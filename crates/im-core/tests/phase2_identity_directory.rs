@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use im_core::prelude::*;
+use awiki_im_core::prelude::*;
 use serde_json::{json, Value};
 
 #[tokio::test]
@@ -231,7 +231,7 @@ async fn identity_service_profile_async_uses_public_http_transport() {
 fn identity_profile_bridge_maps_get_me_result_to_sdk_profile() {
     let fixture = Fixture::new();
     let client = fixture.client("alice");
-    let result = im_core::compat::profile::read_self_profile_with_bridge(
+    let result = awiki_im_core::compat::profile::read_self_profile_with_bridge(
         &client,
         ProfileSession {
             subject: client.did().clone(),
@@ -276,7 +276,7 @@ fn identity_profile_bridge_maps_get_me_result_to_sdk_profile() {
 fn identity_profile_bridge_updates_current_profile() {
     let fixture = Fixture::new();
     let client = fixture.client("alice");
-    let result = im_core::compat::profile::update_profile_with_bridge(
+    let result = awiki_im_core::compat::profile::update_profile_with_bridge(
         &client,
         ProfilePatch {
             display_name: Some(" Alice Updated ".to_string()),
@@ -335,7 +335,7 @@ fn identity_profile_bridge_updates_current_profile() {
 fn identity_profile_update_empty_patch_does_not_call_transport() {
     let fixture = Fixture::new();
     let client = fixture.client("alice");
-    let updated = im_core::compat::profile::update_profile_with_bridge(
+    let updated = awiki_im_core::compat::profile::update_profile_with_bridge(
         &client,
         ProfilePatch::default(),
         ProfileSession {
@@ -938,7 +938,7 @@ async fn directory_service_reads_public_profile_without_resolve_call() {
 async fn directory_bridge_resolves_handle_without_sync_projection() {
     let fixture = Fixture::new();
     let client = fixture.client("alice");
-    let result = im_core::compat::directory::resolve_peer_with_bridge(
+    let result = awiki_im_core::compat::directory::resolve_peer_with_bridge(
         &client,
         PeerRef::parse("bob.awiki.test", "").unwrap(),
         DirectoryTransport::handle_success(),
@@ -978,7 +978,7 @@ async fn directory_bridge_resolves_handle_without_sync_projection() {
 fn directory_bridge_resolves_did_and_keeps_nonfatal_profile_warnings() {
     let fixture = Fixture::new();
     let client = fixture.client("alice");
-    let result = im_core::compat::directory::resolve_peer_with_bridge(
+    let result = awiki_im_core::compat::directory::resolve_peer_with_bridge(
         &client,
         PeerRef::parse("did:example:bob", "").unwrap(),
         DirectoryTransport::did_profile_warning(),
@@ -1003,7 +1003,7 @@ fn directory_bridge_resolves_did_and_keeps_nonfatal_profile_warnings() {
 fn directory_bridge_lookup_handle_maps_result() {
     let fixture = Fixture::new();
     let client = fixture.client("alice");
-    let result = im_core::compat::directory::lookup_handle_with_bridge(
+    let result = awiki_im_core::compat::directory::lookup_handle_with_bridge(
         &client,
         Handle::parse("bob.awiki.test", "").unwrap(),
         DirectoryTransport::handle_success(),
@@ -1203,10 +1203,10 @@ fn seed_contact_binding(
         fs::create_dir_all(parent).unwrap();
     }
     let mut connection = rusqlite::Connection::open(sqlite_path).unwrap();
-    im_core::compat::local_state::ensure_schema(&connection).unwrap();
-    im_core::compat::directory::upsert_contact(
+    awiki_im_core::compat::local_state::ensure_schema(&connection).unwrap();
+    awiki_im_core::compat::directory::upsert_contact(
         &mut connection,
-        im_core::compat::directory::ContactRecord {
+        awiki_im_core::compat::directory::ContactRecord {
             owner_identity_id: "alice-id".to_owned(),
             owner_did: owner_did.to_owned(),
             did: peer_did.to_owned(),
@@ -1215,7 +1215,7 @@ fn seed_contact_binding(
             first_seen_at: seen_at.to_owned(),
             last_seen_at: seen_at.to_owned(),
             credential_name: "alice-id".to_owned(),
-            ..im_core::compat::directory::ContactRecord::default()
+            ..awiki_im_core::compat::directory::ContactRecord::default()
         },
     )
     .unwrap();
@@ -1225,7 +1225,7 @@ struct ProfileSession {
     subject: Did,
 }
 
-impl im_core::compat::profile::BridgeProfileSessionProvider for ProfileSession {
+impl awiki_im_core::compat::profile::BridgeProfileSessionProvider for ProfileSession {
     fn ensure_profile_session(&self) -> ImResult<SessionBundle> {
         Ok(SessionBundle {
             subject: self.subject.clone(),
@@ -1242,7 +1242,7 @@ struct ProfileTransport {
     requests: Vec<(String, String, Value)>,
 }
 
-impl im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport for ProfileTransport {
+impl awiki_im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport for ProfileTransport {
     fn authenticated_rpc(
         &mut self,
         endpoint: &str,
@@ -1273,7 +1273,9 @@ impl im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport for Profil
 #[derive(Default)]
 struct ProfileUpdateTransport;
 
-impl im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport for ProfileUpdateTransport {
+impl awiki_im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport
+    for ProfileUpdateTransport
+{
     fn authenticated_rpc(
         &mut self,
         endpoint: &str,
@@ -1328,7 +1330,7 @@ impl DirectoryTransport {
     }
 }
 
-impl im_core::compat::directory::BridgeDirectoryRpcTransport for DirectoryTransport {
+impl awiki_im_core::compat::directory::BridgeDirectoryRpcTransport for DirectoryTransport {
     fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> ImResult<Value> {
         self.calls
             .push((endpoint.to_string(), method.to_string(), params.clone()));

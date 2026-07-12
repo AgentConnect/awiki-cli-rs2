@@ -1,5 +1,5 @@
-use im_core::compat;
-use im_core::prelude::*;
+use awiki_im_core::compat;
+use awiki_im_core::prelude::*;
 use serde_json::json;
 
 #[test]

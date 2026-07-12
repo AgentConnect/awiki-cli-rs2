@@ -1,5 +1,5 @@
-use im_core::compat::email;
-use im_core::prelude::*;
+use awiki_im_core::compat::email;
+use awiki_im_core::prelude::*;
 use serde_json::{json, Value};
 
 #[test]

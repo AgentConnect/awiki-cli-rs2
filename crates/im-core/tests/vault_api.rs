@@ -1,9 +1,9 @@
-use base64::Engine as _;
-use im_core::vault::{
+use awiki_im_core::vault::{
     parse_device_vault_root_key_b64, DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore,
     SealSecretRequest, SecretAccessPolicy, SecretBytes, SecretKind, SecretMetadata, SecretVault,
     DEVICE_VAULT_ROOT_KEY_LEN,
 };
+use base64::Engine as _;
 
 #[test]
 fn public_vault_api_seals_opens_lists_and_deletes_secret() {

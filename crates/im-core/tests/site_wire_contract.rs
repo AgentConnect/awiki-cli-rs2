@@ -1,10 +1,10 @@
-use im_core::compat::site::{
+use awiki_im_core::compat::site::{
     build_create_page_rpc_call, build_delete_page_rpc_call, build_get_page_rpc_call,
     build_get_root_rpc_call, build_list_pages_rpc_call, build_rename_page_rpc_call,
     build_set_root_rpc_call, build_update_page_rpc_call, TransportProfile, SITE_RPC_ENDPOINT,
 };
-use im_core::content::PageSlug;
-use im_core::site::{
+use awiki_im_core::content::PageSlug;
+use awiki_im_core::site::{
     SiteDomain, SitePageDraft, SitePageQuery, SitePageRef, SitePageUpdate, SiteRootDraft,
 };
 use serde_json::json;
@@ -117,7 +117,7 @@ fn site_wire_validation_matches_go_live_boundaries() {
 #[test]
 fn site_normalizers_return_typed_documents_with_raw_payloads() {
     let domain = SiteDomain::parse("tenant.example").expect("domain");
-    let root = im_core::compat::site::normalize_root(
+    let root = awiki_im_core::compat::site::normalize_root(
         json!({
             "domain": "tenant.example",
             "body": "# Home",
@@ -130,7 +130,7 @@ fn site_normalizers_return_typed_documents_with_raw_payloads() {
     assert_eq!(root.body.as_deref(), Some("# Home"));
     assert_eq!(root.raw["extra"], true);
 
-    let list = im_core::compat::site::normalize_page_list(
+    let list = awiki_im_core::compat::site::normalize_page_list(
         &domain,
         json!({
             "count": 1,
@@ -144,7 +144,7 @@ fn site_normalizers_return_typed_documents_with_raw_payloads() {
     assert_eq!(list.items[0].body.as_deref(), Some("Body"));
 }
 
-fn assert_error_contains(err: im_core::ImError, expected: &str) {
+fn assert_error_contains(err: awiki_im_core::ImError, expected: &str) {
     let message = err.to_string();
     assert!(
         message.contains(expected),

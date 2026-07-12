@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use im_core::prelude::*;
+use awiki_im_core::prelude::*;
 use serde_json::{json, Value};
 
 #[cfg(not(feature = "blocking"))]

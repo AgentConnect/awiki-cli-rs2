@@ -8,10 +8,12 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "blocking")]
 use std::time::Duration;
 
-use im_core::prelude::*;
+use awiki_im_core::prelude::*;
 #[cfg(feature = "blocking")]
-use im_core::realtime::{connect_realtime_with_transport, RealtimeAuthProvider, RealtimeTransport};
-use im_core::realtime::{
+use awiki_im_core::realtime::{
+    connect_realtime_with_transport, RealtimeAuthProvider, RealtimeTransport,
+};
+use awiki_im_core::realtime::{
     realtime_client_construction_plan, realtime_client_endpoints, simulate_realtime_connect,
     RealtimeConnectAction, RealtimeDialOutcome, RealtimeRefreshOutcome,
 };

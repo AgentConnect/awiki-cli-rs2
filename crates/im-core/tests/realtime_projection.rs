@@ -1,5 +1,5 @@
-use im_core::prelude::*;
-use im_core::realtime::{project_notification, NotificationProjectionRoute};
+use awiki_im_core::prelude::*;
+use awiki_im_core::realtime::{project_notification, NotificationProjectionRoute};
 use serde_json::json;
 
 #[test]
@@ -591,6 +591,9 @@ fn realtime_projection_group_state_changed_becomes_group_updated() {
             group_state_version: None,
             actor_did: None,
             subject_did: Some("did:example:bob".to_owned()),
+            subject_handle: None,
+            previous_subject_did: None,
+            handle_binding_generation: None,
             membership_status: Some("active".to_owned()),
             changed_at: None,
             sync: None,

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use im_core::prelude::*;
+use awiki_im_core::prelude::*;
 
 #[test]
 fn realtime_service_api_shape_is_available_from_client_and_prelude() {
