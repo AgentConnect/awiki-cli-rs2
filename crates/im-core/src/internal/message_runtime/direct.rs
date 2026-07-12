@@ -520,7 +520,11 @@ fn sdk_result_from_direct_result(
         .unwrap_or_else(|| {
             crate::internal::message_runtime::state::send_state_label(&send_state.state).to_string()
         });
-    let attributes = resolved_target_attributes(&result.target_did, &peer);
+    let mut attributes = resolved_target_attributes(&result.target_did, &peer);
+    attributes.push(crate::messages::MessageMetadataAttribute {
+        key: "final_acceptance".to_owned(),
+        value: result.final_acceptance.to_string(),
+    });
     let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref(
         &crate::messages::ThreadRef::Direct(peer.clone()),
     );
@@ -651,6 +655,7 @@ mod tests {
                 response: json!({
                     "accepted": true,
                     "accepted_at": "2026-05-21T00:00:00Z",
+                    "final_acceptance": true,
                     "delivery_state": "accepted"
                 }),
             },
@@ -683,6 +688,13 @@ mod tests {
             result.sdk_result.delivery,
             crate::messages::DeliveryState::Accepted
         ));
+        assert!(result
+            .sdk_result
+            .message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "final_acceptance" && attribute.value == "true"));
         assert!(result.sdk_result.message.id.as_str().starts_with("msg-"));
         assert!(result
             .sdk_result

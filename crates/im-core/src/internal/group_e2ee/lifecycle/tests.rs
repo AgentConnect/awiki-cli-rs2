@@ -43,7 +43,6 @@ fn lifecycle_create_prepares_delivers_finalizes_and_persists_summary() {
         credentials: Some(fixture.credentials()),
         service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
         group_state_ref: None,
-        operation_id: None,
     })
     .unwrap();
 

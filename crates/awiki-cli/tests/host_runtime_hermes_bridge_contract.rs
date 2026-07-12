@@ -2,7 +2,10 @@
 
 use awiki_cli::host_runtime::hermes_bridge;
 use serde_json::{json, Map, Value};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static TEMP_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn hermes_bridge_defaults_match_go_constants() {
@@ -348,8 +351,9 @@ impl TempDir {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
+        let sequence = TEMP_DIR_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-hermes-bridge-test-{}-{nonce}",
+            "awiki-cli-rs2-hermes-bridge-test-{}-{nonce}-{sequence}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

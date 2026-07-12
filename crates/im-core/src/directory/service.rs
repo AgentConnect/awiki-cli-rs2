@@ -54,6 +54,13 @@ impl<'a> DirectoryService<'a> {
             crate::internal::directory_runtime::DirectoryRuntime::new(self.client, transport)
                 .resolve_peer(peer)?;
         #[cfg(feature = "sqlite")]
+        project_direct_peer_route(
+            self.client,
+            &result.resolution,
+            result.peer_scope.as_ref(),
+            result.peer_current_did.as_ref(),
+        )?;
+        #[cfg(feature = "sqlite")]
         crate::internal::contact_store::projection::project_directory_resolution(
             self.client,
             &result.resolution,
@@ -73,6 +80,14 @@ impl<'a> DirectoryService<'a> {
             crate::internal::directory_runtime::DirectoryRuntime::new(self.client, transport)
                 .resolve_peer_async(peer)
                 .await?;
+        #[cfg(feature = "sqlite")]
+        project_direct_peer_route_async(
+            self.client,
+            &result.resolution,
+            result.peer_scope.as_ref(),
+            result.peer_current_did.as_ref(),
+        )
+        .await?;
         #[cfg(feature = "sqlite")]
         crate::internal::contact_store::projection::project_directory_resolution_async(
             self.client,
@@ -127,7 +142,7 @@ impl<'a> DirectoryService<'a> {
             crate::internal::directory_runtime::DirectoryRuntime::new(self.client, transport)
                 .lookup_handle(handle)?;
         #[cfg(feature = "sqlite")]
-        project_handle_lookup(self.client, &result);
+        project_handle_lookup(self.client, &result)?;
         Ok(result)
     }
 
@@ -189,6 +204,9 @@ impl<'a> DirectoryService<'a> {
                 input: result.did.as_str().to_string(),
                 did: result.did.clone(),
                 handle: result.handle.clone(),
+                conversation_id: crate::internal::local_state::owner_scope::direct_conversation_id(
+                    result.did.as_str(),
+                ),
                 profile: Some(result.profile.clone()),
                 warnings: result.warnings.clone(),
             },
@@ -215,6 +233,9 @@ impl<'a> DirectoryService<'a> {
                 input: result.did.as_str().to_string(),
                 did: result.did.clone(),
                 handle: result.handle.clone(),
+                conversation_id: crate::internal::local_state::owner_scope::direct_conversation_id(
+                    result.did.as_str(),
+                ),
                 profile: Some(result.profile.clone()),
                 warnings: result.warnings.clone(),
             },
@@ -1028,11 +1049,18 @@ fn validate_identity_subject(subject: &super::IdentitySubject) -> crate::ImResul
 }
 
 #[cfg(feature = "sqlite")]
-fn project_handle_lookup(client: &crate::core::ImClient, lookup: &super::HandleLookupResult) {
-    crate::internal::contact_store::projection::project_directory_resolution(
-        client,
-        &handle_lookup_resolution(lookup),
-    );
+fn project_handle_lookup(
+    client: &crate::core::ImClient,
+    lookup: &super::HandleLookupResult,
+) -> crate::ImResult<()> {
+    let resolution = handle_lookup_resolution(lookup);
+    let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        lookup.user_id.clone(),
+        lookup.handle.as_str(),
+    )?;
+    project_direct_peer_route(client, &resolution, Some(&peer_scope), Some(&lookup.did))?;
+    crate::internal::contact_store::projection::project_directory_resolution(client, &resolution);
+    Ok(())
 }
 
 #[cfg(feature = "sqlite")]
@@ -1040,11 +1068,66 @@ async fn project_handle_lookup_async(
     client: &crate::core::ImClient,
     lookup: &super::HandleLookupResult,
 ) -> crate::ImResult<()> {
+    let resolution = handle_lookup_resolution(lookup);
+    let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        lookup.user_id.clone(),
+        lookup.handle.as_str(),
+    )?;
+    project_direct_peer_route_async(client, &resolution, Some(&peer_scope), Some(&lookup.did))
+        .await?;
     crate::internal::contact_store::projection::project_directory_resolution_async(
         client,
-        &handle_lookup_resolution(lookup),
+        &resolution,
     )
     .await
+}
+
+#[cfg(feature = "sqlite")]
+fn project_direct_peer_route(
+    client: &crate::core::ImClient,
+    resolution: &super::DirectoryResolution,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    peer_current_did: Option<&crate::ids::Did>,
+) -> crate::ImResult<()> {
+    let Some(peer_scope) = peer_scope else {
+        return Ok(());
+    };
+    let record =
+        crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::for_client(
+            client,
+            &resolution.conversation_id,
+            peer_scope,
+            peer_current_did.unwrap_or(&resolution.did).as_str(),
+        )?;
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    crate::internal::local_state::direct_peer_routes::upsert(&connection, &record)
+}
+
+#[cfg(feature = "sqlite")]
+async fn project_direct_peer_route_async(
+    client: &crate::core::ImClient,
+    resolution: &super::DirectoryResolution,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    peer_current_did: Option<&crate::ids::Did>,
+) -> crate::ImResult<()> {
+    let Some(peer_scope) = peer_scope else {
+        return Ok(());
+    };
+    let record =
+        crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::for_client(
+            client,
+            &resolution.conversation_id,
+            peer_scope,
+            peer_current_did.unwrap_or(&resolution.did).as_str(),
+        )?;
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .upsert_direct_peer_route(record)
+        .await
 }
 
 #[cfg(feature = "sqlite")]
@@ -1053,6 +1136,7 @@ fn handle_lookup_resolution(lookup: &super::HandleLookupResult) -> super::Direct
         input: lookup.handle.as_str().to_owned(),
         did: lookup.did.clone(),
         handle: Some(lookup.handle.clone()),
+        conversation_id: lookup.direct_conversation_id(),
         profile: lookup.profile.clone(),
         warnings: lookup.warnings.clone(),
     }
@@ -1106,6 +1190,164 @@ async fn contact_target_from_request_async(
     }
     let resolved = service.resolve_peer_async(request.peer.clone()).await?;
     Ok((resolved.did, request.handle.clone().or(resolved.handle)))
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod direct_peer_route_projection_tests {
+    use std::fs;
+
+    fn lookup(current_did: &str) -> crate::directory::HandleLookupResult {
+        crate::directory::HandleLookupResult {
+            handle: crate::ids::Handle::parse("Bob.AWiki.Test", "").unwrap(),
+            did: crate::ids::Did::parse(current_did).unwrap(),
+            user_id: "user-bob".to_owned(),
+            domain: Some("awiki.test".to_owned()),
+            status: Some("active".to_owned()),
+            profile: None,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn blocking_handle_projection_persists_route_before_any_message() {
+        let fixture = Fixture::new("blocking");
+        let client = fixture.client();
+        let lookup = lookup("did:example:bob-old");
+
+        super::project_handle_lookup(&client, &lookup).unwrap();
+
+        let stored = fixture.load_route(&lookup.direct_conversation_id());
+        assert_eq!(stored.current_did, "did:example:bob-old");
+        assert_eq!(stored.peer_user_id, "user-bob");
+        assert_eq!(stored.full_handle, "bob.awiki.test");
+        assert_eq!(fixture.message_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn async_handle_projection_updates_route_after_did_rotation() {
+        let fixture = Fixture::new("async-rotation");
+        let client = fixture.client();
+        let old = lookup("did:example:bob-old");
+        super::project_handle_lookup_async(&client, &old)
+            .await
+            .unwrap();
+        let current = lookup("did:example:bob-current");
+
+        super::project_handle_lookup_async(&client, &current)
+            .await
+            .unwrap();
+
+        let stored = fixture.load_route(&current.direct_conversation_id());
+        assert_eq!(stored.current_did, "did:example:bob-current");
+        assert_eq!(fixture.route_count(), 1);
+        assert_eq!(fixture.message_count(), 0);
+    }
+
+    struct Fixture {
+        root: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        fn new(prefix: &str) -> Self {
+            let root = tempfile::Builder::new()
+                .prefix(&format!("im-core-directory-route-{prefix}-"))
+                .tempdir()
+                .unwrap();
+            let identities = root.path().join("identities");
+            fs::create_dir_all(identities.join("alice")).unwrap();
+            fs::write(identities.join("default"), "alice\n").unwrap();
+            fs::write(
+                identities.join("registry.json"),
+                r#"{
+                  "default_identity": "alice",
+                  "identities": [{
+                    "id": "alice-id",
+                    "did": "did:example:alice",
+                    "local_alias": "alice",
+                    "ready_for_auth": true,
+                    "ready_for_messaging": true,
+                    "missing": []
+                  }]
+                }"#,
+            )
+            .unwrap();
+            fs::write(identities.join("alice").join("did.json"), "{}").unwrap();
+            Self { root }
+        }
+
+        fn client(&self) -> crate::core::ImClient {
+            crate::core::ImCore::new(
+                crate::ImCoreConfig {
+                    service_base_url: crate::ServiceEndpoint::parse("https://example.test")
+                        .unwrap(),
+                    did_domain: "awiki.test".to_owned(),
+                    user_service_endpoint: None,
+                    message_service_endpoint: None,
+                    mail_service_endpoint: None,
+                    anp_service_endpoint: None,
+                    anp_service_did: None,
+                    ca_bundle: None,
+                    transport_policy: crate::MessageTransportPolicy::HttpOnly,
+                },
+                crate::ImCorePaths {
+                    identities: crate::IdentityRegistryPaths {
+                        identity_root_dir: self.root.path().join("identities"),
+                        registry_path: self.root.path().join("identities/registry.json"),
+                        default_identity_path: Some(self.root.path().join("identities/default")),
+                    },
+                    local_state: crate::LocalStatePaths {
+                        sqlite_path: self.sqlite_path(),
+                    },
+                    runtime: crate::RuntimePaths {
+                        cache_dir: self.root.path().join("cache"),
+                        temp_dir: self.root.path().join("tmp"),
+                    },
+                },
+            )
+            .unwrap()
+            .client(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap()
+        }
+
+        fn sqlite_path(&self) -> std::path::PathBuf {
+            self.root.path().join("local/im.sqlite")
+        }
+
+        fn load_route(
+            &self,
+            conversation_id: &str,
+        ) -> crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord {
+            let connection = crate::internal::local_state::open_writable(&self.sqlite_path())
+                .expect("local state");
+            crate::internal::local_state::direct_peer_routes::get(
+                &connection,
+                "alice-id",
+                conversation_id,
+            )
+            .unwrap()
+            .expect("route")
+        }
+
+        fn route_count(&self) -> i64 {
+            self.count("direct_peer_routes")
+        }
+
+        fn message_count(&self) -> i64 {
+            self.count("messages")
+        }
+
+        fn count(&self, table: &str) -> i64 {
+            let connection = crate::internal::local_state::open_writable(&self.sqlite_path())
+                .expect("local state");
+            connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        }
+    }
 }
 
 fn validate_relationship_list_query(query: &super::RelationshipListQuery) -> crate::ImResult<()> {

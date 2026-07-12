@@ -10,6 +10,7 @@ pub struct DartDirectoryResolution {
     pub input: String,
     pub did: String,
     pub handle: Option<String>,
+    pub conversation_id: String,
     pub profile: Option<crate::dto::profile::DartUserProfile>,
     pub warnings: Vec<String>,
 }
@@ -17,8 +18,17 @@ pub struct DartDirectoryResolution {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartRelationStatus {
     pub peer: String,
+    pub did: String,
+    pub is_following: bool,
+    pub is_follower: bool,
+    pub is_friend: bool,
+    pub is_blocked: bool,
+    pub is_blocked_by: bool,
+    pub is_contact: bool,
+    pub messaged: bool,
     pub relationship: Option<String>,
     pub display_name: Option<String>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

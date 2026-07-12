@@ -587,6 +587,224 @@ mod conversation_read_model_tests {
     }
 
     #[test]
+    fn peer_scope_conversation_resolves_from_directory_route_before_first_message() {
+        let fixture = Fixture::new("conversation-route-before-first-message");
+        let client = fixture.client();
+        let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "user-bob",
+            "Bob.AWiki.Test",
+        )
+        .unwrap();
+        let conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &peer_scope,
+            );
+        fixture.seed_route(&conversation_id, &peer_scope, "did:example:bob-current");
+
+        let resolved = super::resolve_service_conversation_thread(
+            &client,
+            &crate::messages::ConversationReadRef::new(conversation_id.clone()).unwrap(),
+        )
+        .expect("directory route should resolve a canonical empty conversation");
+
+        match resolved.thread {
+            crate::messages::ThreadRef::Direct(peer) => {
+                assert_eq!(peer.as_str(), "did:example:bob-current");
+            }
+            other => panic!("expected direct thread, got {other:?}"),
+        }
+        assert_eq!(
+            resolved.resolved_did.as_deref(),
+            Some("did:example:bob-current")
+        );
+        assert_eq!(resolved.peer_scope, Some(peer_scope));
+        let connection =
+            crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+        let message_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            message_count, 0,
+            "directory routing must not invent a message"
+        );
+    }
+
+    #[test]
+    fn directory_route_is_shared_by_text_payload_and_attachment_conversation_surfaces() {
+        let fixture = Fixture::new("conversation-route-all-send-surfaces");
+        let client = fixture.client();
+        let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "user-bob",
+            "bob.awiki.test",
+        )
+        .unwrap();
+        let conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &peer_scope,
+            );
+        fixture.seed_route(&conversation_id, &peer_scope, "did:example:bob-current");
+
+        for body in [
+            crate::messages::MessageBody::Text {
+                text: "hello".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            crate::messages::MessageBody::Payload {
+                payload: json!({"text": "hello"}),
+            },
+        ] {
+            let resolved = super::conversation_send_request(
+                &client,
+                crate::messages::ConversationReadRef::new(conversation_id.clone()).unwrap(),
+                body,
+                crate::messages::MessageSecurityMode::DefaultPlain,
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                resolved.target_did.as_deref(),
+                Some("did:example:bob-current")
+            );
+            assert_eq!(resolved.target_handle.as_deref(), Some("bob.awiki.test"));
+            assert_eq!(resolved.peer_scope.as_ref(), Some(&peer_scope));
+        }
+
+        let attachment_target = super::resolve_conversation_send_target(
+            &client,
+            &crate::messages::ConversationReadRef::new(conversation_id).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            attachment_target.target_did.as_deref(),
+            Some("did:example:bob-current")
+        );
+        assert_eq!(attachment_target.peer_scope.as_ref(), Some(&peer_scope));
+    }
+
+    #[tokio::test]
+    async fn first_canonical_send_projection_creates_only_peer_scope_message_and_summary() {
+        let fixture = Fixture::new("conversation-route-first-send-projection");
+        let client = fixture.client();
+        let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "user-bob",
+            "bob.awiki.test",
+        )
+        .unwrap();
+        let conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &peer_scope,
+            );
+        fixture.seed_route(&conversation_id, &peer_scope, "did:example:bob-current");
+        let resolved = super::conversation_send_request(
+            &client,
+            crate::messages::ConversationReadRef::new(conversation_id.clone()).unwrap(),
+            crate::messages::MessageBody::Text {
+                text: "first canonical message".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            crate::messages::MessageSecurityMode::DefaultPlain,
+            Some(crate::ids::MessageId::parse("msg-first-canonical").unwrap()),
+            Some("op-first-canonical".to_owned()),
+            false,
+            None,
+        )
+        .unwrap();
+
+        crate::internal::message_runtime::local_projection::persist_send_projection_async(
+            &client,
+            &resolved.request.target,
+            &resolved.request.body,
+            resolved.request.client_message_id.as_ref().unwrap(),
+            resolved.request.delivery.idempotency_key.as_deref(),
+            crate::messages::DeliveryState::StoredLocally,
+            resolved.target_did.as_deref(),
+            resolved.target_handle.as_deref(),
+            resolved.peer_scope.as_ref(),
+        )
+        .await
+        .unwrap();
+
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        let stored_conversation_id: String = connection
+            .query_row(
+                "SELECT conversation_id FROM messages WHERE owner_identity_id = 'alice-id' AND msg_id = 'msg-first-canonical'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_conversation_id, conversation_id);
+        let canonical_summary_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM conversation_summaries WHERE owner_identity_id = 'alice-id' AND conversation_id = ?1",
+                [conversation_id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(canonical_summary_count, 1);
+        let legacy_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE owner_identity_id = 'alice-id' AND conversation_id LIKE 'dm:did:%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_count, 0);
+    }
+
+    #[test]
+    fn corrupt_directory_route_fails_closed_before_message_fallback() {
+        let fixture = Fixture::new("conversation-route-corrupt");
+        let client = fixture.client();
+        let requested_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "user-bob",
+            "bob.awiki.test",
+        )
+        .unwrap();
+        let conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &requested_scope,
+            );
+        let connection =
+            crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+        connection
+            .execute(
+                r#"
+INSERT INTO direct_peer_routes
+    (owner_identity_id, conversation_id, peer_user_id, full_handle, current_did, updated_at)
+VALUES ('alice-id', ?1, 'user-mallory', 'mallory.awiki.test', 'did:example:mallory', '0')
+"#,
+                [conversation_id.as_str()],
+            )
+            .unwrap();
+        fixture.seed_message(crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-valid-fallback-must-not-mask-corruption".to_owned(),
+            conversation_id: conversation_id.clone(),
+            thread_id: conversation_id.clone(),
+            sender_did: "did:example:bob-current".to_owned(),
+            receiver_did: "did:example:alice".to_owned(),
+            metadata: json!({
+                "peer_user_id": "user-bob",
+                "peer_full_handle": "bob.awiki.test",
+                "peer_current_did": "did:example:bob-current"
+            })
+            .to_string(),
+            ..Fixture::message_record_defaults()
+        });
+
+        let err = super::resolve_service_conversation_thread(
+            &client,
+            &crate::messages::ConversationReadRef::new(conversation_id).unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, crate::ImError::LocalStateUnavailable { .. }));
+        assert!(!err.to_string().contains("mallory"));
+    }
+
+    #[test]
     fn sync_conversation_after_peer_scope_prefers_metadata_did_over_legacy_outgoing_rows() {
         let fixture = Fixture::new("conversation-sync-peer-scope-rotation");
         let client = fixture.client();
@@ -777,6 +995,26 @@ mod conversation_read_model_tests {
             let connection =
                 crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
             crate::internal::local_state::messages::upsert_message(&connection, &record).unwrap();
+        }
+
+        fn seed_route(
+            &self,
+            conversation_id: &str,
+            peer_scope: &crate::internal::local_state::owner_scope::DirectPeerScope,
+            current_did: &str,
+        ) {
+            let connection =
+                crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
+            let record =
+                crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::new(
+                    "alice-id",
+                    conversation_id,
+                    peer_scope.user_id.clone(),
+                    peer_scope.full_handle.clone(),
+                    current_did,
+                )
+                .unwrap();
+            crate::internal::local_state::direct_peer_routes::upsert(&connection, &record).unwrap();
         }
 
         fn message_record_defaults() -> crate::internal::local_state::messages::MessageRecord {
@@ -1619,9 +1857,28 @@ impl<'a> MessageService<'a> {
 
         let mut retry = resolved.clone();
         retry.request.target = super::MessageTarget::Direct(target_peer);
-        retry.target_did = Some(current_did);
+        retry.target_did = Some(current_did.clone());
         retry.target_handle = full_handle;
         retry.peer_scope = peer_scope;
+        #[cfg(feature = "sqlite")]
+        if retry.conversation_id.starts_with("dm:peer-scope:") {
+            let Some(peer_scope) = retry.peer_scope.as_ref() else {
+                return Err(unresolvable_service_conversation(&retry.conversation_id));
+            };
+            let route =
+                crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::for_client(
+                    self.client,
+                    &retry.conversation_id,
+                    peer_scope,
+                    &current_did,
+                )?;
+            self.client
+                .core_inner()
+                .local_state_db()
+                .await?
+                .upsert_direct_peer_route(route)
+                .await?;
+        }
         Ok(Some(retry))
     }
 
@@ -3027,6 +3284,7 @@ struct ResolvedSendRequest {
 
 #[derive(Clone)]
 struct ResolvedConversationSendRequest {
+    conversation_id: String,
     request: super::SendMessageRequest,
     target_did: Option<String>,
     target_handle: Option<String>,
@@ -3101,6 +3359,7 @@ fn conversation_send_request(
     wait_for_final_acceptance: bool,
     delegated_signing: Option<super::DelegatedSigningOptions>,
 ) -> crate::ImResult<ResolvedConversationSendRequest> {
+    let conversation_id = conversation.conversation_id.clone();
     let resolved = resolve_service_conversation_thread(client, &conversation)?;
     let client_message_id = match client_message_id {
         Some(id) => id,
@@ -3126,6 +3385,7 @@ fn conversation_send_request(
         delegated_signing,
     };
     Ok(ResolvedConversationSendRequest {
+        conversation_id,
         request,
         target_did: resolved_target.target_did,
         target_handle: resolved_target.target_handle,
@@ -3666,6 +3926,23 @@ fn resolve_peer_scope_service_conversation_thread(
     client: &crate::core::ImClient,
     conversation: &super::ConversationReadRef,
 ) -> crate::ImResult<ResolvedConversationServiceThread> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let owner = crate::internal::local_state::owner_scope::OwnerScope::for_client(client)?;
+    if let Some(route) = crate::internal::local_state::direct_peer_routes::get(
+        &connection,
+        &owner.owner_identity_id,
+        &conversation.conversation_id,
+    )? {
+        let peer_did = canonical_peer_did(&route.current_did, client.did().as_str())
+            .ok_or_else(|| unresolvable_service_conversation(&conversation.conversation_id))?;
+        return Ok(ResolvedConversationServiceThread {
+            thread: super::ThreadRef::Direct(crate::ids::PeerRef::parse(peer_did, "")?),
+            resolved_did: Some(peer_did.to_owned()),
+            peer_scope: Some(route.peer_scope()),
+        });
+    }
     let records = conversation_projection_records(client, conversation)?;
     let Some(peer_did) = peer_current_did_from_records(&records, client.did().as_str()) else {
         return Err(unresolvable_service_conversation(

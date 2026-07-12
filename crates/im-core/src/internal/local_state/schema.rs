@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 24;
+pub(crate) const SCHEMA_VERSION: i64 = 25;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 18;
 
@@ -304,6 +304,22 @@ CREATE TABLE IF NOT EXISTS message_identity_aliases (
 
 CREATE INDEX IF NOT EXISTS idx_message_identity_aliases_owner_canonical
 ON message_identity_aliases(owner_identity_id, canonical_msg_id);
+"#;
+
+const DIRECT_PEER_ROUTES_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS direct_peer_routes (
+    owner_identity_id TEXT NOT NULL,
+    conversation_id   TEXT NOT NULL,
+    peer_user_id      TEXT NOT NULL,
+    full_handle       TEXT NOT NULL,
+    current_did       TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, conversation_id),
+    UNIQUE (owner_identity_id, peer_user_id, full_handle)
+);
+
+CREATE INDEX IF NOT EXISTS idx_direct_peer_routes_owner_did
+ON direct_peer_routes(owner_identity_id, current_did);
 "#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -949,6 +965,9 @@ fn create_schema(
         .map_err(super::local_state_unavailable)?;
     connection
         .execute_batch(crate::internal::group_rebind_recovery::GROUP_REBIND_RECOVERY_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(DIRECT_PEER_ROUTES_SQL)
         .map_err(super::local_state_unavailable)?;
     let mut should_rebuild_conversation_summaries = backfill_conversation_summaries;
     if ensure_message_projection_columns(connection)? {

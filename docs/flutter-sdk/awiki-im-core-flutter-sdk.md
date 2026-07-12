@@ -86,7 +86,12 @@ the native vault-backed backend.
 
 ## Directory profile metadata
 
-`client.directory.resolvePeer(handle)` and `client.directory.lookupHandle(handle)` can return a `DirectoryResolution.profile` populated from the WNS Handle Resolution Document `profile` object. This profile is a DID Subject Profile projection, not routing or security metadata.
+`client.directory.resolvePeer(handle)` and `client.directory.lookupHandle(handle)` return a
+`DirectoryResolution.conversationId` together with the resolved DID/Handle. When the directory
+provides a stable user ID and full Handle, this is the canonical `dm:peer-scope:v1:*` identity and
+must be used by App start-conversation flows before the first message arrives. The same result can
+also carry `DirectoryResolution.profile` populated from the WNS Handle Resolution Document
+`profile` object. This profile is a DID Subject Profile projection, not routing or security metadata.
 
 The Dart `UserProfile` model uses these standard display fields:
 
@@ -107,6 +112,8 @@ Legacy compatibility fields remain available:
 Display fields must not be used for routing, authentication, authorization, service endpoint selection, E2EE binding, or security-profile negotiation. Apps should keep Handle or DID visible on profile and recipient-confirmation surfaces, especially for high-risk operations.
 
 `client.directory.hydrateDisplayProfiles(peers)` reads only the local `im-core` contact/profile cache. It does not call WNS or User Service, and is intended for hot UI paths such as conversation lists, contact lists, and member lists. A returned `DisplayProfile` has `cacheHit = false` when the peer is absent locally; the app should fall back to `displayName -> handle -> did` without blocking list rendering. Remote refresh must be explicit through `resolvePeer`, `lookupHandle`, `loadPublicProfile`, or the send-time security verification path.
+
+`client.directory.relationStatus(peer)` is the authenticated remote relationship status query despite its retained Dart method name. `RelationStatus` exposes `isFollowing`, `isFollower`, `isFriend`, `isBlocked`, `isBlockedBy`, `isContact`, and `messaged` independently. Its nullable `relationship` field is only the caller's outbound local projection (`following` or `none`) and must not be treated as the combined relationship state. A consumer derives `friend` only when both directional flags and `isFriend` agree; missing or contradictory directional truth fails closed.
 
 ## Group display metadata
 

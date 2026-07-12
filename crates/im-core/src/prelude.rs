@@ -24,7 +24,7 @@ pub use crate::email::{
     EmailMarkReadResult, EmailMessage, EmailMessageId, EmailMessageSummary, EmailNotification,
     EmailNotificationQuery, EmailService, SendEmailRequest, SendEmailResult,
 };
-pub use crate::error::{ImError, ImResult};
+pub use crate::error::{IdentityVaultFailure, ImError, ImResult};
 pub use crate::groups::{
     GroupAdmissionMode, GroupCreateRequest, GroupDiscoverability, GroupE2eeProcessLeaveRequest,
     GroupE2eeRecoverMemberRequest, GroupE2eeUpdateKeyRequest, GroupJoinRequest,

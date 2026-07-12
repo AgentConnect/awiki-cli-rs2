@@ -999,6 +999,74 @@ LIMIT ?"#
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn list_decrypted_secure_messages_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    message_ids: &[String],
+) -> crate::ImResult<Vec<MessageRecord>> {
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let message_ids = message_ids
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>();
+    if message_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; message_ids.len()].join(",");
+    let statement = format!(
+        r#"
+SELECT msg_id,
+       owner_identity_id,
+       owner_did,
+       conversation_id,
+       thread_id,
+       direction,
+       sender_did,
+       receiver_did,
+       group_id,
+       group_did,
+       content_type,
+       content,
+       title,
+       server_seq,
+       sent_at,
+       stored_at,
+       is_e2ee,
+       is_read,
+       sender_name,
+       metadata,
+       mentions_current_user,
+       credential_name
+FROM messages
+WHERE owner_identity_id = ?
+  AND msg_id IN ({placeholders})
+  AND is_e2ee = 1
+  AND CASE
+        WHEN json_valid(COALESCE(NULLIF(metadata, ''), '{{}}')) = 1
+        THEN json_extract(COALESCE(NULLIF(metadata, ''), '{{}}'), '$.decryption_state')
+        ELSE NULL
+      END = 'decrypted'"#
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(message_ids.len() + 1);
+    params.push(&owner_identity_id);
+    for message_id in &message_ids {
+        params.push(message_id);
+    }
+    let mut statement = connection
+        .prepare(&statement)
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(params.as_slice(), message_record_from_row)
+        .map_err(super::local_state_unavailable)?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row.map_err(super::local_state_unavailable)?);
+    }
+    Ok(result)
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn reconcile_peer_scope_direct_conversations(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,

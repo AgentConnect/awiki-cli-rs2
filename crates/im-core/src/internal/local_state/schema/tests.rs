@@ -24,6 +24,9 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("table", "sync_state"),
         ("table", "thread_read_state"),
         ("table", "message_identity_aliases"),
+        ("table", "direct_peer_routes"),
+        ("table", "group_rebind_outbox"),
+        ("table", "group_rebind_p6_jobs"),
         ("view", "threads"),
         ("view", "inbox"),
         ("view", "outbox"),
@@ -46,6 +49,9 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     assert_index_exists(&db, "idx_thread_read_state_owner_pending");
     assert_index_exists(&db, "idx_thread_read_state_owner_conversation");
     assert_index_exists(&db, "idx_message_identity_aliases_owner_canonical");
+    assert_index_exists(&db, "idx_direct_peer_routes_owner_did");
+    assert_index_exists(&db, "idx_group_rebind_outbox_resume");
+    assert_index_exists(&db, "idx_group_rebind_p6_resume");
     for table in [
         "contacts",
         "contact_handle_bindings",
@@ -63,6 +69,9 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         "sync_state",
         "thread_read_state",
         "message_identity_aliases",
+        "direct_peer_routes",
+        "group_rebind_outbox",
+        "group_rebind_p6_jobs",
     ] {
         assert_column_exists(&db, table, "owner_identity_id");
     }
@@ -76,6 +85,10 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("messages", vec!["owner_identity_id", "msg_id"]),
         (
             "conversation_summaries",
+            vec!["owner_identity_id", "conversation_id"],
+        ),
+        (
+            "direct_peer_routes",
             vec!["owner_identity_id", "conversation_id"],
         ),
         ("groups", vec!["owner_identity_id", "group_id"]),
@@ -176,6 +189,96 @@ VALUES ('owner-id', 'did:owner', 'did:group', 'legacy-id', 'did:member',
             "did".to_owned(),
             "did:member".to_owned(),
             None
+        )
+    );
+}
+
+#[test]
+fn local_state_schema_upgrades_remote_v23_without_losing_direct_routes() {
+    let db = Connection::open_in_memory().unwrap();
+    create_identity_owned_schema(&db, IdentityOwnedSchemaTableMode::Final).unwrap();
+    db.execute_batch(DIRECT_PEER_ROUTES_SQL).unwrap();
+    db.execute(
+        r#"
+INSERT INTO direct_peer_routes
+    (owner_identity_id, conversation_id, peer_user_id, full_handle, current_did, updated_at)
+VALUES ('owner-id', 'dm:alice.example.com', 'peer-id', 'alice.example.com',
+        'did:example:alice', '2026-07-12T00:00:00Z')"#,
+        [],
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 23).unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_schema_object_exists(&db, "table", "group_rebind_outbox");
+    assert_schema_object_exists(&db, "table", "group_rebind_p6_jobs");
+    let route = db
+        .query_row(
+            "SELECT peer_user_id, full_handle, current_did FROM direct_peer_routes",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        route,
+        (
+            "peer-id".to_owned(),
+            "alice.example.com".to_owned(),
+            "did:example:alice".to_owned(),
+        )
+    );
+}
+
+#[test]
+fn local_state_schema_upgrades_local_v24_without_losing_rebind_jobs() {
+    let db = Connection::open_in_memory().unwrap();
+    create_identity_owned_schema(&db, IdentityOwnedSchemaTableMode::Final).unwrap();
+    db.execute_batch(crate::internal::group_rebind_recovery::GROUP_REBIND_RECOVERY_SQL)
+        .unwrap();
+    db.execute(
+        r#"
+INSERT INTO group_rebind_outbox
+    (job_id, owner_identity_id, group_did, member_handle, previous_member_did,
+     new_member_did, binding_generation, phase, created_at, updated_at)
+VALUES ('job-1', 'owner-id', 'did:example:group', 'alice.example.com',
+        'did:example:alice-old', 'did:example:alice-new', '2', 'awaiting_p6',
+        '2026-07-12T00:00:00Z', '2026-07-12T00:00:00Z')"#,
+        [],
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 24).unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_schema_object_exists(&db, "table", "direct_peer_routes");
+    let job = db
+        .query_row(
+            "SELECT member_handle, binding_generation, phase FROM group_rebind_outbox WHERE job_id='job-1'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        job,
+        (
+            "alice.example.com".to_owned(),
+            "2".to_owned(),
+            "awaiting_p6".to_owned(),
         )
     );
 }

@@ -255,6 +255,13 @@ device context, warnings, and plaintext compatibility retention, but they must
 not expose root keys, private PEM, JWTs, bearer tokens, raw `SecretRef` JSON, or
 ciphertext internals. `VaultRequired` is fail-closed for new secret persistence.
 
+`verify_identity_vault` 的失败分支使用 `ImError::IdentityVault` 与稳定的
+`IdentityVaultFailure`：`Unavailable`、`MetadataMissing`、`MetadataUnverified`、
+`WorkspaceMismatch`、`DeviceMismatch`、`RecordOpenFailed` 和
+`VerificationFailed`。Dart facade 将其映射为同义的稳定 snake-case error code；host
+必须按 code 分支，不得解析 message。出于安全边界，错误 root key、密文损坏和 AEAD
+authentication failure 均归一为 `RecordOpenFailed`。
+
 P2+ API：
 
 ```rust
@@ -515,6 +522,11 @@ Reliable sync 补充：
 
 `msg send --to`、`--group`、`--text-file`、`--file`、`--secure` 是 CLI 输入形态，不是 SDK 字段。CLI adapter 负责转换成 `MessageTarget`、`MessageBody`、`MessageSecurityPolicy`。
 
+当 `msg send --payload` 成功时，`im-core` 返回的 `MessageBodyView::Payload`
+必须被 CLI 作为正常的结构化消息结果渲染，JSON 输出中的
+`data.message.type` 为 `application/json`；不得将 payload 成功回执误判为仅允许
+text body 的内部错误。
+
 ## 9. directory：P2+
 
 ```rust
@@ -547,6 +559,13 @@ impl DirectoryService<'_> {
 }
 ```
 
+`DirectoryResolution.conversation_id` 由 im-core directory resolver 生成：Handle lookup
+具有稳定 user scope 时返回 `dm:peer-scope:v1:*`，无法取得 peer scope 时才回退到 legacy
+`dm:<DID>`。成功解析稳定 user scope 时，im-core 同时在 owner-scoped local state 中记录
+canonical conversation 到 current DID 的内部 route；因此空会话的首条 text/payload/attachment
+发送也直接使用 canonical ID。App/CLI 不得复制 hash 算法、拼 `dm:<DID>` write alias，或在
+收到首条消息后才纠正会话 ID。route 缺失或完整性校验失败必须 fail closed。
+
 `HandleLookupResult` 和 `DirectoryResolution.profile` 可以承载 WNS Handle Resolution Document 中的 DID Subject Profile 投影。SDK 优先接受合法的 `profile`：
 
 - `profile.subject_did` 必须等于外层 `did`；
@@ -576,7 +595,7 @@ pub struct Profile {
 
 `hydrate_display_profiles` 是本地 cache 读取 API，不会发起 WNS / User Service 远程请求。它用于联系人列表、会话列表、群成员列表等热路径水化展示资料；cache miss 时返回 `cache_hit = false`，调用方按 `display_name -> handle -> did` 的展示 fallback 处理。远程刷新仍应通过显式 `resolve_peer` / `public_profile` / 安全验证链路触发。
 
-`relation_status(peer)` 是本地 contact projection 查询；`relationship_status(peer)` 是远端 DID relationship authoritative 查询，并合并本地 `is_contact` / `messaged` / `relationship` 投影。Relationship DTO 不暴露 user-service 内部 `from_user_id` / `to_user_id`。
+`relation_status(peer)` 是本地 contact projection 查询；`relationship_status(peer)` 是远端 DID relationship authoritative 查询，并合并本地 `is_contact` / `messaged` / `relationship` 投影。Relationship DTO 不暴露 user-service 内部 `from_user_id` / `to_user_id`。 Flutter facade 的 `client.directory.relationStatus(peer)` 明确桥接后者，并完整保留五个方向/阻塞布尔值；其中 `relationship` 仍只表示调用方的 outbound local projection，不能替代 combined state。
 
 P1 的 `messages().send(Direct)` 可以内部做最小目标解析，但不需要对外暴露完整 `DirectoryService`。
 

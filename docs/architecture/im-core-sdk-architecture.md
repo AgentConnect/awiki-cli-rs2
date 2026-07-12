@@ -210,7 +210,7 @@ These files describe the SDK public surface and interface-level contracts. They 
 
 ## 11. Local Conversation Summary Projection
 
-The SQLite local state keeps `messages` as the durable message projection truth. Conversation list reads must not aggregate all owner messages on every refresh. Schema version 18 adds `conversation_summaries` as a rebuildable materialized projection for chat-list summaries, schema version 19 adds an owner/conversation/timestamp hot index for local-first message history pagination, schema version 20 adds `sync_state`, and current schema version 21 carries the current conversation/read/send projection contract:
+The SQLite local state keeps `messages` as the durable message projection truth. Conversation list reads must not aggregate all owner messages on every refresh. Schema version 18 adds `conversation_summaries` as a rebuildable materialized projection for chat-list summaries, schema version 19 adds an owner/conversation/timestamp hot index for local-first message history pagination, schema version 20 adds `sync_state`, and schema version 23 adds owner-scoped `direct_peer_routes` for non-reversible peer-scope conversation routing. The current conversation/read/send projection contract keeps:
 
 - primary key: `(owner_identity_id, conversation_id)`;
 - hot index: `idx_conversation_summaries_owner_last(owner_identity_id, last_message_at DESC, conversation_id)`;
@@ -228,6 +228,17 @@ Summary rows are derived state and may be rebuilt from `messages`, but hot write
 - peer-scope direct compatibility uses a SQLite TEMP, owner-scoped memo per local-state connection: after a legacy DID fold, or after a peer handle has been recognized, later upserts in the same actor/session do not rescan all legacy DID rows or rerun the large UPDATE; late legacy rows that match the memoized DID/handle are normalized into the peer-scope conversation before insert.
 
 `ConversationIdentity.conversation_id` is the SDK-level routing key for message display. Conversation list rows, message metadata, timeline patches, read-state updates, conversation-scoped send, and local repair must carry or derive from this canonical identity. `ThreadRef::{Direct, Group, Thread}` remains a compatibility / adapter surface for CLI migration, legacy callers, and low-level diagnostics. New AWiki Me and Flutter SDK message-display paths must not reconstruct a route from DID, handle, or legacy direct aliases when a canonical `conversation_id` is available.
+
+`direct_peer_routes` is a routing projection, not a message or conversation
+truth. A successful directory lookup with stable `user_id + full_handle`
+upserts `(owner_identity_id, conversation_id) -> current_did` after recomputing
+the v1 peer-scope hash. This lets the first text, payload, attachment, read, or
+sync operation resolve an otherwise non-reversible canonical ID before any
+message exists. DID rotation updates `current_did` without changing the
+conversation ID. Missing, cross-owner, or integrity-invalid routes fail closed;
+message metadata/participants remain a compatibility fallback for conversations
+that predate the route projection. App and CLI callers must never manufacture a
+`dm:<DID>` alias to bypass this resolver.
 
 Because summaries contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
 
@@ -266,7 +277,7 @@ The API is for fast first paint. Apps should show local conversation timeline ro
 
 ## 13.1 Conversation Send And Local Echo
 
-Conversation-surface sends should use `messages.send_conversation_text()` / Dart `client.messages.sendConversationText(...)`, `messages.send_conversation_payload()` / Dart `client.messages.sendConversationPayload(...)`, or `attachments.send_conversation()` / Dart `client.attachments.sendConversation(...)` when the caller already has a `ConversationReadRef`. `im-core` resolves the canonical conversation to the storage route, writes a durable pending projection row before network send, updates the row to accepted/sent/failed as the network result arrives, and emits committed patches only after the SQLite transaction succeeds.
+Conversation-surface sends should use `messages.send_conversation_text()` / Dart `client.messages.sendConversationText(...)`, `messages.send_conversation_payload()` / Dart `client.messages.sendConversationPayload(...)`, or `attachments.send_conversation()` / Dart `client.attachments.sendConversation(...)` when the caller already has a `ConversationReadRef`. `im-core` resolves the canonical conversation through its owner-scoped route projection, writes a durable pending projection row under that same canonical ID before network send, updates the row to accepted/sent/failed as the network result arrives, and emits committed patches only after the SQLite transaction succeeds. The first message in a peer-scope conversation does not require a pre-existing message row and must not be bootstrapped with a legacy DID conversation alias.
 
 `MessageMetadata.send_state`, `MessageMetadata.retry_plan`, and `MessageMetadata.conversation_identity` are the SDK facts for pending/accepted/sent/failed presentation. AWiki Me may render those states, but it must not create a second durable optimistic message store or decide send correctness from memory-only pending rows. Attachment local file preview may exist only as transient UI state during upload; list/detail timeline truth, retry correctness, and final send state must come from the SDK durable projection. Secure/E2EE conversation-surface local echo remains fail-closed where unsupported by the secure route.
 

@@ -1647,6 +1647,7 @@ fn project_secure_direct_messages_impl(
             return;
         };
         let mut message_values = std::mem::take(messages);
+        apply_cached_secure_direct_messages(client, &mut message_values);
         let warnings =
             crate::internal::secure_direct::incoming::maybe_decrypt_direct_e2ee_messages_for_client(
                 client,
@@ -1700,6 +1701,7 @@ async fn project_secure_direct_messages_async_impl(
             return;
         };
         let mut message_values = std::mem::take(messages);
+        apply_cached_secure_direct_messages_async(client, &mut message_values).await;
         let mut processed_async = vec![false; message_values.len()];
         let mut async_warnings = Vec::new();
         let mut pending_cipher_indices: HashMap<String, Vec<usize>> = HashMap::new();
@@ -2058,6 +2060,138 @@ fn append_secure_direct_warnings(raw: &mut Value, warnings: Vec<String>) {
     if let Value::Array(items) = entry {
         items.extend(warnings.into_iter().map(Value::String));
     }
+}
+
+#[cfg(feature = "sqlite")]
+fn secure_direct_wire_message_ids(messages: &[Value]) -> Vec<String> {
+    messages
+        .iter()
+        .filter(|message| is_direct_e2ee_wire_message(message))
+        .map(secure_direct_message_id)
+        .filter(|message_id| !message_id.trim().is_empty())
+        .collect()
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+fn apply_cached_secure_direct_messages(client: &crate::core::ImClient, messages: &mut [Value]) {
+    let message_ids = secure_direct_wire_message_ids(messages);
+    if message_ids.is_empty() {
+        return;
+    }
+    let Ok(connection) = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    ) else {
+        return;
+    };
+    let Ok(records) =
+        crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
+            &connection,
+            client.current_identity().id.as_str(),
+            &message_ids,
+        )
+    else {
+        return;
+    };
+    apply_cached_secure_direct_records(messages, records);
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+fn apply_cached_secure_direct_messages(_client: &crate::core::ImClient, _messages: &mut [Value]) {}
+
+#[cfg(feature = "sqlite")]
+async fn apply_cached_secure_direct_messages_async(
+    client: &crate::core::ImClient,
+    messages: &mut [Value],
+) {
+    let message_ids = secure_direct_wire_message_ids(messages);
+    if message_ids.is_empty() {
+        return;
+    }
+    let Ok(db) = client.core_inner().local_state_db().await else {
+        return;
+    };
+    let Ok(records) = db
+        .list_decrypted_secure_messages(
+            client.current_identity().id.as_str().to_owned(),
+            message_ids,
+        )
+        .await
+    else {
+        return;
+    };
+    apply_cached_secure_direct_records(messages, records);
+}
+
+#[cfg(feature = "sqlite")]
+fn apply_cached_secure_direct_records(
+    messages: &mut [Value],
+    records: Vec<crate::internal::local_state::messages::MessageRecord>,
+) {
+    let records = records
+        .into_iter()
+        .map(|record| {
+            (
+                (
+                    record.msg_id.clone(),
+                    record.sender_did.clone(),
+                    record.receiver_did.clone(),
+                ),
+                record,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    for message in messages {
+        let key = (
+            secure_direct_message_id(message),
+            message
+                .get("sender_did")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            message
+                .get("receiver_did")
+                .or_else(|| message.get("recipient_did"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        );
+        let Some(record) = records.get(&key) else {
+            continue;
+        };
+        let plaintext = cached_secure_direct_plaintext(record);
+        crate::internal::secure_direct::incoming::apply_direct_e2ee_processing_result(
+            message,
+            &json_object([
+                ("state", Value::String("decrypted".to_owned())),
+                ("plaintext", plaintext),
+            ]),
+        );
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn cached_secure_direct_plaintext(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> Value {
+    let mut plaintext = serde_json::Map::from_iter([(
+        "application_content_type".to_owned(),
+        Value::String(record.content_type.clone()),
+    )]);
+    if record.content_type == "application/json"
+        || record.content_type == crate::attachments::manifest::attachment_manifest_content_type()
+    {
+        if let Ok(payload) = serde_json::from_str::<Value>(&record.content) {
+            plaintext.insert("payload".to_owned(), payload);
+        }
+    } else if record.content_type == "application/octet-stream" {
+        plaintext.insert(
+            "payload_b64u".to_owned(),
+            Value::String(record.content.clone()),
+        );
+    } else {
+        plaintext.insert("text".to_owned(), Value::String(record.content.clone()));
+    }
+    Value::Object(plaintext)
 }
 
 #[cfg(feature = "group-e2ee")]

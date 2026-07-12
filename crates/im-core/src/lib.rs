@@ -36,7 +36,7 @@ pub use crate::core::{
 };
 pub use crate::directory::{DirectoryService, HandleLookupResult};
 pub use crate::email::EmailService;
-pub use crate::error::{ImError, ImResult};
+pub use crate::error::{IdentityVaultFailure, ImError, ImResult};
 pub use crate::groups::GroupService;
 pub use crate::identity::{
     DeleteLocalIdentityResult, HostedIdentityMaterial, IdentitySecretStorageBackend,

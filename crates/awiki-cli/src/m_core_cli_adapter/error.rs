@@ -32,6 +32,12 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: identity {identity} is not ready: {}", missing.join(", ")),
             "Complete identity setup before using IM commands.",
         ),
+        im_core::ImError::IdentityVault { failure } => ExitError::new(
+            failure.code(),
+            3,
+            format!("{context}: identity vault verification failed."),
+            "Check the configured vault root key and workspace/device context; do not replace an existing vault key.",
+        ),
         im_core::ImError::AuthRequired | im_core::ImError::SessionExpired => ExitError::new(
             "auth_required",
             3,
