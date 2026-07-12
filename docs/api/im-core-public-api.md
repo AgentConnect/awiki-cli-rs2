@@ -561,7 +561,10 @@ impl DirectoryService<'_> {
 
 `DirectoryResolution.conversation_id` 由 im-core directory resolver 生成：Handle lookup
 具有稳定 user scope 时返回 `dm:peer-scope:v1:*`，无法取得 peer scope 时才回退到 legacy
-`dm:<DID>`。App/CLI 不得复制 hash 算法或在收到首条消息后才纠正会话 ID。
+`dm:<DID>`。成功解析稳定 user scope 时，im-core 同时在 owner-scoped local state 中记录
+canonical conversation 到 current DID 的内部 route；因此空会话的首条 text/payload/attachment
+发送也直接使用 canonical ID。App/CLI 不得复制 hash 算法、拼 `dm:<DID>` write alias，或在
+收到首条消息后才纠正会话 ID。route 缺失或完整性校验失败必须 fail closed。
 
 `HandleLookupResult` 和 `DirectoryResolution.profile` 可以承载 WNS Handle Resolution Document 中的 DID Subject Profile 投影。SDK 优先接受合法的 `profile`：
 

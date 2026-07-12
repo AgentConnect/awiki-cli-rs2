@@ -577,8 +577,10 @@ timeline、read ack 的唯一 routing key。
 6. `ReadWatermark.read_at` 是客户端已读动作时间，用于审计/展示，不参与授权或 checkpoint。
 7. SDK 优先调用服务端 `read_state.mark_read`。wire contract 以
    `message-service/docs/api/ANP-client-server-api-read-state.md` 为准，只允许 direct / group
-   service thread。peer-scope direct conversation 的 current DID 必须由 core 从本地 projection
-   metadata / participants 解析，不能由 AWiki Me 拼 alias。
+   service thread。peer-scope direct conversation 的 current DID 必须由 core 优先从 directory
+   解析时写入的 owner-scoped `direct_peer_routes` 获取；旧 message metadata / participants 只作
+   compatibility fallback，不能由 AWiki Me 拼 alias。该 route projection 允许尚无 message row
+   的空会话完成首条 canonical send/read/sync，并在 DID rotation 后保持 conversation ID 不变。
 8. 旧服务端、endpoint unsupported 或 transport unavailable 时，SDK fallback 到当前
    本地 unread ids 查询；direct 尝试 `inbox.mark_read(message_ids)`，group 在旧服务端下只能
    保持 local-read / pending-remote-ack 语义。

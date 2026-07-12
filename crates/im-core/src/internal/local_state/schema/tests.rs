@@ -24,6 +24,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("table", "sync_state"),
         ("table", "thread_read_state"),
         ("table", "message_identity_aliases"),
+        ("table", "direct_peer_routes"),
         ("view", "threads"),
         ("view", "inbox"),
         ("view", "outbox"),
@@ -46,6 +47,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     assert_index_exists(&db, "idx_thread_read_state_owner_pending");
     assert_index_exists(&db, "idx_thread_read_state_owner_conversation");
     assert_index_exists(&db, "idx_message_identity_aliases_owner_canonical");
+    assert_index_exists(&db, "idx_direct_peer_routes_owner_did");
     for table in [
         "contacts",
         "contact_handle_bindings",
@@ -63,6 +65,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         "sync_state",
         "thread_read_state",
         "message_identity_aliases",
+        "direct_peer_routes",
     ] {
         assert_column_exists(&db, table, "owner_identity_id");
     }
@@ -76,6 +79,10 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("messages", vec!["owner_identity_id", "msg_id"]),
         (
             "conversation_summaries",
+            vec!["owner_identity_id", "conversation_id"],
+        ),
+        (
+            "direct_peer_routes",
             vec!["owner_identity_id", "conversation_id"],
         ),
         ("groups", vec!["owner_identity_id", "group_id"]),

@@ -29,6 +29,10 @@ enum LocalStateCommand {
         record: crate::internal::contact_store::records::ContactRecord,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
+    UpsertDirectPeerRoute {
+        record: super::direct_peer_routes::DirectPeerRouteRecord,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
     GetContactByDid {
         owner_identity_id: String,
         owner_did: String,
@@ -396,6 +400,16 @@ impl LocalStateDb {
     ) -> crate::ImResult<()> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::UpsertContact { record, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn upsert_direct_peer_route(
+        &self,
+        record: super::direct_peer_routes::DirectPeerRouteRecord,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::UpsertDirectPeerRoute { record, reply })
             .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
@@ -1165,6 +1179,10 @@ fn run_actor(
                     &mut connection,
                     record,
                 );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::UpsertDirectPeerRoute { record, reply } => {
+                let result = super::direct_peer_routes::upsert(&connection, &record);
                 let _ = reply.send(result);
             }
             LocalStateCommand::GetContactByDid {

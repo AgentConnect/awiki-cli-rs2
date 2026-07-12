@@ -5,6 +5,8 @@ use crate::internal::transport::{AsyncRpcTransport, RpcTransport};
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DirectoryResolveResult {
     pub(crate) resolution: crate::directory::DirectoryResolution,
+    pub(crate) peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
+    pub(crate) peer_current_did: Option<crate::ids::Did>,
     pub(crate) resolve: Option<Value>,
     pub(crate) lookup: Option<Value>,
     pub(crate) public_profile: Option<Value>,
@@ -86,6 +88,12 @@ where
             .map_err(|err| map_directory_not_found(err, &handle))?;
         let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
         let conversation_id = lookup.direct_conversation_id();
+        let peer_scope = Some(
+            crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                lookup.user_id.clone(),
+                lookup.handle.as_str(),
+            )?,
+        );
         let warnings = lookup.warnings.clone();
         let fallback_profile = if lookup.profile.is_none() {
             public_profile_by_did(&mut self.transport, lookup.did.as_str()).ok()
@@ -115,6 +123,8 @@ where
                 profile: profile_dto,
                 warnings,
             },
+            peer_scope,
+            peer_current_did: Some(lookup.did.clone()),
             resolve: Some(resolve_raw),
             lookup: Some(lookup_raw),
             public_profile: fallback_profile,
@@ -127,6 +137,8 @@ where
         let mut warnings = Vec::new();
         let mut lookup_raw = None;
         let mut handle = None;
+        let mut peer_scope = None;
+        let mut peer_current_did = None;
         let mut conversation_id =
             crate::internal::local_state::owner_scope::direct_conversation_id(did.as_str());
         match lookup_by_did(&mut self.transport, did.as_str()) {
@@ -134,6 +146,13 @@ where
                 let lookup = handle_lookup_from_value_with_client(self.client, &raw)?;
                 conversation_id = lookup.direct_conversation_id();
                 warnings.extend(lookup.warnings);
+                peer_scope = Some(
+                    crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                        lookup.user_id,
+                        lookup.handle.as_str(),
+                    )?,
+                );
+                peer_current_did = Some(lookup.did.clone());
                 handle = Some(lookup.handle);
                 lookup_raw = Some(raw);
             }
@@ -160,6 +179,8 @@ where
                 profile,
                 warnings,
             },
+            peer_scope,
+            peer_current_did,
             resolve: Some(resolve_raw),
             lookup: lookup_raw,
             public_profile: profile_raw,
@@ -281,6 +302,12 @@ where
             .map_err(|err| map_directory_not_found(err, &handle))?;
         let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
         let conversation_id = lookup.direct_conversation_id();
+        let peer_scope = Some(
+            crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                lookup.user_id.clone(),
+                lookup.handle.as_str(),
+            )?,
+        );
         let warnings = lookup.warnings.clone();
         let fallback_profile = if lookup.profile.is_none() {
             public_profile_by_did_async(&mut self.transport, lookup.did.as_str())
@@ -313,6 +340,8 @@ where
                 profile: profile_dto,
                 warnings,
             },
+            peer_scope,
+            peer_current_did: Some(lookup.did.clone()),
             resolve: Some(resolve_raw),
             lookup: Some(lookup_raw),
             public_profile: fallback_profile,
@@ -325,6 +354,8 @@ where
         let mut warnings = Vec::new();
         let mut lookup_raw = None;
         let mut handle = None;
+        let mut peer_scope = None;
+        let mut peer_current_did = None;
         let mut conversation_id =
             crate::internal::local_state::owner_scope::direct_conversation_id(did.as_str());
         match lookup_by_did_async(&mut self.transport, did.as_str()).await {
@@ -332,6 +363,13 @@ where
                 let lookup = handle_lookup_from_value_with_client(self.client, &raw)?;
                 conversation_id = lookup.direct_conversation_id();
                 warnings.extend(lookup.warnings);
+                peer_scope = Some(
+                    crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                        lookup.user_id,
+                        lookup.handle.as_str(),
+                    )?,
+                );
+                peer_current_did = Some(lookup.did.clone());
                 handle = Some(lookup.handle);
                 lookup_raw = Some(raw);
             }
@@ -358,6 +396,8 @@ where
                 profile,
                 warnings,
             },
+            peer_scope,
+            peer_current_did,
             resolve: Some(resolve_raw),
             lookup: lookup_raw,
             public_profile: profile_raw,
