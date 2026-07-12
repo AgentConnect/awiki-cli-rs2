@@ -994,7 +994,8 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
         ]
     );
     assert_eq!(bodies[0]["params"]["handle"], "bob.awiki.ai");
-    assert_eq!(bodies[1]["params"]["body"]["member_did"], bob_did);
+    assert_eq!(bodies[1]["params"]["body"]["member_handle"], "bob.awiki.ai");
+    assert!(bodies[1]["params"]["body"].get("member_did").is_none());
     assert_eq!(bodies[1]["params"]["body"]["role"], "admin");
     assert!(bodies[1]["params"]["body"].get("reason_text").is_none());
     assert_eq!(
