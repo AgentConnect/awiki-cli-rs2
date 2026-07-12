@@ -756,6 +756,8 @@ impl<'a> GroupService<'a> {
         }
 
         summary.send_paused_groups = paused_rebind_groups(sqlite_path, owner_identity_id)?;
+        summary.items =
+            crate::internal::group_rebind_recovery::recovery_items(sqlite_path, owner_identity_id)?;
         Ok(summary)
     }
 

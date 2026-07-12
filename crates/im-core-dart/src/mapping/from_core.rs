@@ -11,7 +11,10 @@ use crate::dto::{
         DartEmailMessageSummaryPage, DartEmailNotification, DartEmailNotificationPage,
         DartSendEmailResult,
     },
-    group::{DartGroupMember, DartGroupReadResult, DartGroupSnapshot, DartGroupSummary},
+    group::{
+        DartGroupMember, DartGroupReadResult, DartGroupRebindRecoveryItem,
+        DartGroupRebindRecoverySummary, DartGroupSnapshot, DartGroupSummary,
+    },
     identity::{
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
         DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartHandleRegistrationResult,
@@ -1393,6 +1396,35 @@ impl From<im_core::groups::GroupReadResult> for DartGroupReadResult {
     }
 }
 
+impl From<im_core::groups::GroupRebindRecoveryItem> for DartGroupRebindRecoveryItem {
+    fn from(value: im_core::groups::GroupRebindRecoveryItem) -> Self {
+        Self {
+            group_did: value.group.as_str().to_owned(),
+            layer: value.layer,
+            phase: value.phase,
+            blocked: value.blocked,
+        }
+    }
+}
+
+impl From<im_core::groups::GroupRebindRecoverySummary> for DartGroupRebindRecoverySummary {
+    fn from(value: im_core::groups::GroupRebindRecoverySummary) -> Self {
+        Self {
+            processed: value.processed,
+            completed: value.completed,
+            pending: value.pending,
+            blocked: value.blocked,
+            send_paused_group_dids: value
+                .send_paused_groups
+                .into_iter()
+                .map(|group| group.as_str().to_owned())
+                .collect(),
+            items: value.items.into_iter().map(Into::into).collect(),
+            warnings: value.warnings,
+        }
+    }
+}
+
 impl From<im_core::realtime::RealtimeStatus> for DartRealtimeStatus {
     fn from(value: im_core::realtime::RealtimeStatus) -> Self {
         Self {
@@ -1626,6 +1658,9 @@ mod tests {
             group_state_version: None,
             actor_did: None,
             subject_did: None,
+            subject_handle: None,
+            previous_subject_did: None,
+            handle_binding_generation: None,
             membership_status: None,
             changed_at: None,
             sync: None,

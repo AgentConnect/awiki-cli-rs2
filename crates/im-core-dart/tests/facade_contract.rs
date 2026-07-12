@@ -879,6 +879,8 @@ fn realtime_runner_capability_is_exposed_after_bridge_plan_lands() {
 fn group_create_bridge_request_no_longer_accepts_per_request_service_did() {
     let request = awiki_im_core::dto::group::DartCreateGroupRequest {
         name: "test".to_string(),
+        identity_mode: awiki_im_core::dto::group::DartGroupIdentityMode::DidOnly,
+        identity_handle: None,
         description: None,
         avatar_uri: None,
         discoverability: None,
@@ -900,4 +902,47 @@ fn group_create_bridge_request_no_longer_accepts_per_request_service_did() {
         .expect("service DID is resolved by ImCoreConfig at create time");
     assert_eq!(core.name, "test");
     assert!(core.discoverability.is_none());
+}
+
+#[test]
+fn group_create_bridge_preserves_explicit_handle_mode_without_fallback() {
+    use awiki_im_core::dto::group::{DartCreateGroupRequest, DartGroupIdentityMode};
+
+    let request = DartCreateGroupRequest {
+        name: "handle group".to_owned(),
+        identity_mode: DartGroupIdentityMode::Handle,
+        identity_handle: Some("alice.example.com".to_owned()),
+        description: None,
+        avatar_uri: None,
+        discoverability: None,
+        admission_mode: None,
+        message_security_profile: None,
+        e2ee: false,
+        slug: None,
+        goal: None,
+        rules: None,
+        message_prompt: None,
+        doc_url: None,
+        attachments_allowed: None,
+        max_members: None,
+        member_max_messages: None,
+        member_max_total_chars: None,
+    };
+    let core = request
+        .clone()
+        .into_core()
+        .expect("Handle mode maps to creator_handle");
+    assert_eq!(
+        core.creator_handle
+            .as_ref()
+            .map(im_core::ids::Handle::as_str),
+        Some("alice.example.com")
+    );
+
+    let mut invalid = request.clone();
+    invalid.identity_mode = DartGroupIdentityMode::DidOnly;
+    assert!(invalid.into_core().is_err());
+    let mut missing = request;
+    missing.identity_handle = None;
+    assert!(missing.into_core().is_err());
 }

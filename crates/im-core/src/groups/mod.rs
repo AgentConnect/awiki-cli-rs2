@@ -8,7 +8,7 @@ pub use dto::{
     GroupLeaveRequest, GroupListRequest, GroupMember, GroupMemberLimit, GroupMemberMutationRequest,
     GroupMemberRef, GroupMemberResolution, GroupMemberRole, GroupMembersRequest,
     GroupMessageSecurityProfile, GroupMessagesRequest, GroupPolicyPatch, GroupProfilePatch,
-    GroupReadResult, GroupRebindMemberRequest, GroupRebindRecoverySummary,
+    GroupReadResult, GroupRebindMemberRequest, GroupRebindRecoveryItem, GroupRebindRecoverySummary,
     GroupSecurityRequirement, GroupSnapshot, GroupSummary, GroupUpdatePolicyRequest,
     GroupUpdateProfileRequest, GroupUpdateRequest, GroupUpdateResult,
 };

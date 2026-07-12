@@ -160,7 +160,16 @@ pub struct GroupRebindRecoverySummary {
     pub pending: u32,
     pub blocked: u32,
     pub send_paused_groups: Vec<crate::ids::GroupRef>,
+    pub items: Vec<GroupRebindRecoveryItem>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupRebindRecoveryItem {
+    pub group: crate::ids::GroupRef,
+    pub layer: String,
+    pub phase: String,
+    pub blocked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use crate::dto::{
     error::DartImError,
-    group::{DartCreateGroupRequest, DartGroupReadResult},
+    group::{
+        DartCreateGroupRequest, DartGroupIdentityMode, DartGroupReadResult,
+        DartGroupRebindRecoverySummary, DartJoinGroupRequest,
+    },
 };
 
 fn page_limit(limit: u32) -> Result<im_core::ids::PageLimit, DartImError> {
@@ -35,6 +38,37 @@ pub async fn join_group(
             member_handle: None,
             reason_text: None,
         })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn join_group_with_identity(
+    client: &Arc<crate::api::client::DartImClient>,
+    request: DartJoinGroupRequest,
+) -> Result<DartGroupReadResult, DartImError> {
+    let inner = client.clone_inner()?;
+    let group = im_core::ids::GroupRef::parse(request.group_did).map_err(DartImError::from)?;
+    inner
+        .groups()
+        .join_async(im_core::groups::GroupJoinRequest {
+            group,
+            member_handle: identity_handle(request.identity_mode, request.identity_handle)?,
+            reason_text: None,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn resume_group_rebind_recovery(
+    client: &Arc<crate::api::client::DartImClient>,
+    limit: u32,
+) -> Result<DartGroupRebindRecoverySummary, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .groups()
+        .resume_rebind_recovery_async(limit)
         .await
         .map(Into::into)
         .map_err(DartImError::from)
@@ -197,4 +231,39 @@ async fn mutate_group_member(
 
 fn did_domain_for_client(client: &im_core::ImClient) -> String {
     client.did_domain().to_owned()
+}
+
+pub(crate) fn identity_handle(
+    mode: DartGroupIdentityMode,
+    handle: Option<String>,
+) -> Result<Option<im_core::ids::Handle>, DartImError> {
+    match mode {
+        DartGroupIdentityMode::DidOnly => {
+            if handle
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                return Err(DartImError::from(im_core::ImError::invalid_input(
+                    Some("identity_handle".to_owned()),
+                    "DID-only group identity must not carry a Handle",
+                )));
+            }
+            Ok(None)
+        }
+        DartGroupIdentityMode::Handle => {
+            let handle = handle
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    DartImError::from(im_core::ImError::invalid_input(
+                        Some("identity_handle".to_owned()),
+                        "Handle group identity requires identity_handle",
+                    ))
+                })?;
+            im_core::ids::Handle::parse(handle, "")
+                .map(Some)
+                .map_err(DartImError::from)
+        }
+    }
 }

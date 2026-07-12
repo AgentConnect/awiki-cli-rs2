@@ -650,7 +650,10 @@ impl DartCreateGroupRequest {
     pub fn into_core(self) -> Result<im_core::groups::GroupCreateRequest, DartImError> {
         Ok(im_core::groups::GroupCreateRequest {
             name: self.name,
-            creator_handle: None,
+            creator_handle: crate::api::groups::identity_handle(
+                self.identity_mode,
+                self.identity_handle,
+            )?,
             description: self.description,
             avatar_uri: self.avatar_uri,
             discoverability: match self.discoverability {

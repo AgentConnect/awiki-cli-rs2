@@ -515,6 +515,54 @@ ORDER BY group_did"#,
     Ok(values)
 }
 
+pub(crate) fn recovery_items(
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+) -> crate::ImResult<Vec<crate::groups::GroupRebindRecoveryItem>> {
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    crate::internal::local_state::schema::ensure_schema(&connection)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT group_did, layer, phase
+FROM (
+  SELECT group_did, 'p4' AS layer, phase, updated_at FROM group_rebind_outbox
+  WHERE owner_identity_id=?1
+  UNION ALL
+  SELECT group_did, 'p6' AS layer, phase, updated_at FROM group_rebind_p6_jobs
+  WHERE owner_identity_id=?1
+)
+ORDER BY updated_at DESC, group_did, layer
+LIMIT 500"#,
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let rows = statement
+        .query_map([owner_identity_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut items = Vec::new();
+    for row in rows {
+        let (group_did, layer, phase) =
+            row.map_err(crate::internal::local_state::local_state_unavailable)?;
+        if !seen.insert((group_did.clone(), layer.clone())) {
+            continue;
+        }
+        items.push(crate::groups::GroupRebindRecoveryItem {
+            group: crate::ids::GroupRef::parse(group_did)?,
+            layer,
+            blocked: phase == "blocked",
+            phase,
+        });
+    }
+    Ok(items)
+}
+
 pub(crate) fn group_uses_e2ee(
     sqlite_path: &Path,
     owner_identity_id: &str,
@@ -900,6 +948,27 @@ mod tests {
         assert_eq!(paused_groups(&path, "owner").unwrap(), vec!["did:group"]);
         // Local send readiness after Add is not proof that owner Remove completed.
         assert!(is_group_send_paused(&path, "owner", "did:group").unwrap());
+    }
+
+    #[test]
+    fn recovery_items_keep_latest_status_per_group_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite3");
+        let db = crate::internal::local_state::open_writable(&path).unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        db.execute("INSERT INTO group_rebind_outbox (job_id,owner_identity_id,group_did,member_handle,previous_member_did,new_member_did,binding_generation,phase,created_at,updated_at) VALUES ('old','owner','did:group','alice.example.com','did:old','did:new','2','complete','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", []).unwrap();
+        db.execute("INSERT INTO group_rebind_outbox (job_id,owner_identity_id,group_did,member_handle,previous_member_did,new_member_did,binding_generation,phase,created_at,updated_at) VALUES ('new','owner','did:group','alice.example.com','did:new','did:newer','3','awaiting_p6','2026-01-02T00:00:00Z','2026-01-02T00:00:00Z')", []).unwrap();
+        db.execute("INSERT INTO group_rebind_p6_jobs (job_id,owner_identity_id,group_did,event_id,member_handle,previous_member_did,new_member_did,binding_generation,group_state_ref_json,phase,last_error_detail,created_at,updated_at) VALUES ('p6','owner','did:group','evt','alice.example.com','did:new','did:newer','3','{}','blocked','sensitive transport detail','2026-01-03T00:00:00Z','2026-01-03T00:00:00Z')", []).unwrap();
+        drop(db);
+
+        let items = recovery_items(&path, "owner").unwrap();
+        assert_eq!(items.len(), 2);
+        let p4 = items.iter().find(|item| item.layer == "p4").unwrap();
+        assert_eq!(p4.phase, "awaiting_p6");
+        assert!(!p4.blocked);
+        let p6 = items.iter().find(|item| item.layer == "p6").unwrap();
+        assert_eq!(p6.phase, "blocked");
+        assert!(p6.blocked);
     }
 
     #[test]

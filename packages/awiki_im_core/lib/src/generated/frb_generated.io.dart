@@ -262,6 +262,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartInitialProfile dco_decode_box_autoadd_dart_initial_profile(dynamic raw);
 
   @protected
+  DartJoinGroupRequest dco_decode_box_autoadd_dart_join_group_request(
+    dynamic raw,
+  );
+
+  @protected
   DartMarkConversationReadRequest
   dco_decode_box_autoadd_dart_mark_conversation_read_request(dynamic raw);
 
@@ -532,10 +537,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartGroupIdentityMode dco_decode_dart_group_identity_mode(dynamic raw);
+
+  @protected
   DartGroupMember dco_decode_dart_group_member(dynamic raw);
 
   @protected
   DartGroupReadResult dco_decode_dart_group_read_result(dynamic raw);
+
+  @protected
+  DartGroupRebindRecoveryItem dco_decode_dart_group_rebind_recovery_item(
+    dynamic raw,
+  );
+
+  @protected
+  DartGroupRebindRecoverySummary dco_decode_dart_group_rebind_recovery_summary(
+    dynamic raw,
+  );
 
   @protected
   DartGroupSecureLocalReadiness dco_decode_dart_group_secure_local_readiness(
@@ -627,6 +645,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartInitialProfile dco_decode_dart_initial_profile(dynamic raw);
+
+  @protected
+  DartJoinGroupRequest dco_decode_dart_join_group_request(dynamic raw);
 
   @protected
   DartMarkConversationReadRequest
@@ -833,6 +854,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartGroupMember> dco_decode_list_dart_group_member(dynamic raw);
+
+  @protected
+  List<DartGroupRebindRecoveryItem>
+  dco_decode_list_dart_group_rebind_recovery_item(dynamic raw);
 
   @protected
   List<DartGroupSummary> dco_decode_list_dart_group_summary(dynamic raw);
@@ -1201,6 +1226,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartJoinGroupRequest sse_decode_box_autoadd_dart_join_group_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartMarkConversationReadRequest
   sse_decode_box_autoadd_dart_mark_conversation_read_request(
     SseDeserializer deserializer,
@@ -1539,10 +1569,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartGroupIdentityMode sse_decode_dart_group_identity_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartGroupMember sse_decode_dart_group_member(SseDeserializer deserializer);
 
   @protected
   DartGroupReadResult sse_decode_dart_group_read_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartGroupRebindRecoveryItem sse_decode_dart_group_rebind_recovery_item(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartGroupRebindRecoverySummary sse_decode_dart_group_rebind_recovery_summary(
     SseDeserializer deserializer,
   );
 
@@ -1656,6 +1701,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartInitialProfile sse_decode_dart_initial_profile(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartJoinGroupRequest sse_decode_dart_join_group_request(
     SseDeserializer deserializer,
   );
 
@@ -1944,6 +1994,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<DartGroupMember> sse_decode_list_dart_group_member(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<DartGroupRebindRecoveryItem>
+  sse_decode_list_dart_group_rebind_recovery_item(SseDeserializer deserializer);
 
   @protected
   List<DartGroupSummary> sse_decode_list_dart_group_summary(
@@ -2371,6 +2425,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_join_group_request(
+    DartJoinGroupRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_mark_conversation_read_request(
     DartMarkConversationReadRequest self,
     SseSerializer serializer,
@@ -2779,6 +2839,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_group_identity_mode(
+    DartGroupIdentityMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_group_member(
     DartGroupMember self,
     SseSerializer serializer,
@@ -2787,6 +2853,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_group_read_result(
     DartGroupReadResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_group_rebind_recovery_item(
+    DartGroupRebindRecoveryItem self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_group_rebind_recovery_summary(
+    DartGroupRebindRecoverySummary self,
     SseSerializer serializer,
   );
 
@@ -2931,6 +3009,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_initial_profile(
     DartInitialProfile self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_join_group_request(
+    DartJoinGroupRequest self,
     SseSerializer serializer,
   );
 
@@ -3282,6 +3366,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_group_member(
     List<DartGroupMember> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_group_rebind_recovery_item(
+    List<DartGroupRebindRecoveryItem> self,
     SseSerializer serializer,
   );
 
