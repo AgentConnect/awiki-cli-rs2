@@ -204,6 +204,10 @@ fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value) 
         return;
     };
     let mut message_values = std::mem::take(messages);
+    crate::internal::message_runtime::read::apply_cached_group_e2ee_messages(
+        client,
+        &mut message_values,
+    );
     let warnings =
         crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client(
             client,
@@ -229,6 +233,11 @@ async fn project_group_e2ee_messages_async(client: &crate::core::ImClient, raw: 
         return;
     };
     let mut message_values = std::mem::take(messages);
+    crate::internal::message_runtime::read::apply_cached_group_e2ee_messages_async(
+        client,
+        &mut message_values,
+    )
+    .await;
     let warnings =
         crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client_async(
             client,

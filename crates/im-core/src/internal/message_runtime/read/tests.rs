@@ -1935,6 +1935,62 @@ fn group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_red
 }
 
 #[test]
+fn cached_group_e2ee_plaintext_prevents_redecrypting_consumed_ciphertext() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let group_did = "did:example:group:e2ee";
+    let message_id = "did:example:group:e2ee:3";
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    crate::internal::local_state::messages::upsert_message(
+        &connection,
+        &crate::internal::local_state::messages::MessageRecord {
+            msg_id: message_id.to_owned(),
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            owner_did: client.did().as_str().to_owned(),
+            conversation_id: format!("group:{group_did}"),
+            thread_id: format!("group:{group_did}"),
+            direction: -1,
+            sender_did: "did:example:alice".to_owned(),
+            group_id: group_did.to_owned(),
+            group_did: group_did.to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "cached group plaintext".to_owned(),
+            server_seq: Some(3),
+            is_e2ee: true,
+            metadata: json!({
+                "decryption_state": "decrypted",
+                "security": "group-e2ee"
+            })
+            .to_string(),
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        },
+    )
+    .unwrap();
+
+    let mut messages = vec![json!({
+        "id": "msg-raw-3",
+        "message_id": "msg-raw-3",
+        "sender_did": "did:example:alice",
+        "group_did": group_did,
+        "group_event_seq": "3",
+        "content_type": crate::internal::group_e2ee::wire::GROUP_E2EE_CIPHER_CONTENT_TYPE,
+        "group_cipher_object": {"consumed": true},
+        "content": {"group_cipher_object": {"consumed": true}}
+    })];
+
+    apply_cached_group_e2ee_messages(&client, &mut messages);
+
+    assert_eq!(messages[0]["content"], "cached group plaintext");
+    assert_eq!(messages[0]["content_type"], "text/plain");
+    assert_eq!(messages[0]["decryption_state"], "decrypted");
+    assert_eq!(messages[0]["decrypted"], true);
+    assert!(messages[0].get("group_cipher_object").is_none());
+}
+
+#[test]
 fn direct_attachment_manifest_cache_uses_peer_did_while_public_projection_redacts() {
     let fixture = Fixture::new();
     let client = fixture.client();
