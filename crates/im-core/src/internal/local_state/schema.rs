@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 23;
+pub(crate) const SCHEMA_VERSION: i64 = 24;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 18;
 
@@ -946,6 +946,9 @@ fn create_schema(
         .map_err(super::local_state_unavailable)?;
     connection
         .execute_batch(MESSAGE_IDENTITY_ALIASES_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(crate::internal::group_rebind_recovery::GROUP_REBIND_RECOVERY_SQL)
         .map_err(super::local_state_unavailable)?;
     let mut should_rebuild_conversation_summaries = backfill_conversation_summaries;
     if ensure_message_projection_columns(connection)? {

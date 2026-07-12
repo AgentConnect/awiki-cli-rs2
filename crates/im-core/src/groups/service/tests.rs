@@ -373,3 +373,94 @@ fn unique_temp_root() -> PathBuf {
         std::process::id()
     ))
 }
+
+#[test]
+fn rebind_terminal_errors_use_exact_service_codes_not_messages() {
+    let terminal = crate::ImError::Service {
+        status_code: Some(409),
+        code: Some("3012".to_owned()),
+        message: "localized message".to_owned(),
+        data: None,
+    };
+    assert!(super::rebind_error_is_terminal(&terminal));
+
+    let misleading_transient = crate::ImError::Service {
+        status_code: Some(503),
+        code: Some("temporarily_unavailable".to_owned()),
+        message: "upstream group not found while retrying".to_owned(),
+        data: None,
+    };
+    assert!(!super::rebind_error_is_terminal(&misleading_transient));
+    assert!(!super::rebind_error_is_terminal(
+        &crate::ImError::TransportUnavailable {
+            detail: "not member cache lookup failed".to_owned(),
+        }
+    ));
+}
+
+#[test]
+fn rebind_p6_phase_uses_structured_finalize_outcome() {
+    use crate::internal::group_e2ee::lifecycle::GroupE2eeFinalizeOutcome::*;
+    assert_eq!(super::p6_phase_after_add(Finalized), "awaiting_remove");
+    assert_eq!(super::p6_phase_after_add(AcceptedNeedsRepair), "add_repair");
+    assert_eq!(super::p6_phase_after_remove(Finalized), "complete");
+    assert_eq!(
+        super::p6_phase_after_remove(AcceptedNeedsRepair),
+        "remove_repair"
+    );
+}
+
+#[test]
+fn rebind_repair_requires_operation_gone_and_expected_roster() {
+    use anp::group_e2ee::operations::{PendingCommitStatus, StatusOutput};
+    let mut status = StatusOutput {
+        status: "active".to_owned(),
+        epoch: Some("9".to_owned()),
+        local_epoch: Some("9".to_owned()),
+        pending_commits: Vec::new(),
+        epoch_authenticator: None,
+        member_dids: vec!["did:old".to_owned(), "did:new".to_owned()],
+    };
+    assert!(super::rebind_repair_status_is_finalized(
+        &status, "op-add", "did:old", "did:new", true
+    )
+    .is_ok());
+    assert!(super::rebind_repair_status_is_finalized(
+        &status,
+        "op-remove",
+        "did:old",
+        "did:new",
+        false
+    )
+    .is_err());
+    status.pending_commits.push(PendingCommitStatus {
+        pending_commit_id: "pc".to_owned(),
+        operation_id: "op-add".to_owned(),
+        agent_did: "did:owner".to_owned(),
+        device_id: "default".to_owned(),
+        group_did: "did:group".to_owned(),
+        subject_did: "did:new".to_owned(),
+        subject_status: "active".to_owned(),
+        from_epoch: "8".to_owned(),
+        to_epoch: "9".to_owned(),
+        status: "pending".to_owned(),
+    });
+    assert!(super::rebind_repair_status_is_finalized(
+        &status, "op-add", "did:old", "did:new", true
+    )
+    .is_err());
+    status.pending_commits.clear();
+    status.member_dids = vec!["did:new".to_owned()];
+    assert!(super::rebind_repair_status_is_finalized(
+        &status, "op-add", "did:old", "did:new", true
+    )
+    .is_err());
+    assert!(super::rebind_repair_status_is_finalized(
+        &status,
+        "op-remove",
+        "did:old",
+        "did:new",
+        false
+    )
+    .is_ok());
+}

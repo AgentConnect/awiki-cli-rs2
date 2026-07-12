@@ -8,8 +8,8 @@ pub use dto::{
     GroupLeaveRequest, GroupListRequest, GroupMember, GroupMemberLimit, GroupMemberMutationRequest,
     GroupMemberRef, GroupMemberResolution, GroupMemberRole, GroupMembersRequest,
     GroupMessageSecurityProfile, GroupMessagesRequest, GroupPolicyPatch, GroupProfilePatch,
-    GroupReadResult, GroupRebindMemberRequest, GroupSecurityRequirement, GroupSnapshot,
-    GroupSummary, GroupUpdatePolicyRequest, GroupUpdateProfileRequest, GroupUpdateRequest,
-    GroupUpdateResult,
+    GroupReadResult, GroupRebindMemberRequest, GroupRebindRecoverySummary,
+    GroupSecurityRequirement, GroupSnapshot, GroupSummary, GroupUpdatePolicyRequest,
+    GroupUpdateProfileRequest, GroupUpdateRequest, GroupUpdateResult,
 };
 pub use service::GroupService;

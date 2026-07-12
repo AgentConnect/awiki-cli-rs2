@@ -153,6 +153,16 @@ pub struct GroupRebindMemberRequest {
     pub handle_binding_generation: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupRebindRecoverySummary {
+    pub processed: u32,
+    pub completed: u32,
+    pub pending: u32,
+    pub blocked: u32,
+    pub send_paused_groups: Vec<crate::ids::GroupRef>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupLeaveRequest {
     pub group: crate::ids::GroupRef,

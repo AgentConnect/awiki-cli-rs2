@@ -43,6 +43,7 @@ fn lifecycle_create_prepares_delivers_finalizes_and_persists_summary() {
         credentials: Some(fixture.credentials()),
         service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
         group_state_ref: None,
+        operation_id: None,
     })
     .unwrap();
 
@@ -165,6 +166,7 @@ fn lifecycle_add_gets_key_package_prepares_commit_and_finalizes() {
         credentials: Some(fixture.credentials()),
         service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
         group_state_ref: None,
+        operation_id: None,
     })
     .unwrap();
 
@@ -229,6 +231,7 @@ async fn lifecycle_add_async_uses_async_transport_and_db_actor_summary() {
         credentials: Some(fixture.credentials()),
         service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
         group_state_ref: None,
+        operation_id: None,
     })
     .await
     .unwrap();
@@ -340,6 +343,7 @@ fn lifecycle_remove_aborts_pending_commit_on_deterministic_service_rejection() {
         credentials: Some(fixture.credentials()),
         service_did: None,
         group_state_ref: None,
+        operation_id: None,
     })
     .unwrap_err();
 
@@ -394,6 +398,7 @@ fn lifecycle_remove_returns_redacted_public_delivery() {
         credentials: Some(fixture.credentials()),
         service_did: None,
         group_state_ref: None,
+        operation_id: None,
     })
     .unwrap();
 
@@ -449,6 +454,7 @@ async fn lifecycle_remove_async_uses_async_transport_and_db_actor_summary() {
         credentials: Some(fixture.credentials()),
         service_did: None,
         group_state_ref: None,
+        operation_id: None,
     })
     .await
     .unwrap();
@@ -991,6 +997,7 @@ fn lifecycle_process_leave_request_marks_processing_then_removes() {
         credentials: Some(fixture.credentials()),
         service_did: None,
         group_state_ref: None,
+        operation_id: None,
     })
     .unwrap();
 
@@ -1064,6 +1071,7 @@ async fn lifecycle_process_leave_request_async_uses_async_transport_and_db_actor
         credentials: Some(fixture.credentials()),
         service_did: None,
         group_state_ref: None,
+        operation_id: None,
     })
     .await
     .unwrap();

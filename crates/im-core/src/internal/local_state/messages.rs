@@ -36,6 +36,7 @@ pub(crate) fn upsert_message(
 ) -> crate::ImResult<()> {
     crate::internal::local_state::schema::ensure_schema(connection)?;
     let _ = upsert_message_record(connection, record)?;
+    let _ = crate::internal::group_rebind_recovery::project_rebind_event(connection, record)?;
     Ok(())
 }
 
@@ -927,6 +928,7 @@ pub(crate) fn upsert_messages_with_touched(
     let mut touched = BTreeSet::new();
     for record in records {
         touched.extend(upsert_message_record(connection, record)?);
+        let _ = crate::internal::group_rebind_recovery::project_rebind_event(connection, record)?;
     }
     Ok(touched)
 }

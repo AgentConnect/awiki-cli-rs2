@@ -381,6 +381,38 @@ async fn finish_recover_with_local_finalize_async(
             final_identity_name,
         )
         .await?;
+    let sqlite_path = core.inner().sdk_paths().local_state.sqlite_path.clone();
+    let handle = saved.plan.target.target_handle.as_str().to_owned();
+    let generation = raw
+        .get("binding_generation")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let enqueue_warning = if let Some(generation) = generation {
+        let old_dids_for_jobs = saved.plan.old_owner_dids_in_merge_order();
+        let new_did_for_jobs = saved.stored.did.as_str().to_owned();
+        let owner_for_jobs = saved.stored.unique_id.clone();
+        match crate::internal::runtime::worker::run_blocking(move || {
+            crate::internal::group_rebind_recovery::enqueue_recovery_jobs(
+                &sqlite_path,
+                &owner_for_jobs,
+                &handle,
+                &old_dids_for_jobs,
+                &new_did_for_jobs,
+                &generation,
+            )
+        })
+        .await
+        {
+            Ok(Ok(_)) => None,
+            Ok(Err(error)) => Some(format!("group rebind outbox enqueue failed: {error}")),
+            Err(error) => Some(format!("group rebind outbox worker failed: {error}")),
+        }
+    } else {
+        Some(
+            "recovery response omitted binding_generation; group rebind jobs were not created"
+                .to_owned(),
+        )
+    };
     crate::internal::runtime::worker::run_blocking(move || {
         finish_saved_recover_with_local_finalize(
             &core,
@@ -389,6 +421,7 @@ async fn finish_recover_with_local_finalize_async(
             saved,
             store_merge_counts,
             e2ee_cleanup_counts,
+            enqueue_warning.into_iter().collect(),
         )
     })
     .await
@@ -414,6 +447,24 @@ fn finish_recover_with_local_finalize(
             &saved.stored.unique_id,
             &saved.plan.final_identity_name,
         )?;
+    let mut recovery_warnings = Vec::new();
+    if let Some(generation) = raw.get("binding_generation").and_then(Value::as_str) {
+        if let Err(error) = crate::internal::group_rebind_recovery::enqueue_recovery_jobs(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &saved.stored.unique_id,
+            saved.plan.target.target_handle.as_str(),
+            &saved.plan.old_owner_dids_in_merge_order(),
+            saved.stored.did.as_str(),
+            generation,
+        ) {
+            recovery_warnings.push(format!("group rebind outbox enqueue failed: {error}"));
+        }
+    } else {
+        recovery_warnings.push(
+            "recovery response omitted binding_generation; group rebind jobs were not created"
+                .to_owned(),
+        );
+    }
     finish_saved_recover_with_local_finalize(
         core,
         phone,
@@ -421,6 +472,7 @@ fn finish_recover_with_local_finalize(
         saved,
         store_merge_counts,
         e2ee_cleanup_counts,
+        recovery_warnings,
     )
 }
 
@@ -443,11 +495,14 @@ fn save_recover_with_local_finalize_identity(
     }
     let secret_storage =
         crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
-    let stored = store.save_identity_with_secret_storage(
+    let stable_owner_identity_id = plan
+        .stable_owner_identity_id(&prepared.active_before)
+        .unwrap_or_else(|| generated.unique_id.clone());
+    let stored = store.save_recovered_identity_with_secret_storage(
         crate::internal::identity_store::SaveIdentityInput {
             local_alias: plan.temp_identity_name.clone(),
             did,
-            unique_id: generated.unique_id.clone(),
+            unique_id: stable_owner_identity_id,
             user_id: crate::internal::identity_recovery_local::string_value(raw, "user_id", ""),
             display_name: plan.target.target_local_part.clone(),
             handle: crate::internal::identity_recovery_local::string_value(
@@ -474,13 +529,10 @@ fn save_recover_with_local_finalize_identity(
             make_default: false,
         },
         secret_storage,
+        &plan.archived_identity_names(),
     )?;
-    let identity = crate::internal::identity_recovery_local::identity_summary_from_generated(
-        &generated,
-        raw,
-        &plan.target,
-        &plan.temp_identity_name,
-    )?;
+    let identity =
+        crate::internal::identity_registration_runtime::identity_summary_from_stored(&stored)?;
     let recovered_identity = crate::identity::RecoveredIdentity {
         identity: identity.clone(),
         user_id: raw
@@ -509,6 +561,7 @@ fn finish_saved_recover_with_local_finalize(
     saved: PreparedLocalFinalizeSaved,
     store_merge_counts: std::collections::BTreeMap<String, i64>,
     e2ee_cleanup_counts: std::collections::BTreeMap<String, i64>,
+    additional_warnings: Vec<String>,
 ) -> crate::ImResult<IdentityRecoveryRuntimeResult> {
     let store =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
@@ -553,6 +606,7 @@ fn finish_saved_recover_with_local_finalize(
         active_config_updated,
     };
     let mut warnings = Vec::new();
+    warnings.extend(additional_warnings);
     if !local_recovery.archived_identities.is_empty() {
         warnings.push(format!(
             "Archived {} same-handle local identities; they were removed from the live index, while their original directories and the recover backup were kept.",

@@ -9,6 +9,8 @@ pub(crate) mod email_runtime;
 pub(crate) mod email_wire;
 #[cfg(feature = "group-e2ee")]
 pub(crate) mod group_e2ee;
+#[cfg(feature = "sqlite")]
+pub(crate) mod group_rebind_recovery;
 pub(crate) mod group_runtime;
 pub(crate) mod group_system_events;
 pub(crate) mod handle_discovery;

@@ -1036,6 +1036,7 @@ mod tests {
         fn active(epoch: &str, pending_commits: Vec<PendingCommitStatus>) -> Self {
             Self {
                 status: StatusOutput {
+                    member_dids: Vec::new(),
                     status: "active".to_owned(),
                     epoch: Some(epoch.to_owned()),
                     local_epoch: Some(epoch.to_owned()),
@@ -1048,6 +1049,7 @@ mod tests {
         fn empty() -> Self {
             Self {
                 status: StatusOutput {
+                    member_dids: Vec::new(),
                     status: "empty".to_owned(),
                     epoch: None,
                     local_epoch: None,

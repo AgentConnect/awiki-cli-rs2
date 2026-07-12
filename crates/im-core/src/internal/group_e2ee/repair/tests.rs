@@ -17,6 +17,21 @@ use serde_json::json;
 use super::*;
 
 #[test]
+fn rebind_remove_notice_requires_nested_state_ref_and_complete_duplicate_binding() {
+    let complete = serde_json::json!({
+        "commit_b64u":"commit","operation_id":"op-remove","crypto_group_id_b64u":"cg",
+        "from_epoch":"8","epoch":"9","subject_did":"did:old","subject_status":"removed",
+        "group_state_ref":{"group_did":"did:group","group_state_version":"7"}
+    });
+    let complete = complete.as_object().unwrap();
+    assert_eq!(notice_group_state_version(complete), "7");
+    assert!(duplicate_rebind_notice_has_complete_binding(complete));
+    let mut incomplete = complete.clone();
+    incomplete.remove("operation_id");
+    assert!(!duplicate_rebind_notice_has_complete_binding(&incomplete));
+}
+
+#[test]
 fn repair_processes_commit_notice_and_marks_delivered_without_public_raw_notice() {
     let fixture = Fixture::new();
     let client = fixture.client();
@@ -560,6 +575,7 @@ fn stored_group_metadata(
 
 fn active_status(epoch: &str, pending_commits: Vec<PendingCommitStatus>) -> StatusOutput {
     StatusOutput {
+        member_dids: Vec::new(),
         status: "active".to_owned(),
         epoch: Some(epoch.to_owned()),
         local_epoch: Some(epoch.to_owned()),
