@@ -1660,6 +1660,7 @@ fn project_secure_direct_messages_impl(
                 message_values,
             );
         let mut filtered = filtered;
+        cache_attachment_manifests_for_internal_download(client, &filtered);
         if redact_attachment_secrets {
             redact_attachment_manifests_for_public_projection(&mut filtered);
         }
@@ -1858,6 +1859,7 @@ async fn project_secure_direct_messages_async_impl(
                 message_values,
             );
         let mut filtered = filtered;
+        cache_attachment_manifests_for_internal_download_async(client, &filtered).await;
         if redact_attachment_secrets {
             redact_attachment_manifests_for_public_projection(&mut filtered);
         }
@@ -2214,7 +2216,7 @@ fn project_group_e2ee_messages_impl(
             client,
             &mut message_values,
         );
-    cache_group_attachment_manifests_for_internal_download(client, &message_values);
+    cache_attachment_manifests_for_internal_download(client, &message_values);
     if redact_attachment_secrets {
         redact_attachment_manifests_for_public_projection(&mut message_values);
     }
@@ -2259,7 +2261,7 @@ async fn project_group_e2ee_messages_async_impl(
             &mut message_values,
         )
         .await;
-    cache_group_attachment_manifests_for_internal_download_async(client, &message_values).await;
+    cache_attachment_manifests_for_internal_download_async(client, &message_values).await;
     if redact_attachment_secrets {
         redact_attachment_manifests_for_public_projection(&mut message_values);
     }
@@ -2284,7 +2286,7 @@ pub(crate) async fn project_group_e2ee_messages_for_attachment_download_async(
     project_group_e2ee_messages_async(client, raw).await;
 }
 
-pub(crate) fn cache_group_attachment_manifests_for_internal_download(
+pub(crate) fn cache_attachment_manifests_for_internal_download(
     client: &crate::core::ImClient,
     messages: &[Value],
 ) {
@@ -2313,7 +2315,7 @@ pub(crate) fn cache_group_attachment_manifests_for_internal_download(
     }
 }
 
-pub(crate) async fn cache_group_attachment_manifests_for_internal_download_async(
+pub(crate) async fn cache_attachment_manifests_for_internal_download_async(
     client: &crate::core::ImClient,
     messages: &[Value],
 ) {
@@ -2374,16 +2376,30 @@ fn attachment_manifest_cache_record(
     if !attachment_manifest_contains_object_secrets(&content) {
         return None;
     }
-    let thread_id = first_non_empty_owned([
+    let group_did = first_non_empty_owned([
         string_value(object.get("group_did")),
         string_value(object.get("group")),
-    ])?;
+    ]);
+    let (thread_kind, thread_id) = if let Some(group_did) = group_did {
+        ("group", group_did)
+    } else {
+        let sender_did = string_value(object.get("sender_did"));
+        let receiver_did = string_value(object.get("receiver_did"));
+        let peer_did =
+            direct_peer_did_for_message(client.did().as_str(), &sender_did, &receiver_did)
+                .trim()
+                .to_owned();
+        if peer_did.is_empty() {
+            return None;
+        }
+        ("direct", peer_did)
+    };
     let message_id = attachment_manifest_cache_message_id(object, &thread_id)?;
     Some(
         crate::internal::local_state::attachment_manifest_cache::AttachmentManifestCacheRecord {
             owner_identity_id: client.current_identity().id.as_str().to_owned(),
             owner_did: client.did().as_str().to_owned(),
-            thread_kind: "group".to_owned(),
+            thread_kind: thread_kind.to_owned(),
             thread_id,
             message_id,
             sender_did: string_value(object.get("sender_did")),

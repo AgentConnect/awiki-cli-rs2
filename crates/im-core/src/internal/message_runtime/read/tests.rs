@@ -1900,7 +1900,7 @@ fn group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_red
         "content": direct_e2ee_attachment_manifest()
     })];
 
-    cache_group_attachment_manifests_for_internal_download(&client, &messages);
+    cache_attachment_manifests_for_internal_download(&client, &messages);
     redact_attachment_manifests_for_public_projection(&mut messages);
 
     let public = serde_json::to_string(&messages).unwrap();
@@ -1931,6 +1931,51 @@ fn group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_red
     assert_eq!(
         cached["content"]["attachments"][0]["encryption_info"]["nonce_b64u"],
         "NONCE-SECRET"
+    );
+}
+
+#[test]
+fn direct_attachment_manifest_cache_uses_peer_did_while_public_projection_redacts() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let mut messages = vec![json!({
+        "id": "msg-direct-e2ee-9",
+        "message_id": "msg-direct-e2ee-9",
+        "sender_did": "did:example:alice",
+        "receiver_did": client.did().as_str(),
+        "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+        "message_security_profile": "direct-e2ee",
+        "secure": true,
+        "decryption_state": "decrypted",
+        "content": direct_e2ee_attachment_manifest()
+    })];
+
+    cache_attachment_manifests_for_internal_download(&client, &messages);
+    redact_attachment_manifests_for_public_projection(&mut messages);
+
+    let public = serde_json::to_string(&messages).unwrap();
+    assert!(!public.contains("object_key_b64u"));
+    assert!(!public.contains("nonce_b64u"));
+    assert!(!public.contains("OBJECT-KEY-SECRET"));
+    assert!(!public.contains("NONCE-SECRET"));
+
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    let cached = crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
+        &connection,
+        client.current_identity().id.as_str(),
+        "direct",
+        "did:example:alice",
+        "msg-direct-e2ee-9",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(cached["message_security_profile"], "direct-e2ee");
+    assert_eq!(
+        cached["content"]["attachments"][0]["encryption_info"]["object_key_b64u"],
+        "OBJECT-KEY-SECRET"
     );
 }
 

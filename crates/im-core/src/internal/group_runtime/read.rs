@@ -209,7 +209,7 @@ fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value) 
             client,
             &mut message_values,
         );
-    crate::internal::message_runtime::read::cache_group_attachment_manifests_for_internal_download(
+    crate::internal::message_runtime::read::cache_attachment_manifests_for_internal_download(
         client,
         &message_values,
     );
@@ -235,7 +235,7 @@ async fn project_group_e2ee_messages_async(client: &crate::core::ImClient, raw: 
             &mut message_values,
         )
         .await;
-    crate::internal::message_runtime::read::cache_group_attachment_manifests_for_internal_download_async(
+    crate::internal::message_runtime::read::cache_attachment_manifests_for_internal_download_async(
         client,
         &message_values,
     )
