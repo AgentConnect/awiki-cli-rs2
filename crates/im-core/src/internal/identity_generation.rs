@@ -63,6 +63,52 @@ where
     })
 }
 
+pub(crate) fn generate_handle_identity_with_default_daemon_subkey(
+    hostname: &str,
+    local_part: &str,
+    service_endpoint: Option<&crate::config::ServiceEndpoint>,
+    service_did: Option<&crate::ids::Did>,
+) -> crate::ImResult<GeneratedIdentityWithDaemonSubkey> {
+    let local_part = local_part.trim().to_ascii_lowercase();
+    if local_part.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("handle".to_string()),
+            "Handle local-part is required",
+        ));
+    }
+    let mut generated = generate_identity_with_default_daemon_subkey(
+        hostname,
+        [local_part.as_str()],
+        service_endpoint,
+        service_did,
+    )?;
+    let handle_service = anp::wns::build_handle_service_entry(
+        generated.identity.did.as_str(),
+        &local_part,
+        hostname.trim(),
+    );
+    let services = generated
+        .identity
+        .did_document
+        .as_object_mut()
+        .and_then(|document| document.get_mut("service"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| crate::ImError::Internal {
+            message: "generated DID document is missing service entries".to_string(),
+        })?;
+    services.push(handle_service);
+    crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+        &mut generated.identity.did_document,
+        &generated.identity.did,
+        &generated.identity.key1_private_pem,
+    )?;
+    crate::internal::identity_daemon_subkey::validate_package_against_did_document(
+        &generated.daemon_subkey_package,
+        &generated.identity.did_document,
+    )?;
+    Ok(generated)
+}
+
 pub(crate) fn generate_identity_with_path_segments<I, S>(
     hostname: &str,
     path_segments: I,

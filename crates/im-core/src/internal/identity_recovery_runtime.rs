@@ -309,9 +309,9 @@ fn prepare_recover_with_local_finalize(
     )?;
     let local_finalize = request.local_finalize.clone().unwrap_or_default();
     let generated_with_daemon =
-        crate::internal::identity_generation::generate_identity_with_default_daemon_subkey(
+        crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
             &plan.target.effective_domain,
-            [plan.target.target_local_part.as_str()],
+            &plan.target.target_local_part,
             core.inner().sdk_config().anp_service_endpoint.as_ref(),
             core.inner().sdk_config().anp_service_did.as_ref(),
         )?;
@@ -637,9 +637,9 @@ pub(crate) fn prepare_recover_handle_request(
     if otp_present && request.local_finalize.is_none() && request.generated_identity.is_none() {
         let target = recovery_target(&request.handle, &core.inner().sdk_config().did_domain)?;
         let generated_with_daemon =
-            crate::internal::identity_generation::generate_identity_with_default_daemon_subkey(
+            crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
                 &target.effective_domain,
-                [target.local_part.as_str()],
+                &target.local_part,
                 core.inner().sdk_config().anp_service_endpoint.as_ref(),
                 core.inner().sdk_config().anp_service_did.as_ref(),
             )?;
@@ -1005,6 +1005,11 @@ mod tests {
             .as_str()
             .starts_with("did:wba:awiki.test:alice:"));
         assert_eq!(prepared.request.handle.as_str(), "alice.awiki.test");
+        let services = generated.did_document["service"].as_array().unwrap();
+        assert!(services.iter().any(|service| {
+            service["type"] == "ANPHandleService"
+                && service["serviceEndpoint"] == "https://awiki.test/.well-known/handle/alice"
+        }));
         assert_eq!(
             prepared
                 .local_store
@@ -1015,6 +1020,30 @@ mod tests {
                 .as_str(),
             generated.did.as_str()
         );
+    }
+
+    #[test]
+    fn local_finalize_recovery_generates_handle_service_declaration() {
+        let fixture = CoreFixture::new();
+        let request = crate::identity::RecoverHandleRequest {
+            handle: crate::ids::Handle::parse("alice.awiki.test", "").unwrap(),
+            raw_handle: None,
+            phone: "+15551234567".to_string(),
+            otp: Some("123456".to_string()),
+            generated_identity: None,
+            local_finalize: Some(crate::identity::RecoverHandleLocalFinalizeRequest::default()),
+        };
+
+        let prepared =
+            prepare_recover_with_local_finalize(&fixture.core, &request, "+15551234567", "123456")
+                .unwrap();
+        let services = prepared.generated.did_document["service"]
+            .as_array()
+            .unwrap();
+        assert!(services.iter().any(|service| {
+            service["type"] == "ANPHandleService"
+                && service["serviceEndpoint"] == "https://awiki.test/.well-known/handle/alice"
+        }));
     }
 
     #[test]
