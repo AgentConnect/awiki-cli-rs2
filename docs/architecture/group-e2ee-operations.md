@@ -86,6 +86,16 @@ review approves an explicit enablement plan.
 - `group secure repair` converges pending notices, local MLS state, and service head comparison through `im-core`.
 - `group remove --secure required` and `group leave --secure required` use secure-aware lifecycle APIs; low-level process-leave/update/rejoin commands are not the supported interface.
 
+### Handle-backed DID recovery
+
+1. Handle Provider recovery 完成后，`im-core` 从可靠 group projection 为该本地 identity 建立逐群 durable recovery job。
+2. 新 DID 对每个 Handle-backed 群提交 P4 `group.rebind_member`；请求携带完整 Handle、previous/new DID 和严格递增的 binding generation。旧 DID 单独签名不能证明 continuity。
+3. 普通群在 P4 接受后完成。E2EE 群保持发送暂停，owner 使用同一个 P4 `group_state_ref` 先执行现有 `group.e2ee.add(new DID)`，再执行现有 `group.e2ee.remove(old DID)`。
+4. Add 已接受而 Remove 未完成时必须保持 durable pending，重启后只重试当前阶段；不得回滚 P4、恢复旧 DID 或调用 `group.e2ee.recover_member` 代替 DID 变更。
+5. 只有匹配的 Remove accepted notice 和 MLS roster 已无旧 DID 时才解除发送暂停。新 DID 只获得当前及未来 epoch，历史明文恢复不属于该流程。
+
+该流程没有 `group.e2ee.rebind_member` wire method。CLI/App 只消费 high-level recovery status 和 repair API，不直接编排 raw Add/Remove payload。
+
 ## Release and packaging
 
 - `awiki-cli` must enable the `im-core/group-e2ee` feature in the default Linux/macOS build.

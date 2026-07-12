@@ -60,6 +60,12 @@ DID recover 或 replace 的本地状态行为是：
 
 Replace-DID dry-run 的 `store_rebind_counts` 和 `e2ee_cleanup_counts` 保持为兼容字段；在 identity-owned schema 中它们不再通过 `owner_did` 扫描业务表。
 
+## 群成员身份连续性
+
+群成员的 ANP 线上身份只有两种：Handle-backed 使用完整 `member_handle`，DID-only 使用 `agent_did`。本地 `group_members.user_id` / `peer_user_id` 是 `im-core` 生成的不透明关联键，不是 Provider User ID，也不得写入 ANP payload，不能假设它与 Group Host 的 `member_user_id` 相等。
+
+Handle-backed snapshot 必须同时具有规范化完整 Handle、当前 DID 和 canonical positive decimal `handle_binding_generation`；字段不完整时 fail closed，不能静默降级为 DID-only。DID recovery 后，本地成员 `user_id`、角色、入群时间和历史消息关联不变，只更新当前 DID、generation 和 DID history。DID-only 指纹型 DID 变化没有 Handle continuity，不自动合并到旧成员。
+
 ## Migration / import 边界
 
 SQLite 不能原地修改主键，因此旧 schema 进入 v17 必须通过重建表或重建数据库完成。
