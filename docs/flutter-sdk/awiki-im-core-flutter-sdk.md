@@ -135,7 +135,15 @@ These display fields are UI metadata only. They must not be used for routing, au
 
 ## Local-first message reads
 
-`client.messages.conversations(...)` returns local conversation summaries from `im-core`; after schema version 18 this path is backed by `conversation_summaries` instead of the legacy dynamic `threads` view. The API is paged: pass `cursor: page.nextCursor` to continue, and stop when `hasMore` is false or `nextCursor` is null. A single page is capped at 100 items by `PageLimit::new`, so large conversation lists such as 500 or 1000 rows must be loaded by cursor pagination. The cursor is opaque and follows the local sort order `last_message_at DESC, conversation_id DESC`; callers must not parse it or treat it as an offset.
+`client.messages.conversations(...)` returns durable local conversations from `im-core`. Schema version 26 reads conversation existence from `conversation_registry` and left-joins the message-derived `conversation_summaries`, so a validated empty conversation remains visible. The API is paged: pass `cursor: page.nextCursor` to continue, and stop when `hasMore` is false or `nextCursor` is null. A single page is capped at 100 items by `PageLimit::new`. The cursor is opaque and follows `activity_at DESC, conversation_id DESC`; callers must not parse it or treat it as an offset.
+
+Before opening a newly resolved Direct conversation or a newly created/joined Group conversation, commit its existence:
+
+```dart
+await client.messages.ensureConversation(canonicalConversationId);
+```
+
+The call is idempotent and fail-closed: Direct requires an owner-scoped peer-scope route, and Group requires active local membership. App-local rows may be used only as a temporary optimistic overlay while this call completes.
 
 Conversation list startup and realtime updates use snapshot / patch helpers under
 the same `client.messages` namespace:

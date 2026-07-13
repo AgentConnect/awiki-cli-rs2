@@ -2926,6 +2926,32 @@ impl<'a> MessageService<'a> {
         .await
     }
 
+    /// Durably records that a canonical conversation belongs in the recent
+    /// conversation list, even before its first message exists.
+    pub fn ensure_conversation(
+        &self,
+        conversation: super::ConversationReadRef,
+    ) -> crate::ImResult<()> {
+        ensure_conversation_registry(self.client, &conversation)
+    }
+
+    pub async fn ensure_conversation_async(
+        &self,
+        conversation: super::ConversationReadRef,
+    ) -> crate::ImResult<()> {
+        let owner = crate::internal::local_state::owner_scope::OwnerScope::for_client(self.client)?;
+        self.client
+            .core_inner()
+            .local_state_db()
+            .await?
+            .ensure_conversation(
+                owner.owner_identity_id,
+                owner.owner_did,
+                conversation.conversation_id,
+            )
+            .await
+    }
+
     pub fn load_conversation_snapshot(
         &self,
     ) -> crate::ImResult<Option<super::ConversationListSnapshot>> {
@@ -3835,6 +3861,31 @@ fn resolve_history_thread(
         handle_peer: Some((full_handle, did)),
         peer_scope: Some(peer_scope),
     })
+}
+
+#[cfg(feature = "sqlite")]
+fn ensure_conversation_registry(
+    client: &crate::core::ImClient,
+    conversation: &super::ConversationReadRef,
+) -> crate::ImResult<()> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let owner = crate::internal::local_state::owner_scope::OwnerScope::for_client(client)?;
+    crate::internal::local_state::conversation_registry::ensure_validated(
+        &connection,
+        &owner.owner_identity_id,
+        &owner.owner_did,
+        &conversation.conversation_id,
+    )
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn ensure_conversation_registry(
+    _client: &crate::core::ImClient,
+    _conversation: &super::ConversationReadRef,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("ensure-conversation"))
 }
 
 fn resolve_service_conversation_thread(

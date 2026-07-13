@@ -20,6 +20,7 @@ class DartConversation {
   final String? firstUnreadMentionMessageId;
   final int messageCount;
   final String? lastMessageAt;
+  final String? activityAt;
 
   const DartConversation({
     required this.threadKind,
@@ -33,6 +34,7 @@ class DartConversation {
     this.firstUnreadMentionMessageId,
     required this.messageCount,
     this.lastMessageAt,
+    this.activityAt,
   });
 
   @override
@@ -47,7 +49,8 @@ class DartConversation {
       unreadMentionCount.hashCode ^
       firstUnreadMentionMessageId.hashCode ^
       messageCount.hashCode ^
-      lastMessageAt.hashCode;
+      lastMessageAt.hashCode ^
+      activityAt.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -64,7 +67,8 @@ class DartConversation {
           unreadMentionCount == other.unreadMentionCount &&
           firstUnreadMentionMessageId == other.firstUnreadMentionMessageId &&
           messageCount == other.messageCount &&
-          lastMessageAt == other.lastMessageAt;
+          lastMessageAt == other.lastMessageAt &&
+          activityAt == other.activityAt;
 }
 
 class DartConversationAlias {
@@ -250,6 +254,7 @@ class DartConversationSnapshotItem {
   final String? firstUnreadMentionMessageId;
   final int messageCount;
   final String? lastMessageAt;
+  final String? activityAt;
 
   const DartConversationSnapshotItem({
     required this.threadKind,
@@ -262,6 +267,7 @@ class DartConversationSnapshotItem {
     this.firstUnreadMentionMessageId,
     required this.messageCount,
     this.lastMessageAt,
+    this.activityAt,
   });
 
   @override
@@ -275,7 +281,8 @@ class DartConversationSnapshotItem {
       unreadMentionCount.hashCode ^
       firstUnreadMentionMessageId.hashCode ^
       messageCount.hashCode ^
-      lastMessageAt.hashCode;
+      lastMessageAt.hashCode ^
+      activityAt.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -291,7 +298,8 @@ class DartConversationSnapshotItem {
           unreadMentionCount == other.unreadMentionCount &&
           firstUnreadMentionMessageId == other.firstUnreadMentionMessageId &&
           messageCount == other.messageCount &&
-          lastMessageAt == other.lastMessageAt;
+          lastMessageAt == other.lastMessageAt &&
+          activityAt == other.activityAt;
 }
 
 class DartConversationSnapshotMessage {

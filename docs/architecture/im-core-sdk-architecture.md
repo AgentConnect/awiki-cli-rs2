@@ -208,15 +208,15 @@ Stable API references live under `docs/api/`:
 
 These files describe the SDK public surface and interface-level contracts. They should only change when the API changes; architecture-only cleanup should update this document and related feature docs instead.
 
-## 11. Local Conversation Summary Projection
+## 11. Durable Conversation Registry And Summary Projection
 
-The SQLite local state keeps `messages` as the durable message projection truth. Conversation list reads must not aggregate all owner messages on every refresh. Schema version 18 adds `conversation_summaries` as a rebuildable materialized projection for chat-list summaries, schema version 19 adds an owner/conversation/timestamp hot index for local-first message history pagination, schema version 20 adds `sync_state`, and schema version 23 adds owner-scoped `direct_peer_routes` for non-reversible peer-scope conversation routing. The current conversation/read/send projection contract keeps:
+The SQLite local state keeps `messages` as the durable message projection truth, while schema version 26 adds `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable message-derived aggregate and may legitimately have no row for an empty conversation. The current conversation/read/send projection contract keeps:
 
 - primary key: `(owner_identity_id, conversation_id)`;
 - hot index: `idx_conversation_summaries_owner_last(owner_identity_id, last_message_at DESC, conversation_id)`;
 - unread index: `idx_conversation_summaries_owner_unread_last(owner_identity_id, unread_count, last_message_at DESC)`.
 
-`list_conversations_for_owner_identity()` reads `conversation_summaries` by owner and joins only the stored `last_message_id` back to `messages`. The legacy `threads` SQLite view remains available for debugging and compatibility, but it is no longer the chat-list hot path. Incremental writes update touched summaries inside the same SQLite transaction as message/read-state projection; rebuild/repair paths remain available when a gap, migration, or debug check requires recomputing owner summaries from durable `messages` and `thread_read_state`.
+`list_conversations_for_owner_identity()` reads active `conversation_registry` rows by owner, left-joins `conversation_summaries`, and joins only the stored `last_message_id` back to `messages`. The legacy `threads` SQLite view remains available for debugging and compatibility, but it is no longer the chat-list hot path. Incremental writes update touched summaries inside the same SQLite transaction as message/read-state projection; rebuild/repair paths remain available when a gap, migration, or debug check requires recomputing owner summaries from durable `messages` and `thread_read_state`.
 
 Summary rows are derived state and may be rebuilt from `messages`, but hot writes are incremental after the performance work:
 
@@ -226,6 +226,8 @@ Summary rows are derived state and may be rebuilt from `messages`, but hot write
 - fallback rebuild remains for message conversation moves, legacy DID-to-peer-scope direct merges, last-message ambiguity, missing/corrupt summary rows, first unread mention ambiguity, and explicit owner repair;
 - committed invalidation and runtime store patches are emitted only after the local projection transaction commits;
 - peer-scope direct compatibility uses a SQLite TEMP, owner-scoped memo per local-state connection: after a legacy DID fold, or after a peer handle has been recognized, later upserts in the same actor/session do not rescan all legacy DID rows or rerun the large UPDATE; late legacy rows that match the memoized DID/handle are normalized into the peer-scope conversation before insert.
+
+`messages.ensure_conversation()` / Dart `client.messages.ensureConversation(...)` is the explicit creation boundary. Direct creation fails closed unless the owner has a valid `direct_peer_routes` entry for the canonical `dm:peer-scope:v1:*` ID. Group creation fails closed unless the owner has an active local membership projection. The registry stores `activity_at` independently of `last_message_at`; list pagination uses the opaque v2 cursor ordered by `activity_at DESC, conversation_id DESC`. Migration only backfills conversations already represented by summaries and never synthesizes every known route or group.
 
 `ConversationIdentity.conversation_id` is the SDK-level routing key for message display. Conversation list rows, message metadata, timeline patches, read-state updates, conversation-scoped send, and local repair must carry or derive from this canonical identity. `ThreadRef::{Direct, Group, Thread}` remains a compatibility / adapter surface for CLI migration, legacy callers, and low-level diagnostics. New AWiki Me and Flutter SDK message-display paths must not reconstruct a route from DID, handle, or legacy direct aliases when a canonical `conversation_id` is available.
 

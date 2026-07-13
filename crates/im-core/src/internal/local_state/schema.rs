@@ -2,9 +2,10 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 25;
+pub(crate) const SCHEMA_VERSION: i64 = 26;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 18;
+const CONVERSATION_REGISTRY_SCHEMA_VERSION: i64 = 26;
 
 const V6_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS contacts (
@@ -975,6 +976,7 @@ fn create_schema(
         should_rebuild_conversation_summaries = true;
     }
     super::conversation_summaries::create_schema(connection)?;
+    super::conversation_registry::create_schema(connection)?;
     for view in ["threads", "inbox", "outbox"] {
         connection
             .execute(&format!("DROP VIEW IF EXISTS {view}"), [])
@@ -996,6 +998,11 @@ fn create_schema(
     }
     if should_rebuild_conversation_summaries {
         super::conversation_summaries::rebuild_all(connection)?;
+    }
+    if backfill_conversation_summaries
+        || current_schema_version(connection)? < CONVERSATION_REGISTRY_SCHEMA_VERSION
+    {
+        super::conversation_registry::backfill_from_summaries(connection)?;
     }
     Ok(())
 }

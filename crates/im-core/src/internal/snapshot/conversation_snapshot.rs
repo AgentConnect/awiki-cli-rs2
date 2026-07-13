@@ -379,6 +379,7 @@ mod tests {
             first_unread_mention_message_id: None,
             message_count: 3,
             last_message_at: Some("2026-06-27T00:00:00Z".to_owned()),
+            activity_at: Some("2026-06-27T00:00:00Z".to_owned()),
         }
     }
 

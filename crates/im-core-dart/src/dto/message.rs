@@ -212,6 +212,7 @@ pub struct DartConversation {
     pub first_unread_mention_message_id: Option<String>,
     pub message_count: u32,
     pub last_message_at: Option<String>,
+    pub activity_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -382,6 +383,7 @@ pub struct DartConversationSnapshotItem {
     pub first_unread_mention_message_id: Option<String>,
     pub message_count: u32,
     pub last_message_at: Option<String>,
+    pub activity_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

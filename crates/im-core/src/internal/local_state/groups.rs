@@ -513,6 +513,18 @@ DO UPDATE SET
             rusqlite::params![owner_identity_id.as_str(), group_id.as_str()],
         )
         .map_err(super::local_state_unavailable)?;
+    super::conversation_registry::deactivate(
+        &transaction,
+        &owner_identity_id,
+        &format!("group:{group_id}"),
+    )?;
+    if !group_did.trim().is_empty() {
+        super::conversation_registry::deactivate(
+            &transaction,
+            &owner_identity_id,
+            &format!("group:{}", group_did.trim()),
+        )?;
+    }
     transaction
         .commit()
         .map_err(super::local_state_unavailable)?;

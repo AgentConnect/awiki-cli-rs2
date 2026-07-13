@@ -760,6 +760,7 @@ impl From<im_core::messages::Conversation> for DartConversation {
                 .map(|message_id| message_id.as_str().to_string()),
             message_count: value.message_count,
             last_message_at: value.last_message_at,
+            activity_at: value.activity_at,
         }
     }
 }
@@ -963,6 +964,7 @@ impl From<im_core::messages::ConversationSnapshotItem> for DartConversationSnaps
             first_unread_mention_message_id: value.first_unread_mention_message_id,
             message_count: value.message_count,
             last_message_at: value.last_message_at,
+            activity_at: value.activity_at,
         }
     }
 }

@@ -889,6 +889,10 @@ pub struct ConversationSnapshotItem {
     pub message_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_at: Option<String>,
+    /// Durable list ordering time. Unlike `last_message_at`, this is present for
+    /// conversations that have not sent their first message yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -944,6 +948,8 @@ pub struct Conversation {
     pub first_unread_mention_message_id: Option<crate::ids::MessageId>,
     pub message_count: u32,
     pub last_message_at: Option<String>,
+    /// Durable list ordering time, independent from message aggregation.
+    pub activity_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

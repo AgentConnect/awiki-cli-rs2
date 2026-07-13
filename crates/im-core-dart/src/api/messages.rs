@@ -420,6 +420,20 @@ pub async fn conversations(
         .map_err(DartImError::from)
 }
 
+pub async fn ensure_conversation(
+    client: &Arc<crate::api::client::DartImClient>,
+    conversation_id: String,
+) -> Result<(), DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .ensure_conversation_async(im_core::messages::ConversationReadRef::new(
+            conversation_id,
+        )?)
+        .await
+        .map_err(DartImError::from)
+}
+
 pub async fn load_conversation_snapshot(
     client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<Option<DartConversationListSnapshot>, DartImError> {

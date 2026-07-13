@@ -781,6 +781,16 @@ class MessageApi {
     return page._toModel();
   }
 
+  Future<void> ensureConversation(String conversationId) async {
+    _client._ensureNotDisposed();
+    await _mapNativeErrors(
+      () => gen_messages.ensureConversation(
+        client: _client._inner,
+        conversationId: conversationId,
+      ),
+    );
+  }
+
   Future<ConversationListSnapshot?> loadConversationSnapshot() async {
     _client._ensureNotDisposed();
     final snapshot = await _mapNativeErrors(
@@ -2370,6 +2380,7 @@ extension on gen_message.DartConversation {
     firstUnreadMentionMessageId: firstUnreadMentionMessageId,
     messageCount: messageCount,
     lastMessageAt: lastMessageAt,
+    activityAt: activityAt,
   );
 }
 
@@ -2503,6 +2514,7 @@ extension on gen_message.DartConversationSnapshotItem {
     firstUnreadMentionMessageId: firstUnreadMentionMessageId,
     messageCount: messageCount,
     lastMessageAt: lastMessageAt,
+    activityAt: activityAt,
   );
 }
 

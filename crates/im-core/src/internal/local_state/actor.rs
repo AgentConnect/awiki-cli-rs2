@@ -13,6 +13,12 @@ enum LocalStateCommand {
     CurrentSchemaVersion {
         reply: oneshot::Sender<crate::ImResult<i64>>,
     },
+    EnsureConversation {
+        owner_identity_id: String,
+        owner_did: String,
+        conversation_id: String,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
     StoreMessages {
         records: Vec<super::messages::MessageRecord>,
         reply: oneshot::Sender<crate::ImResult<()>>,
@@ -341,6 +347,23 @@ enum LocalStateCommand {
 }
 
 impl LocalStateDb {
+    pub(crate) async fn ensure_conversation(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        conversation_id: impl Into<String>,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::EnsureConversation {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            conversation_id: conversation_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn open(sqlite_path: PathBuf) -> crate::ImResult<Self> {
         let (sender, receiver) = mpsc::channel(COMMAND_BUFFER);
         let (ready_sender, ready_receiver) = oneshot::channel();
@@ -1156,6 +1179,20 @@ fn run_actor(
         match command {
             LocalStateCommand::CurrentSchemaVersion { reply } => {
                 let result = super::schema::current_schema_version(&connection);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::EnsureConversation {
+                owner_identity_id,
+                owner_did,
+                conversation_id,
+                reply,
+            } => {
+                let result = super::conversation_registry::ensure_validated(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &conversation_id,
+                );
                 let _ = reply.send(result);
             }
             LocalStateCommand::StoreMessages { records, reply } => {

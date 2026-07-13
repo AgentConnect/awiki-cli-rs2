@@ -247,6 +247,11 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
     } else {
         super::conversation_summaries::rebuild_touched(connection, &touched)?;
     }
+    super::conversation_registry::ensure_from_summary(
+        connection,
+        &owner_identity_id,
+        &conversation_id,
+    )?;
     touched.insert((owner_identity_id, conversation_id));
     Ok(touched)
 }

@@ -154,6 +154,7 @@ pub(crate) fn ensure_owner_backfilled(
         .map_err(super::local_state_unavailable)?;
     if message_count > 0 {
         rebuild_owner(connection, &owner_identity_id)?;
+        super::conversation_registry::backfill_from_summaries(connection)?;
     }
     Ok(())
 }
@@ -201,6 +202,11 @@ pub(crate) fn rebuild_touched(
             continue;
         }
         if rebuild_conversation(connection, owner_identity_id, conversation_id)? {
+            super::conversation_registry::ensure_from_summary(
+                connection,
+                owner_identity_id,
+                conversation_id,
+            )?;
             rebuilt += 1;
         }
     }
@@ -551,13 +557,16 @@ fn rebuild_single(
     owner_identity_id: &str,
     conversation_id: &str,
 ) -> crate::ImResult<usize> {
-    Ok(
-        if rebuild_conversation(connection, owner_identity_id, conversation_id)? {
-            1
-        } else {
-            0
-        },
-    )
+    if rebuild_conversation(connection, owner_identity_id, conversation_id)? {
+        super::conversation_registry::ensure_from_summary(
+            connection,
+            owner_identity_id,
+            conversation_id,
+        )?;
+        Ok(1)
+    } else {
+        Ok(0)
+    }
 }
 
 fn apply_insert_delta(
