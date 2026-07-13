@@ -695,6 +695,10 @@ impl GroupService<'_> {
 
 Rust SDK 调用方创建群组时推荐使用 `GroupCreateRequest::new(name)`，再按需设置 `description`、`avatar_uri`、`discoverability` 等可选字段，避免后续新增可选字段时依赖完整 struct literal。群资料更新继续使用 `GroupProfilePatch::default()` 后按需填写字段；`avatar_uri` 对应 Group Host 权威的 `group_profile.avatar_uri`，`name` 仍只是 `group_profile.display_name` 的兼容输入。
 
+Handle recovery 后，host 通过现有 high-level `resume_rebind_recovery_async(limit)` 恢复 durable P4/P6 任务。该调用会先从完整 Handle 的 provider-domain HTTPS `/.well-known/handle/{local-part}` 读取公开 WNS 文档，再补建历史缺失的 P4 job；普通 `handle.lookup` RPC 不含权威 generation，不能替代该文档。只有以下条件全部满足时才补建：公开状态为 `active`、返回的完整 Handle 精确一致、WNS DID 等于当前签名 DID、`did:wba` domain 与 Handle provider 一致、`binding_generation` 是 canonical positive decimal string 且严格大于本地成员 generation、旧成员 DID 精确属于当前 `IdentityId` 的 previous DID history。缺字段、numeric/非 canonical generation、DID/domain mismatch、跨域同名 local-part 都 fail closed；不得推算 generation。
+
+补建后仍由新 DID 的 origin proof 调用 `group.rebind_member`，Group Host 负责再次校验 WNS continuity 和幂等性。SDK 不直接修改服务端 roster；transport-protected 群在 P4 接受后完成，Group E2EE 群继续遵循既有 P4 `group_state_ref` → P6 Add(new DID) → Remove(old DID) durable 顺序。App/CLI 只调用 high-level resume 并消费脱敏 summary，不拼 raw RPC 或 SQL。
+
 ## 11. local state / bootstrap
 
 P1 API：

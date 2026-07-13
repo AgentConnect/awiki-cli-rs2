@@ -67,7 +67,11 @@ Replace-DID dry-run 的 `store_rebind_counts` 和 `e2ee_cleanup_counts` 保持�
 
 群成员的 ANP 线上身份只有两种：Handle-backed 使用完整 `member_handle`，DID-only 使用 `agent_did`。本地 `group_members.user_id` / `peer_user_id` 是 `im-core` 生成的不透明关联键，不是 Provider User ID，也不得写入 ANP payload，不能假设它与 Group Host 的 `member_user_id` 相等。
 
-Handle-backed snapshot 必须同时具有规范化完整 Handle、当前 DID 和 canonical positive decimal `handle_binding_generation`；字段不完整时 fail closed，不能静默降级为 DID-only。DID recovery 后，本地成员 `user_id`、角色、入群时间和历史消息关联不变，只更新当前 DID、generation 和 DID history。DID-only 指纹型 DID 变化没有 Handle continuity，不自动合并到旧成员。
+Handle-backed snapshot 必须同时具有规范化完整 Handle、当前 DID 和 canonical positive decimal `handle_binding_generation`；`group_members.anchor_value` 保存的是包含 provider domain 的协议 Handle（例如 `alice.awiki.info`），不是 UI 展示用 local-part。字段不完整时 fail closed，不能静默降级为 DID-only。DID recovery 后，本地成员 `user_id`、角色、入群时间和历史消息关联不变，只更新当前 DID、generation 和 DID history。DID-only 指纹型 DID 变化没有 Handle continuity，不自动合并到旧成员。
+
+旧版本曾把完整 Handle 错投影成 local-part。兼容扫描只能在同一 `owner_identity_id` 内进行，并且必须同时满足：成员 DID 精确存在于该 owner 的 `identity_did_history(status='previous')`、旧 DID 的 `did:wba` provider domain 等于当前完整 Handle domain、成员仍为 active Handle-backed、以及本地 canonical generation 严格小于公开 WNS generation。任一条件缺失都不得补建 rebind job；尤其不能用裸 local-part 跨域合并，也不能用 `old_generation + 1` 猜 generation。
+
+`resume_rebind_recovery` 补建的只是 owner-scoped durable outbox。服务端 roster 的实际变更仍由当前新 DID 签名的 `group.rebind_member` 完成；本地 reconcile 和运维修复均不得直接更新 Group Host 成员表。
 
 ## Migration / import 边界
 
