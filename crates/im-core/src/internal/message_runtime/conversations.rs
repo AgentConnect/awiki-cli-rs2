@@ -278,8 +278,12 @@ fn conversation_from_record(
 ) -> crate::ImResult<crate::messages::Conversation> {
     let last_message = record.last_message().map(message_from_record).transpose()?;
     let thread = conversation_thread(owner_did, &record, last_message.as_ref())?;
-    let conversation_identity =
-        crate::messages::ConversationIdentity::from_thread_ref_for_owner(&thread, owner_did);
+    let identity_thread =
+        crate::messages::ThreadRef::Thread(crate::ids::ThreadId::parse(record.conversation_id())?);
+    let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref_for_owner(
+        &identity_thread,
+        owner_did,
+    );
     let participants = conversation_participants(owner_did, &thread, last_message.as_ref())?;
     Ok(crate::messages::Conversation {
         thread,
@@ -780,6 +784,43 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn empty_peer_scope_conversation_keeps_canonical_identity() {
+        let conversation_id =
+            crate::messages::direct_peer_scope_thread_id("user-bob", "bob.awiki.info")
+                .unwrap()
+                .as_str()
+                .to_string();
+        let conversation = conversation_from_record(
+            "did:example:alice",
+            crate::internal::local_state::conversations::ConversationRecord {
+                owner_identity_id: "alice-id".into(),
+                owner_did: "did:example:alice".into(),
+                conversation_id: conversation_id.clone(),
+                thread_kind: "direct".into(),
+                thread_id: conversation_id.clone(),
+                direct_peer_did: "did:example:bob".into(),
+                activity_at: "2026-07-13T00:00:00Z".into(),
+                ..crate::internal::local_state::conversations::ConversationRecord::default()
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            conversation.thread,
+            crate::messages::ThreadRef::Direct(_)
+        ));
+        assert_eq!(
+            conversation
+                .conversation_identity
+                .as_ref()
+                .map(|identity| identity.conversation_id.as_str()),
+            Some(conversation_id.as_str())
+        );
+        assert!(conversation.last_message.is_none());
+        assert_eq!(conversation.message_count, 0);
+    }
 
     #[test]
     fn message_conversation_runtime_projects_direct_and_group_conversations() {

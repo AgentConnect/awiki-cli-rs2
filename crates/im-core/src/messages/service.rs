@@ -629,6 +629,40 @@ mod conversation_read_model_tests {
         );
     }
 
+    #[tokio::test]
+    async fn async_ensure_conversation_persists_before_returning() {
+        let fixture = Fixture::new("conversation-async-ensure-persistence");
+        let client = fixture.client();
+        let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "user-bob",
+            "bob.awiki.test",
+        )
+        .unwrap();
+        let conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &peer_scope,
+            );
+        fixture.seed_route(&conversation_id, &peer_scope, "did:example:bob-current");
+
+        client
+            .messages()
+            .ensure_conversation_async(
+                crate::messages::ConversationReadRef::new(conversation_id.clone()).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM conversation_registry WHERE owner_identity_id = 'alice-id' AND conversation_id = ?1",
+                [conversation_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
     #[test]
     fn directory_route_is_shared_by_text_payload_and_attachment_conversation_surfaces() {
         let fixture = Fixture::new("conversation-route-all-send-surfaces");
