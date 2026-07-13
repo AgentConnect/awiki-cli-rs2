@@ -7,7 +7,7 @@ use anp::authentication::{
 use anyhow::{bail, Context, Result};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::config::DaemonConfig;
 
@@ -327,6 +327,11 @@ pub fn generate_agent_identity(
             ])
             .with_security_profiles(["transport-protected"]),
     );
+    let handle_service = json!({
+        "id": "#handle",
+        "type": anp::wns::ANP_HANDLE_SERVICE_TYPE,
+        "serviceEndpoint": anp::wns::build_resolution_url(&handle, domain),
+    });
     let options = DidDocumentOptions {
         path_segments: vec![
             "agent".to_string(),
@@ -335,7 +340,7 @@ pub fn generate_agent_identity(
         ],
         domain: Some(domain.to_string()),
         challenge: Some(random_hex(16)),
-        services: vec![service],
+        services: vec![service, handle_service],
         did_profile: DidProfile::E1,
         ..DidDocumentOptions::default()
     };
@@ -487,6 +492,33 @@ fn random_hex(num_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_agent_identity_declares_handle_provider_in_signed_did_document() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.service_base_url = "https://awiki.info".to_string();
+        config.did_domain = "awiki.info".to_string();
+
+        for kind in [AgentKind::Daemon, AgentKind::Runtime] {
+            let generated = generate_agent_identity(&config, kind, "Codex-1").unwrap();
+            let services = generated.did_document["service"].as_array().unwrap();
+            let handle_service = services
+                .iter()
+                .find(|service| service["type"] == anp::wns::ANP_HANDLE_SERVICE_TYPE)
+                .expect("generated agent DID document should declare its Handle Provider");
+
+            assert_eq!(handle_service["id"], format!("{}#handle", generated.did));
+            assert_eq!(
+                handle_service["serviceEndpoint"],
+                "https://awiki.info/.well-known/handle/codex-1"
+            );
+            assert!(anp::authentication::validate_did_document_binding(
+                &generated.did_document,
+                true,
+            ));
+        }
+    }
 
     #[test]
     fn handle_normalization_rejects_blank_or_shell_like_values() {
