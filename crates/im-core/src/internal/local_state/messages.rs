@@ -5471,7 +5471,7 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
     }
 
     #[test]
-    fn local_state_control_payloads_do_not_count_unread() {
+    fn local_state_control_payloads_do_not_materialize_conversation_summaries() {
         let db = Connection::open_in_memory().unwrap();
         let owner_identity_id = "owner-id";
         let owner_did = "did:owner";
@@ -5495,12 +5495,9 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
         upsert_message(&db, &control).unwrap();
 
         assert_eq!(read_by_msg_id(&db, "msg-control"), 1);
-        let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
-        assert_eq!(summary.message_count, 1);
-        assert_eq!(summary.unread_count, 0);
-        assert_eq!(summary.last_message_id, "msg-control");
-        assert_eq!(summary.last_content, control.content);
-        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+        assert!(!summary_exists(&db, owner_identity_id, conversation_id));
+        super::super::conversation_summaries::rebuild_owner(&db, owner_identity_id).unwrap();
+        assert!(!summary_exists(&db, owner_identity_id, conversation_id));
     }
 
     #[test]
@@ -5556,10 +5553,9 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
         upsert_message(&db, &control).unwrap();
 
         assert_eq!(read_by_msg_id(&db, "msg-empty-daemon-control"), 1);
-        let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
-        assert_eq!(summary.message_count, 1);
-        assert_eq!(summary.unread_count, 0);
-        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+        assert!(!summary_exists(&db, owner_identity_id, conversation_id));
+        super::super::conversation_summaries::rebuild_owner(&db, owner_identity_id).unwrap();
+        assert!(!summary_exists(&db, owner_identity_id, conversation_id));
     }
 
     #[test]
@@ -5584,10 +5580,9 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
         upsert_message(&db, &plain_json).unwrap();
 
         assert_eq!(read_by_msg_id(&db, "msg-empty-json"), 1);
-        let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
-        assert_eq!(summary.message_count, 1);
-        assert_eq!(summary.unread_count, 0);
-        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+        assert!(!summary_exists(&db, owner_identity_id, conversation_id));
+        super::super::conversation_summaries::rebuild_owner(&db, owner_identity_id).unwrap();
+        assert!(!summary_exists(&db, owner_identity_id, conversation_id));
     }
 
     #[test]
@@ -5614,20 +5609,13 @@ VALUES ('msg-legacy-control', ?1, ?2, ?3, ?3, 0,
         )
         .unwrap();
         super::super::conversation_summaries::rebuild_owner(&db, owner_identity_id).unwrap();
-        assert_eq!(
-            summary_snapshot(&db, owner_identity_id, conversation_id).unread_count,
-            0
-        );
+        assert!(!summary_exists(&db, owner_identity_id, conversation_id));
         assert_eq!(read_by_msg_id(&db, "msg-legacy-control"), 0);
 
         let repaired = repair_control_payload_read_projection(&db).unwrap();
         assert_eq!(repaired, 1);
         assert_eq!(read_by_msg_id(&db, "msg-legacy-control"), 1);
-        assert_eq!(
-            summary_snapshot(&db, owner_identity_id, conversation_id).unread_count,
-            0
-        );
-        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+        assert!(!summary_exists(&db, owner_identity_id, conversation_id));
     }
 
     #[test]
@@ -5649,20 +5637,13 @@ VALUES ('msg-legacy-empty-daemon', ?1, ?2, ?3, ?3, 0,
         )
         .unwrap();
         super::super::conversation_summaries::rebuild_owner(&db, owner_identity_id).unwrap();
-        assert_eq!(
-            summary_snapshot(&db, owner_identity_id, conversation_id).unread_count,
-            0
-        );
+        assert!(!summary_exists(&db, owner_identity_id, conversation_id));
         assert_eq!(read_by_msg_id(&db, "msg-legacy-empty-daemon"), 0);
 
         let repaired = repair_control_payload_read_projection(&db).unwrap();
         assert_eq!(repaired, 1);
         assert_eq!(read_by_msg_id(&db, "msg-legacy-empty-daemon"), 1);
-        assert_eq!(
-            summary_snapshot(&db, owner_identity_id, conversation_id).unread_count,
-            0
-        );
-        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+        assert!(!summary_exists(&db, owner_identity_id, conversation_id));
     }
 
     #[test]
@@ -5684,20 +5665,13 @@ VALUES ('msg-legacy-empty-json', ?1, ?2, ?3, ?3, 0,
         )
         .unwrap();
         super::super::conversation_summaries::rebuild_owner(&db, owner_identity_id).unwrap();
-        assert_eq!(
-            summary_snapshot(&db, owner_identity_id, conversation_id).unread_count,
-            0
-        );
+        assert!(!summary_exists(&db, owner_identity_id, conversation_id));
         assert_eq!(read_by_msg_id(&db, "msg-legacy-empty-json"), 0);
 
         let repaired = repair_control_payload_read_projection(&db).unwrap();
         assert_eq!(repaired, 1);
         assert_eq!(read_by_msg_id(&db, "msg-legacy-empty-json"), 1);
-        assert_eq!(
-            summary_snapshot(&db, owner_identity_id, conversation_id).unread_count,
-            0
-        );
-        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+        assert!(!summary_exists(&db, owner_identity_id, conversation_id));
     }
 
     #[test]
@@ -6286,6 +6260,15 @@ VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3,
             "SELECT message_count FROM conversation_summaries WHERE owner_identity_id = ?1 AND conversation_id = ?2",
             (owner_identity_id, conversation_id),
             |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn summary_exists(db: &Connection, owner_identity_id: &str, conversation_id: &str) -> bool {
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM conversation_summaries WHERE owner_identity_id = ?1 AND conversation_id = ?2)",
+            (owner_identity_id, conversation_id),
+            |row| row.get::<_, bool>(0),
         )
         .unwrap()
     }

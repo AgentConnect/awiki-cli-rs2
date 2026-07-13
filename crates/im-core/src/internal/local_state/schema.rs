@@ -2,9 +2,9 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 26;
+pub(crate) const SCHEMA_VERSION: i64 = 27;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
-const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 18;
+const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
 const CONVERSATION_REGISTRY_SCHEMA_VERSION: i64 = 26;
 
 const V6_TABLES_SQL: &str = r#"

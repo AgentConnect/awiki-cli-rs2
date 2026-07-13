@@ -327,6 +327,63 @@ WHERE owner_identity_id = 'alice-id' AND conversation_id = 'dm:did:bob'"#,
 }
 
 #[test]
+fn local_state_schema_v27_rebuilds_control_only_summaries_without_losing_registry() {
+    let db = Connection::open_in_memory().unwrap();
+    ensure_schema(&db).unwrap();
+    db.execute_batch(
+        r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction,
+     sender_did, group_id, group_did, content_type, content, sent_at, stored_at, is_read)
+VALUES
+    ('did:example:group:1', 'alice-id', 'did:alice',
+     'group:did:example:group', 'group:did:example:group', 1,
+     'did:alice', 'did:example:group', 'did:example:group',
+     'application/json', '', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', 1);
+INSERT INTO conversation_summaries
+    (owner_identity_id, owner_did, conversation_id, thread_id,
+     message_count, unread_count, unread_mention_count,
+     last_message_id, last_message_at, last_content, last_content_type,
+     group_id, group_did, updated_at)
+VALUES
+    ('alice-id', 'did:alice', 'group:did:example:group', 'group:did:example:group',
+     1, 0, 0, 'did:example:group:1', '2026-07-13T00:00:00Z', '',
+     'application/json', 'did:example:group', 'did:example:group',
+     '2026-07-13T00:00:00Z');
+INSERT INTO conversation_registry
+    (owner_identity_id, owner_did, conversation_id, thread_kind, thread_id,
+     activity_at, created_at, updated_at, is_active)
+VALUES
+    ('alice-id', 'did:alice', 'group:did:example:group', 'group',
+     'did:example:group', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z',
+     '2026-07-13T00:00:00Z', 1);
+"#,
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 26).unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    let summary_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM conversation_summaries WHERE owner_identity_id = 'alice-id' AND conversation_id = 'group:did:example:group'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let registry_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM conversation_registry WHERE owner_identity_id = 'alice-id' AND conversation_id = 'group:did:example:group' AND is_active = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(summary_count, 0);
+    assert_eq!(registry_count, 1);
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+}
+
+#[test]
 fn local_state_schema_repairs_group_message_aliases_during_upgrade() {
     let db = Connection::open_in_memory().unwrap();
     create_identity_owned_schema(&db, IdentityOwnedSchemaTableMode::Final).unwrap();
