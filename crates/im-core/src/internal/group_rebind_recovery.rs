@@ -601,6 +601,123 @@ pub(crate) fn update_p4_job(
     )
 }
 
+pub(crate) fn project_applied_p4_rebind(
+    sqlite_path: &Path,
+    job: &P4RebindJob,
+) -> crate::ImResult<()> {
+    let expected_handle = canonical_recovery_handle(&job.member_handle)?;
+    if !canonical_generation(&job.binding_generation) {
+        return Err(crate::ImError::invalid_input(
+            Some("binding_generation".to_owned()),
+            "rebind projection requires a canonical positive binding generation",
+        ));
+    }
+    let mut connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    crate::internal::local_state::schema::ensure_schema(&connection)?;
+    let transaction = connection
+        .transaction()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let candidates = {
+        let mut statement = transaction
+            .prepare(
+                r#"
+SELECT user_id, member_did, anchor_value, COALESCE(handle_binding_generation, '')
+FROM group_members
+WHERE owner_identity_id=?1
+  AND group_id=?2
+  AND anchor_kind='handle'
+  AND COALESCE(status, 'active')='active'"#,
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let rows = statement
+            .query_map(
+                rusqlite::params![job.owner_identity_id, job.group_did],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let mut values = Vec::new();
+        for row in rows {
+            let value = row.map_err(crate::internal::local_state::local_state_unavailable)?;
+            if recovery_handle_anchor_matches(&value.2, &value.1, &expected_handle) {
+                values.push(value);
+            }
+        }
+        values
+    };
+    if candidates.len() != 1 {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "accepted group rebind matched {} active local Handle member rows",
+                candidates.len()
+            ),
+        });
+    }
+    let (user_id, stored_did, _, stored_generation) = &candidates[0];
+    if stored_did == &job.new_member_did
+        && canonical_generation(stored_generation)
+        && decimal_generation_cmp(stored_generation, &job.binding_generation)
+            != std::cmp::Ordering::Less
+    {
+        transaction
+            .commit()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        return Ok(());
+    }
+    if stored_did != &job.previous_member_did {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "accepted group rebind does not continue from the projected member DID"
+                .to_owned(),
+        });
+    }
+    if !canonical_generation(stored_generation)
+        || decimal_generation_cmp(&job.binding_generation, stored_generation)
+            != std::cmp::Ordering::Greater
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "accepted group rebind does not advance the projected Handle generation"
+                .to_owned(),
+        });
+    }
+    let updated = transaction
+        .execute(
+            r#"
+UPDATE group_members
+SET member_did=?4,
+    member_handle=?5,
+    anchor_value=?5,
+    handle_binding_generation=?6,
+    last_synced_at=?7
+WHERE owner_identity_id=?1 AND group_id=?2 AND user_id=?3 AND member_did=?8"#,
+            rusqlite::params![
+                job.owner_identity_id,
+                job.group_did,
+                user_id,
+                job.new_member_did,
+                expected_handle.full,
+                job.binding_generation,
+                now(),
+                job.previous_member_did,
+            ],
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if updated != 1 {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "accepted group rebind member projection changed concurrently".to_owned(),
+        });
+    }
+    transaction
+        .commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(())
+}
+
 pub(crate) fn update_p6_job(
     sqlite_path: &Path,
     job_id: &str,
@@ -1086,6 +1203,73 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn applied_rebind_advances_projection_used_by_next_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite3");
+        let db = crate::internal::local_state::open_writable(&path).unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        db.execute("INSERT INTO groups (owner_identity_id,owner_did,group_id,group_did,my_role,membership_status,stored_at) VALUES ('owner','did:current','did:group','did:group','member','active','now')", []).unwrap();
+        db.execute("INSERT INTO group_members (owner_identity_id,owner_did,group_id,user_id,member_did,member_handle,anchor_kind,anchor_value,handle_binding_generation,status,last_synced_at) VALUES ('owner','did:current','did:group','peer','did:wba:example.com:alice:e1_old','alice','handle','alice','1','active','now')", []).unwrap();
+        drop(db);
+
+        let applied = P4RebindJob {
+            job_id: "job-2".to_owned(),
+            owner_identity_id: "owner".to_owned(),
+            group_did: "did:group".to_owned(),
+            member_handle: "alice.example.com".to_owned(),
+            previous_member_did: "did:wba:example.com:alice:e1_old".to_owned(),
+            new_member_did: "did:wba:example.com:alice:e1_middle".to_owned(),
+            binding_generation: "2".to_owned(),
+            phase: "sending".to_owned(),
+            group_state_ref_json: None,
+            attempt_count: 1,
+        };
+        project_applied_p4_rebind(&path, &applied).unwrap();
+        project_applied_p4_rebind(&path, &applied).unwrap();
+
+        let mut db = crate::internal::local_state::open_writable(&path).unwrap();
+        let projected: (String, String, String) = db
+            .query_row(
+                "SELECT member_did,anchor_value,handle_binding_generation FROM group_members",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            projected,
+            (
+                "did:wba:example.com:alice:e1_middle".to_owned(),
+                "alice.example.com".to_owned(),
+                "2".to_owned(),
+            )
+        );
+
+        assert_eq!(
+            enqueue_recovery_jobs_for_connection(
+                &mut db,
+                "owner",
+                "alice.example.com",
+                &[
+                    "did:wba:example.com:alice:e1_old".to_owned(),
+                    "did:wba:example.com:alice:e1_middle".to_owned(),
+                ],
+                "did:wba:example.com:alice:e1_new",
+                "3",
+            )
+            .unwrap(),
+            1
+        );
+        let previous: String = db
+            .query_row(
+                "SELECT previous_member_did FROM group_rebind_outbox",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(previous, "did:wba:example.com:alice:e1_middle");
     }
 
     #[test]

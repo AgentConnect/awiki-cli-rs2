@@ -73,6 +73,8 @@ Handle-backed snapshot 必须同时具有规范化完整 Handle、当前 DID 和
 
 `resume_rebind_recovery` 补建的只是 owner-scoped durable outbox。服务端 roster 的实际变更仍由当前新 DID 签名的 `group.rebind_member` 完成；本地 reconcile 和运维修复均不得直接更新 Group Host 成员表。
 
+Group Host 接受 P4 `group.rebind_member` 后，`im-core` 必须在把 P4 outbox 标记为 `complete` / `awaiting_p6` 之前，将同一 Handle anchor 的本地 `group_members` 投影从 `previous_member_did` 原子推进到 `new_member_did` 和新的 canonical generation。该投影保留稳定 `user_id`、角色、入群时间和历史关联，并把 legacy local-part anchor 收敛为完整 Handle。投影失败时 P4 job 保持可重试，不能让服务端 roster 已前进而本地下一代 recovery 仍从更早的 DID 建任务；重试继续使用稳定 `operation_id`，不得直接写 Group Host 成员表。
+
 群快照投影必须保留 Group Host 返回的 `required_security_profile` / `group_policy.message_security_profile`。P4 成功后仅当权威快照明确为 `transport-protected` 才把 outbox 标记 `complete`；未知、畸形或相互冲突的 profile 继续保留 `awaiting_p6`。历史误留的 transport job 可由 high-level resume 刷新群快照后在本地收敛，但不得借此重复 P4、猜测群安全模式或跳过真实 Group E2EE 的 P6。
 
 ## Migration / import 边界

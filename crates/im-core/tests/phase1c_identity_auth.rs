@@ -788,6 +788,23 @@ async fn resume_rebind_recovery_reconciles_missing_job_from_authoritative_lookup
             "complete".to_owned()
         )
     );
+    let projected_member: (String, String, String, String) = db
+        .query_row(
+            r#"SELECT member_did,member_handle,anchor_value,handle_binding_generation
+               FROM group_members WHERE owner_identity_id='erin-id' AND group_id=?1"#,
+            [group_did],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        projected_member,
+        (
+            current.did.clone(),
+            "erin.awiki.test".to_owned(),
+            "erin.awiki.test".to_owned(),
+            "3".to_owned(),
+        )
+    );
 
     let requests = server.join();
     assert_eq!(requests.len(), 3);

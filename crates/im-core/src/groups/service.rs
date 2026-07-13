@@ -661,6 +661,27 @@ impl<'a> GroupService<'a> {
                             &result,
                         )
                         .await;
+                    if let Err(error) =
+                        crate::internal::group_rebind_recovery::project_applied_p4_rebind(
+                            sqlite_path,
+                            &job,
+                        )
+                    {
+                        let detail = error.to_string();
+                        crate::internal::group_rebind_recovery::update_p4_job(
+                            sqlite_path,
+                            &job.job_id,
+                            "pending",
+                            None,
+                            Some(&detail),
+                        )?;
+                        summary.pending += 1;
+                        summary.warnings.push(format!(
+                            "group {} accepted P4 rebind but local member projection will retry: {}",
+                            job.group_did, detail
+                        ));
+                        continue;
+                    }
                     if crate::internal::group_rebind_recovery::group_security_classification(
                         sqlite_path,
                         owner_identity_id,

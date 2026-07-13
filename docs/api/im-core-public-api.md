@@ -699,6 +699,8 @@ Handle recovery 后，host 通过现有 high-level `resume_rebind_recovery_async
 
 补建后仍由新 DID 的 origin proof 调用 `group.rebind_member`，Group Host 负责再次校验 WNS continuity 和幂等性。SDK 不直接修改服务端 roster；transport-protected 群在 P4 接受后完成，Group E2EE 群继续遵循既有 P4 `group_state_ref` → P6 Add(new DID) → Remove(old DID) durable 顺序。群安全分类必须保留 Group Host `group.get` / `group.list` 返回的 `required_security_profile` 或等价 `group_policy.message_security_profile`；只有明确的 `transport-protected` 才能跳过 P6，缺失、畸形或冲突值一律按未知 fail closed。若旧客户端已把 transport 群误留在 `awaiting_p6`，high-level resume 会先刷新权威群快照，再仅完成本地 P4 outbox，不重复发送 P4，也不改服务端成员表。App/CLI 只调用 high-level resume 并消费脱敏 summary，不拼 raw RPC 或 SQL。
 
+P4 被 Group Host 接受后，high-level resume 会先把本地稳定 Handle member 投影原子推进到返回请求对应的 `new_member_did` 与 generation，再把 durable P4 job 标记为 `complete` 或 `awaiting_p6`。若该本地投影未能完成，job 保持重试状态；下一次恢复仍使用相同稳定 `operation_id`。因此连续 Handle recovery 的下一代任务必须以前一代已接受并已投影的 DID 为 `previous_member_did`，不能重新从最早历史 DID 建链。
+
 ## 11. local state / bootstrap
 
 P1 API：
