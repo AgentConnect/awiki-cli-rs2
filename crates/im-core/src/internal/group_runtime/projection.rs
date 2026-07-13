@@ -319,7 +319,7 @@ fn group_record(
 ) -> Option<crate::internal::local_state::groups::GroupRecord> {
     let raw = result.raw_response().cloned().unwrap_or(Value::Null);
     let snapshot =
-        snapshot_from_result(result).or_else(|| group_snapshot_from_raw_response(&raw))?;
+        group_snapshot_from_raw_response(&raw).or_else(|| snapshot_from_result(result))?;
     let group_did = string_value(snapshot.get("group_did"));
     if group_did.trim().is_empty() {
         return None;
@@ -406,6 +406,16 @@ fn group_summary_records(
     result: &crate::groups::GroupReadResult,
 ) -> Vec<crate::internal::local_state::groups::GroupRecord> {
     let raw = result.raw_response().cloned().unwrap_or(Value::Null);
+    let raw_groups = values_from_array(raw.get("groups"));
+    if !raw_groups.is_empty() {
+        return raw_groups
+            .into_iter()
+            .filter_map(|group| {
+                let snapshot = normalize_group_snapshot(&group).unwrap_or(group);
+                group_record_from_snapshot(scope, snapshot)
+            })
+            .collect();
+    }
     if !result.groups.is_empty() {
         return result
             .groups
@@ -429,13 +439,7 @@ fn group_summary_records(
             })
             .collect();
     }
-    values_from_array(raw.get("groups"))
-        .into_iter()
-        .filter_map(|group| {
-            let snapshot = normalize_group_snapshot(&group).unwrap_or(group);
-            group_record_from_snapshot(scope, snapshot)
-        })
-        .collect()
+    Vec::new()
 }
 
 #[cfg(feature = "sqlite")]
@@ -886,6 +890,52 @@ mod tests {
         assert_eq!(record.group_did, "did:example:group");
         assert_eq!(record.my_role, "owner");
         assert_eq!(record.membership_status, "active");
+    }
+
+    #[test]
+    fn group_record_preserves_required_security_profile_from_raw_snapshot() {
+        let result = crate::groups::GroupReadResult::from_raw_response(
+            json!({
+                "group_snapshot": {
+                    "group_did": "did:example:group",
+                    "name": "Demo",
+                    "member_role": "owner",
+                    "member_status": "active",
+                    "required_security_profile": "transport-protected"
+                }
+            }),
+            Vec::new(),
+        );
+
+        let record = group_record(&scope(), &result).expect("group record");
+        let metadata: Value = serde_json::from_str(&record.metadata).unwrap();
+        assert_eq!(metadata["required_security_profile"], "transport-protected");
+    }
+
+    #[test]
+    fn group_summary_records_preserve_raw_security_policy() {
+        let result = crate::groups::GroupReadResult::from_raw_response(
+            json!({
+                "groups": [{
+                    "group_did": "did:example:group",
+                    "name": "Demo",
+                    "member_role": "owner",
+                    "member_status": "active",
+                    "required_security_profile": "group-e2ee",
+                    "group_policy": {"message_security_profile": "group-e2ee"}
+                }]
+            }),
+            Vec::new(),
+        );
+
+        let records = group_summary_records(&scope(), &result);
+        assert_eq!(records.len(), 1);
+        let metadata: Value = serde_json::from_str(&records[0].metadata).unwrap();
+        assert_eq!(metadata["required_security_profile"], "group-e2ee");
+        assert_eq!(
+            metadata["group_policy"]["message_security_profile"],
+            "group-e2ee"
+        );
     }
 
     #[test]

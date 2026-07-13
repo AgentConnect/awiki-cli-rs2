@@ -570,7 +570,55 @@ impl<'a> GroupService<'a> {
             );
         }
 
-        for _ in 0..limit {
+        let mut transport_refresh_failures = 0_u32;
+        for group_did in crate::internal::group_rebind_recovery::awaiting_p6_groups(
+            sqlite_path,
+            owner_identity_id,
+        )?
+        .into_iter()
+        .take(limit as usize)
+        {
+            if summary.processed >= limit {
+                break;
+            }
+            if crate::internal::group_rebind_recovery::group_security_classification(
+                sqlite_path,
+                owner_identity_id,
+                &group_did,
+            )?
+            .is_none()
+            {
+                let Ok(group) = crate::ids::GroupRef::parse(&group_did) else {
+                    transport_refresh_failures += 1;
+                    continue;
+                };
+                match self.get_async(group).await {
+                    Ok(snapshot) => {
+                        let _ = crate::internal::group_runtime::projection::project_group_snapshot_async(
+                            self.client,
+                            &snapshot,
+                        )
+                        .await;
+                    }
+                    Err(_) => transport_refresh_failures += 1,
+                }
+            }
+            let completed = crate::internal::group_rebind_recovery::complete_transport_p4_jobs(
+                sqlite_path,
+                owner_identity_id,
+                &group_did,
+                limit.saturating_sub(summary.processed),
+            )?;
+            summary.processed += completed;
+            summary.completed += completed;
+        }
+        if transport_refresh_failures > 0 {
+            summary.warnings.push(format!(
+                "{transport_refresh_failures} group rebind security profile refresh(es) failed; recovery remains paused"
+            ));
+        }
+
+        for _ in 0..limit.saturating_sub(summary.processed) {
             let Some(job) = crate::internal::group_rebind_recovery::next_p4_job(
                 sqlite_path,
                 owner_identity_id,
@@ -606,12 +654,23 @@ impl<'a> GroupService<'a> {
             .await;
             match rebind {
                 Ok(result) => {
+                    let mut result = result;
                     let _ =
                         crate::internal::group_runtime::projection::project_group_snapshot_async(
                             self.client,
                             &result,
                         )
                         .await;
+                    if crate::internal::group_rebind_recovery::group_security_classification(
+                        sqlite_path,
+                        owner_identity_id,
+                        &job.group_did,
+                    )?
+                    .is_none()
+                    {
+                        self.refresh_group_state_for_async(&mut result, &job.group_did, false)
+                            .await;
+                    }
                     let state_ref = p4_rebind_state_ref(&job.group_did, &result)?;
                     let e2ee = crate::internal::group_rebind_recovery::group_uses_e2ee(
                         sqlite_path,

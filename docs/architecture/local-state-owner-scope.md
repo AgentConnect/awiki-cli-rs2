@@ -73,6 +73,8 @@ Handle-backed snapshot 必须同时具有规范化完整 Handle、当前 DID 和
 
 `resume_rebind_recovery` 补建的只是 owner-scoped durable outbox。服务端 roster 的实际变更仍由当前新 DID 签名的 `group.rebind_member` 完成；本地 reconcile 和运维修复均不得直接更新 Group Host 成员表。
 
+群快照投影必须保留 Group Host 返回的 `required_security_profile` / `group_policy.message_security_profile`。P4 成功后仅当权威快照明确为 `transport-protected` 才把 outbox 标记 `complete`；未知、畸形或相互冲突的 profile 继续保留 `awaiting_p6`。历史误留的 transport job 可由 high-level resume 刷新群快照后在本地收敛，但不得借此重复 P4、猜测群安全模式或跳过真实 Group E2EE 的 P6。
+
 ## Migration / import 边界
 
 SQLite 不能原地修改主键，因此旧 schema 进入 v17 必须通过重建表或重建数据库完成。

@@ -84,7 +84,9 @@ pub(crate) fn group_snapshot_uses_e2ee(snapshot: &Value) -> bool {
     if snapshot.is_null() {
         return false;
     }
-    if value_string(snapshot.get("message_security_profile")) == "group-e2ee" {
+    if value_string(snapshot.get("message_security_profile")) == "group-e2ee"
+        || value_string(snapshot.get("required_security_profile")) == "group-e2ee"
+    {
         return true;
     }
     if snapshot
@@ -95,10 +97,10 @@ pub(crate) fn group_snapshot_uses_e2ee(snapshot: &Value) -> bool {
     {
         return true;
     }
-    decoded_metadata(snapshot)
-        .as_ref()
-        .map(|metadata| value_string(metadata.get("message_security_profile")))
-        .is_some_and(|profile| profile == "group-e2ee")
+    decoded_metadata(snapshot).as_ref().is_some_and(|metadata| {
+        value_string(metadata.get("message_security_profile")) == "group-e2ee"
+            || value_string(metadata.get("required_security_profile")) == "group-e2ee"
+    })
 }
 
 #[cfg(feature = "sqlite")]

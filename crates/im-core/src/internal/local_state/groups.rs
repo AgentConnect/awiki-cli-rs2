@@ -1,4 +1,6 @@
 #[cfg(feature = "sqlite")]
+use rusqlite::OptionalExtension;
+#[cfg(feature = "sqlite")]
 use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -162,6 +164,12 @@ pub(crate) fn upsert_group(
         ));
     }
     let stored_at = default_string(record.stored_at.clone(), &now_utc());
+    let metadata = preserve_group_security_metadata(
+        connection,
+        &owner_identity_id,
+        &group_id,
+        &record.metadata,
+    )?;
     connection
         .execute(
             r#"
@@ -229,13 +237,89 @@ DO UPDATE SET
                 optional_string(&record.remote_created_at),
                 optional_string(&record.remote_updated_at),
                 stored_at,
-                optional_string(&record.metadata),
+                optional_string(&metadata),
                 normalize(&record.credential_name),
                 optional_string(&record.membership_status),
             ],
         )
         .map_err(super::local_state_unavailable)?;
     Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn preserve_group_security_metadata(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    group_id: &str,
+    incoming: &str,
+) -> crate::ImResult<String> {
+    let Ok(mut incoming_value) = serde_json::from_str::<serde_json::Value>(incoming) else {
+        return Ok(incoming.to_owned());
+    };
+    let Some(incoming_object) = incoming_value.as_object_mut() else {
+        return Ok(incoming.to_owned());
+    };
+    let existing: Option<String> = connection
+        .query_row(
+            "SELECT metadata FROM groups WHERE owner_identity_id=?1 AND group_id=?2",
+            rusqlite::params![owner_identity_id, group_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some(existing_object) = existing
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .and_then(|value| value.as_object().cloned())
+    else {
+        return Ok(incoming.to_owned());
+    };
+
+    for key in ["message_security_profile", "required_security_profile"] {
+        if matches!(
+            incoming_object.get(key),
+            None | Some(serde_json::Value::Null)
+        ) {
+            if let Some(value) = existing_object
+                .get(key)
+                .filter(|value| value.as_str().is_some())
+            {
+                incoming_object.insert(key.to_owned(), value.clone());
+            }
+        }
+    }
+    let existing_policy_profile = existing_object
+        .get("group_policy")
+        .and_then(|policy| policy.get("message_security_profile"))
+        .filter(|value| value.as_str().is_some())
+        .cloned();
+    if let Some(existing_policy_profile) = existing_policy_profile {
+        match incoming_object.get_mut("group_policy") {
+            Some(serde_json::Value::Object(policy)) => {
+                if matches!(
+                    policy.get("message_security_profile"),
+                    None | Some(serde_json::Value::Null)
+                ) {
+                    policy.insert(
+                        "message_security_profile".to_owned(),
+                        existing_policy_profile,
+                    );
+                }
+            }
+            None | Some(serde_json::Value::Null) => {
+                incoming_object.insert(
+                    "group_policy".to_owned(),
+                    serde_json::json!({
+                        "message_security_profile": existing_policy_profile
+                    }),
+                );
+            }
+            Some(_) => {}
+        }
+    }
+    serde_json::to_string(&incoming_value).map_err(|error| crate::ImError::Internal {
+        message: format!("failed to preserve group security metadata: {error}"),
+    })
 }
 
 #[cfg(feature = "sqlite")]
@@ -1112,6 +1196,66 @@ WHERE owner_identity_id = 'alice-id' AND group_id = 'did:group:same'"#,
         assert_eq!(name, "New Name");
         assert_eq!(group_owner_did, "did:group-owner");
         assert_eq!(member_count, 3);
+    }
+
+    #[test]
+    fn sparse_group_upsert_preserves_security_profile_metadata() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let record = |name: &str, metadata: &str| GroupRecord {
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:owner".to_owned(),
+            group_id: "did:group:secure".to_owned(),
+            group_did: "did:group:secure".to_owned(),
+            name: name.to_owned(),
+            metadata: metadata.to_owned(),
+            credential_name: "alice".to_owned(),
+            ..GroupRecord::default()
+        };
+        upsert_group(
+            &db,
+            record(
+                "Rich",
+                r#"{"required_security_profile":"transport-protected","group_policy":{"message_security_profile":"transport-protected"}}"#,
+            ),
+        )
+        .unwrap();
+        upsert_group(&db, record("Sparse", r#"{"member_count":3}"#)).unwrap();
+
+        let (name, metadata): (String, String) = db
+            .query_row(
+                "SELECT name,metadata FROM groups WHERE owner_identity_id='alice-id' AND group_id='did:group:secure'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(name, "Sparse");
+        assert_eq!(metadata["required_security_profile"], "transport-protected");
+        assert_eq!(
+            metadata["group_policy"]["message_security_profile"],
+            "transport-protected"
+        );
+        assert_eq!(metadata["member_count"], 3);
+
+        upsert_group(
+            &db,
+            record(
+                "Malformed",
+                r#"{"required_security_profile":42,"group_policy":{"message_security_profile":42}}"#,
+            ),
+        )
+        .unwrap();
+        let metadata: String = db
+            .query_row(
+                "SELECT metadata FROM groups WHERE owner_identity_id='alice-id' AND group_id='did:group:secure'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(metadata["required_security_profile"], 42);
+        assert_eq!(metadata["group_policy"]["message_security_profile"], 42);
     }
 
     #[test]

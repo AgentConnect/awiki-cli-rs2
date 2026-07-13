@@ -720,6 +720,81 @@ LIMIT 500"#,
     Ok(items)
 }
 
+pub(crate) fn awaiting_p6_groups(
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+) -> crate::ImResult<Vec<String>> {
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    crate::internal::local_state::schema::ensure_schema(&connection)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT DISTINCT group_did FROM group_rebind_outbox WHERE owner_identity_id=?1 AND phase='awaiting_p6' ORDER BY group_did",
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let rows = statement
+        .query_map([owner_identity_id], |row| row.get::<_, String>(0))
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let mut groups = Vec::new();
+    for row in rows {
+        groups.push(row.map_err(crate::internal::local_state::local_state_unavailable)?);
+    }
+    Ok(groups)
+}
+
+pub(crate) fn complete_transport_p4_jobs(
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+    group_did: &str,
+    limit: u32,
+) -> crate::ImResult<u32> {
+    if limit == 0 {
+        return Ok(0);
+    }
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    crate::internal::local_state::schema::ensure_schema(&connection)?;
+    let classification =
+        group_security_classification_for_connection(&connection, owner_identity_id, group_did)?;
+    if classification != Some(false) {
+        return Ok(0);
+    }
+    let mut statement = connection
+        .prepare(
+            "SELECT job_id FROM group_rebind_outbox WHERE owner_identity_id=?1 AND group_did=?2 AND phase='awaiting_p6' ORDER BY created_at,job_id LIMIT ?3",
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![owner_identity_id, group_did, limit],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let job_ids = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    drop(statement);
+    let now = now();
+    let mut updated = 0_u32;
+    for job_id in job_ids {
+        updated += connection
+            .execute(
+                "UPDATE group_rebind_outbox SET phase='complete',lease_expires_at=NULL,next_attempt_at=NULL,last_error_code=NULL,last_error_detail=NULL,updated_at=?2 WHERE job_id=?1 AND phase='awaiting_p6'",
+                rusqlite::params![job_id, now],
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)? as u32;
+    }
+    Ok(updated)
+}
+
+pub(crate) fn group_security_classification(
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+    group_did: &str,
+) -> crate::ImResult<Option<bool>> {
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    crate::internal::local_state::schema::ensure_schema(&connection)?;
+    group_security_classification_for_connection(&connection, owner_identity_id, group_did)
+}
+
 pub(crate) fn group_uses_e2ee(
     sqlite_path: &Path,
     owner_identity_id: &str,
@@ -727,6 +802,17 @@ pub(crate) fn group_uses_e2ee(
 ) -> crate::ImResult<bool> {
     let connection = crate::internal::local_state::open_writable(sqlite_path)?;
     crate::internal::local_state::schema::ensure_schema(&connection)?;
+    Ok(
+        group_security_classification_for_connection(&connection, owner_identity_id, group_did)?
+            .unwrap_or(true),
+    )
+}
+
+fn group_security_classification_for_connection(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    group_did: &str,
+) -> crate::ImResult<Option<bool>> {
     let metadata: Option<String> = connection
         .query_row(
             "SELECT metadata FROM groups WHERE owner_identity_id=?1 AND (group_id=?2 OR group_did=?2) LIMIT 1",
@@ -736,11 +822,7 @@ pub(crate) fn group_uses_e2ee(
         .optional()
         .map_err(crate::internal::local_state::local_state_unavailable)?
         .flatten();
-    let Some(metadata) = metadata else {
-        // Unknown security state must not complete a recovered membership as plaintext.
-        return Ok(true);
-    };
-    Ok(metadata_e2ee_classification(&metadata).unwrap_or(true))
+    Ok(metadata.and_then(|metadata| metadata_e2ee_classification(&metadata)))
 }
 
 pub(crate) fn complete_from_verified_remove_notice(
@@ -810,19 +892,30 @@ pub(crate) fn complete_from_verified_remove_notice(
 
 fn metadata_e2ee_classification(metadata: &str) -> Option<bool> {
     let metadata = serde_json::from_str::<Value>(metadata).ok()?;
-    let profile = metadata
-        .get("message_security_profile")
-        .or_else(|| {
-            metadata
-                .get("group_policy")
-                .and_then(|policy| policy.get("message_security_profile"))
-        })
-        .and_then(Value::as_str)
-        .map(|value| value.trim().to_ascii_lowercase());
-    match profile.as_deref() {
-        Some("transport-protected") | Some("transport") => Some(false),
-        Some("group-e2ee") => Some(true),
-        _ => None,
+    let profiles = [
+        metadata.get("message_security_profile"),
+        metadata.get("required_security_profile"),
+        metadata
+            .get("group_policy")
+            .and_then(|policy| policy.get("message_security_profile")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_str)
+    .map(|value| value.trim().to_ascii_lowercase())
+    .filter(|value| !value.is_empty())
+    .collect::<Vec<_>>();
+    if profiles.iter().any(|profile| profile == "group-e2ee") {
+        return Some(true);
+    }
+    if !profiles.is_empty()
+        && profiles
+            .iter()
+            .all(|profile| matches!(profile.as_str(), "transport-protected" | "transport"))
+    {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -1420,12 +1513,97 @@ INSERT INTO group_members
             "did:e2ee",
             Some(r#"{"group_policy":{"message_security_profile":"group-e2ee"}}"#),
         );
+        insert(
+            "did:required-transport",
+            Some(r#"{"required_security_profile":"transport-protected"}"#),
+        );
+        insert(
+            "did:required-e2ee",
+            Some(r#"{"required_security_profile":"group-e2ee"}"#),
+        );
+        insert(
+            "did:conflicting",
+            Some(
+                r#"{"required_security_profile":"group-e2ee","message_security_profile":"transport-protected"}"#,
+            ),
+        );
         insert("did:malformed", Some("group-e2ee"));
+        insert(
+            "did:malformed-fields",
+            Some(
+                r#"{"required_security_profile":42,"group_policy":{"message_security_profile":42}}"#,
+            ),
+        );
         insert("did:missing", None);
         drop(db);
         assert!(!group_uses_e2ee(&path, "owner", "did:transport").unwrap());
         assert!(group_uses_e2ee(&path, "owner", "did:e2ee").unwrap());
+        assert!(!group_uses_e2ee(&path, "owner", "did:required-transport").unwrap());
+        assert!(group_uses_e2ee(&path, "owner", "did:required-e2ee").unwrap());
+        assert!(group_uses_e2ee(&path, "owner", "did:conflicting").unwrap());
         assert!(group_uses_e2ee(&path, "owner", "did:malformed").unwrap());
+        assert!(group_uses_e2ee(&path, "owner", "did:malformed-fields").unwrap());
         assert!(group_uses_e2ee(&path, "owner", "did:missing").unwrap());
+    }
+
+    #[test]
+    fn only_explicit_transport_profile_completes_awaiting_p6_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite3");
+        let db = crate::internal::local_state::open_writable(&path).unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        for (group, metadata) in [
+            (
+                "did:transport",
+                r#"{"required_security_profile":"transport-protected"}"#,
+            ),
+            ("did:e2ee", r#"{"required_security_profile":"group-e2ee"}"#),
+            ("did:unknown", r#"{}"#),
+        ] {
+            db.execute(
+                "INSERT INTO groups (owner_identity_id,owner_did,group_id,group_did,metadata,stored_at) VALUES ('owner','did:owner',?1,?1,?2,'now')",
+                rusqlite::params![group, metadata],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO group_rebind_outbox (job_id,owner_identity_id,group_did,member_handle,previous_member_did,new_member_did,binding_generation,phase,created_at,updated_at) VALUES (?1,'owner',?2,'alice.example.com','did:old','did:new','2','awaiting_p6','now','now')",
+                rusqlite::params![format!("job-{group}"), group],
+            )
+            .unwrap();
+        }
+        db.execute(
+            "INSERT INTO group_rebind_outbox (job_id,owner_identity_id,group_did,member_handle,previous_member_did,new_member_did,binding_generation,phase,created_at,updated_at) VALUES ('job-transport-new','owner','did:transport','alice.example.com','did:new','did:newer','3','awaiting_p6','later','later')",
+            [],
+        )
+        .unwrap();
+        drop(db);
+
+        assert_eq!(
+            awaiting_p6_groups(&path, "owner").unwrap(),
+            vec!["did:e2ee", "did:transport", "did:unknown"]
+        );
+        assert_eq!(
+            complete_transport_p4_jobs(&path, "owner", "did:transport", 1).unwrap(),
+            1
+        );
+        assert!(awaiting_p6_groups(&path, "owner")
+            .unwrap()
+            .contains(&"did:transport".to_owned()));
+        assert_eq!(
+            complete_transport_p4_jobs(&path, "owner", "did:transport", 1).unwrap(),
+            1
+        );
+        assert_eq!(
+            complete_transport_p4_jobs(&path, "owner", "did:e2ee", 1).unwrap(),
+            0
+        );
+        assert_eq!(
+            complete_transport_p4_jobs(&path, "owner", "did:unknown", 1).unwrap(),
+            0
+        );
+        assert_eq!(
+            awaiting_p6_groups(&path, "owner").unwrap(),
+            vec!["did:e2ee", "did:unknown"]
+        );
     }
 }
