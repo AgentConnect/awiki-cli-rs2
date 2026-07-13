@@ -133,7 +133,7 @@ pub(crate) fn enqueue_recovery_jobs_for_connection(
             .prepare(
                 r#"
 SELECT gm.group_id, gm.member_did
-     , gm.anchor_value
+     , gm.anchor_value, gm.handle_binding_generation
 FROM group_members gm
 JOIN groups g
   ON g.owner_identity_id = gm.owner_identity_id AND g.group_id = gm.group_id
@@ -149,6 +149,7 @@ WHERE gm.owner_identity_id = ?1
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             })
             .map_err(crate::internal::local_state::local_state_unavailable)?;
@@ -157,6 +158,11 @@ WHERE gm.owner_identity_id = ?1
             let value = row.map_err(crate::internal::local_state::local_state_unavailable)?;
             if previous.contains(value.1.trim())
                 && recovery_handle_anchor_matches(&value.2, &value.1, &member_handle)
+                && value.3.as_deref().is_some_and(|generation| {
+                    canonical_generation(generation)
+                        && decimal_generation_cmp(binding_generation, generation)
+                            == std::cmp::Ordering::Greater
+                })
             {
                 values.push((value.0, value.1));
             }
@@ -200,6 +206,81 @@ ON CONFLICT(owner_identity_id, group_did, member_handle, binding_generation) DO 
         .commit()
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     Ok(inserted)
+}
+
+pub(crate) fn reconcile_missing_recovery_jobs(
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+    expected_handle: &str,
+    expected_current_did: &str,
+    lookup: &crate::directory::HandleLookupResult,
+) -> crate::ImResult<usize> {
+    let expected_handle = canonical_recovery_handle(expected_handle)?;
+    let resolved_handle = canonical_recovery_handle(lookup.handle.as_str())?;
+    if resolved_handle != expected_handle {
+        return Err(crate::ImError::invalid_input(
+            Some("handle".to_owned()),
+            "authoritative Handle lookup returned a different full Handle",
+        ));
+    }
+    if !lookup
+        .status
+        .as_deref()
+        .is_some_and(|status| status.trim().eq_ignore_ascii_case("active"))
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("status".to_owned()),
+            "authoritative Handle binding is not active",
+        ));
+    }
+    let expected_current_did = required("current_did", expected_current_did)?;
+    if lookup.did.as_str() != expected_current_did {
+        return Err(crate::ImError::invalid_input(
+            Some("did".to_owned()),
+            "authoritative Handle DID does not match the current signing DID",
+        ));
+    }
+    if did_wba_domain(expected_current_did).as_deref() != Some(expected_handle.domain.as_str()) {
+        return Err(crate::ImError::invalid_input(
+            Some("did".to_owned()),
+            "current signing DID provider domain does not match the full Handle",
+        ));
+    }
+    let binding_generation = lookup
+        .binding_generation
+        .as_deref()
+        .filter(|generation| canonical_generation(generation))
+        .ok_or_else(|| {
+            crate::ImError::invalid_input(
+                Some("binding_generation".to_owned()),
+                "authoritative Handle lookup omitted a canonical positive binding generation",
+            )
+        })?;
+
+    let mut connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let previous_dids = {
+        let mut statement = connection
+            .prepare(
+                "SELECT did FROM identity_did_history WHERE owner_identity_id=?1 AND status='previous' AND did<>?2 ORDER BY did",
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let rows = statement
+            .query_map(
+                rusqlite::params![owner_identity_id, expected_current_did],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+    };
+    enqueue_recovery_jobs_for_connection(
+        &mut connection,
+        owner_identity_id,
+        &expected_handle.full,
+        &previous_dids,
+        expected_current_did,
+        binding_generation,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -986,6 +1067,124 @@ INSERT INTO group_members
                     "alice.example.com".to_owned(),
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn reconcile_requires_current_active_authoritative_binding_and_newer_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite_path = dir.path().join("im.sqlite");
+        let db = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
+        db.execute_batch(
+            r#"
+INSERT INTO identity_did_history
+ (owner_identity_id,did,status,first_seen_at,last_seen_at) VALUES
+ ('owner','did:wba:example.com:alice:e1_old','previous','now','now'),
+ ('owner','did:wba:example.com:alice:e1_new','current','now','now');
+INSERT INTO groups
+ (owner_identity_id,owner_did,group_id,group_did,my_role,membership_status,stored_at) VALUES
+ ('owner','did:wba:example.com:alice:e1_new','did:group','did:group','member','active','now');
+INSERT INTO group_members
+ (owner_identity_id,owner_did,group_id,user_id,member_did,member_handle,anchor_kind,anchor_value,handle_binding_generation,status,last_synced_at) VALUES
+ ('owner','did:wba:example.com:alice:e1_new','did:group','alice','did:wba:example.com:alice:e1_old','alice','handle','alice','2','active','now');
+"#,
+        )
+        .unwrap();
+        drop(db);
+        let mut lookup = crate::directory::HandleLookupResult {
+            handle: crate::ids::Handle::parse("alice.example.com", "").unwrap(),
+            did: crate::ids::Did::parse("did:wba:example.com:alice:e1_new").unwrap(),
+            user_id: "user-alice".to_owned(),
+            domain: Some("example.com".to_owned()),
+            status: Some("active".to_owned()),
+            binding_generation: Some("2".to_owned()),
+            profile: None,
+            warnings: Vec::new(),
+        };
+
+        assert_eq!(
+            reconcile_missing_recovery_jobs(
+                &sqlite_path,
+                "owner",
+                "alice.example.com",
+                "did:wba:example.com:alice:e1_new",
+                &lookup,
+            )
+            .unwrap(),
+            0,
+            "an equal generation must not create a rollback/no-op job"
+        );
+
+        lookup.binding_generation = None;
+        assert!(reconcile_missing_recovery_jobs(
+            &sqlite_path,
+            "owner",
+            "alice.example.com",
+            "did:wba:example.com:alice:e1_new",
+            &lookup,
+        )
+        .is_err());
+        lookup.binding_generation = Some("03".to_owned());
+        assert!(reconcile_missing_recovery_jobs(
+            &sqlite_path,
+            "owner",
+            "alice.example.com",
+            "did:wba:example.com:alice:e1_new",
+            &lookup,
+        )
+        .is_err());
+        lookup.binding_generation = Some("3".to_owned());
+        lookup.status = Some("revoked".to_owned());
+        assert!(reconcile_missing_recovery_jobs(
+            &sqlite_path,
+            "owner",
+            "alice.example.com",
+            "did:wba:example.com:alice:e1_new",
+            &lookup,
+        )
+        .is_err());
+        lookup.status = Some("active".to_owned());
+        lookup.did = crate::ids::Did::parse("did:wba:example.com:alice:e1_other").unwrap();
+        assert!(reconcile_missing_recovery_jobs(
+            &sqlite_path,
+            "owner",
+            "alice.example.com",
+            "did:wba:example.com:alice:e1_new",
+            &lookup,
+        )
+        .is_err());
+        lookup.did = crate::ids::Did::parse("did:wba:other.test:alice:e1_new").unwrap();
+        assert!(reconcile_missing_recovery_jobs(
+            &sqlite_path,
+            "owner",
+            "alice.example.com",
+            "did:wba:other.test:alice:e1_new",
+            &lookup,
+        )
+        .is_err());
+        lookup.did = crate::ids::Did::parse("did:wba:example.com:alice:e1_new").unwrap();
+
+        assert_eq!(
+            reconcile_missing_recovery_jobs(
+                &sqlite_path,
+                "owner",
+                "alice.example.com",
+                "did:wba:example.com:alice:e1_new",
+                &lookup,
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            reconcile_missing_recovery_jobs(
+                &sqlite_path,
+                "owner",
+                "alice.example.com",
+                "did:wba:example.com:alice:e1_new",
+                &lookup,
+            )
+            .unwrap(),
+            0
         );
     }
 

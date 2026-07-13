@@ -33,6 +33,7 @@ pub struct HandleLookupResult {
     pub user_id: String,
     pub domain: Option<String>,
     pub status: Option<String>,
+    pub binding_generation: Option<String>,
     pub profile: Option<crate::identity::Profile>,
     pub warnings: Vec<String>,
 }
@@ -178,6 +179,7 @@ mod tests {
             user_id: "user-alice".to_owned(),
             domain: Some("awiki.info".to_owned()),
             status: Some("active".to_owned()),
+            binding_generation: Some("2".to_owned()),
             profile: None,
             warnings: Vec::new(),
         }

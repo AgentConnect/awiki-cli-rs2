@@ -1203,6 +1203,7 @@ mod direct_peer_route_projection_tests {
             user_id: "user-bob".to_owned(),
             domain: Some("awiki.test".to_owned()),
             status: Some("active".to_owned()),
+            binding_generation: Some("2".to_owned()),
             profile: None,
             warnings: Vec::new(),
         }

@@ -532,6 +532,44 @@ impl<'a> GroupService<'a> {
         let owner_identity_id = self.client.current_identity().id.as_str();
         let mut summary = super::GroupRebindRecoverySummary::default();
 
+        if let Some(handle) = self.client.handle().cloned() {
+            let lookup =
+                crate::internal::handle_discovery::resolve_authoritative_handle_binding_async(
+                    self.client,
+                    handle.as_str(),
+                )
+                .await;
+            match lookup {
+                Ok(lookup) => {
+                    match crate::internal::group_rebind_recovery::reconcile_missing_recovery_jobs(
+                        sqlite_path,
+                        owner_identity_id,
+                        handle.as_str(),
+                        self.client.did().as_str(),
+                        &lookup,
+                    ) {
+                        Ok(reconciled) if reconciled > 0 => summary.warnings.push(format!(
+                            "reconciled {reconciled} missing group rebind job(s) from authoritative Handle binding"
+                        )),
+                        Ok(_) => {}
+                        Err(_) => summary.warnings.push(
+                            "group rebind reconcile skipped because authoritative Handle binding validation failed"
+                                .to_owned(),
+                        ),
+                    }
+                }
+                Err(_) => summary.warnings.push(
+                    "group rebind reconcile skipped because authoritative Handle lookup failed"
+                        .to_owned(),
+                ),
+            }
+        } else {
+            summary.warnings.push(
+                "group rebind reconcile skipped because the current identity has no full Handle"
+                    .to_owned(),
+            );
+        }
+
         for _ in 0..limit {
             let Some(job) = crate::internal::group_rebind_recovery::next_p4_job(
                 sqlite_path,

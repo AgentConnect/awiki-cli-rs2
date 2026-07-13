@@ -571,6 +571,7 @@ pub(crate) fn handle_lookup_from_value_with_client(
         user_id,
         domain: string_option(value, "domain"),
         status: string_option(value, "status"),
+        binding_generation: string_option(value, "binding_generation"),
         profile,
         warnings,
     })
@@ -596,6 +597,7 @@ pub(crate) fn handle_lookup_from_value(
         user_id,
         domain: string_option(value, "domain"),
         status: string_option(value, "status"),
+        binding_generation: string_option(value, "binding_generation"),
         profile: None,
         warnings: Vec::new(),
     })
@@ -683,4 +685,37 @@ fn string_value(value: &Value, key: &str) -> String {
 fn string_option(value: &Value, key: &str) -> Option<String> {
     let value = string_value(value, key);
     (!value.trim().is_empty()).then_some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn handle_lookup_preserves_authoritative_binding_generation() {
+        let lookup = handle_lookup_from_value(&json!({
+            "did": "did:wba:awiki.info:alice:e1_current",
+            "full_handle": "alice.awiki.info",
+            "user_id": "user-alice",
+            "status": "active",
+            "binding_generation": "3"
+        }))
+        .unwrap();
+
+        assert_eq!(lookup.binding_generation.as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn handle_lookup_does_not_coerce_numeric_binding_generation() {
+        let lookup = handle_lookup_from_value(&json!({
+            "did": "did:wba:awiki.info:alice:e1_current",
+            "full_handle": "alice.awiki.info",
+            "status": "active",
+            "binding_generation": 3
+        }))
+        .unwrap();
+
+        assert_eq!(lookup.binding_generation, None);
+    }
 }
