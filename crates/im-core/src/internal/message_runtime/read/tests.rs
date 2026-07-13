@@ -1934,6 +1934,7 @@ fn group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_red
     );
 }
 
+#[cfg(feature = "group-e2ee")]
 #[test]
 fn cached_group_e2ee_plaintext_prevents_redecrypting_consumed_ciphertext() {
     let fixture = Fixture::new();
