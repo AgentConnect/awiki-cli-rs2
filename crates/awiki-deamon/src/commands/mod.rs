@@ -65,6 +65,8 @@ pub struct IncomingAgentPayloadMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeAgentCreateOutcome {
     pub command_id: String,
+    #[serde(default)]
+    pub client_request_id: Option<String>,
     pub agent_did: String,
     pub handle: String,
     pub runtime_profile_id: String,
@@ -307,7 +309,10 @@ where
                         &payload.command_id,
                         "failed",
                         Some(error.to_string()),
-                        json!({ "command": RUNTIME_AGENT_CREATE }),
+                        json!({
+                            "command": RUNTIME_AGENT_CREATE,
+                            "client_request_id": payload.args.client_request_id.as_deref(),
+                        }),
                     )?;
                     return Err(error);
                 }
@@ -328,6 +333,7 @@ where
                     Some("runtime agent ready".to_string()),
                     json!({
                         "command": RUNTIME_AGENT_CREATE,
+                        "client_request_id": outcome.client_request_id,
                         "agent_did": outcome.agent_did,
                         "runtime_agent_did": outcome.agent_did,
                         "daemon_agent_did": daemon_agent.agent_did,
@@ -731,6 +737,7 @@ where
                 serde_json::from_value(existing.outcome_json)
                     .context("parse cached runtime.agent.create outcome")?;
             outcome.command_id = payload.command_id.clone();
+            outcome.client_request_id = Some(client_request_id.to_string());
             return Ok(outcome);
         }
     }
@@ -911,6 +918,7 @@ where
 
     let outcome = RuntimeAgentCreateOutcome {
         command_id: payload.command_id.clone(),
+        client_request_id: client_request_id.map(str::to_string),
         agent_did: exchange.did,
         handle: exchange.handle,
         runtime_profile_id: profile_id,

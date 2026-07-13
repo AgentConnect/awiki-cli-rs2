@@ -120,6 +120,75 @@ pub enum RuntimeRunStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeProgressPhase {
+    ExternalTool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeProgressState {
+    Active,
+    Delayed,
+    Resumed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeProgressCode {
+    ExternalToolRunning,
+    ExternalServiceDelayed,
+    ExternalServiceResumed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeProgressUpdate {
+    pub code: RuntimeProgressCode,
+    pub phase: RuntimeProgressPhase,
+    pub state: RuntimeProgressState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub retryable: bool,
+}
+
+impl RuntimeProgressUpdate {
+    pub fn validate(&self) -> Result<()> {
+        let semantics_are_valid = matches!(
+            (self.code, self.state, self.retryable),
+            (
+                RuntimeProgressCode::ExternalToolRunning,
+                RuntimeProgressState::Active,
+                false
+            ) | (
+                RuntimeProgressCode::ExternalServiceDelayed,
+                RuntimeProgressState::Delayed,
+                true
+            ) | (
+                RuntimeProgressCode::ExternalServiceResumed,
+                RuntimeProgressState::Resumed,
+                false
+            )
+        );
+        if !semantics_are_valid {
+            bail!("runtime progress code, state, and retryable fields are inconsistent");
+        }
+        if let Some(tool) = self.tool.as_deref() {
+            if tool.is_empty()
+                || tool.len() > 64
+                || !tool
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+            {
+                bail!("runtime progress tool must be lowercase snake_case");
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeLaunchContext {
     pub run: RuntimeRun,

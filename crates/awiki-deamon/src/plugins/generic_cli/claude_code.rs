@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -6,7 +7,11 @@ use anyhow::{bail, Context, Result};
 use rand::RngCore;
 use serde_json::Value;
 
-use crate::runtime::{RuntimeInstallStatus, RuntimeRunStatus};
+use crate::cli_wrapper::{self, CliWrapperRequest};
+use crate::runtime::{
+    RuntimeInstallStatus, RuntimeProgressCode, RuntimeProgressPhase, RuntimeProgressState,
+    RuntimeProgressUpdate, RuntimeRunStatus,
+};
 use crate::security::runtime_token::current_time_millis;
 use crate::state::CliRuntimeProfileRecord;
 
@@ -29,6 +34,8 @@ const DEFAULT_CLI_WRAPPER: &str = "library:awiki_deamon::cli_wrapper";
 const NATIVE_SESSION_SOURCE_STREAM_JSON: &str = "stream_json";
 const NATIVE_SESSION_SOURCE_GENERATED_SESSION_ID: &str = "generated_session_id";
 const NATIVE_SESSION_SOURCE_RESUME_ID: &str = "resume_id";
+const EXTERNAL_TOOL_DELAY_THRESHOLD: Duration = Duration::from_secs(15);
+const EXTERNAL_TOOL_DELAY_REPEAT_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaudeCodeDriverConfig {
@@ -71,6 +78,27 @@ struct ClaudeCodeCommandAttempt {
     session_mode: ClaudeCodeSessionMode,
     args: Vec<String>,
     managed_output: ManagedChildOutput,
+    progress_observation: Value,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveExternalTool {
+    id: String,
+    name: String,
+    started_at: Duration,
+    last_delay_report_at: Option<Duration>,
+}
+
+#[derive(Debug)]
+struct ClaudeCodeProgressReporter {
+    socket_path: PathBuf,
+    runtime_rpc_token: String,
+    task_id: String,
+    active_external_tool: Option<ActiveExternalTool>,
+    report_attempts: usize,
+    report_successes: usize,
+    report_failures: usize,
+    delayed_reports: usize,
 }
 
 impl ClaudeCodeSessionMode {
@@ -371,6 +399,7 @@ impl GenericCliDriver for ClaudeCodeDriver {
             session_mode,
             args,
             managed_output,
+            progress_observation,
         } = attempt;
         let process_metadata = managed_output.process_metadata();
         let output = managed_output.output;
@@ -450,6 +479,7 @@ impl GenericCliDriver for ClaudeCodeDriver {
                 "error_summary": if success { serde_json::Value::Null } else { serde_json::Value::String(format!("Claude Code CLI exited with status {exit_code}")) },
                 "next_action": if success { serde_json::Value::Null } else { serde_json::Value::String("manual_review_required".to_string()) },
                 "process": process_metadata,
+                "progress_observation": progress_observation,
                 "native_session_id": native_session_id,
                 "native_session_source": native_session_source,
                 "session": {
@@ -517,12 +547,21 @@ impl ClaudeCodeDriver {
         apply_claude_code_env(&mut command, invocation, socket_path, &self.config);
 
         let managed = ManagedChild::spawn(&mut command, "spawn claude-code print")?;
-        let managed_output = match managed.write_stdin_and_wait_timeout(
+        let progress_reporter = RefCell::new(ClaudeCodeProgressReporter::new(
+            socket_path.to_path_buf(),
+            invocation.runtime_rpc_token.clone(),
+            invocation.task_id.clone(),
+        ));
+        let managed_output_result = managed.write_stdin_and_wait_timeout_observed(
             prompt.as_bytes(),
             "write Claude Code prompt envelope to stdin",
             "wait for claude-code",
             self.config.run_timeout,
-        ) {
+            |line, elapsed| progress_reporter.borrow_mut().on_stdout_line(line, elapsed),
+            |elapsed| progress_reporter.borrow_mut().on_tick(elapsed),
+        );
+        let progress_observation = progress_reporter.into_inner().observation_json();
+        let managed_output = match managed_output_result {
             Ok(output) => output,
             Err(error) => {
                 if let Some(timeout) = error.downcast_ref::<ManagedChildTimeoutError>() {
@@ -541,6 +580,7 @@ impl ClaudeCodeDriver {
                                 "timeout_ms": timeout.timeout_ms(),
                                 "management": timeout.metadata_json(),
                             },
+                            "progress_observation": progress_observation,
                         }),
                     }));
                 }
@@ -551,6 +591,7 @@ impl ClaudeCodeDriver {
             session_mode,
             args,
             managed_output,
+            progress_observation,
         }))
     }
 
@@ -638,6 +679,194 @@ impl ClaudeCodeDriver {
             jsonl_path: output_dir.join("claude-observation.jsonl"),
             output_dir,
         })
+    }
+}
+
+impl ClaudeCodeProgressReporter {
+    fn new(socket_path: PathBuf, runtime_rpc_token: String, task_id: String) -> Self {
+        Self {
+            socket_path,
+            runtime_rpc_token,
+            task_id,
+            active_external_tool: None,
+            report_attempts: 0,
+            report_successes: 0,
+            report_failures: 0,
+            delayed_reports: 0,
+        }
+    }
+
+    fn on_stdout_line(&mut self, line: &[u8], elapsed: Duration) {
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            return;
+        };
+        if let Some((id, name)) = external_tool_start(&value) {
+            self.active_external_tool = Some(ActiveExternalTool {
+                id,
+                name: name.clone(),
+                started_at: elapsed,
+                last_delay_report_at: None,
+            });
+            self.report(
+                RuntimeProgressCode::ExternalToolRunning,
+                RuntimeProgressState::Active,
+                Some(name),
+                false,
+                "Claude Code is using an external service",
+            );
+            return;
+        }
+        let Some(tool_result_id) = external_tool_result_id(&value) else {
+            return;
+        };
+        let Some(active) = self.active_external_tool.as_ref() else {
+            return;
+        };
+        if active.id != tool_result_id {
+            return;
+        }
+        let active = self
+            .active_external_tool
+            .take()
+            .expect("active tool checked");
+        if active.last_delay_report_at.is_some() && !external_tool_result_is_temporary_error(&value)
+        {
+            self.report(
+                RuntimeProgressCode::ExternalServiceResumed,
+                RuntimeProgressState::Resumed,
+                Some(active.name),
+                false,
+                "The external service responded; Claude Code is continuing",
+            );
+        }
+    }
+
+    fn on_tick(&mut self, elapsed: Duration) {
+        let Some(active) = self.active_external_tool.as_ref() else {
+            return;
+        };
+        if elapsed.saturating_sub(active.started_at) < EXTERNAL_TOOL_DELAY_THRESHOLD {
+            return;
+        }
+        if active
+            .last_delay_report_at
+            .is_some_and(|last| elapsed.saturating_sub(last) < EXTERNAL_TOOL_DELAY_REPEAT_INTERVAL)
+        {
+            return;
+        }
+        let tool = active.name.clone();
+        if let Some(active) = self.active_external_tool.as_mut() {
+            active.last_delay_report_at = Some(elapsed);
+        }
+        self.delayed_reports += 1;
+        self.report(
+            RuntimeProgressCode::ExternalServiceDelayed,
+            RuntimeProgressState::Delayed,
+            Some(tool),
+            true,
+            "The external service is responding slowly; Claude Code is waiting or retrying",
+        );
+    }
+
+    fn report(
+        &mut self,
+        code: RuntimeProgressCode,
+        state: RuntimeProgressState,
+        tool: Option<String>,
+        retryable: bool,
+        text: &str,
+    ) {
+        self.report_attempts += 1;
+        let progress = RuntimeProgressUpdate {
+            code,
+            phase: RuntimeProgressPhase::ExternalTool,
+            state,
+            tool,
+            retryable,
+        };
+        let result = cli_wrapper::call_progress(
+            &self.socket_path,
+            CliWrapperRequest::task_status_with_progress(
+                self.runtime_rpc_token.clone(),
+                self.task_id.clone(),
+                text,
+                progress,
+            ),
+        );
+        if result.is_ok_and(|response| response.ok) {
+            self.report_successes += 1;
+        } else {
+            self.report_failures += 1;
+        }
+    }
+
+    fn observation_json(&self) -> Value {
+        serde_json::json!({
+            "schema": "awiki.generic_cli.progress_observation.v1",
+            "report_attempts": self.report_attempts,
+            "report_successes": self.report_successes,
+            "report_failures": self.report_failures,
+            "delayed_reports": self.delayed_reports,
+            "active_external_tool_at_exit": self.active_external_tool.is_some(),
+        })
+    }
+}
+
+fn external_tool_start(value: &Value) -> Option<(String, String)> {
+    let content = value.get("message")?.get("content")?.as_array()?;
+    content.iter().find_map(|item| {
+        if item.get("type").and_then(Value::as_str) != Some("tool_use") {
+            return None;
+        }
+        let name = normalized_external_tool(item.get("name")?.as_str()?)?;
+        let id = item.get("id")?.as_str()?.trim();
+        (!id.is_empty()).then(|| (id.to_string(), name.to_string()))
+    })
+}
+
+fn external_tool_result_id(value: &Value) -> Option<String> {
+    let content = value.get("message")?.get("content")?.as_array()?;
+    content.iter().find_map(|item| {
+        if item.get("type").and_then(Value::as_str) != Some("tool_result") {
+            return None;
+        }
+        item.get("tool_use_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn external_tool_result_is_temporary_error(value: &Value) -> bool {
+    let content = value
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_array);
+    content.is_some_and(|items| {
+        items.iter().any(|item| {
+            if item.get("type").and_then(Value::as_str) != Some("tool_result") {
+                return false;
+            }
+            let text = item
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            text.contains("upstream_error")
+                || text.contains("upstream request failed")
+                || text.contains("badgatewayerror")
+                || text.contains("502 bad gateway")
+                || text.contains("429 too many requests")
+        })
+    })
+}
+
+fn normalized_external_tool(name: &str) -> Option<&'static str> {
+    match name.trim() {
+        "WebSearch" => Some("web_search"),
+        "WebFetch" => Some("web_fetch"),
+        _ => None,
     }
 }
 
@@ -990,3 +1219,7 @@ fn sanitize_path_component(input: &str) -> String {
         sanitized
     }
 }
+
+#[cfg(test)]
+#[path = "claude_code_tests.rs"]
+mod claude_code_tests;

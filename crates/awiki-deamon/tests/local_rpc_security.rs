@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use awiki_deamon::agent::{AgentDefinition, AgentKind};
 use awiki_deamon::cli_wrapper::CliWrapperRequest;
 use awiki_deamon::local_rpc::{
     execute_runtime_rpc_request, execute_runtime_rpc_request_with_outbox, RuntimeRpcDebug,
@@ -8,7 +9,8 @@ use awiki_deamon::local_rpc::{
 };
 use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind, RuntimeMessageSecurity};
 use awiki_deamon::runtime::{
-    RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, RuntimeTask, RuntimeTaskTriggerKind,
+    RuntimeAgentProfile, RuntimeProgressCode, RuntimeProgressPhase, RuntimeProgressState,
+    RuntimeProgressUpdate, RuntimeRun, RuntimeRunStatus, RuntimeTask, RuntimeTaskTriggerKind,
 };
 use awiki_deamon::security::runtime_token::{
     current_time_millis, issue_runtime_token, RpcMethod, RuntimeTokenScope,
@@ -928,6 +930,119 @@ fn app_action_request_records_message_sync_side_effect() {
 }
 
 #[test]
+fn task_status_accepts_only_typed_progress_metadata() {
+    let (root, state) = fixture();
+    let workspace_root = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace_root).unwrap();
+    state
+        .upsert_agent_definition(&AgentDefinition {
+            agent_did: "did:agent:test".to_string(),
+            handle: "test-runtime".to_string(),
+            agent_kind: AgentKind::Runtime,
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
+            controller_did: "did:human:controller".to_string(),
+            runtime_plugin_id: Some("generic-cli".to_string()),
+            runtime_profile_id: Some("profile_1".to_string()),
+            workspace_id: Some("workspace_test".to_string()),
+            policy_id: "default".to_string(),
+            local_agent_db_path: "agents/test/agent.db".to_string(),
+            message_db_path: "agents/test/messages.db".to_string(),
+            status: "active".to_string(),
+        })
+        .unwrap();
+    insert_runtime_task_context(&state, "did:agent:test", "run_1", Some(&workspace_root));
+    let issued = issue(&state, vec![RpcMethod::TaskStatus], None);
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let response = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        CliWrapperRequest::task_status_with_progress(
+            issued.token.as_str(),
+            "task_1",
+            "external service is slow",
+            RuntimeProgressUpdate {
+                code: RuntimeProgressCode::ExternalServiceDelayed,
+                phase: RuntimeProgressPhase::ExternalTool,
+                state: RuntimeProgressState::Delayed,
+                tool: Some("web_search".to_string()),
+                retryable: true,
+            },
+        )
+        .into_rpc_request(),
+    )
+    .unwrap();
+
+    assert!(response.ok);
+    assert_eq!(
+        state.load_runtime_run("run_1").unwrap().status,
+        RuntimeRunStatus::Running
+    );
+    let records = outbox.records();
+    let status = records.last().unwrap();
+    assert_eq!(status.state.as_deref(), Some("running"));
+    assert_eq!(
+        status.metadata.as_ref().unwrap()["progress"]["code"],
+        "external_service_delayed"
+    );
+    assert_eq!(
+        status.metadata.as_ref().unwrap()["progress"]["tool"],
+        "web_search"
+    );
+
+    let invalid = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "task.status".to_string(),
+            params: json!({
+                "state": "running",
+                "progress": {
+                    "code": "external_service_delayed",
+                    "phase": "external_tool",
+                    "state": "delayed",
+                    "tool": "web_search",
+                    "retryable": true,
+                    "untrusted_extra": "must be rejected"
+                }
+            }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+    assert!(invalid.to_string().contains("parse task.status progress"));
+    assert_eq!(outbox.records().len(), 1);
+
+    let inconsistent = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "task.status".to_string(),
+            params: json!({
+                "state": "running",
+                "progress": {
+                    "code": "external_service_resumed",
+                    "phase": "external_tool",
+                    "state": "delayed",
+                    "tool": "web_search",
+                    "retryable": true
+                }
+            }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+    assert!(inconsistent
+        .to_string()
+        .contains("code, state, and retryable fields are inconsistent"));
+    assert_eq!(outbox.records().len(), 1);
+}
+
+#[test]
 fn product_wrapper_normalizes_direct_handle_and_preserves_did_recipient() {
     assert_eq!(
         awiki_deamon::cli_wrapper::normalize_direct_recipient("@alice").unwrap(),
@@ -1176,4 +1291,36 @@ fn uds_server_enforces_permissions_and_handles_one_request() {
     assert!(response.ok);
     server.join().unwrap().unwrap();
     verify_socket_permissions(&socket_path).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn uds_client_timeout_bounds_best_effort_progress_reports() {
+    use awiki_deamon::local_rpc::call_uds_once_with_timeout;
+    use std::os::unix::net::UnixListener;
+    use std::time::Instant;
+
+    let root = tempfile::tempdir().unwrap();
+    let socket_path = root.path().join("unresponsive.sock");
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let server = std::thread::spawn(move || {
+        let (_stream, _) = listener.accept().unwrap();
+        std::thread::sleep(Duration::from_millis(250));
+    });
+
+    let started_at = Instant::now();
+    let result = call_uds_once_with_timeout(
+        &socket_path,
+        &RuntimeRpcRequest {
+            runtime_rpc_token: "rtok_test_secret_value_123456789".to_string(),
+            method: "task.status".to_string(),
+            params: json!({"state": "running"}),
+            debug: None,
+        },
+        Some(Duration::from_millis(40)),
+    );
+
+    assert!(result.is_err());
+    assert!(started_at.elapsed() < Duration::from_millis(200));
+    server.join().unwrap();
 }
