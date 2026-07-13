@@ -38,6 +38,12 @@ Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitiv
 
 The SDK exposes `registerHandleWithPhone`, `registerHandleWithEmail`, and `recoverHandle` on `AwikiImCore`. These calls are core-level identity registry operations that map to `im-core` public identity DTOs; they do not depend on any `awiki-me` account gateway or UI model.
 
+`recoverHandle` always requests the same canonical local-finalize behavior as the CLI. A
+successful recovery of an existing full Handle rotates its DID without changing the stable local
+identity ID, records old/current DID history, refreshes owner-DID snapshots, and enqueues any
+Handle-backed group member rebind work. Dart hosts must not persist the returned DID as a new local
+identity owner or supply a separate generated identity.
+
 ## Identity secret storage
 
 Native hosts can open `AwikiImCore` with explicit identity SecretVault options:

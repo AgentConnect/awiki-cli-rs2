@@ -52,11 +52,14 @@
 
 DID recover 或 replace 的本地状态行为是：
 
-1. 记录 DID history transition。
-2. 刷新同一 `owner_identity_id` 下业务表的 `owner_did` snapshot。
-3. 保持 `owner_identity_id` 和业务主键不变。
-4. 不执行业务行 owner rebind。
-5. 不 reset、merge 或泄露 E2EE private state。
+1. 同一完整 Handle 的 recover 保留原有稳定 `owner_identity_id`；CLI 与 Dart/App
+   都必须进入同一个 `local-finalize` 路径。
+2. 记录 DID history transition。
+3. 刷新同一 `owner_identity_id` 下业务表的 `owner_did` snapshot。
+4. 保持 `owner_identity_id` 和业务主键不变。
+5. 为 Handle-backed 群成员生成幂等 group rebind outbox 任务。
+6. 不执行业务行 owner rebind。
+7. 不 reset、merge 或泄露 E2EE private state。
 
 Replace-DID dry-run 的 `store_rebind_counts` 和 `e2ee_cleanup_counts` 保持为兼容字段；在 identity-owned schema 中它们不再通过 `owner_did` 扫描业务表。
 

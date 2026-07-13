@@ -229,17 +229,29 @@ pub async fn recover_handle(
     let inner = core.clone_inner()?;
     inner
         .identities()
-        .recover_handle_async(im_core::identity::RecoverHandleRequest {
-            handle: im_core::ids::Handle::parse(&handle, "").map_err(DartImError::from)?,
-            raw_handle: Some(handle),
-            phone,
-            otp,
-            generated_identity: None,
-            local_finalize: None,
-        })
+        .recover_handle_async(recover_handle_request(handle, phone, otp)?)
         .await
         .map(Into::into)
         .map_err(DartImError::from)
+}
+
+fn recover_handle_request(
+    handle: String,
+    phone: String,
+    otp: Option<String>,
+) -> Result<im_core::identity::RecoverHandleRequest, DartImError> {
+    Ok(im_core::identity::RecoverHandleRequest {
+        handle: im_core::ids::Handle::parse(&handle, "").map_err(DartImError::from)?,
+        raw_handle: Some(handle),
+        phone,
+        otp,
+        generated_identity: None,
+        // Handle recovery rotates the DID but must keep the local identity
+        // owner stable. The CLI already opts into this path explicitly;
+        // Dart hosts must use the same finalization semantics so local
+        // history and group rebind work are preserved.
+        local_finalize: Some(im_core::identity::RecoverHandleLocalFinalizeRequest::default()),
+    })
 }
 
 impl From<DartInitialProfile> for im_core::identity::InitialProfile {
@@ -248,5 +260,24 @@ impl From<DartInitialProfile> for im_core::identity::InitialProfile {
             display_name: value.display_name,
             avatar_url: value.avatar_url,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recover_handle_uses_local_finalize_for_dart_hosts() {
+        let request = recover_handle_request(
+            "alice.awiki.test".to_string(),
+            "+15551234567".to_string(),
+            Some("123456".to_string()),
+        )
+        .unwrap();
+
+        assert!(request.generated_identity.is_none());
+        assert!(request.local_finalize.is_some());
+        assert_eq!(request.raw_handle.as_deref(), Some("alice.awiki.test"));
     }
 }

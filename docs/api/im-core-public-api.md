@@ -286,6 +286,17 @@ impl IdentityService<'_> {
 }
 ```
 
+`IdentityRegistry::recover_handle` 的 OTP 完成阶段默认执行 canonical
+`local-finalize`。当 SDK 生成新的 DID 时，调用方不能绕过该阶段：同一完整 Handle
+的本地身份继续使用原有稳定 `IdentityId`，旧/新 DID 写入
+`identity_did_history`，同一 owner 下的 `owner_did` snapshot 被刷新，并为仍绑定旧 DID
+的 Handle-backed 群成员写入幂等 `group_rebind_outbox` 任务。CLI 与 Dart facade
+共享这一语义；host 不得自行把恢复结果保存成新的 owner identity。
+
+`generated_identity` 仅保留给显式提供密钥材料且本地不存在同 Handle 身份的低层调用者。
+若本地已有同 Handle 状态却未请求 `local-finalize`，SDK 必须 fail closed。普通 CLI、
+App 和 Dart 调用必须保持为 `None`，由 `im-core` 生成密钥并完成本地 finalize。
+
 `plan_default_identity_change` 返回计划，CLI/App 负责是否写入 default identity 文件。若未来 SDK 需要直接写入，必须只写显式传入的 `default_identity_path`。
 
 ## 7. auth

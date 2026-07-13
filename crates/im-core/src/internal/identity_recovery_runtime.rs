@@ -10,13 +10,6 @@ pub(crate) struct IdentityRecoveryRuntimeResult {
 
 pub(crate) struct PreparedRecoverHandleRequest {
     pub(crate) request: crate::identity::RecoverHandleRequest,
-    pub(crate) local_store: Option<GeneratedRecoveryLocalStore>,
-}
-
-pub(crate) struct GeneratedRecoveryLocalStore {
-    generated: crate::internal::identity_generation::GeneratedIdentity,
-    daemon_subkey_package: crate::identity::DaemonSubkeyPrivatePackage,
-    local_alias: String,
 }
 
 pub(crate) struct IdentityRecoveryRuntime<T> {
@@ -558,7 +551,7 @@ fn finish_saved_recover_with_local_finalize(
     core: &crate::core::ImCore,
     phone: String,
     raw: Value,
-    saved: PreparedLocalFinalizeSaved,
+    mut saved: PreparedLocalFinalizeSaved,
     store_merge_counts: std::collections::BTreeMap<String, i64>,
     e2ee_cleanup_counts: std::collections::BTreeMap<String, i64>,
     additional_warnings: Vec<String>,
@@ -593,6 +586,8 @@ fn finish_saved_recover_with_local_finalize(
         crate::internal::identity_recovery_local::local_identity_summary_from_stored(
             &summary_stored,
         );
+    saved.recovered_identity.identity.local_alias = Some(final_summary.identity_name.clone());
+    saved.recovered_identity.identity.is_default = final_summary.is_default;
     let local_recovery = crate::identity::RecoverHandleLocalResult {
         identity: final_summary,
         backup_path: saved.backup.backup_path,
@@ -633,118 +628,33 @@ pub(crate) fn prepare_recover_handle_request(
         .otp
         .as_deref()
         .is_some_and(|otp| !otp.trim().is_empty());
-    let mut local_store = None;
-    if otp_present && request.local_finalize.is_none() && request.generated_identity.is_none() {
-        let target = recovery_target(&request.handle, &core.inner().sdk_config().did_domain)?;
-        let generated_with_daemon =
-            crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
-                &target.effective_domain,
-                &target.local_part,
-                core.inner().sdk_config().anp_service_endpoint.as_ref(),
-                core.inner().sdk_config().anp_service_did.as_ref(),
+    // A registry-backed recovery owns local persistence. When the caller asks
+    // im-core to generate the replacement DID, local finalization is not an
+    // optional host hint: it is the canonical path that preserves the stable
+    // owner identity, records DID history, and creates group rebind work.
+    // Explicitly supplied generated identities retain their lower-level flow
+    // for compatibility.
+    if otp_present && request.local_finalize.is_none() {
+        if request.generated_identity.is_none() {
+            request.local_finalize =
+                Some(crate::identity::RecoverHandleLocalFinalizeRequest::default());
+        } else {
+            let plan = crate::internal::identity_recovery_local::plan_recover_handle(
+                &core.inner().sdk_paths().identities,
+                &request.handle,
+                request.raw_handle.as_deref(),
+                &core.inner().sdk_config().did_domain,
             )?;
-        let crate::internal::identity_generation::GeneratedIdentityWithDaemonSubkey {
-            identity: generated,
-            daemon_subkey_package,
-        } = generated_with_daemon;
-        request.generated_identity = Some(crate::identity::RecoverGeneratedIdentity {
-            did: generated.did.clone(),
-            unique_id: generated.unique_id.clone(),
-            did_document: generated.did_document.clone(),
-        });
-        request.handle = target.full_handle;
-        local_store = Some(GeneratedRecoveryLocalStore {
-            generated,
-            daemon_subkey_package,
-            local_alias: if target.explicit_domain {
-                request.handle.as_str().to_string()
-            } else {
-                target.local_part
-            },
-        });
+            if !plan.same_handle_candidates.is_empty() {
+                return Err(crate::ImError::invalid_input(
+                    Some("local_finalize".to_owned()),
+                    "same-handle recovery with local state requires local finalization",
+                ));
+            }
+        }
     }
     validate_request(&request)?;
-    Ok(PreparedRecoverHandleRequest {
-        request,
-        local_store,
-    })
-}
-
-pub(crate) fn finalize_recover_handle_result(
-    core: &crate::core::ImCore,
-    local_store: Option<GeneratedRecoveryLocalStore>,
-    result: IdentityRecoveryRuntimeResult,
-) -> crate::ImResult<crate::identity::RecoverHandleResult> {
-    let Some(local_store) = local_store else {
-        return Ok(result.sdk_result);
-    };
-    if !matches!(
-        result.sdk_result.state,
-        crate::identity::RecoverHandleState::Recovered
-    ) {
-        return Ok(result.sdk_result);
-    }
-    let target = recovery_target(
-        &result.sdk_result.handle,
-        &core.inner().sdk_config().did_domain,
-    )?;
-    let generated = local_store.generated;
-    let daemon_subkey_package = local_store.daemon_subkey_package;
-    let did = did_from_raw(&result.raw).unwrap_or_else(|| generated.did.clone());
-    if did != daemon_subkey_package.user_did {
-        return Err(crate::ImError::IdentityNotReady {
-            identity: did.as_str().to_string(),
-            missing: vec!["daemon_subkey_did_mismatch".to_string()],
-        });
-    }
-    let secret_storage =
-        crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
-    let stored =
-        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
-            .save_identity_with_secret_storage(
-            crate::internal::identity_store::SaveIdentityInput {
-                local_alias: local_store.local_alias,
-                did,
-                unique_id: generated.unique_id,
-                user_id: string_value(&result.raw, "user_id", ""),
-                display_name: string_value(&result.raw, "handle", &target.local_part),
-                handle: string_value(&result.raw, "handle", &target.local_part),
-                full_handle: string_value(&result.raw, "full_handle", target.full_handle.as_str()),
-                jwt_token: string_value(&result.raw, "access_token", ""),
-                did_document: Some(generated.did_document),
-                key1_private_pem: generated.key1_private_pem,
-                key1_public_pem: generated.key1_public_pem,
-                e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
-                e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
-                daemon_subkey_package: Some(daemon_subkey_package),
-                make_default: true,
-            },
-            secret_storage,
-        )?;
-    let identity =
-        crate::internal::identity_registration_runtime::identity_summary_from_stored(&stored)?;
-    let recovered_identity = crate::identity::RecoveredIdentity {
-        identity,
-        user_id: result
-            .raw
-            .get("user_id")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        access_token_present: result
-            .raw
-            .get("access_token")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty()),
-    };
-    Ok(crate::identity::RecoverHandleResult::with_raw_response(
-        result.sdk_result.handle,
-        result.sdk_result.phone,
-        result.sdk_result.state,
-        Some(recovered_identity),
-        None,
-        Some(result.raw),
-        result.sdk_result.warnings,
-    ))
+    Ok(PreparedRecoverHandleRequest { request })
 }
 
 pub(crate) fn validate_request(
@@ -778,70 +688,6 @@ pub(crate) fn validate_request(
         }
     }
     Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RecoveryTarget {
-    local_part: String,
-    full_handle: crate::ids::Handle,
-    effective_domain: String,
-    explicit_domain: bool,
-}
-
-fn recovery_target(
-    handle: &crate::ids::Handle,
-    default_domain: &str,
-) -> crate::ImResult<RecoveryTarget> {
-    let raw = handle
-        .as_str()
-        .trim()
-        .trim_start_matches('@')
-        .to_ascii_lowercase();
-    if raw.is_empty() {
-        return Err(crate::ImError::invalid_input(
-            Some("handle".to_string()),
-            "handle must not be empty",
-        ));
-    }
-    if raw.starts_with("did:") {
-        return Err(crate::ImError::invalid_input(
-            Some("handle".to_string()),
-            "DID values are not supported in handle recovery",
-        ));
-    }
-    if let Some(dot) = raw.find('.') {
-        let local_part = raw[..dot].trim().to_string();
-        let domain = raw[dot + 1..].trim().trim_end_matches('.').to_string();
-        if local_part.is_empty() || domain.is_empty() {
-            return Err(crate::ImError::invalid_input(
-                Some("handle".to_string()),
-                "invalid handle",
-            ));
-        }
-        return Ok(RecoveryTarget {
-            full_handle: crate::ids::Handle::parse(format!("{local_part}.{domain}"), "")?,
-            local_part,
-            effective_domain: domain,
-            explicit_domain: true,
-        });
-    }
-
-    let domain = default_domain
-        .trim()
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-    if domain.is_empty() {
-        return Err(crate::ImError::invalid_input(
-            Some("did_domain".to_string()),
-            "did_domain is required to complete bare handle recovery",
-        ));
-    }
-    Ok(RecoveryTarget {
-        full_handle: crate::ids::Handle::parse(format!("{raw}.{domain}"), "")?,
-        local_part: raw,
-        effective_domain: domain,
-        explicit_domain: false,
-    })
 }
 
 fn recovered_identity_summary(
@@ -980,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn prepare_recover_handle_request_generates_identity_when_otp_is_present() {
+    fn prepare_recover_handle_request_defaults_to_local_finalize_when_otp_is_present() {
         let fixture = CoreFixture::new();
         let prepared = prepare_recover_handle_request(
             &fixture.core,
@@ -995,31 +841,67 @@ mod tests {
         )
         .unwrap();
 
-        let generated = prepared
-            .request
-            .generated_identity
-            .as_ref()
-            .expect("generated identity");
-        assert!(generated
-            .did
-            .as_str()
-            .starts_with("did:wba:awiki.test:alice:"));
-        assert_eq!(prepared.request.handle.as_str(), "alice.awiki.test");
-        let services = generated.did_document["service"].as_array().unwrap();
-        assert!(services.iter().any(|service| {
-            service["type"] == "ANPHandleService"
-                && service["serviceEndpoint"] == "https://awiki.test/.well-known/handle/alice"
-        }));
-        assert_eq!(
-            prepared
-                .local_store
-                .as_ref()
-                .unwrap()
-                .generated
-                .did
-                .as_str(),
-            generated.did.as_str()
-        );
+        assert!(prepared.request.generated_identity.is_none());
+        assert!(prepared.request.local_finalize.is_some());
+        assert_eq!(prepared.request.handle.as_str(), "alice");
+    }
+
+    #[test]
+    fn prepare_recover_handle_request_rejects_same_handle_remote_only_recovery() {
+        let fixture = CoreFixture::new();
+        let generated =
+            crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
+                "awiki.test",
+                "alice",
+                fixture.core.inner().sdk_config().anp_service_endpoint.as_ref(),
+                fixture.core.inner().sdk_config().anp_service_did.as_ref(),
+            )
+            .unwrap();
+        let stored_identity = generated.identity.clone();
+        crate::internal::identity_store::IdentityStore::new(
+            &fixture.core.inner().sdk_paths().identities,
+        )
+        .save_identity(crate::internal::identity_store::SaveIdentityInput {
+            local_alias: "alice".to_string(),
+            did: stored_identity.did.clone(),
+            unique_id: "stable-alice-id".to_string(),
+            user_id: "user-alice".to_string(),
+            display_name: "Alice".to_string(),
+            handle: "alice".to_string(),
+            full_handle: "alice.awiki.test".to_string(),
+            jwt_token: "jwt-alice".to_string(),
+            did_document: Some(stored_identity.did_document.clone()),
+            key1_private_pem: stored_identity.key1_private_pem.clone(),
+            key1_public_pem: stored_identity.key1_public_pem.clone(),
+            e2ee_signing_private_pem: stored_identity.e2ee_signing_private_pem.clone(),
+            e2ee_agreement_private_pem: stored_identity.e2ee_agreement_private_pem.clone(),
+            daemon_subkey_package: Some(generated.daemon_subkey_package),
+            make_default: true,
+        })
+        .unwrap();
+
+        let error = match prepare_recover_handle_request(
+            &fixture.core,
+            crate::identity::RecoverHandleRequest {
+                handle: crate::ids::Handle::parse("alice.awiki.test", "").unwrap(),
+                raw_handle: Some("alice.awiki.test".to_string()),
+                phone: "+15551234567".to_string(),
+                otp: Some("123456".to_string()),
+                generated_identity: Some(crate::identity::RecoverGeneratedIdentity {
+                    did: stored_identity.did,
+                    unique_id: "external-generated-id".to_string(),
+                    did_document: stored_identity.did_document,
+                }),
+                local_finalize: None,
+            },
+        ) {
+            Ok(_) => panic!("same-handle remote-only recovery must fail closed"),
+            Err(error) => error,
+        };
+
+        assert!(error
+            .to_string()
+            .contains("same-handle recovery with local state requires local finalization"));
     }
 
     #[test]
@@ -1046,87 +928,6 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn finalize_generated_recovery_persists_identity_for_flutter_clients() {
-        let fixture = CoreFixture::new();
-        let prepared = prepare_recover_handle_request(
-            &fixture.core,
-            crate::identity::RecoverHandleRequest {
-                handle: crate::ids::Handle::parse("alice", "").unwrap(),
-                raw_handle: None,
-                phone: "+15551234567".to_string(),
-                otp: Some("123456".to_string()),
-                generated_identity: None,
-                local_finalize: None,
-            },
-        )
-        .unwrap();
-        let generated = prepared.request.generated_identity.clone().unwrap();
-        let raw = serde_json::json!({
-            "did": generated.did.as_str(),
-            "user_id": "user-alice",
-            "handle": "alice",
-            "full_handle": "alice.awiki.test",
-            "access_token": "jwt-recover"
-        });
-        let runtime_result = IdentityRecoveryRuntimeResult {
-            sdk_result: crate::identity::RecoverHandleResult::with_raw_response(
-                prepared.request.handle,
-                "+15551234567".to_string(),
-                crate::identity::RecoverHandleState::Recovered,
-                Some(crate::identity::RecoveredIdentity {
-                    identity: crate::identity::IdentitySummary {
-                        id: crate::ids::IdentityId::parse(&generated.unique_id).unwrap(),
-                        did: generated.did.clone(),
-                        handle: Some(crate::ids::Handle::parse("alice.awiki.test", "").unwrap()),
-                        display_name: Some("alice".to_string()),
-                        local_alias: Some("alice".to_string()),
-                        device_id: None,
-                        is_default: false,
-                        readiness: crate::identity::IdentityReadiness {
-                            ready_for_auth: true,
-                            ready_for_messaging: true,
-                            missing: Vec::new(),
-                        },
-                    },
-                    user_id: Some("user-alice".to_string()),
-                    access_token_present: true,
-                }),
-                None,
-                Some(raw.clone()),
-                Vec::new(),
-            ),
-            raw,
-        };
-
-        let result =
-            finalize_recover_handle_result(&fixture.core, prepared.local_store, runtime_result)
-                .unwrap();
-
-        let recovered = result.recovered_identity.unwrap();
-        assert_eq!(recovered.identity.local_alias.as_deref(), Some("alice"));
-        assert!(recovered.identity.is_default);
-        assert!(recovered.identity.readiness.ready_for_auth);
-        assert!(recovered.identity.readiness.ready_for_messaging);
-        let default = fixture
-            .core
-            .identities()
-            .default_identity()
-            .unwrap()
-            .unwrap();
-        assert_eq!(default.handle.unwrap().as_str(), "alice.awiki.test");
-        assert!(std::fs::read_to_string(
-            fixture
-                .root
-                .path()
-                .join("identities")
-                .join(&generated.unique_id)
-                .join("auth.json")
-        )
-        .unwrap()
-        .contains("jwt-recover"));
-    }
-
     struct TestTransport {
         responses: Vec<serde_json::Value>,
         calls: Vec<(String, String, serde_json::Value)>,
@@ -1146,7 +947,7 @@ mod tests {
     }
 
     struct CoreFixture {
-        root: tempfile::TempDir,
+        _root: tempfile::TempDir,
         core: crate::core::ImCore,
     }
 
@@ -1176,7 +977,7 @@ mod tests {
                 },
             };
             let core = crate::core::ImCore::new(config, paths).unwrap();
-            Self { root, core }
+            Self { _root: root, core }
         }
     }
 }

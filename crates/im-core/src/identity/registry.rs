@@ -988,13 +988,7 @@ impl IdentityRegistry<'_> {
             crate::internal::transport::CorePlainTransport::new(self.core),
         )
         .recover_handle(prepared.request)
-        .and_then(|result| {
-            crate::internal::identity_recovery_runtime::finalize_recover_handle_result(
-                self.core,
-                prepared.local_store,
-                result,
-            )
-        })
+        .map(|result| result.sdk_result)
     }
 
     pub async fn recover_handle_async(
@@ -1010,13 +1004,7 @@ impl IdentityRegistry<'_> {
         )
         .recover_handle_async(prepared.request)
         .await
-        .and_then(|result| {
-            crate::internal::identity_recovery_runtime::finalize_recover_handle_result(
-                self.core,
-                prepared.local_store,
-                result,
-            )
-        })
+        .map(|result| result.sdk_result)
     }
 
     pub fn recover_handle_plan(
