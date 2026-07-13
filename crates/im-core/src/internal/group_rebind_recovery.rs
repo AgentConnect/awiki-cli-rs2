@@ -112,7 +112,7 @@ pub(crate) fn enqueue_recovery_jobs_for_connection(
     binding_generation: &str,
 ) -> crate::ImResult<usize> {
     let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
-    let member_handle = required("member_handle", member_handle)?.to_ascii_lowercase();
+    let member_handle = canonical_recovery_handle(member_handle)?;
     let new_did = required("new_member_did", new_did)?;
     if !canonical_generation(binding_generation) {
         return Err(crate::ImError::invalid_input(
@@ -133,26 +133,32 @@ pub(crate) fn enqueue_recovery_jobs_for_connection(
             .prepare(
                 r#"
 SELECT gm.group_id, gm.member_did
+     , gm.anchor_value
 FROM group_members gm
 JOIN groups g
   ON g.owner_identity_id = gm.owner_identity_id AND g.group_id = gm.group_id
 WHERE gm.owner_identity_id = ?1
   AND gm.anchor_kind = 'handle'
-  AND LOWER(gm.anchor_value) = ?2
   AND COALESCE(gm.status, 'active') = 'active'
   AND COALESCE(g.membership_status, 'active') NOT IN ('left','removed','inactive','non_member')"#,
             )
             .map_err(crate::internal::local_state::local_state_unavailable)?;
         let rows = statement
-            .query_map(rusqlite::params![owner_identity_id, member_handle], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            .query_map(rusqlite::params![owner_identity_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(crate::internal::local_state::local_state_unavailable)?;
         let mut values = Vec::new();
         for row in rows {
             let value = row.map_err(crate::internal::local_state::local_state_unavailable)?;
-            if previous.contains(value.1.trim()) {
-                values.push(value);
+            if previous.contains(value.1.trim())
+                && recovery_handle_anchor_matches(&value.2, &value.1, &member_handle)
+            {
+                values.push((value.0, value.1));
             }
         }
         values
@@ -166,7 +172,7 @@ WHERE gm.owner_identity_id = ?1
         let job_id = stable_job_id(&[
             owner_identity_id,
             &group_did,
-            &member_handle,
+            &member_handle.full,
             binding_generation,
         ]);
         inserted += transaction
@@ -181,7 +187,7 @@ ON CONFLICT(owner_identity_id, group_did, member_handle, binding_generation) DO 
                     job_id,
                     owner_identity_id,
                     group_did,
-                    member_handle,
+                    member_handle.full,
                     previous_did,
                     new_did,
                     binding_generation,
@@ -194,6 +200,76 @@ ON CONFLICT(owner_identity_id, group_did, member_handle, binding_generation) DO 
         .commit()
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     Ok(inserted)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CanonicalRecoveryHandle {
+    full: String,
+    local_part: String,
+    domain: String,
+}
+
+fn canonical_recovery_handle(value: &str) -> crate::ImResult<CanonicalRecoveryHandle> {
+    let value = required("member_handle", value)?.to_ascii_lowercase();
+    let value = value
+        .strip_prefix("wba://")
+        .unwrap_or(&value)
+        .trim_start_matches('@')
+        .trim_end_matches('.')
+        .to_owned();
+    let Some((local_part, domain)) = value.split_once('.') else {
+        return Err(crate::ImError::invalid_input(
+            Some("member_handle".to_owned()),
+            "member handle must be a full Handle including provider domain",
+        ));
+    };
+    if local_part.is_empty() || domain.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("member_handle".to_owned()),
+            "member handle must include non-empty local part and provider domain",
+        ));
+    }
+    Ok(CanonicalRecoveryHandle {
+        full: value.clone(),
+        local_part: local_part.to_owned(),
+        domain: domain.to_owned(),
+    })
+}
+
+fn recovery_handle_anchor_matches(
+    stored_anchor: &str,
+    previous_member_did: &str,
+    expected: &CanonicalRecoveryHandle,
+) -> bool {
+    let stored = normalize_handle_key(stored_anchor);
+    if stored == expected.full {
+        return true;
+    }
+    stored == expected.local_part
+        && did_wba_domain(previous_member_did).as_deref() == Some(expected.domain.as_str())
+}
+
+fn normalize_handle_key(value: &str) -> String {
+    let value = value.trim().to_ascii_lowercase();
+    value
+        .strip_prefix("wba://")
+        .unwrap_or(&value)
+        .trim_start_matches('@')
+        .trim_end_matches('.')
+        .to_owned()
+}
+
+fn did_wba_domain(did: &str) -> Option<String> {
+    let mut segments = did.trim().split(':');
+    match (segments.next(), segments.next(), segments.next()) {
+        (Some(method), Some(network), Some(domain))
+            if method.eq_ignore_ascii_case("did") && network.eq_ignore_ascii_case("wba") =>
+        {
+            let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+            (!domain.is_empty()).then_some(domain)
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn project_rebind_event(
@@ -836,6 +912,81 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn recovery_outbox_accepts_only_domain_bound_legacy_local_part_anchors() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        db.execute_batch(
+            r#"
+INSERT INTO groups (owner_identity_id,owner_did,group_id,group_did,my_role,membership_status,stored_at) VALUES
+ ('owner','did:new','did:group:legacy','did:group:legacy','member','active','now'),
+ ('owner','did:new','did:group:exact','did:group:exact','member','active','now'),
+ ('owner','did:new','did:group:cross-domain','did:group:cross-domain','member','active','now'),
+ ('owner','did:new','did:group:not-previous','did:group:not-previous','member','active','now'),
+ ('owner','did:new','did:group:did-only','did:group:did-only','member','active','now'),
+ ('owner','did:new','did:group:inactive','did:group:inactive','member','active','now');
+INSERT INTO group_members
+ (owner_identity_id,owner_did,group_id,user_id,member_did,member_handle,anchor_kind,anchor_value,handle_binding_generation,status,last_synced_at) VALUES
+ ('owner','did:new','did:group:legacy','legacy','did:wba:example.com:alice:e1_old','alice','handle','alice','1','active','now'),
+ ('owner','did:new','did:group:exact','exact','did:wba:example.com:alice:e1_old','alice.example.com','handle','alice.example.com','1','active','now'),
+ ('owner','did:new','did:group:cross-domain','cross','did:wba:other.test:alice:e1_old','alice','handle','alice','1','active','now'),
+ ('owner','did:new','did:group:not-previous','unknown','did:wba:example.com:alice:e1_unknown','alice','handle','alice','1','active','now'),
+ ('owner','did:new','did:group:did-only','did-only','did:wba:example.com:alice:e1_old','alice','did','did:wba:example.com:alice:e1_old',NULL,'active','now'),
+ ('owner','did:new','did:group:inactive','inactive','did:wba:example.com:alice:e1_old','alice','handle','alice','1','removed','now');
+"#,
+        )
+        .unwrap();
+        let previous = vec![
+            "did:wba:example.com:alice:e1_old".to_owned(),
+            "did:wba:other.test:alice:e1_old".to_owned(),
+        ];
+
+        let error = enqueue_recovery_jobs_for_connection(
+            &mut db,
+            "owner",
+            "alice",
+            &previous,
+            "did:wba:example.com:alice:e1_new",
+            "2",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("full Handle"));
+
+        assert_eq!(
+            enqueue_recovery_jobs_for_connection(
+                &mut db,
+                "owner",
+                "WBA://Alice.Example.Com.",
+                &previous,
+                "did:wba:example.com:alice:e1_new",
+                "2",
+            )
+            .unwrap(),
+            2
+        );
+
+        let mut statement = db
+            .prepare("SELECT group_did,member_handle FROM group_rebind_outbox ORDER BY group_did")
+            .unwrap();
+        let jobs = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            jobs,
+            vec![
+                ("did:group:exact".to_owned(), "alice.example.com".to_owned(),),
+                (
+                    "did:group:legacy".to_owned(),
+                    "alice.example.com".to_owned(),
+                ),
+            ]
+        );
     }
 
     #[test]

@@ -576,8 +576,8 @@ async fn recover_same_handle_preserves_owner_history_and_enqueues_group_rebind()
                 (owner_identity_id, owner_did, group_id, user_id, member_did,
                  member_handle, anchor_kind, anchor_value, role, status,
                  last_synced_at, credential_name)
-               VALUES (?1, ?2, ?3, 'user-erin', ?2, 'erin.awiki.test',
-                       'handle', 'erin.awiki.test', 'member', 'active', ?4, 'erin')"#,
+               VALUES (?1, ?2, ?3, 'user-erin', ?2, 'erin',
+                       'handle', 'erin', 'member', 'active', ?4, 'erin')"#,
             rusqlite::params![
                 stable_owner_identity_id,
                 previous_did,

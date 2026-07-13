@@ -919,6 +919,71 @@ mod tests {
         assert_eq!(records[0].member_handle, "zhuocheng");
     }
 
+    #[test]
+    fn group_member_record_preserves_full_protocol_handle_anchor() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let result = crate::groups::GroupReadResult::from_raw_response(
+            json!({
+                "group_snapshot": {
+                    "group_did": "did:example:group",
+                    "member_role": "member",
+                    "member_status": "active"
+                },
+                "members": [{
+                    "member_did": "did:wba:example.com:alice:e1_old",
+                    "member_handle": "WBA://Alice.Example.Com.",
+                    "handle_binding_generation": "7",
+                    "role": "member",
+                    "status": "active"
+                }]
+            }),
+            Vec::new(),
+        );
+
+        let records = group_member_records(&scope(), "did:example:group", &result).unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].anchor_kind, "handle");
+        assert_eq!(records[0].anchor_value, "alice.example.com");
+        assert_eq!(records[0].member_handle, "alice.example.com");
+        assert_eq!(records[0].handle_binding_generation, "7");
+
+        crate::internal::local_state::groups::upsert_group(
+            &db,
+            group_record(&scope(), &result).unwrap(),
+        )
+        .unwrap();
+        project_group_members_with_connection(&mut db, &scope(), "did:example:group", &result)
+            .unwrap();
+        assert_eq!(
+            crate::internal::group_rebind_recovery::enqueue_recovery_jobs_for_connection(
+                &mut db,
+                "owner-identity",
+                "alice.example.com",
+                &["did:wba:example.com:alice:e1_old".to_owned()],
+                "did:wba:example.com:alice:e1_new",
+                "8",
+            )
+            .unwrap(),
+            1
+        );
+        let persisted: (String, String) = db
+            .query_row(
+                "SELECT gm.anchor_value,o.member_handle FROM group_members gm JOIN group_rebind_outbox o ON o.group_did = gm.group_id",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            persisted,
+            (
+                "alice.example.com".to_owned(),
+                "alice.example.com".to_owned()
+            )
+        );
+    }
+
     fn assert_partial_handle_pair_preserves_existing_snapshot(member: Value) {
         let mut db = rusqlite::Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
@@ -1077,11 +1142,12 @@ fn normalize_handle_value(value: &str) -> String {
     if value.is_empty() {
         return String::new();
     }
-    let value = value.trim_start_matches("wba://");
-    match value.find('.') {
-        Some(index) if index > 0 => value[..index].to_string(),
-        _ => value.to_string(),
-    }
+    value
+        .strip_prefix("wba://")
+        .unwrap_or(&value)
+        .trim_start_matches('@')
+        .trim_end_matches('.')
+        .to_string()
 }
 
 #[cfg(feature = "sqlite")]
