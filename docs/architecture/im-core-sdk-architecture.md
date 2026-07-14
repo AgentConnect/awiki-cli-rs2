@@ -273,9 +273,11 @@ facts that were genuinely absent in a legacy row.
 
 Verified Handle projection writes the Persona, current and historical
 identifiers, route, Persona-keyed profile, and matching contact association as
-one local transaction. UI/profile consumers must eventually read display data
-by `peer_persona_id`; DID remains a credential snapshot or route address, not a
-profile identity key.
+one local transaction. It is the only directory path that writes a canonical
+Direct route; the former parallel scope/DID route projection is intentionally
+absent so a route cannot bypass Persona validation or be written twice.
+UI/profile consumers must eventually read display data by `peer_persona_id`;
+DID remains a credential snapshot or route address, not a profile identity key.
 
 Inbound Direct sync performs the same Persona lookup inside
 the checkpoint transaction. If the peer DID is not yet bound to a verified
