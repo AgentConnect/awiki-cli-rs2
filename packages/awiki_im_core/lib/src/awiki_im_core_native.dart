@@ -9,6 +9,7 @@ import 'generated/api/directory.dart' as gen_directory;
 import 'generated/api/email.dart' as gen_email;
 import 'generated/api/groups.dart' as gen_groups;
 import 'generated/api/identity.dart' as gen_identity_api;
+import 'generated/api/local_state_upgrade.dart' as gen_local_state_upgrade;
 import 'generated/api/messages.dart' as gen_messages;
 import 'generated/api/profile.dart' as gen_profile;
 import 'generated/api/realtime.dart' as gen_realtime;
@@ -21,6 +22,7 @@ import 'generated/dto/email.dart' as gen_email_dto;
 import 'generated/dto/error.dart' as gen_error;
 import 'generated/dto/group.dart' as gen_group_dto;
 import 'generated/dto/identity.dart' as gen_identity;
+import 'generated/dto/local_state_upgrade.dart' as gen_local_state_upgrade_dto;
 import 'generated/dto/message.dart' as gen_message;
 import 'generated/dto/profile.dart' as gen_profile_dto;
 import 'generated/dto/realtime.dart' as gen_realtime_dto;
@@ -34,6 +36,7 @@ import 'models/email.dart';
 import 'models/error.dart';
 import 'models/group.dart';
 import 'models/identity.dart';
+import 'models/local_state_upgrade.dart';
 import 'models/message.dart';
 import 'models/message_payload.dart';
 import 'models/profile.dart';
@@ -85,6 +88,28 @@ class AwikiImCore {
       ),
     );
     return AwikiImCore._(inner);
+  }
+
+  static Future<LocalStateUpgradeInspection> inspectLocalStateUpgrade({
+    required AwikiImCorePaths paths,
+  }) async {
+    await _ensureRustLibInitialized();
+    final result = await _mapNativeErrors(
+      () => gen_local_state_upgrade.inspectLocalStateUpgrade(
+        paths: paths._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
+  static Future<LocalStateUpgradeResult> upgradeLocalState({
+    required AwikiImCorePaths paths,
+  }) async {
+    await _ensureRustLibInitialized();
+    final result = await _mapNativeErrors(
+      () => gen_local_state_upgrade.upgradeLocalState(paths: paths._toGen()),
+    );
+    return result._toModel();
   }
 
   Future<AwikiImClient> client(IdentitySelector selector) async {
@@ -1527,6 +1552,39 @@ extension on ImCoreSecretVaultOptions {
 extension on DeviceVaultRootKey {
   gen_config.DartDeviceVaultRootKey _toGen() =>
       gen_config.DartDeviceVaultRootKey(bytes: bytes);
+}
+
+extension on gen_local_state_upgrade_dto.DartLocalStateUpgradeInspection {
+  LocalStateUpgradeInspection _toModel() => LocalStateUpgradeInspection(
+    eligibility: switch (eligibility) {
+      gen_local_state_upgrade_dto
+          .DartLocalStateUpgradeEligibility
+          .notRequired =>
+        LocalStateUpgradeEligibility.notRequired,
+      gen_local_state_upgrade_dto.DartLocalStateUpgradeEligibility.required_ =>
+        LocalStateUpgradeEligibility.required,
+    },
+    sourceSchemaVersion: sourceSchemaVersion,
+    targetSchemaVersion: targetSchemaVersion,
+  );
+}
+
+extension on gen_local_state_upgrade_dto.DartLocalStateUpgradeResult {
+  LocalStateUpgradeResult _toModel() => LocalStateUpgradeResult(
+    status: switch (status) {
+      gen_local_state_upgrade_dto.DartLocalStateUpgradeStatus.notRequired =>
+        LocalStateUpgradeStatus.notRequired,
+      gen_local_state_upgrade_dto.DartLocalStateUpgradeStatus.completed =>
+        LocalStateUpgradeStatus.completed,
+    },
+    sourceSchemaVersion: sourceSchemaVersion,
+    targetSchemaVersion: targetSchemaVersion,
+    migratedPersonas: migratedPersonas.toInt(),
+    migratedConversations: migratedConversations.toInt(),
+    unresolvedMessages: unresolvedMessages.toInt(),
+    aliasCount: aliasCount.toInt(),
+    backupAvailable: backupAvailable,
+  );
 }
 
 extension on MessageTransportPolicy {

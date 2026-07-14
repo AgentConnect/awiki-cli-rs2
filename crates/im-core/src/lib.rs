@@ -14,6 +14,8 @@ pub mod error;
 pub mod groups;
 pub mod identity;
 pub mod ids;
+#[cfg(feature = "sqlite")]
+pub mod local_state_upgrade;
 pub mod messages;
 pub mod paths;
 pub mod prelude;
@@ -42,6 +44,11 @@ pub use crate::identity::{
     DeleteLocalIdentityResult, HostedIdentityMaterial, IdentitySecretStorageBackend,
     IdentitySelector, IdentitySummary, IdentityVaultMigrationReport, IdentityVaultStatus,
     IdentityVaultVerificationReport,
+};
+#[cfg(feature = "sqlite")]
+pub use crate::local_state_upgrade::{
+    inspect_local_state_upgrade, upgrade_local_state, LocalStateUpgradeEligibility,
+    LocalStateUpgradeInspection, LocalStateUpgradeResult, LocalStateUpgradeStatus,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::RealtimeService;

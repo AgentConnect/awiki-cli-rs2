@@ -36,7 +36,7 @@ impl SourceConservationSnapshot {
                 r#"SELECT msg_id, owner_identity_id, owner_did, direction,
        sender_did, receiver_did, group_id, group_did, content_type, content,
        title, server_seq, sent_at, stored_at, is_e2ee, is_read, sender_name,
-       metadata, mentions_current_user, credential_name
+       metadata, credential_name
 FROM messages ORDER BY owner_identity_id, msg_id"#,
             )?,
             outbox_facts_hash: hash_rows(

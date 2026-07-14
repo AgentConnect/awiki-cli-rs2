@@ -9,6 +9,29 @@ fn dart_error_unsupported_has_stable_code() {
 }
 
 #[test]
+fn local_state_upgrade_inspection_is_available_before_core_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let inspection = awiki_im_core::api::local_state_upgrade::inspect_local_state_upgrade(
+        awiki_im_core::dto::config::DartImCorePaths {
+            identity_root_dir: directory.path().join("identities").display().to_string(),
+            registry_path: directory.path().join("registry.json").display().to_string(),
+            default_identity_path: None,
+            sqlite_path: directory.path().join("im.sqlite").display().to_string(),
+            cache_dir: directory.path().join("cache").display().to_string(),
+            temp_dir: directory.path().join("tmp").display().to_string(),
+        },
+    )
+    .expect("fresh state inspection");
+
+    assert_eq!(
+        inspection.eligibility,
+        awiki_im_core::dto::local_state_upgrade::DartLocalStateUpgradeEligibility::NotRequired
+    );
+    assert_eq!(inspection.source_schema_version, 0);
+    assert_eq!(inspection.target_schema_version, 28);
+}
+
+#[test]
 fn identity_vault_failures_have_stable_redacted_dart_codes() {
     let cases = [
         (

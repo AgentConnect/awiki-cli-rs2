@@ -30,6 +30,29 @@ The Rust facade exposes opaque `DartImCore` and `DartImClient` objects. Each obj
 
 `im-core` is blocking-first. Public Dart APIs are `Future<T>` and must not expose synchronous IO, SQLite, or HTTP calls into widget build paths. FRB generated calls should use the worker-thread model and the wrapper must keep App-facing methods async.
 
+### Local-state upgrade before Core open
+
+Applications upgrading from release/0710 must inspect and, when required, run
+the canonical local-state upgrade before `AwikiImCore.open`:
+
+```dart
+final inspection = await AwikiImCore.inspectLocalStateUpgrade(paths: paths);
+if (inspection.eligibility == LocalStateUpgradeEligibility.required) {
+  final result = await AwikiImCore.upgradeLocalState(paths: paths);
+  assert(result.status == LocalStateUpgradeStatus.completed);
+}
+final core = await AwikiImCore.open(config: config, paths: paths);
+```
+
+Inspection is read-only. Upgrade performs the Core-owned cross-process lock,
+SQLite online backup (including committed WAL state), shadow migration,
+conservation/invariant validation, and cutover. A missing SQLite file is a fresh
+install and returns `notRequired` without creating files. Ordinary Core open
+continues to fail closed with `local_state_upgrade_required`; hosts must not
+delete, archive, or recreate the database to bypass this gate. Public reports
+contain only schema versions and aggregate counts, never backup paths or message
+content.
+
 ## DTO policy
 
 Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitives at the boundary. Time values remain ISO-8601 strings. The Dart wrapper may add convenience getters such as `AuthStatus.authenticated`, but it must not rename Rust DTO semantics such as `has_session` into a different facade meaning.

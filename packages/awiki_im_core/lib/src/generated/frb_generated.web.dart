@@ -14,6 +14,7 @@ import 'api/directory.dart';
 import 'api/email.dart';
 import 'api/groups.dart';
 import 'api/identity.dart';
+import 'api/local_state_upgrade.dart';
 import 'api/messages.dart';
 import 'api/profile.dart';
 import 'api/realtime.dart';
@@ -29,6 +30,7 @@ import 'dto/email.dart';
 import 'dto/error.dart';
 import 'dto/group.dart';
 import 'dto/identity.dart';
+import 'dto/local_state_upgrade.dart';
 import 'dto/message.dart';
 import 'dto/profile.dart';
 import 'dto/realtime.dart';
@@ -655,6 +657,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartJoinGroupRequest dco_decode_dart_join_group_request(dynamic raw);
+
+  @protected
+  DartLocalStateUpgradeEligibility
+  dco_decode_dart_local_state_upgrade_eligibility(dynamic raw);
+
+  @protected
+  DartLocalStateUpgradeInspection
+  dco_decode_dart_local_state_upgrade_inspection(dynamic raw);
+
+  @protected
+  DartLocalStateUpgradeResult dco_decode_dart_local_state_upgrade_result(
+    dynamic raw,
+  );
+
+  @protected
+  DartLocalStateUpgradeStatus dco_decode_dart_local_state_upgrade_status(
+    dynamic raw,
+  );
 
   @protected
   DartMarkConversationReadRequest
@@ -1718,6 +1738,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartJoinGroupRequest sse_decode_dart_join_group_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartLocalStateUpgradeEligibility
+  sse_decode_dart_local_state_upgrade_eligibility(SseDeserializer deserializer);
+
+  @protected
+  DartLocalStateUpgradeInspection
+  sse_decode_dart_local_state_upgrade_inspection(SseDeserializer deserializer);
+
+  @protected
+  DartLocalStateUpgradeResult sse_decode_dart_local_state_upgrade_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartLocalStateUpgradeStatus sse_decode_dart_local_state_upgrade_status(
     SseDeserializer deserializer,
   );
 
@@ -3033,6 +3071,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_join_group_request(
     DartJoinGroupRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_eligibility(
+    DartLocalStateUpgradeEligibility self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_inspection(
+    DartLocalStateUpgradeInspection self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_result(
+    DartLocalStateUpgradeResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_status(
+    DartLocalStateUpgradeStatus self,
     SseSerializer serializer,
   );
 

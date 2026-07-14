@@ -6,6 +6,7 @@ pub mod email;
 pub mod error;
 pub mod group;
 pub mod identity;
+pub mod local_state_upgrade;
 pub mod message;
 pub mod profile;
 pub mod realtime;

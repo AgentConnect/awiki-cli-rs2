@@ -1,6 +1,7 @@
 import 'models/attachment.dart';
 import 'models/config.dart';
 import 'models/identity.dart';
+import 'models/local_state_upgrade.dart';
 import 'models/message.dart';
 import 'models/secure.dart';
 
@@ -9,6 +10,18 @@ UnsupportedError _unsupported() => UnsupportedError(
 );
 
 class AwikiImCore {
+  static Future<LocalStateUpgradeInspection> inspectLocalStateUpgrade({
+    required AwikiImCorePaths paths,
+  }) async {
+    throw _unsupported();
+  }
+
+  static Future<LocalStateUpgradeResult> upgradeLocalState({
+    required AwikiImCorePaths paths,
+  }) async {
+    throw _unsupported();
+  }
+
   static Future<AwikiImCore> open({
     required AwikiImCoreConfig config,
     required AwikiImCorePaths paths,
