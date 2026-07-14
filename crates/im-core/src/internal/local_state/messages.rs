@@ -3913,6 +3913,17 @@ FROM messages WHERE owner_identity_id = 'owner-id' AND msg_id = 'wire-message-1'
             },
         )
         .unwrap();
+        let baseline_counts = [
+            "messages",
+            "conversation_summaries",
+            "conversation_registry",
+        ]
+        .map(|table| {
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+        });
         let error = upsert_message(
             &db,
             &MessageRecord {
@@ -3941,17 +3952,23 @@ FROM messages WHERE owner_identity_id = 'owner-id' AND msg_id = 'wire-message-1'
         )
         .unwrap_err();
         assert!(error.to_string().contains("generation"));
-        for table in [
+        for (table, baseline) in [
             "messages",
             "conversation_summaries",
             "conversation_registry",
-        ] {
+        ]
+        .into_iter()
+        .zip(baseline_counts)
+        {
             let count: i64 = db
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                     row.get(0)
                 })
                 .unwrap();
-            assert_eq!(count, 0, "{table} must roll back with the failed upsert");
+            assert_eq!(
+                count, baseline,
+                "{table} must roll back with the failed upsert"
+            );
         }
     }
     use rusqlite::Connection;
