@@ -437,6 +437,19 @@ pub struct MessageMetadataAttribute {
 }
 ```
 
+Flutter 展示 DTO 额外把 canonical identity 提升为顶层强字段：
+
+```text
+conversationId          // required；来自 metadata.conversation_identity
+senderPeerPersonaId?    // verified Persona 已解析时提供
+senderDidSnapshot       // 消息发生时的不可变 sender DID
+```
+
+`threadKind/threadId` 仅保留作 wire/legacy 兼容，不得再作为 App 会话主键。可靠入站
+Direct 在 Persona 解析后把 `sender_peer_persona_id` 写入本地 projection metadata；若发送者
+Persona 尚不可解析，`senderPeerPersonaId` 保持空而 `senderDidSnapshot` 仍必须保留。新 App
+展示路径遇到空 `conversationId` 必须 fail closed，不得退回构造 `dm:<DID>`。
+
 `MessageMetadata` 只承载业务可解释的补充字段。不要把完整 wire payload 塞进 `metadata`。
 `conversation_identity.conversation_id` 是 list/detail/read/send/timeline repair 的跨层 routing
 key；`send_state` 和 `retry_plan` 是 pending/accepted/sent/failed 展示事实，不能由 App memory

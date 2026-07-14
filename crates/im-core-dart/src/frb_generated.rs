@@ -8380,6 +8380,9 @@ impl SseDecode for crate::dto::message::DartMessage {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_id = <String>::sse_decode(deserializer);
+        let mut var_conversationId = <String>::sse_decode(deserializer);
+        let mut var_senderPeerPersonaId = <Option<String>>::sse_decode(deserializer);
+        let mut var_senderDidSnapshot = <String>::sse_decode(deserializer);
         let mut var_threadKind = <String>::sse_decode(deserializer);
         let mut var_threadId = <String>::sse_decode(deserializer);
         let mut var_direction =
@@ -8393,6 +8396,9 @@ impl SseDecode for crate::dto::message::DartMessage {
         let mut var_metadata = <crate::dto::message::DartMessageMetadata>::sse_decode(deserializer);
         return crate::dto::message::DartMessage {
             id: var_id,
+            conversation_id: var_conversationId,
+            sender_peer_persona_id: var_senderPeerPersonaId,
+            sender_did_snapshot: var_senderDidSnapshot,
             thread_kind: var_threadKind,
             thread_id: var_threadId,
             direction: var_direction,
@@ -12501,6 +12507,9 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessage {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.id.into_into_dart().into_dart(),
+            self.conversation_id.into_into_dart().into_dart(),
+            self.sender_peer_persona_id.into_into_dart().into_dart(),
+            self.sender_did_snapshot.into_into_dart().into_dart(),
             self.thread_kind.into_into_dart().into_dart(),
             self.thread_id.into_into_dart().into_dart(),
             self.direction.into_into_dart().into_dart(),
@@ -15132,6 +15141,9 @@ impl SseEncode for crate::dto::message::DartMessage {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.id, serializer);
+        <String>::sse_encode(self.conversation_id, serializer);
+        <Option<String>>::sse_encode(self.sender_peer_persona_id, serializer);
+        <String>::sse_encode(self.sender_did_snapshot, serializer);
         <String>::sse_encode(self.thread_kind, serializer);
         <String>::sse_encode(self.thread_id, serializer);
         <crate::dto::message::DartMessageDirection>::sse_encode(self.direction, serializer);

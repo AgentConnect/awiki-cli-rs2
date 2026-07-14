@@ -180,6 +180,9 @@ pub struct DartMessageMetadataAttribute {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartMessage {
     pub id: String,
+    pub conversation_id: String,
+    pub sender_peer_persona_id: Option<String>,
+    pub sender_did_snapshot: String,
     pub thread_kind: String,
     pub thread_id: String,
     pub direction: DartMessageDirection,

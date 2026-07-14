@@ -782,6 +782,7 @@ fn metadata_attributes(metadata: &str) -> Vec<crate::messages::MessageMetadataAt
         "is_read",
         "senderName",
         "sender_name",
+        "sender_peer_persona_id",
     ]
     .into_iter()
     .filter_map(|key| {

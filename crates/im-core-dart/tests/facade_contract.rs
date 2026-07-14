@@ -227,6 +227,10 @@ fn sync_thread_after_result_preserves_ordered_message_page_metadata() {
             metadata: im_core::messages::MessageMetadata {
                 server_sequence: Some(992),
                 conversation_identity: Some(conversation_identity),
+                attributes: vec![im_core::messages::MessageMetadataAttribute {
+                    key: "sender_peer_persona_id".to_owned(),
+                    value: "persona:v1:bob".to_owned(),
+                }],
                 ..Default::default()
             },
         }],
@@ -238,6 +242,14 @@ fn sync_thread_after_result_preserves_ordered_message_page_metadata() {
     let dart: awiki_im_core::dto::message::DartSyncThreadAfterResult = core.into();
     assert_eq!(dart.messages.len(), 1);
     assert_eq!(dart.messages[0].id, "msg-1");
+    assert!(dart.messages[0]
+        .conversation_id
+        .starts_with("dm:peer-scope:v1:"));
+    assert_eq!(
+        dart.messages[0].sender_peer_persona_id.as_deref(),
+        Some("persona:v1:bob")
+    );
+    assert_eq!(dart.messages[0].sender_did_snapshot, "did:example:bob");
     assert_eq!(dart.messages[0].metadata.server_sequence, Some(992));
     let identity = dart.messages[0]
         .metadata

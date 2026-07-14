@@ -700,9 +700,26 @@ impl From<im_core::messages::MessageTarget> for crate::dto::message::DartMessage
 
 impl From<im_core::messages::Message> for DartMessage {
     fn from(value: im_core::messages::Message) -> Self {
+        let conversation_id = value
+            .metadata
+            .conversation_identity
+            .as_ref()
+            .map(|identity| identity.conversation_id.clone())
+            .unwrap_or_default();
+        let sender_peer_persona_id = value
+            .metadata
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key == "sender_peer_persona_id")
+            .map(|attribute| attribute.value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        let sender_did_snapshot = value.sender.as_str().to_owned();
         let (thread_kind, thread_id) = thread_ref_parts(value.thread);
         Self {
             id: value.id.as_str().to_string(),
+            conversation_id,
+            sender_peer_persona_id,
+            sender_did_snapshot,
             thread_kind,
             thread_id,
             direction: value.direction.into(),

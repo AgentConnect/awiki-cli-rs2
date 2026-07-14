@@ -2346,6 +2346,9 @@ extension on gen_message.DartMessageMetadata {
 extension on gen_message.DartMessage {
   Message _toModel() => Message(
     id: id,
+    conversationId: conversationId,
+    senderPeerPersonaId: senderPeerPersonaId,
+    senderDidSnapshot: senderDidSnapshot,
     threadKind: threadKind,
     threadId: threadId,
     direction: direction._toModel(),

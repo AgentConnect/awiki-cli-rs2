@@ -6732,20 +6732,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartMessage dco_decode_dart_message(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return DartMessage(
       id: dco_decode_String(arr[0]),
-      threadKind: dco_decode_String(arr[1]),
-      threadId: dco_decode_String(arr[2]),
-      direction: dco_decode_dart_message_direction(arr[3]),
-      sender: dco_decode_String(arr[4]),
-      receiver: dco_decode_opt_String(arr[5]),
-      group: dco_decode_opt_String(arr[6]),
-      body: dco_decode_dart_message_body_view(arr[7]),
-      sentAt: dco_decode_opt_String(arr[8]),
-      receivedAt: dco_decode_opt_String(arr[9]),
-      metadata: dco_decode_dart_message_metadata(arr[10]),
+      conversationId: dco_decode_String(arr[1]),
+      senderPeerPersonaId: dco_decode_opt_String(arr[2]),
+      senderDidSnapshot: dco_decode_String(arr[3]),
+      threadKind: dco_decode_String(arr[4]),
+      threadId: dco_decode_String(arr[5]),
+      direction: dco_decode_dart_message_direction(arr[6]),
+      sender: dco_decode_String(arr[7]),
+      receiver: dco_decode_opt_String(arr[8]),
+      group: dco_decode_opt_String(arr[9]),
+      body: dco_decode_dart_message_body_view(arr[10]),
+      sentAt: dco_decode_opt_String(arr[11]),
+      receivedAt: dco_decode_opt_String(arr[12]),
+      metadata: dco_decode_dart_message_metadata(arr[13]),
     );
   }
 
@@ -10135,6 +10138,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartMessage sse_decode_dart_message(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_id = sse_decode_String(deserializer);
+    var var_conversationId = sse_decode_String(deserializer);
+    var var_senderPeerPersonaId = sse_decode_opt_String(deserializer);
+    var var_senderDidSnapshot = sse_decode_String(deserializer);
     var var_threadKind = sse_decode_String(deserializer);
     var var_threadId = sse_decode_String(deserializer);
     var var_direction = sse_decode_dart_message_direction(deserializer);
@@ -10147,6 +10153,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_metadata = sse_decode_dart_message_metadata(deserializer);
     return DartMessage(
       id: var_id,
+      conversationId: var_conversationId,
+      senderPeerPersonaId: var_senderPeerPersonaId,
+      senderDidSnapshot: var_senderDidSnapshot,
       threadKind: var_threadKind,
       threadId: var_threadId,
       direction: var_direction,
@@ -13634,6 +13643,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_dart_message(DartMessage self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.id, serializer);
+    sse_encode_String(self.conversationId, serializer);
+    sse_encode_opt_String(self.senderPeerPersonaId, serializer);
+    sse_encode_String(self.senderDidSnapshot, serializer);
     sse_encode_String(self.threadKind, serializer);
     sse_encode_String(self.threadId, serializer);
     sse_encode_dart_message_direction(self.direction, serializer);

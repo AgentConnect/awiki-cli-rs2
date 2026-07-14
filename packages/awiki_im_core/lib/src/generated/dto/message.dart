@@ -678,6 +678,9 @@ class DartMarkThreadReadResult {
 
 class DartMessage {
   final String id;
+  final String conversationId;
+  final String? senderPeerPersonaId;
+  final String senderDidSnapshot;
   final String threadKind;
   final String threadId;
   final DartMessageDirection direction;
@@ -691,6 +694,9 @@ class DartMessage {
 
   const DartMessage({
     required this.id,
+    required this.conversationId,
+    this.senderPeerPersonaId,
+    required this.senderDidSnapshot,
     required this.threadKind,
     required this.threadId,
     required this.direction,
@@ -706,6 +712,9 @@ class DartMessage {
   @override
   int get hashCode =>
       id.hashCode ^
+      conversationId.hashCode ^
+      senderPeerPersonaId.hashCode ^
+      senderDidSnapshot.hashCode ^
       threadKind.hashCode ^
       threadId.hashCode ^
       direction.hashCode ^
@@ -723,6 +732,9 @@ class DartMessage {
       other is DartMessage &&
           runtimeType == other.runtimeType &&
           id == other.id &&
+          conversationId == other.conversationId &&
+          senderPeerPersonaId == other.senderPeerPersonaId &&
+          senderDidSnapshot == other.senderDidSnapshot &&
           threadKind == other.threadKind &&
           threadId == other.threadId &&
           direction == other.direction &&

@@ -284,6 +284,9 @@ enum ConversationMigrationState {
 class Message {
   const Message({
     required this.id,
+    required this.conversationId,
+    this.senderPeerPersonaId,
+    required this.senderDidSnapshot,
     required this.threadKind,
     required this.threadId,
     required this.direction,
@@ -297,6 +300,9 @@ class Message {
   });
 
   final String id;
+  final String conversationId;
+  final String? senderPeerPersonaId;
+  final String senderDidSnapshot;
   final String threadKind;
   final String threadId;
   final MessageDirection direction;

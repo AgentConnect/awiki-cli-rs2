@@ -68,9 +68,32 @@ pub(crate) fn canonicalize_inbound_message(
             .ok_or_else(|| crate::ImError::IdentityUnresolved {
                 detail: "inbound Direct peer DID is not bound to a verified Persona".to_owned(),
             })?;
+    if record.sender_did.trim() != record.owner_did.trim() {
+        set_metadata_string(
+            &mut record.metadata,
+            "sender_peer_persona_id",
+            &resolved.peer_persona_id,
+        );
+    }
     record.conversation_id = resolved.conversation_id.clone();
     record.thread_id = resolved.conversation_id;
     Ok(record)
+}
+
+fn set_metadata_string(metadata: &mut String, key: &str, value: &str) {
+    let mut object = if metadata.trim().is_empty() {
+        serde_json::Map::new()
+    } else {
+        let Ok(existing) = serde_json::from_str::<serde_json::Value>(metadata) else {
+            return;
+        };
+        let Some(object) = existing.as_object() else {
+            return;
+        };
+        object.clone()
+    };
+    object.insert(key.to_owned(), serde_json::Value::String(value.to_owned()));
+    *metadata = serde_json::Value::Object(object).to_string();
 }
 
 pub(crate) fn store(
@@ -312,16 +335,29 @@ mod tests {
         .unwrap();
 
         assert_eq!(pending_count(&db, "owner-a").unwrap(), 0);
-        let stored: (String, String, String) = db
+        let stored: (String, String, String, String) = db
             .query_row(
-                r#"SELECT conversation_id, wire_thread_kind, wire_thread_ref
+                r#"SELECT conversation_id, wire_thread_kind, wire_thread_ref, metadata
 FROM messages WHERE owner_identity_id = 'owner-a' AND msg_id = 'msg-unresolved-1'"#,
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
         assert_eq!(stored.0, conversation_id);
         assert_eq!(stored.1, "direct");
         assert_eq!(stored.2, "did:example:peer");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&stored.3).unwrap()["sender_peer_persona_id"],
+            serde_json::Value::String(
+                crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+                    "awiki.info",
+                    "user-peer",
+                    "peer.awiki.info",
+                    Some("verified"),
+                )
+                .unwrap()
+                .peer_persona_id
+            )
+        );
     }
 }
