@@ -45,7 +45,7 @@ crates/im-core/src/internal/local_state/schema.rs
 
 SQLite schema 18 之后逐步增加 conversation summary projection、local-first history hot index、`sync_state`、`thread_read_state` 和当前 message display read/send projection contract。当前消息显示链路的 owner key 是 `owner_identity_id + conversation_id`；升级或 rebuild 不得把 owner DID、legacy direct alias 或 App display thread id 当成新的持久 correctness key。
 
-SQLite schema 28 增加 owner-scoped `peer_personas`、`peer_identifiers`、`peer_profiles`、append-only `conversation_aliases`，并将 conversation registry 的 `lifecycle_state` 与 `resolution_state` 分离。Handle Authority domain 由 Core 统一执行 IDNA/lowercase 归一化；缺少稳定 authority subject 或可用 binding status 时不得回退 DID 创建 Persona。Group fallback `membership_id` 不包含 Handle binding generation，DID rebind 不改变 membership identity。
+SQLite schema 28 增加 owner-scoped `peer_personas`、`peer_identifiers`、`peer_profiles`、append-only `conversation_aliases`，并将 conversation registry 的 `lifecycle_state` 与 `resolution_state` 分离。Handle Authority domain 由 Core 统一执行 IDNA/lowercase 归一化；缺少稳定 authority subject 或可用 binding status 时不得回退 DID 创建 Persona。Group fallback `membership_id` 不包含 Handle binding generation，DID rebind 不改变 membership identity。`messages` 新增 immutable `wire_thread_kind + wire_thread_ref + wire_identity_resolution_state`，`conversation_id` 只作为 mutable canonical projection；canonical merge 不得再改写 wire thread、DID/group snapshot 或 `server_seq`，相同 message ID 的 wire facts 冲突必须 fail closed。
 
 release/0710 的生产 SQLite schema 27 不允许在普通 `open_writable` 中原地自动 bump。schema 28 Core 在 migration runner 接管前返回 typed `local_state_upgrade_required`，避免在一致性 backup、shadow migration 和 validation gate 完成前修改 source DB。正式 27→28 runner 与 fixture gate由 canonical conversation upgrade 模块负责。
 

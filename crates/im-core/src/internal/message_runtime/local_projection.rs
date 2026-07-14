@@ -790,6 +790,7 @@ fn group_e2ee_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("group", group_did)
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -820,6 +821,7 @@ fn group_e2ee_payload_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("group", group_did)
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -850,6 +852,7 @@ fn group_e2ee_attachment_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("group", group_did)
 }
 
 pub(crate) fn direct_conversation_id(peer_did: &str) -> String {
@@ -944,6 +947,7 @@ fn direct_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("direct", target_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -981,6 +985,7 @@ fn direct_outgoing_result_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("direct", target_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1028,6 +1033,7 @@ fn send_projection_record(
                 credential_name: credential_name(client),
                 ..crate::internal::local_state::messages::MessageRecord::default()
             }
+            .with_resolved_wire_thread("direct", target_did)
         }
         crate::messages::MessageTarget::Group(group) => {
             let group_did = group.as_str();
@@ -1060,6 +1066,7 @@ fn send_projection_record(
                 credential_name: credential_name(client),
                 ..crate::internal::local_state::messages::MessageRecord::default()
             }
+            .with_resolved_wire_thread("group", group_did)
         }
     };
     Ok(record)
@@ -1327,6 +1334,7 @@ fn direct_e2ee_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("direct", target_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1362,6 +1370,7 @@ fn direct_e2ee_attachment_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("direct", target_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1396,6 +1405,7 @@ fn group_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("group", group_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1432,6 +1442,7 @@ fn group_outgoing_result_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("group", group_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1466,6 +1477,7 @@ fn direct_attachment_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("direct", target_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1499,6 +1511,7 @@ fn group_attachment_outgoing_record(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
+    .with_resolved_wire_thread("group", group_did)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1849,7 +1862,8 @@ pub(crate) fn message_record_from_message(
         metadata: read_metadata_json(&message.metadata),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
-    })
+    }
+    .with_wire_thread_ref(&message.thread))
 }
 
 #[cfg(feature = "sqlite")]

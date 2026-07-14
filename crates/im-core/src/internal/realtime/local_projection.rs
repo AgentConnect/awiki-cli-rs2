@@ -98,7 +98,8 @@ pub fn plan_realtime_message_local_projection(
             ),
             credential_name: context.credential_name.trim().to_string(),
             ..crate::internal::local_state::messages::MessageRecord::default()
-        },
+        }
+        .with_wire_thread_ref(&message.thread),
     })
 }
 

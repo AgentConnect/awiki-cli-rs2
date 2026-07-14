@@ -108,6 +108,14 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     ] {
         assert_column_exists(&db, "group_members", column);
     }
+    for column in [
+        "wire_thread_kind",
+        "wire_thread_ref",
+        "wire_identity_resolution_state",
+    ] {
+        assert_column_exists(&db, "messages", column);
+    }
+    assert_column_exists(&db, "contacts", "peer_persona_id");
     for (table, key_columns) in [
         ("contacts", vec!["owner_identity_id", "did"]),
         (
@@ -488,6 +496,9 @@ fn local_state_schema_v17_creates_identity_owned_primary_keys_without_bumping_ac
         assert_primary_key_columns(&db, table, &key_columns);
     }
     assert_column_exists(&db, "messages", "conversation_id");
+    assert_column_exists(&db, "messages", "wire_thread_kind");
+    assert_column_exists(&db, "messages", "wire_thread_ref");
+    assert_column_exists(&db, "messages", "wire_identity_resolution_state");
     assert_index_exists(&db, "idx_identity_did_history_current");
     assert_index_exists(&db, "idx_identity_did_history_live_did_unique");
 }

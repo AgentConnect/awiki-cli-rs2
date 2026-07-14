@@ -432,7 +432,7 @@ async fn sync_delta_metadata_only_event_preserves_existing_message_body() {
                     "sev-1",
                     "1",
                     "msg-delta-body",
-                    11,
+                    10,
                 )],
                 "1",
                 false,

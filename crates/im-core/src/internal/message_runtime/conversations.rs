@@ -1139,6 +1139,13 @@ mod tests {
             "old did",
             "2026-05-21T00:00:01Z",
         );
+        fixture.seed_verified_peer_identity(
+            &client,
+            &[
+                "did:wba:anpclaw.com:bob:e1_old",
+                "did:wba:anpclaw.com:bob:e1_new",
+            ],
+        );
         fixture.seed_scoped_direct_message(
             &client,
             "msg-new-did",
@@ -1544,6 +1551,68 @@ mod tests {
                     metadata: r#"{"peer_user_id":"user-bob","peer_full_handle":"bob.anpclaw.com"}"#
                         .to_owned(),
                     ..crate::internal::local_state::messages::MessageRecord::default()
+                },
+            )
+            .unwrap();
+        }
+
+        fn seed_verified_peer_identity(&self, client: &crate::core::ImClient, peer_dids: &[&str]) {
+            let connection = crate::internal::local_state::open_writable(
+                &client.core_inner().sdk_paths().local_state.sqlite_path,
+            )
+            .unwrap();
+            let persona = crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+                "anpclaw.com",
+                "user-bob",
+                "bob.anpclaw.com",
+                Some("active"),
+            )
+            .unwrap();
+            crate::internal::local_state::peer_personas::upsert(
+                &connection,
+                &crate::internal::local_state::peer_personas::PeerPersonaRecord {
+                    owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                    persona: persona.clone(),
+                    binding_generation: Some("2".to_owned()),
+                    subject_type: "human".to_owned(),
+                    source: "test_authority".to_owned(),
+                    authority_revision: None,
+                    verified_at: "2026-07-14T00:00:00Z".to_owned(),
+                },
+            )
+            .unwrap();
+            for (index, did) in peer_dids.iter().enumerate() {
+                crate::internal::local_state::peer_identifiers::bind(
+                    &connection,
+                    &crate::internal::local_state::peer_identifiers::PeerIdentifierRecord {
+                        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                        peer_persona_id: persona.peer_persona_id.clone(),
+                        identifier_kind: "did".to_owned(),
+                        identifier_value: (*did).to_owned(),
+                        is_current: index + 1 == peer_dids.len(),
+                        binding_generation: Some((index + 1).to_string()),
+                        source: "test_authority".to_owned(),
+                        verified_at: "2026-07-14T00:00:00Z".to_owned(),
+                    },
+                )
+                .unwrap();
+            }
+            let route = crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::from_verified_persona(
+                client.current_identity().id.as_str(),
+                &persona,
+                peer_dids.last().copied().unwrap(),
+            )
+            .unwrap();
+            crate::internal::local_state::direct_peer_routes::upsert(&connection, &route).unwrap();
+            crate::internal::local_state::conversation_registry::ensure(
+                &connection,
+                &crate::internal::local_state::conversation_registry::ConversationRegistryRecord {
+                    owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                    owner_did: client.did().as_str().to_owned(),
+                    conversation_id: persona.direct_conversation_id(),
+                    thread_kind: "direct".to_owned(),
+                    thread_id: persona.direct_conversation_id(),
+                    activity_at: "2026-07-14T00:00:00Z".to_owned(),
                 },
             )
             .unwrap();

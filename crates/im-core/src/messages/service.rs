@@ -801,18 +801,6 @@ mod conversation_read_model_tests {
             crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
                 &requested_scope,
             );
-        let connection =
-            crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
-        connection
-            .execute(
-                r#"
-INSERT INTO direct_peer_routes
-    (owner_identity_id, conversation_id, peer_user_id, full_handle, current_did, updated_at)
-VALUES ('alice-id', ?1, 'user-mallory', 'mallory.awiki.test', 'did:example:mallory', '0')
-"#,
-                [conversation_id.as_str()],
-            )
-            .unwrap();
         fixture.seed_message(crate::internal::local_state::messages::MessageRecord {
             msg_id: "msg-valid-fallback-must-not-mask-corruption".to_owned(),
             conversation_id: conversation_id.clone(),
@@ -827,6 +815,18 @@ VALUES ('alice-id', ?1, 'user-mallory', 'mallory.awiki.test', 'did:example:mallo
             .to_string(),
             ..Fixture::message_record_defaults()
         });
+        let connection =
+            crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+        connection
+            .execute(
+                r#"
+INSERT INTO direct_peer_routes
+    (owner_identity_id, conversation_id, peer_user_id, full_handle, current_did, updated_at)
+VALUES ('alice-id', ?1, 'user-mallory', 'mallory.awiki.test', 'did:example:mallory', '0')
+"#,
+                [conversation_id.as_str()],
+            )
+            .unwrap();
 
         let err = super::resolve_service_conversation_thread(
             &client,

@@ -225,7 +225,7 @@ Summary rows are derived state and may be rebuilt from `messages`, but hot write
 - bounded mark-read, `mark_conversation_read`, and legacy `mark_thread_read` update unread / unread mention counters by delta where the previous state is known;
 - fallback rebuild remains for message conversation moves, legacy DID-to-peer-scope direct merges, last-message ambiguity, missing/corrupt summary rows, first unread mention ambiguity, and explicit owner repair;
 - committed invalidation and runtime store patches are emitted only after the local projection transaction commits;
-- peer-scope direct compatibility uses a SQLite TEMP, owner-scoped memo per local-state connection: after a legacy DID fold, or after a peer handle has been recognized, later upserts in the same actor/session do not rescan all legacy DID rows or rerun the large UPDATE; late legacy rows that match the memoized DID/handle are normalized into the peer-scope conversation before insert.
+- verified Direct alias correctness is persisted in owner-scoped `conversation_aliases`; a SQLite TEMP memo may skip repeated work within one connection, but it is only a performance cache and is never identity evidence. Legacy DID rows are folded only when the DID belongs to the target `peer_persona_id` in verified identifier history. The alias insert is conflict-visible and the legacy registry row becomes `merged + resolved` with an explicit target.
 
 `messages.ensure_conversation()` / Dart `client.messages.ensureConversation(...)` is the explicit creation boundary. Direct creation fails closed unless the owner has a valid `direct_peer_routes` entry for the canonical `dm:peer-scope:v1:*` ID. Group creation fails closed unless the owner has an active local membership projection. The registry stores `activity_at` independently of `last_message_at`; list pagination uses the opaque v2 cursor ordered by `activity_at DESC, conversation_id DESC`. Migration only backfills conversations already represented by summaries and never synthesizes every known route or group.
 
@@ -253,6 +253,22 @@ route. A verified legacy DID reference is written to append-only
 followed by target verification), never last-write-wins. Registry lifecycle and
 canonical resolution are orthogonal, so `active + legacy_unresolved` cannot be
 mistaken for a resolved canonical row.
+
+Schema 28 also separates immutable protocol facts from mutable local
+conversation projection. Each message stores `wire_thread_kind`,
+`wire_thread_ref`, and `wire_identity_resolution_state` alongside the canonical
+`conversation_id`; the old `thread_id` column is deprecated compatibility data.
+Canonical alias merge may update only `conversation_id`. It must not rewrite
+wire thread facts, sender/receiver DID snapshots, group identifiers, or
+`server_seq`. Replaying the same owner/message ID with different non-empty wire
+facts fails with `message_wire_identity_conflict`; a replay may only fill wire
+facts that were genuinely absent in a legacy row.
+
+Verified Handle projection writes the Persona, current and historical
+identifiers, route, Persona-keyed profile, and matching contact association as
+one local transaction. UI/profile consumers must eventually read display data
+by `peer_persona_id`; DID remains a credential snapshot or route address, not a
+profile identity key.
 
 An existing schema 27 database is not modified by ordinary schema open. Core
 returns `local_state_upgrade_required` until the release/0710 backup/shadow/

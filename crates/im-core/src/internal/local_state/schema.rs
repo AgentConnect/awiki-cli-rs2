@@ -951,6 +951,7 @@ fn create_schema(
     backfill_conversation_summaries: bool,
 ) -> crate::ImResult<()> {
     create_identity_owned_schema(connection, IdentityOwnedSchemaTableMode::Final)?;
+    ensure_column(connection, "contacts", "peer_persona_id", "TEXT")?;
     ensure_group_member_identity_columns(connection)?;
     connection
         .execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL)
@@ -1026,6 +1027,7 @@ CREATE TABLE IF NOT EXISTS contacts{suffix} (
     owner_identity_id TEXT NOT NULL,
     owner_did         TEXT NOT NULL DEFAULT '',
     did               TEXT NOT NULL,
+    peer_persona_id   TEXT,
     name              TEXT,
     handle            TEXT,
     nick_name         TEXT,
@@ -1068,6 +1070,9 @@ CREATE TABLE IF NOT EXISTS messages{suffix} (
     owner_identity_id TEXT NOT NULL,
     owner_did         TEXT NOT NULL DEFAULT '',
     conversation_id   TEXT NOT NULL DEFAULT '',
+    wire_thread_kind  TEXT NOT NULL DEFAULT '',
+    wire_thread_ref   TEXT NOT NULL DEFAULT '',
+    wire_identity_resolution_state TEXT NOT NULL DEFAULT 'legacy_unresolved',
     thread_id         TEXT NOT NULL,
     direction         INTEGER NOT NULL DEFAULT 0,
     sender_did        TEXT,
@@ -1316,6 +1321,7 @@ fn ensure_owner_identity_columns(connection: &Connection) -> crate::ImResult<()>
         "credential_name",
         "TEXT NOT NULL DEFAULT ''",
     )?;
+    ensure_column(connection, "contacts", "peer_persona_id", "TEXT")?;
     Ok(())
 }
 
@@ -1329,16 +1335,30 @@ fn ensure_direct_e2ee_session_columns(connection: &Connection) -> crate::ImResul
 }
 
 fn ensure_message_projection_columns(connection: &Connection) -> crate::ImResult<bool> {
-    if has_column(connection, "messages", "mentions_current_user")? {
-        return Ok(false);
+    let mut changed = false;
+    for (column, definition) in [
+        ("wire_thread_kind", "TEXT NOT NULL DEFAULT ''"),
+        ("wire_thread_ref", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "wire_identity_resolution_state",
+            "TEXT NOT NULL DEFAULT 'legacy_unresolved'",
+        ),
+    ] {
+        if !has_column(connection, "messages", column)? {
+            ensure_column(connection, "messages", column, definition)?;
+            changed = true;
+        }
     }
-    ensure_column(
-        connection,
-        "messages",
-        "mentions_current_user",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    Ok(true)
+    if !has_column(connection, "messages", "mentions_current_user")? {
+        ensure_column(
+            connection,
+            "messages",
+            "mentions_current_user",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        changed = true;
+    }
+    Ok(changed)
 }
 
 fn ensure_group_member_identity_columns(connection: &Connection) -> crate::ImResult<()> {

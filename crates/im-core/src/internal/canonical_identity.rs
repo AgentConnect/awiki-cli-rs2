@@ -41,8 +41,12 @@ impl PeerPersona {
     }
 
     pub(crate) fn direct_conversation_id(&self) -> String {
-        let input = format!("direct-conversation:v1\npersona:{}", self.peer_persona_id);
-        format!("dm:peer-scope:v1:{}", sha256_hex(input.as_bytes()))
+        crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+            &crate::internal::local_state::owner_scope::DirectPeerScope {
+                user_id: self.authority_subject_id.clone(),
+                full_handle: self.full_handle.clone(),
+            },
+        )
     }
 }
 

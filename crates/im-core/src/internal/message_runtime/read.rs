@@ -861,6 +861,9 @@ fn message_from_local_state_value(
         owner_identity_id: string_value(row.get("owner_identity_id")),
         owner_did: string_value(row.get("owner_did")),
         conversation_id: string_value(row.get("conversation_id")),
+        wire_thread_kind: string_value(row.get("wire_thread_kind")),
+        wire_thread_ref: string_value(row.get("wire_thread_ref")),
+        wire_identity_resolution_state: string_value(row.get("wire_identity_resolution_state")),
         thread_id: string_value(row.get("thread_id")),
         direction: row
             .get("direction")

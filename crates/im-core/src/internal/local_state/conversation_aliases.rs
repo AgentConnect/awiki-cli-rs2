@@ -99,6 +99,28 @@ WHERE owner_identity_id = ?1 AND alias_kind = ?2 AND alias_conversation_id = ?3"
     Ok(())
 }
 
+pub(crate) fn resolve(
+    connection: &Connection,
+    owner_identity_id: &str,
+    alias_kind: &str,
+    alias_conversation_id: &str,
+) -> crate::ImResult<Option<String>> {
+    connection
+        .query_row(
+            r#"SELECT canonical_conversation_id
+FROM conversation_aliases
+WHERE owner_identity_id = ?1 AND alias_kind = ?2 AND alias_conversation_id = ?3"#,
+            (
+                owner_identity_id.trim(),
+                alias_kind.trim(),
+                alias_conversation_id.trim(),
+            ),
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)
+}
+
 fn validate(record: &ConversationAliasRecord) -> crate::ImResult<()> {
     for (field, value) in [
         ("owner_identity_id", record.owner_identity_id.as_str()),

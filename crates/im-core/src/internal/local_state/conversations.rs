@@ -179,6 +179,9 @@ fn conversation_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Con
             owner_identity_id: owner_identity_id.clone(),
             owner_did: owner_did.clone(),
             conversation_id: conversation_id.clone(),
+            wire_thread_kind: String::new(),
+            wire_thread_ref: String::new(),
+            wire_identity_resolution_state: String::new(),
             thread_id: thread_id.clone(),
             direction: row.get::<_, Option<i64>>("direction")?.unwrap_or_default(),
             sender_did: row

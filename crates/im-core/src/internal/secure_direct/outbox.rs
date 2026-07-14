@@ -364,7 +364,7 @@ pub(crate) fn flush_queued_secure_outbox_rows_plan(
                 thread_id: conversation_id,
                 direction: 1,
                 sender_did: owner_did.trim().to_owned(),
-                receiver_did: target_did,
+                receiver_did: target_did.clone(),
                 content_type: content_type_for_message_type(&original_type).to_owned(),
                 content: plaintext,
                 sent_at: accepted_at,
@@ -373,7 +373,8 @@ pub(crate) fn flush_queued_secure_outbox_rows_plan(
                 metadata,
                 credential_name: credential_name.trim().to_owned(),
                 ..crate::internal::local_state::messages::MessageRecord::default()
-            },
+            }
+            .with_resolved_wire_thread("direct", target_did),
         });
         if let StoreMessageOutcome::Error(err) = outcome.store_message {
             warnings.push(format!(

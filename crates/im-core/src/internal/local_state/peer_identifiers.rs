@@ -126,3 +126,27 @@ WHERE owner_identity_id = ?6 AND identifier_kind = ?7 AND identifier_value = ?8"
         .map_err(super::local_state_unavailable)?;
     Ok(())
 }
+
+pub(crate) fn dids_for_persona(
+    connection: &Connection,
+    owner_identity_id: &str,
+    peer_persona_id: &str,
+) -> crate::ImResult<Vec<String>> {
+    let mut statement = connection
+        .prepare(
+            r#"SELECT identifier_value FROM peer_identifiers
+WHERE owner_identity_id = ?1 AND peer_persona_id = ?2 AND identifier_kind = 'did'
+ORDER BY is_current DESC, last_seen_at DESC, identifier_value"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map((owner_identity_id.trim(), peer_persona_id.trim()), |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(super::local_state_unavailable)?;
+    let mut dids = Vec::new();
+    for row in rows {
+        dids.push(row.map_err(super::local_state_unavailable)?);
+    }
+    Ok(dids)
+}

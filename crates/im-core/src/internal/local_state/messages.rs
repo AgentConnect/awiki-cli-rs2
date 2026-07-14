@@ -9,6 +9,9 @@ pub(crate) struct MessageRecord {
     pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
     pub(crate) conversation_id: String,
+    pub(crate) wire_thread_kind: String,
+    pub(crate) wire_thread_ref: String,
+    pub(crate) wire_identity_resolution_state: String,
     pub(crate) thread_id: String,
     pub(crate) direction: i64,
     pub(crate) sender_did: String,
@@ -27,6 +30,184 @@ pub(crate) struct MessageRecord {
     pub(crate) metadata: String,
     pub(crate) mentions_current_user: bool,
     pub(crate) credential_name: String,
+}
+
+impl MessageRecord {
+    pub(crate) fn with_resolved_wire_thread(
+        mut self,
+        kind: impl Into<String>,
+        reference: impl Into<String>,
+    ) -> Self {
+        self.wire_thread_kind = kind.into();
+        self.wire_thread_ref = reference.into();
+        self.wire_identity_resolution_state = "resolved".to_owned();
+        self
+    }
+
+    pub(crate) fn with_wire_thread_ref(self, thread: &crate::messages::ThreadRef) -> Self {
+        let (kind, reference) = crate::messages::thread_ref_parts(thread);
+        self.with_resolved_wire_thread(kind, reference)
+    }
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WireThreadIdentity {
+    kind: String,
+    reference: String,
+    resolution_state: String,
+}
+
+#[cfg(feature = "sqlite")]
+fn wire_identity_for_record(record: &MessageRecord) -> crate::ImResult<WireThreadIdentity> {
+    let explicit_kind = record.wire_thread_kind.trim();
+    let explicit_ref = record.wire_thread_ref.trim();
+    if explicit_kind.is_empty() != explicit_ref.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("wire_thread_ref".to_owned()),
+            "wire thread kind and reference must be provided together",
+        ));
+    }
+    if !explicit_kind.is_empty() {
+        return validated_wire_identity(
+            explicit_kind,
+            explicit_ref,
+            record.wire_identity_resolution_state.as_str(),
+        );
+    }
+
+    let group_ref =
+        non_empty(record.group_did.as_str()).or_else(|| non_empty(record.group_id.as_str()));
+    if let Some(group_ref) = group_ref {
+        return validated_wire_identity("group", group_ref, "resolved");
+    }
+    let owner_did = record.owner_did.trim();
+    let direct_ref = [record.sender_did.as_str(), record.receiver_did.as_str()]
+        .into_iter()
+        .map(str::trim)
+        .find(|did| did.starts_with("did:") && *did != owner_did);
+    if let Some(direct_ref) = direct_ref {
+        return validated_wire_identity("direct", direct_ref, "resolved");
+    }
+
+    let compatibility_thread = record.thread_id.trim();
+    if compatibility_thread.is_empty() {
+        return Ok(WireThreadIdentity {
+            kind: String::new(),
+            reference: String::new(),
+            resolution_state: "legacy_unresolved".to_owned(),
+        });
+    }
+    if let Some(group_ref) = compatibility_thread.strip_prefix("group:") {
+        return validated_wire_identity("group", group_ref, "legacy_unresolved");
+    }
+    if let Some(mail_ref) = compatibility_thread.strip_prefix("mail:") {
+        return validated_wire_identity("mail", mail_ref, "resolved");
+    }
+    if let Some(direct_ref) = compatibility_thread.strip_prefix("dm:") {
+        let resolution_state = if direct_ref.starts_with("peer-scope:") {
+            "legacy_unresolved"
+        } else {
+            "resolved"
+        };
+        return validated_wire_identity("direct", direct_ref, resolution_state);
+    }
+    validated_wire_identity("thread", compatibility_thread, "resolved")
+}
+
+#[cfg(feature = "sqlite")]
+fn validated_wire_identity(
+    kind: &str,
+    reference: &str,
+    resolution_state: &str,
+) -> crate::ImResult<WireThreadIdentity> {
+    let kind = kind.trim().to_ascii_lowercase();
+    if !matches!(kind.as_str(), "direct" | "group" | "thread" | "mail") {
+        return Err(crate::ImError::invalid_input(
+            Some("wire_thread_kind".to_owned()),
+            "wire thread kind must be direct, group, thread, or mail",
+        ));
+    }
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("wire_thread_ref".to_owned()),
+            "wire thread reference must not be empty",
+        ));
+    }
+    let resolution_state = match resolution_state.trim() {
+        "" | "resolved" => "resolved",
+        "legacy_unresolved" => "legacy_unresolved",
+        _ => {
+            return Err(crate::ImError::invalid_input(
+                Some("wire_identity_resolution_state".to_owned()),
+                "wire identity resolution state must be resolved or legacy_unresolved",
+            ));
+        }
+    };
+    Ok(WireThreadIdentity {
+        kind,
+        reference: reference.to_owned(),
+        resolution_state: resolution_state.to_owned(),
+    })
+}
+
+#[cfg(feature = "sqlite")]
+fn assert_existing_wire_identity_compatible(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    message_id: &str,
+    record: &MessageRecord,
+    wire_identity: &WireThreadIdentity,
+) -> crate::ImResult<()> {
+    let existing = connection
+        .query_row(
+            r#"SELECT wire_thread_kind, wire_thread_ref, sender_did, receiver_did,
+                      group_id, group_did, server_seq
+FROM messages
+WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
+            (owner_identity_id, message_id),
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                    row.get::<_, Option<i64>>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some((kind, reference, sender, receiver, group_id, group_did, server_seq)) = existing
+    else {
+        return Ok(());
+    };
+    let text_conflict = [
+        (kind.as_str(), wire_identity.kind.as_str()),
+        (reference.as_str(), wire_identity.reference.as_str()),
+        (sender.as_str(), record.sender_did.as_str()),
+        (receiver.as_str(), record.receiver_did.as_str()),
+        (group_id.as_str(), record.group_id.as_str()),
+        (group_did.as_str(), record.group_did.as_str()),
+    ]
+    .into_iter()
+    .any(|(existing, incoming)| {
+        !existing.trim().is_empty()
+            && !incoming.trim().is_empty()
+            && existing.trim() != incoming.trim()
+    });
+    let sequence_conflict = server_seq
+        .zip(record.server_seq)
+        .is_some_and(|(existing, incoming)| existing != incoming);
+    if text_conflict || sequence_conflict {
+        return Err(crate::ImError::MessageWireIdentityConflict {
+            message_id: message_id.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(feature = "sqlite")]
@@ -88,6 +269,14 @@ fn upsert_message_record(
     let thread_id = conversation_id.clone();
     let canonical_group_msg_id = canonical_group_message_id(record, &conversation_id);
     let msg_id = canonical_group_msg_id.clone().unwrap_or(input_msg_id);
+    let wire_identity = wire_identity_for_record(record)?;
+    assert_existing_wire_identity_compatible(
+        connection,
+        &owner_identity_id,
+        &msg_id,
+        record,
+        &wire_identity,
+    )?;
     let group_aliases = group_message_aliases(record, &msg_id);
     let group_duplicate_rows = existing_group_duplicate_rows(
         connection,
@@ -177,26 +366,40 @@ fn upsert_message_record(
         .execute(
             r#"
 INSERT INTO messages
-    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did,
+    (msg_id, owner_identity_id, owner_did, conversation_id,
+     wire_thread_kind, wire_thread_ref, wire_identity_resolution_state,
+     thread_id, direction, sender_did, receiver_did,
      group_id, group_did, content_type, content, title, server_seq, sent_at, stored_at,
      is_e2ee, is_read, sender_name, metadata, mentions_current_user, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+        ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
 ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
     owner_did = excluded.owner_did,
     conversation_id = excluded.conversation_id,
-    thread_id = excluded.thread_id,
+    wire_thread_kind = CASE
+        WHEN TRIM(COALESCE(messages.wire_thread_kind, '')) = '' THEN excluded.wire_thread_kind
+        ELSE messages.wire_thread_kind
+    END,
+    wire_thread_ref = CASE
+        WHEN TRIM(COALESCE(messages.wire_thread_ref, '')) = '' THEN excluded.wire_thread_ref
+        ELSE messages.wire_thread_ref
+    END,
+    wire_identity_resolution_state = CASE
+        WHEN messages.wire_identity_resolution_state = 'resolved' THEN 'resolved'
+        ELSE excluded.wire_identity_resolution_state
+    END,
     direction = excluded.direction,
-    sender_did = excluded.sender_did,
-    receiver_did = excluded.receiver_did,
-    group_id = excluded.group_id,
-    group_did = excluded.group_did,
+    sender_did = COALESCE(NULLIF(messages.sender_did, ''), excluded.sender_did),
+    receiver_did = COALESCE(NULLIF(messages.receiver_did, ''), excluded.receiver_did),
+    group_id = COALESCE(NULLIF(messages.group_id, ''), excluded.group_id),
+    group_did = COALESCE(NULLIF(messages.group_did, ''), excluded.group_did),
     content_type = CASE
         WHEN excluded.content IS NULL THEN messages.content_type
         ELSE excluded.content_type
     END,
     content = COALESCE(excluded.content, messages.content),
     title = COALESCE(excluded.title, messages.title),
-    server_seq = COALESCE(excluded.server_seq, messages.server_seq),
+    server_seq = COALESCE(messages.server_seq, excluded.server_seq),
     sent_at = excluded.sent_at,
     stored_at = excluded.stored_at,
     is_e2ee = CASE WHEN excluded.is_e2ee = 1 OR messages.is_e2ee = 1 THEN 1 ELSE 0 END,
@@ -213,6 +416,9 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
                 owner_identity_id,
                 owner_did,
                 conversation_id,
+                wire_identity.kind,
+                wire_identity.reference,
+                wire_identity.resolution_state,
                 thread_id,
                 record.direction,
                 nullable_text(&record.sender_did),
@@ -266,11 +472,6 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
         )?;
     } else {
         super::conversation_summaries::rebuild_touched(connection, &touched)?;
-    }
-    // The alias can remain on disk for diagnostics, but it must stop being a
-    // recent-conversation identity as soon as its messages become canonical.
-    for legacy_id in &merged_legacy_ids {
-        super::conversation_registry::deactivate(connection, &owner_identity_id, legacy_id)?;
     }
     super::conversation_registry::ensure_from_summary(
         connection,
@@ -1128,9 +1329,7 @@ pub(crate) fn reconcile_peer_scope_direct_conversations(
         }
     }
     super::conversation_summaries::rebuild_touched(connection, &touched)?;
-    for legacy_id in merged_legacy_ids {
-        super::conversation_registry::deactivate(connection, &owner_identity_id, &legacy_id)?;
-    }
+    let _ = merged_legacy_ids;
     Ok(())
 }
 
@@ -1156,6 +1355,12 @@ fn message_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageR
         conversation_id: row
             .get::<_, Option<String>>("conversation_id")?
             .unwrap_or_default(),
+        wire_thread_kind: optional_string_column(row, "wire_thread_kind")?,
+        wire_thread_ref: optional_string_column(row, "wire_thread_ref")?,
+        wire_identity_resolution_state: optional_string_column(
+            row,
+            "wire_identity_resolution_state",
+        )?,
         thread_id: row
             .get::<_, Option<String>>("thread_id")?
             .unwrap_or_default(),
@@ -1197,6 +1402,15 @@ fn message_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageR
             .get::<_, Option<String>>("credential_name")?
             .unwrap_or_default(),
     })
+}
+
+#[cfg(feature = "sqlite")]
+fn optional_string_column(row: &rusqlite::Row<'_>, column: &str) -> rusqlite::Result<String> {
+    match row.get::<_, Option<String>>(column) {
+        Ok(value) => Ok(value.unwrap_or_default()),
+        Err(rusqlite::Error::InvalidColumnName(_)) => Ok(String::new()),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -2992,39 +3206,66 @@ fn merge_legacy_direct_did_conversation(
     if legacy_direct_merge_memo_contains(connection, &owner_identity_id, &conversation_id)? {
         return Ok(Vec::new());
     }
-    if peer_scope_user_id_from_record(record).as_deref() == peer_current_did(record).as_deref() {
+    let Some(route) =
+        super::direct_peer_routes::get(connection, &owner_identity_id, &conversation_id)?
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(peer_persona_id) = route
+        .peer_persona_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(Vec::new());
+    };
+    super::conversation_registry::ensure(
+        connection,
+        &super::conversation_registry::ConversationRegistryRecord {
+            owner_identity_id: owner_identity_id.clone(),
+            owner_did: owner_did_for_record(record),
+            conversation_id: conversation_id.clone(),
+            thread_kind: "direct".to_owned(),
+            thread_id: conversation_id.clone(),
+            activity_at: default_string(&record.stored_at, &now_utc_like()),
+        },
+    )?;
+    let legacy_conversation_ids = verified_legacy_direct_conversation_ids(
+        connection,
+        &owner_identity_id,
+        peer_persona_id,
+        &conversation_id,
+    )?;
+    if legacy_conversation_ids.is_empty() {
+        mark_legacy_direct_merge_memo(connection, &owner_identity_id, &conversation_id, &[], 0)?;
         return Ok(Vec::new());
     }
-    let peer_full_handle = legacy_direct_peer_full_handle(record);
-    let legacy_conversation_ids =
-        legacy_direct_conversation_ids_for_peer(connection, &owner_identity_id, record)?;
-    if legacy_conversation_ids.is_empty() {
-        if let Some(peer_full_handle) = peer_full_handle.as_deref() {
-            mark_legacy_direct_merge_memo(
-                connection,
-                &owner_identity_id,
-                &conversation_id,
-                &[],
-                Some(peer_full_handle),
-                0,
-            )?;
-        }
-        return Ok(Vec::new());
+    let verified_at = now_utc_like();
+    for legacy_id in &legacy_conversation_ids {
+        super::conversation_aliases::insert(
+            connection,
+            &super::conversation_aliases::ConversationAliasRecord {
+                owner_identity_id: owner_identity_id.clone(),
+                alias_kind: "legacy_direct_did".to_owned(),
+                alias_conversation_id: legacy_id.clone(),
+                canonical_conversation_id: conversation_id.clone(),
+                source: "verified_peer_persona".to_owned(),
+                verified_at: verified_at.clone(),
+            },
+        )?;
     }
     let placeholders = vec!["?"; legacy_conversation_ids.len()].join(",");
     let statement = format!(
         r#"
 UPDATE messages
-SET conversation_id = ?,
-    thread_id = ?
+SET conversation_id = ?
 WHERE owner_identity_id = ?
   AND NULLIF(TRIM(COALESCE(group_id, '')), '') IS NULL
   AND NULLIF(TRIM(COALESCE(group_did, '')), '') IS NULL
   AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})"#
     );
     let mut params: Vec<&dyn rusqlite::ToSql> =
-        Vec::with_capacity(legacy_conversation_ids.len() + 3);
-    params.push(&conversation_id);
+        Vec::with_capacity(legacy_conversation_ids.len() + 2);
     params.push(&conversation_id);
     params.push(&owner_identity_id);
     for legacy_id in &legacy_conversation_ids {
@@ -3038,10 +3279,61 @@ WHERE owner_identity_id = ?
         &owner_identity_id,
         &conversation_id,
         &legacy_conversation_ids,
-        peer_full_handle.as_deref(),
         merged_rows as i64,
     )?;
+    for legacy_id in &legacy_conversation_ids {
+        super::conversation_registry::mark_merged(
+            connection,
+            &owner_identity_id,
+            legacy_id,
+            &conversation_id,
+        )?;
+    }
     Ok(legacy_conversation_ids)
+}
+
+#[cfg(feature = "sqlite")]
+fn verified_legacy_direct_conversation_ids(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    peer_persona_id: &str,
+    canonical_conversation_id: &str,
+) -> crate::ImResult<Vec<String>> {
+    let mut ids = Vec::new();
+    for did in
+        super::peer_identifiers::dids_for_persona(connection, owner_identity_id, peer_persona_id)?
+    {
+        let candidate = crate::internal::local_state::owner_scope::direct_conversation_id(&did);
+        if candidate == canonical_conversation_id {
+            continue;
+        }
+        let exists = connection
+            .query_row(
+                r#"SELECT 1
+FROM (
+    SELECT conversation_id FROM conversation_registry
+    WHERE owner_identity_id = ?1
+    UNION ALL
+    SELECT COALESCE(NULLIF(conversation_id, ''), thread_id) FROM messages
+    WHERE owner_identity_id = ?1
+)
+WHERE conversation_id = ?2 LIMIT 1"#,
+                (owner_identity_id, candidate.as_str()),
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(super::local_state_unavailable)?
+            .is_some();
+        if exists {
+            push_unique(&mut ids, candidate);
+        }
+    }
+    Ok(ids)
+}
+
+#[cfg(feature = "sqlite")]
+fn owner_did_for_record(record: &MessageRecord) -> String {
+    record.owner_did.trim().to_owned()
 }
 
 #[cfg(feature = "sqlite")]
@@ -3075,13 +3367,9 @@ fn mark_legacy_direct_merge_memo(
     owner_identity_id: &str,
     conversation_id: &str,
     legacy_conversation_ids: &[String],
-    peer_full_handle: Option<&str>,
     merged_rows: i64,
 ) -> crate::ImResult<()> {
     ensure_legacy_direct_merge_memo(connection)?;
-    let peer_full_handle = peer_full_handle
-        .map(normalize_full_handle)
-        .filter(|value| !value.is_empty());
     let updated_at = now_utc_like();
     connection
         .execute(
@@ -3107,19 +3395,6 @@ VALUES (?1, ?2, ?3)"#,
             )
             .map_err(super::local_state_unavailable)?;
     }
-    if let Some(peer_full_handle) = peer_full_handle {
-        connection
-            .execute(
-                r#"
-INSERT INTO temp.legacy_direct_merge_memo_handles
-    (owner_identity_id, peer_full_handle, peer_scope_conversation_id)
-VALUES (?1, ?2, ?3)
-ON CONFLICT(owner_identity_id, peer_full_handle) DO UPDATE SET
-    peer_scope_conversation_id = excluded.peer_scope_conversation_id"#,
-                (owner_identity_id, peer_full_handle, conversation_id),
-            )
-            .map_err(super::local_state_unavailable)?;
-    }
     Ok(())
 }
 
@@ -3132,12 +3407,6 @@ fn clear_legacy_direct_merge_memo_for_owner(
     connection
         .execute(
             "DELETE FROM temp.legacy_direct_merge_memo_ids WHERE owner_identity_id = ?1",
-            [owner_identity_id],
-        )
-        .map_err(super::local_state_unavailable)?;
-    connection
-        .execute(
-            "DELETE FROM temp.legacy_direct_merge_memo_handles WHERE owner_identity_id = ?1",
             [owner_identity_id],
         )
         .map_err(super::local_state_unavailable)?;
@@ -3173,13 +3442,7 @@ CREATE TEMP TABLE IF NOT EXISTS legacy_direct_merge_memo_ids (
     PRIMARY KEY (owner_identity_id, peer_scope_conversation_id, legacy_conversation_id)
 );
 CREATE INDEX IF NOT EXISTS temp.idx_legacy_direct_merge_memo_ids_lookup
-ON legacy_direct_merge_memo_ids(owner_identity_id, legacy_conversation_id);
-CREATE TEMP TABLE IF NOT EXISTS legacy_direct_merge_memo_handles (
-    owner_identity_id TEXT NOT NULL,
-    peer_full_handle TEXT NOT NULL,
-    peer_scope_conversation_id TEXT NOT NULL,
-    PRIMARY KEY (owner_identity_id, peer_full_handle)
-);"#,
+ON legacy_direct_merge_memo_ids(owner_identity_id, legacy_conversation_id);"#,
         )
         .map_err(super::local_state_unavailable)
 }
@@ -3192,6 +3455,16 @@ fn cached_peer_scope_conversation_id_for_legacy_direct(
 ) -> crate::ImResult<Option<String>> {
     if !conversation_id.trim().starts_with("dm:did:wba:") {
         return Ok(None);
+    }
+    for alias_kind in ["legacy_direct_did", "verified_did"] {
+        if let Some(canonical) = super::conversation_aliases::resolve(
+            connection,
+            owner_identity_id,
+            alias_kind,
+            conversation_id,
+        )? {
+            return Ok(Some(canonical));
+        }
     }
     ensure_legacy_direct_merge_memo(connection)?;
     let cached_by_id = connection
@@ -3210,32 +3483,7 @@ LIMIT 1"#,
             other => Err(other),
         })
         .map_err(super::local_state_unavailable)?;
-    if cached_by_id.is_some() {
-        return Ok(cached_by_id);
-    }
-
-    let Some(peer_full_handle) = did_from_direct_conversation_id(conversation_id)
-        .as_deref()
-        .and_then(did_full_handle)
-    else {
-        return Ok(None);
-    };
-    connection
-        .query_row(
-            r#"
-SELECT peer_scope_conversation_id
-FROM temp.legacy_direct_merge_memo_handles
-WHERE owner_identity_id = ?1 AND peer_full_handle = ?2
-LIMIT 1"#,
-            (owner_identity_id, peer_full_handle),
-            |row| row.get::<_, String>(0),
-        )
-        .map(Some)
-        .or_else(|err| match err {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(other),
-        })
-        .map_err(super::local_state_unavailable)
+    Ok(cached_by_id)
 }
 
 #[cfg(feature = "sqlite")]
@@ -3568,6 +3816,85 @@ fn now_utc_like() -> String {
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+
+    fn wire_identity_record() -> MessageRecord {
+        MessageRecord {
+            msg_id: "wire-message-1".to_owned(),
+            owner_identity_id: "owner-id".to_owned(),
+            owner_did: "did:example:owner".to_owned(),
+            conversation_id: "dm:peer-scope:v1:first".to_owned(),
+            thread_id: "dm:peer-scope:v1:first".to_owned(),
+            direction: 1,
+            sender_did: "did:example:owner".to_owned(),
+            receiver_did: "did:example:peer".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "hello".to_owned(),
+            server_seq: Some(7),
+            stored_at: "2026-07-14T00:00:00Z".to_owned(),
+            ..MessageRecord::default()
+        }
+        .with_resolved_wire_thread("direct", "did:example:peer")
+    }
+
+    #[test]
+    fn canonical_reprojection_never_rewrites_wire_identity() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let original = wire_identity_record();
+        upsert_message(&db, &original).unwrap();
+
+        let mut reprojected = original;
+        reprojected.conversation_id = "dm:peer-scope:v1:canonical".to_owned();
+        reprojected.thread_id = "dm:peer-scope:v1:canonical".to_owned();
+        upsert_message(&db, &reprojected).unwrap();
+
+        let stored: (String, String, String, String, String, i64) = db
+            .query_row(
+                r#"SELECT conversation_id, thread_id, wire_thread_kind, wire_thread_ref,
+                          wire_identity_resolution_state, server_seq
+FROM messages WHERE owner_identity_id = 'owner-id' AND msg_id = 'wire-message-1'"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(stored.0, "dm:peer-scope:v1:canonical");
+        assert_eq!(stored.1, "dm:peer-scope:v1:first");
+        assert_eq!(stored.2, "direct");
+        assert_eq!(stored.3, "did:example:peer");
+        assert_eq!(stored.4, "resolved");
+        assert_eq!(stored.5, 7);
+    }
+
+    #[test]
+    fn same_message_id_with_different_wire_facts_fails_closed() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let original = wire_identity_record();
+        upsert_message(&db, &original).unwrap();
+
+        let mut conflicting_thread = original.clone();
+        conflicting_thread.wire_thread_ref = "did:example:other".to_owned();
+        assert!(matches!(
+            upsert_message(&db, &conflicting_thread).unwrap_err(),
+            crate::ImError::MessageWireIdentityConflict { .. }
+        ));
+
+        let mut conflicting_sequence = original;
+        conflicting_sequence.server_seq = Some(8);
+        assert!(matches!(
+            upsert_message(&db, &conflicting_sequence).unwrap_err(),
+            crate::ImError::MessageWireIdentityConflict { .. }
+        ));
+    }
 
     #[test]
     fn local_state_message_upsert_rolls_back_all_projections_on_post_write_failure() {
@@ -5033,7 +5360,7 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
             "2026-06-27T00:00:02Z",
             false,
         );
-        metadata_only.server_seq = Some(11);
+        metadata_only.server_seq = Some(10);
         upsert_message(&db, &metadata_only).unwrap();
 
         let content = db
@@ -5931,6 +6258,12 @@ VALUES ('msg-legacy-empty-json', ?1, ?2, ?3, ?3, 0,
         let legacy_conversation_id =
             crate::internal::local_state::owner_scope::direct_conversation_id(peer_old_did);
         let scoped_conversation_id = scoped_zhuochengtest_conversation_id();
+        seed_verified_peer_identity(
+            &db,
+            owner_identity_id,
+            owner_did,
+            &[peer_old_did, peer_new_did],
+        );
 
         seed_message_row(
             &db,
@@ -6048,6 +6381,12 @@ VALUES ('msg-legacy-empty-json', ?1, ?2, ?3, ?3, 0,
                 "owner-2-new",
             ),
         ] {
+            seed_verified_peer_identity(
+                &db,
+                owner_identity_id,
+                owner_did,
+                &[peer_old_did, peer_new_did],
+            );
             seed_message_row(
                 &db,
                 old_msg,
@@ -6176,24 +6515,9 @@ VALUES ('msg-legacy-empty-json', ?1, ?2, ?3, ?3, 0,
             },
         )
         .unwrap();
-        let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
-            "peer-user-id",
-            "zhuochengtest.anpclaw.com",
-        )
-        .unwrap();
-        let scoped_conversation_id =
-            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
-                &scope,
-            );
-        let route = crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::new(
-            "owner-id",
-            scoped_conversation_id.clone(),
-            "peer-user-id",
-            "zhuochengtest.anpclaw.com",
-            "did:wba:anpclaw.com:zhuochengtest:e1_new",
-        )
-        .unwrap();
-        crate::internal::local_state::direct_peer_routes::upsert(&db, &route).unwrap();
+        let new_peer_did = "did:wba:anpclaw.com:zhuochengtest:e1_new";
+        seed_verified_peer_identity(&db, "owner-id", owner_did, &[old_peer_did, new_peer_did]);
+        let scoped_conversation_id = scoped_zhuochengtest_conversation_id();
 
         upsert_message(
             &db,
@@ -6205,7 +6529,7 @@ VALUES ('msg-legacy-empty-json', ?1, ?2, ?3, ?3, 0,
                 thread_id: scoped_conversation_id.clone(),
                 direction: 1,
                 sender_did: "did:wba:anpclaw.com:zhuocheng:e1_owner".to_owned(),
-                receiver_did: "did:wba:anpclaw.com:zhuochengtest:e1_new".to_owned(),
+                receiver_did: new_peer_did.to_owned(),
                 content_type: "text/plain".to_owned(),
                 content: "new scoped message".to_owned(),
                 stored_at: "2026-06-10T00:00:01Z".to_owned(),
@@ -6243,21 +6567,63 @@ VALUES ('msg-legacy-empty-json', ?1, ?2, ?3, ?3, 0,
             .unwrap();
         assert_eq!(summary_conversation_id, scoped_conversation_id);
         assert_eq!(summary_count, 2);
+        let old_wire: (String, String, String, String) = db
+            .query_row(
+                r#"SELECT conversation_id, thread_id, wire_thread_kind, wire_thread_ref
+FROM messages WHERE owner_identity_id = 'owner-id' AND msg_id = 'msg-old'"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(old_wire.0, scoped_conversation_id);
+        assert_eq!(old_wire.1, "dm:did:wba:anpclaw.com:zhuochengtest:e1_old");
+        assert_eq!(old_wire.2, "direct");
+        assert_eq!(old_wire.3, old_peer_did);
         let registry_rows = db
             .prepare(
-                "SELECT conversation_id, is_active FROM conversation_registry WHERE owner_identity_id = 'owner-id' ORDER BY conversation_id",
+                "SELECT conversation_id, is_active, lifecycle_state, resolution_state, COALESCE(merged_into_conversation_id, '') FROM conversation_registry WHERE owner_identity_id = 'owner-id' ORDER BY conversation_id",
             )
             .unwrap()
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(
             registry_rows,
             vec![
-                ("dm:did:wba:anpclaw.com:zhuochengtest:e1_old".to_owned(), 0),
-                (summary_conversation_id, 1),
+                (
+                    "dm:did:wba:anpclaw.com:zhuochengtest:e1_old".to_owned(),
+                    0,
+                    "merged".to_owned(),
+                    "resolved".to_owned(),
+                    scoped_conversation_id.clone(),
+                ),
+                (
+                    summary_conversation_id,
+                    1,
+                    "active".to_owned(),
+                    "resolved".to_owned(),
+                    String::new(),
+                ),
             ]
+        );
+        assert_eq!(
+            crate::internal::local_state::conversation_aliases::resolve(
+                &db,
+                "owner-id",
+                "legacy_direct_did",
+                "dm:did:wba:anpclaw.com:zhuochengtest:e1_old",
+            )
+            .unwrap(),
+            Some(scoped_conversation_id.clone())
         );
 
         upsert_message(
@@ -6367,6 +6733,69 @@ VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3,
         )
         .unwrap();
         crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(&scope)
+    }
+
+    fn seed_verified_peer_identity(
+        db: &Connection,
+        owner_identity_id: &str,
+        owner_did: &str,
+        peer_dids: &[&str],
+    ) {
+        let persona = crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+            "anpclaw.com",
+            "peer-user-id",
+            "zhuochengtest.anpclaw.com",
+            Some("active"),
+        )
+        .unwrap();
+        crate::internal::local_state::peer_personas::upsert(
+            db,
+            &crate::internal::local_state::peer_personas::PeerPersonaRecord {
+                owner_identity_id: owner_identity_id.to_owned(),
+                persona: persona.clone(),
+                binding_generation: Some("2".to_owned()),
+                subject_type: "human".to_owned(),
+                source: "test_authority".to_owned(),
+                authority_revision: None,
+                verified_at: "2026-07-14T00:00:00Z".to_owned(),
+            },
+        )
+        .unwrap();
+        for (index, did) in peer_dids.iter().enumerate() {
+            crate::internal::local_state::peer_identifiers::bind(
+                db,
+                &crate::internal::local_state::peer_identifiers::PeerIdentifierRecord {
+                    owner_identity_id: owner_identity_id.to_owned(),
+                    peer_persona_id: persona.peer_persona_id.clone(),
+                    identifier_kind: "did".to_owned(),
+                    identifier_value: (*did).to_owned(),
+                    is_current: index + 1 == peer_dids.len(),
+                    binding_generation: Some((index + 1).to_string()),
+                    source: "test_authority".to_owned(),
+                    verified_at: "2026-07-14T00:00:00Z".to_owned(),
+                },
+            )
+            .unwrap();
+        }
+        let route = crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::from_verified_persona(
+            owner_identity_id,
+            &persona,
+            peer_dids.last().copied().unwrap(),
+        )
+        .unwrap();
+        crate::internal::local_state::direct_peer_routes::upsert(db, &route).unwrap();
+        crate::internal::local_state::conversation_registry::ensure(
+            db,
+            &crate::internal::local_state::conversation_registry::ConversationRegistryRecord {
+                owner_identity_id: owner_identity_id.to_owned(),
+                owner_did: owner_did.to_owned(),
+                conversation_id: persona.direct_conversation_id(),
+                thread_kind: "direct".to_owned(),
+                thread_id: persona.direct_conversation_id(),
+                activity_at: "2026-07-14T00:00:00Z".to_owned(),
+            },
+        )
+        .unwrap();
     }
 
     fn peer_scope_message_record(

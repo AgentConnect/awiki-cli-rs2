@@ -163,6 +163,61 @@ WHERE owner_identity_id = ?1 AND peer_persona_id = ?2
             },
         )?;
     }
+    if let Some(profile) = lookup.profile.as_ref() {
+        super::peer_profiles::upsert_from_verified_lookup(
+            &transaction,
+            owner_identity_id,
+            &persona.peer_persona_id,
+            &persona.full_handle,
+            profile,
+        )?;
+    }
+    let conflicting_contacts: i64 = transaction
+        .query_row(
+            r#"SELECT COUNT(*) FROM contacts
+WHERE owner_identity_id = ?1
+  AND TRIM(COALESCE(peer_persona_id, '')) <> ''
+  AND peer_persona_id <> ?2
+  AND (
+      did IN (
+          SELECT identifier_value FROM peer_identifiers
+          WHERE owner_identity_id = ?1 AND peer_persona_id = ?2
+            AND identifier_kind = 'did'
+      )
+      OR LOWER(TRIM(COALESCE(handle, ''))) = ?3
+  )"#,
+            (
+                owner_identity_id.trim(),
+                persona.peer_persona_id.as_str(),
+                persona.full_handle.as_str(),
+            ),
+            |row| row.get(0),
+        )
+        .map_err(super::local_state_unavailable)?;
+    if conflicting_contacts > 0 {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "contact projection is already bound to another Persona".to_owned(),
+        });
+    }
+    transaction
+        .execute(
+            r#"UPDATE contacts SET peer_persona_id = ?1
+WHERE owner_identity_id = ?2
+  AND (
+      did IN (
+          SELECT identifier_value FROM peer_identifiers
+          WHERE owner_identity_id = ?2 AND peer_persona_id = ?1
+            AND identifier_kind = 'did'
+      )
+      OR LOWER(TRIM(COALESCE(handle, ''))) = ?3
+  )"#,
+            (
+                persona.peer_persona_id.as_str(),
+                owner_identity_id.trim(),
+                persona.full_handle.as_str(),
+            ),
+        )
+        .map_err(super::local_state_unavailable)?;
     let route = super::direct_peer_routes::DirectPeerRouteRecord::from_verified_persona(
         owner_identity_id,
         &persona,
@@ -278,5 +333,40 @@ mod tests {
             .unwrap(),
             2
         );
+    }
+
+    #[test]
+    fn verified_handle_projection_persists_persona_keyed_profile_without_degrading_it() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let mut profile =
+            crate::identity::Profile::new(crate::ids::Did::parse("did:example:alice").unwrap());
+        profile.display_name = Some("Alice".to_owned());
+        profile.avatar_uri = Some("https://example.test/alice.png".to_owned());
+        profile.version_id = Some("profile-v1".to_owned());
+        let lookup = crate::directory::HandleLookupResult {
+            handle: crate::ids::Handle::parse("alice.awiki.info", "").unwrap(),
+            did: crate::ids::Did::parse("did:example:alice").unwrap(),
+            user_id: "user-alice".to_owned(),
+            domain: Some("awiki.info".to_owned()),
+            status: Some("active".to_owned()),
+            binding_generation: Some("1".to_owned()),
+            profile: Some(profile),
+            warnings: Vec::new(),
+        };
+        let conversation_id =
+            project_verified_handle(&mut db, "owner-a", "did:example:owner", &lookup).unwrap();
+        let stored: (String, String, String) = db
+            .query_row(
+                r#"SELECT display_name, full_handle, profile_version
+FROM peer_profiles WHERE owner_identity_id = 'owner-a'"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(stored.0, "Alice");
+        assert_eq!(stored.1, "alice.awiki.info");
+        assert_eq!(stored.2, "profile-v1");
+        assert!(conversation_id.starts_with("dm:peer-scope:v1:"));
     }
 }

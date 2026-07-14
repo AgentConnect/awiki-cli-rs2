@@ -268,10 +268,13 @@ WHERE owner_identity_id = ?1 AND conversation_id = ?2"#,
         Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
         Err(err) => return Err(super::local_state_unavailable(err)),
     };
-    let (thread_kind, thread_id) = conversation_id
-        .strip_prefix("group:")
-        .map(|id| ("group", id.to_owned()))
-        .unwrap_or(("thread", summary_thread_id));
+    let (thread_kind, thread_id) = if let Some(group_ref) = conversation_id.strip_prefix("group:") {
+        ("group", group_ref.to_owned())
+    } else if conversation_id.starts_with("dm:peer-scope:v1:") {
+        ("direct", summary_thread_id)
+    } else {
+        ("thread", summary_thread_id)
+    };
     ensure(
         connection,
         &ConversationRegistryRecord {
@@ -298,6 +301,48 @@ pub(crate) fn deactivate(
         .execute(
             "UPDATE conversation_registry SET is_active = 0, lifecycle_state = 'archived', updated_at = ?1 WHERE owner_identity_id = ?2 AND conversation_id = ?3",
             rusqlite::params![now_utc_like(), owner_identity_id.trim(), conversation_id.trim()],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+pub(crate) fn mark_merged(
+    connection: &Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+    canonical_conversation_id: &str,
+) -> crate::ImResult<()> {
+    let target_exists = connection
+        .query_row(
+            r#"SELECT 1 FROM conversation_registry
+WHERE owner_identity_id = ?1 AND conversation_id = ?2
+  AND lifecycle_state = 'active' AND resolution_state = 'resolved'"#,
+            (owner_identity_id.trim(), canonical_conversation_id.trim()),
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+        .is_some();
+    if !target_exists {
+        return Err(crate::ImError::IdentityUnresolved {
+            detail: "canonical merge target is not an active resolved conversation".to_owned(),
+        });
+    }
+    connection
+        .execute(
+            r#"UPDATE conversation_registry
+SET is_active = 0,
+    lifecycle_state = 'merged',
+    resolution_state = 'resolved',
+    merged_into_conversation_id = ?1,
+    updated_at = ?2
+WHERE owner_identity_id = ?3 AND conversation_id = ?4"#,
+            rusqlite::params![
+                canonical_conversation_id.trim(),
+                now_utc_like(),
+                owner_identity_id.trim(),
+                conversation_id.trim(),
+            ],
         )
         .map_err(super::local_state_unavailable)?;
     Ok(())
