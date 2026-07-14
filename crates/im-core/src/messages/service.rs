@@ -28,6 +28,16 @@ mod direct_send_result_identity_tests {
             }
             other => panic!("expected thread ref, got {other:?}"),
         }
+        let identity = result
+            .message
+            .metadata
+            .conversation_identity
+            .as_ref()
+            .expect("normalized send result should expose canonical identity");
+        assert_eq!(identity.conversation_id, expected_thread_id);
+        assert_eq!(identity.canonical_thread_id, expected_thread_id);
+        assert_eq!(identity.storage_thread_ref.kind, "thread");
+        assert_eq!(identity.storage_thread_ref.id, expected_thread_id);
         assert_eq!(
             attribute(&result, "peer_user_id").as_deref(),
             Some("user-bob")
@@ -92,7 +102,16 @@ mod direct_send_result_identity_tests {
                 },
                 sent_at: Some("2026-07-04T00:00:00Z".to_owned()),
                 received_at: None,
-                metadata: crate::messages::MessageMetadata::default(),
+                metadata: crate::messages::MessageMetadata {
+                    conversation_identity: Some(
+                        crate::messages::ConversationIdentity::from_thread_ref(
+                            &crate::messages::ThreadRef::Direct(
+                                crate::ids::PeerRef::parse("bob.awiki.test", "").unwrap(),
+                            ),
+                        ),
+                    ),
+                    ..crate::messages::MessageMetadata::default()
+                },
             },
             delivery: crate::messages::DeliveryState::Accepted,
             warnings: Vec::new(),
@@ -3455,6 +3474,9 @@ pub(crate) fn normalize_direct_send_result_for_peer_scope(
         scope.full_handle.as_str(),
     )?;
     result.message.thread = super::ThreadRef::Thread(thread_id);
+    result.message.metadata.conversation_identity = Some(
+        crate::messages::ConversationIdentity::from_thread_ref(&result.message.thread),
+    );
     upsert_message_attribute(
         &mut result.message.metadata.attributes,
         "peer_user_id",
