@@ -335,10 +335,7 @@ mod tests {
             error.contains(&server.url("/secondary")),
             "error should include secondary manifest URL: {error}"
         );
-        assert_eq!(
-            outcome.decision.installer_url,
-            server.url("/awiki-cli.tgz")
-        );
+        assert_eq!(outcome.decision.installer_url, server.url("/awiki-cli.tgz"));
     }
 
     #[test]
