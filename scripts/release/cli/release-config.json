@@ -2,8 +2,8 @@
   "schema_version": 1,
   "channels": {
     "beta": {
-      "version": "1.0.17-beta.2",
-      "min_supported_version": "1.0.17-beta.2"
+      "version": "1.0.17-beta.3",
+      "min_supported_version": "1.0.17-beta.3"
     },
     "stable": {
       "version": "1.0.17",

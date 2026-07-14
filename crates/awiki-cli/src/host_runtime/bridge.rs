@@ -1058,7 +1058,6 @@ fn windows_flush_handle(handle: windows_sys::Win32::Foundation::HANDLE) -> io::R
 }
 
 #[cfg(windows)]
-#[derive(Debug)]
 struct WindowsOverlapped {
     value: windows_sys::Win32::System::IO::OVERLAPPED,
 }
