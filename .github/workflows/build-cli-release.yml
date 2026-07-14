@@ -85,6 +85,15 @@ jobs:
           rustup toolchain install 1.88.0 --profile minimal
           rustup target add --toolchain 1.88.0 ${{ matrix.target }}
 
+      - name: Restore Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            awiki-cli-rs2/target
+          key: cli-release-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('awiki-cli-rs2/Cargo.lock') }}
+
       - name: Build archive
         shell: bash
         working-directory: awiki-cli-rs2
