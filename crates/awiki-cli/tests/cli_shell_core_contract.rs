@@ -373,6 +373,7 @@ fn schema_lists_contracts_and_supports_space_joined_targets() {
         "backend_base_url + did_host",
     );
     assert!(schema_child(&tenant, "tenant.create").is_object());
+    assert!(schema_child(&tenant, "tenant.setup").is_object());
 
     let tenant_create_help = awiki_cmd(&["tenant", "create", "--help"]);
     assert_success(&tenant_create_help);
@@ -381,6 +382,25 @@ fn schema_lists_contracts_and_supports_space_joined_targets() {
     assert_text_contains(&tenant_create, "awiki-cli tenant create <name>");
     assert_text_contains(&tenant_create, "does not make the new tenant active");
     assert_text_contains(&tenant_create, "--backend-base-url <string>");
+
+    let tenant_setup_help = awiki_cmd(&["tenant", "setup", "--help"]);
+    assert_success(&tenant_setup_help);
+    let tenant_setup = stdout_text(&tenant_setup_help);
+    assert_text_contains(&tenant_setup, "awiki-cli tenant setup <name>");
+    assert_text_contains(&tenant_setup, "never reconfigures existing tenant data");
+    assert_text_contains(&tenant_setup, "run `awiki-cli init` next");
+
+    let site_help = awiki_cmd(&["site", "--help"]);
+    assert_success(&site_help);
+    let site_help = stdout_text(&site_help);
+    assert_text_contains(&site_help, "never creates, reconfigures, or switches");
+
+    let site_get_help = awiki_cmd(&["site", "root", "get", "--help"]);
+    assert_success(&site_get_help);
+    let site_get_help = stdout_text(&site_get_help);
+    assert_text_contains(&site_get_help, "--domain <string>");
+    assert_text_contains(&site_get_help, "(required)");
+    assert_text_contains(&site_get_help, "does not switch active tenant");
 }
 
 #[test]

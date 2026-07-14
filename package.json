@@ -12,8 +12,14 @@
   "bin": {
     "awiki-cli": "scripts/run.js"
   },
+  "files": [
+    "scripts/install.js",
+    "scripts/run.js",
+    "awiki-release.json"
+  ],
   "scripts": {
     "install-binary": "node scripts/install.js",
-    "postinstall": "node scripts/install.js"
+    "postinstall": "node scripts/install.js",
+    "test:installer": "node --test scripts/install.test.js scripts/release/cli/config.test.js scripts/release/cli/stage-release.test.js"
   }
 }

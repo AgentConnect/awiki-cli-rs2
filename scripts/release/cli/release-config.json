@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "channels": {
+    "beta": {
+      "version": "1.0.17-beta.1",
+      "min_supported_version": "1.0.17-beta.1"
+    },
+    "stable": {
+      "version": "1.0.17",
+      "min_supported_version": "1.0.17"
+    }
+  },
+  "anp_commit": "67e6680fac80a5fb3dca41029c67a0ea3ecc0dd5",
+  "archive_keep_versions": 10,
+  "targets": [
+    "darwin-amd64",
+    "darwin-arm64",
+    "linux-amd64",
+    "windows-amd64"
+  ]
+}

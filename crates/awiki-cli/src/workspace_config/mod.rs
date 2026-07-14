@@ -31,6 +31,8 @@ const DEFAULT_TENANT_NAME: &str = "default";
 const DEFAULT_TENANT_DISPLAY_NAME: &str = "AWiki";
 const DEFAULT_SERVICE_BASE_URL: &str = "https://awiki.ai";
 const DEFAULT_DID_DOMAIN: &str = "awiki.ai";
+const DEFAULT_SERVICE_BASE_URL_ENV: &str = "AWIKI_CLI_DEFAULT_BACKEND_BASE_URL";
+const DEFAULT_DID_DOMAIN_ENV: &str = "AWIKI_CLI_DEFAULT_DID_HOST";
 const DEFAULT_ANP_PATH: &str = "/anp-im/rpc";
 const DEFAULT_RUNTIME_MODE: &str = "websocket";
 const DEFAULT_OUTPUT_FORMAT: &str = "json";
@@ -96,6 +98,12 @@ pub struct TenantContext {
     pub global_config_file: String,
     pub tenants_dir: String,
     pub tenant_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TenantSetupResult {
+    pub action: String,
+    pub tenant: TenantContext,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -759,6 +767,31 @@ pub fn create_tenant(input: TenantCreateInput) -> anyhow::Result<TenantContext> 
     ))
 }
 
+pub fn setup_tenant(input: TenantCreateInput) -> anyhow::Result<TenantSetupResult> {
+    let (product_home_dir, mut registry, profile, action) = prepare_tenant_setup(input)?;
+    if action == "created" {
+        write_tenant_config(&product_home_dir, &profile)?;
+        registry.tenants.push(profile.clone());
+        registry
+            .tenants
+            .sort_by(|left, right| left.name.cmp(&right.name));
+        write_tenant_registry(&product_home_dir, &registry)?;
+    }
+    activate_tenant(&product_home_dir, &profile.name)?;
+    Ok(TenantSetupResult {
+        action,
+        tenant: tenant_context(&product_home_dir, profile, "global_config".to_string()),
+    })
+}
+
+pub fn preview_setup_tenant(input: TenantCreateInput) -> anyhow::Result<TenantSetupResult> {
+    let (product_home_dir, _registry, profile, action) = prepare_tenant_setup(input)?;
+    Ok(TenantSetupResult {
+        action,
+        tenant: tenant_context(&product_home_dir, profile, "planned".to_string()),
+    })
+}
+
 pub fn preview_create_tenant(input: TenantCreateInput) -> anyhow::Result<TenantContext> {
     let (product_home_dir, _registry, profile) = prepare_tenant_create(input)?;
     Ok(tenant_context(
@@ -833,6 +866,59 @@ fn prepare_tenant_create(
     Ok((product_home_dir, registry, profile))
 }
 
+fn prepare_tenant_setup(
+    input: TenantCreateInput,
+) -> anyhow::Result<(PathBuf, TenantRegistry, TenantProfile, String)> {
+    let home = home_dir()?;
+    let (product_home_dir, _) = resolve_workspace_home(&home);
+    archive_legacy_product_root(&product_home_dir)?;
+    ensure_tenant_state(&product_home_dir)?;
+    let name = normalize_tenant_name(&input.name)?;
+    let backend_base_url = normalize_base_url(&input.backend_base_url);
+    validate_service_base_url(&backend_base_url)?;
+    let did_host = normalize_did_domain(&input.did_host)?;
+    let registry = load_tenant_registry(&product_home_dir)?;
+
+    if let Some(existing) = registry.tenants.iter().find(|tenant| tenant.name == name) {
+        if existing.backend_base_url == backend_base_url && existing.did_host == did_host {
+            let existing = existing.clone();
+            return Ok((product_home_dir, registry, existing, "reused".to_string()));
+        }
+        return Err(WorkspaceConfigError::conflict(
+            format!(
+                "tenant {name:?} already exists with a different backend_base_url or did_host"
+            ),
+            "Use the existing tenant endpoints, choose a different tenant name, or inspect the tenant with `awiki-cli tenant list`. Existing tenant data is never reconfigured by `tenant setup`.",
+        )
+        .into());
+    }
+    if registry
+        .tenants
+        .iter()
+        .any(|tenant| tenant.backend_base_url == backend_base_url && tenant.did_host == did_host)
+    {
+        return Err(duplicate_tenant_endpoint_error("a ").into());
+    }
+
+    let now = now_compact();
+    let profile = TenantProfile {
+        name: name.clone(),
+        display_name: input
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&name)
+            .to_string(),
+        backend_base_url,
+        did_host,
+        dir_name: name,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    Ok((product_home_dir, registry, profile, "created".to_string()))
+}
+
 pub fn use_tenant(name: &str) -> anyhow::Result<TenantContext> {
     let home = home_dir()?;
     let (product_home_dir, _) = resolve_workspace_home(&home);
@@ -846,15 +932,19 @@ pub fn use_tenant(name: &str) -> anyhow::Result<TenantContext> {
         .find(|tenant| tenant.name == name)
         .cloned()
         .ok_or_else(|| tenant_not_found_error("tenant", &name))?;
-    let mut global = load_global_config(&product_home_dir)?;
-    global.schema_version = 1;
-    global.active_tenant = name;
-    write_global_config(&product_home_dir, &global)?;
+    activate_tenant(&product_home_dir, &name)?;
     Ok(tenant_context(
         &product_home_dir,
         profile,
         "global_config".to_string(),
     ))
+}
+
+fn activate_tenant(product_home_dir: &Path, name: &str) -> anyhow::Result<()> {
+    let mut global = load_global_config(product_home_dir)?;
+    global.schema_version = 1;
+    global.active_tenant = name.to_string();
+    write_global_config(product_home_dir, &global)
 }
 
 pub fn reconfigure_tenant(
@@ -989,7 +1079,7 @@ fn ensure_tenant_state(product_home_dir: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(product_home_dir.join(TENANTS_DIR_NAME))
         .map_err(|err| anyhow::anyhow!("create tenant directory: {err}"))?;
     if !tenant_registry_path(product_home_dir).exists() {
-        let profile = default_tenant_profile();
+        let profile = default_tenant_profile()?;
         write_tenant_config(product_home_dir, &profile)?;
         write_tenant_registry(
             product_home_dir,
@@ -1011,17 +1101,37 @@ fn ensure_tenant_state(product_home_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn default_tenant_profile() -> TenantProfile {
+fn default_tenant_profile() -> anyhow::Result<TenantProfile> {
+    let configured_base_url = env::var(DEFAULT_SERVICE_BASE_URL_ENV).unwrap_or_default();
+    let configured_did_host = env::var(DEFAULT_DID_DOMAIN_ENV).unwrap_or_default();
+    let has_base_url = !configured_base_url.trim().is_empty();
+    let has_did_host = !configured_did_host.trim().is_empty();
+    if has_base_url != has_did_host {
+        anyhow::bail!(
+            "{DEFAULT_SERVICE_BASE_URL_ENV} and {DEFAULT_DID_DOMAIN_ENV} must be configured together"
+        );
+    }
+    let (backend_base_url, did_host) = if has_base_url {
+        let backend_base_url = normalize_base_url(&configured_base_url);
+        validate_service_base_url(&backend_base_url)?;
+        let did_host = normalize_did_domain(&configured_did_host)?;
+        (backend_base_url, did_host)
+    } else {
+        (
+            DEFAULT_SERVICE_BASE_URL.to_string(),
+            DEFAULT_DID_DOMAIN.to_string(),
+        )
+    };
     let now = now_compact();
-    TenantProfile {
+    Ok(TenantProfile {
         name: DEFAULT_TENANT_NAME.to_string(),
         display_name: DEFAULT_TENANT_DISPLAY_NAME.to_string(),
-        backend_base_url: DEFAULT_SERVICE_BASE_URL.to_string(),
-        did_host: DEFAULT_DID_DOMAIN.to_string(),
+        backend_base_url,
+        did_host,
         dir_name: DEFAULT_TENANT_NAME.to_string(),
         created_at: now.clone(),
         updated_at: now,
-    }
+    })
 }
 
 fn load_tenant_registry(product_home_dir: &Path) -> anyhow::Result<TenantRegistry> {

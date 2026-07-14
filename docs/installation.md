@@ -132,11 +132,14 @@ awiki-cli config show
 awiki-cli tenant list
 awiki-cli tenant current
 awiki-cli tenant create acme --backend-base-url https://api.acme.example --did-host acme.example
+awiki-cli tenant setup acme --backend-base-url https://api.acme.example --did-host acme.example
 awiki-cli tenant use acme
 awiki-cli tenant reconfigure acme --backend-base-url https://api2.acme.example --did-host acme.example
 ```
 
 租户名会 trim 并规范化为小写；只允许 ASCII 字母、数字和单个 `-` 分隔符，最长 64 个字符，不能以 `-` 开头或结尾，也不能包含 `--`。如果需要中文、空格或展示用大小写，使用 `--display-name`。
+
+`tenant setup` 是面向 Onboarding 的幂等入口：不存在时创建并切换，已存在且 endpoint 完全一致时直接切换，配置不一致时拒绝覆盖。它不会执行 `init`，切换后仍需运行 `awiki-cli init`。
 
 `tenant reconfigure` 只允许修改还没有身份或本地数据库数据的租户；如果租户已经有数据，请创建一个新租户。
 

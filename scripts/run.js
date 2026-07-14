@@ -30,6 +30,20 @@ function getPackageVersion() {
   }
 }
 
+function releaseEnvironment() {
+  try {
+    const metadata = require(path.resolve(__dirname, '..', 'awiki-release.json'));
+    const defaults = metadata.default_tenant || {};
+    return {
+      AWIKI_CLI_UPDATE_BASE_URL: process.env.AWIKI_CLI_UPDATE_BASE_URL || metadata.update_base_url || '',
+      AWIKI_CLI_DEFAULT_BACKEND_BASE_URL: process.env.AWIKI_CLI_DEFAULT_BACKEND_BASE_URL || defaults.backend_base_url || '',
+      AWIKI_CLI_DEFAULT_DID_HOST: process.env.AWIKI_CLI_DEFAULT_DID_HOST || defaults.did_host || '',
+    };
+  } catch {
+    return {};
+  }
+}
+
 function run() {
   const binPath = findBinary();
 
@@ -45,7 +59,10 @@ function run() {
   }
 
   const args = process.argv.slice(2);
-  const child = spawn(binPath, args, { stdio: 'inherit' });
+  const child = spawn(binPath, args, {
+    stdio: 'inherit',
+    env: { ...process.env, ...releaseEnvironment() },
+  });
 
   child.on('exit', code => {
     process.exit(code ?? 1);
@@ -65,5 +82,6 @@ module.exports = {
   _internal: {
     findBinary,
     fileExists,
+    releaseEnvironment,
   },
 };

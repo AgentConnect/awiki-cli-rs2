@@ -4,8 +4,6 @@ use crate::self_update::{self, Decision};
 use serde_json::{json, Value};
 use std::process::Command;
 
-const NPM_MIRROR_REGISTRY_URL: &str = "https://registry.npmmirror.com";
-
 impl App {
     pub fn run_upgrade(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
@@ -19,15 +17,15 @@ impl App {
             && (outcome.decision.blocked || outcome.decision.has_newer_version)
         {
             upgrade_attempted = true;
-            if let Err(err) = run_npm_global_install() {
+            if let Err(err) = run_npm_global_install(&outcome.decision.installer_url) {
                 return Err(ExitError::new(
                     "upgrade_failed",
                     1,
                     err,
-                    "Ensure npm is installed, your PATH is configured, you have permission to install global packages, and you can reach registry.npmjs.org or registry.npmmirror.com, then retry `awiki-cli upgrade`.",
+                    "Ensure npm is installed, your PATH is configured, you have permission to install global packages, and the configured awiki-cli release server is reachable, then retry `awiki-cli upgrade`.",
                 ));
             }
-            warnings.push("Attempted to upgrade via npm with registry.npmjs.org first and registry.npmmirror.com fallback. Open a new shell and run `awiki-cli version` to verify.".to_string());
+            warnings.push("Installed the current channel tgz from the configured awiki-cli release server. Open a new shell and run `awiki-cli version` to verify.".to_string());
         }
         data["upgrade_attempted"] = json!(upgrade_attempted);
 
@@ -47,7 +45,7 @@ fn build_upgrade_status(
         "dev_build": decision.dev_build,
         "has_newer_version": decision.has_newer_version,
         "blocked": decision.blocked,
-        "upgrade_hint": direct_upgrade_hint(),
+        "upgrade_hint": direct_upgrade_hint(&decision.installer_url),
     });
     if !decision.metadata_source.is_empty() {
         data["update_metadata_source"] = json!(decision.metadata_source);
@@ -60,7 +58,7 @@ fn build_upgrade_status(
             data,
             "Unable to check for awiki-cli updates".to_string(),
             vec![
-                format!("Failed to fetch npm metadata for awiki-cli: {err}"),
+                format!("Failed to fetch the awiki-cli release manifest: {err}"),
                 "Showing local version status only. Retry `awiki-cli upgrade` when network access is available.".to_string(),
             ],
         );
@@ -93,7 +91,7 @@ fn build_upgrade_status(
     }
     if decision.metadata_source == "cache_stale" {
         warnings.push(
-            "Remote npm registries were unavailable; showing cached update metadata instead."
+            "The awiki-cli release server was unavailable; showing cached update metadata instead."
                 .to_string(),
         );
     }
@@ -101,43 +99,50 @@ fn build_upgrade_status(
     (data, summary, warnings)
 }
 
-fn format_npm_install_command(args: &[&str]) -> String {
-    super::update_preflight::format_npm_install_command(args)
-}
-
-fn direct_npm_install_command() -> String {
-    super::update_preflight::direct_npm_install_command()
-}
-
-fn mirror_npm_install_command() -> String {
-    format_npm_install_command(&super::update_preflight::npm_global_install_attempts()[1])
-}
-
-fn direct_upgrade_hint() -> String {
+fn direct_upgrade_hint(installer_url: &str) -> String {
     format!(
-        "To upgrade awiki-cli, run: {}. If registry.npmjs.org is unreachable, retry with: {}",
-        direct_npm_install_command(),
-        mirror_npm_install_command()
+        "To upgrade awiki-cli, run: {}",
+        super::update_preflight::npm_install_command(installer_url)
     )
 }
 
-fn run_npm_global_install() -> Result<(), String> {
-    let attempts = super::update_preflight::npm_global_install_attempts();
-    let mut errors = Vec::new();
-    for (index, args) in attempts.iter().enumerate() {
-        if index > 0 {
-            eprintln!(
-                "[awiki-cli] npm install via registry.npmjs.org failed; retrying with {NPM_MIRROR_REGISTRY_URL}"
-            );
-        }
-        match Command::new("npm").args(args).status() {
-            Ok(status) if status.success() => return Ok(()),
-            Ok(status) => errors.push(format!("{}: {}", format_npm_install_command(args), status)),
-            Err(err) => errors.push(format!("{}: {}", format_npm_install_command(args), err)),
-        }
+fn run_npm_global_install(installer_url: &str) -> Result<(), String> {
+    let installer_url = installer_url.trim();
+    if installer_url.is_empty() {
+        return Err("release manifest does not provide an installer URL".to_string());
     }
-    Err(format!(
-        "failed to upgrade awiki-cli via npm registries: {}",
-        errors.join("; ")
-    ))
+    if !installer_url.starts_with("https://")
+        || installer_url["https://".len()..].is_empty()
+        || installer_url.chars().any(char::is_whitespace)
+    {
+        return Err(format!(
+            "release manifest installer URL must use HTTPS: {installer_url}"
+        ));
+    }
+    let args = ["install", "-g", installer_url];
+    match Command::new("npm").args(args).status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!(
+            "{}: {}",
+            super::update_preflight::npm_install_command(installer_url),
+            status
+        )),
+        Err(err) => Err(format!(
+            "{}: {}",
+            super::update_preflight::npm_install_command(installer_url),
+            err
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_npm_global_install;
+
+    #[test]
+    fn upgrade_rejects_non_https_installer_before_invoking_npm() {
+        let error = run_npm_global_install("http://downloads.example/awiki-cli.tgz")
+            .expect_err("HTTP installer must be rejected");
+        assert!(error.contains("must use HTTPS"));
+    }
 }

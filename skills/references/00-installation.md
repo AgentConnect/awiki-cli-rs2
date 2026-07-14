@@ -20,13 +20,7 @@ This file is intentionally separated from onboarding, so these longer installati
 Run the following command to install the CLI globally:
 
 ```bash
-npm install -g @awiki/cli@latest
-```
-
-If `registry.npmjs.org` is unreachable, use:
-
-```bash
-npm install -g @awiki/cli@latest --registry=https://registry.npmmirror.com
+npm install -g {{AWIKI_CLI_CHANNEL_BASE_URL}}/awiki-cli.tgz
 ```
 
 After installation, verify that the CLI is available:
@@ -108,26 +102,13 @@ Overall approach:
 
 ### 2.2 Install Awiki Skills
 
-If your environment can reliably access GitHub, you can use the official GitHub repository URL:
-
 ```bash
-npx skills add https://github.com/AgentConnect/awiki-cli.git --agent <your-agent-id> -y -g
-```
-
-If you are in mainland China, it is recommended to prefer the Gitee repository URL:
-
-```bash
-npx skills add https://gitee.com/agentconnect/awiki-cli.git --agent <your-agent-id> -y -g
+npx skills add {{AWIKI_CLI_CHANNEL_BASE_URL}} --agent <your-agent-id> -y -g
 ```
 
 If you really want to install Awiki Skills for all supported Agents, you can remove the `--agent <your-agent-id>` parameter entirely.
 
-If `npx skills add` is unavailable in the current environment, or if that command fails, use the Awiki repository as the skill source and let the current Agent load it using its own supported method:
-
-- Gitee: [https://gitee.com/agentconnect/awiki-cli](https://gitee.com/agentconnect/awiki-cli)
-- GitHub: [https://github.com/AgentConnect/awiki-cli](https://github.com/AgentConnect/awiki-cli)
-
-After downloading, enter the `skills` folder under the project root and install the skill there.
+If `npx skills add` is unavailable, fix the local Node/npm environment first. The Awiki Skill content is served by the configured AWiki release endpoint and does not require GitHub or Gitee.
 
 ---
 
@@ -144,10 +125,9 @@ awiki-cli init
 
 Current important behavior:
 
-- `awiki-cli init` does more than just create the directory and `config.yaml`
-- It also initializes the local SQLite schema and applies runtime policy
-- Under the default websocket listener policy (`enabled = true`, `auto_install = true`, `auto_start = true`), this step may install and start the listener service
-- If the current environment is sensitive to service-manager side effects, run `awiki-cli init --dry-run` first; however, note that the current dry-run does not fully expand listener service install/start side effects
+- `awiki-cli init` creates the current tenant's workspace/config and initializes its local SQLite schema
+- `awiki-cli init` does not install or start the listener service
+- Listener service changes happen later through `runtime setup` or explicit `runtime listener` commands
 
 Inside the workspace root directory, you should expect to see:
 
@@ -168,7 +148,7 @@ awiki-cli init
 
 From that point on, all config, identities, data, cache, and logs will live in that directory.
 
-If websocket mode and automatic listener management are still enabled, the same runtime-policy side effects apply in the isolated workspace as well.
+The isolated workspace does not change service-manager state until runtime setup is performed.
 
 ---
 

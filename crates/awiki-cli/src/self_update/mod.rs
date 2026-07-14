@@ -17,6 +17,7 @@ static TEST_CURRENT_VERSION: std::sync::Mutex<Option<String>> = std::sync::Mutex
 pub struct Metadata {
     pub latest_version: String,
     pub min_supported_version: String,
+    pub installer_url: String,
     pub source: String,
 }
 
@@ -25,6 +26,7 @@ pub struct Decision {
     pub current_version: String,
     pub latest_version: String,
     pub min_supported_version: String,
+    pub installer_url: String,
     pub metadata_source: String,
     pub strict_disabled: bool,
     pub dev_build: bool,
@@ -87,12 +89,15 @@ fn check_with_settings(settings: CheckSettings, prefer_fresh: bool) -> CheckOutc
         ..Decision::default()
     };
 
-    let metadata = match cache::load_metadata(
+    let urls = manifest_urls();
+    decision.installer_url =
+        installer_url_from_manifest_url(urls.first().map(String::as_str).unwrap_or_default());
+    let mut metadata = match cache::load_metadata(
         &settings.cache_dir,
         ttl_seconds,
         prefer_fresh,
         update_cache_only_enabled(),
-        &npm_latest_urls(),
+        &urls,
     ) {
         Ok(metadata) => metadata,
         Err(err) => {
@@ -102,9 +107,13 @@ fn check_with_settings(settings: CheckSettings, prefer_fresh: bool) -> CheckOutc
             };
         }
     };
+    if metadata.installer_url.trim().is_empty() {
+        metadata.installer_url = decision.installer_url.clone();
+    }
 
     decision.latest_version = metadata.latest_version;
     decision.min_supported_version = metadata.min_supported_version;
+    decision.installer_url = metadata.installer_url;
     decision.metadata_source = metadata.source;
 
     if version::compare_versions(&decision.latest_version, &decision.current_version)
@@ -197,7 +206,7 @@ fn parse_bool(raw: &str) -> bool {
     )
 }
 
-fn npm_latest_urls() -> Vec<String> {
+fn manifest_urls() -> Vec<String> {
     #[cfg(test)]
     {
         if let Some(urls) = TEST_NPM_LATEST_URLS
@@ -208,10 +217,31 @@ fn npm_latest_urls() -> Vec<String> {
             return urls;
         }
     }
-    vec![
-        "https://registry.npmjs.org/@awiki%2Fcli/latest".to_string(),
-        "https://registry.npmmirror.com/@awiki/cli/latest".to_string(),
-    ]
+    let configured = std::env::var("AWIKI_CLI_UPDATE_BASE_URL").unwrap_or_default();
+    let base = if configured.trim().is_empty() {
+        "https://awiki.ai/cli/stable".to_string()
+    } else {
+        configured.trim().trim_end_matches('/').to_string()
+    };
+    if base.ends_with(".json") {
+        vec![base]
+    } else {
+        vec![format!("{base}/manifest.json")]
+    }
+}
+
+fn installer_url_from_manifest_url(manifest_url: &str) -> String {
+    let trimmed = manifest_url.trim();
+    let base = trimmed
+        .strip_suffix("/manifest.json")
+        .or_else(|| trimmed.rsplit_once('/').map(|(base, _)| base))
+        .unwrap_or(trimmed)
+        .trim_end_matches('/');
+    if base.is_empty() {
+        String::new()
+    } else {
+        format!("{base}/awiki-cli.tgz")
+    }
 }
 
 #[cfg(test)]
@@ -268,12 +298,12 @@ mod tests {
     }
 
     #[test]
-    fn registry_fetch_falls_back_to_mirror() {
+    fn manifest_fetch_falls_back_to_secondary_url() {
         let server = TestServer::new(vec![
             TestResponse::status(503, "unavailable"),
             TestResponse::ok(r#"{"version":"1.0.9","awikiCli":{"minSupportedVersion":"1.0.8"}}"#),
         ]);
-        let _urls = TestUrls::set(vec![server.url("/npmjs"), server.url("/npmmirror")]);
+        let _urls = TestUrls::set(vec![server.url("/primary"), server.url("/secondary")]);
         let temp = TempDir::new();
 
         let outcome = super::check_fresh(&resolved(temp.path()));
@@ -282,28 +312,32 @@ mod tests {
         assert_eq!(outcome.decision.latest_version, "1.0.9");
         assert_eq!(outcome.decision.min_supported_version, "1.0.8");
         assert_eq!(outcome.decision.metadata_source, "network");
-        assert_eq!(server.paths(), vec!["/npmjs", "/npmmirror"]);
+        assert_eq!(server.paths(), vec!["/primary", "/secondary"]);
     }
 
     #[test]
-    fn registry_fetch_returns_combined_error_when_all_registries_fail() {
+    fn manifest_fetch_returns_combined_error_and_keeps_installer_fallback() {
         let server = TestServer::new(vec![
             TestResponse::status(503, "unavailable"),
             TestResponse::status(502, "bad gateway"),
         ]);
-        let _urls = TestUrls::set(vec![server.url("/npmjs"), server.url("/npmmirror")]);
+        let _urls = TestUrls::set(vec![server.url("/primary"), server.url("/secondary")]);
         let temp = TempDir::new();
 
         let outcome = super::check_fresh(&resolved(temp.path()));
 
         let error = outcome.error.expect("combined error");
         assert!(
-            error.contains(&server.url("/npmjs")),
-            "error should include first registry URL: {error}"
+            error.contains(&server.url("/primary")),
+            "error should include primary manifest URL: {error}"
         );
         assert!(
-            error.contains(&server.url("/npmmirror")),
-            "error should include mirror registry URL: {error}"
+            error.contains(&server.url("/secondary")),
+            "error should include secondary manifest URL: {error}"
+        );
+        assert_eq!(
+            outcome.decision.installer_url,
+            server.url("/awiki-cli.tgz")
         );
     }
 

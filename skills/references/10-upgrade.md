@@ -21,16 +21,12 @@ Recommended path:
 awiki-cli upgrade
 ```
 
-This command checks the version first. When a newer version exists, or when the current version is below the minimum supported version, it executes the following command. If you want to run the global npm upgrade directly, you can also use it yourself:
+This command reads the manifest for the release server and channel used during installation. When a newer version exists, or when the current version is below the minimum supported version, it installs that channel's current tgz.
+
+If you want to run the global npm upgrade directly, use:
 
 ```bash
-npm install -g @awiki/cli@latest
-```
-
-If your network cannot access `registry.npmjs.org`, use:
-
-```bash
-npm install -g @awiki/cli@latest --registry=https://registry.npmmirror.com
+npm install -g {{AWIKI_CLI_CHANNEL_BASE_URL}}/awiki-cli.tgz
 ```
 
 After the upgrade is complete, open a new shell and run:
@@ -43,16 +39,8 @@ awiki-cli version
 
 Upgrading the CLI does not automatically refresh the Awiki Skills already installed in the current Agent. To refresh the skill, run the installation command again.
 
-If the current environment can reliably access GitHub:
-
 ```bash
-npx skills add https://github.com/AgentConnect/awiki-cli.git --agent <your-agent-id> -y -g
-```
-
-If you are installing from mainland China, it is recommended to prefer Gitee:
-
-```bash
-npx skills add https://gitee.com/agentconnect/awiki-cli.git --agent <your-agent-id> -y -g
+npx skills add {{AWIKI_CLI_CHANNEL_BASE_URL}} --agent <your-agent-id> -y -g
 ```
 
 If you are unsure about the value of `--agent`, make sure to go back to `00-installation.md` and check the table.

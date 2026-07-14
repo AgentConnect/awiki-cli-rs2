@@ -265,6 +265,11 @@ CLI release artifact example:
 scripts/release/build-release-artifact.sh --os linux --arch amd64
 ```
 
+Self-hosted CLI release configuration, tag preparation, staging, and server
+publishing live under [`scripts/release/cli`](./scripts/release/cli). The release
+version comes from `release-config.json`; each server keeps its domain, paths,
+and GitHub token in an ignored same-directory `publish-server.toml`.
+
 Daemon release/publish helpers live under [`scripts/release/daemon`](./scripts/release/daemon).
 For local AWiki daemon package staging, see repository-local guidance in
 [`AGENTS.md`](./AGENTS.md) and the daemon release docs under
@@ -277,7 +282,7 @@ For local AWiki daemon package staging, see repository-local guidance in
 - CLI workspace root override: `AWIKI_CLI_WORKSPACE_HOME_DIR`
 - Default tenant config path: `~/.awiki-cli/tenants/default/config.yaml`
 - Tenant backend/DID host values are managed with `awiki-cli tenant create`,
-  `awiki-cli tenant use`, and `awiki-cli tenant reconfigure`.
+  `awiki-cli tenant setup`, `awiki-cli tenant use`, and `awiki-cli tenant reconfigure`.
 - Default product daemon state root: `~/.awiki-daemon/`
 
 Security-sensitive material is not ordinary config. Identity private keys,
