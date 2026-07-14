@@ -690,6 +690,21 @@ WHERE canonical_group_did = 'did:wba:awiki.info:groups:fixture-empty:e1_fixture_
                 .unwrap(),
             2
         );
+        let membership_ids: Vec<String> = {
+            let mut statement = db
+                .prepare("SELECT membership_id FROM group_members ORDER BY user_id")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(membership_ids.len(), 2);
+        assert!(membership_ids
+            .iter()
+            .all(|membership_id| membership_id.starts_with("membership:v1:")));
+        assert_ne!(membership_ids[0], membership_ids[1]);
         let identifiers: Vec<(String, String, i64, String)> = {
             let mut statement = db
                 .prepare(

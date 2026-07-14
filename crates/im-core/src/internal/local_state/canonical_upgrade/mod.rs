@@ -160,6 +160,14 @@ pub(crate) fn run(
     sqlite_path: &Path,
     upgrade_dir: &Path,
 ) -> crate::ImResult<CanonicalUpgradeOutcome> {
+    run_with_interrupt_after_phase(sqlite_path, upgrade_dir, None)
+}
+
+fn run_with_interrupt_after_phase(
+    sqlite_path: &Path,
+    upgrade_dir: &Path,
+    interrupt_after: Option<CanonicalUpgradePhase>,
+) -> crate::ImResult<CanonicalUpgradeOutcome> {
     let _lock = acquire_lock(upgrade_dir)?;
     recover_interrupted_cutover(sqlite_path, upgrade_dir)?;
     let detection = detect(sqlite_path)?;
@@ -192,9 +200,11 @@ pub(crate) fn run(
         updated_at_unix: now_unix(),
     };
     write_journal(upgrade_dir, &journal)?;
+    interrupt_if_requested(interrupt_after, journal.phase)?;
     journal.phase = CanonicalUpgradePhase::PreflightPassed;
     journal.updated_at_unix = now_unix();
     write_journal(upgrade_dir, &journal)?;
+    interrupt_if_requested(interrupt_after, journal.phase)?;
 
     let backup_path = upgrade_dir.join(&journal.backup_file);
     let backup = if backup_path.exists() {
@@ -214,6 +224,7 @@ pub(crate) fn run(
     journal.phase = CanonicalUpgradePhase::BackupVerified;
     journal.updated_at_unix = now_unix();
     write_journal(upgrade_dir, &journal)?;
+    interrupt_if_requested(interrupt_after, journal.phase)?;
 
     let shadow_path = create_shadow_from_source(sqlite_path, upgrade_dir, &upgrade_id)?;
     let mut report = migrate::migrate_shadow(&shadow_path)?;
@@ -221,20 +232,34 @@ pub(crate) fn run(
     journal.phase = CanonicalUpgradePhase::ShadowMigrated;
     journal.updated_at_unix = now_unix();
     write_journal(upgrade_dir, &journal)?;
+    interrupt_if_requested(interrupt_after, journal.phase)?;
     validate_target_file(&shadow_path)?;
     journal.phase = CanonicalUpgradePhase::ValidationPassed;
     journal.updated_at_unix = now_unix();
     write_journal(upgrade_dir, &journal)?;
+    interrupt_if_requested(interrupt_after, journal.phase)?;
 
     journal.phase = CanonicalUpgradePhase::CutoverStarted;
     journal.updated_at_unix = now_unix();
     write_journal(upgrade_dir, &journal)?;
+    interrupt_if_requested(interrupt_after, journal.phase)?;
     cutover(sqlite_path, upgrade_dir, &journal)?;
     validate_target_file(sqlite_path)?;
     journal.phase = CanonicalUpgradePhase::Completed;
     journal.updated_at_unix = now_unix();
     write_journal(upgrade_dir, &journal)?;
+    interrupt_if_requested(interrupt_after, journal.phase)?;
     Ok(CanonicalUpgradeOutcome::Completed(report))
+}
+
+fn interrupt_if_requested(
+    requested: Option<CanonicalUpgradePhase>,
+    durable_phase: CanonicalUpgradePhase,
+) -> crate::ImResult<()> {
+    if requested == Some(durable_phase) {
+        return Err(upgrade_failed("test_interrupt", "simulated_process_exit"));
+    }
+    Ok(())
 }
 
 pub(crate) fn acquire_lock(upgrade_dir: &Path) -> crate::ImResult<CanonicalUpgradeLock> {
@@ -762,6 +787,92 @@ VALUES ('owner', 'did:example:owner', 'message-1', 'dm:legacy', 'dm:legacy',
                 .unwrap(),
             28
         );
+    }
+
+    #[test]
+    fn runner_resumes_after_every_durable_upgrade_phase() {
+        for phase in [
+            CanonicalUpgradePhase::Detected,
+            CanonicalUpgradePhase::PreflightPassed,
+            CanonicalUpgradePhase::BackupVerified,
+            CanonicalUpgradePhase::ShadowMigrated,
+            CanonicalUpgradePhase::ValidationPassed,
+            CanonicalUpgradePhase::CutoverStarted,
+            CanonicalUpgradePhase::Completed,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let sqlite_path = directory.path().join("im.sqlite");
+            let upgrade_dir = directory.path().join("upgrade");
+            source::copy_release_0710_fixture(&sqlite_path);
+
+            assert!(
+                run_with_interrupt_after_phase(&sqlite_path, &upgrade_dir, Some(phase)).is_err()
+            );
+            assert_eq!(
+                load_journal(&upgrade_dir).unwrap().unwrap().phase,
+                phase,
+                "phase {phase:?} must be durable before interruption"
+            );
+
+            let resumed = run(&sqlite_path, &upgrade_dir).unwrap();
+            assert!(matches!(
+                resumed,
+                CanonicalUpgradeOutcome::Completed(_) | CanonicalUpgradeOutcome::NotRequired(_)
+            ));
+            let db = rusqlite::Connection::open(&sqlite_path).unwrap();
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                28
+            );
+            let counts = (
+                db.query_row("SELECT COUNT(*) FROM messages", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+                db.query_row("SELECT COUNT(*) FROM e2ee_outbox", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+                db.query_row("SELECT COUNT(*) FROM group_members", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+                db.query_row("SELECT COUNT(*) FROM conversation_aliases", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            );
+            drop(db);
+
+            assert!(matches!(
+                run(&sqlite_path, &upgrade_dir).unwrap(),
+                CanonicalUpgradeOutcome::NotRequired(_)
+            ));
+            let db = rusqlite::Connection::open(&sqlite_path).unwrap();
+            let repeated_counts = (
+                db.query_row("SELECT COUNT(*) FROM messages", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+                db.query_row("SELECT COUNT(*) FROM e2ee_outbox", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+                db.query_row("SELECT COUNT(*) FROM group_members", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+                db.query_row("SELECT COUNT(*) FROM conversation_aliases", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            );
+            assert_eq!(
+                repeated_counts, counts,
+                "phase {phase:?} resume must be idempotent"
+            );
+        }
     }
 
     #[test]
