@@ -349,6 +349,10 @@ mod tests {
 
     fn item(message_id: &str) -> ConversationSnapshotItem {
         ConversationSnapshotItem {
+            conversation_id: "dm:did:example:bob".to_owned(),
+            peer_persona_id: None,
+            canonical_group_did: None,
+            resolution_state: crate::messages::ConversationResolutionState::LegacyUnresolved,
             thread_kind: "direct".to_owned(),
             thread_id: "did:example:bob".to_owned(),
             conversation_identity: None,

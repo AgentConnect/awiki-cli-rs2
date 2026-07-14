@@ -1039,15 +1039,52 @@ VALUES ('alice-id', ?1, 'user-mallory', 'mallory.awiki.test', 'did:example:mallo
         ) {
             let connection =
                 crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
-            let record =
-                crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::new(
-                    "alice-id",
-                    conversation_id,
-                    peer_scope.user_id.clone(),
-                    peer_scope.full_handle.clone(),
-                    current_did,
-                )
+            let authority = peer_scope
+                .full_handle
+                .split_once('.')
+                .map(|(_, domain)| domain)
                 .unwrap();
+            let persona = crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+                authority,
+                &peer_scope.user_id,
+                &peer_scope.full_handle,
+                Some("active"),
+            )
+            .unwrap();
+            assert_eq!(persona.direct_conversation_id(), conversation_id);
+            crate::internal::local_state::peer_personas::upsert(
+                &connection,
+                &crate::internal::local_state::peer_personas::PeerPersonaRecord {
+                    owner_identity_id: "alice-id".to_owned(),
+                    persona: persona.clone(),
+                    binding_generation: Some("1".to_owned()),
+                    subject_type: "human".to_owned(),
+                    source: "test_authority".to_owned(),
+                    authority_revision: None,
+                    verified_at: "2026-07-14T00:00:00Z".to_owned(),
+                },
+            )
+            .unwrap();
+            crate::internal::local_state::peer_identifiers::bind(
+                &connection,
+                &crate::internal::local_state::peer_identifiers::PeerIdentifierRecord {
+                    owner_identity_id: "alice-id".to_owned(),
+                    peer_persona_id: persona.peer_persona_id.clone(),
+                    identifier_kind: "did".to_owned(),
+                    identifier_value: current_did.to_owned(),
+                    is_current: true,
+                    binding_generation: Some("1".to_owned()),
+                    source: "test_authority".to_owned(),
+                    verified_at: "2026-07-14T00:00:00Z".to_owned(),
+                },
+            )
+            .unwrap();
+            let record = crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::from_verified_persona(
+                "alice-id",
+                &persona,
+                current_did,
+            )
+            .unwrap();
             crate::internal::local_state::direct_peer_routes::upsert(&connection, &record).unwrap();
         }
 

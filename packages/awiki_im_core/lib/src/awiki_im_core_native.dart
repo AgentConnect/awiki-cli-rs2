@@ -2369,6 +2369,10 @@ extension on gen_message.DartMessagePage {
 
 extension on gen_message.DartConversation {
   Conversation _toModel() => Conversation(
+    conversationId: conversationId,
+    peerPersonaId: peerPersonaId,
+    canonicalGroupDid: canonicalGroupDid,
+    resolutionState: resolutionState._toModel(),
     threadKind: threadKind,
     threadId: threadId,
     conversationIdentity: conversationIdentity?._toModel(),
@@ -2382,6 +2386,17 @@ extension on gen_message.DartConversation {
     lastMessageAt: lastMessageAt,
     activityAt: activityAt,
   );
+}
+
+extension on gen_message.DartConversationResolutionState {
+  ConversationResolutionState _toModel() => switch (this) {
+    gen_message.DartConversationResolutionState.resolved =>
+      ConversationResolutionState.resolved,
+    gen_message.DartConversationResolutionState.legacyUnresolved =>
+      ConversationResolutionState.legacyUnresolved,
+    gen_message.DartConversationResolutionState.blockedConflict =>
+      ConversationResolutionState.blockedConflict,
+  };
 }
 
 extension on gen_message.DartConversationPage {
@@ -2504,6 +2519,10 @@ extension on gen_message.DartThreadMessageStorePatch {
 
 extension on gen_message.DartConversationSnapshotItem {
   ConversationSnapshotItem _toModel() => ConversationSnapshotItem(
+    conversationId: conversationId,
+    peerPersonaId: peerPersonaId,
+    canonicalGroupDid: canonicalGroupDid,
+    resolutionState: resolutionState._toModel(),
     threadKind: threadKind,
     threadId: threadId,
     conversationIdentity: conversationIdentity?._toModel(),
@@ -2683,7 +2702,10 @@ extension on gen_group_dto.DartGroupSnapshot {
 
 extension on gen_group_dto.DartGroupMember {
   GroupMember _toModel() => GroupMember(
+    membershipId: membershipId,
+    peerPersonaId: peerPersonaId,
     did: did,
+    credentialDid: credentialDid,
     handle: handle,
     role: role,
     status: status,

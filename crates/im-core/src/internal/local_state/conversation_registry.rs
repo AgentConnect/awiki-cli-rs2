@@ -193,14 +193,18 @@ pub(crate) fn ensure_validated(
     let conversation_id = conversation_id.trim();
     let (thread_kind, thread_id) = if let Some(group_ref) = conversation_id.strip_prefix("group:") {
         let group_ref = group_ref.trim();
-        crate::ids::GroupRef::parse(group_ref)?;
+        crate::ids::Did::parse(group_ref).map_err(|_| {
+            crate::ImError::CanonicalGroupIdentityMissing {
+                group: group_ref.to_owned(),
+            }
+        })?;
         let active = connection
             .query_row(
                 r#"
 SELECT COALESCE(NULLIF(TRIM(group_id), ''), TRIM(group_did))
 FROM groups
 WHERE owner_identity_id = ?1
-  AND (group_id = ?2 OR group_did = ?2)
+  AND group_did = ?2
   AND COALESCE(NULLIF(TRIM(membership_status), ''), 'active')
       NOT IN ('left', 'removed', 'inactive', 'non_member')
 LIMIT 1"#,
@@ -223,6 +227,17 @@ LIMIT 1"#,
                     "Direct conversation requires an owner-scoped canonical peer route",
                 )
             })?;
+        if route
+            .peer_persona_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            return Err(crate::ImError::IdentityUnresolved {
+                detail: "Direct conversation route is not bound to a verified Persona".to_owned(),
+            });
+        }
         ("direct".to_owned(), route.conversation_id)
     } else {
         return Err(crate::ImError::invalid_input(
@@ -240,7 +255,39 @@ LIMIT 1"#,
             thread_id,
             activity_at: now_utc_like(),
         },
-    )
+    )?;
+    require_active_resolved(connection, owner_identity_id, conversation_id)
+}
+
+pub(crate) fn require_active_resolved(
+    connection: &Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+) -> crate::ImResult<()> {
+    let state = connection
+        .query_row(
+            r#"SELECT lifecycle_state, resolution_state
+FROM conversation_registry
+WHERE owner_identity_id = ?1 AND conversation_id = ?2"#,
+            (owner_identity_id.trim(), conversation_id.trim()),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    match state {
+        Some((lifecycle, resolution)) if lifecycle == "active" && resolution == "resolved" => {
+            Ok(())
+        }
+        Some((_, resolution)) if resolution == "blocked_conflict" => {
+            Err(crate::ImError::IdentityBindingConflict {
+                detail: "conversation canonical identity is blocked by a binding conflict"
+                    .to_owned(),
+            })
+        }
+        Some(_) | None => Err(crate::ImError::IdentityUnresolved {
+            detail: "conversation is not an active resolved canonical conversation".to_owned(),
+        }),
+    }
 }
 
 pub(crate) fn ensure_from_summary(
@@ -434,16 +481,28 @@ mod tests {
 
         db.execute(
             r#"INSERT INTO groups
-               (owner_identity_id, owner_did, group_id, membership_status, stored_at)
-               VALUES ('owner-1', 'did:example:owner', 'g1', 'active', '2026-07-13T00:00:00Z')"#,
+               (owner_identity_id, owner_did, group_id, group_did, membership_status, stored_at)
+               VALUES ('owner-1', 'did:example:owner', 'g1', 'did:example:group', 'active', '2026-07-13T00:00:00Z')"#,
             [],
         )
         .unwrap();
-        ensure_validated(&db, "owner-1", "did:example:owner", "group:g1").unwrap();
-        ensure_validated(&db, "owner-1", "did:example:owner", "group:g1").unwrap();
+        ensure_validated(
+            &db,
+            "owner-1",
+            "did:example:owner",
+            "group:did:example:group",
+        )
+        .unwrap();
+        ensure_validated(
+            &db,
+            "owner-1",
+            "did:example:owner",
+            "group:did:example:group",
+        )
+        .unwrap();
         assert_eq!(
             db.query_row(
-                "SELECT COUNT(*) FROM conversation_registry WHERE conversation_id = 'group:g1'",
+                "SELECT COUNT(*) FROM conversation_registry WHERE conversation_id = 'group:did:example:group'",
                 [],
                 |row| row.get::<_, i64>(0),
             )

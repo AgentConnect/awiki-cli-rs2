@@ -201,6 +201,10 @@ pub struct DartMessagePage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartConversation {
+    pub conversation_id: String,
+    pub peer_persona_id: Option<String>,
+    pub canonical_group_did: Option<String>,
+    pub resolution_state: DartConversationResolutionState,
     pub thread_kind: String,
     pub thread_id: String,
     pub conversation_identity: Option<DartConversationIdentity>,
@@ -213,6 +217,13 @@ pub struct DartConversation {
     pub message_count: u32,
     pub last_message_at: Option<String>,
     pub activity_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartConversationResolutionState {
+    Resolved,
+    LegacyUnresolved,
+    BlockedConflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,6 +384,10 @@ pub enum DartThreadMessageStorePatch {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartConversationSnapshotItem {
+    pub conversation_id: String,
+    pub peer_persona_id: Option<String>,
+    pub canonical_group_did: Option<String>,
+    pub resolution_state: DartConversationResolutionState,
     pub thread_kind: String,
     pub thread_id: String,
     pub conversation_identity: Option<DartConversationIdentity>,

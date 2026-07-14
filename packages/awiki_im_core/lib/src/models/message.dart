@@ -443,6 +443,10 @@ class ThreadMessageStorePatch {
 
 class ConversationSnapshotItem {
   const ConversationSnapshotItem({
+    required this.conversationId,
+    this.peerPersonaId,
+    this.canonicalGroupDid,
+    required this.resolutionState,
     required this.threadKind,
     required this.threadId,
     this.conversationIdentity,
@@ -456,6 +460,10 @@ class ConversationSnapshotItem {
     this.activityAt,
   });
 
+  final String conversationId;
+  final String? peerPersonaId;
+  final String? canonicalGroupDid;
+  final ConversationResolutionState resolutionState;
   final String threadKind;
   final String threadId;
   final ConversationIdentity? conversationIdentity;
@@ -468,6 +476,8 @@ class ConversationSnapshotItem {
   final String? lastMessageAt;
   final String? activityAt;
 }
+
+enum ConversationResolutionState { resolved, legacyUnresolved, blockedConflict }
 
 class ConversationSnapshotMessage {
   const ConversationSnapshotMessage({
@@ -563,6 +573,10 @@ class SyncThreadAfterResult {
 
 class Conversation {
   const Conversation({
+    required this.conversationId,
+    this.peerPersonaId,
+    this.canonicalGroupDid,
+    required this.resolutionState,
     required this.threadKind,
     required this.threadId,
     this.conversationIdentity,
@@ -577,6 +591,10 @@ class Conversation {
     this.activityAt,
   });
 
+  final String conversationId;
+  final String? peerPersonaId;
+  final String? canonicalGroupDid;
+  final ConversationResolutionState resolutionState;
   final String threadKind;
   final String threadId;
   final ConversationIdentity? conversationIdentity;

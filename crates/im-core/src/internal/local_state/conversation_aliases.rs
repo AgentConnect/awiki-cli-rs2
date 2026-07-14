@@ -59,6 +59,26 @@ WHERE owner_identity_id = ?1 AND alias_conversation_id = ?2 LIMIT 1"#,
                 .to_owned(),
         });
     }
+    let target_is_active_resolved = connection
+        .query_row(
+            r#"SELECT 1 FROM conversation_registry
+WHERE owner_identity_id = ?1 AND conversation_id = ?2
+  AND lifecycle_state = 'active' AND resolution_state = 'resolved'
+LIMIT 1"#,
+            (
+                record.owner_identity_id.trim(),
+                record.canonical_conversation_id.trim(),
+            ),
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+        .is_some();
+    if !target_is_active_resolved {
+        return Err(crate::ImError::IdentityUnresolved {
+            detail: "conversation alias target must be an active resolved registry row".to_owned(),
+        });
+    }
     let created_at = time::OffsetDateTime::now_utc().unix_timestamp().to_string();
     connection
         .execute(
@@ -160,15 +180,15 @@ mod tests {
     fn alias_insert_is_idempotent_but_never_last_write_wins() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
-        for conversation_id in ["dm:peer-scope:v1:first", "dm:peer-scope:v1:second"] {
+        for conversation_id in ["group:did:example:first", "group:did:example:second"] {
             crate::internal::local_state::conversation_registry::ensure(
                 &db,
                 &crate::internal::local_state::conversation_registry::ConversationRegistryRecord {
                     owner_identity_id: "owner".to_owned(),
                     owner_did: "did:example:owner".to_owned(),
                     conversation_id: conversation_id.to_owned(),
-                    thread_kind: "direct".to_owned(),
-                    thread_id: conversation_id.to_owned(),
+                    thread_kind: "group".to_owned(),
+                    thread_id: conversation_id.trim_start_matches("group:").to_owned(),
                     activity_at: "2026-07-14T00:00:00Z".to_owned(),
                 },
             )
@@ -178,7 +198,7 @@ mod tests {
             owner_identity_id: "owner".to_owned(),
             alias_kind: "legacy_direct_did".to_owned(),
             alias_conversation_id: "dm:did:example:peer".to_owned(),
-            canonical_conversation_id: "dm:peer-scope:v1:first".to_owned(),
+            canonical_conversation_id: "group:did:example:first".to_owned(),
             source: "verified_route".to_owned(),
             verified_at: "2026-07-14T00:00:00Z".to_owned(),
         };
@@ -187,7 +207,7 @@ mod tests {
         let conflict = insert(
             &db,
             &ConversationAliasRecord {
-                canonical_conversation_id: "dm:peer-scope:v1:second".to_owned(),
+                canonical_conversation_id: "group:did:example:second".to_owned(),
                 ..record
             },
         )
@@ -195,6 +215,41 @@ mod tests {
         assert!(matches!(
             conflict,
             crate::ImError::ConversationAliasConflict { .. }
+        ));
+    }
+
+    #[test]
+    fn alias_rejects_missing_or_unresolved_targets() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let record = ConversationAliasRecord {
+            owner_identity_id: "owner".to_owned(),
+            alias_kind: "legacy_direct_did".to_owned(),
+            alias_conversation_id: "dm:did:example:peer".to_owned(),
+            canonical_conversation_id: "dm:peer-scope:v1:missing".to_owned(),
+            source: "verified_route".to_owned(),
+            verified_at: "2026-07-14T00:00:00Z".to_owned(),
+        };
+        assert!(matches!(
+            insert(&db, &record).unwrap_err(),
+            crate::ImError::IdentityUnresolved { .. }
+        ));
+
+        crate::internal::local_state::conversation_registry::ensure(
+            &db,
+            &crate::internal::local_state::conversation_registry::ConversationRegistryRecord {
+                owner_identity_id: "owner".to_owned(),
+                owner_did: "did:example:owner".to_owned(),
+                conversation_id: record.canonical_conversation_id.clone(),
+                thread_kind: "direct".to_owned(),
+                thread_id: record.canonical_conversation_id.clone(),
+                activity_at: "2026-07-14T00:00:00Z".to_owned(),
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            insert(&db, &record).unwrap_err(),
+            crate::ImError::IdentityUnresolved { .. }
         ));
     }
 }

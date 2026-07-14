@@ -97,7 +97,10 @@ class DartCreateGroupRequest {
 enum DartGroupIdentityMode { handle, didOnly }
 
 class DartGroupMember {
+  final String? membershipId;
+  final String? peerPersonaId;
   final String? did;
+  final String? credentialDid;
   final String? handle;
   final String? role;
   final String? status;
@@ -105,7 +108,10 @@ class DartGroupMember {
   final String? subjectType;
 
   const DartGroupMember({
+    this.membershipId,
+    this.peerPersonaId,
     this.did,
+    this.credentialDid,
     this.handle,
     this.role,
     this.status,
@@ -115,7 +121,10 @@ class DartGroupMember {
 
   @override
   int get hashCode =>
+      membershipId.hashCode ^
+      peerPersonaId.hashCode ^
       did.hashCode ^
+      credentialDid.hashCode ^
       handle.hashCode ^
       role.hashCode ^
       status.hashCode ^
@@ -127,7 +136,10 @@ class DartGroupMember {
       identical(this, other) ||
       other is DartGroupMember &&
           runtimeType == other.runtimeType &&
+          membershipId == other.membershipId &&
+          peerPersonaId == other.peerPersonaId &&
           did == other.did &&
+          credentialDid == other.credentialDid &&
           handle == other.handle &&
           role == other.role &&
           status == other.status &&

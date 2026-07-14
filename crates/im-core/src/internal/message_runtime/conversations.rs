@@ -108,6 +108,10 @@ pub(crate) fn snapshot_item_from_conversation(
             crate::messages::ConversationIdentity::from_thread_ref(&conversation.thread)
         });
     ConversationSnapshotItem {
+        conversation_id: conversation.conversation_id.clone(),
+        peer_persona_id: conversation.peer_persona_id.clone(),
+        canonical_group_did: conversation.canonical_group_did.clone(),
+        resolution_state: conversation.resolution_state,
         thread_kind,
         thread_id,
         conversation_identity: Some(conversation_identity),
@@ -285,7 +289,29 @@ fn conversation_from_record(
         owner_did,
     );
     let participants = conversation_participants(owner_did, &thread, last_message.as_ref())?;
+    let resolution_state = conversation_resolution_state(record.resolution_state())?;
+    let peer_persona_id = non_empty_string(record.peer_persona_id());
+    let canonical_group_did = non_empty_string(record.canonical_group_did());
+    if resolution_state == crate::messages::ConversationResolutionState::Resolved {
+        match record.thread_kind() {
+            "direct" if peer_persona_id.is_none() => {
+                return Err(crate::ImError::LocalProjectionUnavailable {
+                    detail: "resolved Direct conversation is missing peer_persona_id".to_owned(),
+                });
+            }
+            "group" if canonical_group_did.is_none() => {
+                return Err(crate::ImError::CanonicalGroupIdentityMissing {
+                    group: record.conversation_id().to_owned(),
+                });
+            }
+            _ => {}
+        }
+    }
     Ok(crate::messages::Conversation {
+        conversation_id: record.conversation_id().to_owned(),
+        peer_persona_id,
+        canonical_group_did,
+        resolution_state,
         thread,
         conversation_identity: Some(conversation_identity),
         title: None,
@@ -324,6 +350,18 @@ impl ConversationRecordExt for crate::internal::local_state::conversations::Conv
 
     fn conversation_id(&self) -> &str {
         &self.conversation_id
+    }
+
+    fn peer_persona_id(&self) -> &str {
+        &self.peer_persona_id
+    }
+
+    fn canonical_group_did(&self) -> &str {
+        &self.canonical_group_did
+    }
+
+    fn resolution_state(&self) -> &str {
+        &self.resolution_state
     }
 
     fn thread_kind(&self) -> &str {
@@ -373,6 +411,18 @@ impl ConversationRecordExt for NoSqliteConversationRecord {
         ""
     }
 
+    fn peer_persona_id(&self) -> &str {
+        ""
+    }
+
+    fn canonical_group_did(&self) -> &str {
+        ""
+    }
+
+    fn resolution_state(&self) -> &str {
+        "legacy_unresolved"
+    }
+
     fn thread_kind(&self) -> &str {
         ""
     }
@@ -411,6 +461,9 @@ impl ConversationRecordExt for NoSqliteConversationRecord {
 trait ConversationRecordExt {
     fn thread_id(&self) -> &str;
     fn conversation_id(&self) -> &str;
+    fn peer_persona_id(&self) -> &str;
+    fn canonical_group_did(&self) -> &str;
+    fn resolution_state(&self) -> &str;
     fn thread_kind(&self) -> &str;
     fn direct_peer_did(&self) -> &str;
     fn activity_at(&self) -> &str;
@@ -420,6 +473,19 @@ trait ConversationRecordExt {
     fn first_unread_mention_message_id(&self) -> Option<&str>;
     fn last_message_at(&self) -> &str;
     fn last_message(&self) -> Option<&crate::internal::local_state::messages::MessageRecord>;
+}
+
+fn conversation_resolution_state(
+    value: &str,
+) -> crate::ImResult<crate::messages::ConversationResolutionState> {
+    match value.trim() {
+        "resolved" => Ok(crate::messages::ConversationResolutionState::Resolved),
+        "legacy_unresolved" => Ok(crate::messages::ConversationResolutionState::LegacyUnresolved),
+        "blocked_conflict" => Ok(crate::messages::ConversationResolutionState::BlockedConflict),
+        other => Err(crate::ImError::LocalProjectionUnavailable {
+            detail: format!("unknown conversation resolution state: {other}"),
+        }),
+    }
 }
 
 fn encode_conversation_cursor(record: &impl ConversationRecordExt) -> Option<String> {
@@ -798,6 +864,8 @@ mod tests {
                 owner_identity_id: "alice-id".into(),
                 owner_did: "did:example:alice".into(),
                 conversation_id: conversation_id.clone(),
+                peer_persona_id: "persona:v1:bob".into(),
+                resolution_state: "resolved".into(),
                 thread_kind: "direct".into(),
                 thread_id: conversation_id.clone(),
                 direct_peer_did: "did:example:bob".into(),
@@ -811,6 +879,10 @@ mod tests {
             conversation.thread,
             crate::messages::ThreadRef::Direct(_)
         ));
+        assert_eq!(
+            conversation.peer_persona_id.as_deref(),
+            Some("persona:v1:bob")
+        );
         assert_eq!(
             conversation
                 .conversation_identity

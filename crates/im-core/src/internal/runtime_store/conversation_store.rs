@@ -407,6 +407,10 @@ mod tests {
         unread_count: u32,
     ) -> crate::messages::ConversationSnapshotItem {
         crate::messages::ConversationSnapshotItem {
+            conversation_id: format!("dm:{thread_id}"),
+            peer_persona_id: None,
+            canonical_group_did: None,
+            resolution_state: crate::messages::ConversationResolutionState::LegacyUnresolved,
             thread_kind: thread_kind.to_owned(),
             thread_id: thread_id.to_owned(),
             conversation_identity: None,

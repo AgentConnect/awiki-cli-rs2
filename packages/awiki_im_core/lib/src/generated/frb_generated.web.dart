@@ -414,6 +414,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartConversationReadRef dco_decode_dart_conversation_read_ref(dynamic raw);
 
   @protected
+  DartConversationResolutionState dco_decode_dart_conversation_resolution_state(
+    dynamic raw,
+  );
+
+  @protected
   DartConversationSnapshotItem dco_decode_dart_conversation_snapshot_item(
     dynamic raw,
   );
@@ -1414,6 +1419,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartConversationReadRef sse_decode_dart_conversation_read_ref(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationResolutionState sse_decode_dart_conversation_resolution_state(
     SseDeserializer deserializer,
   );
 
@@ -2651,6 +2661,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_conversation_read_ref(
     DartConversationReadRef self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_resolution_state(
+    DartConversationResolutionState self,
     SseSerializer serializer,
   );
 

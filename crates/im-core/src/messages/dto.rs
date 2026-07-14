@@ -874,6 +874,12 @@ fn is_old_flutter_direct_alias(id: &str) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationSnapshotItem {
+    pub conversation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_persona_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_group_did: Option<String>,
+    pub resolution_state: ConversationResolutionState,
     pub thread_kind: String,
     pub thread_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -935,6 +941,12 @@ pub struct ConversationSnapshotMessageBody {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Conversation {
+    pub conversation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_persona_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_group_did: Option<String>,
+    pub resolution_state: ConversationResolutionState,
     pub thread: ThreadRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_identity: Option<ConversationIdentity>,
@@ -950,6 +962,14 @@ pub struct Conversation {
     pub last_message_at: Option<String>,
     /// Durable list ordering time, independent from message aggregation.
     pub activity_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationResolutionState {
+    Resolved,
+    LegacyUnresolved,
+    BlockedConflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

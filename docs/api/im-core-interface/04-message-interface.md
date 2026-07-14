@@ -531,6 +531,24 @@ pub struct MarkThreadReadResult {
 
 ### 5.0 Local History 当前补充
 
+Schema 28 的 conversation list/snapshot contract 直接携带：
+
+```text
+conversation_id          // required canonical key
+peer_persona_id?         // resolved Direct required
+canonical_group_did?     // resolved Group required
+resolution_state         // resolved | legacy_unresolved | blocked_conflict
+```
+
+新 App 主路径必须使用这些字段，不能再执行 `conversation_id ?? thread_id`。Core 在
+`resolved` 行缺少对应 Persona/Group DID 时返回 typed projection error；显式
+`ensure_conversation` 只接受绑定到 verified Persona 的 Direct route 和以权威 Group DID
+为 key 的 active Group membership。`legacy_unresolved` 仍可用于历史列表/诊断，但不能通过
+ensure/send 边界伪装成 resolved canonical conversation。
+
+Group member DTO 同时分离 `membership_id`、`peer_persona_id?`、`credential_did` 和
+Handle；Handle binding generation/DID 轮换只更新属性，不改变 membership identity。
+
 `history(thread, query)` 保持远端 history + 本地 projection/reconcile 语义。AWiki Me 首屏读取应使用 `local_conversation_timeline(conversation, query)`；`local_history(thread, query)` 是兼容入口：
 
 ```rust

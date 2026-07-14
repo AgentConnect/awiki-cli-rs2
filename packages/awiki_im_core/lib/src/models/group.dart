@@ -45,7 +45,10 @@ class GroupSnapshot extends GroupSummary {
 
 class GroupMember {
   const GroupMember({
+    this.membershipId,
+    this.peerPersonaId,
     this.did,
+    this.credentialDid,
     this.handle,
     this.role,
     this.status,
@@ -53,7 +56,10 @@ class GroupMember {
     this.subjectType,
   });
 
+  final String? membershipId;
+  final String? peerPersonaId;
   final String? did;
+  final String? credentialDid;
   final String? handle;
   final String? role;
   final String? status;

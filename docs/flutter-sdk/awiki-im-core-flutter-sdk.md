@@ -143,7 +143,18 @@ Before opening a newly resolved Direct conversation or a newly created/joined Gr
 await client.messages.ensureConversation(canonicalConversationId);
 ```
 
-The call is idempotent and fail-closed: Direct requires an owner-scoped peer-scope route, and Group requires active local membership. App-local rows may be used only as a temporary optimistic overlay while this call completes.
+The call is idempotent and fail-closed: Direct requires an owner-scoped
+peer-scope route bound to a verified `peerPersonaId`; Group requires an active
+local membership addressed by canonical Group DID. App-local rows may be used
+only as a temporary optimistic overlay while this call completes.
+
+Generated `DartConversation` and `DartConversationSnapshotItem` now expose a
+required `conversationId`, optional `peerPersonaId` / `canonicalGroupDid`, and a
+required `resolutionState`. A resolved Direct must have `peerPersonaId`; a
+resolved Group must have `canonicalGroupDid`. New App code must not fall back to
+`threadId` when any of these canonical facts is missing. `DartGroupMember`
+separates `membershipId`, `peerPersonaId`, and `credentialDid`; the credential
+DID is not the membership identity.
 
 Conversation list startup and realtime updates use snapshot / patch helpers under
 the same `client.messages` namespace:

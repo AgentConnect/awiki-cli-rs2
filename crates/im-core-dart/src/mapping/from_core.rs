@@ -24,13 +24,13 @@ use crate::dto::{
     message::{
         DartConversation, DartConversationAlias, DartConversationAliasSource,
         DartConversationIdentity, DartConversationIdentityScope, DartConversationListSnapshot,
-        DartConversationMigrationState, DartConversationPage, DartConversationSnapshotItem,
-        DartConversationSnapshotMessage, DartConversationSnapshotMessageBody,
-        DartConversationStorageThreadRef, DartConversationStorePatch, DartMarkReadResult,
-        DartMarkThreadReadResult, DartMessage, DartMessageBodyView, DartMessageDirection,
-        DartMessageMetadata, DartMessageMetadataAttribute, DartMessagePage, DartReadWatermark,
-        DartSendMessageResult, DartSyncDeltaResult, DartSyncThreadAfterResult,
-        DartThreadMessageStorePatch,
+        DartConversationMigrationState, DartConversationPage, DartConversationResolutionState,
+        DartConversationSnapshotItem, DartConversationSnapshotMessage,
+        DartConversationSnapshotMessageBody, DartConversationStorageThreadRef,
+        DartConversationStorePatch, DartMarkReadResult, DartMarkThreadReadResult, DartMessage,
+        DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
+        DartMessageMetadataAttribute, DartMessagePage, DartReadWatermark, DartSendMessageResult,
+        DartSyncDeltaResult, DartSyncThreadAfterResult, DartThreadMessageStorePatch,
     },
     profile::DartUserProfile,
     realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint},
@@ -743,6 +743,10 @@ impl From<im_core::messages::Conversation> for DartConversation {
     fn from(value: im_core::messages::Conversation) -> Self {
         let (thread_kind, thread_id) = thread_ref_parts(value.thread);
         Self {
+            conversation_id: value.conversation_id,
+            peer_persona_id: value.peer_persona_id,
+            canonical_group_did: value.canonical_group_did,
+            resolution_state: value.resolution_state.into(),
             thread_kind,
             thread_id,
             conversation_identity: value.conversation_identity.map(Into::into),
@@ -761,6 +765,20 @@ impl From<im_core::messages::Conversation> for DartConversation {
             message_count: value.message_count,
             last_message_at: value.last_message_at,
             activity_at: value.activity_at,
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationResolutionState> for DartConversationResolutionState {
+    fn from(value: im_core::messages::ConversationResolutionState) -> Self {
+        match value {
+            im_core::messages::ConversationResolutionState::Resolved => Self::Resolved,
+            im_core::messages::ConversationResolutionState::LegacyUnresolved => {
+                Self::LegacyUnresolved
+            }
+            im_core::messages::ConversationResolutionState::BlockedConflict => {
+                Self::BlockedConflict
+            }
         }
     }
 }
@@ -954,6 +972,10 @@ impl From<im_core::messages::ThreadMessageStorePatch> for DartThreadMessageStore
 impl From<im_core::messages::ConversationSnapshotItem> for DartConversationSnapshotItem {
     fn from(value: im_core::messages::ConversationSnapshotItem) -> Self {
         Self {
+            conversation_id: value.conversation_id,
+            peer_persona_id: value.peer_persona_id,
+            canonical_group_did: value.canonical_group_did,
+            resolution_state: value.resolution_state.into(),
             thread_kind: value.thread_kind,
             thread_id: value.thread_id,
             conversation_identity: value.conversation_identity.map(Into::into),
@@ -1384,7 +1406,10 @@ impl From<im_core::groups::GroupSnapshot> for DartGroupSnapshot {
 impl From<im_core::groups::GroupMember> for DartGroupMember {
     fn from(value: im_core::groups::GroupMember) -> Self {
         Self {
+            membership_id: value.membership_id,
+            peer_persona_id: value.peer_persona_id,
             did: value.did.map(|did| did.as_str().to_string()),
+            credential_did: value.credential_did.map(|did| did.as_str().to_string()),
             handle: value.handle.map(|handle| handle.as_str().to_string()),
             role: value.role,
             status: value.status,

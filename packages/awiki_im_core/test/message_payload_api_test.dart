@@ -109,6 +109,41 @@ void main() {
     expect(sync.limit, 25);
   });
 
+  test('conversation projections expose canonical identity separately', () {
+    const conversation = Conversation(
+      conversationId: 'dm:persona:peer-1',
+      peerPersonaId: 'peer-1',
+      resolutionState: ConversationResolutionState.resolved,
+      threadKind: 'direct',
+      threadId: 'did:example:peer-device-2',
+      unreadCount: 0,
+      messageCount: 0,
+    );
+    const groupSnapshot = ConversationSnapshotItem(
+      conversationId: 'group:did:example:group-1',
+      canonicalGroupDid: 'did:example:group-1',
+      resolutionState: ConversationResolutionState.resolved,
+      threadKind: 'group',
+      threadId: 'wire-group-thread-7',
+      unreadCount: 0,
+      messageCount: 0,
+    );
+    const member = GroupMember(
+      membershipId: 'membership-1',
+      peerPersonaId: 'peer-1',
+      did: 'did:example:peer-device-2',
+      credentialDid: 'did:example:peer-device-2',
+    );
+
+    expect(conversation.conversationId, 'dm:persona:peer-1');
+    expect(conversation.peerPersonaId, 'peer-1');
+    expect(conversation.threadId, 'did:example:peer-device-2');
+    expect(groupSnapshot.canonicalGroupDid, 'did:example:group-1');
+    expect(member.membershipId, 'membership-1');
+    expect(member.peerPersonaId, 'peer-1');
+    expect(member.credentialDid, member.did);
+  });
+
   test('agent control helpers identify command and status payloads', () {
     const commandPayload =
         '{"schema":"awiki.agent.command.v1","command":"runtime.agent.create"}';

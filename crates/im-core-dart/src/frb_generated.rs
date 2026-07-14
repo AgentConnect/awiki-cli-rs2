@@ -6790,6 +6790,11 @@ impl SseDecode for crate::dto::auth::DartAuthStatus {
 impl SseDecode for crate::dto::message::DartConversation {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_conversationId = <String>::sse_decode(deserializer);
+        let mut var_peerPersonaId = <Option<String>>::sse_decode(deserializer);
+        let mut var_canonicalGroupDid = <Option<String>>::sse_decode(deserializer);
+        let mut var_resolutionState =
+            <crate::dto::message::DartConversationResolutionState>::sse_decode(deserializer);
         let mut var_threadKind = <String>::sse_decode(deserializer);
         let mut var_threadId = <String>::sse_decode(deserializer);
         let mut var_conversationIdentity =
@@ -6805,6 +6810,10 @@ impl SseDecode for crate::dto::message::DartConversation {
         let mut var_lastMessageAt = <Option<String>>::sse_decode(deserializer);
         let mut var_activityAt = <Option<String>>::sse_decode(deserializer);
         return crate::dto::message::DartConversation {
+            conversation_id: var_conversationId,
+            peer_persona_id: var_peerPersonaId,
+            canonical_group_did: var_canonicalGroupDid,
+            resolution_state: var_resolutionState,
             thread_kind: var_threadKind,
             thread_id: var_threadId,
             conversation_identity: var_conversationIdentity,
@@ -6962,9 +6971,30 @@ impl SseDecode for crate::dto::message::DartConversationReadRef {
     }
 }
 
+impl SseDecode for crate::dto::message::DartConversationResolutionState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::message::DartConversationResolutionState::Resolved,
+            1 => crate::dto::message::DartConversationResolutionState::LegacyUnresolved,
+            2 => crate::dto::message::DartConversationResolutionState::BlockedConflict,
+            _ => unreachable!(
+                "Invalid variant for DartConversationResolutionState: {}",
+                inner
+            ),
+        };
+    }
+}
+
 impl SseDecode for crate::dto::message::DartConversationSnapshotItem {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_conversationId = <String>::sse_decode(deserializer);
+        let mut var_peerPersonaId = <Option<String>>::sse_decode(deserializer);
+        let mut var_canonicalGroupDid = <Option<String>>::sse_decode(deserializer);
+        let mut var_resolutionState =
+            <crate::dto::message::DartConversationResolutionState>::sse_decode(deserializer);
         let mut var_threadKind = <String>::sse_decode(deserializer);
         let mut var_threadId = <String>::sse_decode(deserializer);
         let mut var_conversationIdentity =
@@ -6981,6 +7011,10 @@ impl SseDecode for crate::dto::message::DartConversationSnapshotItem {
         let mut var_lastMessageAt = <Option<String>>::sse_decode(deserializer);
         let mut var_activityAt = <Option<String>>::sse_decode(deserializer);
         return crate::dto::message::DartConversationSnapshotItem {
+            conversation_id: var_conversationId,
+            peer_persona_id: var_peerPersonaId,
+            canonical_group_did: var_canonicalGroupDid,
+            resolution_state: var_resolutionState,
             thread_kind: var_threadKind,
             thread_id: var_threadId,
             conversation_identity: var_conversationIdentity,
@@ -7691,14 +7725,20 @@ impl SseDecode for crate::dto::group::DartGroupIdentityMode {
 impl SseDecode for crate::dto::group::DartGroupMember {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_membershipId = <Option<String>>::sse_decode(deserializer);
+        let mut var_peerPersonaId = <Option<String>>::sse_decode(deserializer);
         let mut var_did = <Option<String>>::sse_decode(deserializer);
+        let mut var_credentialDid = <Option<String>>::sse_decode(deserializer);
         let mut var_handle = <Option<String>>::sse_decode(deserializer);
         let mut var_role = <Option<String>>::sse_decode(deserializer);
         let mut var_status = <Option<String>>::sse_decode(deserializer);
         let mut var_joinedAt = <Option<String>>::sse_decode(deserializer);
         let mut var_subjectType = <Option<String>>::sse_decode(deserializer);
         return crate::dto::group::DartGroupMember {
+            membership_id: var_membershipId,
+            peer_persona_id: var_peerPersonaId,
             did: var_did,
+            credential_did: var_credentialDid,
             handle: var_handle,
             role: var_role,
             status: var_status,
@@ -10523,6 +10563,10 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::auth::DartAuthStatus>
 impl flutter_rust_bridge::IntoDart for crate::dto::message::DartConversation {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.conversation_id.into_into_dart().into_dart(),
+            self.peer_persona_id.into_into_dart().into_dart(),
+            self.canonical_group_did.into_into_dart().into_dart(),
+            self.resolution_state.into_into_dart().into_dart(),
             self.thread_kind.into_into_dart().into_dart(),
             self.thread_id.into_into_dart().into_dart(),
             self.conversation_identity.into_into_dart().into_dart(),
@@ -10739,9 +10783,35 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartConversationRead
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartConversationResolutionState {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Resolved => 0.into_dart(),
+            Self::LegacyUnresolved => 1.into_dart(),
+            Self::BlockedConflict => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartConversationResolutionState
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartConversationResolutionState>
+    for crate::dto::message::DartConversationResolutionState
+{
+    fn into_into_dart(self) -> crate::dto::message::DartConversationResolutionState {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::message::DartConversationSnapshotItem {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.conversation_id.into_into_dart().into_dart(),
+            self.peer_persona_id.into_into_dart().into_dart(),
+            self.canonical_group_did.into_into_dart().into_dart(),
+            self.resolution_state.into_into_dart().into_dart(),
             self.thread_kind.into_into_dart().into_dart(),
             self.thread_id.into_into_dart().into_dart(),
             self.conversation_identity.into_into_dart().into_dart(),
@@ -11623,7 +11693,10 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::group::DartGroupIdentityMode>
 impl flutter_rust_bridge::IntoDart for crate::dto::group::DartGroupMember {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.membership_id.into_into_dart().into_dart(),
+            self.peer_persona_id.into_into_dart().into_dart(),
             self.did.into_into_dart().into_dart(),
+            self.credential_did.into_into_dart().into_dart(),
             self.handle.into_into_dart().into_dart(),
             self.role.into_into_dart().into_dart(),
             self.status.into_into_dart().into_dart(),
@@ -13945,6 +14018,13 @@ impl SseEncode for crate::dto::auth::DartAuthStatus {
 impl SseEncode for crate::dto::message::DartConversation {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.conversation_id, serializer);
+        <Option<String>>::sse_encode(self.peer_persona_id, serializer);
+        <Option<String>>::sse_encode(self.canonical_group_did, serializer);
+        <crate::dto::message::DartConversationResolutionState>::sse_encode(
+            self.resolution_state,
+            serializer,
+        );
         <String>::sse_encode(self.thread_kind, serializer);
         <String>::sse_encode(self.thread_id, serializer);
         <Option<crate::dto::message::DartConversationIdentity>>::sse_encode(
@@ -14083,9 +14163,33 @@ impl SseEncode for crate::dto::message::DartConversationReadRef {
     }
 }
 
+impl SseEncode for crate::dto::message::DartConversationResolutionState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::message::DartConversationResolutionState::Resolved => 0,
+                crate::dto::message::DartConversationResolutionState::LegacyUnresolved => 1,
+                crate::dto::message::DartConversationResolutionState::BlockedConflict => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::dto::message::DartConversationSnapshotItem {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.conversation_id, serializer);
+        <Option<String>>::sse_encode(self.peer_persona_id, serializer);
+        <Option<String>>::sse_encode(self.canonical_group_did, serializer);
+        <crate::dto::message::DartConversationResolutionState>::sse_encode(
+            self.resolution_state,
+            serializer,
+        );
         <String>::sse_encode(self.thread_kind, serializer);
         <String>::sse_encode(self.thread_id, serializer);
         <Option<crate::dto::message::DartConversationIdentity>>::sse_encode(
@@ -14600,7 +14704,10 @@ impl SseEncode for crate::dto::group::DartGroupIdentityMode {
 impl SseEncode for crate::dto::group::DartGroupMember {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.membership_id, serializer);
+        <Option<String>>::sse_encode(self.peer_persona_id, serializer);
         <Option<String>>::sse_encode(self.did, serializer);
+        <Option<String>>::sse_encode(self.credential_did, serializer);
         <Option<String>>::sse_encode(self.handle, serializer);
         <Option<String>>::sse_encode(self.role, serializer);
         <Option<String>>::sse_encode(self.status, serializer);
