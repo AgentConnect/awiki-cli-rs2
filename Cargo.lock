@@ -241,6 +241,7 @@ dependencies = [
  "chacha20poly1305",
  "chrono",
  "ed25519-dalek",
+ "fs2",
  "futures-util",
  "hkdf",
  "idna",

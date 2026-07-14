@@ -71,6 +71,11 @@ pub enum ImError {
         from_version: i64,
         target_version: i64,
     },
+    LocalStateUpgradeInProgress,
+    LocalStateUpgradeFailed {
+        phase: String,
+        code: String,
+    },
     IdentityUnresolved {
         detail: String,
     },
@@ -177,6 +182,10 @@ impl fmt::Display for ImError {
                 f,
                 "local state upgrade required: schema {from_version} -> {target_version}"
             ),
+            Self::LocalStateUpgradeInProgress => f.write_str("local state upgrade in progress"),
+            Self::LocalStateUpgradeFailed { phase, code } => {
+                write!(f, "local state upgrade failed during {phase}: {code}")
+            }
             Self::IdentityUnresolved { detail } => write!(f, "identity unresolved: {detail}"),
             Self::IdentityBindingConflict { detail } => {
                 write!(f, "identity binding conflict: {detail}")

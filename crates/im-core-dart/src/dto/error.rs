@@ -114,6 +114,13 @@ impl From<im_core::ImError> for DartImError {
                     "local state upgrade required: schema {from_version} -> {target_version}"
                 ),
             ),
+            im_core::ImError::LocalStateUpgradeInProgress => {
+                Self::simple("local_state_upgrade_in_progress", value)
+            }
+            im_core::ImError::LocalStateUpgradeFailed { phase, code } => Self::simple(
+                "local_state_upgrade_failed",
+                format!("local state upgrade failed during {phase}: {code}"),
+            ),
             im_core::ImError::IdentityUnresolved { detail } => Self::simple(
                 "identity_unresolved",
                 format!("identity unresolved: {detail}"),

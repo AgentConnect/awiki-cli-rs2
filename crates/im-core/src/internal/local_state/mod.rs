@@ -4,6 +4,8 @@ pub(crate) mod actor;
 pub(crate) mod attachment_manifest_cache;
 #[cfg(feature = "sqlite")]
 pub(crate) mod canonical_invariants;
+#[cfg(feature = "sqlite")]
+pub(crate) mod canonical_upgrade;
 pub(crate) mod contacts;
 #[cfg(feature = "sqlite")]
 pub(crate) mod conversation_aliases;

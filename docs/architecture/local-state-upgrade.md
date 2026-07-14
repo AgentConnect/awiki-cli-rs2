@@ -47,7 +47,9 @@ SQLite schema 18 之后逐步增加 conversation summary projection、local-firs
 
 SQLite schema 28 增加 owner-scoped `peer_personas`、`peer_identifiers`、`peer_profiles`、append-only `conversation_aliases`，并将 conversation registry 的 `lifecycle_state` 与 `resolution_state` 分离。Handle Authority domain 由 Core 统一执行 IDNA/lowercase 归一化；缺少稳定 authority subject 或可用 binding status 时不得回退 DID 创建 Persona。Group fallback `membership_id` 不包含 Handle binding generation，DID rebind 不改变 membership identity。`messages` 新增 immutable `wire_thread_kind + wire_thread_ref + wire_identity_resolution_state`，`conversation_id` 只作为 mutable canonical projection；canonical merge 不得再改写 wire thread、DID/group snapshot 或 `server_seq`，相同 message ID 的 wire facts 冲突必须 fail closed。
 
-release/0710 的生产 SQLite schema 27 不允许在普通 `open_writable` 中原地自动 bump。schema 28 Core 在 migration runner 接管前返回 typed `local_state_upgrade_required`，避免在一致性 backup、shadow migration 和 validation gate 完成前修改 source DB。正式 27→28 runner 与 fixture gate由 canonical conversation upgrade 模块负责。
+release/0710 的生产 SQLite schema 27 不允许在普通 `open_writable` 中原地自动 bump。schema 28 Core 在 migration runner 接管前返回 typed `local_state_upgrade_required`，避免在一致性 backup、shadow migration 和 validation gate 完成前修改 source DB。正式 27→28 runner 位于 `crates/im-core/src/internal/local_state/canonical_upgrade/`：只读 structural preflight 和 schema fingerprint 通过后获取跨进程文件锁，使用 SQLite Online Backup API（包含已提交 WAL）生成并复验 backup，再创建独立 shadow。部分 target schema、未知 source schema、source fingerprint 变化和 integrity check 失败均 fail closed，且不修改 source。
+
+canonical upgrade journal 只记录 upgrade ID、schema/fingerprint、相对 artifact 名和阶段，不记录 owner DID、消息内容、凭证或密钥。阶段固定为 `detected → preflight_passed → backup_verified → shadow_migrated → validation_passed → cutover_started → completed`；migration、validation、cutover 和 restore 在相同模块中继续实现，未完成 validation 前不得替换 live SQLite。
 
 ## 3. 工作区路径
 

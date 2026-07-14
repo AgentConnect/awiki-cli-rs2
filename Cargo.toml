@@ -30,7 +30,8 @@ serde_json = "1"
 serde_json_canonicalizer = "0.3.2"
 sha2 = "0.10"
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["backup", "bundled"] }
+fs2 = "0.4"
 anp = { version = "0.8.9", path = "../anp/anp/rust", default-features = false }
 rand = "0.8"
 redb = "=2.6.3"
