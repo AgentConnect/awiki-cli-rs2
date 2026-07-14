@@ -254,7 +254,9 @@ route. A verified legacy DID reference is written to append-only
 `conversation_aliases`. Alias insertion is conflict-visible (`INSERT OR IGNORE`
 followed by target verification), never last-write-wins. Registry lifecycle and
 canonical resolution are orthogonal, so `active + legacy_unresolved` cannot be
-mistaken for a resolved canonical row.
+mistaken for a resolved canonical row. An alias may continue to target a
+resolved canonical conversation after that target becomes `archived`, `left`,
+or `deleted`; it must never target an unresolved or `merged` registry row.
 
 Schema 28 also separates immutable protocol facts from mutable local
 conversation projection. Each message stores `wire_thread_kind`,

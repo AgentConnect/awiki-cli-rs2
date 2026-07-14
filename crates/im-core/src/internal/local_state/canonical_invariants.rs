@@ -75,13 +75,13 @@ WHERE source.owner_identity_id = ?1 AND source.lifecycle_state = 'merged'
         ),
         (
             "conversation_aliases",
-            "alias_target_must_be_active_resolved",
+            "alias_target_must_be_resolved_canonical",
             r#"SELECT COUNT(*) FROM conversation_aliases alias
 LEFT JOIN conversation_registry target
   ON target.owner_identity_id = alias.owner_identity_id
  AND target.conversation_id = alias.canonical_conversation_id
 WHERE alias.owner_identity_id = ?1
-  AND (target.conversation_id IS NULL OR target.lifecycle_state <> 'active'
+  AND (target.conversation_id IS NULL OR target.lifecycle_state = 'merged'
        OR target.resolution_state <> 'resolved')"#,
         ),
         (

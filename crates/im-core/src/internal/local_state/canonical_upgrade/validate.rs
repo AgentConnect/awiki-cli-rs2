@@ -333,6 +333,8 @@ LEFT JOIN messages
   ON messages.owner_identity_id = groups.owner_identity_id
  AND (messages.group_id = groups.group_id OR messages.group_did = groups.group_did)
 WHERE TRIM(COALESCE(groups.group_did, '')) <> ''
+  AND LOWER(TRIM(COALESCE(groups.membership_status, 'active')))
+      NOT IN ('left', 'removed', 'inactive', 'non_member')
 GROUP BY groups.owner_identity_id, groups.group_did
 HAVING COUNT(messages.msg_id) = 0
 ORDER BY groups.owner_identity_id, groups.group_did"#,

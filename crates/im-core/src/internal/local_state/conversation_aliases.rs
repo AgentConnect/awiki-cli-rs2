@@ -59,11 +59,11 @@ WHERE owner_identity_id = ?1 AND alias_conversation_id = ?2 LIMIT 1"#,
                 .to_owned(),
         });
     }
-    let target_is_active_resolved = connection
+    let target_is_canonical_resolved = connection
         .query_row(
             r#"SELECT 1 FROM conversation_registry
 WHERE owner_identity_id = ?1 AND conversation_id = ?2
-  AND lifecycle_state = 'active' AND resolution_state = 'resolved'
+  AND lifecycle_state <> 'merged' AND resolution_state = 'resolved'
 LIMIT 1"#,
             (
                 record.owner_identity_id.trim(),
@@ -74,9 +74,10 @@ LIMIT 1"#,
         .optional()
         .map_err(super::local_state_unavailable)?
         .is_some();
-    if !target_is_active_resolved {
+    if !target_is_canonical_resolved {
         return Err(crate::ImError::IdentityUnresolved {
-            detail: "conversation alias target must be an active resolved registry row".to_owned(),
+            detail: "conversation alias target must be a resolved canonical registry row"
+                .to_owned(),
         });
     }
     let created_at = time::OffsetDateTime::now_utc().unix_timestamp().to_string();
@@ -249,6 +250,66 @@ mod tests {
         .unwrap();
         assert!(matches!(
             insert(&db, &record).unwrap_err(),
+            crate::ImError::IdentityUnresolved { .. }
+        ));
+    }
+
+    #[test]
+    fn alias_survives_canonical_target_archive_but_rejects_merged_target() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let target = "group:did:example:archived";
+        crate::internal::local_state::conversation_registry::ensure(
+            &db,
+            &crate::internal::local_state::conversation_registry::ConversationRegistryRecord {
+                owner_identity_id: "owner".to_owned(),
+                owner_did: "did:example:owner".to_owned(),
+                conversation_id: target.to_owned(),
+                thread_kind: "group".to_owned(),
+                thread_id: "did:example:archived".to_owned(),
+                activity_at: "2026-07-14T00:00:00Z".to_owned(),
+            },
+        )
+        .unwrap();
+        crate::internal::local_state::conversation_registry::deactivate(&db, "owner", target)
+            .unwrap();
+        let record = ConversationAliasRecord {
+            owner_identity_id: "owner".to_owned(),
+            alias_kind: "release_0710_group_id".to_owned(),
+            alias_conversation_id: "group:legacy-archived".to_owned(),
+            canonical_conversation_id: target.to_owned(),
+            source: "test".to_owned(),
+            verified_at: "2026-07-14T00:00:00Z".to_owned(),
+        };
+        insert(&db, &record).unwrap();
+        assert_eq!(
+            resolve(
+                &db,
+                "owner",
+                "release_0710_group_id",
+                "group:legacy-archived"
+            )
+            .unwrap()
+            .as_deref(),
+            Some(target)
+        );
+        assert!(
+            crate::internal::local_state::canonical_invariants::check(&db, "owner")
+                .unwrap()
+                .is_empty()
+        );
+
+        db.execute(
+            "UPDATE conversation_registry SET lifecycle_state = 'merged' WHERE owner_identity_id = 'owner' AND conversation_id = ?1",
+            [target],
+        )
+        .unwrap();
+        let rejected = ConversationAliasRecord {
+            alias_conversation_id: "group:another-legacy".to_owned(),
+            ..record
+        };
+        assert!(matches!(
+            insert(&db, &rejected).unwrap_err(),
             crate::ImError::IdentityUnresolved { .. }
         ));
     }

@@ -22,6 +22,7 @@ struct GroupRow {
     owner_did: String,
     group_id: String,
     group_did: String,
+    membership_status: String,
     activity_at: String,
 }
 
@@ -218,6 +219,12 @@ WHERE owner_identity_id = ?2
                 &row.old_conversation_id,
                 &canonical_id,
             )?;
+            mark_legacy_merged_if_present(
+                connection,
+                &row.owner_identity_id,
+                &row.old_conversation_id,
+                &canonical_id,
+            )?;
         }
     }
     Ok(did_routes)
@@ -297,12 +304,28 @@ fn migrate_groups(
                 activity_at: row.activity_at.clone(),
             },
         )?;
+        if inactive_group_membership(&row.membership_status) {
+            connection
+                .execute(
+                    r#"UPDATE conversation_registry
+SET is_active = 0, lifecycle_state = 'left', resolution_state = 'resolved'
+WHERE owner_identity_id = ?1 AND conversation_id = ?2"#,
+                    (row.owner_identity_id.as_str(), canonical_id.as_str()),
+                )
+                .map_err(super::super::local_state_unavailable)?;
+        }
         let legacy_group_id = super::super::owner_scope::group_conversation_id(&row.group_id);
         if legacy_group_id != canonical_id {
             insert_alias(
                 connection,
                 &row.owner_identity_id,
                 "release_0710_group_id",
+                &legacy_group_id,
+                &canonical_id,
+            )?;
+            mark_legacy_merged_if_present(
+                connection,
+                &row.owner_identity_id,
                 &legacy_group_id,
                 &canonical_id,
             )?;
@@ -547,7 +570,7 @@ fn group_rows(connection: &Transaction<'_>) -> crate::ImResult<Vec<GroupRow>> {
     let mut statement = connection
         .prepare(
             r#"SELECT groups.owner_identity_id, groups.owner_did, groups.group_id,
-       COALESCE(groups.group_did, ''),
+       COALESCE(groups.group_did, ''), COALESCE(groups.membership_status, 'active'),
        COALESCE(NULLIF(groups.last_message_at, ''), NULLIF(groups.remote_updated_at, ''), groups.stored_at)
 FROM groups
 WHERE TRIM(COALESCE(groups.group_did, '')) <> ''
@@ -561,11 +584,19 @@ ORDER BY groups.owner_identity_id, groups.group_id"#,
                 owner_did: row.get(1)?,
                 group_id: row.get(2)?,
                 group_did: row.get(3)?,
-                activity_at: row.get(4)?,
+                membership_status: row.get(4)?,
+                activity_at: row.get(5)?,
             })
         })
         .map_err(super::super::local_state_unavailable)?;
     collect_rows(rows)
+}
+
+fn inactive_group_membership(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "left" | "removed" | "inactive" | "non_member"
+    )
 }
 
 fn message_identity_rows(connection: &Transaction<'_>) -> crate::ImResult<Vec<MessageIdentityRow>> {
@@ -776,6 +807,144 @@ WHERE peer_persona_id = ?1 AND thread_kind = 'direct'
             )
             .unwrap(),
             1
+        );
+        assert_eq!(
+            db.query_row(
+                r#"SELECT COUNT(*) FROM conversation_registry
+WHERE lifecycle_state = 'active' AND resolution_state = 'resolved'"#,
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            3
+        );
+        assert_eq!(
+            db.query_row(
+                r#"SELECT COUNT(*) FROM conversation_registry
+WHERE conversation_id IN ('group:fixture-group-local', 'group:fixture-empty-group-local')
+  AND is_active = 0 AND lifecycle_state = 'merged'
+  AND resolution_state = 'resolved'
+  AND TRIM(COALESCE(merged_into_conversation_id, '')) <> ''"#,
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn empty_direct_route_merge_leaves_one_active_canonical_conversation() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("release-0710-empty-direct.sqlite");
+        super::super::source::copy_release_0710_fixture(&source);
+        let db = Connection::open(&source).unwrap();
+        let legacy_id = "dm:did:wba:awiki.info:fixture-peer:e1_fixture_peer";
+        db.execute(
+            r#"UPDATE direct_peer_routes SET conversation_id = ?1"#,
+            [legacy_id],
+        )
+        .unwrap();
+        db.execute(
+            r#"INSERT INTO conversation_registry
+(owner_identity_id, owner_did, conversation_id, thread_kind, thread_id,
+ activity_at, created_at, updated_at, is_active)
+VALUES ('fixture-owner-id', 'did:wba:awiki.info:fixture-owner:e1_fixture_owner',
+        ?1, 'direct', ?1, '2026-07-10T00:00:00Z',
+        '2026-07-10T00:00:00Z', '2026-07-10T00:00:00Z', 1)"#,
+            [legacy_id],
+        )
+        .unwrap();
+        drop(db);
+
+        migrate_shadow(&source).unwrap();
+
+        let db = Connection::open(&source).unwrap();
+        let canonical_id: String = db
+            .query_row(
+                "SELECT conversation_id FROM direct_peer_routes WHERE owner_identity_id = 'fixture-owner-id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(canonical_id.starts_with("dm:peer-scope:v1:"));
+        assert_eq!(
+            db.query_row(
+                r#"SELECT COUNT(*) FROM conversation_registry
+WHERE owner_identity_id = 'fixture-owner-id' AND thread_kind = 'direct'
+  AND lifecycle_state = 'active' AND resolution_state = 'resolved'
+  AND peer_persona_id IS NOT NULL"#,
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                r#"SELECT COUNT(*) FROM conversation_registry
+WHERE owner_identity_id = 'fixture-owner-id' AND conversation_id = ?1
+  AND is_active = 0 AND lifecycle_state = 'merged'
+  AND resolution_state = 'resolved' AND merged_into_conversation_id = ?2"#,
+                (legacy_id, canonical_id.as_str()),
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn left_group_migrates_to_resolved_non_active_canonical_lifecycle() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("release-0710-left-group.sqlite");
+        super::super::source::copy_release_0710_fixture(&source);
+        let db = Connection::open(&source).unwrap();
+        db.execute(
+            "UPDATE groups SET membership_status = 'left' WHERE group_id = 'fixture-empty-group-local'",
+            [],
+        )
+        .unwrap();
+        drop(db);
+
+        migrate_shadow(&source).unwrap();
+
+        let db = Connection::open(&source).unwrap();
+        let canonical_id = "group:did:wba:awiki.info:groups:fixture-empty:e1_fixture_empty";
+        assert_eq!(
+            db.query_row(
+                r#"SELECT COUNT(*) FROM conversation_registry
+WHERE owner_identity_id = 'fixture-owner-id' AND conversation_id = ?1
+  AND is_active = 0 AND lifecycle_state = 'left'
+  AND resolution_state = 'resolved'"#,
+                [canonical_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                r#"SELECT COUNT(*) FROM conversation_registry
+WHERE owner_identity_id = 'fixture-owner-id'
+  AND canonical_group_did = 'did:wba:awiki.info:groups:fixture-empty:e1_fixture_empty'
+  AND lifecycle_state = 'active'"#,
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            super::super::super::conversation_aliases::resolve(
+                &db,
+                "fixture-owner-id",
+                "release_0710_group_id",
+                "group:fixture-empty-group-local",
+            )
+            .unwrap()
+            .as_deref(),
+            Some(canonical_id)
         );
     }
 
