@@ -130,6 +130,14 @@ pub struct OwnerInvariantViolation {
 }
 
 #[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalInvariantViolation {
+    pub table: String,
+    pub invariant: String,
+    pub row_count: i64,
+}
+
+#[cfg(feature = "sqlite")]
 #[doc(hidden)]
 pub fn ensure_schema(connection: &rusqlite::Connection) -> crate::ImResult<()> {
     crate::internal::local_state::schema::ensure_schema(connection)
@@ -166,6 +174,26 @@ pub fn identity_owned_owner_invariants(
             })
             .collect()
     })
+}
+
+#[cfg(feature = "sqlite")]
+#[doc(hidden)]
+pub fn canonical_conversation_invariants(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+) -> crate::ImResult<Vec<CanonicalInvariantViolation>> {
+    crate::internal::local_state::canonical_invariants::check(connection, owner_identity_id).map(
+        |violations| {
+            violations
+                .into_iter()
+                .map(|violation| CanonicalInvariantViolation {
+                    table: violation.table.to_owned(),
+                    invariant: violation.invariant.to_owned(),
+                    row_count: violation.row_count,
+                })
+                .collect()
+        },
+    )
 }
 
 #[cfg(feature = "sqlite")]

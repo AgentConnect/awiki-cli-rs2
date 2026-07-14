@@ -278,6 +278,13 @@ checkpoint advance. A later verified Handle projection replays matching rows
 into `messages` and removes them from the backlog without changing their
 `wire_thread_kind`, `wire_thread_ref`, or sender/receiver DID snapshots.
 
+The redacted canonical invariant doctor is available through the local-state
+compatibility diagnostics. It reports counts and invariant labels only: active
+Direct/Group exact-one violations, unresolved resolved rows, alias chains or
+missing targets, route/Persona/registry mismatches, orphan profiles, invalid
+merged rows, and messages without a canonical registry owner. It never logs
+message bodies, complete identifiers, credentials, or key material.
+
 An existing schema 27 database is not modified by ordinary schema open. Core
 returns `local_state_upgrade_required` until the release/0710 backup/shadow/
 validation runner performs the explicit 27→28 cutover.
