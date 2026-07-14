@@ -7,7 +7,7 @@ use awiki_cli::host_runtime::listener_service::{
     ListenerServiceStatusForAction, ListenerServiceStatusForPlan, ListenerServiceStatusSnapshot,
 };
 use awiki_cli::host_runtime::listener_systemd;
-use awiki_cli::workspace_config::{Paths, Resolved};
+use awiki_cli::workspace_config::{Paths, Resolved, ValueSource};
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -97,7 +97,7 @@ fn listener_service_config_plan_matches_go_new_service_config_shape() {
     let mut expected_env = BTreeMap::new();
     expected_env.insert(
         "AWIKI_CLI_WORKSPACE_HOME_DIR".to_string(),
-        resolved.paths.workspace_home_dir.clone(),
+        product_home_dir(&resolved).to_string(),
     );
     expected_env.insert("AWIKI_CLI_INTERNAL_ENTRY".to_string(), "1".to_string());
     expected_env.insert("AWIKI_LISTENER_SERVICE_MODE".to_string(), "1".to_string());
@@ -131,7 +131,7 @@ fn listener_service_config_plan_matches_go_new_service_config_shape() {
             .env_vars
             .get("AWIKI_CLI_WORKSPACE_HOME_DIR")
             .expect("workspace env"),
-        &spaced.paths.workspace_home_dir
+        product_home_dir(&spaced)
     );
 }
 
@@ -163,7 +163,7 @@ fn listener_systemd_unit_matches_go_service_intent_on_linux() {
         .contains("Environment=AWIKI_CLI_INTERNAL_ENTRY=1"));
     assert!(unit.content.contains(&format!(
         "Environment=AWIKI_CLI_WORKSPACE_HOME_DIR={}",
-        resolved.paths.workspace_home_dir
+        product_home_dir(&resolved)
     )));
     assert!(unit.content.contains("Restart=on-failure"));
     assert!(unit.content.contains("RestartSec=1s"));
@@ -986,8 +986,19 @@ fn test_resolved() -> Resolved {
         config_exists: false,
         config_error: String::new(),
         env_hits: Vec::new(),
-        sources: Default::default(),
+        sources: BTreeMap::from([(
+            "product_home_dir".to_string(),
+            ValueSource {
+                source: "canonical_env".to_string(),
+                key: "AWIKI_CLI_WORKSPACE_HOME_DIR".to_string(),
+                value: path_string(&root.join("product-home")),
+            },
+        )]),
     }
+}
+
+fn product_home_dir(resolved: &Resolved) -> &str {
+    &resolved.sources["product_home_dir"].value
 }
 
 fn status(installed: bool, running: bool) -> ListenerServiceStatusSnapshot {

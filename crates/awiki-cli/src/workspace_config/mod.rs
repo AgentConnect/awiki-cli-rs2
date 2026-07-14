@@ -636,6 +636,21 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
     })
 }
 
+/// Return the product-level workspace root used to resolve tenant state.
+///
+/// `Resolved.paths` is intentionally tenant-scoped. Long-running child
+/// processes must receive the product root through
+/// `AWIKI_CLI_WORKSPACE_HOME_DIR`, otherwise they would treat the active
+/// tenant directory as a second product root and resolve a nested tenant.
+pub fn product_home_dir(resolved: &Resolved) -> &str {
+    resolved
+        .sources
+        .get("product_home_dir")
+        .map(|source| source.value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(resolved.paths.workspace_home_dir.as_str())
+}
+
 pub fn snapshot(resolved: &Resolved) -> Value {
     let mut value = serde_json::to_value(resolved).unwrap_or_else(|_| json!({}));
     if let Some(object) = value.as_object_mut() {
