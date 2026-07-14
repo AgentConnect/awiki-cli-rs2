@@ -1381,7 +1381,9 @@ impl From<im_core::messages::SyncThreadAfterResult> for DartSyncThreadAfterResul
 
 impl From<im_core::groups::GroupSummary> for DartGroupSummary {
     fn from(value: im_core::groups::GroupSummary) -> Self {
+        let conversation_id = format!("group:{}", value.did.as_str());
         Self {
+            conversation_id,
             id: value.id,
             did: value.did.as_str().to_string(),
             name: value.name,
@@ -1397,7 +1399,9 @@ impl From<im_core::groups::GroupSummary> for DartGroupSummary {
 
 impl From<im_core::groups::GroupSnapshot> for DartGroupSnapshot {
     fn from(value: im_core::groups::GroupSnapshot) -> Self {
+        let conversation_id = format!("group:{}", value.did.as_str());
         Self {
+            conversation_id,
             id: value.id,
             did: value.did.as_str().to_string(),
             name: value.name,
@@ -1641,7 +1645,7 @@ fn realtime_subscription_to_string(value: im_core::realtime::RealtimeSubscriptio
 
 #[cfg(test)]
 mod tests {
-    use super::{realtime_event_to_dart, DartRelationStatus};
+    use super::{realtime_event_to_dart, DartGroupSummary, DartRelationStatus};
     use im_core::{
         directory::RelationshipStatus,
         ids::{Did, GroupRef, MessageId, PeerRef, ThreadId},
@@ -1818,5 +1822,22 @@ mod tests {
         assert_eq!(hint.event_type.as_deref(), Some("message.created"));
         assert!(hint.sync_dirty);
         assert!(hint.gap_detected);
+    }
+
+    #[test]
+    fn group_summary_mapping_exposes_core_canonical_conversation_id() {
+        let mapped = DartGroupSummary::from(im_core::groups::GroupSummary {
+            id: None,
+            did: im_core::ids::GroupRef::parse("did:example:group").unwrap(),
+            name: Some("Group".to_owned()),
+            display_name: None,
+            avatar_uri: None,
+            my_role: Some("member".to_owned()),
+            membership_status: Some("active".to_owned()),
+            member_count: Some(1),
+            last_message_at: None,
+        });
+
+        assert_eq!(mapped.conversation_id, "group:did:example:group");
     }
 }

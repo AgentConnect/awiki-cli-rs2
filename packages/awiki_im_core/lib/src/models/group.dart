@@ -4,6 +4,7 @@ enum GroupIdentityMode { handle, didOnly }
 
 class GroupSummary {
   const GroupSummary({
+    required this.conversationId,
     this.id,
     required this.did,
     this.name,
@@ -15,6 +16,7 @@ class GroupSummary {
     this.lastMessageAt,
   });
 
+  final String conversationId;
   final String? id;
   final String did;
   final String? name;
@@ -28,6 +30,7 @@ class GroupSummary {
 
 class GroupSnapshot extends GroupSummary {
   const GroupSnapshot({
+    required super.conversationId,
     super.id,
     required super.did,
     super.name,

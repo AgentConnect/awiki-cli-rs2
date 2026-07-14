@@ -6446,19 +6446,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartGroupSnapshot dco_decode_dart_group_snapshot(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return DartGroupSnapshot(
-      id: dco_decode_opt_String(arr[0]),
-      did: dco_decode_String(arr[1]),
-      name: dco_decode_opt_String(arr[2]),
-      displayName: dco_decode_opt_String(arr[3]),
-      description: dco_decode_opt_String(arr[4]),
-      avatarUri: dco_decode_opt_String(arr[5]),
-      myRole: dco_decode_opt_String(arr[6]),
-      membershipStatus: dco_decode_opt_String(arr[7]),
-      memberCount: dco_decode_opt_box_autoadd_u_32(arr[8]),
-      lastMessageAt: dco_decode_opt_String(arr[9]),
+      conversationId: dco_decode_String(arr[0]),
+      id: dco_decode_opt_String(arr[1]),
+      did: dco_decode_String(arr[2]),
+      name: dco_decode_opt_String(arr[3]),
+      displayName: dco_decode_opt_String(arr[4]),
+      description: dco_decode_opt_String(arr[5]),
+      avatarUri: dco_decode_opt_String(arr[6]),
+      myRole: dco_decode_opt_String(arr[7]),
+      membershipStatus: dco_decode_opt_String(arr[8]),
+      memberCount: dco_decode_opt_box_autoadd_u_32(arr[9]),
+      lastMessageAt: dco_decode_opt_String(arr[10]),
     );
   }
 
@@ -6466,18 +6467,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartGroupSummary dco_decode_dart_group_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 9)
-      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return DartGroupSummary(
-      id: dco_decode_opt_String(arr[0]),
-      did: dco_decode_String(arr[1]),
-      name: dco_decode_opt_String(arr[2]),
-      displayName: dco_decode_opt_String(arr[3]),
-      avatarUri: dco_decode_opt_String(arr[4]),
-      myRole: dco_decode_opt_String(arr[5]),
-      membershipStatus: dco_decode_opt_String(arr[6]),
-      memberCount: dco_decode_opt_box_autoadd_u_32(arr[7]),
-      lastMessageAt: dco_decode_opt_String(arr[8]),
+      conversationId: dco_decode_String(arr[0]),
+      id: dco_decode_opt_String(arr[1]),
+      did: dco_decode_String(arr[2]),
+      name: dco_decode_opt_String(arr[3]),
+      displayName: dco_decode_opt_String(arr[4]),
+      avatarUri: dco_decode_opt_String(arr[5]),
+      myRole: dco_decode_opt_String(arr[6]),
+      membershipStatus: dco_decode_opt_String(arr[7]),
+      memberCount: dco_decode_opt_box_autoadd_u_32(arr[8]),
+      lastMessageAt: dco_decode_opt_String(arr[9]),
     );
   }
 
@@ -9816,6 +9818,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_conversationId = sse_decode_String(deserializer);
     var var_id = sse_decode_opt_String(deserializer);
     var var_did = sse_decode_String(deserializer);
     var var_name = sse_decode_opt_String(deserializer);
@@ -9827,6 +9830,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_memberCount = sse_decode_opt_box_autoadd_u_32(deserializer);
     var var_lastMessageAt = sse_decode_opt_String(deserializer);
     return DartGroupSnapshot(
+      conversationId: var_conversationId,
       id: var_id,
       did: var_did,
       name: var_name,
@@ -9843,6 +9847,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   DartGroupSummary sse_decode_dart_group_summary(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_conversationId = sse_decode_String(deserializer);
     var var_id = sse_decode_opt_String(deserializer);
     var var_did = sse_decode_String(deserializer);
     var var_name = sse_decode_opt_String(deserializer);
@@ -9853,6 +9858,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_memberCount = sse_decode_opt_box_autoadd_u_32(deserializer);
     var var_lastMessageAt = sse_decode_opt_String(deserializer);
     return DartGroupSummary(
+      conversationId: var_conversationId,
       id: var_id,
       did: var_did,
       name: var_name,
@@ -13558,6 +13564,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.conversationId, serializer);
     sse_encode_opt_String(self.id, serializer);
     sse_encode_String(self.did, serializer);
     sse_encode_opt_String(self.name, serializer);
@@ -13576,6 +13583,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.conversationId, serializer);
     sse_encode_opt_String(self.id, serializer);
     sse_encode_String(self.did, serializer);
     sse_encode_opt_String(self.name, serializer);

@@ -7974,6 +7974,7 @@ impl SseDecode for crate::dto::secure::DartGroupSecureStatus {
 impl SseDecode for crate::dto::group::DartGroupSnapshot {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_conversationId = <String>::sse_decode(deserializer);
         let mut var_id = <Option<String>>::sse_decode(deserializer);
         let mut var_did = <String>::sse_decode(deserializer);
         let mut var_name = <Option<String>>::sse_decode(deserializer);
@@ -7985,6 +7986,7 @@ impl SseDecode for crate::dto::group::DartGroupSnapshot {
         let mut var_memberCount = <Option<u32>>::sse_decode(deserializer);
         let mut var_lastMessageAt = <Option<String>>::sse_decode(deserializer);
         return crate::dto::group::DartGroupSnapshot {
+            conversation_id: var_conversationId,
             id: var_id,
             did: var_did,
             name: var_name,
@@ -8002,6 +8004,7 @@ impl SseDecode for crate::dto::group::DartGroupSnapshot {
 impl SseDecode for crate::dto::group::DartGroupSummary {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_conversationId = <String>::sse_decode(deserializer);
         let mut var_id = <Option<String>>::sse_decode(deserializer);
         let mut var_did = <String>::sse_decode(deserializer);
         let mut var_name = <Option<String>>::sse_decode(deserializer);
@@ -8012,6 +8015,7 @@ impl SseDecode for crate::dto::group::DartGroupSummary {
         let mut var_memberCount = <Option<u32>>::sse_decode(deserializer);
         let mut var_lastMessageAt = <Option<String>>::sse_decode(deserializer);
         return crate::dto::group::DartGroupSummary {
+            conversation_id: var_conversationId,
             id: var_id,
             did: var_did,
             name: var_name,
@@ -12110,6 +12114,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::secure::DartGroupSecureStatus
 impl flutter_rust_bridge::IntoDart for crate::dto::group::DartGroupSnapshot {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.conversation_id.into_into_dart().into_dart(),
             self.id.into_into_dart().into_dart(),
             self.did.into_into_dart().into_dart(),
             self.name.into_into_dart().into_dart(),
@@ -12139,6 +12144,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::group::DartGroupSnapshot>
 impl flutter_rust_bridge::IntoDart for crate::dto::group::DartGroupSummary {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.conversation_id.into_into_dart().into_dart(),
             self.id.into_into_dart().into_dart(),
             self.did.into_into_dart().into_dart(),
             self.name.into_into_dart().into_dart(),
@@ -15124,6 +15130,7 @@ impl SseEncode for crate::dto::secure::DartGroupSecureStatus {
 impl SseEncode for crate::dto::group::DartGroupSnapshot {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.conversation_id, serializer);
         <Option<String>>::sse_encode(self.id, serializer);
         <String>::sse_encode(self.did, serializer);
         <Option<String>>::sse_encode(self.name, serializer);
@@ -15140,6 +15147,7 @@ impl SseEncode for crate::dto::group::DartGroupSnapshot {
 impl SseEncode for crate::dto::group::DartGroupSummary {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.conversation_id, serializer);
         <Option<String>>::sse_encode(self.id, serializer);
         <String>::sse_encode(self.did, serializer);
         <Option<String>>::sse_encode(self.name, serializer);

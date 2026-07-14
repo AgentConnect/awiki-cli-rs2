@@ -262,6 +262,7 @@ class DartGroupRebindRecoverySummary {
 }
 
 class DartGroupSnapshot {
+  final String conversationId;
   final String? id;
   final String did;
   final String? name;
@@ -274,6 +275,7 @@ class DartGroupSnapshot {
   final String? lastMessageAt;
 
   const DartGroupSnapshot({
+    required this.conversationId,
     this.id,
     required this.did,
     this.name,
@@ -288,6 +290,7 @@ class DartGroupSnapshot {
 
   @override
   int get hashCode =>
+      conversationId.hashCode ^
       id.hashCode ^
       did.hashCode ^
       name.hashCode ^
@@ -304,6 +307,7 @@ class DartGroupSnapshot {
       identical(this, other) ||
       other is DartGroupSnapshot &&
           runtimeType == other.runtimeType &&
+          conversationId == other.conversationId &&
           id == other.id &&
           did == other.did &&
           name == other.name &&
@@ -317,6 +321,7 @@ class DartGroupSnapshot {
 }
 
 class DartGroupSummary {
+  final String conversationId;
   final String? id;
   final String did;
   final String? name;
@@ -328,6 +333,7 @@ class DartGroupSummary {
   final String? lastMessageAt;
 
   const DartGroupSummary({
+    required this.conversationId,
     this.id,
     required this.did,
     this.name,
@@ -341,6 +347,7 @@ class DartGroupSummary {
 
   @override
   int get hashCode =>
+      conversationId.hashCode ^
       id.hashCode ^
       did.hashCode ^
       name.hashCode ^
@@ -356,6 +363,7 @@ class DartGroupSummary {
       identical(this, other) ||
       other is DartGroupSummary &&
           runtimeType == other.runtimeType &&
+          conversationId == other.conversationId &&
           id == other.id &&
           did == other.did &&
           name == other.name &&

@@ -2740,6 +2740,7 @@ extension on GroupIdentityMode {
 
 extension on gen_group_dto.DartGroupSummary {
   GroupSummary _toModel() => GroupSummary(
+    conversationId: conversationId,
     id: id,
     did: did,
     name: name,
@@ -2754,6 +2755,7 @@ extension on gen_group_dto.DartGroupSummary {
 
 extension on gen_group_dto.DartGroupSnapshot {
   GroupSnapshot _toModel() => GroupSnapshot(
+    conversationId: conversationId,
     id: id,
     did: did,
     name: name,

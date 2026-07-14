@@ -1,5 +1,6 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartGroupSummary {
+    pub conversation_id: String,
     pub id: Option<String>,
     pub did: String,
     pub name: Option<String>,
@@ -13,6 +14,7 @@ pub struct DartGroupSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartGroupSnapshot {
+    pub conversation_id: String,
     pub id: Option<String>,
     pub did: String,
     pub name: Option<String>,
