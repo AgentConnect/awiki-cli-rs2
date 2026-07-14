@@ -41,6 +41,9 @@ schema-27 lookalikes.
 
 The macOS AWiki Me release artifact is not represented by this Core fixture.
 The public `0.1.4+12` Intel artifact checksum has since been recovered, but the
-artifact does not embed an exact App/Core source ref. That source provenance,
-the new release artifact, and a dual-version runner remain mandatory evidence
-for the App-to-App `remote-upgrade-compat` gate.
+artifact does not embed an exact App/Core source ref. That historical source
+provenance, a new source-attested release artifact, and a real accessibility/UI
+driver remain mandatory evidence for the App-to-App `remote-upgrade-compat`
+gate. `awiki-system-test` now provides the fail-closed dual-version
+artifact/session runner, but the runner cannot make this historical artifact
+prove source refs that were never embedded in it.
