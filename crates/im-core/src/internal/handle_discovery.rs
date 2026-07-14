@@ -86,15 +86,13 @@ fn resolution_from_lookup(
     expected_handle: &str,
     lookup: crate::directory::HandleLookupResult,
 ) -> crate::ImResult<DirectHandleResolution> {
-    if let Some(status) = lookup.status.as_deref() {
-        validate_active_status(expected_handle, status)?;
-    }
-    let full_handle = lookup.handle.as_str().to_owned();
+    let persona = lookup.peer_persona()?;
+    let full_handle = persona.full_handle;
     validate_handle_match(expected_handle, full_handle.as_str())?;
     Ok(DirectHandleResolution {
         target_did: lookup.did.as_str().to_owned(),
         full_handle,
-        user_id: lookup.user_id,
+        user_id: persona.authority_subject_id,
     })
 }
 
@@ -109,11 +107,22 @@ fn resolution_from_public_document(
     let target_did = string_field(&raw, "did")?;
     let did = crate::ids::Did::parse(target_did.as_str())?;
     validate_did_matches_handle_domain(full_handle.as_str(), did.as_str())?;
+    let authority = normalize_handle(expected_handle)?.domain;
+    let authority_subject_id =
+        first_non_empty_string(&raw, &["user_id", "userId", "subject_id", "subjectId"])
+            .ok_or_else(|| crate::ImError::IdentityUnresolved {
+                detail: "Handle authority did not return a stable user_id/subject_id".to_owned(),
+            })?;
+    let persona = crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+        &authority,
+        &authority_subject_id,
+        &full_handle,
+        Some(&status),
+    )?;
     Ok(DirectHandleResolution {
         target_did: did.as_str().to_owned(),
-        full_handle,
-        user_id: first_non_empty_string(&raw, &["user_id", "userId", "subject_id", "subjectId"])
-            .unwrap_or_else(|| did.as_str().to_owned()),
+        full_handle: persona.full_handle,
+        user_id: persona.authority_subject_id,
     })
 }
 
@@ -336,7 +345,7 @@ fn percent_encode_path_segment(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::fs;
     use std::path::PathBuf;
 
@@ -420,13 +429,33 @@ mod tests {
                 "status": "active",
                 "handle": "peer.awiki.info",
                 "did": "did:wba:awiki.info:user:peer:e1",
+                "user_id": "user-peer",
             }),
         )
         .unwrap();
 
         assert_eq!(resolved.full_handle, "peer.awiki.info");
         assert_eq!(resolved.target_did, "did:wba:awiki.info:user:peer:e1");
-        assert_eq!(resolved.user_id, "did:wba:awiki.info:user:peer:e1");
+        assert_eq!(resolved.user_id, "user-peer");
+    }
+
+    #[test]
+    fn public_document_resolution_rejects_missing_or_did_fallback_subject() {
+        for subject in [None, Some("did:wba:awiki.info:user:peer:e1")] {
+            let mut raw = json!({
+                "status": "active",
+                "handle": "peer.awiki.info",
+                "did": "did:wba:awiki.info:user:peer:e1",
+            });
+            if let Some(subject) = subject {
+                raw["user_id"] = Value::String(subject.to_owned());
+            }
+
+            assert!(matches!(
+                super::resolution_from_public_document("peer.awiki.info", raw),
+                Err(crate::ImError::IdentityUnresolved { .. })
+            ));
+        }
     }
 
     #[test]

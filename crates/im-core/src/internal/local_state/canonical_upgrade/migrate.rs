@@ -339,21 +339,28 @@ fn migrate_messages(
         let mut resolution_state = "legacy_unresolved";
         let mut canonical_id = None;
         if let Some(group_ref) = non_empty(&row.group_did).or_else(|| non_empty(&row.group_id)) {
+            wire_kind = "group".to_owned();
+            wire_ref = non_empty(&row.group_did)
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    group_routes
+                        .get(&(row.owner_identity_id.clone(), group_ref.to_owned()))
+                        .map(|mapped| mapped.trim_start_matches("group:").to_owned())
+                })
+                .unwrap_or_else(|| group_ref.to_owned());
+            resolution_state = "resolved";
             if let Some(mapped) =
                 group_routes.get(&(row.owner_identity_id.clone(), group_ref.to_owned()))
             {
-                wire_kind = "group".to_owned();
-                wire_ref = mapped.trim_start_matches("group:").to_owned();
-                resolution_state = "resolved";
                 canonical_id = Some(mapped.clone());
             }
         } else if let Some(peer_did) = direct_peer_did(&row) {
             wire_kind = "direct".to_owned();
             wire_ref = peer_did.to_owned();
+            resolution_state = "resolved";
             if let Some(mapped) =
                 direct_routes.get(&(row.owner_identity_id.clone(), peer_did.to_owned()))
             {
-                resolution_state = "resolved";
                 canonical_id = Some(mapped.clone());
             }
         } else if row.old_thread_id.trim().starts_with("mail:") {
@@ -765,6 +772,63 @@ WHERE conversation_id = 'group:did:wba:awiki.info:groups:fixture-group:e1_fixtur
 WHERE peer_persona_id = ?1 AND thread_kind = 'direct'
   AND lifecycle_state = 'active' AND resolution_state = 'resolved'"#,
                 [identifiers[0].0.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn did_fallback_route_stays_canonical_unresolved_without_losing_wire_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("release-0710-did-fallback.sqlite");
+        super::super::source::copy_release_0710_fixture(&source);
+        let db = Connection::open(&source).unwrap();
+        db.execute(
+            "UPDATE direct_peer_routes SET peer_user_id = current_did",
+            [],
+        )
+        .unwrap();
+        drop(db);
+
+        let report = migrate_shadow(&source).unwrap();
+        assert_eq!(report.migrated_personas, 0);
+        assert_eq!(report.unresolved_messages, 1);
+
+        let db = Connection::open(&source).unwrap();
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM peer_personas", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        let message: (String, String, String, String) = db
+            .query_row(
+                r#"SELECT conversation_id, wire_thread_kind, wire_thread_ref,
+                          wire_identity_resolution_state
+FROM messages WHERE msg_id = 'fixture-direct-message-1'"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            message.0,
+            "dm:did:wba:awiki.info:fixture-peer:e1_fixture_peer_old"
+        );
+        assert_eq!(message.1, "direct");
+        assert_eq!(
+            message.2,
+            "did:wba:awiki.info:fixture-peer:e1_fixture_peer_old"
+        );
+        assert_eq!(message.3, "resolved");
+        assert_eq!(
+            db.query_row(
+                r#"SELECT COUNT(*) FROM conversation_registry
+WHERE conversation_id = ?1 AND lifecycle_state = 'active'
+  AND resolution_state = 'legacy_unresolved'"#,
+                [message.0.as_str()],
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),

@@ -19,6 +19,7 @@ impl PeerPersona {
     ) -> crate::ImResult<Self> {
         let authority_namespace = normalize_authority_namespace(authority_domain)?;
         let authority_subject_id = required("authority_subject_id", authority_subject_id)?;
+        validate_authority_subject_id(&authority_subject_id)?;
         let full_handle = normalize_full_handle(full_handle)?;
         validate_handle_authority(&full_handle, &authority_namespace)?;
         validate_available_status(status)?;
@@ -48,6 +49,15 @@ impl PeerPersona {
             },
         )
     }
+}
+
+fn validate_authority_subject_id(value: &str) -> crate::ImResult<()> {
+    if value.to_ascii_lowercase().starts_with("did:") {
+        return Err(crate::ImError::IdentityUnresolved {
+            detail: "Handle authority subject must not fall back to a credential DID".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn normalize_authority_namespace(value: &str) -> crate::ImResult<String> {
@@ -222,6 +232,13 @@ mod tests {
             "user-alice",
             "alice.awiki.info",
             None
+        )
+        .is_err());
+        assert!(PeerPersona::from_verified_handle(
+            "awiki.info",
+            "did:wba:awiki.info:alice:e1_fallback",
+            "alice.awiki.info",
+            Some("active")
         )
         .is_err());
     }

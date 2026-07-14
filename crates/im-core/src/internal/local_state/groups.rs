@@ -155,6 +155,46 @@ mod handle_member_identity_tests {
         assert_eq!(first, rebound);
         assert_ne!(first, rejoined);
     }
+
+    #[test]
+    fn active_group_projection_ensures_one_canonical_empty_conversation() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let record = GroupRecord {
+            owner_identity_id: "owner-id".to_owned(),
+            owner_did: "did:example:owner".to_owned(),
+            group_id: "group-storage-id".to_owned(),
+            group_did: "did:example:canonical-group".to_owned(),
+            name: "Empty Group".to_owned(),
+            membership_status: "active".to_owned(),
+            stored_at: "2026-07-15T00:00:00Z".to_owned(),
+            ..GroupRecord::default()
+        };
+
+        upsert_group(&db, record.clone()).unwrap();
+        upsert_group(&db, record).unwrap();
+
+        assert_eq!(
+            db.query_row(
+                r#"SELECT COUNT(*) FROM conversation_registry
+WHERE owner_identity_id = 'owner-id'
+  AND conversation_id = 'group:did:example:canonical-group'
+  AND canonical_group_did = 'did:example:canonical-group'
+  AND lifecycle_state = 'active' AND resolution_state = 'resolved'"#,
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -284,7 +324,56 @@ DO UPDATE SET
             ],
         )
         .map_err(super::local_state_unavailable)?;
+    ensure_active_group_conversation(connection, &owner_identity_id, &group_id)?;
     Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn ensure_active_group_conversation(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    group_id: &str,
+) -> crate::ImResult<()> {
+    let projection = connection
+        .query_row(
+            r#"SELECT owner_did, COALESCE(NULLIF(TRIM(group_did), ''), ''),
+                      COALESCE(NULLIF(TRIM(membership_status), ''), 'active'),
+                      COALESCE(NULLIF(TRIM(last_message_at), ''), stored_at)
+FROM groups WHERE owner_identity_id = ?1 AND group_id = ?2"#,
+            (owner_identity_id, group_id),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some((owner_did, group_did, membership_status, activity_at)) = projection else {
+        return Ok(());
+    };
+    if matches!(
+        membership_status.trim().to_ascii_lowercase().as_str(),
+        "left" | "removed" | "inactive" | "non_member"
+    ) || crate::ids::Did::parse(&group_did).is_err()
+    {
+        return Ok(());
+    }
+    let conversation_id = super::owner_scope::group_conversation_id(&group_did);
+    super::conversation_registry::ensure(
+        connection,
+        &super::conversation_registry::ConversationRegistryRecord {
+            owner_identity_id: owner_identity_id.to_owned(),
+            owner_did,
+            conversation_id,
+            thread_kind: "group".to_owned(),
+            thread_id: group_did,
+            activity_at,
+        },
+    )
 }
 
 #[cfg(feature = "sqlite")]
