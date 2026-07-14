@@ -191,7 +191,9 @@ if (!versions.includes(version)) {
 }
 NODE
 
-commit="${AWIKI_CLI_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || printf '%s' unknown)}"
+# Keep the exact source identity in the binary. System-test and incident
+# evidence compare this value with the immutable release tag commit.
+commit="${AWIKI_CLI_COMMIT:-$(git rev-parse HEAD 2>/dev/null || printf '%s' unknown)}"
 build_date="${AWIKI_CLI_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 bin_name="awiki-cli"
 if [[ "${OS_NAME}" == "windows" ]]; then

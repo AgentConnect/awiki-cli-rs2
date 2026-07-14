@@ -2,12 +2,12 @@
   "schema_version": 1,
   "channels": {
     "beta": {
-      "version": "1.0.17-beta.5",
-      "min_supported_version": "1.0.17-beta.5"
+      "version": "1.0.18-beta.1",
+      "min_supported_version": "1.0.18-beta.1"
     },
     "stable": {
-      "version": "1.0.17",
-      "min_supported_version": "1.0.17"
+      "version": "1.0.18",
+      "min_supported_version": "1.0.18"
     }
   },
   "anp_commit": "67e6680fac80a5fb3dca41029c67a0ea3ecc0dd5",

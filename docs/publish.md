@@ -86,7 +86,7 @@ awiki-cli-<version>-windows-<arch>.zip
 脚本会注入构建信息：
 
 - `AWIKI_CLI_VERSION`
-- `AWIKI_CLI_COMMIT`
+- `AWIKI_CLI_COMMIT`（默认使用完整 40 位 Git commit，供发布产物来源校验）
 - `AWIKI_CLI_BUILD_DATE`
 
 Linux/macOS 构建还会检查 E2EE feature graph，确认 `awiki-cli -> im-core/group-e2ee -> anp/mls` 已启用。Linux 构建还会检查最终二进制不包含 GLIBC 版本符号。

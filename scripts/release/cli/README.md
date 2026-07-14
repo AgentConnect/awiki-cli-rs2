@@ -12,6 +12,8 @@
 
 Linux AMD64 使用静态 musl 目标构建，并在归档前拒绝包含 GLIBC 版本符号的二进制，避免产物依赖 GitHub runner 的 glibc 版本。
 
+所有平台的 `awiki-cli version` 都嵌入不可变 tag 对应的完整 40 位 Git commit；发布验收和系统测试使用它确认运行中的二进制与 manifest 来源一致。
+
 ## 发布顺序
 
 1. 在干净且已推送的发布分支运行 `prepare-cli-tag.sh beta`。

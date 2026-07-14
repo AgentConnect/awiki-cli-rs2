@@ -27,7 +27,7 @@ test('server and release configuration schemas are strict', () => {
 
     const release = path.resolve(__dirname, 'release-config.json');
     const parsed = readReleaseConfig(release);
-    assert.equal(parsed.channels.beta.version, '1.0.17-beta.5');
+    assert.equal(parsed.channels.beta.version, '1.0.18-beta.1');
     assert.deepEqual(parsed.targets, [
       'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64',
     ]);
