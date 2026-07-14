@@ -40,5 +40,7 @@ supported fingerprint; the runtime detector must never accept arbitrary
 schema-27 lookalikes.
 
 The macOS AWiki Me release artifact is not represented by this Core fixture.
-Its exact released checksum remains mandatory evidence for the App-to-App
-`remote-upgrade-compat` gate.
+The public `0.1.4+12` Intel artifact checksum has since been recovered, but the
+artifact does not embed an exact App/Core source ref. That source provenance,
+the new release artifact, and a dual-version runner remain mandatory evidence
+for the App-to-App `remote-upgrade-compat` gate.
