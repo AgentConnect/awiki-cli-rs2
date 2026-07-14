@@ -230,6 +230,120 @@ PRAGMA user_version = 27;
 }
 
 #[cfg(test)]
+pub(super) fn create_full_release_0710_fixture(path: &Path) {
+    let db = Connection::open(path).unwrap();
+    super::super::schema::ensure_schema(&db).unwrap();
+    let direct_canonical = super::super::owner_scope::direct_conversation_id_for_peer_scope(
+        &super::super::owner_scope::DirectPeerScope::new("peer-user", "peer.awiki.info").unwrap(),
+    );
+    db.execute_batch(&format!(
+        r#"
+INSERT INTO identity_did_history
+(owner_identity_id, did, status, first_seen_at, last_seen_at)
+VALUES ('owner', 'did:example:owner', 'current', '1', '1');
+INSERT INTO contacts(owner_identity_id, owner_did, did, handle)
+VALUES ('owner', 'did:example:owner', 'did:example:peer', 'peer.awiki.info');
+INSERT INTO direct_peer_routes
+(owner_identity_id, conversation_id, peer_user_id, full_handle, current_did, updated_at)
+VALUES ('owner', '{direct_canonical}', 'peer-user', 'peer.awiki.info', 'did:example:peer', '1');
+INSERT INTO conversation_registry
+(owner_identity_id, owner_did, conversation_id, thread_kind, thread_id,
+ activity_at, created_at, updated_at, is_active)
+VALUES
+('owner', 'did:example:owner', '{direct_canonical}', 'direct', '{direct_canonical}', '1', '1', '1', 1),
+('owner', 'did:example:owner', 'dm:did:example:peer', 'thread', 'dm:did:example:peer', '2', '2', '2', 1),
+('owner', 'did:example:owner', 'group:local-group', 'group', 'local-group', '3', '3', '3', 1),
+('owner', 'did:example:owner', 'group:empty-local', 'group', 'empty-local', '4', '4', '4', 1);
+INSERT INTO groups
+(owner_identity_id, owner_did, group_id, group_did, name, stored_at)
+VALUES
+('owner', 'did:example:owner', 'local-group', 'did:example:group', 'Group', '3'),
+('owner', 'did:example:owner', 'empty-local', 'did:example:empty-group', 'Empty', '4');
+INSERT INTO group_members
+(owner_identity_id, owner_did, group_id, user_id, member_did, member_handle,
+ status, last_synced_at)
+VALUES ('owner', 'did:example:owner', 'local-group', 'peer-user',
+        'did:example:peer', 'peer.awiki.info', 'active', '3');
+INSERT INTO messages
+(msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction,
+ sender_did, receiver_did, content_type, content, stored_at, is_read)
+VALUES
+('direct-1', 'owner', 'did:example:owner', 'dm:did:example:peer',
+ 'dm:did:example:peer', 0, 'did:example:peer', 'did:example:owner',
+ 'text/plain', 'direct body', '2', 0),
+('group-1', 'owner', 'did:example:owner', 'group:local-group',
+ 'group:local-group', 0, 'did:example:peer', 'did:example:owner',
+ 'text/plain', 'group body', '3', 1);
+UPDATE messages SET group_id = 'local-group', group_did = 'did:example:group'
+WHERE msg_id = 'group-1';
+INSERT INTO thread_read_state
+(owner_identity_id, owner_did, thread_scope, thread_id, conversation_id,
+ read_watermark_message_id, read_watermark_seq, pending_remote_ack, updated_at)
+VALUES ('owner', 'did:example:owner', 'direct', 'dm:did:example:peer',
+        'dm:did:example:peer', 'direct-1', '1', 0, '2');
+INSERT INTO e2ee_outbox
+(outbox_id, owner_identity_id, owner_did, peer_did, plaintext, local_status,
+ created_at, updated_at)
+VALUES ('outbox-1', 'owner', 'did:example:owner', 'did:example:peer',
+        'queued body', 'queued', '2', '2');
+"#
+    ))
+    .unwrap();
+    db.execute_batch(
+        r#"
+DROP INDEX IF EXISTS idx_conversation_registry_active_direct_persona;
+DROP INDEX IF EXISTS idx_conversation_registry_active_group_did;
+DROP INDEX IF EXISTS idx_group_members_owner_membership;
+ALTER TABLE group_members RENAME TO group_members_target;
+CREATE TABLE group_members (
+    owner_identity_id TEXT NOT NULL,
+    owner_did TEXT NOT NULL DEFAULT '',
+    group_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    member_did TEXT,
+    member_handle TEXT,
+    profile_url TEXT,
+    role TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    joined_at TEXT,
+    sent_message_count INTEGER NOT NULL DEFAULT 0,
+    last_synced_at TEXT NOT NULL,
+    metadata TEXT,
+    credential_name TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (owner_identity_id, group_id, user_id)
+);
+INSERT INTO group_members
+(owner_identity_id, owner_did, group_id, user_id, member_did, member_handle,
+ profile_url, role, status, joined_at, sent_message_count, last_synced_at,
+ metadata, credential_name)
+SELECT owner_identity_id, owner_did, group_id, user_id, member_did, member_handle,
+ profile_url, role, status, joined_at, sent_message_count, last_synced_at,
+ metadata, credential_name
+FROM group_members_target;
+DROP TABLE group_members_target;
+DROP TABLE inbound_resolution_backlog;
+DROP TABLE conversation_aliases;
+DROP TABLE peer_profiles;
+DROP TABLE peer_identifiers;
+DROP TABLE peer_personas;
+ALTER TABLE contacts DROP COLUMN peer_persona_id;
+ALTER TABLE direct_peer_routes DROP COLUMN authority_namespace;
+ALTER TABLE direct_peer_routes DROP COLUMN peer_persona_id;
+ALTER TABLE conversation_registry DROP COLUMN merged_into_conversation_id;
+ALTER TABLE conversation_registry DROP COLUMN resolution_state;
+ALTER TABLE conversation_registry DROP COLUMN lifecycle_state;
+ALTER TABLE conversation_registry DROP COLUMN canonical_group_did;
+ALTER TABLE conversation_registry DROP COLUMN peer_persona_id;
+ALTER TABLE messages DROP COLUMN wire_identity_resolution_state;
+ALTER TABLE messages DROP COLUMN wire_thread_ref;
+ALTER TABLE messages DROP COLUMN wire_thread_kind;
+PRAGMA user_version = 27;
+"#,
+    )
+    .unwrap();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

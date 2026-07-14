@@ -946,7 +946,7 @@ pub(crate) fn current_schema_version(connection: &Connection) -> crate::ImResult
         .map_err(super::local_state_unavailable)
 }
 
-fn create_schema(
+pub(super) fn create_schema(
     connection: &Connection,
     backfill_conversation_summaries: bool,
 ) -> crate::ImResult<()> {
@@ -1710,7 +1710,7 @@ WHERE EXISTS (
     Ok(())
 }
 
-fn set_schema_version(connection: &Connection, version: i64) -> crate::ImResult<()> {
+pub(super) fn set_schema_version(connection: &Connection, version: i64) -> crate::ImResult<()> {
     connection
         .pragma_update(None, "user_version", version)
         .map_err(super::local_state_unavailable)

@@ -4,7 +4,9 @@
 //! This module owns detection, cross-process locking, consistent backup,
 //! shadow migration, validation, cutover, and restore.
 
+mod migrate;
 mod source;
+mod validate;
 
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -61,6 +63,23 @@ pub(crate) struct VerifiedBackup {
     pub(crate) source_fingerprint: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct CanonicalUpgradeReport {
+    pub(crate) source_schema_version: i64,
+    pub(crate) target_schema_version: i64,
+    pub(crate) migrated_personas: u64,
+    pub(crate) migrated_conversations: u64,
+    pub(crate) unresolved_messages: u64,
+    pub(crate) alias_count: u64,
+    pub(crate) backup_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CanonicalUpgradeOutcome {
+    NotRequired(CanonicalUpgradeDetection),
+    Completed(CanonicalUpgradeReport),
+}
+
 pub(crate) struct CanonicalUpgradeLock {
     file: File,
 }
@@ -73,6 +92,87 @@ impl Drop for CanonicalUpgradeLock {
 
 pub(crate) fn detect(sqlite_path: &Path) -> crate::ImResult<CanonicalUpgradeDetection> {
     source::detect(sqlite_path)
+}
+
+pub(crate) fn run(
+    sqlite_path: &Path,
+    upgrade_dir: &Path,
+) -> crate::ImResult<CanonicalUpgradeOutcome> {
+    let _lock = acquire_lock(upgrade_dir)?;
+    recover_interrupted_cutover(sqlite_path, upgrade_dir)?;
+    let detection = detect(sqlite_path)?;
+    if detection.eligibility == CanonicalUpgradeEligibility::NotRequired {
+        complete_existing_journal_if_needed(upgrade_dir)?;
+        return Ok(CanonicalUpgradeOutcome::NotRequired(detection));
+    }
+    source::verify_release_0710_source(sqlite_path, Some(&detection.source_fingerprint))?;
+    let existing = load_journal(upgrade_dir)?;
+    let upgrade_id = existing
+        .as_ref()
+        .filter(|journal| {
+            journal.source_schema_version == detection.source_schema_version
+                && journal.target_schema_version == detection.target_schema_version
+                && journal.source_fingerprint == detection.source_fingerprint
+                && journal.phase != CanonicalUpgradePhase::Completed
+        })
+        .map(|journal| journal.upgrade_id.clone())
+        .unwrap_or_else(new_upgrade_id);
+    let mut journal = CanonicalUpgradeJournal {
+        format_version: 1,
+        upgrade_id: upgrade_id.clone(),
+        source_schema_version: detection.source_schema_version,
+        target_schema_version: detection.target_schema_version,
+        source_fingerprint: detection.source_fingerprint.clone(),
+        phase: CanonicalUpgradePhase::Detected,
+        backup_file: format!("backups/{upgrade_id}/im.sqlite"),
+        shadow_file: format!("canonical-{upgrade_id}.shadow.sqlite"),
+        rollback_file: format!("rollbacks/{upgrade_id}/im.sqlite"),
+        updated_at_unix: now_unix(),
+    };
+    write_journal(upgrade_dir, &journal)?;
+    journal.phase = CanonicalUpgradePhase::PreflightPassed;
+    journal.updated_at_unix = now_unix();
+    write_journal(upgrade_dir, &journal)?;
+
+    let backup_path = upgrade_dir.join(&journal.backup_file);
+    let backup = if backup_path.exists() {
+        source::verify_release_0710_source(&backup_path, Some(&detection.source_fingerprint))?;
+        VerifiedBackup {
+            path: backup_path,
+            source_fingerprint: detection.source_fingerprint.clone(),
+        }
+    } else {
+        create_verified_backup(
+            sqlite_path,
+            upgrade_dir,
+            &detection.source_fingerprint,
+            &upgrade_id,
+        )?
+    };
+    journal.phase = CanonicalUpgradePhase::BackupVerified;
+    journal.updated_at_unix = now_unix();
+    write_journal(upgrade_dir, &journal)?;
+
+    let shadow_path = create_shadow_from_source(sqlite_path, upgrade_dir, &upgrade_id)?;
+    let mut report = migrate::migrate_shadow(&shadow_path)?;
+    report.backup_path = backup.path;
+    journal.phase = CanonicalUpgradePhase::ShadowMigrated;
+    journal.updated_at_unix = now_unix();
+    write_journal(upgrade_dir, &journal)?;
+    validate_target_file(&shadow_path)?;
+    journal.phase = CanonicalUpgradePhase::ValidationPassed;
+    journal.updated_at_unix = now_unix();
+    write_journal(upgrade_dir, &journal)?;
+
+    journal.phase = CanonicalUpgradePhase::CutoverStarted;
+    journal.updated_at_unix = now_unix();
+    write_journal(upgrade_dir, &journal)?;
+    cutover(sqlite_path, upgrade_dir, &journal)?;
+    validate_target_file(sqlite_path)?;
+    journal.phase = CanonicalUpgradePhase::Completed;
+    journal.updated_at_unix = now_unix();
+    write_journal(upgrade_dir, &journal)?;
+    Ok(CanonicalUpgradeOutcome::Completed(report))
 }
 
 pub(crate) fn acquire_lock(upgrade_dir: &Path) -> crate::ImResult<CanonicalUpgradeLock> {
@@ -192,6 +292,124 @@ fn journal_path(upgrade_dir: &Path) -> PathBuf {
     upgrade_dir.join("canonical-conversation-upgrade.journal.json")
 }
 
+fn cutover(
+    sqlite_path: &Path,
+    upgrade_dir: &Path,
+    journal: &CanonicalUpgradeJournal,
+) -> crate::ImResult<()> {
+    let shadow_path = upgrade_dir.join(&journal.shadow_file);
+    validate_target_file(&shadow_path)?;
+    let rollback_path = upgrade_dir.join(&journal.rollback_file);
+    let rollback_dir = rollback_path
+        .parent()
+        .ok_or_else(|| upgrade_failed("cutover", "rollback_directory_invalid"))?;
+    create_private_dir(rollback_dir)?;
+    if !rollback_path.exists() {
+        move_sqlite_file_set(sqlite_path, &rollback_path, "cutover_source_move")?;
+    }
+    if !sqlite_path.exists() {
+        move_sqlite_file_set(&shadow_path, sqlite_path, "cutover_shadow_move")?;
+        set_private_file_permissions(sqlite_path)?;
+    }
+    Ok(())
+}
+
+fn recover_interrupted_cutover(sqlite_path: &Path, upgrade_dir: &Path) -> crate::ImResult<()> {
+    let Some(mut journal) = load_journal(upgrade_dir)? else {
+        return Ok(());
+    };
+    if journal.phase != CanonicalUpgradePhase::CutoverStarted {
+        return Ok(());
+    }
+    if sqlite_path.exists() {
+        if validate_target_file(sqlite_path).is_ok() {
+            journal.phase = CanonicalUpgradePhase::Completed;
+            journal.updated_at_unix = now_unix();
+            write_journal(upgrade_dir, &journal)?;
+        }
+        return Ok(());
+    }
+    let shadow_path = upgrade_dir.join(&journal.shadow_file);
+    if shadow_path.exists() && validate_target_file(&shadow_path).is_ok() {
+        move_sqlite_file_set(&shadow_path, sqlite_path, "cutover_recovery")?;
+        validate_target_file(sqlite_path)?;
+        journal.phase = CanonicalUpgradePhase::Completed;
+        journal.updated_at_unix = now_unix();
+        write_journal(upgrade_dir, &journal)?;
+        return Ok(());
+    }
+    let rollback_path = upgrade_dir.join(&journal.rollback_file);
+    if rollback_path.exists() {
+        move_sqlite_file_set(&rollback_path, sqlite_path, "cutover_rollback")?;
+        return Ok(());
+    }
+    Err(upgrade_failed(
+        "cutover",
+        "cutover_recovery_artifact_missing",
+    ))
+}
+
+fn complete_existing_journal_if_needed(upgrade_dir: &Path) -> crate::ImResult<()> {
+    let Some(mut journal) = load_journal(upgrade_dir)? else {
+        return Ok(());
+    };
+    if journal.phase != CanonicalUpgradePhase::Completed {
+        journal.phase = CanonicalUpgradePhase::Completed;
+        journal.updated_at_unix = now_unix();
+        write_journal(upgrade_dir, &journal)?;
+    }
+    Ok(())
+}
+
+fn validate_target_file(path: &Path) -> crate::ImResult<()> {
+    let connection = rusqlite::Connection::open(path)
+        .map_err(|_| upgrade_failed("validation", "target_open_failed"))?;
+    let version = super::schema::current_schema_version(&connection)?;
+    if version != super::schema::SCHEMA_VERSION {
+        return Err(upgrade_failed(
+            "validation",
+            "target_schema_version_invalid",
+        ));
+    }
+    super::schema::ensure_schema(&connection)?;
+    let integrity: String = connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(|_| upgrade_failed("validation", "target_integrity_check_failed"))?;
+    if integrity != "ok" {
+        return Err(upgrade_failed(
+            "validation",
+            "target_integrity_check_failed",
+        ));
+    }
+    Ok(())
+}
+
+fn move_sqlite_file_set(source: &Path, target: &Path, phase: &str) -> crate::ImResult<()> {
+    if let Some(parent) = target.parent() {
+        create_private_dir(parent)?;
+    }
+    for (source_file, target_file) in [
+        (source.to_path_buf(), target.to_path_buf()),
+        (
+            PathBuf::from(format!("{}-wal", source.display())),
+            PathBuf::from(format!("{}-wal", target.display())),
+        ),
+        (
+            PathBuf::from(format!("{}-shm", source.display())),
+            PathBuf::from(format!("{}-shm", target.display())),
+        ),
+    ] {
+        if source_file.exists() {
+            if target_file.exists() {
+                return Err(upgrade_failed(phase, "target_already_exists"));
+            }
+            fs::rename(source_file, target_file)
+                .map_err(|_| upgrade_failed(phase, "file_move_failed"))?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn upgrade_failed(phase: &str, code: &str) -> crate::ImError {
     crate::ImError::LocalStateUpgradeFailed {
         phase: phase.to_owned(),
@@ -304,6 +522,101 @@ VALUES ('owner', 'did:example:owner', 'message-1', 'dm:legacy', 'dm:legacy',
                     .get::<_, i64>(0))
                 .unwrap(),
             1
+        );
+    }
+
+    #[test]
+    fn runner_upgrades_once_preserves_backup_and_is_idempotent() {
+        let directory = tempfile::tempdir().unwrap();
+        let sqlite_path = directory.path().join("im.sqlite");
+        let upgrade_dir = directory.path().join("upgrade");
+        source::create_full_release_0710_fixture(&sqlite_path);
+
+        let first = run(&sqlite_path, &upgrade_dir).unwrap();
+        let CanonicalUpgradeOutcome::Completed(report) = first else {
+            panic!("expected completed upgrade");
+        };
+        assert_eq!(report.migrated_personas, 1);
+        assert!(report.backup_path.exists());
+        assert_eq!(
+            rusqlite::Connection::open(&report.backup_path)
+                .unwrap()
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            27
+        );
+        let live = rusqlite::Connection::open(&sqlite_path).unwrap();
+        assert_eq!(
+            live.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            28
+        );
+        let alias_count = live
+            .query_row("SELECT COUNT(*) FROM conversation_aliases", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        drop(live);
+
+        assert!(matches!(
+            run(&sqlite_path, &upgrade_dir).unwrap(),
+            CanonicalUpgradeOutcome::NotRequired(_)
+        ));
+        assert_eq!(
+            rusqlite::Connection::open(&sqlite_path)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM conversation_aliases", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            alias_count
+        );
+        assert_eq!(
+            load_journal(&upgrade_dir).unwrap().unwrap().phase,
+            CanonicalUpgradePhase::Completed
+        );
+    }
+
+    #[test]
+    fn runner_recovers_cutover_gap_without_losing_source_or_shadow() {
+        let directory = tempfile::tempdir().unwrap();
+        let sqlite_path = directory.path().join("im.sqlite");
+        let upgrade_dir = directory.path().join("upgrade");
+        source::create_full_release_0710_fixture(&sqlite_path);
+        let detection = detect(&sqlite_path).unwrap();
+        let upgrade_id = "recovery-1";
+        let shadow_path =
+            create_shadow_from_source(&sqlite_path, &upgrade_dir, upgrade_id).unwrap();
+        migrate::migrate_shadow(&shadow_path).unwrap();
+        let journal = CanonicalUpgradeJournal {
+            format_version: 1,
+            upgrade_id: upgrade_id.to_owned(),
+            source_schema_version: 27,
+            target_schema_version: 28,
+            source_fingerprint: detection.source_fingerprint,
+            phase: CanonicalUpgradePhase::CutoverStarted,
+            backup_file: format!("backups/{upgrade_id}/im.sqlite"),
+            shadow_file: format!("canonical-{upgrade_id}.shadow.sqlite"),
+            rollback_file: format!("rollbacks/{upgrade_id}/im.sqlite"),
+            updated_at_unix: now_unix(),
+        };
+        write_journal(&upgrade_dir, &journal).unwrap();
+        let rollback_path = upgrade_dir.join(&journal.rollback_file);
+        move_sqlite_file_set(&sqlite_path, &rollback_path, "test_cutover").unwrap();
+        assert!(!sqlite_path.exists());
+
+        assert!(matches!(
+            run(&sqlite_path, &upgrade_dir).unwrap(),
+            CanonicalUpgradeOutcome::NotRequired(_)
+        ));
+        assert!(sqlite_path.exists());
+        assert!(rollback_path.exists());
+        assert_eq!(
+            rusqlite::Connection::open(&sqlite_path)
+                .unwrap()
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            28
         );
     }
 }

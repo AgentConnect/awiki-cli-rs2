@@ -287,7 +287,11 @@ message bodies, complete identifiers, credentials, or key material.
 
 An existing schema 27 database is not modified by ordinary schema open. Core
 returns `local_state_upgrade_required` until the release/0710 backup/shadow/
-validation runner performs the explicit 27→28 cutover.
+validation runner performs the explicit 27→28 cutover. The runner uses a
+cross-process file lock and SQLite Online Backup, performs canonical mapping
+inside a disposable shadow transaction, verifies conservation and canonical
+invariants, and records a resumable redacted journal before replacing the live
+SQLite file set. Re-running against schema 28 is a no-op.
 
 Because summaries contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
 

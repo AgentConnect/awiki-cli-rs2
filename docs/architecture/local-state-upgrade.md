@@ -49,7 +49,9 @@ SQLite schema 28 增加 owner-scoped `peer_personas`、`peer_identifiers`、`pee
 
 release/0710 的生产 SQLite schema 27 不允许在普通 `open_writable` 中原地自动 bump。schema 28 Core 在 migration runner 接管前返回 typed `local_state_upgrade_required`，避免在一致性 backup、shadow migration 和 validation gate 完成前修改 source DB。正式 27→28 runner 位于 `crates/im-core/src/internal/local_state/canonical_upgrade/`：只读 structural preflight 和 schema fingerprint 通过后获取跨进程文件锁，使用 SQLite Online Backup API（包含已提交 WAL）生成并复验 backup，再创建独立 shadow。部分 target schema、未知 source schema、source fingerprint 变化和 integrity check 失败均 fail closed，且不修改 source。
 
-canonical upgrade journal 只记录 upgrade ID、schema/fingerprint、相对 artifact 名和阶段，不记录 owner DID、消息内容、凭证或密钥。阶段固定为 `detected → preflight_passed → backup_verified → shadow_migrated → validation_passed → cutover_started → completed`；migration、validation、cutover 和 restore 在相同模块中继续实现，未完成 validation 前不得替换 live SQLite。
+canonical upgrade journal 只记录 upgrade ID、schema/fingerprint、相对 artifact 名和阶段，不记录 owner DID、消息内容、凭证或密钥。阶段固定为 `detected → preflight_passed → backup_verified → shadow_migrated → validation_passed → cutover_started → completed`。runner 在 shadow transaction 中先增加 target 物理字段，再从 0710 verified route 建 Persona/identifier/alias、按 Group DID 收敛群会话、回填 immutable WireIdentity、保留 unresolved 行、重建 summary 并迁移 read-state canonical reference。validation 对 message/outbox/read facts 做逐行 hash 守恒，检查 contacts/groups/members/outbox/read 数量、WireIdentity 完整性、SQLite integrity 和 canonical invariant doctor；全部通过后才设置 schema 28 并进入 cutover。
+
+cutover 先把完整 live SQLite file set 移到 owner-scope upgrade 目录的 rollback artifact，再把已验证 shadow 放到原路径。`cutover_started` 中断后，下一次 runner 会优先完成已验证 shadow，或在 shadow 不可用时恢复 rollback；backup 始终保留。相同 source/journal 可重复执行，schema 28 再次调用返回 NotRequired，不重复创建 alias、消息或 outbox。
 
 ## 3. 工作区路径
 
