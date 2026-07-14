@@ -289,4 +289,32 @@ mod tests {
             1
         );
     }
+
+    #[test]
+    fn summary_registration_keeps_unresolved_direct_message_visible() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let conversation_id = "dm:did:example:peer";
+        db.execute(
+            r#"
+INSERT INTO conversation_summaries
+    (owner_identity_id, owner_did, conversation_id, thread_id,
+     message_count, unread_count, unread_mention_count,
+     last_message_at, updated_at)
+VALUES ('owner-1', 'did:example:owner', ?1, ?1, 1, 1, 0,
+        '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z')"#,
+            [conversation_id],
+        )
+        .unwrap();
+        ensure_from_summary(&db, "owner-1", conversation_id).unwrap();
+
+        let ids = db
+            .prepare("SELECT conversation_id FROM conversation_registry ORDER BY conversation_id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(ids, vec![conversation_id]);
+    }
 }

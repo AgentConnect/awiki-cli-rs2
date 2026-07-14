@@ -35,9 +35,30 @@ pub(crate) fn upsert_message(
     record: &MessageRecord,
 ) -> crate::ImResult<()> {
     crate::internal::local_state::schema::ensure_schema(connection)?;
-    let _ = upsert_message_record(connection, record)?;
-    let _ = crate::internal::group_rebind_recovery::project_rebind_event(connection, record)?;
-    Ok(())
+    // A savepoint is atomic both on a standalone connection and inside the
+    // local-state actor's wider transaction.
+    connection
+        .execute_batch("SAVEPOINT awiki_message_upsert")
+        .map_err(super::local_state_unavailable)?;
+    let result = (|| {
+        let _ = upsert_message_record(connection, record)?;
+        let _ = crate::internal::group_rebind_recovery::project_rebind_event(connection, record)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => connection
+            .execute_batch("RELEASE SAVEPOINT awiki_message_upsert")
+            .map_err(super::local_state_unavailable),
+        Err(error) => {
+            let rollback = connection.execute_batch(
+                "ROLLBACK TO SAVEPOINT awiki_message_upsert; RELEASE SAVEPOINT awiki_message_upsert",
+            );
+            match rollback {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(super::local_state_unavailable(rollback_error)),
+            }
+        }
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -222,17 +243,16 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
         &stored_at,
     )?;
     touched.insert((owner_identity_id.clone(), conversation_id.clone()));
-    let mut merged_legacy = false;
-    for legacy_id in merge_legacy_direct_did_conversation(
+    let merged_legacy_ids = merge_legacy_direct_did_conversation(
         connection,
         &owner_identity_id,
         &conversation_id,
         record,
-    )? {
-        merged_legacy = true;
-        touched.insert((owner_identity_id.clone(), legacy_id));
+    )?;
+    for legacy_id in &merged_legacy_ids {
+        touched.insert((owner_identity_id.clone(), legacy_id.clone()));
     }
-    if merged_legacy || !group_duplicate_rows.is_empty() {
+    if !merged_legacy_ids.is_empty() || !group_duplicate_rows.is_empty() {
         super::conversation_summaries::rebuild_touched(connection, &touched)?;
     } else if let Some(next_projection) = super::conversation_summaries::message_projection_for_id(
         connection,
@@ -246,6 +266,11 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
         )?;
     } else {
         super::conversation_summaries::rebuild_touched(connection, &touched)?;
+    }
+    // The alias can remain on disk for diagnostics, but it must stop being a
+    // recent-conversation identity as soon as its messages become canonical.
+    for legacy_id in &merged_legacy_ids {
+        super::conversation_registry::deactivate(connection, &owner_identity_id, legacy_id)?;
     }
     super::conversation_registry::ensure_from_summary(
         connection,
@@ -1079,6 +1104,7 @@ pub(crate) fn reconcile_peer_scope_direct_conversations(
     let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
     clear_legacy_direct_merge_memo_for_owner(connection, &owner_identity_id)?;
     let mut touched = BTreeSet::new();
+    let mut merged_legacy_ids = BTreeSet::new();
     for candidate in peer_scope_direct_candidates(connection, &owner_identity_id)? {
         let record = MessageRecord {
             owner_identity_id: owner_identity_id.clone(),
@@ -1097,10 +1123,14 @@ pub(crate) fn reconcile_peer_scope_direct_conversations(
             &candidate.conversation_id,
             &record,
         )? {
-            touched.insert((owner_identity_id.clone(), legacy_id));
+            touched.insert((owner_identity_id.clone(), legacy_id.clone()));
+            merged_legacy_ids.insert(legacy_id);
         }
     }
     super::conversation_summaries::rebuild_touched(connection, &touched)?;
+    for legacy_id in merged_legacy_ids {
+        super::conversation_registry::deactivate(connection, &owner_identity_id, &legacy_id)?;
+    }
     Ok(())
 }
 
@@ -3538,6 +3568,65 @@ fn now_utc_like() -> String {
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_state_message_upsert_rolls_back_all_projections_on_post_write_failure() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        crate::internal::local_state::groups::upsert_group(
+            &db,
+            crate::internal::local_state::groups::GroupRecord {
+                owner_identity_id: "owner-id".to_owned(),
+                owner_did: "did:example:owner".to_owned(),
+                group_id: "group-1".to_owned(),
+                group_did: "did:example:group-1".to_owned(),
+                my_role: "owner".to_owned(),
+                membership_status: "active".to_owned(),
+                ..crate::internal::local_state::groups::GroupRecord::default()
+            },
+        )
+        .unwrap();
+        let error = upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "bad-rebind".to_owned(),
+                owner_identity_id: "owner-id".to_owned(),
+                owner_did: "did:example:owner".to_owned(),
+                conversation_id: "group:group-1".to_owned(),
+                thread_id: "group:group-1".to_owned(),
+                sender_did: "did:example:owner".to_owned(),
+                group_id: "group-1".to_owned(),
+                group_did: "did:example:group-1".to_owned(),
+                content_type: "application/json".to_owned(),
+                content: serde_json::json!({
+                    "type": "member_credential_rebound",
+                    "group_did": "did:example:group-1",
+                    "subject_handle": "peer.awiki.test",
+                    "previous_subject_did": "did:example:peer-old",
+                    "subject_did": "did:example:peer-new",
+                    "handle_binding_generation": "invalid",
+                    "group_state_version": "1"
+                })
+                .to_string(),
+                stored_at: "2026-07-14T00:00:00Z".to_owned(),
+                ..MessageRecord::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("generation"));
+        for table in [
+            "messages",
+            "conversation_summaries",
+            "conversation_registry",
+        ] {
+            let count: i64 = db
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} must roll back with the failed upsert");
+        }
+    }
     use rusqlite::Connection;
 
     #[test]
@@ -6063,20 +6152,28 @@ VALUES ('msg-legacy-empty-json', ?1, ?2, ?3, ?3, 0,
     fn local_state_messages_merge_rotated_did_direct_rows_into_peer_scope() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
-        db.execute(
-            r#"
-INSERT INTO messages
-    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did,
-     content_type, content, sent_at, stored_at, is_read)
-VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3,
-        'text/plain', 'old did message', '2026-06-10T00:00:00Z', '2026-06-10T00:00:00Z', 1)"#,
-            (
-                "msg-old",
-                "owner-id",
-                "did:wba:anpclaw.com:zhuocheng:e1_owner",
-                "dm:did:wba:anpclaw.com:zhuochengtest:e1_old",
-                "did:wba:anpclaw.com:zhuochengtest:e1_old",
-            ),
+        let owner_did = "did:wba:anpclaw.com:zhuocheng:e1_owner";
+        let old_peer_did = "did:wba:anpclaw.com:zhuochengtest:e1_old";
+        let legacy_conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id(old_peer_did);
+        upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "msg-old".to_owned(),
+                owner_identity_id: "owner-id".to_owned(),
+                owner_did: owner_did.to_owned(),
+                conversation_id: legacy_conversation_id.clone(),
+                thread_id: legacy_conversation_id,
+                direction: 0,
+                sender_did: old_peer_did.to_owned(),
+                receiver_did: owner_did.to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "old did message".to_owned(),
+                sent_at: "2026-06-10T00:00:00Z".to_owned(),
+                stored_at: "2026-06-10T00:00:00Z".to_owned(),
+                is_read: true,
+                ..MessageRecord::default()
+            },
         )
         .unwrap();
         let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
@@ -6088,6 +6185,15 @@ VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3,
             crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
                 &scope,
             );
+        let route = crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::new(
+            "owner-id",
+            scoped_conversation_id.clone(),
+            "peer-user-id",
+            "zhuochengtest.anpclaw.com",
+            "did:wba:anpclaw.com:zhuochengtest:e1_new",
+        )
+        .unwrap();
+        crate::internal::local_state::direct_peer_routes::upsert(&db, &route).unwrap();
 
         upsert_message(
             &db,
@@ -6137,6 +6243,56 @@ VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3,
             .unwrap();
         assert_eq!(summary_conversation_id, scoped_conversation_id);
         assert_eq!(summary_count, 2);
+        let registry_rows = db
+            .prepare(
+                "SELECT conversation_id, is_active FROM conversation_registry WHERE owner_identity_id = 'owner-id' ORDER BY conversation_id",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            registry_rows,
+            vec![
+                ("dm:did:wba:anpclaw.com:zhuochengtest:e1_old".to_owned(), 0),
+                (summary_conversation_id, 1),
+            ]
+        );
+
+        upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "msg-late-legacy".to_owned(),
+                owner_identity_id: "owner-id".to_owned(),
+                owner_did: owner_did.to_owned(),
+                conversation_id: crate::internal::local_state::owner_scope::direct_conversation_id(
+                    old_peer_did,
+                ),
+                thread_id: crate::internal::local_state::owner_scope::direct_conversation_id(
+                    old_peer_did,
+                ),
+                direction: 0,
+                sender_did: old_peer_did.to_owned(),
+                receiver_did: owner_did.to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "late old did message".to_owned(),
+                sent_at: "2026-06-10T00:00:02Z".to_owned(),
+                stored_at: "2026-06-10T00:00:02Z".to_owned(),
+                ..MessageRecord::default()
+            },
+        )
+        .unwrap();
+        let active_ids = db
+            .prepare(
+                "SELECT conversation_id FROM conversation_registry WHERE owner_identity_id = 'owner-id' AND is_active = 1 ORDER BY conversation_id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(active_ids, vec![scoped_conversation_id]);
     }
 
     #[test]
