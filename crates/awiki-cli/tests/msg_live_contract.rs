@@ -325,8 +325,11 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
             "did": alice_new,
+            "user_id": "user-alice",
             "handle": "alice.awiki.ai",
-            "full_handle": "alice.awiki.ai"
+            "full_handle": "alice.awiki.ai",
+            "domain": "awiki.ai",
+            "status": "active"
         }))),
         TestResponse::ok(&json_rpc_result(json!({
             "messages": [remote_message],
@@ -416,8 +419,11 @@ fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_ca
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
             "did": alice_new,
+            "user_id": "user-alice",
             "handle": "alice.awiki.ai",
-            "full_handle": "alice.awiki.ai"
+            "full_handle": "alice.awiki.ai",
+            "domain": "awiki.ai",
+            "status": "active"
         }))),
         TestResponse::ok(&json_rpc_result(json!({
             "messages": [remote_message],
