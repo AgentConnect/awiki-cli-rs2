@@ -21,6 +21,7 @@ pub(crate) struct SyncDeltaApplyInput {
 pub(crate) struct SyncDeltaApplyEvent {
     pub(crate) event_id: String,
     pub(crate) event_seq: String,
+    pub(crate) event_type: String,
     pub(crate) messages: Vec<super::messages::MessageRecord>,
     pub(crate) groups: Vec<super::groups::GroupRecord>,
 }
@@ -28,6 +29,7 @@ pub(crate) struct SyncDeltaApplyEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SyncDeltaApplyOutcome {
     pub(crate) applied_events: usize,
+    pub(crate) backlogged_messages: usize,
     pub(crate) last_applied_event_seq: String,
     pub(crate) invalidation: SyncDeltaInvalidation,
 }
@@ -205,8 +207,30 @@ pub(crate) fn apply_sync_delta_tx(
 
     let mut messages = Vec::new();
     let mut groups = Vec::new();
-    for (_, _, event) in new_events {
-        messages.extend(event.messages);
+    let mut backlogged_messages = 0usize;
+    for (_, event_seq, event) in new_events {
+        for message in event.messages {
+            match super::inbound_resolution_backlog::canonicalize_inbound_message(
+                transaction,
+                message.clone(),
+            ) {
+                Ok(message) => messages.push(message),
+                Err(error) if is_backlog_identity_error(&error) => {
+                    super::inbound_resolution_backlog::store(
+                        transaction,
+                        super::inbound_resolution_backlog::BacklogSource {
+                            event_id: &event.event_id,
+                            event_seq: &event_seq,
+                            event_type: &event.event_type,
+                        },
+                        &message,
+                        &error,
+                    )?;
+                    backlogged_messages = backlogged_messages.saturating_add(1);
+                }
+                Err(error) => return Err(error),
+            }
+        }
         groups.extend(event.groups);
     }
     let invalidation = sync_delta_invalidation(
@@ -252,6 +276,7 @@ pub(crate) fn apply_sync_delta_tx(
             input.metadata_json,
             groups,
             invalidation,
+            backlogged_messages,
         );
     }
 
@@ -265,6 +290,7 @@ pub(crate) fn apply_sync_delta_tx(
         input.metadata_json,
         groups,
         invalidation,
+        backlogged_messages,
     )
 }
 
@@ -280,6 +306,7 @@ fn finish_sync_delta_apply(
     metadata_json: Option<String>,
     groups: Vec<super::groups::GroupRecord>,
     invalidation: SyncDeltaInvalidation,
+    backlogged_messages: usize,
 ) -> crate::ImResult<SyncDeltaApplyOutcome> {
     for group in groups {
         super::groups::upsert_group(transaction, group)?;
@@ -297,9 +324,21 @@ fn finish_sync_delta_apply(
 
     Ok(SyncDeltaApplyOutcome {
         applied_events: usize::try_from(next_seq - current_seq).unwrap_or(usize::MAX),
+        backlogged_messages,
         last_applied_event_seq: next_event_seq,
         invalidation,
     })
+}
+
+#[cfg(feature = "sqlite")]
+fn is_backlog_identity_error(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::IdentityUnresolved { .. }
+            | crate::ImError::IdentityBindingConflict { .. }
+            | crate::ImError::ConversationAliasConflict { .. }
+            | crate::ImError::CanonicalGroupIdentityMissing { .. }
+    )
 }
 
 #[cfg(feature = "sqlite")]
@@ -476,5 +515,63 @@ mod tests {
         for invalid in ["", "  ", "-1", "1.0", "01", "abc"] {
             assert!(parse_decimal_seq(invalid).is_err(), "{invalid:?}");
         }
+    }
+
+    #[test]
+    fn unresolved_inbound_is_backlogged_in_same_transaction_as_checkpoint() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let message = super::super::messages::MessageRecord {
+            msg_id: "msg-unresolved".to_owned(),
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:example:alice".to_owned(),
+            conversation_id: "dm:did:example:bob".to_owned(),
+            thread_id: "dm:did:example:bob".to_owned(),
+            direction: 0,
+            sender_did: "did:example:bob".to_owned(),
+            receiver_did: "did:example:alice".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "hello".to_owned(),
+            stored_at: "2026-07-14T00:00:00Z".to_owned(),
+            credential_name: "alice-id".to_owned(),
+            ..super::super::messages::MessageRecord::default()
+        }
+        .with_resolved_wire_thread("direct", "did:example:bob");
+        let input = SyncDeltaApplyInput {
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:example:alice".to_owned(),
+            events: vec![SyncDeltaApplyEvent {
+                event_id: "event-1".to_owned(),
+                event_seq: "1".to_owned(),
+                event_type: "message.created".to_owned(),
+                messages: vec![message],
+                groups: Vec::new(),
+            }],
+            next_event_seq: "1".to_owned(),
+            metadata_json: None,
+        };
+
+        let tx = db.transaction().unwrap();
+        let outcome = apply_sync_delta_tx(&tx, input).unwrap();
+        assert_eq!(outcome.backlogged_messages, 1);
+        tx.commit().unwrap();
+
+        assert_eq!(
+            load_global_checkpoint(&db, "alice-id")
+                .unwrap()
+                .unwrap()
+                .event_seq,
+            "1"
+        );
+        assert_eq!(
+            super::super::inbound_resolution_backlog::pending_count(&db, "alice-id").unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 }

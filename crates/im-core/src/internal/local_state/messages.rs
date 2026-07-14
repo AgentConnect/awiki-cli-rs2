@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "sqlite")]
 use rusqlite::OptionalExtension;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct MessageRecord {
     pub(crate) msg_id: String,
     pub(crate) owner_identity_id: String,

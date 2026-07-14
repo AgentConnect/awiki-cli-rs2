@@ -14,6 +14,7 @@ pub(crate) mod conversations;
 pub(crate) mod direct_peer_routes;
 pub(crate) mod email;
 pub(crate) mod groups;
+pub(crate) mod inbound_resolution_backlog;
 pub(crate) mod messages;
 pub(crate) mod owner_scope;
 #[cfg(feature = "sqlite")]

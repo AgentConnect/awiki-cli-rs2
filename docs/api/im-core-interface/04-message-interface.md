@@ -680,7 +680,10 @@ pub struct RealtimeSyncHint {
 3. `limit`、`device_id`、`reason` 只作为分页和诊断输入；`reason` 是字符串，不是封闭
    enum，便于 App 记录 `startup`、`app_resumed`、`reconnect`、`realtime_gap` 等来源。
 4. 在同一个本地 SQLite transaction 中 apply 所有事件、更新 conversation/message
-   projection，并在 apply 成功后写入 `next_event_seq` checkpoint。
+   projection。Direct 的 peer DID 尚未绑定 verified Persona 时，不创建 `dm:<DID>`：先把
+   保留原 WireIdentity 的消息写入 owner-scoped `inbound_resolution_backlog`，成功后才能写入
+   `next_event_seq` checkpoint。后续权威 Handle projection 会幂等重放对应 backlog；冲突保持
+   blocked/conflict-visible，不猜测合并。
 5. 返回 `events_applied`、`pages_fetched` 和 `last_applied_event_seq` 作为诊断和 UI 状态；
    `last_applied_event_seq` 不是 public checkpoint setter。
 6. 当服务端返回 `snapshot_required=true` 时 fail-closed：不推进 checkpoint、不清空本地

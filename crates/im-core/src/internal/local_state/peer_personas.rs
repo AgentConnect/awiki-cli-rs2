@@ -32,10 +32,74 @@ pub(crate) struct PeerPersonaRecord {
     pub(crate) verified_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedPeerPersona {
+    pub(crate) peer_persona_id: String,
+    pub(crate) conversation_id: String,
+}
+
 pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
     connection
         .execute_batch(TABLE_SQL)
         .map_err(super::local_state_unavailable)
+}
+
+pub(crate) fn resolve_by_did(
+    connection: &Connection,
+    owner_identity_id: &str,
+    did: &str,
+) -> crate::ImResult<Option<ResolvedPeerPersona>> {
+    let row = connection
+        .query_row(
+            r#"SELECT p.peer_persona_id, p.authority_namespace,
+                      p.authority_subject_id, p.full_handle, r.conversation_id
+FROM peer_identifiers i
+JOIN peer_personas p
+  ON p.owner_identity_id = i.owner_identity_id
+ AND p.peer_persona_id = i.peer_persona_id
+JOIN direct_peer_routes r
+  ON r.owner_identity_id = p.owner_identity_id
+ AND r.peer_persona_id = p.peer_persona_id
+WHERE i.owner_identity_id = ?1
+  AND i.identifier_kind = 'did'
+  AND i.identifier_value = ?2"#,
+            (owner_identity_id.trim(), did.trim()),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some((stored_persona_id, authority, subject, handle, stored_conversation_id)) = row else {
+        return Ok(None);
+    };
+    let persona = crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+        &authority,
+        &subject,
+        &handle,
+        Some("verified"),
+    )?;
+    if persona.peer_persona_id != stored_persona_id {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "stored DID binding does not match its immutable Persona identity".to_owned(),
+        });
+    }
+    let conversation_id = persona.direct_conversation_id();
+    if conversation_id != stored_conversation_id {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "stored Direct route does not match its immutable Persona identity".to_owned(),
+        });
+    }
+    Ok(Some(ResolvedPeerPersona {
+        peer_persona_id: persona.peer_persona_id,
+        conversation_id,
+    }))
 }
 
 pub(crate) fn upsert(connection: &Connection, record: &PeerPersonaRecord) -> crate::ImResult<()> {
@@ -245,6 +309,11 @@ WHERE owner_identity_id = ?2
             source: "handle_authority".to_owned(),
             verified_at,
         },
+    )?;
+    super::inbound_resolution_backlog::replay_for_persona(
+        &transaction,
+        owner_identity_id,
+        &persona.peer_persona_id,
     )?;
     transaction
         .commit()

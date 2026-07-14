@@ -88,6 +88,7 @@ where
                 .events_applied
                 .saturating_add(u32::try_from(outcome.applied_events).unwrap_or(u32::MAX));
             result.last_applied_event_seq = Some(outcome.last_applied_event_seq);
+            append_backlog_warning(&mut result.warnings, outcome.backlogged_messages);
             emit_committed_sync_invalidation(self.client, &outcome.invalidation);
             result.retention_floor_event_seq = page.retention_floor_event_seq;
             result.has_more = page.has_more;
@@ -252,6 +253,7 @@ where
                 .events_applied
                 .saturating_add(u32::try_from(outcome.applied_events).unwrap_or(u32::MAX));
             result.last_applied_event_seq = Some(outcome.last_applied_event_seq);
+            append_backlog_warning(&mut result.warnings, outcome.backlogged_messages);
             emit_committed_sync_invalidation(self.client, &outcome.invalidation);
             result.retention_floor_event_seq = page.retention_floor_event_seq;
             result.has_more = page.has_more;
@@ -402,6 +404,12 @@ fn empty_sync_delta_result() -> crate::messages::SyncDeltaResult {
         snapshot_required: false,
         retention_floor_event_seq: None,
         warnings: Vec::new(),
+    }
+}
+
+fn append_backlog_warning(warnings: &mut Vec<String>, backlogged_messages: usize) {
+    if backlogged_messages > 0 {
+        warnings.push(format!("identity_unresolved_backlog:{backlogged_messages}"));
     }
 }
 
@@ -571,6 +579,7 @@ fn sync_delta_apply_event(
     let mut apply = crate::internal::local_state::sync_state::SyncDeltaApplyEvent {
         event_id: event.event_id.clone(),
         event_seq: event.event_seq.clone(),
+        event_type: event.event_type.clone(),
         ..crate::internal::local_state::sync_state::SyncDeltaApplyEvent::default()
     };
 

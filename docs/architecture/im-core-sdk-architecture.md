@@ -270,6 +270,14 @@ one local transaction. UI/profile consumers must eventually read display data
 by `peer_persona_id`; DID remains a credential snapshot or route address, not a
 profile identity key.
 
+Inbound Direct sync performs the same Persona lookup inside
+the checkpoint transaction. If the peer DID is not yet bound to a verified
+Persona, the immutable message projection is serialized into the owner-scoped
+`inbound_resolution_backlog`; only after that durable write may the global
+checkpoint advance. A later verified Handle projection replays matching rows
+into `messages` and removes them from the backlog without changing their
+`wire_thread_kind`, `wire_thread_ref`, or sender/receiver DID snapshots.
+
 An existing schema 27 database is not modified by ordinary schema open. Core
 returns `local_state_upgrade_required` until the release/0710 backup/shadow/
 validation runner performs the explicit 27→28 cutover.
@@ -333,6 +341,11 @@ the SDK architecture boundary.
   `next_event_seq`, or equivalent manual checkpoint advance.
 - `snapshot_required=true` is fail-closed until a documented repair API exists:
   no checkpoint advance and no local projection wipe.
+- An identity-unresolved inbound message is not a failed apply and is never
+  projected into a `dm:<DID>` conversation. The same transaction stores it in
+  `inbound_resolution_backlog` before advancing the checkpoint; verified
+  Persona projection later performs idempotent replay. Binding conflicts remain
+  conflict-visible rather than being guessed or last-write-wins.
 
 `messages.sync_conversation_after()` / Dart `client.messages.syncConversationAfter(...)` is the conversationId-first catch-up API for AWiki Me and the Flutter SDK display chain. It resolves `ConversationReadRef.conversation_id` to the syncable storage thread/ref, uses `after_server_seq`, and does not read or advance the account-level checkpoint. `messages.sync_thread_after()` / Dart `client.messages.syncThreadAfter(...)` remains a legacy / debug adapter. Implementations must not return a locally merged `history_async` page as a catch-up result; they use a raw remote path or strictly filter `server_seq > after_server_seq`.
 
