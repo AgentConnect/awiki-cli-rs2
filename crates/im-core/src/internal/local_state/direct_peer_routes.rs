@@ -13,6 +13,8 @@ use super::owner_scope::{direct_conversation_id_for_peer_scope, DirectPeerScope,
 pub(crate) struct DirectPeerRouteRecord {
     pub(crate) owner_identity_id: String,
     pub(crate) conversation_id: String,
+    pub(crate) peer_persona_id: Option<String>,
+    pub(crate) authority_namespace: Option<String>,
     pub(crate) peer_user_id: String,
     pub(crate) full_handle: String,
     pub(crate) current_did: String,
@@ -57,8 +59,29 @@ impl DirectPeerRouteRecord {
         Ok(Self {
             owner_identity_id,
             conversation_id,
+            peer_persona_id: None,
+            authority_namespace: None,
             peer_user_id: peer_scope.user_id,
             full_handle: peer_scope.full_handle,
+            current_did,
+            updated_at: time::OffsetDateTime::now_utc().unix_timestamp().to_string(),
+        })
+    }
+
+    pub(crate) fn from_verified_persona(
+        owner_identity_id: impl Into<String>,
+        persona: &crate::internal::canonical_identity::PeerPersona,
+        current_did: impl Into<String>,
+    ) -> crate::ImResult<Self> {
+        let current_did = required("current_did", current_did.into())?;
+        crate::ids::Did::parse(&current_did)?;
+        Ok(Self {
+            owner_identity_id: required("owner_identity_id", owner_identity_id.into())?,
+            conversation_id: persona.direct_conversation_id(),
+            peer_persona_id: Some(persona.peer_persona_id.clone()),
+            authority_namespace: Some(persona.authority_namespace.clone()),
+            peer_user_id: persona.authority_subject_id.clone(),
+            full_handle: persona.full_handle.clone(),
             current_did,
             updated_at: time::OffsetDateTime::now_utc().unix_timestamp().to_string(),
         })
@@ -81,10 +104,13 @@ pub(crate) fn upsert(
         .execute(
             r#"
 INSERT INTO direct_peer_routes
-    (owner_identity_id, conversation_id, peer_user_id, full_handle, current_did, updated_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+    (owner_identity_id, conversation_id, peer_persona_id, authority_namespace,
+     peer_user_id, full_handle, current_did, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
 ON CONFLICT(owner_identity_id, conversation_id)
 DO UPDATE SET
+    peer_persona_id = COALESCE(excluded.peer_persona_id, direct_peer_routes.peer_persona_id),
+    authority_namespace = COALESCE(excluded.authority_namespace, direct_peer_routes.authority_namespace),
     peer_user_id = excluded.peer_user_id,
     full_handle = excluded.full_handle,
     current_did = excluded.current_did,
@@ -93,6 +119,8 @@ DO UPDATE SET
             rusqlite::params![
                 record.owner_identity_id,
                 record.conversation_id,
+                record.peer_persona_id,
+                record.authority_namespace,
                 record.peer_user_id,
                 record.full_handle,
                 record.current_did,
@@ -113,7 +141,8 @@ pub(crate) fn get(
     let record = connection
         .query_row(
             r#"
-SELECT owner_identity_id, conversation_id, peer_user_id, full_handle, current_did, updated_at
+SELECT owner_identity_id, conversation_id, peer_persona_id, authority_namespace,
+       peer_user_id, full_handle, current_did, updated_at
 FROM direct_peer_routes
 WHERE owner_identity_id = ?1 AND conversation_id = ?2
 "#,
@@ -122,10 +151,12 @@ WHERE owner_identity_id = ?1 AND conversation_id = ?2
                 Ok(DirectPeerRouteRecord {
                     owner_identity_id: row.get(0)?,
                     conversation_id: row.get(1)?,
-                    peer_user_id: row.get(2)?,
-                    full_handle: row.get(3)?,
-                    current_did: row.get(4)?,
-                    updated_at: row.get(5)?,
+                    peer_persona_id: row.get(2)?,
+                    authority_namespace: row.get(3)?,
+                    peer_user_id: row.get(4)?,
+                    full_handle: row.get(5)?,
+                    current_did: row.get(6)?,
+                    updated_at: row.get(7)?,
                 })
             },
         )
@@ -143,6 +174,31 @@ WHERE owner_identity_id = ?1 AND conversation_id = ?2
 }
 
 fn validate_record(record: &DirectPeerRouteRecord) -> crate::ImResult<()> {
+    if let (Some(peer_persona_id), Some(authority_namespace)) = (
+        record.peer_persona_id.as_deref(),
+        record.authority_namespace.as_deref(),
+    ) {
+        let persona = crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+            authority_namespace,
+            &record.peer_user_id,
+            &record.full_handle,
+            Some("active"),
+        )?;
+        if peer_persona_id != persona.peer_persona_id
+            || record.conversation_id != persona.direct_conversation_id()
+        {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "Direct route does not match its canonical Persona".to_owned(),
+            });
+        }
+        crate::ids::Did::parse(&record.current_did)?;
+        return Ok(());
+    }
+    if record.peer_persona_id.is_some() || record.authority_namespace.is_some() {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "Direct route has a partial Persona binding".to_owned(),
+        });
+    }
     let validated = DirectPeerRouteRecord::new(
         record.owner_identity_id.clone(),
         record.conversation_id.clone(),
@@ -152,6 +208,8 @@ fn validate_record(record: &DirectPeerRouteRecord) -> crate::ImResult<()> {
     )?;
     if validated.owner_identity_id != record.owner_identity_id
         || validated.conversation_id != record.conversation_id
+        || validated.peer_persona_id != record.peer_persona_id
+        || validated.authority_namespace != record.authority_namespace
         || validated.peer_user_id != record.peer_user_id
         || validated.full_handle != record.full_handle
         || validated.current_did != record.current_did

@@ -1,6 +1,6 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
-pub(crate) const TABLE_SQL: &str = r#"
+const TABLE_ONLY_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS conversation_registry (
     owner_identity_id TEXT NOT NULL,
     owner_did         TEXT NOT NULL DEFAULT '',
@@ -11,10 +11,28 @@ CREATE TABLE IF NOT EXISTS conversation_registry (
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL,
     is_active         INTEGER NOT NULL DEFAULT 1,
+    peer_persona_id   TEXT,
+    canonical_group_did TEXT,
+    lifecycle_state   TEXT NOT NULL DEFAULT 'active',
+    resolution_state  TEXT NOT NULL DEFAULT 'legacy_unresolved',
+    merged_into_conversation_id TEXT,
     PRIMARY KEY (owner_identity_id, conversation_id)
 );
+"#;
+
+const INDEX_SQL: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_conversation_registry_owner_activity
 ON conversation_registry(owner_identity_id, is_active, activity_at DESC, conversation_id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_registry_active_direct_persona
+ON conversation_registry(owner_identity_id, peer_persona_id)
+WHERE thread_kind = 'direct'
+  AND lifecycle_state = 'active'
+  AND resolution_state = 'resolved';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_registry_active_group_did
+ON conversation_registry(owner_identity_id, canonical_group_did)
+WHERE thread_kind = 'group'
+  AND lifecycle_state = 'active'
+  AND resolution_state = 'resolved';
 "#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,8 +47,51 @@ pub(crate) struct ConversationRegistryRecord {
 
 pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
     connection
-        .execute_batch(TABLE_SQL)
+        .execute_batch(TABLE_ONLY_SQL)
         .map_err(super::local_state_unavailable)?;
+    for (column, definition) in [
+        ("peer_persona_id", "TEXT"),
+        ("canonical_group_did", "TEXT"),
+        ("lifecycle_state", "TEXT NOT NULL DEFAULT 'active'"),
+        (
+            "resolution_state",
+            "TEXT NOT NULL DEFAULT 'legacy_unresolved'",
+        ),
+        ("merged_into_conversation_id", "TEXT"),
+    ] {
+        ensure_column(connection, column, definition)?;
+    }
+    connection
+        .execute_batch(INDEX_SQL)
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+fn ensure_column(connection: &Connection, column: &str, definition: &str) -> crate::ImResult<()> {
+    let exists = {
+        let mut statement = connection
+            .prepare("PRAGMA table_info(conversation_registry)")
+            .map_err(super::local_state_unavailable)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(super::local_state_unavailable)?;
+        let mut exists = false;
+        for row in rows {
+            if row.map_err(super::local_state_unavailable)? == column {
+                exists = true;
+                break;
+            }
+        }
+        exists
+    };
+    if !exists {
+        connection
+            .execute(
+                &format!("ALTER TABLE conversation_registry ADD COLUMN {column} {definition}"),
+                [],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
     Ok(())
 }
 
@@ -40,7 +101,8 @@ pub(crate) fn backfill_from_summaries(connection: &Connection) -> crate::ImResul
             r#"
 INSERT OR IGNORE INTO conversation_registry
     (owner_identity_id, owner_did, conversation_id, thread_kind, thread_id,
-     activity_at, created_at, updated_at, is_active)
+     activity_at, created_at, updated_at, is_active, canonical_group_did,
+     lifecycle_state, resolution_state)
 SELECT owner_identity_id,
        owner_did,
        conversation_id,
@@ -50,6 +112,9 @@ SELECT owner_identity_id,
        updated_at,
        updated_at,
        1
+       ,CASE WHEN conversation_id LIKE 'group:%' THEN SUBSTR(conversation_id, 7) ELSE NULL END
+       ,'active'
+       ,CASE WHEN conversation_id LIKE 'group:%' THEN 'resolved' ELSE 'legacy_unresolved' END
 FROM conversation_summaries"#,
             [],
         )
@@ -76,13 +141,16 @@ pub(crate) fn ensure(
             ));
         }
     }
+    let (peer_persona_id, canonical_group_did, resolution_state) =
+        canonical_identity_for_record(connection, record)?;
     connection
         .execute(
             r#"
 INSERT INTO conversation_registry
     (owner_identity_id, owner_did, conversation_id, thread_kind, thread_id,
-     activity_at, created_at, updated_at, is_active)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6, 1)
+     activity_at, created_at, updated_at, is_active, peer_persona_id,
+     canonical_group_did, lifecycle_state, resolution_state)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6, 1, ?7, ?8, 'active', ?9)
 ON CONFLICT(owner_identity_id, conversation_id) DO UPDATE SET
     owner_did = excluded.owner_did,
     thread_kind = excluded.thread_kind,
@@ -92,7 +160,14 @@ ON CONFLICT(owner_identity_id, conversation_id) DO UPDATE SET
         ELSE conversation_registry.activity_at
     END,
     updated_at = excluded.updated_at,
-    is_active = 1"#,
+    is_active = 1,
+    peer_persona_id = COALESCE(excluded.peer_persona_id, conversation_registry.peer_persona_id),
+    canonical_group_did = COALESCE(excluded.canonical_group_did, conversation_registry.canonical_group_did),
+    lifecycle_state = 'active',
+    resolution_state = CASE
+        WHEN conversation_registry.resolution_state = 'blocked_conflict' THEN 'blocked_conflict'
+        ELSE excluded.resolution_state
+    END"#,
             rusqlite::params![
                 record.owner_identity_id,
                 record.owner_did,
@@ -100,6 +175,9 @@ ON CONFLICT(owner_identity_id, conversation_id) DO UPDATE SET
                 record.thread_kind,
                 record.thread_id,
                 record.activity_at,
+                peer_persona_id,
+                canonical_group_did,
+                resolution_state,
             ],
         )
         .map_err(super::local_state_unavailable)?;
@@ -218,11 +296,50 @@ pub(crate) fn deactivate(
 ) -> crate::ImResult<()> {
     connection
         .execute(
-            "UPDATE conversation_registry SET is_active = 0, updated_at = ?1 WHERE owner_identity_id = ?2 AND conversation_id = ?3",
+            "UPDATE conversation_registry SET is_active = 0, lifecycle_state = 'archived', updated_at = ?1 WHERE owner_identity_id = ?2 AND conversation_id = ?3",
             rusqlite::params![now_utc_like(), owner_identity_id.trim(), conversation_id.trim()],
         )
         .map_err(super::local_state_unavailable)?;
     Ok(())
+}
+
+fn canonical_identity_for_record(
+    connection: &Connection,
+    record: &ConversationRegistryRecord,
+) -> crate::ImResult<(Option<String>, Option<String>, &'static str)> {
+    match record.thread_kind.as_str() {
+        "group" => {
+            let group_did = record
+                .conversation_id
+                .strip_prefix("group:")
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            Ok((None, group_did, "resolved"))
+        }
+        "direct" => {
+            let persona = connection
+                .query_row(
+                    r#"SELECT peer_persona_id FROM direct_peer_routes
+WHERE owner_identity_id = ?1 AND conversation_id = ?2
+  AND TRIM(COALESCE(peer_persona_id, '')) <> ''"#,
+                    (
+                        record.owner_identity_id.as_str(),
+                        record.conversation_id.as_str(),
+                    ),
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(super::local_state_unavailable)?;
+            let resolution = if persona.is_some() {
+                "resolved"
+            } else {
+                "legacy_unresolved"
+            };
+            Ok((persona, None, resolution))
+        }
+        _ => Ok((None, None, "legacy_unresolved")),
+    }
 }
 
 pub(crate) fn now_utc_like() -> String {

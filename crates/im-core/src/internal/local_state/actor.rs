@@ -39,6 +39,12 @@ enum LocalStateCommand {
         record: super::direct_peer_routes::DirectPeerRouteRecord,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
+    ProjectVerifiedHandle {
+        owner_identity_id: String,
+        owner_did: String,
+        lookup: crate::directory::HandleLookupResult,
+        reply: oneshot::Sender<crate::ImResult<String>>,
+    },
     GetContactByDid {
         owner_identity_id: String,
         owner_did: String,
@@ -434,6 +440,23 @@ impl LocalStateDb {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::UpsertDirectPeerRoute { record, reply })
             .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn project_verified_handle(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        lookup: crate::directory::HandleLookupResult,
+    ) -> crate::ImResult<String> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ProjectVerifiedHandle {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            lookup,
+            reply,
+        })
+        .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
 
@@ -1220,6 +1243,20 @@ fn run_actor(
             }
             LocalStateCommand::UpsertDirectPeerRoute { record, reply } => {
                 let result = super::direct_peer_routes::upsert(&connection, &record);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ProjectVerifiedHandle {
+                owner_identity_id,
+                owner_did,
+                lookup,
+                reply,
+            } => {
+                let result = super::peer_personas::project_verified_handle(
+                    &mut connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &lookup,
+                );
                 let _ = reply.send(result);
             }
             LocalStateCommand::GetContactByDid {

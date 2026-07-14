@@ -23,6 +23,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 ed25519-dalek = { version = "=2.1.1", features = ["rand_core", "pkcs8", "pem"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 hkdf = "0.12"
+idna = "1.1"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

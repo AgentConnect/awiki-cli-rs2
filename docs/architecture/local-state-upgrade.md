@@ -1,7 +1,7 @@
 # awiki-cli 本地状态升级系统设计
 
-**文档状态**：Draft v1.1
-**最后更新**：2026-05-31
+**文档状态**：Draft v1.2
+**最后更新**：2026-07-14
 **适用范围**：Rust `awiki-cli` 本地 config、identity store、SQLite、本地升级元数据，以及从 `awiki-agent-id-message` Python v1 布局导入 legacy 本地状态。
 
 ## 1. 目标
@@ -29,7 +29,7 @@
 crates/awiki-cli/src/workspace_upgrade/types.rs
 ```
 
-当前 local SQLite schema version 为 `21`，定义在：
+当前 canonical conversation target SQLite schema version 为 `28`，定义在：
 
 ```text
 crates/im-core/src/internal/local_state/schema.rs
@@ -44,6 +44,10 @@ crates/im-core/src/internal/local_state/schema.rs
 - `workspace schema 4`：SQLite 本地状态已收敛到 identity-owned schema 17，业务行使用 `owner_identity_id` 作为 owner partition key。DID recover/replace 只写 `identity_did_history` 并刷新 `owner_did` snapshot，不再做业务行 owner rebind。旧 SQLite schema 通过 backup 后 clean rebuild 进入干净 schema 17，不按 DID、credential、alias 或路径静默迁移业务所有权。
 
 SQLite schema 18 之后逐步增加 conversation summary projection、local-first history hot index、`sync_state`、`thread_read_state` 和当前 message display read/send projection contract。当前消息显示链路的 owner key 是 `owner_identity_id + conversation_id`；升级或 rebuild 不得把 owner DID、legacy direct alias 或 App display thread id 当成新的持久 correctness key。
+
+SQLite schema 28 增加 owner-scoped `peer_personas`、`peer_identifiers`、`peer_profiles`、append-only `conversation_aliases`，并将 conversation registry 的 `lifecycle_state` 与 `resolution_state` 分离。Handle Authority domain 由 Core 统一执行 IDNA/lowercase 归一化；缺少稳定 authority subject 或可用 binding status 时不得回退 DID 创建 Persona。Group fallback `membership_id` 不包含 Handle binding generation，DID rebind 不改变 membership identity。
+
+release/0710 的生产 SQLite schema 27 不允许在普通 `open_writable` 中原地自动 bump。schema 28 Core 在 migration runner 接管前返回 typed `local_state_upgrade_required`，避免在一致性 backup、shadow migration 和 validation gate 完成前修改 source DB。正式 27→28 runner 与 fixture gate由 canonical conversation upgrade 模块负责。
 
 ## 3. 工作区路径
 

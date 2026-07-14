@@ -105,6 +105,45 @@ impl From<im_core::ImError> for DartImError {
                 "local_state_unavailable",
                 format!("local state unavailable: {detail}"),
             ),
+            im_core::ImError::LocalStateUpgradeRequired {
+                from_version,
+                target_version,
+            } => Self::simple(
+                "local_state_upgrade_required",
+                format!(
+                    "local state upgrade required: schema {from_version} -> {target_version}"
+                ),
+            ),
+            im_core::ImError::IdentityUnresolved { detail } => Self::simple(
+                "identity_unresolved",
+                format!("identity unresolved: {detail}"),
+            ),
+            im_core::ImError::IdentityBindingConflict { detail } => Self::simple(
+                "identity_binding_conflict",
+                format!("identity binding conflict: {detail}"),
+            ),
+            im_core::ImError::ConversationAliasConflict {
+                alias,
+                existing_target,
+                requested_target,
+            } => Self::simple(
+                "conversation_alias_conflict",
+                format!(
+                    "conversation alias conflict for {alias}: existing target {existing_target}, requested target {requested_target}"
+                ),
+            ),
+            im_core::ImError::MessageWireIdentityConflict { message_id } => Self::simple(
+                "message_wire_identity_conflict",
+                format!("message wire identity conflict: {message_id}"),
+            ),
+            im_core::ImError::CanonicalGroupIdentityMissing { group } => Self::simple(
+                "canonical_group_identity_missing",
+                format!("canonical group identity missing: {group}"),
+            ),
+            im_core::ImError::LocalProjectionUnavailable { detail } => Self::simple(
+                "local_projection_unavailable",
+                format!("local projection unavailable: {detail}"),
+            ),
             im_core::ImError::PathUnavailable { path_kind, detail } => Self::simple(
                 "path_unavailable",
                 format!("{path_kind} path unavailable: {detail}"),

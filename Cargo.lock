@@ -243,6 +243,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "hkdf",
+ "idna",
  "rand 0.8.6",
  "redb",
  "reqwest",

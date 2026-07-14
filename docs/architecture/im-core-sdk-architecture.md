@@ -210,7 +210,7 @@ These files describe the SDK public surface and interface-level contracts. They 
 
 ## 11. Durable Conversation Registry And Summary Projection
 
-The SQLite local state keeps `messages` as the durable message projection truth, while schema version 27 uses `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
+The SQLite local state keeps `messages` as the durable message projection truth, while target schema version 28 uses `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
 
 - primary key: `(owner_identity_id, conversation_id)`;
 - hot index: `idx_conversation_summaries_owner_last(owner_identity_id, last_message_at DESC, conversation_id)`;
@@ -241,6 +241,22 @@ conversation ID. Missing, cross-owner, or integrity-invalid routes fail closed;
 message metadata/participants remain a compatibility fallback for conversations
 that predate the route projection. App and CLI callers must never manufacture a
 `dm:<DID>` alias to bypass this resolver.
+
+Schema 28 makes the verified authority identity explicit. A canonical Direct is
+created from `authority_namespace + authority_subject_id + full_handle`, where
+the namespace is the IDNA-normalized authoritative Handle provider domain and
+the subject comes from a usable Handle Authority response. The projection is
+persisted in `peer_personas` and `peer_identifiers`; `direct_peer_routes`
+references the Persona while keeping `current_did` as a replaceable delivery
+route. A verified legacy DID reference is written to append-only
+`conversation_aliases`. Alias insertion is conflict-visible (`INSERT OR IGNORE`
+followed by target verification), never last-write-wins. Registry lifecycle and
+canonical resolution are orthogonal, so `active + legacy_unresolved` cannot be
+mistaken for a resolved canonical row.
+
+An existing schema 27 database is not modified by ordinary schema open. Core
+returns `local_state_upgrade_required` until the release/0710 backup/shadow/
+validation runner performs the explicit 27→28 cutover.
 
 Because summaries contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
 
