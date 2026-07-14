@@ -557,7 +557,10 @@ resolution_state         // resolved | legacy_unresolved | blocked_conflict
 `resolved` 行缺少对应 Persona/Group DID 时返回 typed projection error；显式
 `ensure_conversation` 只接受绑定到 verified Persona 的 Direct route 和以权威 Group DID
 为 key 的 active Group membership。`legacy_unresolved` 仍可用于历史列表/诊断，但不能通过
-ensure/send 边界伪装成 resolved canonical conversation。
+ensure/send 边界伪装成 resolved canonical conversation。conversation text、payload 和
+attachment 发送会在写 local echo 或上传对象前执行同一 `ensure_conversation` 校验；
+`dm:<DID>`、缺少 verified Persona route 的 Direct，以及没有 active membership 的 Group
+都 fail closed。target-first legacy send API 的兼容行为不因此改变。
 
 Group member DTO 同时分离 `membership_id`、`peer_persona_id?`、`credential_did` 和
 Handle；Handle binding generation/DID 轮换只更新属性，不改变 membership identity。

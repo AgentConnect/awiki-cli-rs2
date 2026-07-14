@@ -534,6 +534,9 @@ Reliable sync 补充：
   是 App local-first timeline 的事实源；远端 history/backfill 结果只有持久化到 projection
   后才能成为 UI 可见事实。
 - `send_conversation_text` / `send_conversation_payload` 是 conversation-surface send 主路径。
+  该边界只接受 verified Persona route 对应的 `dm:peer-scope:v1:*`，或存在 active local
+  membership projection 的 `group:<Group DID>`；`dm:<DID>` / `legacy_unresolved` 会在 local
+  echo 前 fail closed。target-first `send` 继续作为 CLI/daemon/legacy compatibility API。
   `im-core` 先写 durable pending projection，再按网络结果更新 `MessageMetadata.send_state` /
   retry plan 并发 committed patch；App 不应维护第二套 durable optimistic message truth。
 - `attachments().send_conversation` / Dart `client.attachments.sendConversation(...)` 是

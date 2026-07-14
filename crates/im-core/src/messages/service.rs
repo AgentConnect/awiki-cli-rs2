@@ -718,6 +718,50 @@ mod conversation_read_model_tests {
         assert_eq!(attachment_target.peer_scope.as_ref(), Some(&peer_scope));
     }
 
+    #[test]
+    fn conversation_send_surfaces_reject_legacy_did_conversation() {
+        let fixture = Fixture::new("conversation-send-legacy-did");
+        let client = fixture.client();
+        let conversation = crate::messages::ConversationReadRef::new("dm:did:example:bob").unwrap();
+
+        let text_error = match super::conversation_send_request(
+            &client,
+            conversation.clone(),
+            crate::messages::MessageBody::Text {
+                text: "must not send".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            crate::messages::MessageSecurityMode::DefaultPlain,
+            None,
+            None,
+            false,
+            None,
+        ) {
+            Ok(_) => panic!("legacy DID conversation must not be sendable"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            text_error,
+            crate::ImError::InvalidInput {
+                field: Some(ref field),
+                ..
+            } if field == "conversation_id"
+        ));
+
+        let attachment_error = match super::resolve_conversation_send_target(&client, &conversation)
+        {
+            Ok(_) => panic!("legacy DID conversation must not accept attachments"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            attachment_error,
+            crate::ImError::InvalidInput {
+                field: Some(ref field),
+                ..
+            } if field == "conversation_id"
+        ));
+    }
+
     #[tokio::test]
     async fn first_canonical_send_projection_creates_only_peer_scope_message_and_summary() {
         let fixture = Fixture::new("conversation-route-first-send-projection");
@@ -3456,6 +3500,7 @@ fn conversation_send_request(
     wait_for_final_acceptance: bool,
     delegated_signing: Option<super::DelegatedSigningOptions>,
 ) -> crate::ImResult<ResolvedConversationSendRequest> {
+    ensure_conversation_registry(client, &conversation)?;
     let conversation_id = conversation.conversation_id.clone();
     let resolved = resolve_service_conversation_thread(client, &conversation)?;
     let client_message_id = match client_message_id {
@@ -3533,6 +3578,7 @@ pub(crate) fn resolve_conversation_send_target(
     client: &crate::core::ImClient,
     conversation: &super::ConversationReadRef,
 ) -> crate::ImResult<ResolvedConversationSendTarget> {
+    ensure_conversation_registry(client, conversation)?;
     conversation_send_target(resolve_service_conversation_thread(client, conversation)?)
 }
 

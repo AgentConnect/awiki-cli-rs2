@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use awiki_im_core::messages::direct_peer_scope_thread_id;
 use awiki_im_core::prelude::*;
 use serde_json::json;
 use serde_json::Value;
@@ -61,8 +62,12 @@ fn attachments_input_is_the_canonical_message_body_input() {
 
 #[test]
 fn conversation_attachment_request_is_conversation_first() {
+    let conversation_id = direct_peer_scope_thread_id("user-bob", "bob.awiki.info")
+        .unwrap()
+        .as_str()
+        .to_owned();
     let request = SendConversationAttachmentRequest {
-        conversation: ConversationReadRef::new("dm:did:example:bob").unwrap(),
+        conversation: ConversationReadRef::new(conversation_id.clone()).unwrap(),
         input: AttachmentInput::Bytes {
             filename: Some("note.txt".to_string()),
             mime_type: Some("text/plain".to_string()),
@@ -78,7 +83,7 @@ fn conversation_attachment_request_is_conversation_first() {
         wait_for_final_acceptance: true,
     };
 
-    assert_eq!(request.conversation.conversation_id, "dm:did:example:bob");
+    assert_eq!(request.conversation.conversation_id, conversation_id);
     assert_eq!(
         request.client_message_id.as_ref().map(MessageId::as_str),
         Some("msg-client-attachment")
@@ -93,6 +98,7 @@ fn conversation_attachment_request_is_conversation_first() {
 #[tokio::test]
 async fn attachments_service_send_conversation_direct_uses_canonical_projection() {
     let server = AttachmentServiceTestServer::spawn(vec![
+        ExpectedHttp::rpc_result(handle_lookup_result()),
         ExpectedHttp::rpc_result(json!({
             "attachment_id": "att-conv-direct",
             "slot_id": "slot-conv-direct",
@@ -125,11 +131,17 @@ async fn attachments_service_send_conversation_direct_uses_canonical_projection(
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
+    let lookup = client
+        .directory()
+        .lookup_handle_async(Handle::parse("bob.awiki.info", "").unwrap())
+        .await
+        .expect("verified Handle lookup should establish the canonical Direct route");
+    let conversation_id = lookup.direct_conversation_id();
 
     let result = client
         .attachments()
         .send_conversation_async(SendConversationAttachmentRequest {
-            conversation: ConversationReadRef::new("dm:did:example:bob").unwrap(),
+            conversation: ConversationReadRef::new(conversation_id.clone()).unwrap(),
             input: AttachmentInput::Bytes {
                 filename: Some("conversation.txt".to_string()),
                 mime_type: Some("text/plain".to_string()),
@@ -159,7 +171,7 @@ async fn attachments_service_send_conversation_direct_uses_canonical_projection(
             .conversation_identity
             .as_ref()
             .map(|identity| identity.conversation_id.as_str()),
-        Some("dm:did:example:bob")
+        Some(conversation_id.as_str())
     );
     assert_eq!(result.target_kind, "agent");
     assert_eq!(result.target_did, "did:example:bob");
@@ -169,8 +181,8 @@ async fn attachments_service_send_conversation_direct_uses_canonical_projection(
         "SELECT msg_id, conversation_id, thread_id, receiver_did, content_type, content, metadata FROM messages WHERE msg_id = 'msg-conv-attachment-direct'",
     );
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["conversation_id"], "dm:did:example:bob");
-    assert_eq!(rows[0]["thread_id"], "dm:did:example:bob");
+    assert_eq!(rows[0]["conversation_id"], conversation_id);
+    assert_eq!(rows[0]["thread_id"], conversation_id);
     assert_eq!(rows[0]["receiver_did"], "did:example:bob");
     assert_eq!(
         rows[0]["content_type"],
@@ -185,26 +197,27 @@ async fn attachments_service_send_conversation_direct_uses_canonical_projection(
     assert_eq!(metadata["attachment_id"], "att-conv-direct");
 
     let requests = server.join();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
+    assert_eq!(requests[0].rpc_method().as_deref(), Some("lookup"));
     assert_eq!(
-        requests[0].rpc_method().as_deref(),
+        requests[1].rpc_method().as_deref(),
         Some("attachment.create_slot")
     );
     assert_eq!(
-        requests[0].params()["body"]["intended_target"],
+        requests[1].params()["body"]["intended_target"],
         json!({ "kind": "agent", "did": "did:example:bob" })
     );
-    assert_eq!(requests[3].rpc_method().as_deref(), Some("direct.send"));
+    assert_eq!(requests[4].rpc_method().as_deref(), Some("direct.send"));
     assert_eq!(
-        requests[3].params()["meta"]["target"],
+        requests[4].params()["meta"]["target"],
         json!({ "kind": "agent", "did": "did:example:bob" })
     );
     assert_eq!(
-        requests[3].params()["meta"]["message_id"],
+        requests[4].params()["meta"]["message_id"],
         "msg-conv-attachment-direct"
     );
     assert_eq!(
-        requests[3].params()["meta"]["operation_id"],
+        requests[4].params()["meta"]["operation_id"],
         "retry-msg-conv-attachment-direct"
     );
 }
@@ -245,6 +258,7 @@ async fn attachments_service_send_conversation_group_uses_group_route() {
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
+    seed_active_group_conversation(&paths, "did:example:group");
 
     let result = client
         .attachments()
@@ -1465,6 +1479,28 @@ fn local_message_rows(paths: &ImCorePaths, statement: &str) -> Vec<Value> {
         .unwrap()
         .map(|row| row.unwrap())
         .collect()
+}
+
+fn seed_active_group_conversation(paths: &ImCorePaths, group_did: &str) {
+    fs::create_dir_all(
+        paths
+            .local_state
+            .sqlite_path
+            .parent()
+            .expect("local state database parent"),
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(&paths.local_state.sqlite_path).unwrap();
+    awiki_im_core::compat::local_state::ensure_schema(&db).unwrap();
+    db.execute(
+        r#"
+INSERT INTO groups
+    (owner_identity_id, owner_did, group_id, group_did, membership_status, stored_at, metadata)
+VALUES ('alice-id', 'did:example:alice', ?1, ?1, 'active', '2026-07-14T00:00:00Z', '{}')
+"#,
+        [group_did],
+    )
+    .unwrap();
 }
 
 fn sqlite_value_to_json(value: rusqlite::types::ValueRef<'_>) -> Value {
