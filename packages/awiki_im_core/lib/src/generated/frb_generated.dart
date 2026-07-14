@@ -6757,6 +6757,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartLocalStateConversationAliasMapping
+  dco_decode_dart_local_state_conversation_alias_mapping(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return DartLocalStateConversationAliasMapping(
+      ownerIdentityId: dco_decode_String(arr[0]),
+      ownerDid: dco_decode_String(arr[1]),
+      legacyConversationId: dco_decode_String(arr[2]),
+      canonicalConversationId: dco_decode_String(arr[3]),
+    );
+  }
+
+  @protected
   DartLocalStateUpgradeEligibility
   dco_decode_dart_local_state_upgrade_eligibility(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -6783,8 +6798,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return DartLocalStateUpgradeResult(
       status: dco_decode_dart_local_state_upgrade_status(arr[0]),
       sourceSchemaVersion: dco_decode_i_64(arr[1]),
@@ -6794,6 +6809,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       unresolvedMessages: dco_decode_u_64(arr[5]),
       aliasCount: dco_decode_u_64(arr[6]),
       backupAvailable: dco_decode_bool(arr[7]),
+      aliasMappings:
+          dco_decode_list_dart_local_state_conversation_alias_mapping(arr[8]),
     );
   }
 
@@ -7709,6 +7726,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>)
         .map(dco_decode_dart_identity_summary)
+        .toList();
+  }
+
+  @protected
+  List<DartLocalStateConversationAliasMapping>
+  dco_decode_list_dart_local_state_conversation_alias_mapping(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_dart_local_state_conversation_alias_mapping)
         .toList();
   }
 
@@ -10201,6 +10227,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartLocalStateConversationAliasMapping
+  sse_decode_dart_local_state_conversation_alias_mapping(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_ownerIdentityId = sse_decode_String(deserializer);
+    var var_ownerDid = sse_decode_String(deserializer);
+    var var_legacyConversationId = sse_decode_String(deserializer);
+    var var_canonicalConversationId = sse_decode_String(deserializer);
+    return DartLocalStateConversationAliasMapping(
+      ownerIdentityId: var_ownerIdentityId,
+      ownerDid: var_ownerDid,
+      legacyConversationId: var_legacyConversationId,
+      canonicalConversationId: var_canonicalConversationId,
+    );
+  }
+
+  @protected
   DartLocalStateUpgradeEligibility
   sse_decode_dart_local_state_upgrade_eligibility(
     SseDeserializer deserializer,
@@ -10239,6 +10283,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_unresolvedMessages = sse_decode_u_64(deserializer);
     var var_aliasCount = sse_decode_u_64(deserializer);
     var var_backupAvailable = sse_decode_bool(deserializer);
+    var var_aliasMappings =
+        sse_decode_list_dart_local_state_conversation_alias_mapping(
+          deserializer,
+        );
     return DartLocalStateUpgradeResult(
       status: var_status,
       sourceSchemaVersion: var_sourceSchemaVersion,
@@ -10248,6 +10296,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       unresolvedMessages: var_unresolvedMessages,
       aliasCount: var_aliasCount,
       backupAvailable: var_backupAvailable,
+      aliasMappings: var_aliasMappings,
     );
   }
 
@@ -11494,6 +11543,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <DartIdentitySummary>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_dart_identity_summary(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<DartLocalStateConversationAliasMapping>
+  sse_decode_list_dart_local_state_conversation_alias_mapping(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <DartLocalStateConversationAliasMapping>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(
+        sse_decode_dart_local_state_conversation_alias_mapping(deserializer),
+      );
     }
     return ans_;
   }
@@ -13785,6 +13851,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_local_state_conversation_alias_mapping(
+    DartLocalStateConversationAliasMapping self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.ownerIdentityId, serializer);
+    sse_encode_String(self.ownerDid, serializer);
+    sse_encode_String(self.legacyConversationId, serializer);
+    sse_encode_String(self.canonicalConversationId, serializer);
+  }
+
+  @protected
   void sse_encode_dart_local_state_upgrade_eligibility(
     DartLocalStateUpgradeEligibility self,
     SseSerializer serializer,
@@ -13821,6 +13899,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_64(self.unresolvedMessages, serializer);
     sse_encode_u_64(self.aliasCount, serializer);
     sse_encode_bool(self.backupAvailable, serializer);
+    sse_encode_list_dart_local_state_conversation_alias_mapping(
+      self.aliasMappings,
+      serializer,
+    );
   }
 
   @protected
@@ -14763,6 +14845,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_dart_identity_summary(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_dart_local_state_conversation_alias_mapping(
+    List<DartLocalStateConversationAliasMapping> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_dart_local_state_conversation_alias_mapping(item, serializer);
     }
   }
 

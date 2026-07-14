@@ -75,6 +75,14 @@ pub(crate) struct CanonicalUpgradeReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CanonicalConversationAliasMapping {
+    pub(crate) owner_identity_id: String,
+    pub(crate) owner_did: String,
+    pub(crate) legacy_conversation_id: String,
+    pub(crate) canonical_conversation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CanonicalUpgradeOutcome {
     NotRequired(CanonicalUpgradeDetection),
     Completed(CanonicalUpgradeReport),
@@ -92,6 +100,47 @@ impl Drop for CanonicalUpgradeLock {
 
 pub(crate) fn detect(sqlite_path: &Path) -> crate::ImResult<CanonicalUpgradeDetection> {
     source::detect(sqlite_path)
+}
+
+/// Reads the stable owner-scoped alias projection used by the App overlay
+/// migrator. This is intentionally available after cutover as well so an App
+/// crash between the Core and overlay journals can resume without guessing.
+pub(crate) fn list_alias_mappings(
+    sqlite_path: &Path,
+) -> crate::ImResult<Vec<CanonicalConversationAliasMapping>> {
+    use rusqlite::{Connection, OpenFlags};
+
+    let connection = Connection::open_with_flags(
+        sqlite_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(super::local_state_unavailable)?;
+    let mut statement = connection
+        .prepare(
+            r#"SELECT DISTINCT aliases.owner_identity_id,
+       registry.owner_did,
+       aliases.alias_conversation_id,
+       aliases.canonical_conversation_id
+FROM conversation_aliases aliases
+JOIN conversation_registry registry
+  ON registry.owner_identity_id = aliases.owner_identity_id
+ AND registry.conversation_id = aliases.canonical_conversation_id
+WHERE aliases.alias_conversation_id <> aliases.canonical_conversation_id
+ORDER BY aliases.owner_identity_id, aliases.alias_conversation_id"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(CanonicalConversationAliasMapping {
+                owner_identity_id: row.get(0)?,
+                owner_did: row.get(1)?,
+                legacy_conversation_id: row.get(2)?,
+                canonical_conversation_id: row.get(3)?,
+            })
+        })
+        .map_err(super::local_state_unavailable)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(super::local_state_unavailable)
 }
 
 pub(crate) fn run(

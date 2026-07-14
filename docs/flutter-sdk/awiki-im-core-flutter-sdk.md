@@ -50,8 +50,10 @@ conservation/invariant validation, and cutover. A missing SQLite file is a fresh
 install and returns `notRequired` without creating files. Ordinary Core open
 continues to fail closed with `local_state_upgrade_required`; hosts must not
 delete, archive, or recreate the database to bypass this gate. Public reports
-contain only schema versions and aggregate counts, never backup paths or message
-content.
+contain schema versions, aggregate counts, and owner-scoped legacy-to-canonical
+conversation mappings required by the App overlay migration. They never expose
+backup paths or message content. The mapping remains available after cutover so
+an App crash between the Core and overlay journals can resume idempotently.
 
 ## DTO policy
 

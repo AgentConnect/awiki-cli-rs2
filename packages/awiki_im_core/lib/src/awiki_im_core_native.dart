@@ -1584,6 +1584,16 @@ extension on gen_local_state_upgrade_dto.DartLocalStateUpgradeResult {
     unresolvedMessages: unresolvedMessages.toInt(),
     aliasCount: aliasCount.toInt(),
     backupAvailable: backupAvailable,
+    aliasMappings: aliasMappings
+        .map(
+          (mapping) => LocalStateConversationAliasMapping(
+            ownerIdentityId: mapping.ownerIdentityId,
+            ownerDid: mapping.ownerDid,
+            legacyConversationId: mapping.legacyConversationId,
+            canonicalConversationId: mapping.canonicalConversationId,
+          ),
+        )
+        .toList(growable: false),
   );
 }
 

@@ -24,6 +24,7 @@ class LocalStateUpgradeResult {
     required this.unresolvedMessages,
     required this.aliasCount,
     required this.backupAvailable,
+    this.aliasMappings = const <LocalStateConversationAliasMapping>[],
   });
 
   final LocalStateUpgradeStatus status;
@@ -34,4 +35,19 @@ class LocalStateUpgradeResult {
   final int unresolvedMessages;
   final int aliasCount;
   final bool backupAvailable;
+  final List<LocalStateConversationAliasMapping> aliasMappings;
+}
+
+class LocalStateConversationAliasMapping {
+  const LocalStateConversationAliasMapping({
+    required this.ownerIdentityId,
+    required this.ownerDid,
+    required this.legacyConversationId,
+    required this.canonicalConversationId,
+  });
+
+  final String ownerIdentityId;
+  final String ownerDid;
+  final String legacyConversationId;
+  final String canonicalConversationId;
 }

@@ -27,6 +27,15 @@ pub struct DartLocalStateUpgradeResult {
     pub unresolved_messages: u64,
     pub alias_count: u64,
     pub backup_available: bool,
+    pub alias_mappings: Vec<DartLocalStateConversationAliasMapping>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartLocalStateConversationAliasMapping {
+    pub owner_identity_id: String,
+    pub owner_did: String,
+    pub legacy_conversation_id: String,
+    pub canonical_conversation_id: String,
 }
 
 impl From<im_core::LocalStateUpgradeInspection> for DartLocalStateUpgradeInspection {
@@ -64,6 +73,16 @@ impl From<im_core::LocalStateUpgradeResult> for DartLocalStateUpgradeResult {
             unresolved_messages: value.unresolved_messages,
             alias_count: value.alias_count,
             backup_available: value.backup_available,
+            alias_mappings: value
+                .alias_mappings
+                .into_iter()
+                .map(|mapping| DartLocalStateConversationAliasMapping {
+                    owner_identity_id: mapping.owner_identity_id,
+                    owner_did: mapping.owner_did,
+                    legacy_conversation_id: mapping.legacy_conversation_id,
+                    canonical_conversation_id: mapping.canonical_conversation_id,
+                })
+                .collect(),
         }
     }
 }

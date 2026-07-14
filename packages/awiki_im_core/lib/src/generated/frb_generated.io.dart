@@ -657,6 +657,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartJoinGroupRequest dco_decode_dart_join_group_request(dynamic raw);
 
   @protected
+  DartLocalStateConversationAliasMapping
+  dco_decode_dart_local_state_conversation_alias_mapping(dynamic raw);
+
+  @protected
   DartLocalStateUpgradeEligibility
   dco_decode_dart_local_state_upgrade_eligibility(dynamic raw);
 
@@ -889,6 +893,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartIdentitySummary> dco_decode_list_dart_identity_summary(dynamic raw);
+
+  @protected
+  List<DartLocalStateConversationAliasMapping>
+  dco_decode_list_dart_local_state_conversation_alias_mapping(dynamic raw);
 
   @protected
   List<DartMessage> dco_decode_list_dart_message(dynamic raw);
@@ -1740,6 +1748,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartLocalStateConversationAliasMapping
+  sse_decode_dart_local_state_conversation_alias_mapping(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartLocalStateUpgradeEligibility
   sse_decode_dart_local_state_upgrade_eligibility(SseDeserializer deserializer);
 
@@ -2054,6 +2068,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartIdentitySummary> sse_decode_list_dart_identity_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartLocalStateConversationAliasMapping>
+  sse_decode_list_dart_local_state_conversation_alias_mapping(
     SseDeserializer deserializer,
   );
 
@@ -3073,6 +3093,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_local_state_conversation_alias_mapping(
+    DartLocalStateConversationAliasMapping self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_local_state_upgrade_eligibility(
     DartLocalStateUpgradeEligibility self,
     SseSerializer serializer,
@@ -3462,6 +3488,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_identity_summary(
     List<DartIdentitySummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_local_state_conversation_alias_mapping(
+    List<DartLocalStateConversationAliasMapping> self,
     SseSerializer serializer,
   );
 

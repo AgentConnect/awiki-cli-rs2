@@ -8393,6 +8393,22 @@ impl SseDecode for crate::dto::group::DartJoinGroupRequest {
     }
 }
 
+impl SseDecode for crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_ownerIdentityId = <String>::sse_decode(deserializer);
+        let mut var_ownerDid = <String>::sse_decode(deserializer);
+        let mut var_legacyConversationId = <String>::sse_decode(deserializer);
+        let mut var_canonicalConversationId = <String>::sse_decode(deserializer);
+        return crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping {
+            owner_identity_id: var_ownerIdentityId,
+            owner_did: var_ownerDid,
+            legacy_conversation_id: var_legacyConversationId,
+            canonical_conversation_id: var_canonicalConversationId,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::local_state_upgrade::DartLocalStateUpgradeEligibility {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -8439,6 +8455,9 @@ impl SseDecode for crate::dto::local_state_upgrade::DartLocalStateUpgradeResult 
         let mut var_unresolvedMessages = <u64>::sse_decode(deserializer);
         let mut var_aliasCount = <u64>::sse_decode(deserializer);
         let mut var_backupAvailable = <bool>::sse_decode(deserializer);
+        let mut var_aliasMappings = <Vec<
+            crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping,
+        >>::sse_decode(deserializer);
         return crate::dto::local_state_upgrade::DartLocalStateUpgradeResult {
             status: var_status,
             source_schema_version: var_sourceSchemaVersion,
@@ -8448,6 +8467,7 @@ impl SseDecode for crate::dto::local_state_upgrade::DartLocalStateUpgradeResult 
             unresolved_messages: var_unresolvedMessages,
             alias_count: var_aliasCount,
             backup_available: var_backupAvailable,
+            alias_mappings: var_aliasMappings,
         };
     }
 }
@@ -9711,6 +9731,18 @@ impl SseDecode for Vec<crate::dto::identity::DartIdentitySummary> {
             ans_.push(<crate::dto::identity::DartIdentitySummary>::sse_decode(
                 deserializer,
             ));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping>::sse_decode(deserializer));
         }
         return ans_;
     }
@@ -12588,6 +12620,35 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::group::DartJoinGroupRequest>
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
+    for crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.owner_identity_id.into_into_dart().into_dart(),
+            self.owner_did.into_into_dart().into_dart(),
+            self.legacy_conversation_id.into_into_dart().into_dart(),
+            self.canonical_conversation_id.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping,
+    > for crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
     for crate::dto::local_state_upgrade::DartLocalStateUpgradeEligibility
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -12651,6 +12712,7 @@ impl flutter_rust_bridge::IntoDart
             self.unresolved_messages.into_into_dart().into_dart(),
             self.alias_count.into_into_dart().into_dart(),
             self.backup_available.into_into_dart().into_dart(),
+            self.alias_mappings.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -15360,6 +15422,16 @@ impl SseEncode for crate::dto::group::DartJoinGroupRequest {
     }
 }
 
+impl SseEncode for crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.owner_identity_id, serializer);
+        <String>::sse_encode(self.owner_did, serializer);
+        <String>::sse_encode(self.legacy_conversation_id, serializer);
+        <String>::sse_encode(self.canonical_conversation_id, serializer);
+    }
+}
+
 impl SseEncode for crate::dto::local_state_upgrade::DartLocalStateUpgradeEligibility {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -15402,6 +15474,10 @@ impl SseEncode for crate::dto::local_state_upgrade::DartLocalStateUpgradeResult 
         <u64>::sse_encode(self.unresolved_messages, serializer);
         <u64>::sse_encode(self.alias_count, serializer);
         <bool>::sse_encode(self.backup_available, serializer);
+        <Vec<crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping>>::sse_encode(
+            self.alias_mappings,
+            serializer,
+        );
     }
 }
 
@@ -16313,6 +16389,18 @@ impl SseEncode for Vec<crate::dto::identity::DartIdentitySummary> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::dto::identity::DartIdentitySummary>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping>::sse_encode(
+                item, serializer,
+            );
         }
     }
 }

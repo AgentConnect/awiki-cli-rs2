@@ -41,6 +41,15 @@ pub struct LocalStateUpgradeResult {
     pub unresolved_messages: u64,
     pub alias_count: u64,
     pub backup_available: bool,
+    pub alias_mappings: Vec<LocalStateConversationAliasMapping>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalStateConversationAliasMapping {
+    pub owner_identity_id: String,
+    pub owner_did: String,
+    pub legacy_conversation_id: String,
+    pub canonical_conversation_id: String,
 }
 
 /// Inspects whether the Storage Scope SQLite file needs the canonical upgrade.
@@ -87,6 +96,7 @@ pub fn upgrade_local_state(paths: &LocalStatePaths) -> ImResult<LocalStateUpgrad
             unresolved_messages: 0,
             alias_count: 0,
             backup_available: false,
+            alias_mappings: Vec::new(),
         });
     }
     let upgrade_dir = upgrade_directory(paths)?;
@@ -102,6 +112,7 @@ pub fn upgrade_local_state(paths: &LocalStatePaths) -> ImResult<LocalStateUpgrad
             unresolved_messages: 0,
             alias_count: 0,
             backup_available: completed_backup_exists(&upgrade_dir),
+            alias_mappings: read_alias_mappings(&paths.sqlite_path)?,
         }),
         crate::internal::local_state::canonical_upgrade::CanonicalUpgradeOutcome::Completed(
             report,
@@ -114,8 +125,25 @@ pub fn upgrade_local_state(paths: &LocalStatePaths) -> ImResult<LocalStateUpgrad
             unresolved_messages: report.unresolved_messages,
             alias_count: report.alias_count,
             backup_available: report.backup_path.exists(),
+            alias_mappings: read_alias_mappings(&paths.sqlite_path)?,
         }),
     }
+}
+
+fn read_alias_mappings(
+    sqlite_path: &std::path::Path,
+) -> ImResult<Vec<LocalStateConversationAliasMapping>> {
+    crate::internal::local_state::canonical_upgrade::list_alias_mappings(sqlite_path).map(|items| {
+        items
+            .into_iter()
+            .map(|item| LocalStateConversationAliasMapping {
+                owner_identity_id: item.owner_identity_id,
+                owner_did: item.owner_did,
+                legacy_conversation_id: item.legacy_conversation_id,
+                canonical_conversation_id: item.canonical_conversation_id,
+            })
+            .collect()
+    })
 }
 
 fn upgrade_directory(paths: &LocalStatePaths) -> ImResult<PathBuf> {
@@ -158,5 +186,51 @@ mod tests {
         assert_eq!(result.status, LocalStateUpgradeStatus::NotRequired);
         assert!(!result.backup_available);
         assert!(!paths.sqlite_path.exists());
+    }
+
+    #[test]
+    fn completed_target_returns_alias_mapping_for_overlay_resume() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = LocalStatePaths {
+            sqlite_path: directory.path().join("im.sqlite"),
+        };
+        let connection = crate::internal::local_state::open_writable(&paths.sqlite_path).unwrap();
+        crate::internal::local_state::conversation_registry::ensure(
+            &connection,
+            &crate::internal::local_state::conversation_registry::ConversationRegistryRecord {
+                owner_identity_id: "owner-a".to_owned(),
+                owner_did: "did:wba:example.com:alice".to_owned(),
+                conversation_id: "group:did:wba:example.com:groups:canonical".to_owned(),
+                thread_kind: "group".to_owned(),
+                thread_id: "did:wba:example.com:groups:canonical".to_owned(),
+                activity_at: "2026-07-14T00:00:00Z".to_owned(),
+            },
+        )
+        .unwrap();
+        crate::internal::local_state::conversation_aliases::insert(
+            &connection,
+            &crate::internal::local_state::conversation_aliases::ConversationAliasRecord {
+                owner_identity_id: "owner-a".to_owned(),
+                alias_kind: "legacy_conversation_id".to_owned(),
+                alias_conversation_id: "group:legacy".to_owned(),
+                canonical_conversation_id: "group:did:wba:example.com:groups:canonical".to_owned(),
+                source: "test".to_owned(),
+                verified_at: "2026-07-14T00:00:00Z".to_owned(),
+            },
+        )
+        .unwrap();
+        drop(connection);
+
+        let result = upgrade_local_state(&paths).unwrap();
+        assert_eq!(result.status, LocalStateUpgradeStatus::NotRequired);
+        assert_eq!(
+            result.alias_mappings,
+            vec![LocalStateConversationAliasMapping {
+                owner_identity_id: "owner-a".to_owned(),
+                owner_did: "did:wba:example.com:alice".to_owned(),
+                legacy_conversation_id: "group:legacy".to_owned(),
+                canonical_conversation_id: "group:did:wba:example.com:groups:canonical".to_owned(),
+            }]
+        );
     }
 }

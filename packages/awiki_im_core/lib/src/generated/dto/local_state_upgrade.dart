@@ -6,6 +6,37 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+class DartLocalStateConversationAliasMapping {
+  final String ownerIdentityId;
+  final String ownerDid;
+  final String legacyConversationId;
+  final String canonicalConversationId;
+
+  const DartLocalStateConversationAliasMapping({
+    required this.ownerIdentityId,
+    required this.ownerDid,
+    required this.legacyConversationId,
+    required this.canonicalConversationId,
+  });
+
+  @override
+  int get hashCode =>
+      ownerIdentityId.hashCode ^
+      ownerDid.hashCode ^
+      legacyConversationId.hashCode ^
+      canonicalConversationId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartLocalStateConversationAliasMapping &&
+          runtimeType == other.runtimeType &&
+          ownerIdentityId == other.ownerIdentityId &&
+          ownerDid == other.ownerDid &&
+          legacyConversationId == other.legacyConversationId &&
+          canonicalConversationId == other.canonicalConversationId;
+}
+
 enum DartLocalStateUpgradeEligibility { notRequired, required_ }
 
 class DartLocalStateUpgradeInspection {
@@ -44,6 +75,7 @@ class DartLocalStateUpgradeResult {
   final BigInt unresolvedMessages;
   final BigInt aliasCount;
   final bool backupAvailable;
+  final List<DartLocalStateConversationAliasMapping> aliasMappings;
 
   const DartLocalStateUpgradeResult({
     required this.status,
@@ -54,6 +86,7 @@ class DartLocalStateUpgradeResult {
     required this.unresolvedMessages,
     required this.aliasCount,
     required this.backupAvailable,
+    required this.aliasMappings,
   });
 
   @override
@@ -65,7 +98,8 @@ class DartLocalStateUpgradeResult {
       migratedConversations.hashCode ^
       unresolvedMessages.hashCode ^
       aliasCount.hashCode ^
-      backupAvailable.hashCode;
+      backupAvailable.hashCode ^
+      aliasMappings.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -79,7 +113,8 @@ class DartLocalStateUpgradeResult {
           migratedConversations == other.migratedConversations &&
           unresolvedMessages == other.unresolvedMessages &&
           aliasCount == other.aliasCount &&
-          backupAvailable == other.backupAvailable;
+          backupAvailable == other.backupAvailable &&
+          aliasMappings == other.aliasMappings;
 }
 
 enum DartLocalStateUpgradeStatus { notRequired, completed }
