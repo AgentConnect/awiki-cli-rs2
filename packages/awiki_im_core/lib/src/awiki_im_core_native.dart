@@ -2445,9 +2445,7 @@ extension on gen_message.DartConversationStorePatch {
       ownerDid: value.ownerDid,
       version: value.version.toInt(),
       unreadTotal: value.unreadTotal,
-      threadKind: value.threadKind,
-      threadId: value.threadId,
-      conversationIdentity: value.conversationIdentity?._toModel(),
+      conversationId: value.conversationId,
     ),
     reorder: (value) => ConversationStorePatch(
       kind: ConversationStorePatchKind.reorder,
@@ -2455,9 +2453,7 @@ extension on gen_message.DartConversationStorePatch {
       ownerDid: value.ownerDid,
       version: value.version.toInt(),
       unreadTotal: value.unreadTotal,
-      threadKind: value.threadKind,
-      threadId: value.threadId,
-      conversationIdentity: value.conversationIdentity?._toModel(),
+      conversationId: value.conversationId,
       index: value.index,
     ),
     repairRequired: (value) => ConversationStorePatch(

@@ -558,20 +558,14 @@ pub enum ConversationStorePatch {
         owner_did: String,
         version: u64,
         unread_total: u32,
-        thread_kind: String,
-        thread_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        conversation_identity: Option<ConversationIdentity>,
+        conversation_id: String,
     },
     Reorder {
         owner_identity_id: String,
         owner_did: String,
         version: u64,
         unread_total: u32,
-        thread_kind: String,
-        thread_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        conversation_identity: Option<ConversationIdentity>,
+        conversation_id: String,
         index: u32,
     },
     RepairRequired {

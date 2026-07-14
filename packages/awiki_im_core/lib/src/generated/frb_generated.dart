@@ -5762,10 +5762,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           ownerDid: dco_decode_String(raw[2]),
           version: dco_decode_u_64(raw[3]),
           unreadTotal: dco_decode_u_32(raw[4]),
-          threadKind: dco_decode_String(raw[5]),
-          threadId: dco_decode_String(raw[6]),
-          conversationIdentity:
-              dco_decode_opt_box_autoadd_dart_conversation_identity(raw[7]),
+          conversationId: dco_decode_String(raw[5]),
         );
       case 3:
         return DartConversationStorePatch_Reorder(
@@ -5773,11 +5770,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           ownerDid: dco_decode_String(raw[2]),
           version: dco_decode_u_64(raw[3]),
           unreadTotal: dco_decode_u_32(raw[4]),
-          threadKind: dco_decode_String(raw[5]),
-          threadId: dco_decode_String(raw[6]),
-          conversationIdentity:
-              dco_decode_opt_box_autoadd_dart_conversation_identity(raw[7]),
-          index: dco_decode_u_32(raw[8]),
+          conversationId: dco_decode_String(raw[5]),
+          index: dco_decode_u_32(raw[6]),
         );
       case 4:
         return DartConversationStorePatch_RepairRequired(
@@ -8903,37 +8897,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         var var_ownerDid = sse_decode_String(deserializer);
         var var_version = sse_decode_u_64(deserializer);
         var var_unreadTotal = sse_decode_u_32(deserializer);
-        var var_threadKind = sse_decode_String(deserializer);
-        var var_threadId = sse_decode_String(deserializer);
-        var var_conversationIdentity =
-            sse_decode_opt_box_autoadd_dart_conversation_identity(deserializer);
+        var var_conversationId = sse_decode_String(deserializer);
         return DartConversationStorePatch_Remove(
           ownerIdentityId: var_ownerIdentityId,
           ownerDid: var_ownerDid,
           version: var_version,
           unreadTotal: var_unreadTotal,
-          threadKind: var_threadKind,
-          threadId: var_threadId,
-          conversationIdentity: var_conversationIdentity,
+          conversationId: var_conversationId,
         );
       case 3:
         var var_ownerIdentityId = sse_decode_String(deserializer);
         var var_ownerDid = sse_decode_String(deserializer);
         var var_version = sse_decode_u_64(deserializer);
         var var_unreadTotal = sse_decode_u_32(deserializer);
-        var var_threadKind = sse_decode_String(deserializer);
-        var var_threadId = sse_decode_String(deserializer);
-        var var_conversationIdentity =
-            sse_decode_opt_box_autoadd_dart_conversation_identity(deserializer);
+        var var_conversationId = sse_decode_String(deserializer);
         var var_index = sse_decode_u_32(deserializer);
         return DartConversationStorePatch_Reorder(
           ownerIdentityId: var_ownerIdentityId,
           ownerDid: var_ownerDid,
           version: var_version,
           unreadTotal: var_unreadTotal,
-          threadKind: var_threadKind,
-          threadId: var_threadId,
-          conversationIdentity: var_conversationIdentity,
+          conversationId: var_conversationId,
           index: var_index,
         );
       case 4:
@@ -12769,29 +12753,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ownerDid: final ownerDid,
         version: final version,
         unreadTotal: final unreadTotal,
-        threadKind: final threadKind,
-        threadId: final threadId,
-        conversationIdentity: final conversationIdentity,
+        conversationId: final conversationId,
       ):
         sse_encode_i_32(2, serializer);
         sse_encode_String(ownerIdentityId, serializer);
         sse_encode_String(ownerDid, serializer);
         sse_encode_u_64(version, serializer);
         sse_encode_u_32(unreadTotal, serializer);
-        sse_encode_String(threadKind, serializer);
-        sse_encode_String(threadId, serializer);
-        sse_encode_opt_box_autoadd_dart_conversation_identity(
-          conversationIdentity,
-          serializer,
-        );
+        sse_encode_String(conversationId, serializer);
       case DartConversationStorePatch_Reorder(
         ownerIdentityId: final ownerIdentityId,
         ownerDid: final ownerDid,
         version: final version,
         unreadTotal: final unreadTotal,
-        threadKind: final threadKind,
-        threadId: final threadId,
-        conversationIdentity: final conversationIdentity,
+        conversationId: final conversationId,
         index: final index,
       ):
         sse_encode_i_32(3, serializer);
@@ -12799,12 +12774,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_String(ownerDid, serializer);
         sse_encode_u_64(version, serializer);
         sse_encode_u_32(unreadTotal, serializer);
-        sse_encode_String(threadKind, serializer);
-        sse_encode_String(threadId, serializer);
-        sse_encode_opt_box_autoadd_dart_conversation_identity(
-          conversationIdentity,
-          serializer,
-        );
+        sse_encode_String(conversationId, serializer);
         sse_encode_u_32(index, serializer);
       case DartConversationStorePatch_RepairRequired(
         ownerIdentityId: final ownerIdentityId,

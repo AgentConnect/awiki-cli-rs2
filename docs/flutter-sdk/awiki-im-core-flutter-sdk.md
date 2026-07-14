@@ -184,7 +184,10 @@ discardable snapshot cache for the current owner; it does not clear SQLite local
 projection, runtime store, read state, or reliable checkpoint. `watchConversationPatches` streams versioned
 `ConversationStorePatch` values (`reset`, `upsert`, `remove`, `reorder`,
 `repairRequired`) emitted only after the underlying local projection commit
-succeeds. `repairConversationStore` returns a reset/repair patch after lag,
+succeeds. The conversation store is keyed only by canonical `conversationId`;
+`remove` and `reorder` carry that ID instead of thread kind/id or a legacy alias.
+Snapshot format v2 invalidates older discardable redb snapshots and rebuilds them
+from SQLite. `repairConversationStore` returns a reset/repair patch after lag,
 overflow, stream close, or version gaps. `watchConversationTimelinePatches` and
 `repairConversationTimelineStore` expose the same committed-projection rule for an
 opened conversation timeline keyed by `ConversationReadRef.conversationId`;

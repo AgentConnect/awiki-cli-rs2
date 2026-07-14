@@ -266,29 +266,20 @@ fn sync_thread_after_result_preserves_ordered_message_page_metadata() {
 }
 
 #[test]
-fn conversation_store_patches_preserve_identity_for_removal_and_reorder() {
-    let identity = im_core::messages::ConversationIdentity::from_storage_parts_for_owner(
-        "thread",
-        "dm:did:example:alice:did:example:bob",
-        "did:example:alice",
-    );
+fn conversation_store_patches_are_keyed_only_by_canonical_conversation_id() {
     let remove = im_core::messages::ConversationStorePatch::Remove {
         owner_identity_id: "identity-1".to_string(),
         owner_did: "did:example:alice".to_string(),
         version: 7,
         unread_total: 0,
-        thread_kind: "thread".to_string(),
-        thread_id: "dm:did:example:alice:did:example:bob".to_string(),
-        conversation_identity: Some(identity.clone()),
+        conversation_id: "dm:persona:bob".to_string(),
     };
     let reorder = im_core::messages::ConversationStorePatch::Reorder {
         owner_identity_id: "identity-1".to_string(),
         owner_did: "did:example:alice".to_string(),
         version: 8,
         unread_total: 0,
-        thread_kind: "thread".to_string(),
-        thread_id: "dm:did:example:alice:did:example:bob".to_string(),
-        conversation_identity: Some(identity),
+        conversation_id: "dm:persona:bob".to_string(),
         index: 1,
     };
 
@@ -297,33 +288,21 @@ fn conversation_store_patches_preserve_identity_for_removal_and_reorder() {
 
     match remove {
         awiki_im_core::dto::message::DartConversationStorePatch::Remove {
-            conversation_identity,
-            ..
+            conversation_id, ..
         } => {
-            let identity = conversation_identity.expect("remove identity");
-            assert_eq!(identity.conversation_id, "dm:did:example:bob");
-            assert_eq!(
-                identity.migration_state,
-                awiki_im_core::dto::message::DartConversationMigrationState::LegacyInput
-            );
-            assert!(identity.aliases.iter().any(|alias| {
-                alias.source
-                    == awiki_im_core::dto::message::DartConversationAliasSource::OldFlutterSortedDirect
-                    && alias.id == "dm:did:example:alice:did:example:bob"
-            }));
+            assert_eq!(conversation_id, "dm:persona:bob");
         }
         other => panic!("expected remove patch, got {other:?}"),
     }
 
     match reorder {
         awiki_im_core::dto::message::DartConversationStorePatch::Reorder {
-            conversation_identity,
+            conversation_id,
             index,
             ..
         } => {
             assert_eq!(index, 1);
-            let identity = conversation_identity.expect("reorder identity");
-            assert_eq!(identity.conversation_id, "dm:did:example:bob");
+            assert_eq!(conversation_id, "dm:persona:bob");
         }
         other => panic!("expected reorder patch, got {other:?}"),
     }

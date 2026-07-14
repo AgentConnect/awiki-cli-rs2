@@ -487,18 +487,14 @@ sealed class DartConversationStorePatch with _$DartConversationStorePatch {
     required String ownerDid,
     required BigInt version,
     required int unreadTotal,
-    required String threadKind,
-    required String threadId,
-    DartConversationIdentity? conversationIdentity,
+    required String conversationId,
   }) = DartConversationStorePatch_Remove;
   const factory DartConversationStorePatch.reorder({
     required String ownerIdentityId,
     required String ownerDid,
     required BigInt version,
     required int unreadTotal,
-    required String threadKind,
-    required String threadId,
-    DartConversationIdentity? conversationIdentity,
+    required String conversationId,
     required int index,
   }) = DartConversationStorePatch_Reorder;
   const factory DartConversationStorePatch.repairRequired({

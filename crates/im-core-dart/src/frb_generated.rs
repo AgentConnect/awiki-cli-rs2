@@ -7141,19 +7141,13 @@ impl SseDecode for crate::dto::message::DartConversationStorePatch {
                 let mut var_ownerDid = <String>::sse_decode(deserializer);
                 let mut var_version = <u64>::sse_decode(deserializer);
                 let mut var_unreadTotal = <u32>::sse_decode(deserializer);
-                let mut var_threadKind = <String>::sse_decode(deserializer);
-                let mut var_threadId = <String>::sse_decode(deserializer);
-                let mut var_conversationIdentity = <Option<
-                    crate::dto::message::DartConversationIdentity,
-                >>::sse_decode(deserializer);
+                let mut var_conversationId = <String>::sse_decode(deserializer);
                 return crate::dto::message::DartConversationStorePatch::Remove {
                     owner_identity_id: var_ownerIdentityId,
                     owner_did: var_ownerDid,
                     version: var_version,
                     unread_total: var_unreadTotal,
-                    thread_kind: var_threadKind,
-                    thread_id: var_threadId,
-                    conversation_identity: var_conversationIdentity,
+                    conversation_id: var_conversationId,
                 };
             }
             3 => {
@@ -7161,20 +7155,14 @@ impl SseDecode for crate::dto::message::DartConversationStorePatch {
                 let mut var_ownerDid = <String>::sse_decode(deserializer);
                 let mut var_version = <u64>::sse_decode(deserializer);
                 let mut var_unreadTotal = <u32>::sse_decode(deserializer);
-                let mut var_threadKind = <String>::sse_decode(deserializer);
-                let mut var_threadId = <String>::sse_decode(deserializer);
-                let mut var_conversationIdentity = <Option<
-                    crate::dto::message::DartConversationIdentity,
-                >>::sse_decode(deserializer);
+                let mut var_conversationId = <String>::sse_decode(deserializer);
                 let mut var_index = <u32>::sse_decode(deserializer);
                 return crate::dto::message::DartConversationStorePatch::Reorder {
                     owner_identity_id: var_ownerIdentityId,
                     owner_did: var_ownerDid,
                     version: var_version,
                     unread_total: var_unreadTotal,
-                    thread_kind: var_threadKind,
-                    thread_id: var_threadId,
-                    conversation_identity: var_conversationIdentity,
+                    conversation_id: var_conversationId,
                     index: var_index,
                 };
             }
@@ -10958,18 +10946,14 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartConversationStor
                 owner_did,
                 version,
                 unread_total,
-                thread_kind,
-                thread_id,
-                conversation_identity,
+                conversation_id,
             } => [
                 2.into_dart(),
                 owner_identity_id.into_into_dart().into_dart(),
                 owner_did.into_into_dart().into_dart(),
                 version.into_into_dart().into_dart(),
                 unread_total.into_into_dart().into_dart(),
-                thread_kind.into_into_dart().into_dart(),
-                thread_id.into_into_dart().into_dart(),
-                conversation_identity.into_into_dart().into_dart(),
+                conversation_id.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::dto::message::DartConversationStorePatch::Reorder {
@@ -10977,9 +10961,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartConversationStor
                 owner_did,
                 version,
                 unread_total,
-                thread_kind,
-                thread_id,
-                conversation_identity,
+                conversation_id,
                 index,
             } => [
                 3.into_dart(),
@@ -10987,9 +10969,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartConversationStor
                 owner_did.into_into_dart().into_dart(),
                 version.into_into_dart().into_dart(),
                 unread_total.into_into_dart().into_dart(),
-                thread_kind.into_into_dart().into_dart(),
-                thread_id.into_into_dart().into_dart(),
-                conversation_identity.into_into_dart().into_dart(),
+                conversation_id.into_into_dart().into_dart(),
                 index.into_into_dart().into_dart(),
             ]
             .into_dart(),
@@ -14297,30 +14277,21 @@ impl SseEncode for crate::dto::message::DartConversationStorePatch {
                 owner_did,
                 version,
                 unread_total,
-                thread_kind,
-                thread_id,
-                conversation_identity,
+                conversation_id,
             } => {
                 <i32>::sse_encode(2, serializer);
                 <String>::sse_encode(owner_identity_id, serializer);
                 <String>::sse_encode(owner_did, serializer);
                 <u64>::sse_encode(version, serializer);
                 <u32>::sse_encode(unread_total, serializer);
-                <String>::sse_encode(thread_kind, serializer);
-                <String>::sse_encode(thread_id, serializer);
-                <Option<crate::dto::message::DartConversationIdentity>>::sse_encode(
-                    conversation_identity,
-                    serializer,
-                );
+                <String>::sse_encode(conversation_id, serializer);
             }
             crate::dto::message::DartConversationStorePatch::Reorder {
                 owner_identity_id,
                 owner_did,
                 version,
                 unread_total,
-                thread_kind,
-                thread_id,
-                conversation_identity,
+                conversation_id,
                 index,
             } => {
                 <i32>::sse_encode(3, serializer);
@@ -14328,12 +14299,7 @@ impl SseEncode for crate::dto::message::DartConversationStorePatch {
                 <String>::sse_encode(owner_did, serializer);
                 <u64>::sse_encode(version, serializer);
                 <u32>::sse_encode(unread_total, serializer);
-                <String>::sse_encode(thread_kind, serializer);
-                <String>::sse_encode(thread_id, serializer);
-                <Option<crate::dto::message::DartConversationIdentity>>::sse_encode(
-                    conversation_identity,
-                    serializer,
-                );
+                <String>::sse_encode(conversation_id, serializer);
                 <u32>::sse_encode(index, serializer);
             }
             crate::dto::message::DartConversationStorePatch::RepairRequired {

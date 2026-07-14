@@ -389,9 +389,7 @@ class ConversationStorePatch {
     this.items = const [],
     this.item,
     this.index,
-    this.threadKind,
-    this.threadId,
-    this.conversationIdentity,
+    this.conversationId,
     this.reason,
   });
 
@@ -403,9 +401,7 @@ class ConversationStorePatch {
   final List<ConversationSnapshotItem> items;
   final ConversationSnapshotItem? item;
   final int? index;
-  final String? threadKind;
-  final String? threadId;
-  final ConversationIdentity? conversationIdentity;
+  final String? conversationId;
   final String? reason;
 }
 

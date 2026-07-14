@@ -144,6 +144,19 @@ void main() {
     expect(member.credentialDid, member.did);
   });
 
+  test('conversation store removal is canonical-id keyed', () {
+    const patch = ConversationStorePatch(
+      kind: ConversationStorePatchKind.remove,
+      ownerIdentityId: 'owner-1',
+      ownerDid: 'did:example:owner',
+      version: 3,
+      unreadTotal: 0,
+      conversationId: 'dm:persona:peer-1',
+    );
+
+    expect(patch.conversationId, 'dm:persona:peer-1');
+  });
+
   test('agent control helpers identify command and status payloads', () {
     const commandPayload =
         '{"schema":"awiki.agent.command.v1","command":"runtime.agent.create"}';

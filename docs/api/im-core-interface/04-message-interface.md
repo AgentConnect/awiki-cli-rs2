@@ -751,7 +751,10 @@ snapshot 只用于冷启动 first paint，随后仍必须用 SQLite local projec
 `ConversationStorePatch` stream。patch kind 当前包括 `reset`、`upsert`、`remove`、
 `reorder`、`repairRequired`。subscriber lag、stream drop、session switch 或 version gap
 必须走 `repair_conversation_store()` / Dart `repairConversationStore()`，repair 返回的
-patch version 是后续 patch 连续性判断的基线。
+patch version 是后续 patch 连续性判断的基线。Conversation Store 的唯一 key 是
+`conversation_id`；`remove` / `reorder` 只携带 `conversation_id`，不得用
+`(thread_kind, thread_id)` 或 alias/DID 作为 Store identity。snapshot format v2 同样要求
+每项有 canonical `conversation_id`，旧的可丢弃 redb snapshot 会直接失效并从 SQLite 重建。
 
 `watch_thread_patches(thread, limit)` / Dart `watchThreadPatches(thread, limit: ...)`
 返回当前 thread 的 versioned `ThreadMessageStorePatch` stream。patch kind 当前包括
