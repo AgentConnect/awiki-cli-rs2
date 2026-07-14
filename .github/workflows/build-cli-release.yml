@@ -1,0 +1,112 @@
+name: Build CLI Release
+run-name: CLI ${{ inputs.channel }} ${{ inputs.source_ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Immutable cli-v* tag to build
+        required: true
+        type: string
+      channel:
+        description: Release channel
+        required: true
+        type: choice
+        options: [beta, stable]
+      expected_version:
+        description: Version expected from release-config.json
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target_name: linux-amd64
+            os_name: linux
+            arch: amd64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target_name: darwin-amd64
+            os_name: darwin
+            arch: amd64
+            target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target_name: darwin-arm64
+            os_name: darwin
+            arch: arm64
+            target: aarch64-apple-darwin
+            runner: macos-14
+          - target_name: windows-amd64
+            os_name: windows
+            arch: amd64
+            target: x86_64-pc-windows-msvc
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Validate immutable source tag
+        shell: bash
+        run: |
+          test "${{ inputs.source_ref }}" = "cli-v${{ inputs.expected_version }}"
+
+      - name: Checkout awiki-cli-rs2
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: awiki-cli-rs2
+
+      - name: Read and validate release config
+        id: release
+        shell: bash
+        working-directory: awiki-cli-rs2
+        run: |
+          node scripts/release/cli/config.js release scripts/release/cli/release-config.json >/dev/null
+          version="$(node scripts/release/cli/config.js release scripts/release/cli/release-config.json 'channels.${{ inputs.channel }}.version')"
+          test "${version}" = "${{ inputs.expected_version }}"
+          echo "anp_commit=$(node scripts/release/cli/config.js release scripts/release/cli/release-config.json anp_commit)" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout pinned ANP SDK
+        uses: actions/checkout@v4
+        with:
+          repository: agent-network-protocol/anp
+          ref: ${{ steps.release.outputs.anp_commit }}
+          path: anp
+
+      - name: Set up Rust
+        shell: bash
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup target add --toolchain 1.88.0 ${{ matrix.target }}
+
+      - name: Build archive
+        shell: bash
+        working-directory: awiki-cli-rs2
+        run: |
+          scripts/release/build-release-artifact.sh \
+            --version "${{ inputs.expected_version }}" \
+            --os "${{ matrix.os_name }}" \
+            --arch "${{ matrix.arch }}" \
+            --target "${{ matrix.target }}"
+
+      - name: Smoke test binary
+        shell: bash
+        working-directory: awiki-cli-rs2
+        run: |
+          binary="target/${{ matrix.target }}/release/awiki-cli"
+          if [ "${{ matrix.os_name }}" = windows ]; then binary="${binary}.exe"; fi
+          "${binary}" version | tee version.json
+          node -e 'const p=require("./version.json"); if(p.data.version!==process.argv[1]) process.exit(1)' "${{ inputs.expected_version }}"
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: awiki-cli-${{ matrix.target_name }}
+          path: awiki-cli-rs2/dist/awiki-cli-${{ inputs.expected_version }}-*
+          if-no-files-found: error
+          retention-days: 3
