@@ -85,6 +85,23 @@ function installLocalBinary(source, destination, osName) {
   if (osName !== 'windows') fs.chmodSync(destination, 0o755);
 }
 
+function binaryProbeEnvironment(metadata, tempDir) {
+  const probeHome = path.join(tempDir, 'probe-home');
+  const probeWorkspace = path.join(probeHome, '.awiki-cli');
+  const defaults = metadata.default_tenant || {};
+  fs.mkdirSync(probeHome, { recursive: true });
+  return {
+    ...process.env,
+    HOME: probeHome,
+    USERPROFILE: probeHome,
+    AWIKI_CLI_WORKSPACE_HOME_DIR: probeWorkspace,
+    AWIKI_CLI_UPDATE_CACHE_ONLY: '1',
+    AWIKI_CLI_UPDATE_BASE_URL: metadata.update_base_url || '',
+    AWIKI_CLI_DEFAULT_BACKEND_BASE_URL: defaults.backend_base_url || '',
+    AWIKI_CLI_DEFAULT_DID_HOST: defaults.did_host || '',
+  };
+}
+
 async function main() {
   const rootDir = path.resolve(__dirname, '..');
   const { osName, target } = mapTarget();
@@ -117,7 +134,10 @@ async function main() {
     await extract(archivePath, binDir, osName);
     if (!fs.existsSync(binaryPath)) throw new Error(`Archive did not contain ${path.basename(binaryPath)}`);
     if (osName !== 'windows') fs.chmodSync(binaryPath, 0o755);
-    await runCommand(binaryPath, ['version'], { env: { ...process.env, AWIKI_CLI_UPDATE_CACHE_ONLY: '1' } });
+    // `version` resolves workspace configuration. Probe inside the installer
+    // temp directory so postinstall cannot initialize or alter the user's
+    // real workspace before the package wrapper supplies release defaults.
+    await runCommand(binaryPath, ['version'], { env: binaryProbeEnvironment(metadata, tempDir) });
     console.log(`awiki-cli binary is installed at ${binaryPath}`);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -131,4 +151,12 @@ if (require.main === module) {
   });
 }
 
-module.exports = { _internal: { SUPPORTED_TARGETS, mapTarget, readReleaseMetadata, sha256File } };
+module.exports = {
+  _internal: {
+    SUPPORTED_TARGETS,
+    mapTarget,
+    readReleaseMetadata,
+    sha256File,
+    binaryProbeEnvironment,
+  },
+};

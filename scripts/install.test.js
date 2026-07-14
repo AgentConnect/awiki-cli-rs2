@@ -51,7 +51,17 @@ test('downloads an artifact, verifies SHA-256, and rejects a mismatched digest',
   fs.mkdirSync(scriptsDir, { recursive: true });
   fs.copyFileSync(path.resolve(__dirname, 'install.js'), path.join(scriptsDir, 'install.js'));
   const binary = path.join(archiveStage, 'awiki-cli');
-  fs.writeFileSync(binary, '#!/bin/sh\nprintf \'installer smoke\\n\'\n');
+  fs.writeFileSync(binary, `#!/bin/sh
+set -eu
+mkdir -p "$AWIKI_CLI_WORKSPACE_HOME_DIR"
+printf '%s\n%s\n%s\n%s\n%s\n' \
+  "$HOME" \
+  "$AWIKI_CLI_WORKSPACE_HOME_DIR" \
+  "$AWIKI_CLI_UPDATE_BASE_URL" \
+  "$AWIKI_CLI_DEFAULT_BACKEND_BASE_URL" \
+  "$AWIKI_CLI_DEFAULT_DID_HOST" > "$AWIKI_TEST_PROBE_OUTPUT"
+printf 'installer smoke\n'
+`);
   fs.chmodSync(binary, 0o755);
   const archive = path.join(root, 'awiki-cli.tar.gz');
   const tar = await execFileAsync('tar', ['-C', archiveStage, '-czf', archive, 'awiki-cli']);
@@ -78,6 +88,11 @@ test('downloads an artifact, verifies SHA-256, and rejects a mismatched digest',
     const metadata = {
       schema_version: 1,
       version: '1.0.17-beta.1',
+      update_base_url: 'https://downloads.example.com/cli/beta',
+      default_tenant: {
+        backend_base_url: 'https://tenant.example.com',
+        did_host: 'tenant.example.com',
+      },
       packages: {
         [target]: {
           url: `http://127.0.0.1:${port}/awiki-cli.tar.gz`,
@@ -87,9 +102,31 @@ test('downloads an artifact, verifies SHA-256, and rejects a mismatched digest',
     };
     fs.writeFileSync(metadataPath, JSON.stringify(metadata));
     const install = path.join(scriptsDir, 'install.js');
-    const success = await execFileAsync(process.execPath, [install], { cwd: packageRoot });
+    const realHome = path.join(root, 'real-home');
+    const inheritedWorkspace = path.join(realHome, 'inherited-workspace');
+    const probeOutput = path.join(root, 'probe-output.txt');
+    fs.mkdirSync(realHome);
+    const success = await execFileAsync(process.execPath, [install], {
+      cwd: packageRoot,
+      env: {
+        ...process.env,
+        HOME: realHome,
+        AWIKI_CLI_WORKSPACE_HOME_DIR: inheritedWorkspace,
+        AWIKI_TEST_PROBE_OUTPUT: probeOutput,
+      },
+    });
     assert.match(success.stdout, /binary is installed/);
     assert.ok(fs.statSync(path.join(packageRoot, 'bin', 'awiki-cli')).isFile());
+    const [probeHome, probeWorkspace, updateBaseUrl, backendBaseUrl, didHost] =
+      fs.readFileSync(probeOutput, 'utf8').trim().split('\n');
+    assert.notEqual(probeHome, realHome);
+    assert.equal(probeWorkspace, path.join(probeHome, '.awiki-cli'));
+    assert.equal(updateBaseUrl, metadata.update_base_url);
+    assert.equal(backendBaseUrl, metadata.default_tenant.backend_base_url);
+    assert.equal(didHost, metadata.default_tenant.did_host);
+    assert.equal(fs.existsSync(probeHome), false);
+    assert.equal(fs.existsSync(inheritedWorkspace), false);
+    assert.equal(fs.existsSync(path.join(realHome, '.awiki-cli')), false);
 
     fs.rmSync(path.join(packageRoot, 'bin'), { recursive: true, force: true });
     metadata.packages[target].sha256 = '0'.repeat(64);
