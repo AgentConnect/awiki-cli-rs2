@@ -257,6 +257,9 @@ canonical resolution are orthogonal, so `active + legacy_unresolved` cannot be
 mistaken for a resolved canonical row. An alias may continue to target a
 resolved canonical conversation after that target becomes `archived`, `left`,
 or `deleted`; it must never target an unresolved or `merged` registry row.
+Once a legacy registry row is `merged`, ordinary summary refresh or
+`ensure` calls cannot reactivate it; only the canonical target remains eligible
+for the active conversation list.
 
 Schema 28 also separates immutable protocol facts from mutable local
 conversation projection. Each message stores `wire_thread_kind`,

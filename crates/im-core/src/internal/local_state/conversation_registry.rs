@@ -160,12 +160,19 @@ ON CONFLICT(owner_identity_id, conversation_id) DO UPDATE SET
         ELSE conversation_registry.activity_at
     END,
     updated_at = excluded.updated_at,
-    is_active = 1,
+    is_active = CASE
+        WHEN conversation_registry.lifecycle_state = 'merged' THEN 0
+        ELSE 1
+    END,
     peer_persona_id = COALESCE(excluded.peer_persona_id, conversation_registry.peer_persona_id),
     canonical_group_did = COALESCE(excluded.canonical_group_did, conversation_registry.canonical_group_did),
-    lifecycle_state = 'active',
+    lifecycle_state = CASE
+        WHEN conversation_registry.lifecycle_state = 'merged' THEN 'merged'
+        ELSE 'active'
+    END,
     resolution_state = CASE
         WHEN conversation_registry.resolution_state = 'blocked_conflict' THEN 'blocked_conflict'
+        WHEN conversation_registry.lifecycle_state = 'merged' THEN conversation_registry.resolution_state
         ELSE excluded.resolution_state
     END"#,
             rusqlite::params![
@@ -463,6 +470,62 @@ mod tests {
                 .get::<_, i64>(0))
                 .unwrap(),
             1
+        );
+    }
+
+    #[test]
+    fn ordinary_ensure_never_reactivates_a_merged_legacy_row() {
+        let db = Connection::open_in_memory().unwrap();
+        create_schema(&db).unwrap();
+        let target = ConversationRegistryRecord {
+            owner_identity_id: "owner-1".into(),
+            owner_did: "did:example:owner".into(),
+            conversation_id: "group:did:example:canonical".into(),
+            thread_kind: "group".into(),
+            thread_id: "did:example:canonical".into(),
+            activity_at: "2026-07-13T00:00:00Z".into(),
+        };
+        let legacy = ConversationRegistryRecord {
+            conversation_id: "group:legacy-local-id".into(),
+            thread_kind: "thread".into(),
+            thread_id: "legacy-local-id".into(),
+            ..target.clone()
+        };
+        ensure(&db, &target).unwrap();
+        ensure(&db, &legacy).unwrap();
+        mark_merged(
+            &db,
+            "owner-1",
+            &legacy.conversation_id,
+            &target.conversation_id,
+        )
+        .unwrap();
+
+        ensure(&db, &legacy).unwrap();
+
+        assert_eq!(
+            db.query_row(
+                r#"SELECT is_active, lifecycle_state, resolution_state,
+       merged_into_conversation_id
+FROM conversation_registry
+WHERE owner_identity_id = 'owner-1' AND conversation_id = 'group:legacy-local-id'"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .unwrap(),
+            (
+                0,
+                "merged".to_owned(),
+                "resolved".to_owned(),
+                target.conversation_id,
+            )
         );
     }
 
