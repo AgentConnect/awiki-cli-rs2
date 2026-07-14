@@ -20,3 +20,9 @@ Future<DartLocalStateUpgradeResult> upgradeLocalState({
 }) => RustLib.instance.api.crateApiLocalStateUpgradeUpgradeLocalState(
   paths: paths,
 );
+
+Future<DartLocalStateRestoreResult> restoreLocalStateBackup({
+  required DartImCorePaths paths,
+}) => RustLib.instance.api.crateApiLocalStateUpgradeRestoreLocalStateBackup(
+  paths: paths,
+);

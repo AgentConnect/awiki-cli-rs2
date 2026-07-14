@@ -45,7 +45,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1488914628;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1548759808;
 
 // Section: executor
 
@@ -4512,6 +4512,44 @@ fn wire__crate__api__directory__resolve_peer_impl(
         },
     )
 }
+fn wire__crate__api__local_state_upgrade__restore_local_state_backup_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "restore_local_state_backup",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_paths = <crate::dto::config::DartImCorePaths>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let output_ok =
+                            crate::api::local_state_upgrade::restore_local_state_backup(api_paths)
+                                .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__groups__resume_group_rebind_recovery_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -8413,6 +8451,18 @@ impl SseDecode for crate::dto::local_state_upgrade::DartLocalStateConversationAl
     }
 }
 
+impl SseDecode for crate::dto::local_state_upgrade::DartLocalStateRestoreResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_restoredSchemaVersion = <i64>::sse_decode(deserializer);
+        let mut var_targetSafetyCopyAvailable = <bool>::sse_decode(deserializer);
+        return crate::dto::local_state_upgrade::DartLocalStateRestoreResult {
+            restored_schema_version: var_restoredSchemaVersion,
+            target_safety_copy_available: var_targetSafetyCopyAvailable,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::local_state_upgrade::DartLocalStateUpgradeEligibility {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -10360,120 +10410,126 @@ fn pde_ffi_dispatcher_primary_impl(
         }
         73 => wire__crate__api__identity__resolve_identity_impl(port, ptr, rust_vec_len, data_len),
         74 => wire__crate__api__directory__resolve_peer_impl(port, ptr, rust_vec_len, data_len),
-        75 => wire__crate__api__groups__resume_group_rebind_recovery_impl(
+        75 => wire__crate__api__local_state_upgrade__restore_local_state_backup_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        76 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
-        77 => wire__crate__api__identity__revoke_daemon_subkey_authorization_impl(
+        76 => wire__crate__api__groups__resume_group_rebind_recovery_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        78 => {
+        77 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
+        78 => wire__crate__api__identity__revoke_daemon_subkey_authorization_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        79 => {
             wire__crate__api__secure__secure_direct_prepare_impl(port, ptr, rust_vec_len, data_len)
         }
-        79 => {
+        80 => {
             wire__crate__api__secure__secure_direct_repair_impl(port, ptr, rust_vec_len, data_len)
         }
-        80 => {
+        81 => {
             wire__crate__api__secure__secure_direct_status_impl(port, ptr, rust_vec_len, data_len)
         }
-        81 => {
+        82 => {
             wire__crate__api__secure__secure_group_prepare_impl(port, ptr, rust_vec_len, data_len)
         }
-        82 => wire__crate__api__secure__secure_group_repair_impl(port, ptr, rust_vec_len, data_len),
-        83 => wire__crate__api__secure__secure_group_status_impl(port, ptr, rust_vec_len, data_len),
-        84 => wire__crate__api__secure__secure_outbox_drop_impl(port, ptr, rust_vec_len, data_len),
-        85 => wire__crate__api__secure__secure_outbox_list_failed_impl(
+        83 => wire__crate__api__secure__secure_group_repair_impl(port, ptr, rust_vec_len, data_len),
+        84 => wire__crate__api__secure__secure_group_status_impl(port, ptr, rust_vec_len, data_len),
+        85 => wire__crate__api__secure__secure_outbox_drop_impl(port, ptr, rust_vec_len, data_len),
+        86 => wire__crate__api__secure__secure_outbox_list_failed_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        86 => wire__crate__api__secure__secure_outbox_retry_impl(port, ptr, rust_vec_len, data_len),
-        87 => wire__crate__api__email__send_impl(port, ptr, rust_vec_len, data_len),
-        88 => {
+        87 => wire__crate__api__secure__secure_outbox_retry_impl(port, ptr, rust_vec_len, data_len),
+        88 => wire__crate__api__email__send_impl(port, ptr, rust_vec_len, data_len),
+        89 => {
             wire__crate__api__attachments__send_attachment_impl(port, ptr, rust_vec_len, data_len)
         }
-        89 => wire__crate__api__attachments__send_conversation_attachment_impl(
+        90 => wire__crate__api__attachments__send_conversation_attachment_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        90 => wire__crate__api__messages__send_conversation_payload_impl(
+        91 => wire__crate__api__messages__send_conversation_payload_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        91 => wire__crate__api__messages__send_conversation_text_impl(
+        92 => wire__crate__api__messages__send_conversation_text_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        92 => wire__crate__api__messages__send_payload_impl(port, ptr, rust_vec_len, data_len),
-        93 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
-        94 => wire__crate__api__messages__stop_conversation_patch_session_impl(
+        93 => wire__crate__api__messages__send_payload_impl(port, ptr, rust_vec_len, data_len),
+        94 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
+        95 => wire__crate__api__messages__stop_conversation_patch_session_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        95 => wire__crate__api__messages__stop_thread_message_patch_session_impl(
+        96 => wire__crate__api__messages__stop_thread_message_patch_session_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        96 => wire__crate__api__messages__sync_conversation_after_impl(
+        97 => wire__crate__api__messages__sync_conversation_after_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        97 => wire__crate__api__messages__sync_delta_impl(port, ptr, rust_vec_len, data_len),
-        98 => wire__crate__api__messages__sync_thread_after_impl(port, ptr, rust_vec_len, data_len),
-        99 => wire__crate__api__messages__thread_message_patch_stream_impl(
+        98 => wire__crate__api__messages__sync_delta_impl(port, ptr, rust_vec_len, data_len),
+        99 => wire__crate__api__messages__sync_thread_after_impl(port, ptr, rust_vec_len, data_len),
+        100 => wire__crate__api__messages__thread_message_patch_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        100 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
-        101 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
-        102 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
-        103 => wire__crate__api__local_state_upgrade__upgrade_local_state_impl(
+        101 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
+        102 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
+        103 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
+        104 => wire__crate__api__local_state_upgrade__upgrade_local_state_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        104 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
-        105 => wire__crate__api__identity__verify_identity_vault_impl(
+        105 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
+        106 => wire__crate__api__identity__verify_identity_vault_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        106 => wire__crate__api__messages__watch_conversation_patches_impl(
+        107 => wire__crate__api__messages__watch_conversation_patches_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        107 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
+        108 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        108 => {
+        109 => {
             wire__crate__api__messages__watch_thread_patches_impl(port, ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),
@@ -12650,6 +12706,31 @@ impl
     fn into_into_dart(
         self,
     ) -> crate::dto::local_state_upgrade::DartLocalStateConversationAliasMapping {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::dto::local_state_upgrade::DartLocalStateRestoreResult
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.restored_schema_version.into_into_dart().into_dart(),
+            self.target_safety_copy_available
+                .into_into_dart()
+                .into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::local_state_upgrade::DartLocalStateRestoreResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::local_state_upgrade::DartLocalStateRestoreResult>
+    for crate::dto::local_state_upgrade::DartLocalStateRestoreResult
+{
+    fn into_into_dart(self) -> crate::dto::local_state_upgrade::DartLocalStateRestoreResult {
         self
     }
 }
@@ -15437,6 +15518,14 @@ impl SseEncode for crate::dto::local_state_upgrade::DartLocalStateConversationAl
         <String>::sse_encode(self.owner_did, serializer);
         <String>::sse_encode(self.legacy_conversation_id, serializer);
         <String>::sse_encode(self.canonical_conversation_id, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::local_state_upgrade::DartLocalStateRestoreResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i64>::sse_encode(self.restored_schema_version, serializer);
+        <bool>::sse_encode(self.target_safety_copy_available, serializer);
     }
 }
 

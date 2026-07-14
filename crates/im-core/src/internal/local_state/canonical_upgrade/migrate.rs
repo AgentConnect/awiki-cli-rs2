@@ -26,6 +26,13 @@ struct GroupRow {
 }
 
 #[derive(Debug, Clone)]
+struct HandleDidBinding {
+    did: String,
+    is_current: bool,
+    binding_generation: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 struct MessageIdentityRow {
     msg_id: String,
     owner_identity_id: String,
@@ -60,7 +67,9 @@ pub(super) fn migrate_shadow(path: &Path) -> crate::ImResult<CanonicalUpgradeRep
         ..CanonicalUpgradeReport::default()
     };
     let direct_routes = migrate_verified_routes(&transaction)?;
-    report.migrated_personas = u64::try_from(direct_routes.len()).unwrap_or(u64::MAX);
+    report.migrated_personas =
+        u64::try_from(direct_routes.values().collect::<BTreeSet<&String>>().len())
+            .unwrap_or(u64::MAX);
     let group_routes = migrate_groups(&transaction)?;
     let migrated = migrate_messages(&transaction, &direct_routes, &group_routes)?;
     report.migrated_conversations = migrated.migrated_conversations;
@@ -104,32 +113,47 @@ fn migrate_verified_routes(
             Err(_) => continue,
         };
         let verified_at = non_empty_or(&row.updated_at, "release_0710_migration");
+        let did_bindings = handle_did_bindings(connection, &row)?;
+        let current_generation = did_bindings
+            .iter()
+            .find(|binding| binding.did == row.current_did)
+            .and_then(|binding| binding.binding_generation.clone());
         super::super::peer_personas::upsert(
             connection,
             &super::super::peer_personas::PeerPersonaRecord {
                 owner_identity_id: row.owner_identity_id.clone(),
                 persona: persona.clone(),
-                binding_generation: None,
+                binding_generation: current_generation.clone(),
                 subject_type: "human".to_owned(),
                 source: "release_0710_verified_route".to_owned(),
                 authority_revision: None,
                 verified_at: verified_at.to_owned(),
             },
         )?;
-        for (kind, value) in [
-            ("handle", persona.full_handle.as_str()),
-            ("did", row.current_did.as_str()),
-        ] {
+        super::super::peer_identifiers::bind(
+            connection,
+            &super::super::peer_identifiers::PeerIdentifierRecord {
+                owner_identity_id: row.owner_identity_id.clone(),
+                peer_persona_id: persona.peer_persona_id.clone(),
+                identifier_kind: "handle".to_owned(),
+                identifier_value: persona.full_handle.clone(),
+                is_current: true,
+                binding_generation: current_generation,
+                source: "release_0710_verified_route".to_owned(),
+                verified_at: verified_at.to_owned(),
+            },
+        )?;
+        for binding in &did_bindings {
             super::super::peer_identifiers::bind(
                 connection,
                 &super::super::peer_identifiers::PeerIdentifierRecord {
                     owner_identity_id: row.owner_identity_id.clone(),
                     peer_persona_id: persona.peer_persona_id.clone(),
-                    identifier_kind: kind.to_owned(),
-                    identifier_value: value.to_owned(),
-                    is_current: true,
-                    binding_generation: None,
-                    source: "release_0710_verified_route".to_owned(),
+                    identifier_kind: "did".to_owned(),
+                    identifier_value: binding.did.clone(),
+                    is_current: binding.is_current,
+                    binding_generation: binding.binding_generation.clone(),
+                    source: "release_0710_verified_handle_binding".to_owned(),
                     verified_at: verified_at.to_owned(),
                 },
             )?;
@@ -173,13 +197,19 @@ WHERE owner_identity_id = ?2
                 ),
             )
             .map_err(super::super::local_state_unavailable)?;
-        insert_alias(
-            connection,
-            &row.owner_identity_id,
-            "verified_did",
-            &super::super::owner_scope::direct_conversation_id(&row.current_did),
-            &canonical_id,
-        )?;
+        for binding in &did_bindings {
+            insert_alias(
+                connection,
+                &row.owner_identity_id,
+                "verified_did",
+                &super::super::owner_scope::direct_conversation_id(&binding.did),
+                &canonical_id,
+            )?;
+            did_routes.insert(
+                (row.owner_identity_id.clone(), binding.did.clone()),
+                canonical_id.clone(),
+            );
+        }
         if row.old_conversation_id != canonical_id {
             insert_alias(
                 connection,
@@ -189,12 +219,61 @@ WHERE owner_identity_id = ?2
                 &canonical_id,
             )?;
         }
-        did_routes.insert(
-            (row.owner_identity_id.clone(), row.current_did.clone()),
-            canonical_id,
-        );
     }
     Ok(did_routes)
+}
+
+fn handle_did_bindings(
+    connection: &Transaction<'_>,
+    route: &RouteRow,
+) -> crate::ImResult<Vec<HandleDidBinding>> {
+    let mut statement = connection
+        .prepare(
+            r#"SELECT did, is_current, COALESCE(metadata, '')
+FROM contact_handle_bindings
+WHERE owner_identity_id = ?1 AND LOWER(TRIM(handle)) = LOWER(TRIM(?2))
+ORDER BY is_current DESC, last_seen_at DESC, did"#,
+        )
+        .map_err(super::super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(
+            (route.owner_identity_id.as_str(), route.full_handle.as_str()),
+            |row| {
+                let metadata = row.get::<_, String>(2)?;
+                Ok(HandleDidBinding {
+                    did: row.get(0)?,
+                    is_current: row.get::<_, i64>(1)? != 0,
+                    binding_generation: binding_generation(&metadata),
+                })
+            },
+        )
+        .map_err(super::super::local_state_unavailable)?;
+    let mut bindings = BTreeMap::<String, HandleDidBinding>::new();
+    for binding in collect_rows(rows)? {
+        if crate::ids::Did::parse(&binding.did).is_ok() {
+            bindings.insert(binding.did.clone(), binding);
+        }
+    }
+    bindings
+        .entry(route.current_did.clone())
+        .and_modify(|binding| binding.is_current = true)
+        .or_insert_with(|| HandleDidBinding {
+            did: route.current_did.clone(),
+            is_current: true,
+            binding_generation: None,
+        });
+    Ok(bindings.into_values().collect())
+}
+
+fn binding_generation(metadata: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(metadata)
+        .ok()
+        .and_then(|value| value.get("binding_generation").cloned())
+        .and_then(|value| match value {
+            serde_json::Value::String(value) => non_empty(&value).map(ToOwned::to_owned),
+            serde_json::Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        })
 }
 
 fn migrate_groups(
@@ -556,7 +635,7 @@ mod tests {
     fn migrates_release_0710_projection_without_losing_wire_or_empty_conversations() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("release-0710.sqlite");
-        super::super::source::create_full_release_0710_fixture(&source);
+        super::super::source::copy_release_0710_fixture(&source);
         let report = migrate_shadow(&source).unwrap();
         assert_eq!(report.source_schema_version, 27);
         assert_eq!(report.target_schema_version, 28);
@@ -577,18 +656,21 @@ mod tests {
         let direct: (String, String, String) = db
             .query_row(
                 r#"SELECT conversation_id, wire_thread_kind, wire_thread_ref
-FROM messages WHERE msg_id = 'direct-1'"#,
+FROM messages WHERE msg_id = 'fixture-direct-message-1'"#,
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
         assert!(direct.0.starts_with("dm:peer-scope:v1:"));
         assert_eq!(direct.1, "direct");
-        assert_eq!(direct.2, "did:example:peer");
+        assert_eq!(
+            direct.2,
+            "did:wba:awiki.info:fixture-peer:e1_fixture_peer_old"
+        );
         assert_eq!(
             db.query_row(
                 r#"SELECT COUNT(*) FROM conversation_registry
-WHERE canonical_group_did = 'did:example:empty-group'
+WHERE canonical_group_did = 'did:wba:awiki.info:groups:fixture-empty:e1_fixture_empty'
   AND lifecycle_state = 'active' AND resolution_state = 'resolved'"#,
                 [],
                 |row| row.get::<_, i64>(0),
@@ -606,6 +688,71 @@ WHERE canonical_group_did = 'did:example:empty-group'
             db.query_row("SELECT COUNT(*) FROM group_members", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap(),
+            2
+        );
+        let identifiers: Vec<(String, String, i64, String)> = {
+            let mut statement = db
+                .prepare(
+                    r#"SELECT peer_persona_id, identifier_value, is_current,
+       COALESCE(binding_generation, '')
+FROM peer_identifiers
+WHERE identifier_kind = 'did'
+ORDER BY is_current, identifier_value"#,
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(identifiers.len(), 2);
+        assert_eq!(identifiers[0].0, identifiers[1].0);
+        assert_eq!(identifiers[0].1, direct.2);
+        assert_eq!(identifiers[0].2, 0);
+        assert_eq!(identifiers[0].3, "1");
+        assert_eq!(identifiers[1].2, 1);
+        assert_eq!(identifiers[1].3, "2");
+        assert_eq!(
+            db.query_row(
+                r#"SELECT message_count, unread_count, unread_mention_count
+FROM conversation_summaries WHERE conversation_id = ?1"#,
+                [direct.0.as_str()],
+                |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?
+                )),
+            )
+            .unwrap(),
+            (1, 1, 0)
+        );
+        assert_eq!(
+            db.query_row(
+                r#"SELECT message_count, unread_count, unread_mention_count
+FROM conversation_summaries
+WHERE conversation_id = 'group:did:wba:awiki.info:groups:fixture-group:e1_fixture_group'"#,
+                [],
+                |row| Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?
+                )),
+            )
+            .unwrap(),
+            (1, 0, 0)
+        );
+        assert_eq!(
+            db.query_row(
+                r#"SELECT COUNT(*) FROM conversation_registry
+WHERE peer_persona_id = ?1 AND thread_kind = 'direct'
+  AND lifecycle_state = 'active' AND resolution_state = 'resolved'"#,
+                [identifiers[0].0.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
             1
         );
     }

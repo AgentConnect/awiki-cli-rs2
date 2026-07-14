@@ -292,6 +292,12 @@ cross-process file lock and SQLite Online Backup, performs canonical mapping
 inside a disposable shadow transaction, verifies conservation and canonical
 invariants, and records a resumable redacted journal before replacing the live
 SQLite file set. Re-running against schema 28 is a no-op.
+The source allowlist is pinned to the exact deployed release/0710 daemon
+artifact, source ref, and schema fingerprint. Its checked-in fixture is built
+by that binary in an isolated state root and contains synthetic rows only.
+After a completed cutover, the pre-open restore API verifies the retained
+backup, keeps the schema 28 target as a private safety copy, and restores the
+whole schema 27 file set; partial table-level downgrade is unsupported.
 
 Because summaries contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
 

@@ -47,9 +47,9 @@ pub use crate::identity::{
 };
 #[cfg(feature = "sqlite")]
 pub use crate::local_state_upgrade::{
-    inspect_local_state_upgrade, upgrade_local_state, LocalStateConversationAliasMapping,
-    LocalStateUpgradeEligibility, LocalStateUpgradeInspection, LocalStateUpgradeResult,
-    LocalStateUpgradeStatus,
+    inspect_local_state_upgrade, restore_local_state_backup, upgrade_local_state,
+    LocalStateConversationAliasMapping, LocalStateRestoreResult, LocalStateUpgradeEligibility,
+    LocalStateUpgradeInspection, LocalStateUpgradeResult, LocalStateUpgradeStatus,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::RealtimeService;

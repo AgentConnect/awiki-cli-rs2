@@ -51,3 +51,13 @@ class LocalStateConversationAliasMapping {
   final String legacyConversationId;
   final String canonicalConversationId;
 }
+
+class LocalStateRestoreResult {
+  const LocalStateRestoreResult({
+    required this.restoredSchemaVersion,
+    required this.targetSafetyCopyAvailable,
+  });
+
+  final int restoredSchemaVersion;
+  final bool targetSafetyCopyAvailable;
+}

@@ -29,4 +29,14 @@ void main() {
     expect(result.backupAvailable, isTrue);
     expect(result.aliasMappings.single.canonicalConversationId, 'dm:canonical');
   });
+
+  test('restore result exposes availability without a filesystem path', () {
+    const result = LocalStateRestoreResult(
+      restoredSchemaVersion: 27,
+      targetSafetyCopyAvailable: true,
+    );
+
+    expect(result.restoredSchemaVersion, 27);
+    expect(result.targetSafetyCopyAvailable, isTrue);
+  });
 }

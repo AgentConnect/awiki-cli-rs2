@@ -38,6 +38,12 @@ pub struct DartLocalStateConversationAliasMapping {
     pub canonical_conversation_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartLocalStateRestoreResult {
+    pub restored_schema_version: i64,
+    pub target_safety_copy_available: bool,
+}
+
 impl From<im_core::LocalStateUpgradeInspection> for DartLocalStateUpgradeInspection {
     fn from(value: im_core::LocalStateUpgradeInspection) -> Self {
         Self {
@@ -83,6 +89,15 @@ impl From<im_core::LocalStateUpgradeResult> for DartLocalStateUpgradeResult {
                     canonical_conversation_id: mapping.canonical_conversation_id,
                 })
                 .collect(),
+        }
+    }
+}
+
+impl From<im_core::LocalStateRestoreResult> for DartLocalStateRestoreResult {
+    fn from(value: im_core::LocalStateRestoreResult) -> Self {
+        Self {
+            restored_schema_version: value.restored_schema_version,
+            target_safety_copy_available: value.target_safety_copy_available,
         }
     }
 }

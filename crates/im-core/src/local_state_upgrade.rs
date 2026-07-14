@@ -52,6 +52,12 @@ pub struct LocalStateConversationAliasMapping {
     pub canonical_conversation_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalStateRestoreResult {
+    pub restored_schema_version: i64,
+    pub target_safety_copy_available: bool,
+}
+
 /// Inspects whether the Storage Scope SQLite file needs the canonical upgrade.
 ///
 /// A missing file is a fresh install and therefore needs no migration. Existing
@@ -128,6 +134,23 @@ pub fn upgrade_local_state(paths: &LocalStatePaths) -> ImResult<LocalStateUpgrad
             alias_mappings: read_alias_mappings(&paths.sqlite_path)?,
         }),
     }
+}
+
+/// Restores the verified release/0710 backup after a completed canonical cutover.
+///
+/// The current target database is retained as a private safety copy. Callers
+/// must dispose Core before invoking this entry point and must not reopen the
+/// target-version Core afterwards unless they intend to run the upgrade again.
+pub fn restore_local_state_backup(paths: &LocalStatePaths) -> ImResult<LocalStateRestoreResult> {
+    let upgrade_dir = upgrade_directory(paths)?;
+    let report = crate::internal::local_state::canonical_upgrade::restore_verified_backup(
+        &paths.sqlite_path,
+        &upgrade_dir,
+    )?;
+    Ok(LocalStateRestoreResult {
+        restored_schema_version: report.restored_schema_version,
+        target_safety_copy_available: report.target_safety_copy.is_file(),
+    })
 }
 
 fn read_alias_mappings(
@@ -232,5 +255,32 @@ mod tests {
                 canonical_conversation_id: "group:did:wba:example.com:groups:canonical".to_owned(),
             }]
         );
+    }
+
+    #[test]
+    fn completed_upgrade_can_restore_verified_release_0710_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = LocalStatePaths {
+            sqlite_path: directory.path().join("im.sqlite"),
+        };
+        crate::internal::local_state::canonical_upgrade::copy_release_0710_fixture(
+            &paths.sqlite_path,
+        );
+        let upgraded = upgrade_local_state(&paths).unwrap();
+        assert_eq!(upgraded.status, LocalStateUpgradeStatus::Completed);
+
+        let restored = restore_local_state_backup(&paths).unwrap();
+        assert_eq!(restored.restored_schema_version, 27);
+        assert!(restored.target_safety_copy_available);
+        assert_eq!(
+            rusqlite::Connection::open(&paths.sqlite_path)
+                .unwrap()
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            27
+        );
+
+        let repeated = restore_local_state_backup(&paths).unwrap();
+        assert_eq!(repeated, restored);
     }
 }

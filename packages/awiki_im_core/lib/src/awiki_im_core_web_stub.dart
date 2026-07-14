@@ -22,6 +22,12 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  static Future<LocalStateRestoreResult> restoreLocalStateBackup({
+    required AwikiImCorePaths paths,
+  }) async {
+    throw _unsupported();
+  }
+
   static Future<AwikiImCore> open({
     required AwikiImCoreConfig config,
     required AwikiImCorePaths paths,

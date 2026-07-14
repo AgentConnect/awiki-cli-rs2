@@ -32,6 +32,19 @@ fn local_state_upgrade_inspection_is_available_before_core_open() {
 }
 
 #[test]
+fn local_state_restore_result_preserves_recovery_evidence_for_dart() {
+    let dart: awiki_im_core::dto::local_state_upgrade::DartLocalStateRestoreResult =
+        im_core::LocalStateRestoreResult {
+            restored_schema_version: 27,
+            target_safety_copy_available: true,
+        }
+        .into();
+
+    assert_eq!(dart.restored_schema_version, 27);
+    assert!(dart.target_safety_copy_available);
+}
+
+#[test]
 fn identity_vault_failures_have_stable_redacted_dart_codes() {
     let cases = [
         (

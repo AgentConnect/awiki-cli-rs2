@@ -119,6 +119,31 @@ impl ImClient {
 }
 ```
 
+### 3.1 Core open 前的 local-state 升级与恢复
+
+release/0710 schema 27 必须在 `ImCore` 打开前通过独立入口升级；普通 open
+只返回 `local_state_upgrade_required`，不能绕过 backup：
+
+```rust
+pub fn inspect_local_state_upgrade(
+    paths: &LocalStatePaths,
+) -> ImResult<LocalStateUpgradeInspection>;
+
+pub fn upgrade_local_state(
+    paths: &LocalStatePaths,
+) -> ImResult<LocalStateUpgradeResult>;
+
+pub fn restore_local_state_backup(
+    paths: &LocalStatePaths,
+) -> ImResult<LocalStateRestoreResult>;
+```
+
+upgrade 只接受显式白名单中的真实 release/0710 schema fingerprint，使用完整
+SQLite backup、shadow migration 和守恒校验后 cutover。restore 只接受已完成
+cutover 的 journal，将当前 target 保留为 private safety copy 后恢复整个 schema 27
+backup。公共结果只包含 schema、聚合计数、alias mapping 和 backup/safety-copy
+availability，不返回 backup 路径、消息内容或凭证。
+
 P2+ API：
 
 ```rust

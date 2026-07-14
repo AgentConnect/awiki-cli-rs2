@@ -55,6 +55,20 @@ conversation mappings required by the App overlay migration. They never expose
 backup paths or message content. The mapping remains available after cutover so
 an App crash between the Core and overlay journals can resume idempotently.
 
+If a canary must be downgraded after cutover, dispose Core first and restore
+the complete verified release/0710 backup with the new SDK/tooling:
+
+```dart
+final restored = await AwikiImCore.restoreLocalStateBackup(paths: paths);
+assert(restored.restoredSchemaVersion == 27);
+assert(restored.targetSafetyCopyAvailable);
+```
+
+Restore is not an in-process rollback for an open Core. It only accepts a
+completed canonical-upgrade journal, keeps the schema 28 target as a private
+safety copy, and is idempotent across interruption. The public result exposes
+versions/availability only, never filesystem backup paths.
+
 ## DTO policy
 
 Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitives at the boundary. Time values remain ISO-8601 strings. The Dart wrapper may add convenience getters such as `AuthStatus.authenticated`, but it must not rename Rust DTO semantics such as `has_session` into a different facade meaning.

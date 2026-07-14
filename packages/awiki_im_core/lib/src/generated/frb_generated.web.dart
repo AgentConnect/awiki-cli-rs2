@@ -663,6 +663,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_dart_local_state_conversation_alias_mapping(dynamic raw);
 
   @protected
+  DartLocalStateRestoreResult dco_decode_dart_local_state_restore_result(
+    dynamic raw,
+  );
+
+  @protected
   DartLocalStateUpgradeEligibility
   dco_decode_dart_local_state_upgrade_eligibility(dynamic raw);
 
@@ -1752,6 +1757,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartLocalStateConversationAliasMapping
   sse_decode_dart_local_state_conversation_alias_mapping(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartLocalStateRestoreResult sse_decode_dart_local_state_restore_result(
     SseDeserializer deserializer,
   );
 
@@ -3097,6 +3107,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_local_state_conversation_alias_mapping(
     DartLocalStateConversationAliasMapping self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_restore_result(
+    DartLocalStateRestoreResult self,
     SseSerializer serializer,
   );
 

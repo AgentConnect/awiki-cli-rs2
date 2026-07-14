@@ -112,6 +112,18 @@ class AwikiImCore {
     return result._toModel();
   }
 
+  static Future<LocalStateRestoreResult> restoreLocalStateBackup({
+    required AwikiImCorePaths paths,
+  }) async {
+    await _ensureRustLibInitialized();
+    final result = await _mapNativeErrors(
+      () => gen_local_state_upgrade.restoreLocalStateBackup(
+        paths: paths._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
   Future<AwikiImClient> client(IdentitySelector selector) async {
     _ensureNotDisposed();
     final inner = await _mapNativeErrors(
@@ -1594,6 +1606,13 @@ extension on gen_local_state_upgrade_dto.DartLocalStateUpgradeResult {
           ),
         )
         .toList(growable: false),
+  );
+}
+
+extension on gen_local_state_upgrade_dto.DartLocalStateRestoreResult {
+  LocalStateRestoreResult _toModel() => LocalStateRestoreResult(
+    restoredSchemaVersion: restoredSchemaVersion,
+    targetSafetyCopyAvailable: targetSafetyCopyAvailable,
   );
 }
 

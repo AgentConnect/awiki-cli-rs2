@@ -37,6 +37,28 @@ class DartLocalStateConversationAliasMapping {
           canonicalConversationId == other.canonicalConversationId;
 }
 
+class DartLocalStateRestoreResult {
+  final PlatformInt64 restoredSchemaVersion;
+  final bool targetSafetyCopyAvailable;
+
+  const DartLocalStateRestoreResult({
+    required this.restoredSchemaVersion,
+    required this.targetSafetyCopyAvailable,
+  });
+
+  @override
+  int get hashCode =>
+      restoredSchemaVersion.hashCode ^ targetSafetyCopyAvailable.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartLocalStateRestoreResult &&
+          runtimeType == other.runtimeType &&
+          restoredSchemaVersion == other.restoredSchemaVersion &&
+          targetSafetyCopyAvailable == other.targetSafetyCopyAvailable;
+}
+
 enum DartLocalStateUpgradeEligibility { notRequired, required_ }
 
 class DartLocalStateUpgradeInspection {
