@@ -49,7 +49,7 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
     const serverConfig = path.join(temp, 'server.toml');
     fs.mkdirSync(artifacts);
     writeServerConfig(serverConfig, temp);
-    writeArtifacts(artifacts, '1.0.17-beta.4');
+    writeArtifacts(artifacts, '1.0.17-beta.5');
 
     const result = run(process.execPath, [
       path.join(scriptDir, 'stage-release.js'),
@@ -58,13 +58,13 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
       '--server-config', serverConfig,
       '--artifacts', artifacts,
       '--output', output,
-      '--source-tag', 'cli-v1.0.17-beta.4',
+      '--source-tag', 'cli-v1.0.17-beta.5',
       '--source-commit', 'a'.repeat(40),
     ], { cwd: rootDir });
     assert.equal(result.status, 0, result.stderr || result.stdout);
 
     const manifest = JSON.parse(fs.readFileSync(path.join(output, 'manifest.json'), 'utf8'));
-    assert.equal(manifest.latest, '1.0.17-beta.4');
+    assert.equal(manifest.latest, '1.0.17-beta.5');
     assert.equal(manifest.installer.url, 'https://downloads.example.com/cli/beta/awiki-cli.tgz');
     assert.deepEqual(Object.keys(manifest.packages).sort(), [
       'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64',
@@ -106,14 +106,14 @@ test('rejects missing and unexpected workflow artifacts', () => {
     const serverConfig = path.join(temp, 'server.toml');
     fs.mkdirSync(artifacts);
     writeServerConfig(serverConfig, temp);
-    writeArtifacts(artifacts, '1.0.17-beta.4');
-    fs.rmSync(path.join(artifacts, 'awiki-cli-1.0.17-beta.4-linux-amd64.tar.gz'));
+    writeArtifacts(artifacts, '1.0.17-beta.5');
+    fs.rmSync(path.join(artifacts, 'awiki-cli-1.0.17-beta.5-linux-amd64.tar.gz'));
 
     const baseArgs = [
       path.join(scriptDir, 'stage-release.js'), '--channel', 'beta',
       '--release-config', releaseConfig, '--server-config', serverConfig,
       '--artifacts', artifacts, '--output', output,
-      '--source-tag', 'cli-v1.0.17-beta.4', '--source-commit', 'a'.repeat(40),
+      '--source-tag', 'cli-v1.0.17-beta.5', '--source-commit', 'a'.repeat(40),
     ];
     let result = run(process.execPath, baseArgs, { cwd: rootDir });
     assert.notEqual(result.status, 0);

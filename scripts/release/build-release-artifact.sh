@@ -65,7 +65,7 @@ target_for() {
   local arch_name="$2"
 
   case "${os_name}/${arch_name}" in
-    linux/amd64) printf '%s\n' "x86_64-unknown-linux-gnu" ;;
+    linux/amd64) printf '%s\n' "x86_64-unknown-linux-musl" ;;
     darwin/amd64) printf '%s\n' "x86_64-apple-darwin" ;;
     darwin/arm64) printf '%s\n' "aarch64-apple-darwin" ;;
     windows/amd64) printf '%s\n' "x86_64-pc-windows-msvc" ;;
@@ -224,6 +224,14 @@ AWIKI_CLI_CGO_ENABLED=0 \
   "${cargo_cmd[@]}" build -p awiki-cli --bin awiki-cli --release --locked --target "${TARGET_TRIPLE}"
 
 [[ -f "${build_bin}" ]] || die "built binary not found: ${build_bin}"
+
+# The npm installer must work on Linux hosts older than the current GitHub
+# runner. A musl build keeps the CLI independent of the runner's glibc ABI.
+if [[ "${OS_NAME}" == "linux" ]] && command -v strings >/dev/null 2>&1; then
+  if strings "${build_bin}" | grep -q 'GLIBC_[0-9]'; then
+    die "Linux CLI release binary contains GLIBC symbol requirements; build a musl/static-compatible package"
+  fi
+fi
 
 mkdir -p "${DIST_DIR}"
 stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/awiki-release.XXXXXX")"

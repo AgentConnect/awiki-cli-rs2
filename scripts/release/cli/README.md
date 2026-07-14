@@ -10,6 +10,8 @@
 
 编译产物与站点无关。域名、默认 tenant endpoint、公开路径、归档路径、Nginx 路径、gateway 路径和 GitHub token 只能来自 `publish-server.toml`。
 
+Linux AMD64 使用静态 musl 目标构建，并在归档前拒绝包含 GLIBC 版本符号的二进制，避免产物依赖 GitHub runner 的 glibc 版本。
+
 ## 发布顺序
 
 1. 在干净且已推送的发布分支运行 `prepare-cli-tag.sh beta`。
