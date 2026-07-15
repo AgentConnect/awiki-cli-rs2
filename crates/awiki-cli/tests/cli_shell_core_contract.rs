@@ -72,7 +72,44 @@ fn trace_timing_completion_keeps_raw_stdout_without_trace_stderr() {
     assert_success(&output);
     assert_stderr_empty(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_text_contains(&stdout, "complete -F _awiki-cli awiki-cli");
+    assert_text_contains(&stdout, "complete -F _awiki_cli awiki-cli");
+    assert_text_contains(&stdout, "'runtime host-notify hermes'");
+    assert_text_contains(&stdout, "--notify-url");
+}
+
+#[test]
+fn completion_scripts_are_catalog_backed_for_every_supported_shell() {
+    for shell in ["bash", "zsh", "fish", "powershell"] {
+        let output = awiki_cmd(&["completion", shell]);
+        assert_success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_text_contains(&stdout, "runtime host-notify hermes");
+        assert_text_contains(&stdout, "--notify-url");
+        assert_text_contains(&stdout, "tenant");
+        assert!(
+            !stdout.contains("people search")
+                && !stdout.contains("runtime heartbeat")
+                && !stdout.contains("debug logs"),
+            "{shell} completion should not advertise unsupported commands: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn human_help_hides_unimplemented_leaves_and_explains_command_gates() {
+    let debug = awiki_cmd(&["debug", "--help"]);
+    assert_success(&debug);
+    let debug_help = String::from_utf8_lossy(&debug.stdout);
+    assert_text_contains(&debug_help, "global --diagnostic gate");
+    assert_text_contains(&debug_help, "global --migration gate");
+    assert!(!debug_help.contains("schema-cache"));
+    assert!(!debug_help.contains("Tail runtime logs"));
+
+    let vault = awiki_cmd(&["id", "vault", "--help"]);
+    assert_success(&vault);
+    let vault_help = String::from_utf8_lossy(&vault.stdout);
+    assert_text_contains(&vault_help, "migrate");
+    assert_text_contains(&vault_help, "requires --migration");
 }
 
 #[test]
@@ -331,6 +368,24 @@ fn docs_list_and_topic_lookup_preserve_go_topic_contracts() {
             .any(|reference| reference == "docs/installation.md"),
         "tenant docs topic should point to installation docs: {tenant_topic:?}"
     );
+
+    for topic in awiki_cli::cli_docs::all() {
+        assert!(
+            !topic
+                .references
+                .iter()
+                .any(|reference| reference.starts_with("../")),
+            "public docs topic {} must not point outside this repository: {:?}",
+            topic.name,
+            topic.references
+        );
+        let references: Vec<_> = topic
+            .references
+            .iter()
+            .map(|reference| Value::String((*reference).to_string()))
+            .collect();
+        assert_docs_references_exist(&references);
+    }
 }
 
 #[test]
@@ -578,13 +633,13 @@ fn group_e2ee_unknown_subcommands_are_invalid_arguments() {
 }
 
 #[test]
-fn schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes() {
+fn schema_metadata_matches_current_behavior_for_choices_and_grouping_nodes() {
     let upgrade = schema_for(&["upgrade"]);
     assert_eq!(
         schema_command(&upgrade)["short"],
-        "Check for newer awiki-cli versions and show upgrade hints"
+        "Check for and install an available awiki-cli update"
     );
-    assert_eq!(schema_command(&upgrade)["side_effect"], false);
+    assert_eq!(schema_command(&upgrade)["side_effect"], true);
 
     let register = schema_for(&["id", "register"]);
     assert_eq!(
@@ -721,7 +776,7 @@ fn schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes() {
     let debug = schema_for(&["debug"]);
     assert_eq!(
         schema_command(&debug)["short"],
-        "Debugging and raw inspection commands"
+        "Diagnostic and migration inspection commands"
     );
     let debug_db = schema_for(&["debug", "db"]);
     assert_eq!(schema_command(&debug_db)["phase"], "phase4");
@@ -1365,9 +1420,6 @@ fn assert_docs_references_exist(references: &[Value]) {
         let reference = reference
             .as_str()
             .unwrap_or_else(|| panic!("docs reference should be a string: {reference:?}"));
-        if reference.starts_with("../") {
-            continue;
-        }
         assert!(
             repo_root.join(reference).is_file(),
             "docs reference {reference:?} should exist under {repo_root:?}"

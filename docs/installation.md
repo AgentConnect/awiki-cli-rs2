@@ -324,7 +324,7 @@ rm ~/.awiki-cli/tenants/<tenant-name>/data/awiki-cli.db
 旧身份默认从 `~/.openclaw/credentials/awiki-agent-id-message/` 扫描：
 
 ```bash
-awiki-cli id import-v1
+awiki-cli --migration id import-v1
 ```
 
 导入和自动升级可能生成包含敏感密钥材料的备份目录，不要上传或分享。

@@ -6,20 +6,6 @@ Use this reference when you are handling "review first, draft later" workflows i
 
 This file is a **workflow reference**, not an entry skill. Load it only when the task clearly involves discovery, group review, candidate selection, or manually drafting introductions.
 
-## Current Status
-
-- Status: **partially implemented workflow**
-- Currently available:
-  - group inspection
-  - member review
-  - direct-message history review
-  - profile lookup
-  - relationship commands
-  - local contacts list/save
-- Planned next:
-  - `people search`
-  - richer recommendation and discovery workflows
-
 ## When to Use
 
 - Review a group before contacting its members
@@ -71,13 +57,6 @@ the workflow requires explicit relationship context:
 - `awiki-cli people following [--limit N] [--offset N] [--profile]`
 - `awiki-cli people contacts list`
 - `awiki-cli people contacts save --did <did> [--handle <handle>] [--display-name <name>] [--relationship <label>] [--reason <text>]`
-
-`awiki-cli people search <QUERY>` remains unsupported until a search API is
-designed.
-
-When the user requests search or automated discovery, explain that relationship
-and local-contact operations are available, but people search is not implemented
-in the current repository.
 
 ## Safety Notes
 

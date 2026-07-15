@@ -92,6 +92,8 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
     assert.equal(skillListing.status, 0, skillListing.stderr);
     assert.match(skillListing.stdout, /^SKILL\.md$/m);
     assert.match(skillListing.stdout, /^references\/00-installation\.md$/m);
+    assert.match(skillListing.stdout, /^references\/12-mail\.md$/m);
+    assert.match(skillListing.stdout, /^references\/13-tenants\.md$/m);
     assert.doesNotMatch(skillListing.stdout, /(^|\/)\._/m);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });

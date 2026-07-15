@@ -10,12 +10,7 @@
 
 `awiki-cli` 让人类、脚本和 Agent 使用 DID / handle 身份发送消息、加入群组、传输附件并接收结构化 JSON 结果。本仓库还包含 AWiki 客户端共享的 Rust IM Core、Flutter/Dart SDK、AWiki Daemon 和 Agent Skills。
 
-> 仓库名 `awiki-cli-rs2` 是历史代码名；它已经不只是一个 CLI 仓库。本文用 **AWiki Client Workspace** 表达真实项目范围，二进制名称仍为 `awiki-cli`。
-
-> **当前状态：持续开发中。** CLI、群组、SDK 和站点能力已有实现；消息、Runtime、People 与 Discovery 中仍有部分能力处于 partial 状态。生产采用前请查看 [兼容性与成熟度](docs/compatibility.zh-CN.md)。
-
-> **演示待补：第一次消息终端 GIF**
-> 建议展示 `status` → `id register` → `msg send --dry-run` → 实际发送 → `msg inbox`，并突出稳定 JSON envelope。文件建议为 `docs/assets/readme/awiki-cli-first-message.gif`。拍摄要求见 [截图计划](docs/screenshot-plan.zh-CN.md)。
+> **当前状态：持续开发中。** 生产采用前请查看 [兼容性与成熟度](docs/compatibility.zh-CN.md)。
 
 ## 选择你的入口
 
@@ -155,7 +150,7 @@ Skill 的安全原则：
 | --- | --- |
 | `crates/im-core` | 共享 Rust IM SDK：身份、消息、群组、附件、同步、本地状态和安全能力 |
 | `crates/awiki-cli` | 面向人和 Agent 的薄 CLI 产品壳 |
-| `crates/awiki-deamon` | AWiki Daemon，本地 Agent Runtime Host；包名保留历史拼写 |
+| `crates/awiki-deamon` | AWiki Daemon，本地 Agent Runtime Host |
 | `crates/im-core-dart` | Rust-Dart FFI facade |
 | `packages/awiki_im_core` | Flutter/Dart SDK，供 AWiki Me 等 Native App 使用 |
 | `skills` | 面向 Agent 的 AWiki 任务入口和按需参考 |

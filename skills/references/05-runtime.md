@@ -2,14 +2,14 @@
 
 ## Purpose
 
-Use this reference when you are handling runtime selection and long-connection delivery tasks in `awiki-cli`, including runtime mode inspection, websocket listener control, host-notification configuration, and the current heartbeat limitations.
+Use this reference when you are handling runtime selection and long-connection delivery tasks in `awiki-cli`, including runtime mode inspection, websocket listener control, and host-notification configuration.
 
 This file is a **reference**, not an entry skill. Load it only when the task clearly involves runtime mode, listener, websocket transport, host notification, or runtime recovery.
 
 ## Current Status
 
-- Status: **partially implemented**
-- Currently implemented:
+- Status: **implemented**
+- Available commands:
   - `runtime status`
   - `runtime apply`
   - `runtime setup`
@@ -22,30 +22,26 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
   - `runtime host-notify enable/disable`
   - `runtime host-notify openclaw set/set-token/clear-token`
   - `runtime host-notify openclaw route add/list/remove`
-- Planned but not yet implemented:
-  - `runtime heartbeat status/install/run-once`
+  - `runtime host-notify hermes guide/status/setup`
 
 ## Current Behavior Notes
 
 - When the listener service is missing, `runtime listener start` automatically installs the service
 - `runtime setup` and `runtime mode set` apply runtime policy after writing configuration; in websocket mode, if the listener is enabled and auto-install/auto-start are enabled, they may install and start the listener service
 - `runtime listener install` still exists as an explicit install-only path
-- Do not describe heartbeat as already implemented in the current repository
 
 ## When to Use
 
 - Inspect the runtime mode
 - Switch between `http` and `websocket`
 - Control real-time listener and host-notification settings
-- Understand the current heartbeat contract and its limitations
 
 ## Core Concepts
 
 - **runtime mode**: the transport selection exposed only by the runtime domain
 - **listener**: the long-running process used on the websocket side
 - **daemon bridge**: the local process boundary used in websocket mode
-- **host notify**: normalized websocket events forwarded to `log`, `file`, or `openclaw`
-- **heartbeat**: a reserved but not yet implemented timed reliability path
+- **host notify**: normalized websocket events forwarded to `log`, `file`, `openclaw`, or the managed local `hermes` adapter
 
 ## Decision Rules
 
@@ -55,13 +51,12 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - Need to change persistent listener policy -> use `runtime listener config show/set`
 - Need to enable or disable listener management and apply runtime state -> use `runtime listener enable` or `runtime listener disable`
 - Need websocket real-time receiving -> set websocket mode first, then use listener commands
-- Need host/webhook notifications -> inspect `runtime host-notify config show` first, then set the sink or use `runtime host-notify enable`
+- Need host/webhook notifications -> inspect `runtime host-notify config show` first, then follow the OpenClaw or Hermes high-level setup path
 - messaging returns `transport-unavailable` -> inspect listener state, or switch back to `http`
-- Need heartbeat automation -> explain that this command family is still in the planning stage in the current repository
 
 ## Canonical Commands
 
-Currently implemented:
+Available commands:
 
 - `awiki-cli runtime status`
 - `awiki-cli runtime apply`
@@ -90,6 +85,9 @@ Currently implemented:
 - `awiki-cli runtime host-notify openclaw route list`
 - `awiki-cli runtime host-notify openclaw route remove --channel <channel> --to <target>`
 - `awiki-cli runtime host-notify openclaw route remove --session-key <session-key>`
+- `awiki-cli runtime host-notify hermes guide [--deliver <target>]`
+- `awiki-cli runtime host-notify hermes status`
+- `awiki-cli runtime host-notify hermes setup [--notify-url <url>] [--deliver <target>] [--secret <secret>]`
 
 ## Common Patterns
 
@@ -130,6 +128,14 @@ Under the default websocket listener policy, step 3 may already have installed a
    - `awiki-cli runtime host-notify openclaw route add --session-key <session-key>`
    - or `awiki-cli runtime host-notify openclaw route add --channel <channel> --to <target>`
 
+### Configure Managed Hermes Notifications
+
+1. `awiki-cli runtime host-notify hermes guide`
+2. Review the proposed local Hermes route and delivery target
+3. `awiki-cli runtime host-notify hermes setup --dry-run`
+4. After explicit confirmation, run `awiki-cli runtime host-notify hermes setup`
+5. `awiki-cli runtime host-notify hermes status`
+
 ## Side Effects and Confirmation
 
 - Require explicit confirmation:
@@ -142,9 +148,8 @@ Under the default websocket listener policy, step 3 may already have installed a
   - `runtime host-notify enable/disable`
   - `runtime host-notify config set`
   - `runtime host-notify openclaw set/set-token/clear-token`
-- Internal-only:
-  - `runtime listener run`
-  - `runtime listener service-run`
+  - `runtime host-notify openclaw route add/remove`
+  - `runtime host-notify hermes setup`
 
 ## Error Handling
 
@@ -163,8 +168,7 @@ Under the default websocket listener policy, step 3 may already have installed a
 - `runtime host_notify.enabled` is enabled by default, while the default sink remains `log`
 - `runtime host-notify config show` displays whether an OpenClaw token is configured, the registered routes, the auto-detected webhook port, and the final effective `hook_url`
 - The OpenClaw adapter now keeps only the pure webhook path and performs fan-out to registered routes based on the local route registry
-- OpenClaw is the recommended host integration path for `host-notify`; see `00-installation.md`
-- `runtime heartbeat` is still in the planning stage in the current repository
+- OpenClaw uses registered webhook routes; Hermes uses the managed local adapter and bridge configured by `hermes setup`; see `00-installation.md`
 
 ## Related References
 

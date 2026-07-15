@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn upgrade_schema_exposes_go_contract() {
+fn upgrade_schema_exposes_current_installing_contract() {
     let output = awiki_cmd(&["schema", "upgrade"]);
     assert_success(&output);
     let envelope = success_json(&output);
@@ -14,7 +14,7 @@ fn upgrade_schema_exposes_go_contract() {
     assert_eq!(envelope["data"]["command"]["name"], "upgrade");
     assert_eq!(envelope["data"]["command"]["handler"], "upgrade");
     assert_eq!(envelope["data"]["command"]["phase"], "phase2");
-    assert_eq!(envelope["data"]["command"]["side_effect"], false);
+    assert_eq!(envelope["data"]["command"]["side_effect"], true);
     assert_eq!(
         envelope["data"]["command"]["outputs"],
         json!(["json", "pretty", "table"])

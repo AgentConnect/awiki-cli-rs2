@@ -129,15 +129,25 @@ Current important behavior:
 - `awiki-cli init` does not install or start the listener service
 - Listener service changes happen later through `runtime setup` or explicit `runtime listener` commands
 
-Inside the workspace root directory, you should expect to see:
+The product root contains global selection/update state plus one isolated directory per tenant:
 
-- `config.yaml`
-- `identities/`
-- `data/awiki-cli.db`
-- `runtime/`
-- `cache/`
-- `logs/`
-- `upgrade/`
+```text
+~/.awiki-cli/
+  global.json
+  cache/
+  tenants/
+    registry.json
+    <tenant-name>/
+      config.yaml
+      identities/
+      data/awiki-cli.db
+      runtime/
+      cache/
+      logs/
+      upgrade/
+```
+
+Do not look for `config.yaml` or the SQLite database directly under `~/.awiki-cli/`; they belong to the active tenant under `tenants/<tenant-name>/`.
 
 ### Optional: Isolate the Workspace for a Single Agent
 
@@ -146,7 +156,7 @@ export AWIKI_CLI_WORKSPACE_HOME_DIR=~/awiki-workspaces/agent-1
 awiki-cli init
 ```
 
-From that point on, all config, identities, data, cache, and logs will live in that directory.
+From that point on, global state and all tenant config, identities, data, cache, and logs will live under that product root.
 
 The isolated workspace does not change service-manager state until runtime setup is performed.
 

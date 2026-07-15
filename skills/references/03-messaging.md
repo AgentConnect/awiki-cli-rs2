@@ -8,8 +8,8 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 
 ## Current Status
 
-- Status: **partially implemented**
-- Currently implemented:
+- Status: **implemented**
+- Available commands:
   - `msg send`
   - `msg attachment download`
   - `msg inbox`
@@ -21,12 +21,7 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
   - `msg attachment download` for local decrypting download of E2EE attachments when the high-level SDK has the required secure selection
   - `msg secure status`
   - `msg secure repair`
-- Unsupported/internal secure diagnostics:
-  - `msg secure init`
-  - `msg secure failed`
-  - `msg secure retry`
-  - `msg secure drop`
-- `msg send --secure required` is the canonical secure send flag for direct and group text or attachment messages; `--secure on/e2ee/secure-direct/group-e2ee` are deprecated aliases and should not be suggested as canonical.
+- Use `msg send --secure required` for secure direct/group text and attachments.
 
 ## When to Use
 
@@ -37,7 +32,7 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - Download a single attachment from a direct message or group message
 - View the inbox or direct-message history
 - Mark messages as read
-- Understand the current secure-message contract and its limitations
+- Inspect or repair secure-message state
 
 ## Core Concepts
 
@@ -80,6 +75,7 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - Need to clear unread state -> `awiki-cli msg mark-read ...`
 - Need to change group lifecycle state -> use `04-groups.md`
 - Need to handle transport setup -> use `05-runtime.md`
+- Need email-style recipients, subjects, mailbox folders, or mail attachments -> use `12-mail.md`
 
 ## Canonical Commands
 
@@ -154,7 +150,7 @@ For group attachment downloads, use `awiki-cli group messages --group <group_did
 - The attachment-download command shape is unclear -> check `awiki-cli schema msg attachment download`
 - auth/setup error -> confirm that the active identity has completed registration
 - transport unavailable -> use `05-runtime.md`
-- secure is requested and fails -> report the stable error from `im-core` capability, identity, local-state, or transport checks; do not suggest legacy outbox or raw E2EE diagnostics
+- secure is requested and fails -> report the error from `im-core` capability, identity, local-state, or transport checks, then use `msg secure status` or `msg secure repair` when appropriate
 - secure attachment download fails -> report the stable `im-core` or service error; do not ask the user for object keys, nonces, ratchet keys, MLS secrets, download tickets, or raw manifests
 
 ## Implementation Notes
@@ -164,10 +160,10 @@ For group attachment downloads, use `awiki-cli group messages --group <group_did
 - Secure attachments use the same command shape plus `--secure required`; there is no separate public secure-attachment command.
 - The CLI must use high-level `im-core` attachment/message APIs. It must not build P7 object transfer, P5 direct E2EE, or P6 group E2EE wire payloads itself.
 - Full E2EE attachment manifests, object keys, nonces, P5 ratchet keys, MLS secrets, and download tickets must not be printed in public CLI output. Dry-run output and send/download result envelopes are redacted.
-- `msg secure init/failed/retry/drop` and `msg secure outbox *` are not supported product commands in this version.
 
 ## Related References
 
 - `04-groups.md`
+- `12-mail.md`
 - `05-runtime.md`
 - `01-onboarding.md`

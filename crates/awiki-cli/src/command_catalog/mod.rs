@@ -1128,14 +1128,27 @@ fn include_in_public_help(spec: &CommandSpec) -> bool {
     if spec.hidden {
         return false;
     }
-    matches!(
-        spec.direct_invocation(),
-        DirectInvocationPolicy::Allow
-            | DirectInvocationPolicy::AllowWithWarning
-            | DirectInvocationPolicy::RequireDiagnosticGate
-            | DirectInvocationPolicy::RequireMigrationGate
-            | DirectInvocationPolicy::RequireInternalServiceGate
-    )
+    let has_public_implementation = spec.implemented
+        || default_specs().iter().any(|candidate| {
+            candidate.implemented
+                && !candidate.hidden
+                && candidate.name.starts_with(&format!("{}.", spec.name))
+                && matches!(
+                    candidate.direct_invocation(),
+                    DirectInvocationPolicy::Allow
+                        | DirectInvocationPolicy::AllowWithWarning
+                        | DirectInvocationPolicy::RequireDiagnosticGate
+                        | DirectInvocationPolicy::RequireMigrationGate
+                )
+        });
+    has_public_implementation
+        && matches!(
+            spec.direct_invocation(),
+            DirectInvocationPolicy::Allow
+                | DirectInvocationPolicy::AllowWithWarning
+                | DirectInvocationPolicy::RequireDiagnosticGate
+                | DirectInvocationPolicy::RequireMigrationGate
+        )
 }
 
 fn default_surface_owner(owner: CommandOwner) -> bool {
@@ -1265,11 +1278,11 @@ macro_rules! cmd {
 
 fn default_specs() -> &'static [CommandSpec] {
     &[
-        cmd!("status", "status", "Show the current phase-1 CLI status", "phase1", "status"),
+        cmd!("status", "status", "Show the current CLI, workspace, and identity status", "phase1", "status"),
         cmd!("docs", "docs [topic]", "Show built-in documentation topics", "phase1", "docs"),
         cmd!("doctor", "doctor", "Run baseline environment and storage diagnostics", "phase1", "doctor"),
         cmd!("version", "version", "Show build information", "phase1", "version"),
-        CommandSpec { name: "upgrade", use_: "upgrade", short: "Check for newer awiki-cli versions and show upgrade hints", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "upgrade", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
+        CommandSpec { name: "upgrade", use_: "upgrade", short: "Check for and install an available awiki-cli update", long: "Checks the configured release channel and, when a newer or minimum-supported version is required, installs that channel's current npm package. Use --dry-run to check without installing.", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "upgrade", side_effect: true, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "init", use_: "init", short: "Initialize the awiki-cli workspace and config.yaml", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "init", side_effect: true, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "completion", use_: "completion", short: "Generate shell completion scripts", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "completion.bash", use_: "bash", short: "Generate Bash completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.bash", side_effect: false, outputs: &[], flags: &[] },
@@ -1278,7 +1291,7 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "completion.powershell", use_: "powershell", short: "Generate PowerShell completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.powershell", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "help", use_: "help [COMMAND]", short: "Show human-readable command help", long: "Show concise command usage, flags, and subcommands. For machine-readable command metadata, use `awiki-cli schema`.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "help", side_effect: false, outputs: &["text"], flags: &[] },
         CommandSpec { name: "schema", use_: "schema [COMMAND]", short: "Show static command contracts", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "schema", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("all", "bool", "Show every command surface"), flag!("audience", "string", "Show one command audience", choices = ["default", "advanced", "operator", "diagnostic", "migration", "internal", "all"])] },
-        CommandSpec { name: "config", use_: "config", short: "Inspect resolved CLI configuration", long: "Inspect the configuration resolved from the active tenant and its isolated workspace. Backend and DID host values are managed as an atomic tenant profile, not by editing config.yaml or using the removed config set command.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "config", use_: "config", short: "Inspect resolved CLI configuration", long: "Inspect the configuration resolved from the active tenant and its isolated workspace. Manage backend and DID host values together through tenant commands.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         cmd!("config.show", "show", "Show resolved configuration values", "phase1", "config.show"),
         CommandSpec { name: "tenant", use_: "tenant", short: "Manage backend and DID host tenants", long: "A tenant is an atomic backend_base_url + did_host profile with an isolated local workspace under ~/.awiki-cli/tenants/<name>. Create a tenant first, then switch by name; backend and DID host values are not edited in config.yaml.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "tenant.list", use_: "list", short: "List configured tenants", long: "List tenant profiles from the product-level tenant registry and show the active tenant for this command invocation.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "tenant.list", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
@@ -1358,7 +1371,7 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "group.code.get", use_: "get", short: "Show group join code status", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Group DID", required)] },
         CommandSpec { name: "group.code.refresh", use_: "refresh", short: "Rotate the current group join code", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: false, handler: "stub", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required)] },
         CommandSpec { name: "group.code.enable", use_: "enable", short: "Enable or disable group join codes", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: false, handler: "stub", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("enabled", "bool", "Whether join codes are enabled", required)] },
-        CommandSpec { name: "runtime", use_: "runtime", short: "Runtime mode, listener, and heartbeat commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "runtime", use_: "runtime", short: "Runtime mode, listener, and host notification commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         cmd!("runtime.status", "status", "Show runtime status", "phase7", "runtime.status"),
         CommandSpec { name: "runtime.apply", use_: "apply", short: "Apply the configured runtime state", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.apply", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "runtime.setup", use_: "setup", short: "Run runtime bootstrap and migration checks", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.setup", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("mode", "string", "Runtime mode", choices = ["http", "websocket"])] },
@@ -1434,7 +1447,7 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "site.page.update", use_: "update", short: "Update a tenant site page", long: "Replace one public page under the required remote --domain using exactly one Markdown source. This does not switch the active tenant.", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "site.page.update", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("domain", "string", "Remote tenant bare domain; does not switch active tenant", required), flag!("slug", "string", "Page slug", required), flag!("markdown", "string", "Inline markdown body"), flag!("markdown-file", "string", "Markdown file path")] },
         CommandSpec { name: "site.page.rename", use_: "rename", short: "Rename a tenant site page slug", long: "Rename a page slug under the required remote --domain. This changes remote site content naming only and does not switch the active tenant.", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "site.page.rename", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("domain", "string", "Remote tenant bare domain; does not switch active tenant", required), flag!("slug", "string", "Current page slug", required), flag!("to", "string", "New slug", required)] },
         CommandSpec { name: "site.page.delete", use_: "delete", short: "Delete a tenant site page", long: "Delete one public page from the required remote --domain. This does not remove or switch any local tenant data.", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "site.page.delete", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("domain", "string", "Remote tenant bare domain; does not switch active tenant", required), flag!("slug", "string", "Page slug", required)] },
-        CommandSpec { name: "debug", use_: "debug", short: "Debugging and raw inspection commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "debug", use_: "debug", short: "Diagnostic and migration inspection commands", long: "Diagnostic commands require the global --diagnostic gate. Migration imports require the global --migration gate.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "debug.db", use_: "db", short: "Database inspection helpers", long: "", aliases: &[], phase: "phase4", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "debug.db.handle-history", use_: "handle-history <HANDLE>", short: "Show the local DID history recorded for one handle", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "debug.db.handle-history", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "debug.db.query", use_: "query <SQL>", short: "Raw SQLite query is no longer supported", long: "", aliases: &[], phase: "phase4", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },

@@ -8,11 +8,8 @@ Load it when the user asks whether people, follower, following, or local-contact
 
 ## Current Status
 
-- Status: **partially implemented**
-- `people follow`, `people unfollow`, `people status`, `people followers`, `people following`, `people contacts list`, and `people contacts save` are implemented through `im-core` `DirectoryService`.
-- `people search` remains unsupported until a search API is designed.
-
-Do not describe people search as implemented.
+- Status: **implemented**
+- Relationship and local-contact commands use `im-core` `DirectoryService`.
 
 ## Current Implemented Scope
 
@@ -31,20 +28,10 @@ Do not describe people search as implemented.
 - `awiki-cli people contacts list`
 - `awiki-cli people contacts save --did <did> [--handle <handle>] [--display-name <name>] [--relationship <label>] [--reason <text>]`
 
-`--name` is retained as a deprecated alias for `people contacts save`, but
-new references should use `--display-name`.
-
-## Future Planned Scope
-
-- `awiki-cli people search <QUERY>`
-- block / unblock
-- recommendation and discovery flows
-
 ## Usage Guidance
 
-- If the user needs relationship discovery today, use `07-discovery.md`
-- If the user needs real message history or group inspection today, use `03-messaging.md` or `04-groups.md`
-- If the user asks whether `people` is available, answer that relationship and local-contact commands are available, while `people search` is still unsupported.
+- For relationship discovery, use `07-discovery.md`
+- For message history or group inspection, use `03-messaging.md` or `04-groups.md`
 
 ## Confirmation Rules
 

@@ -6,17 +6,6 @@ Use this reference when you are doing local debugging and final fallback inspect
 
 This file is a **reference**, not an entry skill. Load it only after all safe inspection paths have been exhausted.
 
-## Current Status
-
-- Status: **partially implemented**
-- Currently implemented:
-  - `debug db handle-history`
-  - `debug db import-v1`
-- Stable unsupported / non-default:
-  - `debug db query` is stable unsupported; raw SQL is not a current supported capability.
-  - `debug raw rpc` is removed.
-  - `debug schema-cache` and `debug logs` are hidden diagnostic contracts, not default product workflows.
-
 ## When to Use
 
 - Local SQLite inspection
@@ -35,21 +24,13 @@ Use debug only when the following paths are still not enough:
 5. `awiki-cli config show`
 6. One matching domain or workflow reference
 
-## Currently Available Commands
+## Available Commands
 
 - `awiki-cli --diagnostic debug db handle-history <handle>`
 - `awiki-cli --migration debug db import-v1 [--path <legacy_db>]`
 
-## Unsupported, Removed, or Hidden Commands
-
-- `awiki-cli debug db query "<SQL>"` returns stable unsupported capability.
-- `awiki-cli debug raw rpc` returns removed command.
-- `awiki-cli debug schema-cache` and `awiki-cli debug logs [--follow]` are hidden diagnostic contracts and should not be used as normal product flows.
-
 ## Limitations
 
-- Do not suggest raw SQL as a current supported inspection path
-- Do not assume raw RPC is already available before the command is implemented
 - Do not expose JWTs, private keys, secure session material, or unrelated local files
 - Do not use debug to bypass domain-level confirmation rules
 

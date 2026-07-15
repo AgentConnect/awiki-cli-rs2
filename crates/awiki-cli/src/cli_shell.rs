@@ -577,13 +577,7 @@ impl App {
     }
 
     pub fn run_completion(&self, shell: &str) -> Result<(), ExitError> {
-        let script = match shell {
-            "bash" => "_awiki-cli() {\n  COMPREPLY=()\n}\ncomplete -F _awiki-cli awiki-cli\n",
-            "zsh" => "#compdef awiki-cli\n_arguments '*::arg:->args'\n",
-            "fish" => "complete -c awiki-cli -f\n",
-            "powershell" => "Register-ArgumentCompleter -CommandName awiki-cli -ScriptBlock {}\n",
-            _ => "",
-        };
+        let script = crate::cli_completion::render(shell);
         print!("{script}");
         Ok(())
     }
@@ -1436,7 +1430,11 @@ fn render_root_help() -> String {
         "  --identity <name>    Use a local identity for this command only".to_string(),
         "  --format <format>    Output format for data commands: json, pretty, table, ndjson"
             .to_string(),
+        "  --jq <expression>    Filter the JSON envelope with a jq expression".to_string(),
         "  --dry-run            Show the planned side effects without applying them".to_string(),
+        "  --diagnostic         Allow explicitly gated diagnostic commands".to_string(),
+        "  --migration          Allow explicitly gated migration commands".to_string(),
+        "  --verbose            Include additional diagnostic details when supported".to_string(),
         "  --help, -h           Show help".to_string(),
         String::new(),
         "Use `awiki-cli <command> --help` for command-specific help.".to_string(),
@@ -1488,10 +1486,21 @@ fn command_usage(spec: &command_catalog::CommandSpec) -> String {
 
 fn append_command_rows(lines: &mut Vec<String>, commands: &[command_catalog::CommandSpec]) {
     for spec in commands {
+        let is_leaf = command_catalog::public_help_children_of(spec.name).is_empty();
+        let gate = match (is_leaf, spec.direct_invocation()) {
+            (true, command_catalog::DirectInvocationPolicy::RequireDiagnosticGate) => {
+                " (requires --diagnostic)"
+            }
+            (true, command_catalog::DirectInvocationPolicy::RequireMigrationGate) => {
+                " (requires --migration)"
+            }
+            _ => "",
+        };
         lines.push(format!(
-            "  {:<18} {}",
+            "  {:<18} {}{}",
             command_display_name(spec),
-            spec.short
+            spec.short,
+            gate,
         ));
     }
 }

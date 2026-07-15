@@ -74,7 +74,7 @@ awiki-cli id list --format json
 If you are migrating from v1:
 
 ```bash
-awiki-cli id import-v1 --all --dry-run
+awiki-cli --migration id import-v1 --all --dry-run
 ```
 
 ---

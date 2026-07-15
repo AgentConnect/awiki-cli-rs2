@@ -10,12 +10,7 @@
 
 `awiki-cli` lets people, scripts, and agents use DID/handle identities to send messages, join groups, transfer attachments, and receive structured JSON results. This repository also contains the Rust IM Core, Flutter/Dart SDK, AWiki Daemon, and Agent Skills shared by AWiki clients.
 
-> The repository name `awiki-cli-rs2` is historical; this is no longer only a CLI repository. The documentation uses **AWiki Client Workspace** for the actual project scope, while the binary remains `awiki-cli`.
-
-> **Current status: active development.** CLI, group, SDK, and site capabilities are implemented; some Messaging, Runtime, People, and Discovery capabilities remain partial. Read [Compatibility and Maturity](docs/compatibility.md) before production adoption.
-
-> **Demo pending: first-message terminal GIF**
-> Show `status`, `id register`, `msg send --dry-run`, the actual send, and `msg inbox`, highlighting the stable JSON envelope. The intended file is `docs/assets/readme/awiki-cli-first-message.gif`; see the [asset plan](docs/screenshot-plan.md).
+> **Current status: active development.** Read [Compatibility and Maturity](docs/compatibility.md) before production adoption.
 
 ## Choose an entry point
 
@@ -155,7 +150,7 @@ See [Agent and Skill Integration](docs/agent-integration.md).
 | --- | --- |
 | `crates/im-core` | Shared Rust IM SDK for identity, messages, groups, attachments, sync, local state, and secure capabilities. |
 | `crates/awiki-cli` | Thin CLI shell for people and agents. |
-| `crates/awiki-deamon` | AWiki Daemon, the local Agent Runtime Host; package name retains the historical spelling. |
+| `crates/awiki-deamon` | AWiki Daemon, the local Agent Runtime Host. |
 | `crates/im-core-dart` | Rust-Dart FFI facade. |
 | `packages/awiki_im_core` | Flutter/Dart SDK for AWiki Me and other native apps. |
 | `skills` | Task entry points and on-demand references for agents. |
