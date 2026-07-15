@@ -147,6 +147,7 @@ where
         group_state_ref,
         source: GroupStateRefSource::ServiceHead,
         mls_status: StatusOutput {
+            member_dids: Vec::new(),
             status: String::new(),
             epoch: None,
             local_epoch: None,
@@ -458,6 +459,7 @@ where
         group_state_ref,
         source: GroupStateRefSource::ServiceHead,
         mls_status: StatusOutput {
+            member_dids: Vec::new(),
             status: String::new(),
             epoch: None,
             local_epoch: None,
@@ -990,6 +992,7 @@ mod tests {
             assert_eq!(input.agent_did.as_deref(), Some("did:example:alice"));
             assert_eq!(input.group_did.as_deref(), Some("did:example:groups:e2ee"));
             Ok(StatusOutput {
+                member_dids: Vec::new(),
                 status: "active".to_owned(),
                 epoch: Some("7".to_owned()),
                 local_epoch: Some("7".to_owned()),
@@ -1092,6 +1095,7 @@ mod tests {
             let group_did = input.group_did.unwrap_or_default();
             self.calls.lock().unwrap().push(group_did);
             Ok(StatusOutput {
+                member_dids: Vec::new(),
                 status: "active".to_owned(),
                 epoch: Some("8".to_owned()),
                 local_epoch: Some("8".to_owned()),
@@ -1188,6 +1192,7 @@ mod tests {
     impl GroupMlsProvider for InactiveStatusProvider {
         fn status(&self, _input: StatusInput) -> crate::ImResult<StatusOutput> {
             Ok(StatusOutput {
+                member_dids: Vec::new(),
                 status: "missing".to_owned(),
                 epoch: None,
                 local_epoch: None,

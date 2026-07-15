@@ -116,6 +116,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "tenant.list" => app.run_tenant_list(),
         "tenant.current" => app.run_tenant_current(),
         "tenant.create" => app.run_tenant_create(command),
+        "tenant.setup" => app.run_tenant_setup(command),
         "tenant.use" => app.run_tenant_use(command),
         "tenant.reconfigure" => app.run_tenant_reconfigure(command),
         "doctor" => app.run_doctor(),

@@ -286,6 +286,7 @@ pub fn build_bridge_group_create_rpc_params(
     let payload = crate::internal::wire::group::build_group_create_payload(
         &identity.did,
         &crate::groups::GroupCreateRequest {
+            creator_handle: None,
             name: request.name,
             description: optional_trimmed(request.description),
             avatar_uri: optional_trimmed(request.avatar_uri),
@@ -349,6 +350,7 @@ pub fn build_bridge_group_join_rpc_params(
     let payload = crate::internal::wire::group::build_group_join_payload(
         &identity.did,
         &crate::groups::GroupJoinRequest {
+            member_handle: None,
             group: crate::ids::GroupRef::parse(group_did)?,
             reason_text: optional_trimmed(reason_text),
         },

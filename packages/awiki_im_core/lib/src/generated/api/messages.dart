@@ -164,6 +164,14 @@ Future<DartConversationPage> conversations({
   unreadOnly: unreadOnly,
 );
 
+Future<void> ensureConversation({
+  required ArcDartImClient client,
+  required String conversationId,
+}) => RustLib.instance.api.crateApiMessagesEnsureConversation(
+  client: client,
+  conversationId: conversationId,
+);
+
 Future<DartConversationListSnapshot?> loadConversationSnapshot({
   required ArcDartImClient client,
 }) => RustLib.instance.api.crateApiMessagesLoadConversationSnapshot(

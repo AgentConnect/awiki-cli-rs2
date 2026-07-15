@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use anp::authentication::verification_methods::extract_public_key;
 use anp::authentication::{create_did_wba_document, DidDocumentOptions};
 use anp::proof::{verify_w3c_proof, ProofVerificationOptions};
-use im_core::prelude::*;
-use im_core::vault::DeviceVaultRootKey;
+use awiki_im_core::prelude::*;
+use awiki_im_core::vault::DeviceVaultRootKey;
 use serde_json::{json, Value};
 
 static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -495,7 +495,13 @@ async fn recover_handle_async_with_otp_recovers_and_persists_identity() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(default.handle.unwrap().as_str(), "erin.awiki.test");
+    assert_eq!(default.handle.unwrap().as_str(), "alice.awiki.test");
+    let persisted = core
+        .identities()
+        .resolve_async(IdentitySelector::LocalAlias("erin".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(persisted.did.as_str(), recovered_did);
 
     let requests = server.join();
     assert_eq!(requests.len(), 1);
@@ -511,6 +517,424 @@ async fn recover_handle_async_with_otp_recovers_and_persists_identity() {
         body["params"]["did_document"]["id"].as_str(),
         Some(recovered_did.as_str())
     );
+}
+
+#[tokio::test]
+async fn recover_same_handle_preserves_owner_history_and_enqueues_group_rebind() {
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
+        "user_id": "user-erin",
+        "handle": "erin",
+        "full_handle": "erin.awiki.test",
+        "access_token": "jwt-erin-recovered",
+        "binding_generation": "2"
+    }))]);
+    let fixture = Fixture::new();
+    let previous = fixture.write_generated_identity_with_daemon_key("erin", true, true);
+    let previous_did = previous.did.clone();
+    let stable_owner_identity_id = "erin-id";
+    let sqlite_path = fixture.root.join("local").join("im.sqlite");
+    let base_url = server.base_url().to_owned();
+    let core = fixture.core_async_with_base_url(&base_url).await;
+    core.bootstrap()
+        .initialize_local_state_async()
+        .await
+        .unwrap();
+
+    let connection = rusqlite::Connection::open(&sqlite_path).unwrap();
+    connection
+        .execute(
+            r#"INSERT INTO messages
+                (msg_id, owner_identity_id, owner_did, thread_id, direction,
+                 content_type, content, stored_at, credential_name)
+               VALUES (?1, ?2, ?3, ?4, 0, 'text', 'before recovery', ?5, 'erin')"#,
+            rusqlite::params![
+                "msg-before-recovery",
+                stable_owner_identity_id,
+                previous_did,
+                "dm:peer-scope:v1:test",
+                "2026-07-13T10:00:00Z"
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            r#"INSERT INTO groups
+                (owner_identity_id, owner_did, group_id, group_did, name,
+                 my_role, membership_status, stored_at, credential_name)
+               VALUES (?1, ?2, ?3, ?3, 'Recovery group', 'member', 'active', ?4, 'erin')"#,
+            rusqlite::params![
+                stable_owner_identity_id,
+                previous_did,
+                "did:wba:awiki.test:groups:recovery-test",
+                "2026-07-13T10:00:00Z"
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            r#"INSERT INTO group_members
+                (owner_identity_id, owner_did, group_id, user_id, member_did,
+                 member_handle, anchor_kind, anchor_value, role, status,
+                 handle_binding_generation, last_synced_at, credential_name)
+               VALUES (?1, ?2, ?3, 'user-erin', ?2, 'erin',
+                       'handle', 'erin', 'member', 'active', '1', ?4, 'erin')"#,
+            rusqlite::params![
+                stable_owner_identity_id,
+                previous_did,
+                "did:wba:awiki.test:groups:recovery-test",
+                "2026-07-13T10:00:00Z"
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    let result = core
+        .identities()
+        .recover_handle_async(RecoverHandleRequest {
+            handle: Handle::parse("erin.awiki.test", "").unwrap(),
+            raw_handle: Some("erin.awiki.test".to_string()),
+            phone: "+15551234567".to_string(),
+            otp: Some("654321".to_string()),
+            generated_identity: None,
+            local_finalize: None,
+        })
+        .await
+        .unwrap();
+
+    let recovered = result.recovered_identity.as_ref().unwrap();
+    let recovered_did = recovered.identity.did.as_str();
+    assert_eq!(recovered.identity.id.as_str(), stable_owner_identity_id);
+    assert_ne!(recovered_did, previous_did);
+    let local = result.local_recovery.as_ref().unwrap();
+    assert_eq!(local.identity.unique_id, stable_owner_identity_id);
+    assert_eq!(local.identity.did, recovered_did);
+
+    let connection = rusqlite::Connection::open(&sqlite_path).unwrap();
+    let message_owner: (String, String) = connection
+        .query_row(
+            "SELECT owner_identity_id, owner_did FROM messages WHERE msg_id=?1",
+            ["msg-before-recovery"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(message_owner.0, stable_owner_identity_id);
+    assert_eq!(message_owner.1, recovered_did);
+    let group_owner: (String, String) = connection
+        .query_row(
+            "SELECT owner_identity_id, owner_did FROM groups WHERE group_id=?1",
+            ["did:wba:awiki.test:groups:recovery-test"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(group_owner.0, stable_owner_identity_id);
+    assert_eq!(group_owner.1, recovered_did);
+
+    let history = connection
+        .prepare(
+            "SELECT did, status FROM identity_did_history WHERE owner_identity_id=?1 ORDER BY status, did",
+        )
+        .unwrap()
+        .query_map([stable_owner_identity_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(history.contains(&(previous_did.clone(), "previous".to_string())));
+    assert!(history.contains(&(recovered_did.to_string(), "current".to_string())));
+    assert_eq!(history.len(), 2);
+
+    let rebind_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM group_rebind_outbox", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(rebind_count, 1);
+    let rebind: (String, String, String, String, String, String) = connection
+        .query_row(
+            r#"SELECT owner_identity_id, group_did, member_handle,
+                      previous_member_did, new_member_did, binding_generation
+               FROM group_rebind_outbox"#,
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(rebind.0, stable_owner_identity_id);
+    assert_eq!(rebind.1, "did:wba:awiki.test:groups:recovery-test");
+    assert_eq!(rebind.2, "erin.awiki.test");
+    assert_eq!(rebind.3, previous_did);
+    assert_eq!(rebind.4, recovered_did);
+    assert_eq!(rebind.5, "2");
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].json_body()["method"], "recover_handle");
+}
+
+#[tokio::test]
+async fn resume_rebind_recovery_reconciles_missing_job_from_authoritative_lookup() {
+    let fixture = Fixture::new();
+    let current = fixture.write_generated_identity_with_daemon_key("erin", true, true);
+    fs::write(
+        fixture
+            .root
+            .join("identities")
+            .join("erin-id")
+            .join("auth.json"),
+        r#"{"jwt_token":"test-token-for-erin","expires_at":"2099-05-21T00:00:00Z"}"#,
+    )
+    .unwrap();
+    let previous_did = "did:wba:awiki.test:erin:e1_previous";
+    let group_did = "did:wba:awiki.test:groups:reconcile-test";
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::json(json!({
+            "did": current.did.clone(),
+            "user_id": "user-erin",
+            "handle": "erin",
+            "full_handle": "erin.awiki.test",
+            "domain": "awiki.test",
+            "status": "active",
+            "binding_generation": "3"
+        })),
+        ExpectedHttp::rpc_result(json!({
+            "accepted": true,
+            "group_did": group_did,
+            "group_state_version": "11"
+        })),
+        ExpectedHttp::rpc_result(json!({
+            "group_snapshot": {
+                "group_did": group_did,
+                "name": "Recovered group",
+                "member_role": "member",
+                "member_status": "active",
+                "member_count": 3,
+                "required_security_profile": "transport-protected"
+            }
+        })),
+    ]);
+    let core = fixture.core_async_with_base_url(server.base_url()).await;
+    core.bootstrap()
+        .initialize_local_state_async()
+        .await
+        .unwrap();
+    let sqlite_path = fixture.root.join("local").join("im.sqlite");
+    let db = rusqlite::Connection::open(&sqlite_path).unwrap();
+    db.execute(
+        r#"INSERT INTO identity_did_history
+           (owner_identity_id,did,status,first_seen_at,last_seen_at)
+           VALUES ('erin-id',?1,'previous','now','now'),
+                  ('erin-id',?2,'current','now','now')"#,
+        rusqlite::params![previous_did, &current.did],
+    )
+    .unwrap();
+    db.execute(
+        r#"INSERT INTO groups
+           (owner_identity_id,owner_did,group_id,group_did,name,my_role,
+            membership_status,metadata,stored_at,credential_name)
+           VALUES ('erin-id',?1,?2,?2,'Recovered group','member','active',?3,'now','erin-id')"#,
+        rusqlite::params![&current.did, group_did, r#"{}"#],
+    )
+    .unwrap();
+    db.execute(
+        r#"INSERT INTO group_members
+           (owner_identity_id,owner_did,group_id,user_id,member_did,member_handle,
+            anchor_kind,anchor_value,handle_binding_generation,role,status,last_synced_at,credential_name)
+           VALUES ('erin-id',?1,?2,'user-erin',?3,'erin','handle','erin','2','member','active','now','erin-id')"#,
+        rusqlite::params![&current.did, group_did, previous_did],
+    )
+    .unwrap();
+    drop(db);
+
+    let client = core
+        .client_async(IdentitySelector::LocalAlias("erin".to_owned()))
+        .await
+        .unwrap();
+    let summary = client
+        .groups()
+        .resume_rebind_recovery_async(10)
+        .await
+        .unwrap();
+
+    assert_eq!(summary.processed, 1);
+    assert_eq!(summary.completed, 1);
+    assert_eq!(summary.pending, 0);
+    assert_eq!(summary.blocked, 0);
+    assert!(summary
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("reconciled 1 missing")));
+    let db = rusqlite::Connection::open(&sqlite_path).unwrap();
+    let persisted: (String, String, String) = db
+        .query_row(
+            "SELECT member_handle,binding_generation,phase FROM group_rebind_outbox",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        persisted,
+        (
+            "erin.awiki.test".to_owned(),
+            "3".to_owned(),
+            "complete".to_owned()
+        )
+    );
+    let projected_member: (String, String, String, String) = db
+        .query_row(
+            r#"SELECT member_did,member_handle,anchor_value,handle_binding_generation
+               FROM group_members WHERE owner_identity_id='erin-id' AND group_id=?1"#,
+            [group_did],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        projected_member,
+        (
+            current.did.clone(),
+            "erin.awiki.test".to_owned(),
+            "erin.awiki.test".to_owned(),
+            "3".to_owned(),
+        )
+    );
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].path, "/.well-known/handle/erin");
+    assert_eq!(requests[1].path, "/im/rpc");
+    let rebind = requests[1].json_body();
+    assert_eq!(rebind["method"], "group.rebind_member");
+    assert_eq!(rebind["params"]["body"]["member_handle"], "erin.awiki.test");
+    assert_eq!(
+        rebind["params"]["body"]["previous_member_did"],
+        previous_did
+    );
+    assert_eq!(rebind["params"]["body"]["new_member_did"], current.did);
+    assert_eq!(rebind["params"]["body"]["handle_binding_generation"], "3");
+    assert!(rebind["params"]["auth"]["origin_proof"].is_object());
+    assert_eq!(requests[2].json_body()["method"], "group.get");
+}
+
+#[tokio::test]
+async fn resume_rebind_recovery_completes_transport_job_after_authoritative_group_refresh() {
+    let fixture = Fixture::new();
+    let current = fixture.write_generated_identity_with_daemon_key("erin", true, true);
+    fs::write(
+        fixture
+            .root
+            .join("identities")
+            .join("erin-id")
+            .join("auth.json"),
+        r#"{"jwt_token":"test-token-for-erin","expires_at":"2099-05-21T00:00:00Z"}"#,
+    )
+    .unwrap();
+    let previous_did = "did:wba:awiki.test:erin:e1_previous";
+    let group_did = "did:wba:awiki.test:groups:transport-reconcile-test";
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::json(json!({
+            "did": current.did.clone(),
+            "user_id": "user-erin",
+            "handle": "erin",
+            "full_handle": "erin.awiki.test",
+            "domain": "awiki.test",
+            "status": "active",
+            "binding_generation": "3"
+        })),
+        ExpectedHttp::rpc_result(json!({
+            "group_snapshot": {
+                "group_did": group_did,
+                "name": "Recovered group",
+                "member_role": "member",
+                "member_status": "active",
+                "member_count": 3,
+                "required_security_profile": "transport-protected"
+            }
+        })),
+    ]);
+    let core = fixture.core_async_with_base_url(server.base_url()).await;
+    core.bootstrap()
+        .initialize_local_state_async()
+        .await
+        .unwrap();
+    let sqlite_path = fixture.root.join("local").join("im.sqlite");
+    let db = rusqlite::Connection::open(&sqlite_path).unwrap();
+    db.execute(
+        r#"INSERT INTO identity_did_history
+           (owner_identity_id,did,status,first_seen_at,last_seen_at)
+           VALUES ('erin-id',?1,'previous','now','now'),
+                  ('erin-id',?2,'current','now','now')"#,
+        rusqlite::params![previous_did, &current.did],
+    )
+    .unwrap();
+    db.execute(
+        r#"INSERT INTO groups
+           (owner_identity_id,owner_did,group_id,group_did,name,my_role,
+            membership_status,metadata,stored_at,credential_name)
+           VALUES ('erin-id',?1,?2,?2,'Recovered group','member','active','{}','now','erin-id')"#,
+        rusqlite::params![&current.did, group_did],
+    )
+    .unwrap();
+    db.execute(
+        r#"INSERT INTO group_members
+           (owner_identity_id,owner_did,group_id,user_id,member_did,member_handle,
+            anchor_kind,anchor_value,handle_binding_generation,role,status,last_synced_at,credential_name)
+           VALUES ('erin-id',?1,?2,'user-erin',?3,'erin','handle','erin','2','member','active','now','erin-id')"#,
+        rusqlite::params![&current.did, group_did, previous_did],
+    )
+    .unwrap();
+    db.execute(
+        r#"INSERT INTO group_rebind_outbox
+           (job_id,owner_identity_id,group_did,member_handle,previous_member_did,
+            new_member_did,binding_generation,phase,created_at,updated_at)
+           VALUES ('existing-job','erin-id',?1,'erin.awiki.test',?2,?3,'3','awaiting_p6','now','now')"#,
+        rusqlite::params![group_did, previous_did, &current.did],
+    )
+    .unwrap();
+    drop(db);
+
+    let client = core
+        .client_async(IdentitySelector::LocalAlias("erin".to_owned()))
+        .await
+        .unwrap();
+    let summary = client
+        .groups()
+        .resume_rebind_recovery_async(10)
+        .await
+        .unwrap();
+
+    assert_eq!(summary.processed, 1);
+    assert_eq!(summary.completed, 1);
+    assert_eq!(summary.pending, 0);
+    assert_eq!(summary.blocked, 0);
+    assert!(summary.send_paused_groups.is_empty());
+    let db = rusqlite::Connection::open(&sqlite_path).unwrap();
+    let persisted: (String, String) = db
+        .query_row(
+            "SELECT phase,metadata FROM group_rebind_outbox JOIN groups USING(group_did) WHERE job_id='existing-job'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(persisted.0, "complete");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&persisted.1).unwrap()
+            ["required_security_profile"],
+        "transport-protected"
+    );
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[1].json_body()["method"], "group.get");
 }
 
 #[tokio::test]

@@ -255,6 +255,13 @@ device context, warnings, and plaintext compatibility retention, but they must
 not expose root keys, private PEM, JWTs, bearer tokens, raw `SecretRef` JSON, or
 ciphertext internals. `VaultRequired` is fail-closed for new secret persistence.
 
+`verify_identity_vault` 的失败分支使用 `ImError::IdentityVault` 与稳定的
+`IdentityVaultFailure`：`Unavailable`、`MetadataMissing`、`MetadataUnverified`、
+`WorkspaceMismatch`、`DeviceMismatch`、`RecordOpenFailed` 和
+`VerificationFailed`。Dart facade 将其映射为同义的稳定 snake-case error code；host
+必须按 code 分支，不得解析 message。出于安全边界，错误 root key、密文损坏和 AEAD
+authentication failure 均归一为 `RecordOpenFailed`。
+
 P2+ API：
 
 ```rust
@@ -278,6 +285,17 @@ impl IdentityService<'_> {
     pub fn replace_did(&self, request: ReplaceDidRequest) -> ImResult<ReplaceDidResult>;
 }
 ```
+
+`IdentityRegistry::recover_handle` 的 OTP 完成阶段默认执行 canonical
+`local-finalize`。当 SDK 生成新的 DID 时，调用方不能绕过该阶段：同一完整 Handle
+的本地身份继续使用原有稳定 `IdentityId`，旧/新 DID 写入
+`identity_did_history`，同一 owner 下的 `owner_did` snapshot 被刷新，并为仍绑定旧 DID
+的 Handle-backed 群成员写入幂等 `group_rebind_outbox` 任务。CLI 与 Dart facade
+共享这一语义；host 不得自行把恢复结果保存成新的 owner identity。
+
+`generated_identity` 仅保留给显式提供密钥材料且本地不存在同 Handle 身份的低层调用者。
+若本地已有同 Handle 状态却未请求 `local-finalize`，SDK 必须 fail closed。普通 CLI、
+App 和 Dart 调用必须保持为 `None`，由 `im-core` 生成密钥并完成本地 finalize。
 
 `plan_default_identity_change` 返回计划，CLI/App 负责是否写入 default identity 文件。若未来 SDK 需要直接写入，必须只写显式传入的 `default_identity_path`。
 
@@ -470,14 +488,17 @@ impl MessageService<'_> {
 
 Reliable sync 补充：
 
-- `conversations(ConversationQuery)` 返回本地 committed `conversation_summaries`
-  projection 的 `Page<Conversation>`，`ConversationQuery` 包含 `limit`、`cursor`、
+- `ensure_conversation(ConversationReadRef)` 幂等提交空会话存在性。Direct 必须已有
+  owner-scoped canonical route，Group 必须已有 active membership；校验失败不写入。
+- `conversations(ConversationQuery)` 从 committed `conversation_registry` 左连接
+  `conversation_summaries` 返回 `Page<Conversation>`，`ConversationQuery` 包含 `limit`、`cursor`、
   `include_groups`、`include_direct` 和 `unread_only`。`PageLimit::new` 仍把单页最大值
   截到 100；调用方必须通过 `next_cursor` 循环翻页，不能假设传入 500/1000 会一次性返回完整列表。
   `next_cursor` 是 SDK 生成的不透明 keyset cursor，只能原样传回下一次
   `conversations` 调用。
-- Conversation list 排序固定为 `last_message_at DESC, conversation_id DESC`。cursor 内部保存上一页最后一条
-  `last_message_at` 与 `conversation_id` 排序键，比 offset 更能抵抗新增消息或排序变化。
+- Conversation list 排序固定为 `activity_at DESC, conversation_id DESC`。`activity_at`
+  独立于 `last_message_at`，因此无消息会话也有稳定排序键。cursor 内部保存上一页最后一条
+  `activity_at` 与 `conversation_id` 排序键，比 offset 更能抵抗新增消息或排序变化。
   调用方不得解析、修改或复用到其他 API。
 - `sync_delta` 是高层可靠同步入口，`since_event_seq` 从 `im-core` Rust/SQLite 内部
   checkpoint 注入，调用方不能传入或推进。
@@ -515,6 +536,11 @@ Reliable sync 补充：
 
 `msg send --to`、`--group`、`--text-file`、`--file`、`--secure` 是 CLI 输入形态，不是 SDK 字段。CLI adapter 负责转换成 `MessageTarget`、`MessageBody`、`MessageSecurityPolicy`。
 
+当 `msg send --payload` 成功时，`im-core` 返回的 `MessageBodyView::Payload`
+必须被 CLI 作为正常的结构化消息结果渲染，JSON 输出中的
+`data.message.type` 为 `application/json`；不得将 payload 成功回执误判为仅允许
+text body 的内部错误。
+
 ## 9. directory：P2+
 
 ```rust
@@ -547,6 +573,13 @@ impl DirectoryService<'_> {
 }
 ```
 
+`DirectoryResolution.conversation_id` 由 im-core directory resolver 生成：Handle lookup
+具有稳定 user scope 时返回 `dm:peer-scope:v1:*`，无法取得 peer scope 时才回退到 legacy
+`dm:<DID>`。成功解析稳定 user scope 时，im-core 同时在 owner-scoped local state 中记录
+canonical conversation 到 current DID 的内部 route；因此空会话的首条 text/payload/attachment
+发送也直接使用 canonical ID。App/CLI 不得复制 hash 算法、拼 `dm:<DID>` write alias，或在
+收到首条消息后才纠正会话 ID。route 缺失或完整性校验失败必须 fail closed。
+
 `HandleLookupResult` 和 `DirectoryResolution.profile` 可以承载 WNS Handle Resolution Document 中的 DID Subject Profile 投影。SDK 优先接受合法的 `profile`：
 
 - `profile.subject_did` 必须等于外层 `did`；
@@ -576,7 +609,7 @@ pub struct Profile {
 
 `hydrate_display_profiles` 是本地 cache 读取 API，不会发起 WNS / User Service 远程请求。它用于联系人列表、会话列表、群成员列表等热路径水化展示资料；cache miss 时返回 `cache_hit = false`，调用方按 `display_name -> handle -> did` 的展示 fallback 处理。远程刷新仍应通过显式 `resolve_peer` / `public_profile` / 安全验证链路触发。
 
-`relation_status(peer)` 是本地 contact projection 查询；`relationship_status(peer)` 是远端 DID relationship authoritative 查询，并合并本地 `is_contact` / `messaged` / `relationship` 投影。Relationship DTO 不暴露 user-service 内部 `from_user_id` / `to_user_id`。
+`relation_status(peer)` 是本地 contact projection 查询；`relationship_status(peer)` 是远端 DID relationship authoritative 查询，并合并本地 `is_contact` / `messaged` / `relationship` 投影。Relationship DTO 不暴露 user-service 内部 `from_user_id` / `to_user_id`。 Flutter facade 的 `client.directory.relationStatus(peer)` 明确桥接后者，并完整保留五个方向/阻塞布尔值；其中 `relationship` 仍只表示调用方的 outbound local projection，不能替代 combined state。
 
 P1 的 `messages().send(Direct)` 可以内部做最小目标解析，但不需要对外暴露完整 `DirectoryService`。
 
@@ -661,6 +694,12 @@ impl GroupService<'_> {
 普通群消息统一走 `client.messages().send(MessageTarget::Group)`。`groups().send_text()` 只是便利封装，不重复实现业务逻辑。
 
 Rust SDK 调用方创建群组时推荐使用 `GroupCreateRequest::new(name)`，再按需设置 `description`、`avatar_uri`、`discoverability` 等可选字段，避免后续新增可选字段时依赖完整 struct literal。群资料更新继续使用 `GroupProfilePatch::default()` 后按需填写字段；`avatar_uri` 对应 Group Host 权威的 `group_profile.avatar_uri`，`name` 仍只是 `group_profile.display_name` 的兼容输入。
+
+Handle recovery 后，host 通过现有 high-level `resume_rebind_recovery_async(limit)` 恢复 durable P4/P6 任务。该调用会先从完整 Handle 的 provider-domain HTTPS `/.well-known/handle/{local-part}` 读取公开 WNS 文档，再补建历史缺失的 P4 job；普通 `handle.lookup` RPC 不含权威 generation，不能替代该文档。只有以下条件全部满足时才补建：公开状态为 `active`、返回的完整 Handle 精确一致、WNS DID 等于当前签名 DID、`did:wba` domain 与 Handle provider 一致、`binding_generation` 是 canonical positive decimal string 且严格大于本地成员 generation、旧成员 DID 精确属于当前 `IdentityId` 的 previous DID history。缺字段、numeric/非 canonical generation、DID/domain mismatch、跨域同名 local-part 都 fail closed；不得推算 generation。
+
+补建后仍由新 DID 的 origin proof 调用 `group.rebind_member`，Group Host 负责再次校验 WNS continuity 和幂等性。SDK 不直接修改服务端 roster；transport-protected 群在 P4 接受后完成，Group E2EE 群继续遵循既有 P4 `group_state_ref` → P6 Add(new DID) → Remove(old DID) durable 顺序。群安全分类必须保留 Group Host `group.get` / `group.list` 返回的 `required_security_profile` 或等价 `group_policy.message_security_profile`；只有明确的 `transport-protected` 才能跳过 P6，缺失、畸形或冲突值一律按未知 fail closed。若旧客户端已把 transport 群误留在 `awaiting_p6`，high-level resume 会先刷新权威群快照，再仅完成本地 P4 outbox，不重复发送 P4，也不改服务端成员表。App/CLI 只调用 high-level resume 并消费脱敏 summary，不拼 raw RPC 或 SQL。
+
+P4 被 Group Host 接受后，high-level resume 会先把本地稳定 Handle member 投影原子推进到返回请求对应的 `new_member_did` 与 generation，再把 durable P4 job 标记为 `complete` 或 `awaiting_p6`。若该本地投影未能完成，job 保持重试状态；下一次恢复仍使用相同稳定 `operation_id`。因此连续 Handle recovery 的下一代任务必须以前一代已接受并已投影的 DID 为 `previous_member_did`，不能重新从最早历史 DID 建链。
 
 ## 11. local state / bootstrap
 

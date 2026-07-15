@@ -178,6 +178,9 @@ fn realtime_local_state_projector_stores_group_update() {
                     group_state_version: None,
                     actor_did: None,
                     subject_did: None,
+                    subject_handle: None,
+                    previous_subject_did: None,
+                    handle_binding_generation: None,
                     membership_status: None,
                     changed_at: None,
                     sync: None,
@@ -1174,6 +1177,7 @@ fn prepare_group_e2ee_realtime_cipher(
     let add = add_member_prepare(
         &alice_store,
         AddMemberInput {
+            group_state_ref: None,
             actor_did: "did:wba:example.com:users:alice:e1".to_owned(),
             device_id: crate::internal::group_e2ee::DEFAULT_GROUP_MLS_DEVICE_ID.to_owned(),
             group_did: group_did.to_owned(),

@@ -52,13 +52,30 @@
 
 DID recover 或 replace 的本地状态行为是：
 
-1. 记录 DID history transition。
-2. 刷新同一 `owner_identity_id` 下业务表的 `owner_did` snapshot。
-3. 保持 `owner_identity_id` 和业务主键不变。
-4. 不执行业务行 owner rebind。
-5. 不 reset、merge 或泄露 E2EE private state。
+1. 同一完整 Handle 的 recover 保留原有稳定 `owner_identity_id`；CLI 与 Dart/App
+   都必须进入同一个 `local-finalize` 路径。
+2. 记录 DID history transition。
+3. 刷新同一 `owner_identity_id` 下业务表的 `owner_did` snapshot。
+4. 保持 `owner_identity_id` 和业务主键不变。
+5. 为 Handle-backed 群成员生成幂等 group rebind outbox 任务。
+6. 不执行业务行 owner rebind。
+7. 不 reset、merge 或泄露 E2EE private state。
 
 Replace-DID dry-run 的 `store_rebind_counts` 和 `e2ee_cleanup_counts` 保持为兼容字段；在 identity-owned schema 中它们不再通过 `owner_did` 扫描业务表。
+
+## 群成员身份连续性
+
+群成员的 ANP 线上身份只有两种：Handle-backed 使用完整 `member_handle`，DID-only 使用 `agent_did`。本地 `group_members.user_id` / `peer_user_id` 是 `im-core` 生成的不透明关联键，不是 Provider User ID，也不得写入 ANP payload，不能假设它与 Group Host 的 `member_user_id` 相等。
+
+Handle-backed snapshot 必须同时具有规范化完整 Handle、当前 DID 和 canonical positive decimal `handle_binding_generation`；`group_members.anchor_value` 保存的是包含 provider domain 的协议 Handle（例如 `alice.awiki.info`），不是 UI 展示用 local-part。字段不完整时 fail closed，不能静默降级为 DID-only。DID recovery 后，本地成员 `user_id`、角色、入群时间和历史消息关联不变，只更新当前 DID、generation 和 DID history。DID-only 指纹型 DID 变化没有 Handle continuity，不自动合并到旧成员。
+
+旧版本曾把完整 Handle 错投影成 local-part。兼容扫描只能在同一 `owner_identity_id` 内进行，并且必须同时满足：成员 DID 精确存在于该 owner 的 `identity_did_history(status='previous')`、旧 DID 的 `did:wba` provider domain 等于当前完整 Handle domain、成员仍为 active Handle-backed、以及本地 canonical generation 严格小于公开 WNS generation。任一条件缺失都不得补建 rebind job；尤其不能用裸 local-part 跨域合并，也不能用 `old_generation + 1` 猜 generation。
+
+`resume_rebind_recovery` 补建的只是 owner-scoped durable outbox。服务端 roster 的实际变更仍由当前新 DID 签名的 `group.rebind_member` 完成；本地 reconcile 和运维修复均不得直接更新 Group Host 成员表。
+
+Group Host 接受 P4 `group.rebind_member` 后，`im-core` 必须在把 P4 outbox 标记为 `complete` / `awaiting_p6` 之前，将同一 Handle anchor 的本地 `group_members` 投影从 `previous_member_did` 原子推进到 `new_member_did` 和新的 canonical generation。该投影保留稳定 `user_id`、角色、入群时间和历史关联，并把 legacy local-part anchor 收敛为完整 Handle。投影失败时 P4 job 保持可重试，不能让服务端 roster 已前进而本地下一代 recovery 仍从更早的 DID 建任务；重试继续使用稳定 `operation_id`，不得直接写 Group Host 成员表。
+
+群快照投影必须保留 Group Host 返回的 `required_security_profile` / `group_policy.message_security_profile`。P4 成功后仅当权威快照明确为 `transport-protected` 才把 outbox 标记 `complete`；未知、畸形或相互冲突的 profile 继续保留 `awaiting_p6`。历史误留的 transport job 可由 high-level resume 刷新群快照后在本地收敛，但不得借此重复 P4、猜测群安全模式或跳过真实 Group E2EE 的 P6。
 
 ## Migration / import 边界
 

@@ -1,4 +1,4 @@
-use crate::workspace_config::Resolved;
+use crate::workspace_config::{product_home_dir, Resolved};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -369,7 +369,7 @@ pub fn service_config_plan_for(resolved: &Resolved, is_windows: bool) -> Listene
     let mut env_vars = BTreeMap::new();
     env_vars.insert(
         WORKSPACE_HOME_ENV.to_string(),
-        resolved.paths.workspace_home_dir.clone(),
+        product_home_dir(resolved).to_string(),
     );
     env_vars.insert(INTERNAL_ENTRY_ENV.to_string(), "1".to_string());
     env_vars.insert(LISTENER_SERVICE_MODE_ENV.to_string(), "1".to_string());

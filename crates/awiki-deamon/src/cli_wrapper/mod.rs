@@ -1,9 +1,13 @@
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
-use crate::local_rpc::{call_uds_once, RuntimeRpcRequest, RuntimeRpcResponse};
+use crate::local_rpc::{
+    call_uds_once, call_uds_once_with_timeout, RuntimeRpcRequest, RuntimeRpcResponse,
+};
+use crate::runtime::RuntimeProgressUpdate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliWrapperRequest {
@@ -34,6 +38,24 @@ impl CliWrapperRequest {
                 "task_id": task_id.into(),
                 "state": state.into(),
                 "text": text.into(),
+            }),
+        }
+    }
+
+    pub fn task_status_with_progress(
+        runtime_rpc_token: impl Into<String>,
+        task_id: impl Into<String>,
+        text: impl Into<String>,
+        progress: RuntimeProgressUpdate,
+    ) -> Self {
+        Self {
+            runtime_rpc_token: runtime_rpc_token.into(),
+            method: "task.status".to_string(),
+            params: json!({
+                "task_id": task_id.into(),
+                "state": "running",
+                "text": text.into(),
+                "progress": progress,
             }),
         }
     }
@@ -138,6 +160,14 @@ impl CliWrapperRequest {
 
 pub fn call(socket_path: &Path, request: CliWrapperRequest) -> Result<RuntimeRpcResponse> {
     call_uds_once(socket_path, &request.into_rpc_request())
+}
+
+pub fn call_progress(socket_path: &Path, request: CliWrapperRequest) -> Result<RuntimeRpcResponse> {
+    call_uds_once_with_timeout(
+        socket_path,
+        &request.into_rpc_request(),
+        Some(Duration::from_millis(750)),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

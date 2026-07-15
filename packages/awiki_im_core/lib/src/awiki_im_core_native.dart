@@ -781,6 +781,16 @@ class MessageApi {
     return page._toModel();
   }
 
+  Future<void> ensureConversation(String conversationId) async {
+    _client._ensureNotDisposed();
+    await _mapNativeErrors(
+      () => gen_messages.ensureConversation(
+        client: _client._inner,
+        conversationId: conversationId,
+      ),
+    );
+  }
+
   Future<ConversationListSnapshot?> loadConversationSnapshot() async {
     _client._ensureNotDisposed();
     final snapshot = await _mapNativeErrors(
@@ -1066,6 +1076,32 @@ class GroupApi {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_groups.joinGroup(client: _client._inner, groupDid: groupDid),
+    );
+    return result._toModel();
+  }
+
+  Future<GroupReadResult> joinGroupWithIdentity(
+    JoinGroupRequest request,
+  ) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_groups.joinGroupWithIdentity(
+        client: _client._inner,
+        request: request._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<GroupRebindRecoverySummary> resumeRebindRecovery({
+    int limit = 100,
+  }) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_groups.resumeGroupRebindRecovery(
+        client: _client._inner,
+        limit: limit,
+      ),
     );
     return result._toModel();
   }
@@ -1736,6 +1772,7 @@ extension on gen_directory_dto.DartDirectoryResolution {
     input: input,
     did: did,
     handle: handle,
+    conversationId: conversationId,
     profile: profile?._toModel(),
     warnings: warnings,
   );
@@ -1744,8 +1781,17 @@ extension on gen_directory_dto.DartDirectoryResolution {
 extension on gen_directory_dto.DartRelationStatus {
   RelationStatus _toModel() => RelationStatus(
     peer: peer,
+    did: did,
+    isFollowing: isFollowing,
+    isFollower: isFollower,
+    isFriend: isFriend,
+    isBlocked: isBlocked,
+    isBlockedBy: isBlockedBy,
+    isContact: isContact,
+    messaged: messaged,
     relationship: relationship,
     displayName: displayName,
+    warnings: warnings,
   );
 }
 
@@ -2334,6 +2380,7 @@ extension on gen_message.DartConversation {
     firstUnreadMentionMessageId: firstUnreadMentionMessageId,
     messageCount: messageCount,
     lastMessageAt: lastMessageAt,
+    activityAt: activityAt,
   );
 }
 
@@ -2467,6 +2514,7 @@ extension on gen_message.DartConversationSnapshotItem {
     firstUnreadMentionMessageId: firstUnreadMentionMessageId,
     messageCount: messageCount,
     lastMessageAt: lastMessageAt,
+    activityAt: activityAt,
   );
 }
 
@@ -2568,6 +2616,8 @@ extension on CreateGroupRequest {
   gen_group_dto.DartCreateGroupRequest _toGen() =>
       gen_group_dto.DartCreateGroupRequest(
         name: name,
+        identityMode: identityMode._toGen(),
+        identityHandle: identityHandle,
         description: description,
         avatarUri: avatarUri,
         discoverability: discoverability?.value,
@@ -2584,6 +2634,22 @@ extension on CreateGroupRequest {
         memberMaxMessages: memberMaxMessages,
         memberMaxTotalChars: memberMaxTotalChars,
       );
+}
+
+extension on JoinGroupRequest {
+  gen_group_dto.DartJoinGroupRequest _toGen() =>
+      gen_group_dto.DartJoinGroupRequest(
+        groupDid: groupDid,
+        identityMode: identityMode._toGen(),
+        identityHandle: identityHandle,
+      );
+}
+
+extension on GroupIdentityMode {
+  gen_group_dto.DartGroupIdentityMode _toGen() => switch (this) {
+    GroupIdentityMode.handle => gen_group_dto.DartGroupIdentityMode.handle,
+    GroupIdentityMode.didOnly => gen_group_dto.DartGroupIdentityMode.didOnly,
+  };
 }
 
 extension on gen_group_dto.DartGroupSummary {
@@ -2634,6 +2700,27 @@ extension on gen_group_dto.DartGroupReadResult {
     messages: messages._toModel(),
     total: total,
     source: source,
+    warnings: warnings,
+  );
+}
+
+extension on gen_group_dto.DartGroupRebindRecoveryItem {
+  GroupRebindRecoveryItem _toModel() => GroupRebindRecoveryItem(
+    groupDid: groupDid,
+    layer: layer,
+    phase: phase,
+    blocked: blocked,
+  );
+}
+
+extension on gen_group_dto.DartGroupRebindRecoverySummary {
+  GroupRebindRecoverySummary _toModel() => GroupRebindRecoverySummary(
+    processed: processed,
+    completed: completed,
+    pending: pending,
+    blocked: blocked,
+    sendPausedGroupDids: sendPausedGroupDids,
+    items: items.map((item) => item._toModel()).toList(),
     warnings: warnings,
   );
 }

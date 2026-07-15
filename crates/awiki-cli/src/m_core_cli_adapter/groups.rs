@@ -189,6 +189,7 @@ pub fn join_group_via_im_core(
         .groups()
         .join(SdkGroupJoinRequest {
             group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            member_handle: None,
             reason_text: optional_string(&request.reason_text),
         })
         .map_err(im_error_to_message_error)?;
@@ -221,6 +222,7 @@ pub async fn join_group_via_im_core_async(
         .groups()
         .join_async(SdkGroupJoinRequest {
             group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            member_handle: None,
             reason_text: optional_string(&request.reason_text),
         })
         .await
@@ -1123,6 +1125,7 @@ fn group_create_request(
         || request.message_security_profile.trim() == GROUP_E2EE_SECURITY_PROFILE;
     Ok(SdkGroupCreateRequest {
         name: request.name,
+        creator_handle: None,
         description: optional_string(&request.description),
         avatar_uri: optional_string(&request.avatar_uri),
         discoverability: GroupDiscoverability::parse_optional(&request.discoverability)

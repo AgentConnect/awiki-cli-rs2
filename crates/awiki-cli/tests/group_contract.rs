@@ -994,7 +994,8 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
         ]
     );
     assert_eq!(bodies[0]["params"]["handle"], "bob.awiki.ai");
-    assert_eq!(bodies[1]["params"]["body"]["member_did"], bob_did);
+    assert_eq!(bodies[1]["params"]["body"]["member_handle"], "bob.awiki.ai");
+    assert!(bodies[1]["params"]["body"].get("member_did").is_none());
     assert_eq!(bodies[1]["params"]["body"]["role"], "admin");
     assert!(bodies[1]["params"]["body"].get("reason_text").is_none());
     assert_eq!(
@@ -1713,7 +1714,11 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Each assertion invokes the real debug CLI binary. On a cold or contended
+    // workspace the identity/vault bootstrap before the first HTTP request can
+    // exceed five seconds, so keep the fake server alive for the command-level
+    // contract rather than turning host load into transport_unavailable.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {

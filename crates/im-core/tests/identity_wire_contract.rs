@@ -1,5 +1,5 @@
-use im_core::compat::{directory, identity};
-use im_core::prelude::{Did, Handle, Profile, ProfileAttribute};
+use awiki_im_core::compat::{directory, identity};
+use awiki_im_core::prelude::{Did, Handle, Profile, ProfileAttribute};
 use serde_json::{json, Value};
 
 #[test]
@@ -85,11 +85,11 @@ fn identity_relationship_rpc_builders_match_go_methods_profiles_and_params() {
 
     assert!(matches!(
         directory::build_follow_rpc_call(" "),
-        Err(im_core::ImError::InvalidInput { field: Some(field), .. }) if field == "target_did"
+        Err(awiki_im_core::ImError::InvalidInput { field: Some(field), .. }) if field == "target_did"
     ));
     assert!(matches!(
         directory::build_followers_rpc_call(0, 0),
-        Err(im_core::ImError::InvalidInput { field: Some(field), .. }) if field == "limit"
+        Err(awiki_im_core::ImError::InvalidInput { field: Some(field), .. }) if field == "limit"
     ));
 }
 

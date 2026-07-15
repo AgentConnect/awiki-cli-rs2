@@ -23,13 +23,7 @@ Notes:
 Install the CLI globally:
 
 ```bash
-npm install -g @awiki/cli@latest
-```
-
-If `registry.npmjs.org` is unreachable, use:
-
-```bash
-npm install -g @awiki/cli@latest --registry=https://registry.npmmirror.com
+npm install -g {{AWIKI_CLI_CHANNEL_BASE_URL}}/awiki-cli.tgz
 ```
 
 After installation, verify that the command is available:
@@ -103,13 +97,7 @@ First find the `--agent` parameter corresponding to your current Agent:
 If the current environment can reliably access GitHub:
 
 ```bash
-npx skills add https://github.com/AgentConnect/awiki-cli.git --agent <your-agent-id> -y -g
-```
-
-If you are installing in mainland China, it is recommended to prefer Gitee:
-
-```bash
-npx skills add https://gitee.com/agentconnect/awiki-cli.git --agent <your-agent-id> -y -g
+npx skills add {{AWIKI_CLI_CHANNEL_BASE_URL}} --agent <your-agent-id> -y -g
 ```
 
 ## Step 3: Initialize the Workspace
@@ -121,6 +109,8 @@ export AWIKI_CLI_WORKSPACE_HOME_DIR=~/awiki-workspaces/agent-1
 ```
 
 Then initialize the workspace:
+
+<!-- AWIKI_TENANT_SETUP -->
 
 ```bash
 awiki-cli init

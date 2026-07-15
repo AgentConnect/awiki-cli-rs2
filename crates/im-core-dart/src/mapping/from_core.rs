@@ -11,7 +11,10 @@ use crate::dto::{
         DartEmailMessageSummaryPage, DartEmailNotification, DartEmailNotificationPage,
         DartSendEmailResult,
     },
-    group::{DartGroupMember, DartGroupReadResult, DartGroupSnapshot, DartGroupSummary},
+    group::{
+        DartGroupMember, DartGroupReadResult, DartGroupRebindRecoveryItem,
+        DartGroupRebindRecoverySummary, DartGroupSnapshot, DartGroupSummary,
+    },
     identity::{
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
         DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartHandleRegistrationResult,
@@ -474,6 +477,7 @@ impl From<im_core::directory::DirectoryResolution> for DartDirectoryResolution {
             input: value.input,
             did: value.did.as_str().to_string(),
             handle: value.handle.map(|handle| handle.as_str().to_string()),
+            conversation_id: value.conversation_id,
             profile: value.profile.map(Into::into),
             warnings: value.warnings,
         }
@@ -496,12 +500,21 @@ impl From<im_core::directory::DisplayProfile> for crate::dto::directory::DartDis
     }
 }
 
-impl From<im_core::directory::RelationStatus> for DartRelationStatus {
-    fn from(value: im_core::directory::RelationStatus) -> Self {
+impl From<im_core::directory::RelationshipStatus> for DartRelationStatus {
+    fn from(value: im_core::directory::RelationshipStatus) -> Self {
         Self {
             peer: value.peer.as_str().to_string(),
+            did: value.did.as_str().to_string(),
+            is_following: value.is_following,
+            is_follower: value.is_follower,
+            is_friend: value.is_friend,
+            is_blocked: value.is_blocked,
+            is_blocked_by: value.is_blocked_by,
+            is_contact: value.is_contact,
+            messaged: value.messaged,
             relationship: value.relationship,
             display_name: None,
+            warnings: value.warnings,
         }
     }
 }
@@ -747,6 +760,7 @@ impl From<im_core::messages::Conversation> for DartConversation {
                 .map(|message_id| message_id.as_str().to_string()),
             message_count: value.message_count,
             last_message_at: value.last_message_at,
+            activity_at: value.activity_at,
         }
     }
 }
@@ -950,6 +964,7 @@ impl From<im_core::messages::ConversationSnapshotItem> for DartConversationSnaps
             first_unread_mention_message_id: value.first_unread_mention_message_id,
             message_count: value.message_count,
             last_message_at: value.last_message_at,
+            activity_at: value.activity_at,
         }
     }
 }
@@ -1393,6 +1408,35 @@ impl From<im_core::groups::GroupReadResult> for DartGroupReadResult {
     }
 }
 
+impl From<im_core::groups::GroupRebindRecoveryItem> for DartGroupRebindRecoveryItem {
+    fn from(value: im_core::groups::GroupRebindRecoveryItem) -> Self {
+        Self {
+            group_did: value.group.as_str().to_owned(),
+            layer: value.layer,
+            phase: value.phase,
+            blocked: value.blocked,
+        }
+    }
+}
+
+impl From<im_core::groups::GroupRebindRecoverySummary> for DartGroupRebindRecoverySummary {
+    fn from(value: im_core::groups::GroupRebindRecoverySummary) -> Self {
+        Self {
+            processed: value.processed,
+            completed: value.completed,
+            pending: value.pending,
+            blocked: value.blocked,
+            send_paused_group_dids: value
+                .send_paused_groups
+                .into_iter()
+                .map(|group| group.as_str().to_owned())
+                .collect(),
+            items: value.items.into_iter().map(Into::into).collect(),
+            warnings: value.warnings,
+        }
+    }
+}
+
 impl From<im_core::realtime::RealtimeStatus> for DartRealtimeStatus {
     fn from(value: im_core::realtime::RealtimeStatus) -> Self {
         Self {
@@ -1563,9 +1607,10 @@ fn realtime_subscription_to_string(value: im_core::realtime::RealtimeSubscriptio
 
 #[cfg(test)]
 mod tests {
-    use super::realtime_event_to_dart;
+    use super::{realtime_event_to_dart, DartRelationStatus};
     use im_core::{
-        ids::{GroupRef, MessageId, PeerRef, ThreadId},
+        directory::RelationshipStatus,
+        ids::{Did, GroupRef, MessageId, PeerRef, ThreadId},
         messages::{
             Message, MessageBodyView, MessageDirection, MessageKind, MessageMetadata, ThreadRef,
         },
@@ -1576,6 +1621,34 @@ mod tests {
             UnknownNotificationEvent,
         },
     };
+
+    #[test]
+    fn relationship_status_mapping_preserves_directional_truth() {
+        let mapped: DartRelationStatus = RelationshipStatus {
+            peer: PeerRef::parse("bob.awiki", "").unwrap(),
+            did: Did::parse("did:example:bob").unwrap(),
+            is_following: false,
+            is_follower: true,
+            is_friend: false,
+            is_blocked: false,
+            is_blocked_by: false,
+            is_contact: true,
+            messaged: true,
+            relationship: Some("none".to_owned()),
+            warnings: vec!["status-warning".to_owned()],
+        }
+        .into();
+
+        assert_eq!(mapped.peer, "bob.awiki");
+        assert_eq!(mapped.did, "did:example:bob");
+        assert!(!mapped.is_following);
+        assert!(mapped.is_follower);
+        assert!(!mapped.is_friend);
+        assert!(mapped.is_contact);
+        assert!(mapped.messaged);
+        assert_eq!(mapped.relationship.as_deref(), Some("none"));
+        assert_eq!(mapped.warnings, vec!["status-warning"]);
+    }
 
     #[test]
     fn realtime_event_mapping_preserves_connection_and_message_events() {
@@ -1626,6 +1699,9 @@ mod tests {
             group_state_version: None,
             actor_did: None,
             subject_did: None,
+            subject_handle: None,
+            previous_subject_did: None,
+            handle_binding_generation: None,
             membership_status: None,
             changed_at: None,
             sync: None,

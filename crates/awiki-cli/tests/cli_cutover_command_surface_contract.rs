@@ -411,6 +411,10 @@ fn release_artifact_script_documents_e2ee_feature_gate() {
     assert!(script.contains("anp feature \"mls\""));
     assert!(script.contains("cargo_cmd[@]}\" tree -p awiki-cli -e features --locked"));
     assert!(script.contains("Windows E2EE package/release validation is deferred"));
+    assert!(script.contains("x86_64-unknown-linux-musl"));
+    assert!(script.contains("Linux CLI release binary contains GLIBC symbol requirements"));
+    assert!(script.contains("git rev-parse HEAD"));
+    assert!(!script.contains("git rev-parse --short HEAD"));
 }
 
 #[test]

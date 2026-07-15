@@ -122,7 +122,7 @@ where
         requested_attachment_id: &str,
     ) -> crate::ImResult<crate::attachments::selection::InternalAttachmentSelection> {
         if let Some(selection) =
-            find_cached_group_attachment_selection(self.client, target, requested_message_id)?
+            find_cached_attachment_selection(self.client, target, requested_message_id)?
         {
             if let Ok(selection) = crate::attachments::selection::find_internal_attachment_selection(
                 &[selection],
@@ -338,7 +338,7 @@ where
         requested_attachment_id: &str,
     ) -> crate::ImResult<crate::attachments::selection::InternalAttachmentSelection> {
         if let Some(selection) =
-            find_cached_group_attachment_selection(self.client, target, requested_message_id)?
+            find_cached_attachment_selection(self.client, target, requested_message_id)?
         {
             if let Ok(selection) = crate::attachments::selection::find_internal_attachment_selection(
                 &[selection],
@@ -471,15 +471,16 @@ where
     }
 }
 
-fn find_cached_group_attachment_selection(
+fn find_cached_attachment_selection(
     client: &crate::core::ImClient,
     target: &DownloadTarget,
     requested_message_id: &str,
 ) -> crate::ImResult<Option<Value>> {
     #[cfg(feature = "sqlite")]
     {
-        let DownloadTarget::Group { group } = target else {
-            return Ok(None);
+        let (thread_kind, thread_id) = match target {
+            DownloadTarget::Direct { peer_did } => ("direct", peer_did.as_str()),
+            DownloadTarget::Group { group } => ("group", group.as_str()),
         };
         let connection = crate::internal::local_state::open_writable(
             &client.core_inner().sdk_paths().local_state.sqlite_path,
@@ -487,8 +488,8 @@ fn find_cached_group_attachment_selection(
         crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
             &connection,
             client.current_identity().id.as_str(),
-            "group",
-            group.as_str(),
+            thread_kind,
+            thread_id,
             requested_message_id,
         )
     }

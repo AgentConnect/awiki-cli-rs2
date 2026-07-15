@@ -1,5 +1,7 @@
 import 'message.dart';
 
+enum GroupIdentityMode { handle, didOnly }
+
 class GroupSummary {
   const GroupSummary({
     this.id,
@@ -124,6 +126,8 @@ class GroupMemberLimit {
 class CreateGroupRequest {
   const CreateGroupRequest({
     required this.name,
+    this.identityMode = GroupIdentityMode.didOnly,
+    this.identityHandle,
     this.description,
     this.avatarUri,
     this.discoverability,
@@ -142,6 +146,8 @@ class CreateGroupRequest {
   });
 
   final String name;
+  final GroupIdentityMode identityMode;
+  final String? identityHandle;
   final String? description;
   final String? avatarUri;
   final GroupDiscoverability? discoverability;
@@ -157,6 +163,52 @@ class CreateGroupRequest {
   final GroupMemberLimit? maxMembers;
   final int? memberMaxMessages;
   final int? memberMaxTotalChars;
+}
+
+class JoinGroupRequest {
+  const JoinGroupRequest({
+    required this.groupDid,
+    this.identityMode = GroupIdentityMode.didOnly,
+    this.identityHandle,
+  });
+
+  final String groupDid;
+  final GroupIdentityMode identityMode;
+  final String? identityHandle;
+}
+
+class GroupRebindRecoveryItem {
+  const GroupRebindRecoveryItem({
+    required this.groupDid,
+    required this.layer,
+    required this.phase,
+    required this.blocked,
+  });
+
+  final String groupDid;
+  final String layer;
+  final String phase;
+  final bool blocked;
+}
+
+class GroupRebindRecoverySummary {
+  const GroupRebindRecoverySummary({
+    required this.processed,
+    required this.completed,
+    required this.pending,
+    required this.blocked,
+    this.sendPausedGroupDids = const [],
+    this.items = const [],
+    this.warnings = const [],
+  });
+
+  final int processed;
+  final int completed;
+  final int pending;
+  final int blocked;
+  final List<String> sendPausedGroupDids;
+  final List<GroupRebindRecoveryItem> items;
+  final List<String> warnings;
 }
 
 class GroupReadResult {

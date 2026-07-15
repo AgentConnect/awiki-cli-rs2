@@ -35,9 +35,17 @@ pub struct DartGroupMember {
     pub subject_type: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartGroupIdentityMode {
+    Handle,
+    DidOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartCreateGroupRequest {
     pub name: String,
+    pub identity_mode: DartGroupIdentityMode,
+    pub identity_handle: Option<String>,
     pub description: Option<String>,
     pub avatar_uri: Option<String>,
     pub discoverability: Option<String>,
@@ -53,6 +61,32 @@ pub struct DartCreateGroupRequest {
     pub max_members: Option<String>,
     pub member_max_messages: Option<i64>,
     pub member_max_total_chars: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartJoinGroupRequest {
+    pub group_did: String,
+    pub identity_mode: DartGroupIdentityMode,
+    pub identity_handle: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartGroupRebindRecoveryItem {
+    pub group_did: String,
+    pub layer: String,
+    pub phase: String,
+    pub blocked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartGroupRebindRecoverySummary {
+    pub processed: u32,
+    pub completed: u32,
+    pub pending: u32,
+    pub blocked: u32,
+    pub send_paused_group_dids: Vec<String>,
+    pub items: Vec<DartGroupRebindRecoveryItem>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

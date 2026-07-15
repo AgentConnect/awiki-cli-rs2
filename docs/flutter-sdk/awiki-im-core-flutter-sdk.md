@@ -38,6 +38,12 @@ Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitiv
 
 The SDK exposes `registerHandleWithPhone`, `registerHandleWithEmail`, and `recoverHandle` on `AwikiImCore`. These calls are core-level identity registry operations that map to `im-core` public identity DTOs; they do not depend on any `awiki-me` account gateway or UI model.
 
+`recoverHandle` always requests the same canonical local-finalize behavior as the CLI. A
+successful recovery of an existing full Handle rotates its DID without changing the stable local
+identity ID, records old/current DID history, refreshes owner-DID snapshots, and enqueues any
+Handle-backed group member rebind work. Dart hosts must not persist the returned DID as a new local
+identity owner or supply a separate generated identity.
+
 ## Identity secret storage
 
 Native hosts can open `AwikiImCore` with explicit identity SecretVault options:
@@ -86,7 +92,12 @@ the native vault-backed backend.
 
 ## Directory profile metadata
 
-`client.directory.resolvePeer(handle)` and `client.directory.lookupHandle(handle)` can return a `DirectoryResolution.profile` populated from the WNS Handle Resolution Document `profile` object. This profile is a DID Subject Profile projection, not routing or security metadata.
+`client.directory.resolvePeer(handle)` and `client.directory.lookupHandle(handle)` return a
+`DirectoryResolution.conversationId` together with the resolved DID/Handle. When the directory
+provides a stable user ID and full Handle, this is the canonical `dm:peer-scope:v1:*` identity and
+must be used by App start-conversation flows before the first message arrives. The same result can
+also carry `DirectoryResolution.profile` populated from the WNS Handle Resolution Document
+`profile` object. This profile is a DID Subject Profile projection, not routing or security metadata.
 
 The Dart `UserProfile` model uses these standard display fields:
 
@@ -108,6 +119,8 @@ Display fields must not be used for routing, authentication, authorization, serv
 
 `client.directory.hydrateDisplayProfiles(peers)` reads only the local `im-core` contact/profile cache. It does not call WNS or User Service, and is intended for hot UI paths such as conversation lists, contact lists, and member lists. A returned `DisplayProfile` has `cacheHit = false` when the peer is absent locally; the app should fall back to `displayName -> handle -> did` without blocking list rendering. Remote refresh must be explicit through `resolvePeer`, `lookupHandle`, `loadPublicProfile`, or the send-time security verification path.
 
+`client.directory.relationStatus(peer)` is the authenticated remote relationship status query despite its retained Dart method name. `RelationStatus` exposes `isFollowing`, `isFollower`, `isFriend`, `isBlocked`, `isBlockedBy`, `isContact`, and `messaged` independently. Its nullable `relationship` field is only the caller's outbound local projection (`following` or `none`) and must not be treated as the combined relationship state. A consumer derives `friend` only when both directional flags and `isFriend` agree; missing or contradictory directional truth fails closed.
+
 ## Group display metadata
 
 `CreateGroupRequest.avatarUri` maps to `group_profile.avatar_uri`; `CreateGroupRequest.name` remains the Flutter convenience input for `group_profile.display_name`. `GroupSummary` and `GroupSnapshot` expose `displayName` and `avatarUri`; the old `name` field is retained as a compatibility projection of `displayName`.
@@ -122,7 +135,15 @@ These display fields are UI metadata only. They must not be used for routing, au
 
 ## Local-first message reads
 
-`client.messages.conversations(...)` returns local conversation summaries from `im-core`; after schema version 18 this path is backed by `conversation_summaries` instead of the legacy dynamic `threads` view. The API is paged: pass `cursor: page.nextCursor` to continue, and stop when `hasMore` is false or `nextCursor` is null. A single page is capped at 100 items by `PageLimit::new`, so large conversation lists such as 500 or 1000 rows must be loaded by cursor pagination. The cursor is opaque and follows the local sort order `last_message_at DESC, conversation_id DESC`; callers must not parse it or treat it as an offset.
+`client.messages.conversations(...)` returns durable local conversations from `im-core`. Schema version 27 reads conversation existence from `conversation_registry` and left-joins the message-derived `conversation_summaries`, so a validated empty conversation remains visible. Protocol/control records (including group lifecycle records) do not materialize a message summary; until the first user-visible message, `messageCount` remains `0` and `lastMessage` remains `null`. The API is paged: pass `cursor: page.nextCursor` to continue, and stop when `hasMore` is false or `nextCursor` is null. A single page is capped at 100 items by `PageLimit::new`. The cursor is opaque and follows `activity_at DESC, conversation_id DESC`; callers must not parse it or treat it as an offset.
+
+Before opening a newly resolved Direct conversation or a newly created/joined Group conversation, commit its existence:
+
+```dart
+await client.messages.ensureConversation(canonicalConversationId);
+```
+
+The call is idempotent and fail-closed: Direct requires an owner-scoped peer-scope route, and Group requires active local membership. App-local rows may be used only as a temporary optimistic overlay while this call completes.
 
 Conversation list startup and realtime updates use snapshot / patch helpers under
 the same `client.messages` namespace:

@@ -35,7 +35,7 @@ cargo run -p xtask -- check-version --expect <version>
 - Rust toolchain：仓库根目录 `rust-toolchain.toml` 固定版本，当前发布脚本默认使用 `1.88.0`。
 - Node.js 18+：用于读取 `package.json` 和生成 daemon manifest。
 - 同级 ANP Rust SDK：`../anp/anp/rust/Cargo.toml` 必须存在。
-- Linux release 建议在 Ubuntu 或兼容 Linux build 机上构建，避免 macOS 交叉编译 Linux 目标带来的 linker 和 libc 差异。
+- Linux release 使用 musl 静态目标；构建机必须提供 `musl-tools`。归档脚本会拒绝仍包含 GLIBC 版本符号的产物，避免下载机器受 GitHub runner 的 glibc 版本约束。
 
 检查：
 
@@ -55,7 +55,7 @@ scripts/release/build-release-artifact.sh \
   --version <version> \
   --os linux \
   --arch amd64 \
-  --target x86_64-unknown-linux-gnu
+  --target x86_64-unknown-linux-musl
 ```
 
 常用目标：
@@ -66,7 +66,7 @@ scripts/release/build-release-artifact.sh \
   --version <version> \
   --os linux \
   --arch amd64 \
-  --target x86_64-unknown-linux-gnu
+  --target x86_64-unknown-linux-musl
 
 # macOS arm64
 scripts/release/build-release-artifact.sh \
@@ -86,10 +86,10 @@ awiki-cli-<version>-windows-<arch>.zip
 脚本会注入构建信息：
 
 - `AWIKI_CLI_VERSION`
-- `AWIKI_CLI_COMMIT`
+- `AWIKI_CLI_COMMIT`（默认使用完整 40 位 Git commit，供发布产物来源校验）
 - `AWIKI_CLI_BUILD_DATE`
 
-Linux/macOS 构建还会检查 E2EE feature graph，确认 `awiki-cli -> im-core/group-e2ee -> anp/mls` 已启用。
+Linux/macOS 构建还会检查 E2EE feature graph，确认 `awiki-cli -> im-core/group-e2ee -> anp/mls` 已启用。Linux 构建还会检查最终二进制不包含 GLIBC 版本符号。
 
 ## 4. 发布 awiki-deamon 包
 
@@ -152,7 +152,7 @@ manifest 中的 `sha256` 校验；校验失败或下载失败会继续尝试下�
 scripts/release/daemon/_build-artifact.sh \
   --os linux \
   --arch amd64 \
-  --target x86_64-unknown-linux-gnu \
+  --target x86_64-unknown-linux-musl \
   --dist dist/daemon
 
 scripts/release/daemon/_build-artifact.sh \

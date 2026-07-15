@@ -12,6 +12,9 @@ pub(crate) struct GroupSystemEventInput {
     pub(crate) group_state_version: Option<String>,
     pub(crate) actor_did: Option<String>,
     pub(crate) subject_did: Option<String>,
+    pub(crate) subject_handle: Option<String>,
+    pub(crate) previous_subject_did: Option<String>,
+    pub(crate) handle_binding_generation: Option<String>,
     pub(crate) membership_status: Option<String>,
     pub(crate) changed_at: Option<String>,
     pub(crate) sync_event_id: Option<String>,
@@ -46,6 +49,9 @@ pub(crate) fn record_from_input(
         group_state_version: trim_optional(input.group_state_version),
         actor_did: Some(actor_did.clone()).filter(|value| !value.trim().is_empty()),
         subject_did,
+        subject_handle: trim_optional(input.subject_handle),
+        previous_subject_did: trim_optional(input.previous_subject_did),
+        handle_binding_generation: trim_optional(input.handle_binding_generation),
         membership_status: trim_optional(input.membership_status),
         changed_at: changed_at.clone(),
         sync_event_id: trim_optional(input.sync_event_id),
@@ -97,8 +103,15 @@ pub(crate) fn record_from_group_read_result(
             .map(|member| member.did.as_str().to_owned())
     });
     let membership_status = string_like_from_object(Some(raw), "membership_status");
-    let event_type = event_type_from_membership_status(membership_status.as_deref())
-        .unwrap_or_else(|| "member_added".to_owned());
+    let event_type = if raw.contains_key("previous_member_did")
+        && raw.contains_key("member_handle")
+        && raw.contains_key("handle_binding_generation")
+    {
+        "member-credential-rebound".to_owned()
+    } else {
+        event_type_from_membership_status(membership_status.as_deref())
+            .unwrap_or_else(|| "member_added".to_owned())
+    };
     record_from_input(
         client,
         GroupSystemEventInput {
@@ -108,6 +121,12 @@ pub(crate) fn record_from_group_read_result(
             group_state_version: string_like_from_object(Some(raw), "group_state_version"),
             actor_did: Some(client.did().as_str().to_owned()),
             subject_did,
+            subject_handle: string_like_from_object(Some(raw), "member_handle"),
+            previous_subject_did: string_like_from_object(Some(raw), "previous_member_did"),
+            handle_binding_generation: string_like_from_object(
+                Some(raw),
+                "handle_binding_generation",
+            ),
             membership_status,
             changed_at: string_like_from_object(Some(raw), "accepted_at")
                 .or_else(|| string_like_from_object(Some(raw), "changed_at")),
@@ -186,6 +205,9 @@ struct GroupSystemEventPayload {
     group_state_version: Option<String>,
     actor_did: Option<String>,
     subject_did: Option<String>,
+    subject_handle: Option<String>,
+    previous_subject_did: Option<String>,
+    handle_binding_generation: Option<String>,
     membership_status: Option<String>,
     changed_at: String,
     sync_event_id: Option<String>,
@@ -217,6 +239,21 @@ fn payload_json(payload: &GroupSystemEventPayload) -> String {
     );
     insert_optional(&mut object, "actor_did", payload.actor_did.as_deref());
     insert_optional(&mut object, "subject_did", payload.subject_did.as_deref());
+    insert_optional(
+        &mut object,
+        "subject_handle",
+        payload.subject_handle.as_deref(),
+    );
+    insert_optional(
+        &mut object,
+        "previous_subject_did",
+        payload.previous_subject_did.as_deref(),
+    );
+    insert_optional(
+        &mut object,
+        "handle_binding_generation",
+        payload.handle_binding_generation.as_deref(),
+    );
     insert_optional(
         &mut object,
         "membership_status",
@@ -352,4 +389,37 @@ fn now_utc_like() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rebound_event_payload_preserves_continuity_fields() {
+        let payload = payload_json(&GroupSystemEventPayload {
+            event_type: "member_credential_rebound".to_owned(),
+            group_did: "did:example:group".to_owned(),
+            group_event_seq: 9,
+            group_state_version: Some("9".to_owned()),
+            actor_did: Some("did:example:alice-new".to_owned()),
+            subject_did: Some("did:example:alice-new".to_owned()),
+            subject_handle: Some("alice.example.com".to_owned()),
+            previous_subject_did: Some("did:example:alice-old".to_owned()),
+            handle_binding_generation: Some("100000000000000000000000".to_owned()),
+            membership_status: Some("active".to_owned()),
+            changed_at: "2026-07-12T00:00:00Z".to_owned(),
+            sync_event_id: Some("event-9".to_owned()),
+            sync_event_seq: Some("9".to_owned()),
+            sync_event_type: Some("group.state_changed".to_owned()),
+            source: "test".to_owned(),
+        });
+        let value: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["subject_handle"], "alice.example.com");
+        assert_eq!(value["previous_subject_did"], "did:example:alice-old");
+        assert_eq!(
+            value["handle_binding_generation"],
+            "100000000000000000000000"
+        );
+    }
 }

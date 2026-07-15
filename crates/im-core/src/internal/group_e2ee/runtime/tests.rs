@@ -833,6 +833,7 @@ impl GroupMlsProvider for ResolvingMlsProvider {
         assert_eq!(input.agent_did.as_deref(), Some("did:example:alice"));
         assert_eq!(input.group_did.as_deref(), Some("did:example:groups:e2ee"));
         Ok(StatusOutput {
+            member_dids: Vec::new(),
             status: "active".to_owned(),
             epoch: Some("12".to_owned()),
             local_epoch: Some("12".to_owned()),
@@ -924,6 +925,7 @@ impl RepairingMlsProvider {
     fn new() -> Self {
         Self {
             status: Rc::new(RefCell::new(StatusOutput {
+                member_dids: Vec::new(),
                 status: "active".to_owned(),
                 epoch: Some("1".to_owned()),
                 local_epoch: Some("1".to_owned()),

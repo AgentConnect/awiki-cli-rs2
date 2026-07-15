@@ -44,6 +44,7 @@ pub(crate) struct GroupE2eeMemberMutationInput {
     pub(crate) credentials: Option<GroupTextCredentials>,
     pub(crate) service_did: Option<crate::ids::Did>,
     pub(crate) group_state_ref: Option<GroupStateRef>,
+    pub(crate) operation_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +75,13 @@ pub(crate) struct GroupE2eeServiceAvailabilityInput {
 pub(crate) struct GroupE2eeLifecycleResult {
     pub(crate) delivery: Value,
     pub(crate) warnings: Vec<String>,
+    pub(crate) finalize_outcome: GroupE2eeFinalizeOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GroupE2eeFinalizeOutcome {
+    Finalized,
+    AcceptedNeedsRepair,
 }
 
 pub(crate) fn ensure_group_e2ee_service_available<P, T>(
@@ -246,6 +254,7 @@ where
             "group E2EE leave request created; the group owner must process it before the MLS epoch advances"
                 .to_owned(),
         ],
+        finalize_outcome: GroupE2eeFinalizeOutcome::Finalized,
     })
 }
 
@@ -338,12 +347,13 @@ where
                 &delivery,
             ),
             warnings,
+            finalize_outcome: GroupE2eeFinalizeOutcome::Finalized,
         })
     }
 
     pub(crate) fn add_secure_member(
         mut self,
-        input: GroupE2eeMemberMutationInput,
+        mut input: GroupE2eeMemberMutationInput,
     ) -> crate::ImResult<GroupE2eeLifecycleResult> {
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
@@ -362,10 +372,15 @@ where
             "normal",
             None,
         )?;
-        let operation_id = format!(
-            "op-{}",
-            crate::internal::wire::common::generate_operation_id()
-        );
+        let operation_id = input.operation_id.take().unwrap_or_else(|| {
+            format!(
+                "op-{}",
+                crate::internal::wire::common::generate_operation_id()
+            )
+        });
+        let group_state_ref = input
+            .group_state_ref
+            .or_else(|| local_group_state_ref(self.client, &group_did));
         let prepared = self.mls_provider.add_member_prepare(AddMemberInput {
             actor_did: self.client.did().as_str().to_owned(),
             device_id: device_id_for_client(self.client),
@@ -375,10 +390,8 @@ where
             operation_id: operation_id.clone(),
             request_id: format!("group-e2ee-add-{operation_id}"),
             pending_commit_id: Some(format!("pc-{operation_id}")),
+            group_state_ref: group_state_ref.clone(),
         })?;
-        let group_state_ref = input
-            .group_state_ref
-            .or_else(|| local_group_state_ref(self.client, &group_did));
         let params = super::wire::build_group_e2ee_add_rpc_params(
             &credentials,
             self.client.did().as_str(),
@@ -399,6 +412,7 @@ where
             }
         };
         let mut warnings = Vec::new();
+        let mut finalize_outcome = GroupE2eeFinalizeOutcome::Finalized;
         match finalize_prepared(&self.mls_provider, &prepared, &group_did, &delivery) {
             Ok(finalized) => persist_group_e2ee_summary(
                 self.client,
@@ -414,9 +428,12 @@ where
                     membership_status: "active",
                 },
             ),
-            Err(err) => warnings.push(format!(
-                "group E2EE add was accepted by service but local finalize failed: {err}"
-            )),
+            Err(err) => {
+                finalize_outcome = GroupE2eeFinalizeOutcome::AcceptedNeedsRepair;
+                warnings.push(format!(
+                    "group E2EE add was accepted by service but local finalize failed: {err}"
+                ));
+            }
         }
         Ok(GroupE2eeLifecycleResult {
             delivery: public_lifecycle_delivery(
@@ -427,12 +444,13 @@ where
                 &delivery,
             ),
             warnings,
+            finalize_outcome,
         })
     }
 
     pub(crate) fn remove_secure_member(
         mut self,
-        input: GroupE2eeMemberMutationInput,
+        mut input: GroupE2eeMemberMutationInput,
     ) -> crate::ImResult<GroupE2eeLifecycleResult> {
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
@@ -443,10 +461,12 @@ where
             Some(reference) => Some(reference),
             None => self.resolved_group_state_ref(&credentials, &input.group, &group_did)?,
         };
-        let operation_id = format!(
-            "op-{}",
-            crate::internal::wire::common::generate_operation_id()
-        );
+        let operation_id = input.operation_id.take().unwrap_or_else(|| {
+            format!(
+                "op-{}",
+                crate::internal::wire::common::generate_operation_id()
+            )
+        });
         let prepared = self.mls_provider.remove_member_prepare(RemoveMemberInput {
             actor_did: self.client.did().as_str().to_owned(),
             device_id: device_id_for_client(self.client),
@@ -478,6 +498,7 @@ where
             }
         };
         let mut warnings = Vec::new();
+        let mut finalize_outcome = GroupE2eeFinalizeOutcome::Finalized;
         match finalize_prepared(&self.mls_provider, &prepared, &group_did, &delivery) {
             Ok(finalized) => persist_group_e2ee_summary(
                 self.client,
@@ -493,9 +514,12 @@ where
                     membership_status: "active",
                 },
             ),
-            Err(err) => warnings.push(format!(
-                "group E2EE remove was accepted by service but local finalize failed: {err}"
-            )),
+            Err(err) => {
+                finalize_outcome = GroupE2eeFinalizeOutcome::AcceptedNeedsRepair;
+                warnings.push(format!(
+                    "group E2EE remove was accepted by service but local finalize failed: {err}"
+                ));
+            }
         }
         Ok(GroupE2eeLifecycleResult {
             delivery: public_lifecycle_delivery(
@@ -506,6 +530,7 @@ where
                 &delivery,
             ),
             warnings,
+            finalize_outcome,
         })
     }
 
@@ -541,6 +566,7 @@ where
                     "group E2EE leave request created; the group owner must process it before the MLS epoch advances"
                         .to_owned(),
                 ],
+                finalize_outcome: GroupE2eeFinalizeOutcome::Finalized,
             });
         }
 
@@ -606,6 +632,7 @@ where
                 &delivery,
             ),
             warnings,
+            finalize_outcome: GroupE2eeFinalizeOutcome::Finalized,
         })
     }
 
@@ -699,6 +726,7 @@ where
                 &delivery,
             ),
             warnings,
+            finalize_outcome: GroupE2eeFinalizeOutcome::Finalized,
         })
     }
 
@@ -788,6 +816,7 @@ where
                 &delivery,
             ),
             warnings,
+            finalize_outcome: GroupE2eeFinalizeOutcome::Finalized,
         })
     }
 
@@ -831,10 +860,49 @@ where
             credentials: Some(credentials),
             service_did: input.service_did,
             group_state_ref: input.group_state_ref,
+            operation_id: input.operation_id,
         })?;
         Ok(GroupE2eeLifecycleResult {
             delivery: merge_process_leave_delivery(final_result.delivery, &processing),
             warnings: final_result.warnings,
+            finalize_outcome: final_result.finalize_outcome,
+        })
+    }
+
+    pub(crate) fn acknowledge_leave_request(
+        mut self,
+        input: GroupE2eeMemberMutationInput,
+    ) -> crate::ImResult<GroupE2eeLifecycleResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
+        let credentials = self.credentials(input.credentials)?;
+        let group_did = require_group(input.group.as_str())?.to_owned();
+        let leave_request_id = input
+            .leave_request_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                crate::ImError::invalid_input(
+                    Some("leave_request_id".to_owned()),
+                    "group E2EE process leave request requires leave_request_id",
+                )
+            })?;
+        let params = super::wire::build_group_e2ee_process_leave_request_rpc_params(
+            &credentials,
+            self.client.did().as_str(),
+            &group_did,
+            leave_request_id,
+        )?;
+        let delivery = self.transport.authenticated_rpc(
+            crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+            "group.e2ee.process_leave_request",
+            params,
+        )?;
+        Ok(GroupE2eeLifecycleResult {
+            delivery,
+            warnings: Vec::new(),
+            finalize_outcome: GroupE2eeFinalizeOutcome::Finalized,
         })
     }
 
@@ -1189,12 +1257,13 @@ where
                 &delivery,
             ),
             warnings,
+            finalize_outcome: GroupE2eeFinalizeOutcome::Finalized,
         })
     }
 
     pub(crate) async fn add_secure_member_async(
         mut self,
-        input: GroupE2eeMemberMutationInput,
+        mut input: GroupE2eeMemberMutationInput,
     ) -> crate::ImResult<GroupE2eeLifecycleResult> {
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)
@@ -1219,10 +1288,16 @@ where
                 None,
             )
             .await?;
-        let operation_id = format!(
-            "op-{}",
-            crate::internal::wire::common::generate_operation_id()
-        );
+        let operation_id = input.operation_id.take().unwrap_or_else(|| {
+            format!(
+                "op-{}",
+                crate::internal::wire::common::generate_operation_id()
+            )
+        });
+        let group_state_ref = match input.group_state_ref {
+            Some(reference) => Some(reference),
+            None => local_group_state_ref_async(self.client, &group_did).await,
+        };
         let add_input = AddMemberInput {
             actor_did: self.client.did().as_str().to_owned(),
             device_id: device_id_for_client(self.client),
@@ -1232,16 +1307,13 @@ where
             operation_id: operation_id.clone(),
             request_id: format!("group-e2ee-add-{operation_id}"),
             pending_commit_id: Some(format!("pc-{operation_id}")),
+            group_state_ref: group_state_ref.clone(),
         };
         let mls_provider = self.mls_provider.clone();
         let prepared = run_lifecycle_mls_blocking("add prepare", move || {
             mls_provider.add_member_prepare(add_input)
         })
         .await?;
-        let group_state_ref = match input.group_state_ref {
-            Some(reference) => Some(reference),
-            None => local_group_state_ref_async(self.client, &group_did).await,
-        };
         let params = super::wire::build_group_e2ee_add_rpc_params(
             &credentials,
             self.client.did().as_str(),
@@ -1272,6 +1344,7 @@ where
             }
         };
         let mut warnings = Vec::new();
+        let mut finalize_outcome = GroupE2eeFinalizeOutcome::Finalized;
         match finalize_prepared_async(
             self.mls_provider.clone(),
             prepared.clone(),
@@ -1305,9 +1378,12 @@ where
                     ));
                 }
             }
-            Err(err) => warnings.push(format!(
-                "group E2EE add was accepted by service but local finalize failed: {err}"
-            )),
+            Err(err) => {
+                finalize_outcome = GroupE2eeFinalizeOutcome::AcceptedNeedsRepair;
+                warnings.push(format!(
+                    "group E2EE add was accepted by service but local finalize failed: {err}"
+                ));
+            }
         }
         Ok(GroupE2eeLifecycleResult {
             delivery: public_lifecycle_delivery(
@@ -1318,12 +1394,13 @@ where
                 &delivery,
             ),
             warnings,
+            finalize_outcome,
         })
     }
 
     pub(crate) async fn remove_secure_member_async(
         mut self,
-        input: GroupE2eeMemberMutationInput,
+        mut input: GroupE2eeMemberMutationInput,
     ) -> crate::ImResult<GroupE2eeLifecycleResult> {
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)
@@ -1338,10 +1415,12 @@ where
             Some(reference) => Some(reference),
             None => local_group_state_ref_async(self.client, &group_did).await,
         };
-        let operation_id = format!(
-            "op-{}",
-            crate::internal::wire::common::generate_operation_id()
-        );
+        let operation_id = input.operation_id.take().unwrap_or_else(|| {
+            format!(
+                "op-{}",
+                crate::internal::wire::common::generate_operation_id()
+            )
+        });
         let remove_input = RemoveMemberInput {
             actor_did: self.client.did().as_str().to_owned(),
             device_id: device_id_for_client(self.client),
@@ -1388,6 +1467,7 @@ where
             }
         };
         let mut warnings = Vec::new();
+        let mut finalize_outcome = GroupE2eeFinalizeOutcome::Finalized;
         match finalize_prepared_async(
             self.mls_provider.clone(),
             prepared.clone(),
@@ -1421,9 +1501,12 @@ where
                     ));
                 }
             }
-            Err(err) => warnings.push(format!(
-                "group E2EE remove was accepted by service but local finalize failed: {err}"
-            )),
+            Err(err) => {
+                finalize_outcome = GroupE2eeFinalizeOutcome::AcceptedNeedsRepair;
+                warnings.push(format!(
+                    "group E2EE remove was accepted by service but local finalize failed: {err}"
+                ));
+            }
         }
         Ok(GroupE2eeLifecycleResult {
             delivery: public_lifecycle_delivery(
@@ -1434,6 +1517,7 @@ where
                 &delivery,
             ),
             warnings,
+            finalize_outcome,
         })
     }
 
@@ -1567,6 +1651,7 @@ where
                 &delivery,
             ),
             warnings,
+            finalize_outcome: GroupE2eeFinalizeOutcome::Finalized,
         })
     }
 
@@ -1699,6 +1784,7 @@ where
                 &delivery,
             ),
             warnings,
+            finalize_outcome: GroupE2eeFinalizeOutcome::Finalized,
         })
     }
 
@@ -1717,6 +1803,7 @@ where
             credentials,
             service_did,
             group_state_ref,
+            operation_id,
         } = input;
         let credentials = match credentials {
             Some(credentials) => credentials,
@@ -1758,11 +1845,57 @@ where
                 credentials: Some(credentials),
                 service_did,
                 group_state_ref,
+                operation_id,
             })
             .await?;
         Ok(GroupE2eeLifecycleResult {
             delivery: merge_process_leave_delivery(final_result.delivery, &processing),
             warnings: final_result.warnings,
+            finalize_outcome: final_result.finalize_outcome,
+        })
+    }
+
+    pub(crate) async fn acknowledge_leave_request_async(
+        mut self,
+        input: GroupE2eeMemberMutationInput,
+    ) -> crate::ImResult<GroupE2eeLifecycleResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)
+            .await?;
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials_async(self.client).await?,
+        };
+        let group_did = require_group(input.group.as_str())?.to_owned();
+        let leave_request_id = input
+            .leave_request_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                crate::ImError::invalid_input(
+                    Some("leave_request_id".to_owned()),
+                    "group E2EE process leave request requires leave_request_id",
+                )
+            })?;
+        let params = super::wire::build_group_e2ee_process_leave_request_rpc_params(
+            &credentials,
+            self.client.did().as_str(),
+            &group_did,
+            leave_request_id,
+        )?;
+        let delivery = self
+            .transport
+            .authenticated_rpc(
+                crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+                "group.e2ee.process_leave_request",
+                params,
+            )
+            .await?;
+        Ok(GroupE2eeLifecycleResult {
+            delivery,
+            warnings: Vec::new(),
+            finalize_outcome: GroupE2eeFinalizeOutcome::Finalized,
         })
     }
 

@@ -76,6 +76,11 @@ The CLI business SQLite may store high-level message indexes, local plaintext vi
 
 - Established sessions send direct cipher messages.
 - History and listener decrypt ciphers into local plaintext views.
+- A successful decrypt commits both the advanced ratchet and the owner-scoped
+  local plaintext projection. Re-reading the same canonical message ID must
+  reuse that committed projection instead of advancing or replaying the
+  ratchet again; a later failed replay must never overwrite a committed
+  decrypted view.
 - Replay, tamper and skip-window behavior remains SDK-owned.
 
 ## Command Surface

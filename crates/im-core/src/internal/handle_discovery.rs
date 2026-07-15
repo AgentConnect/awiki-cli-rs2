@@ -56,6 +56,32 @@ pub(crate) async fn resolve_direct_handle_async(
     }
 }
 
+pub(crate) async fn resolve_authoritative_handle_binding_async(
+    client: &crate::core::ImClient,
+    raw_handle: &str,
+) -> crate::ImResult<crate::directory::HandleLookupResult> {
+    let normalized = normalize_handle_for_client(client, raw_handle)?;
+    let url = authoritative_discovery_url_for_client(client, &normalized);
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let raw = crate::internal::transport::AsyncRawJsonTransport::get_json_url(
+        &mut transport,
+        &url,
+        BTreeMap::new(),
+    )
+    .await?;
+    let resolution = resolution_from_public_document(&normalized.full_handle, raw.clone())?;
+    let lookup = crate::internal::directory_runtime::handle_lookup_from_value(&raw)?;
+    if lookup.did.as_str() != resolution.target_did
+        || lookup.handle.as_str() != resolution.full_handle
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("handle".to_owned()),
+            "authoritative Handle document changed during normalization",
+        ));
+    }
+    Ok(lookup)
+}
+
 fn resolution_from_lookup(
     expected_handle: &str,
     lookup: crate::directory::HandleLookupResult,
@@ -178,6 +204,41 @@ fn discovery_url(domain: &str, local_part: &str) -> String {
         domain.trim().trim_end_matches('.'),
         percent_encode_path_segment(local_part)
     )
+}
+
+fn authoritative_discovery_url_for_client(
+    client: &crate::core::ImClient,
+    handle: &NormalizedHandle,
+) -> String {
+    if is_local_handle(client, &handle.full_handle) {
+        let config = client.core_inner().sdk_config();
+        let configured_base = config
+            .user_service_endpoint
+            .as_ref()
+            .unwrap_or(&config.service_base_url)
+            .as_str()
+            .trim_end_matches('/');
+        if is_loopback_http_base(configured_base) {
+            return format!(
+                "{configured_base}/.well-known/handle/{}",
+                percent_encode_path_segment(&handle.local_part)
+            );
+        }
+    }
+    discovery_url(&handle.domain, &handle.local_part)
+}
+
+fn is_loopback_http_base(base: &str) -> bool {
+    let Some(rest) = base.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = if let Some(bracketed) = authority.strip_prefix('[') {
+        bracketed.split(']').next().unwrap_or_default()
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    };
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -328,6 +389,18 @@ mod tests {
                 full_handle: "peer.awiki.info".to_owned(),
                 url: "https://awiki.info/.well-known/handle/peer".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn authoritative_url_uses_handle_provider_instead_of_https_service_host() {
+        let fixture = Fixture::new("authoritative-provider-route");
+        let client = fixture.client();
+        let handle = super::normalize_handle_for_client(&client, "Alice").unwrap();
+
+        assert_eq!(
+            super::authoritative_discovery_url_for_client(&client, &handle),
+            "https://awiki.test/.well-known/handle/alice"
         );
     }
 

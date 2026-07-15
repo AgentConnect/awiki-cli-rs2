@@ -1307,14 +1307,12 @@ fn raw_content_value(attributes: &[MessageMetadataAttribute]) -> Option<Value> {
         .or(Some(Value::String(raw)))
 }
 
-fn message_text_and_type(
+pub(super) fn send_result_message_type(
     body: &MessageBodyView,
-) -> Result<(&str, &'static str), MessageAdapterError> {
+) -> Result<&'static str, MessageAdapterError> {
     match body {
-        MessageBodyView::Text { text, kind } => Ok((text.as_str(), message_type_for_kind(kind))),
-        MessageBodyView::Payload { .. } => Err(MessageAdapterError::Internal(
-            "payload message body returned by im-core where text was required".to_string(),
-        )),
+        MessageBodyView::Text { kind, .. } => Ok(message_type_for_kind(kind)),
+        MessageBodyView::Payload { .. } => Ok("application/json"),
         MessageBodyView::Unsupported { content_type } => {
             Err(MessageAdapterError::Internal(format!(
                 "unsupported message body returned by im-core: {}",
@@ -1602,6 +1600,14 @@ fn message_attribute(attributes: &[MessageMetadataAttribute], key: &str) -> Opti
         .filter(|value| !value.trim().is_empty())
 }
 
+fn message_bool_attribute(attributes: &[MessageMetadataAttribute], key: &str) -> Option<bool> {
+    message_attribute(attributes, key).and_then(|value| match value.trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    })
+}
+
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 struct DirectSendResult {
     #[serde(default)]
@@ -1655,7 +1661,11 @@ impl DirectSendResult {
                 .unwrap_or_default(),
             target_did: target.did.clone(),
             accepted_at: result.message.sent_at.clone().unwrap_or_default(),
-            final_acceptance: matches!(result.delivery, DeliveryState::Sent),
+            final_acceptance: message_bool_attribute(
+                &result.message.metadata.attributes,
+                "final_acceptance",
+            )
+            .unwrap_or(matches!(result.delivery, DeliveryState::Sent)),
             delivery_state: delivery_state_label(result),
         }
     }
@@ -1665,7 +1675,11 @@ impl GroupSendResult {
     fn from_sdk_result(result: &SendMessageResult, group_did: &str) -> Self {
         Self {
             accepted: delivery_was_accepted(&result.delivery),
-            final_acceptance: matches!(result.delivery, DeliveryState::Sent),
+            final_acceptance: message_bool_attribute(
+                &result.message.metadata.attributes,
+                "final_acceptance",
+            )
+            .unwrap_or(matches!(result.delivery, DeliveryState::Sent)),
             group_did: group_did.to_string(),
             message_id: message_attribute(&result.message.metadata.attributes, "raw_message_id")
                 .unwrap_or_else(|| result.message.id.as_str().to_string()),
@@ -1701,7 +1715,7 @@ fn render_send_result(
     secure: bool,
 ) -> Result<CommandResult, MessageAdapterError> {
     let result = DirectSendResult::from_sdk_result(sdk_result, target);
-    let (_text, message_type) = message_text_and_type(&sdk_result.message.body)?;
+    let message_type = send_result_message_type(&sdk_result.message.body)?;
     let warnings = sdk_result.warnings.clone();
     Ok(CommandResult {
         data: json!({
@@ -1730,7 +1744,7 @@ fn render_group_send_result(
     secure: bool,
 ) -> Result<CommandResult, MessageAdapterError> {
     let result = GroupSendResult::from_sdk_result(sdk_result, group_did);
-    let (_text, message_type) = message_text_and_type(&sdk_result.message.body)?;
+    let message_type = send_result_message_type(&sdk_result.message.body)?;
     let warnings = sdk_result.warnings.clone();
     Ok(CommandResult {
         data: json!({

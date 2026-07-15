@@ -6,7 +6,7 @@ use awiki_cli::host_runtime::hermes_bridge::{
 use awiki_cli::host_runtime::hermes_bridge::{
     BridgeServiceBackend, BridgeServiceStatusSnapshot, BridgeSystemdCommandRunner,
 };
-use awiki_cli::workspace_config::{Paths, Resolved};
+use awiki_cli::workspace_config::{Paths, Resolved, ValueSource};
 use hermes_bridge::BridgeServiceLifecycleOperation as Op;
 use std::fs;
 use std::sync::{
@@ -66,10 +66,7 @@ fn hermes_bridge_service_config_plan_matches_go_new_service_config() {
     assert_eq!(plan.description, SERVICE_DESCRIPTION);
     assert_eq!(plan.arguments, SERVICE_ARGUMENTS);
     assert_eq!(plan.working_directory, resolved.paths.workspace_home_dir);
-    assert_eq!(
-        plan.env_workspace_home_dir,
-        resolved.paths.workspace_home_dir
-    );
+    assert_eq!(plan.env_workspace_home_dir, product_home_dir(&resolved));
     assert_eq!(plan.env_hermes_home, "/tmp/hermes-home");
     assert!(plan.user_service);
     assert!(plan.keep_alive);
@@ -96,7 +93,7 @@ fn hermes_bridge_systemd_unit_allows_hidden_service_entry() {
         .contains("Environment=AWIKI_CLI_INTERNAL_ENTRY=1"));
     assert!(unit.content.contains(&format!(
         "Environment=AWIKI_CLI_WORKSPACE_HOME_DIR={}",
-        resolved.paths.workspace_home_dir
+        product_home_dir(&resolved)
     )));
     assert!(unit.content.contains("Environment=HERMES_HOME="));
 }
@@ -867,8 +864,19 @@ fn test_resolved() -> Resolved {
         config_exists: false,
         config_error: String::new(),
         env_hits: Vec::new(),
-        sources: Default::default(),
+        sources: std::collections::BTreeMap::from([(
+            "product_home_dir".to_string(),
+            ValueSource {
+                source: "canonical_env".to_string(),
+                key: "AWIKI_CLI_WORKSPACE_HOME_DIR".to_string(),
+                value: path_string(&root.join("product-home")),
+            },
+        )]),
     }
+}
+
+fn product_home_dir(resolved: &Resolved) -> &str {
+    &resolved.sources["product_home_dir"].value
 }
 
 fn path_string(path: &std::path::Path) -> String {

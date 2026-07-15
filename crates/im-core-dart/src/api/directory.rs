@@ -40,6 +40,7 @@ pub async fn lookup_handle(
         input: result.handle.as_str().to_string(),
         did: result.did.as_str().to_string(),
         handle: Some(result.handle.as_str().to_string()),
+        conversation_id: result.direct_conversation_id(),
         profile: result.profile.map(Into::into),
         warnings: result.warnings,
     })
@@ -70,7 +71,7 @@ pub async fn relation_status(
     let peer = im_core::ids::PeerRef::parse(peer, "").map_err(DartImError::from)?;
     inner
         .directory()
-        .relation_status_async(peer)
+        .relationship_status_async(peer)
         .await
         .map(Into::into)
         .map_err(DartImError::from)

@@ -17,7 +17,7 @@ const E2EE_SIGNING_PRIVATE_FILE_NAME: &str = "e2ee-signing-private.pem";
 const E2EE_AGREEMENT_PRIVATE_FILE_NAME: &str = "e2ee-agreement-private.pem";
 const DAEMON_SUBKEY_PRIVATE_FILE_NAME: &str = "daemon-key-1-private.pem";
 const DAEMON_SUBKEY_PACKAGE_FILE_NAME: &str = "daemon-subkey-package.json";
-const IDENTITY_VAULT_MIGRATION_SCHEMA_VERSION: u32 = 1;
+pub(crate) const IDENTITY_VAULT_MIGRATION_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
 pub(crate) struct IdentityStore<'a> {
@@ -341,6 +341,37 @@ impl<'a> IdentityStore<'a> {
             has_e2ee_signing_private: !input.e2ee_signing_private_pem.trim().is_empty(),
             has_e2ee_agreement_private: !input.e2ee_agreement_private_pem.trim().is_empty(),
         })
+    }
+
+    pub(crate) fn save_recovered_identity_with_secret_storage(
+        &self,
+        mut input: SaveIdentityInput,
+        secret_storage: SaveIdentitySecretStorage,
+        archived_identity_names: &[String],
+    ) -> crate::ImResult<StoredIdentity> {
+        let original = self.load_index()?;
+        let mut prepared = original.clone();
+        let archived = archived_identity_names
+            .iter()
+            .map(|name| name.trim())
+            .filter(|name| !name.is_empty())
+            .collect::<std::collections::BTreeSet<_>>();
+        let default_was_archived = archived.contains(prepared.default_credential_name.trim());
+        prepared
+            .credentials
+            .retain(|name, _| !archived.contains(name.as_str()));
+        if default_was_archived {
+            prepared.default_credential_name.clear();
+            input.make_default = true;
+        }
+        self.save_index(prepared)?;
+        match self.save_identity_with_secret_storage(input, secret_storage) {
+            Ok(stored) => Ok(stored),
+            Err(error) => {
+                let _ = self.save_index(original);
+                Err(error)
+            }
+        }
     }
 
     pub(crate) async fn save_identity_async(
@@ -2239,6 +2270,45 @@ mod tests {
         let mut out = String::new();
         collect_text_files_inner(root, &mut out);
         out
+    }
+
+    #[test]
+    fn recovered_identity_reuses_stable_id_after_removing_archived_alias() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        let input = |alias: &str, did: &str| SaveIdentityInput {
+            local_alias: alias.to_owned(),
+            did: crate::ids::Did::parse(did).unwrap(),
+            unique_id: "stable-owner".to_owned(),
+            user_id: "user-alice".to_owned(),
+            display_name: "Alice".to_owned(),
+            handle: "alice".to_owned(),
+            full_handle: "alice.example".to_owned(),
+            jwt_token: "jwt".to_owned(),
+            did_document: Some(json!({"id": did})),
+            key1_private_pem: "private".to_owned(),
+            key1_public_pem: "public".to_owned(),
+            e2ee_signing_private_pem: "signing".to_owned(),
+            e2ee_agreement_private_pem: "agreement".to_owned(),
+            daemon_subkey_package: None,
+            make_default: true,
+        };
+        store
+            .save_identity(input("alice-old", "did:example:old"))
+            .unwrap();
+        let recovered = store
+            .save_recovered_identity_with_secret_storage(
+                input("alice-recovering", "did:example:new"),
+                SaveIdentitySecretStorage::FileCompat,
+                &["alice-old".to_owned()],
+            )
+            .unwrap();
+        assert_eq!(recovered.unique_id, "stable-owner");
+        let index = store.load_index().unwrap();
+        assert!(!index.credentials.contains_key("alice-old"));
+        assert_eq!(index.default_credential_name, "alice-recovering");
+        assert_eq!(index.credentials["alice-recovering"].did, "did:example:new");
     }
 
     fn collect_text_files_inner(root: &Path, out: &mut String) {

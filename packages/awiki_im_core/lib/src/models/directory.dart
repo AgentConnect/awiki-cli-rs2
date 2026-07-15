@@ -28,6 +28,7 @@ class DirectoryResolution {
     required this.input,
     required this.did,
     this.handle,
+    required this.conversationId,
     this.profile,
     this.warnings = const [],
   });
@@ -35,6 +36,7 @@ class DirectoryResolution {
   final String input;
   final String did;
   final String? handle;
+  final String conversationId;
   final UserProfile? profile;
   final List<String> warnings;
 }
@@ -42,13 +44,31 @@ class DirectoryResolution {
 class RelationStatus {
   const RelationStatus({
     required this.peer,
+    required this.did,
+    required this.isFollowing,
+    required this.isFollower,
+    required this.isFriend,
+    required this.isBlocked,
+    required this.isBlockedBy,
+    required this.isContact,
+    required this.messaged,
     this.relationship,
     this.displayName,
+    this.warnings = const <String>[],
   });
 
   final String peer;
+  final String did;
+  final bool isFollowing;
+  final bool isFollower;
+  final bool isFriend;
+  final bool isBlocked;
+  final bool isBlockedBy;
+  final bool isContact;
+  final bool messaged;
   final String? relationship;
   final String? displayName;
+  final List<String> warnings;
 }
 
 class DisplayProfile {

@@ -577,7 +577,8 @@ pub(crate) fn sdk_result_from_secure_result(
             optional_string(&accepted_at),
             Some(crate::internal::message_runtime::state::MessageRetryTarget::DirectText),
         );
-    let attributes = secure_direct_attributes(target_did, &peer, Vec::new());
+    let attributes =
+        secure_direct_attributes(target_did, &peer, vec![final_acceptance_attribute(raw)]);
     let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref(
         &crate::messages::ThreadRef::Direct(peer.clone()),
     );
@@ -648,10 +649,13 @@ pub(crate) fn sdk_result_from_secure_attachment_result(
     let attributes = secure_direct_attributes(
         target_did,
         &peer,
-        vec![crate::messages::MessageMetadataAttribute {
-            key: "attachment_manifest".to_owned(),
-            value: crate::attachments::manifest::manifest_content_string(redacted_manifest),
-        }],
+        vec![
+            final_acceptance_attribute(raw),
+            crate::messages::MessageMetadataAttribute {
+                key: "attachment_manifest".to_owned(),
+                value: crate::attachments::manifest::manifest_content_string(redacted_manifest),
+            },
+        ],
     );
     let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref(
         &crate::messages::ThreadRef::Direct(peer.clone()),
@@ -697,6 +701,19 @@ pub(crate) fn sdk_result_from_secure_attachment_result(
         delivery,
         warnings,
     })
+}
+
+fn final_acceptance_attribute(
+    raw: &Map<String, Value>,
+) -> crate::messages::MessageMetadataAttribute {
+    crate::messages::MessageMetadataAttribute {
+        key: "final_acceptance".to_owned(),
+        value: raw
+            .get("final_acceptance")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            .to_string(),
+    }
 }
 
 pub(crate) fn attachment_client_context(grant_ref: Value) -> Value {
@@ -971,10 +988,16 @@ mod tests {
         ));
         assert_eq!(
             result.sdk_result.message.metadata.attributes,
-            vec![crate::messages::MessageMetadataAttribute {
-                key: "security".to_owned(),
-                value: "direct-e2ee".to_owned(),
-            }]
+            vec![
+                crate::messages::MessageMetadataAttribute {
+                    key: "security".to_owned(),
+                    value: "direct-e2ee".to_owned(),
+                },
+                crate::messages::MessageMetadataAttribute {
+                    key: "final_acceptance".to_owned(),
+                    value: "false".to_owned(),
+                },
+            ]
         );
         let calls = message_calls.borrow();
         assert_eq!(calls[0].method, "direct.e2ee.publish_prekey_bundle");

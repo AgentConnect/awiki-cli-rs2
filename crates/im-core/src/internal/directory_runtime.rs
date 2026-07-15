@@ -5,6 +5,8 @@ use crate::internal::transport::{AsyncRpcTransport, RpcTransport};
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DirectoryResolveResult {
     pub(crate) resolution: crate::directory::DirectoryResolution,
+    pub(crate) peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
+    pub(crate) peer_current_did: Option<crate::ids::Did>,
     pub(crate) resolve: Option<Value>,
     pub(crate) lookup: Option<Value>,
     pub(crate) public_profile: Option<Value>,
@@ -85,6 +87,13 @@ where
         let lookup_raw = lookup_by_handle(&mut self.transport, &handle)
             .map_err(|err| map_directory_not_found(err, &handle))?;
         let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
+        let conversation_id = lookup.direct_conversation_id();
+        let peer_scope = Some(
+            crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                lookup.user_id.clone(),
+                lookup.handle.as_str(),
+            )?,
+        );
         let warnings = lookup.warnings.clone();
         let fallback_profile = if lookup.profile.is_none() {
             public_profile_by_did(&mut self.transport, lookup.did.as_str()).ok()
@@ -110,9 +119,12 @@ where
                 input: handle,
                 did: lookup.did.clone(),
                 handle: Some(lookup.handle),
+                conversation_id,
                 profile: profile_dto,
                 warnings,
             },
+            peer_scope,
+            peer_current_did: Some(lookup.did.clone()),
             resolve: Some(resolve_raw),
             lookup: Some(lookup_raw),
             public_profile: fallback_profile,
@@ -125,10 +137,22 @@ where
         let mut warnings = Vec::new();
         let mut lookup_raw = None;
         let mut handle = None;
+        let mut peer_scope = None;
+        let mut peer_current_did = None;
+        let mut conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id(did.as_str());
         match lookup_by_did(&mut self.transport, did.as_str()) {
             Ok(raw) => {
                 let lookup = handle_lookup_from_value_with_client(self.client, &raw)?;
+                conversation_id = lookup.direct_conversation_id();
                 warnings.extend(lookup.warnings);
+                peer_scope = Some(
+                    crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                        lookup.user_id,
+                        lookup.handle.as_str(),
+                    )?,
+                );
+                peer_current_did = Some(lookup.did.clone());
                 handle = Some(lookup.handle);
                 lookup_raw = Some(raw);
             }
@@ -151,9 +175,12 @@ where
                 input: did.as_str().to_string(),
                 did,
                 handle,
+                conversation_id,
                 profile,
                 warnings,
             },
+            peer_scope,
+            peer_current_did,
             resolve: Some(resolve_raw),
             lookup: lookup_raw,
             public_profile: profile_raw,
@@ -274,6 +301,13 @@ where
             .await
             .map_err(|err| map_directory_not_found(err, &handle))?;
         let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
+        let conversation_id = lookup.direct_conversation_id();
+        let peer_scope = Some(
+            crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                lookup.user_id.clone(),
+                lookup.handle.as_str(),
+            )?,
+        );
         let warnings = lookup.warnings.clone();
         let fallback_profile = if lookup.profile.is_none() {
             public_profile_by_did_async(&mut self.transport, lookup.did.as_str())
@@ -302,9 +336,12 @@ where
                 input: handle,
                 did: lookup.did.clone(),
                 handle: Some(lookup.handle),
+                conversation_id,
                 profile: profile_dto,
                 warnings,
             },
+            peer_scope,
+            peer_current_did: Some(lookup.did.clone()),
             resolve: Some(resolve_raw),
             lookup: Some(lookup_raw),
             public_profile: fallback_profile,
@@ -317,10 +354,22 @@ where
         let mut warnings = Vec::new();
         let mut lookup_raw = None;
         let mut handle = None;
+        let mut peer_scope = None;
+        let mut peer_current_did = None;
+        let mut conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id(did.as_str());
         match lookup_by_did_async(&mut self.transport, did.as_str()).await {
             Ok(raw) => {
                 let lookup = handle_lookup_from_value_with_client(self.client, &raw)?;
+                conversation_id = lookup.direct_conversation_id();
                 warnings.extend(lookup.warnings);
+                peer_scope = Some(
+                    crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                        lookup.user_id,
+                        lookup.handle.as_str(),
+                    )?,
+                );
+                peer_current_did = Some(lookup.did.clone());
                 handle = Some(lookup.handle);
                 lookup_raw = Some(raw);
             }
@@ -343,9 +392,12 @@ where
                 input: did.as_str().to_string(),
                 did,
                 handle,
+                conversation_id,
                 profile,
                 warnings,
             },
+            peer_scope,
+            peer_current_did,
             resolve: Some(resolve_raw),
             lookup: lookup_raw,
             public_profile: profile_raw,
@@ -519,6 +571,7 @@ pub(crate) fn handle_lookup_from_value_with_client(
         user_id,
         domain: string_option(value, "domain"),
         status: string_option(value, "status"),
+        binding_generation: string_option(value, "binding_generation"),
         profile,
         warnings,
     })
@@ -544,6 +597,7 @@ pub(crate) fn handle_lookup_from_value(
         user_id,
         domain: string_option(value, "domain"),
         status: string_option(value, "status"),
+        binding_generation: string_option(value, "binding_generation"),
         profile: None,
         warnings: Vec::new(),
     })
@@ -631,4 +685,37 @@ fn string_value(value: &Value, key: &str) -> String {
 fn string_option(value: &Value, key: &str) -> Option<String> {
     let value = string_value(value, key);
     (!value.trim().is_empty()).then_some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn handle_lookup_preserves_authoritative_binding_generation() {
+        let lookup = handle_lookup_from_value(&json!({
+            "did": "did:wba:awiki.info:alice:e1_current",
+            "full_handle": "alice.awiki.info",
+            "user_id": "user-alice",
+            "status": "active",
+            "binding_generation": "3"
+        }))
+        .unwrap();
+
+        assert_eq!(lookup.binding_generation.as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn handle_lookup_does_not_coerce_numeric_binding_generation() {
+        let lookup = handle_lookup_from_value(&json!({
+            "did": "did:wba:awiki.info:alice:e1_current",
+            "full_handle": "alice.awiki.info",
+            "status": "active",
+            "binding_generation": 3
+        }))
+        .unwrap();
+
+        assert_eq!(lookup.binding_generation, None);
+    }
 }

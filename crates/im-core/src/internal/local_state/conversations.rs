@@ -3,7 +3,10 @@ pub(crate) struct ConversationRecord {
     pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
     pub(crate) conversation_id: String,
+    pub(crate) thread_kind: String,
     pub(crate) thread_id: String,
+    pub(crate) direct_peer_did: String,
+    pub(crate) activity_at: String,
     pub(crate) message_count: i64,
     pub(crate) unread_count: i64,
     pub(crate) unread_mention_count: i64,
@@ -36,16 +39,19 @@ pub(crate) fn list_conversations_for_owner_identity(
     let mut statement = String::from(
         r#"
 SELECT
-    t.owner_identity_id,
-    t.owner_did,
-    t.conversation_id,
-    t.thread_id,
-    t.message_count,
-    t.unread_count,
-    t.unread_mention_count,
+    r.owner_identity_id,
+    r.owner_did,
+    r.conversation_id,
+    r.thread_kind,
+    r.thread_id,
+    COALESCE(d.current_did, '') AS direct_peer_did,
+    r.activity_at,
+    COALESCE(t.message_count, 0) AS message_count,
+    COALESCE(t.unread_count, 0) AS unread_count,
+    COALESCE(t.unread_mention_count, 0) AS unread_mention_count,
     t.first_unread_mention_message_id,
-    t.last_message_at,
-    t.last_content,
+    COALESCE(t.last_message_at, '') AS last_message_at,
+    COALESCE(t.last_content, '') AS last_content,
     m.msg_id,
     m.direction,
     m.sender_did,
@@ -64,43 +70,49 @@ SELECT
     m.metadata,
     m.mentions_current_user,
     m.credential_name
-FROM conversation_summaries t
+FROM conversation_registry r
+LEFT JOIN conversation_summaries t
+  ON t.owner_identity_id = r.owner_identity_id
+ AND t.conversation_id = r.conversation_id
 LEFT JOIN messages m
-  ON m.owner_identity_id = t.owner_identity_id
+  ON m.owner_identity_id = r.owner_identity_id
  AND m.msg_id = t.last_message_id
-WHERE t.owner_identity_id = ?1"#,
+LEFT JOIN direct_peer_routes d
+  ON d.owner_identity_id = r.owner_identity_id
+ AND d.conversation_id = r.conversation_id
+WHERE r.owner_identity_id = ?1 AND r.is_active = 1"#,
     );
     if cursor.is_some() {
         statement.push_str(
             r#"
- AND (t.last_message_at < ?3 OR (t.last_message_at = ?3 AND t.conversation_id < ?4))"#,
+ AND (r.activity_at < ?3 OR (r.activity_at = ?3 AND r.conversation_id < ?4))"#,
         );
     }
     if query.unread_only {
-        statement.push_str(" AND t.unread_count > 0");
+        statement.push_str(" AND COALESCE(t.unread_count, 0) > 0");
     }
     match (query.include_direct, query.include_groups) {
         (true, true) => {}
-        (true, false) => statement.push_str(" AND t.conversation_id NOT LIKE 'group:%'"),
-        (false, true) => statement.push_str(" AND t.conversation_id LIKE 'group:%'"),
+        (true, false) => statement.push_str(" AND r.thread_kind <> 'group'"),
+        (false, true) => statement.push_str(" AND r.thread_kind = 'group'"),
         (false, false) => return Ok(Vec::new()),
     }
     statement.push_str(
         r#"
-ORDER BY t.last_message_at DESC, t.conversation_id DESC
+ORDER BY r.activity_at DESC, r.conversation_id DESC
 LIMIT ?2"#,
     );
     let _owner = normalize_owner_did(owner_did);
     let mut statement = connection
         .prepare(&statement)
         .map_err(super::local_state_unavailable)?;
-    let mut rows = if let Some((cursor_last_message_at, cursor_conversation_id)) = cursor {
+    let mut rows = if let Some((cursor_activity_at, cursor_conversation_id)) = cursor {
         statement
             .query_map(
                 (
                     &owner_identity_id,
                     limit,
-                    cursor_last_message_at,
+                    cursor_activity_at,
                     cursor_conversation_id,
                 ),
                 conversation_record_from_row,
@@ -147,8 +159,17 @@ fn conversation_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Con
     let conversation_id = row
         .get::<_, Option<String>>("conversation_id")?
         .unwrap_or_default();
+    let thread_kind = row
+        .get::<_, Option<String>>("thread_kind")?
+        .unwrap_or_default();
     let thread_id = row
         .get::<_, Option<String>>("thread_id")?
+        .unwrap_or_default();
+    let direct_peer_did = row
+        .get::<_, Option<String>>("direct_peer_did")?
+        .unwrap_or_default();
+    let activity_at = row
+        .get::<_, Option<String>>("activity_at")?
         .unwrap_or_default();
     let last_message = if msg_id.trim().is_empty() {
         None
@@ -203,7 +224,10 @@ fn conversation_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Con
         owner_identity_id,
         owner_did,
         conversation_id,
+        thread_kind,
         thread_id,
+        direct_peer_did,
+        activity_at,
         message_count: row
             .get::<_, Option<i64>>("message_count")?
             .unwrap_or_default(),
@@ -230,8 +254,8 @@ fn conversation_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Con
 pub(crate) fn encode_conversation_cursor(record: &ConversationRecord) -> Option<String> {
     let conversation_id = non_empty(&record.conversation_id)?;
     Some(format!(
-        "conversation-list:v1:{}:{}",
-        base64_url_encode(record.last_message_at.as_str()),
+        "conversation-list:v2:{}:{}",
+        base64_url_encode(record.activity_at.as_str()),
         base64_url_encode(conversation_id)
     ))
 }
@@ -241,7 +265,10 @@ fn decode_conversation_cursor(cursor: Option<&str>) -> crate::ImResult<Option<(S
     let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
-    let Some(rest) = cursor.strip_prefix("conversation-list:v1:") else {
+    let Some(rest) = cursor
+        .strip_prefix("conversation-list:v2:")
+        .or_else(|| cursor.strip_prefix("conversation-list:v1:"))
+    else {
         return Err(crate::ImError::invalid_input(
             Some("cursor".to_owned()),
             "conversation cursor must be produced by conversations",
@@ -333,6 +360,67 @@ fn required_owner_identity_id(value: &str) -> crate::ImResult<String> {
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    #[test]
+    fn empty_direct_and_group_conversations_are_listed_without_messages() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let route = crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::new(
+            "alice-id",
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                    "bob-user",
+                    "bob.awiki.info",
+                )
+                .unwrap(),
+            ),
+            "bob-user",
+            "bob.awiki.info",
+            "did:example:bob",
+        )
+        .unwrap();
+        crate::internal::local_state::direct_peer_routes::upsert(&db, &route).unwrap();
+        for record in [
+            crate::internal::local_state::conversation_registry::ConversationRegistryRecord {
+                owner_identity_id: "alice-id".into(),
+                owner_did: "did:example:alice".into(),
+                conversation_id: route.conversation_id.clone(),
+                thread_kind: "direct".into(),
+                thread_id: route.conversation_id.clone(),
+                activity_at: "2026-07-13T00:00:02Z".into(),
+            },
+            crate::internal::local_state::conversation_registry::ConversationRegistryRecord {
+                owner_identity_id: "alice-id".into(),
+                owner_did: "did:example:alice".into(),
+                conversation_id: "group:g1".into(),
+                thread_kind: "group".into(),
+                thread_id: "g1".into(),
+                activity_at: "2026-07-13T00:00:01Z".into(),
+            },
+        ] {
+            crate::internal::local_state::conversation_registry::ensure(&db, &record).unwrap();
+        }
+
+        let rows = list_conversations_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            &crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                cursor: None,
+                include_groups: true,
+                include_direct: true,
+                unread_only: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.message_count == 0));
+        assert!(rows.iter().all(|row| row.last_message.is_none()));
+        assert_eq!(rows[0].thread_kind, "direct");
+        assert_eq!(rows[0].direct_peer_did, "did:example:bob");
+        assert_eq!(rows[1].thread_kind, "group");
+    }
 
     #[test]
     fn local_state_conversations_projects_threads_with_filters() {

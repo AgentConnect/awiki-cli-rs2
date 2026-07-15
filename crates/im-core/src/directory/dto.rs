@@ -5,6 +5,7 @@ pub struct DirectoryResolution {
     pub input: String,
     pub did: crate::ids::Did,
     pub handle: Option<crate::ids::Handle>,
+    pub conversation_id: String,
     pub profile: Option<crate::identity::Profile>,
     pub warnings: Vec<String>,
 }
@@ -32,8 +33,21 @@ pub struct HandleLookupResult {
     pub user_id: String,
     pub domain: Option<String>,
     pub status: Option<String>,
+    pub binding_generation: Option<String>,
     pub profile: Option<crate::identity::Profile>,
     pub warnings: Vec<String>,
+}
+
+impl HandleLookupResult {
+    pub fn direct_conversation_id(&self) -> String {
+        crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+            &crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                self.user_id.clone(),
+                self.handle.as_str(),
+            )
+            .expect("validated handle lookup must define a direct peer scope"),
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,4 +166,36 @@ pub struct RelationshipListItem {
     pub profile: Option<crate::identity::Profile>,
     pub created_at: Option<String>,
     pub warnings: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lookup(did: &str) -> HandleLookupResult {
+        HandleLookupResult {
+            handle: crate::ids::Handle::parse("Alice.Awiki.Info", "").unwrap(),
+            did: crate::ids::Did::parse(did).unwrap(),
+            user_id: "user-alice".to_owned(),
+            domain: Some("awiki.info".to_owned()),
+            status: Some("active".to_owned()),
+            binding_generation: Some("2".to_owned()),
+            profile: None,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn handle_lookup_exposes_peer_scope_conversation_id_stable_across_did_rotation() {
+        let first = lookup("did:example:alice:old");
+        let rotated = lookup("did:example:alice:new");
+
+        assert_eq!(
+            first.direct_conversation_id(),
+            rotated.direct_conversation_id()
+        );
+        assert!(first
+            .direct_conversation_id()
+            .starts_with("dm:peer-scope:v1:"));
+    }
 }

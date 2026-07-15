@@ -65,12 +65,10 @@ target_for() {
   local arch_name="$2"
 
   case "${os_name}/${arch_name}" in
-    linux/amd64) printf '%s\n' "x86_64-unknown-linux-gnu" ;;
-    linux/arm64) printf '%s\n' "aarch64-unknown-linux-gnu" ;;
+    linux/amd64) printf '%s\n' "x86_64-unknown-linux-musl" ;;
     darwin/amd64) printf '%s\n' "x86_64-apple-darwin" ;;
     darwin/arm64) printf '%s\n' "aarch64-apple-darwin" ;;
     windows/amd64) printf '%s\n' "x86_64-pc-windows-msvc" ;;
-    windows/arm64) printf '%s\n' "aarch64-pc-windows-msvc" ;;
     *) die "unsupported release target ${os_name}/${arch_name}" ;;
   esac
 }
@@ -171,6 +169,9 @@ case "${ARCH_NAME}" in
   amd64|arm64) ;;
   *) die "unsupported release arch ${ARCH_NAME}" ;;
 esac
+expected_target="$(target_for "${OS_NAME}" "${ARCH_NAME}")"
+[[ "${TARGET_TRIPLE}" == "${expected_target}" ]] || die \
+  "target triple ${TARGET_TRIPLE} does not match ${OS_NAME}/${ARCH_NAME} (expected ${expected_target})"
 
 cargo_bin="${CARGO:-cargo}"
 toolchain="${AWIKI_CLI_RUST_TOOLCHAIN:-1.88.0}"
@@ -180,9 +181,19 @@ else
   cargo_cmd=("${cargo_bin}")
 fi
 
-"${cargo_cmd[@]}" run -p xtask -- check-version --expect "${VERSION}"
+node - "${ROOT_DIR}/scripts/release/cli/release-config.json" "${VERSION}" <<'NODE'
+const fs = require('fs');
+const [configPath, version] = process.argv.slice(2);
+const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+const versions = Object.values(config.channels || {}).map(entry => entry.version);
+if (!versions.includes(version)) {
+  throw new Error(`version ${version} is not declared in ${configPath}`);
+}
+NODE
 
-commit="${AWIKI_CLI_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || printf '%s' unknown)}"
+# Keep the exact source identity in the binary. System-test and incident
+# evidence compare this value with the immutable release tag commit.
+commit="${AWIKI_CLI_COMMIT:-$(git rev-parse HEAD 2>/dev/null || printf '%s' unknown)}"
 build_date="${AWIKI_CLI_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 bin_name="awiki-cli"
 if [[ "${OS_NAME}" == "windows" ]]; then
@@ -215,6 +226,14 @@ AWIKI_CLI_CGO_ENABLED=0 \
   "${cargo_cmd[@]}" build -p awiki-cli --bin awiki-cli --release --locked --target "${TARGET_TRIPLE}"
 
 [[ -f "${build_bin}" ]] || die "built binary not found: ${build_bin}"
+
+# The npm installer must work on Linux hosts older than the current GitHub
+# runner. A musl build keeps the CLI independent of the runner's glibc ABI.
+if [[ "${OS_NAME}" == "linux" ]] && command -v strings >/dev/null 2>&1; then
+  if strings "${build_bin}" | grep -q 'GLIBC_[0-9]'; then
+    die "Linux CLI release binary contains GLIBC symbol requirements; build a musl/static-compatible package"
+  fi
+fi
 
 mkdir -p "${DIST_DIR}"
 stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/awiki-release.XXXXXX")"
@@ -261,7 +280,7 @@ PY
     die "zip archive creation requires python, PowerShell, or zip"
   fi
 else
-  tar -C "${stage_dir}" -czf "${archive_path}" "${bin_name}"
+  COPYFILE_DISABLE=1 tar -C "${stage_dir}" -czf "${archive_path}" "${bin_name}"
 fi
 
 echo "release archive created: ${archive_path}"

@@ -1578,6 +1578,8 @@ where
             | "peer_user_id"
             | "peer_full_handle"
             | "peer_current_did"
+            | "decryption_state"
+            | "secure_wire_content_type"
                 if !attribute.value.trim().is_empty() =>
             {
                 object.insert(
@@ -1769,6 +1771,8 @@ where
             | "peer_user_id"
             | "peer_full_handle"
             | "peer_current_did"
+            | "decryption_state"
+            | "secure_wire_content_type"
                 if !attribute.value.trim().is_empty() =>
             {
                 object.insert(
@@ -2048,6 +2052,8 @@ fn read_metadata_json(metadata: &crate::messages::MessageMetadata) -> String {
             | "peer_user_id"
             | "peer_full_handle"
             | "peer_current_did"
+            | "decryption_state"
+            | "secure_wire_content_type"
                 if !attribute.value.trim().is_empty() =>
             {
                 object.insert(

@@ -314,6 +314,46 @@ impl App {
         )
     }
 
+    pub fn run_tenant_setup(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let name = required_arg(command, "tenant setup", "name")?;
+        let input = workspace_config::TenantCreateInput {
+            name: name.to_string(),
+            display_name: command.flags.get("display-name").cloned(),
+            backend_base_url: required_flag(command, "tenant setup", "backend-base-url")?
+                .to_string(),
+            did_host: required_flag(command, "tenant setup", "did-host")?.to_string(),
+        };
+        let before = self.resolve_config()?;
+        if self.globals.dry_run {
+            let planned = workspace_config::preview_setup_tenant(input).map_err(internal_anyhow)?;
+            return self.render_success(
+                "awiki-cli tenant setup",
+                &before,
+                json!({
+                    "plan": {
+                        "action": "tenant_setup",
+                        "result": planned,
+                        "next_command": "awiki-cli init",
+                    }
+                }),
+                "Dry run: tenant setup planned",
+                Vec::new(),
+            );
+        }
+        let result = workspace_config::setup_tenant(input).map_err(internal_anyhow)?;
+        let resolved = self.resolve_config()?;
+        self.render_success(
+            "awiki-cli tenant setup",
+            &resolved,
+            json!({
+                "result": result,
+                "next_command": "awiki-cli init",
+            }),
+            "Tenant is configured and active",
+            vec!["Run `awiki-cli init` to initialize this tenant's isolated workspace before creating an identity or configuring runtime.".to_string()],
+        )
+    }
+
     pub fn run_tenant_reconfigure(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let name = required_arg(command, "tenant reconfigure", "name")?;
         let backend_base_url = required_flag(command, "tenant reconfigure", "backend-base-url")?;

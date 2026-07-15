@@ -10,7 +10,7 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `did_domain_for_client`, `mutate_group_member`, `page_limit`
+// These functions are ignored because they are not marked as `pub`: `did_domain_for_client`, `identity_handle`, `mutate_group_member`, `page_limit`
 
 Future<DartGroupReadResult> createGroup({
   required ArcDartImClient client,
@@ -26,6 +26,22 @@ Future<DartGroupReadResult> joinGroup({
 }) => RustLib.instance.api.crateApiGroupsJoinGroup(
   client: client,
   groupDid: groupDid,
+);
+
+Future<DartGroupReadResult> joinGroupWithIdentity({
+  required ArcDartImClient client,
+  required DartJoinGroupRequest request,
+}) => RustLib.instance.api.crateApiGroupsJoinGroupWithIdentity(
+  client: client,
+  request: request,
+);
+
+Future<DartGroupRebindRecoverySummary> resumeGroupRebindRecovery({
+  required ArcDartImClient client,
+  required int limit,
+}) => RustLib.instance.api.crateApiGroupsResumeGroupRebindRecovery(
+  client: client,
+  limit: limit,
 );
 
 Future<DartGroupReadResult> getGroup({

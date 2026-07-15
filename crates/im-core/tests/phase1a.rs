@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use im_core::prelude::*;
+use awiki_im_core::prelude::*;
 
 #[test]
 fn im_core_new_can_construct() {

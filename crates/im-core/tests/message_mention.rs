@@ -1,4 +1,4 @@
-use im_core::messages::{
+use awiki_im_core::messages::{
     is_message_mention_payload, parse_message_mention_payload, MessageMentionRole,
     MessageMentionSelector, MessageMentionTarget, SendMessageRequest,
 };
@@ -156,18 +156,18 @@ fn schema_less_mention_payload_can_be_used_in_send_payload_request() {
     parse_message_mention_payload(&payload).unwrap();
 
     let request = SendMessageRequest {
-        target: im_core::messages::MessageTarget::Group(
-            im_core::ids::GroupRef::parse("did:wba:example.com:group:team").unwrap(),
+        target: awiki_im_core::messages::MessageTarget::Group(
+            awiki_im_core::ids::GroupRef::parse("did:wba:example.com:group:team").unwrap(),
         ),
-        body: im_core::messages::MessageBody::Payload { payload },
-        security: im_core::messages::MessageSecurityMode::DefaultPlain,
+        body: awiki_im_core::messages::MessageBody::Payload { payload },
+        security: awiki_im_core::messages::MessageSecurityMode::DefaultPlain,
         client_message_id: None,
-        delivery: im_core::messages::MessageDeliveryOptions::default(),
+        delivery: awiki_im_core::messages::MessageDeliveryOptions::default(),
         delegated_signing: None,
     };
 
     assert!(matches!(
         request.body,
-        im_core::messages::MessageBody::Payload { .. }
+        awiki_im_core::messages::MessageBody::Payload { .. }
     ));
 }

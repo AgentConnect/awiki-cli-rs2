@@ -46,6 +46,23 @@ struct RecoverBackupManifest {
 }
 
 impl RecoverLocalPlan {
+    pub(crate) fn stable_owner_identity_id(&self, active_before: &str) -> Option<String> {
+        self.same_handle_candidates
+            .iter()
+            .find(|candidate| {
+                !active_before.trim().is_empty()
+                    && candidate.identity_name.trim() == active_before.trim()
+            })
+            .or_else(|| {
+                self.same_handle_candidates
+                    .iter()
+                    .find(|candidate| candidate.is_default)
+            })
+            .or_else(|| self.same_handle_candidates.first())
+            .map(|candidate| candidate.unique_id.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    }
+
     pub(crate) fn archived_identity_names(&self) -> Vec<String> {
         self.same_handle_candidates
             .iter()
@@ -776,6 +793,36 @@ mod tests {
         assert_eq!(target.target_local_part, "alice");
         assert_eq!(target.effective_domain, "tenant.example");
         assert!(!target.explicit_domain);
+    }
+
+    #[test]
+    fn stable_owner_identity_prefers_active_same_handle_persona() {
+        let summary =
+            |name: &str, id: &str, is_default: bool| crate::identity::RecoverLocalIdentitySummary {
+                identity_name: name.to_owned(),
+                unique_id: id.to_owned(),
+                is_default,
+                ..Default::default()
+            };
+        let plan = RecoverLocalPlan {
+            target: recover_target("alice", "awiki.test").unwrap(),
+            final_identity_name: "alice".to_owned(),
+            temp_identity_name: "alice-recovering".to_owned(),
+            backup_path_preview: String::new(),
+            same_handle_candidates: vec![
+                summary("alice-old", "owner-active", false),
+                summary("alice-default", "owner-default", true),
+            ],
+            excluded_identities: vec![summary("bob", "other-persona", false)],
+        };
+        assert_eq!(
+            plan.stable_owner_identity_id("alice-old").as_deref(),
+            Some("owner-active")
+        );
+        assert_eq!(
+            plan.stable_owner_identity_id("missing").as_deref(),
+            Some("owner-default")
+        );
     }
 
     #[test]

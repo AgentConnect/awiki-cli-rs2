@@ -9,6 +9,8 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 class DartCreateGroupRequest {
   final String name;
+  final DartGroupIdentityMode identityMode;
+  final String? identityHandle;
   final String? description;
   final String? avatarUri;
   final String? discoverability;
@@ -27,6 +29,8 @@ class DartCreateGroupRequest {
 
   const DartCreateGroupRequest({
     required this.name,
+    required this.identityMode,
+    this.identityHandle,
     this.description,
     this.avatarUri,
     this.discoverability,
@@ -47,6 +51,8 @@ class DartCreateGroupRequest {
   @override
   int get hashCode =>
       name.hashCode ^
+      identityMode.hashCode ^
+      identityHandle.hashCode ^
       description.hashCode ^
       avatarUri.hashCode ^
       discoverability.hashCode ^
@@ -69,6 +75,8 @@ class DartCreateGroupRequest {
       other is DartCreateGroupRequest &&
           runtimeType == other.runtimeType &&
           name == other.name &&
+          identityMode == other.identityMode &&
+          identityHandle == other.identityHandle &&
           description == other.description &&
           avatarUri == other.avatarUri &&
           discoverability == other.discoverability &&
@@ -85,6 +93,8 @@ class DartCreateGroupRequest {
           memberMaxMessages == other.memberMaxMessages &&
           memberMaxTotalChars == other.memberMaxTotalChars;
 }
+
+enum DartGroupIdentityMode { handle, didOnly }
 
 class DartGroupMember {
   final String? did;
@@ -165,6 +175,77 @@ class DartGroupReadResult {
           messages == other.messages &&
           total == other.total &&
           source == other.source &&
+          warnings == other.warnings;
+}
+
+class DartGroupRebindRecoveryItem {
+  final String groupDid;
+  final String layer;
+  final String phase;
+  final bool blocked;
+
+  const DartGroupRebindRecoveryItem({
+    required this.groupDid,
+    required this.layer,
+    required this.phase,
+    required this.blocked,
+  });
+
+  @override
+  int get hashCode =>
+      groupDid.hashCode ^ layer.hashCode ^ phase.hashCode ^ blocked.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartGroupRebindRecoveryItem &&
+          runtimeType == other.runtimeType &&
+          groupDid == other.groupDid &&
+          layer == other.layer &&
+          phase == other.phase &&
+          blocked == other.blocked;
+}
+
+class DartGroupRebindRecoverySummary {
+  final int processed;
+  final int completed;
+  final int pending;
+  final int blocked;
+  final List<String> sendPausedGroupDids;
+  final List<DartGroupRebindRecoveryItem> items;
+  final List<String> warnings;
+
+  const DartGroupRebindRecoverySummary({
+    required this.processed,
+    required this.completed,
+    required this.pending,
+    required this.blocked,
+    required this.sendPausedGroupDids,
+    required this.items,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      processed.hashCode ^
+      completed.hashCode ^
+      pending.hashCode ^
+      blocked.hashCode ^
+      sendPausedGroupDids.hashCode ^
+      items.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartGroupRebindRecoverySummary &&
+          runtimeType == other.runtimeType &&
+          processed == other.processed &&
+          completed == other.completed &&
+          pending == other.pending &&
+          blocked == other.blocked &&
+          sendPausedGroupDids == other.sendPausedGroupDids &&
+          items == other.items &&
           warnings == other.warnings;
 }
 
@@ -272,4 +353,29 @@ class DartGroupSummary {
           membershipStatus == other.membershipStatus &&
           memberCount == other.memberCount &&
           lastMessageAt == other.lastMessageAt;
+}
+
+class DartJoinGroupRequest {
+  final String groupDid;
+  final DartGroupIdentityMode identityMode;
+  final String? identityHandle;
+
+  const DartJoinGroupRequest({
+    required this.groupDid,
+    required this.identityMode,
+    this.identityHandle,
+  });
+
+  @override
+  int get hashCode =>
+      groupDid.hashCode ^ identityMode.hashCode ^ identityHandle.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartJoinGroupRequest &&
+          runtimeType == other.runtimeType &&
+          groupDid == other.groupDid &&
+          identityMode == other.identityMode &&
+          identityHandle == other.identityHandle;
 }

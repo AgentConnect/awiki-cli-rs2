@@ -453,6 +453,7 @@ class ConversationSnapshotItem {
     this.firstUnreadMentionMessageId,
     required this.messageCount,
     this.lastMessageAt,
+    this.activityAt,
   });
 
   final String threadKind;
@@ -465,6 +466,7 @@ class ConversationSnapshotItem {
   final String? firstUnreadMentionMessageId;
   final int messageCount;
   final String? lastMessageAt;
+  final String? activityAt;
 }
 
 class ConversationSnapshotMessage {
@@ -572,6 +574,7 @@ class Conversation {
     this.firstUnreadMentionMessageId,
     required this.messageCount,
     this.lastMessageAt,
+    this.activityAt,
   });
 
   final String threadKind;
@@ -585,6 +588,7 @@ class Conversation {
   final String? firstUnreadMentionMessageId;
   final int messageCount;
   final String? lastMessageAt;
+  final String? activityAt;
 }
 
 class ConversationPage {

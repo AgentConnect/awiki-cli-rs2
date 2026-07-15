@@ -30,6 +30,39 @@ function getPackageVersion() {
   }
 }
 
+function releaseEnvironment() {
+  try {
+    const metadata = require(path.resolve(__dirname, '..', 'awiki-release.json'));
+    const defaults = metadata.default_tenant || {};
+    return {
+      AWIKI_CLI_UPDATE_BASE_URL: process.env.AWIKI_CLI_UPDATE_BASE_URL || metadata.update_base_url || '',
+      AWIKI_CLI_DEFAULT_BACKEND_BASE_URL: process.env.AWIKI_CLI_DEFAULT_BACKEND_BASE_URL || defaults.backend_base_url || '',
+      AWIKI_CLI_DEFAULT_DID_HOST: process.env.AWIKI_CLI_DEFAULT_DID_HOST || defaults.did_host || '',
+    };
+  } catch {
+    return {};
+  }
+}
+
+function serviceManagerEnvironment(
+  platform = process.platform,
+  environment = process.env,
+) {
+  if (platform !== 'linux') {
+    return {};
+  }
+
+  // The Rust binary keeps real user-systemd writes opt-in so isolated tests can
+  // exercise runtime policy without touching the host. The npm entrypoint is
+  // the production boundary, so Linux installs enable those backends by default.
+  return {
+    AWIKI_CLI_ENABLE_SYSTEMD_LISTENER_SERVICE:
+      environment.AWIKI_CLI_ENABLE_SYSTEMD_LISTENER_SERVICE || '1',
+    AWIKI_CLI_ENABLE_SYSTEMD_HERMES_BRIDGE_SERVICE:
+      environment.AWIKI_CLI_ENABLE_SYSTEMD_HERMES_BRIDGE_SERVICE || '1',
+  };
+}
+
 function run() {
   const binPath = findBinary();
 
@@ -45,7 +78,14 @@ function run() {
   }
 
   const args = process.argv.slice(2);
-  const child = spawn(binPath, args, { stdio: 'inherit' });
+  const child = spawn(binPath, args, {
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      ...releaseEnvironment(),
+      ...serviceManagerEnvironment(),
+    },
+  });
 
   child.on('exit', code => {
     process.exit(code ?? 1);
@@ -65,5 +105,7 @@ module.exports = {
   _internal: {
     findBinary,
     fileExists,
+    releaseEnvironment,
+    serviceManagerEnvironment,
   },
 };

@@ -138,9 +138,9 @@ where
     ) -> crate::ImResult<IdentityRegistrationRuntimeResult> {
         let previous_default = self.core.identities().default_identity().ok().flatten();
         let generated_with_daemon =
-            crate::internal::identity_generation::generate_identity_with_default_daemon_subkey(
+            crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
                 &target.effective_domain,
-                [target.local_part.as_str()],
+                &target.local_part,
                 self.core.inner().sdk_config().anp_service_endpoint.as_ref(),
                 self.core.inner().sdk_config().anp_service_did.as_ref(),
             )?;
@@ -351,9 +351,9 @@ where
             .ok()
             .flatten();
         let generated_with_daemon =
-            crate::internal::identity_generation::generate_identity_with_default_daemon_subkey(
+            crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
                 &target.effective_domain,
-                [target.local_part.as_str()],
+                &target.local_part,
                 self.core.inner().sdk_config().anp_service_endpoint.as_ref(),
                 self.core.inner().sdk_config().anp_service_did.as_ref(),
             )?;

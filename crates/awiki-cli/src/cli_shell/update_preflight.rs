@@ -55,9 +55,8 @@ fn update_blocked_error(decision: &self_update::Decision) -> ExitError {
             decision.current_version, decision.min_supported_version
         ),
         format!(
-            "Please upgrade awiki-cli before running this command. Run `awiki-cli upgrade`, or install directly with `{}` (`{}` if registry.npmjs.org is unreachable).",
-            direct_npm_install_command(),
-            mirror_npm_install_command()
+            "Please upgrade awiki-cli before running this command. Run `awiki-cli upgrade`, or install directly with `{}`.",
+            npm_install_command(&decision.installer_url)
         ),
     )
 }
@@ -94,28 +93,8 @@ fn is_update_exempt_command(command: &ParsedCommand) -> bool {
     )
 }
 
-pub(super) fn npm_global_install_attempts() -> Vec<Vec<&'static str>> {
-    vec![
-        vec!["install", "-g", "@awiki/cli@latest"],
-        vec![
-            "install",
-            "-g",
-            "@awiki/cli@latest",
-            "--registry=https://registry.npmmirror.com",
-        ],
-    ]
-}
-
-pub(super) fn format_npm_install_command(args: &[&str]) -> String {
-    format!("npm {}", args.join(" "))
-}
-
-pub(super) fn direct_npm_install_command() -> String {
-    format_npm_install_command(&npm_global_install_attempts()[0])
-}
-
-fn mirror_npm_install_command() -> String {
-    format_npm_install_command(&npm_global_install_attempts()[1])
+pub(super) fn npm_install_command(installer_url: &str) -> String {
+    format!("npm install -g {}", installer_url.trim())
 }
 
 #[cfg(test)]
@@ -185,6 +164,7 @@ mod tests {
             current_version: "1.0.0".to_string(),
             latest_version: "1.0.2".to_string(),
             min_supported_version: "1.0.1".to_string(),
+            installer_url: "https://awiki.example/cli/stable/awiki-cli.tgz".to_string(),
             metadata_source: "cache".to_string(),
             strict_disabled: false,
             dev_build: false,
@@ -199,10 +179,9 @@ mod tests {
             "awiki-cli 1.0.0 is no longer supported (minimum supported version is 1.0.1)."
         );
         assert!(err.detail.hint.contains("Run `awiki-cli upgrade`"));
-        assert!(err.detail.hint.contains("npm install -g @awiki/cli@latest"));
         assert!(err
             .detail
             .hint
-            .contains("--registry=https://registry.npmmirror.com"));
+            .contains("npm install -g https://awiki.example/cli/stable/awiki-cli.tgz"));
     }
 }

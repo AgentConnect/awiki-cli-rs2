@@ -125,7 +125,7 @@ async fn db_actor_stores_classifies_marks_and_lists_messages() {
         .any(|record| record.thread_id == "dm:did:example:bob"));
     assert!(conversations
         .iter()
-        .any(|record| record.thread_id == "group:did:example:group"));
+        .any(|record| record.conversation_id == "group:did:example:group"));
     db.shutdown().await.unwrap();
 }
 

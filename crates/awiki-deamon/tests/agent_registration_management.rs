@@ -658,6 +658,10 @@ fn runtime_agent_create_reuses_client_request_id_without_second_exchange() {
     );
 
     assert_eq!(second.command_id, "cmd_create_once_retry");
+    assert_eq!(
+        second.client_request_id.as_deref(),
+        Some("app_req_create_hermes_once")
+    );
     assert_eq!(second.agent_did, first.agent_did);
     assert_eq!(second.handle, first.handle);
     assert_eq!(second.runtime_profile_id, first.runtime_profile_id);
@@ -670,6 +674,14 @@ fn runtime_agent_create_reuses_client_request_id_without_second_exchange() {
 
     let statuses = outbox.agent_statuses();
     assert_eq!(statuses.len(), 2);
+    assert_eq!(
+        statuses[0].payload["result"]["client_request_id"],
+        "app_req_create_hermes_once"
+    );
+    assert_eq!(
+        statuses[1].payload["result"]["client_request_id"],
+        "app_req_create_hermes_once"
+    );
     assert_eq!(
         statuses[0].payload["result"]["runtime_agent_did"],
         first.agent_did
@@ -2000,7 +2012,8 @@ fn runtime_agent_create_rejects_conflicting_workspace_mode_and_strategy() {
                     "workspace_strategy": "shared-root",
                     "controller_did": "did:human:alice",
                     "registration_token": "tok_runtime_secret_value",
-                    "display_name": "Codex Strategy Conflict"
+                    "display_name": "Codex Strategy Conflict",
+                    "client_request_id": "app_req_workspace_strategy_conflict"
                 }
             }),
         },
@@ -2013,6 +2026,10 @@ fn runtime_agent_create_rejects_conflicting_workspace_mode_and_strategy() {
     assert_eq!(state.list_runtime_agent_definitions().unwrap().len(), 0);
     assert_eq!(outbox.agent_statuses().len(), 1);
     assert_eq!(outbox.agent_statuses()[0].payload["state"], "failed");
+    assert_eq!(
+        outbox.agent_statuses()[0].payload["result"]["client_request_id"],
+        "app_req_workspace_strategy_conflict"
+    );
 }
 
 #[test]

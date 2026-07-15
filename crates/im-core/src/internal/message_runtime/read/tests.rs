@@ -1900,7 +1900,7 @@ fn group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_red
         "content": direct_e2ee_attachment_manifest()
     })];
 
-    cache_group_attachment_manifests_for_internal_download(&client, &messages);
+    cache_attachment_manifests_for_internal_download(&client, &messages);
     redact_attachment_manifests_for_public_projection(&mut messages);
 
     let public = serde_json::to_string(&messages).unwrap();
@@ -1931,6 +1931,108 @@ fn group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_red
     assert_eq!(
         cached["content"]["attachments"][0]["encryption_info"]["nonce_b64u"],
         "NONCE-SECRET"
+    );
+}
+
+#[cfg(feature = "group-e2ee")]
+#[test]
+fn cached_group_e2ee_plaintext_prevents_redecrypting_consumed_ciphertext() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let group_did = "did:example:group:e2ee";
+    let message_id = "did:example:group:e2ee:3";
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    crate::internal::local_state::messages::upsert_message(
+        &connection,
+        &crate::internal::local_state::messages::MessageRecord {
+            msg_id: message_id.to_owned(),
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            owner_did: client.did().as_str().to_owned(),
+            conversation_id: format!("group:{group_did}"),
+            thread_id: format!("group:{group_did}"),
+            direction: -1,
+            sender_did: "did:example:alice".to_owned(),
+            group_id: group_did.to_owned(),
+            group_did: group_did.to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "cached group plaintext".to_owned(),
+            server_seq: Some(3),
+            is_e2ee: true,
+            metadata: json!({
+                "decryption_state": "decrypted",
+                "security": "group-e2ee"
+            })
+            .to_string(),
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        },
+    )
+    .unwrap();
+
+    let mut messages = vec![json!({
+        "id": "msg-raw-3",
+        "message_id": "msg-raw-3",
+        "sender_did": "did:example:alice",
+        "group_did": group_did,
+        "group_event_seq": "3",
+        "content_type": crate::internal::group_e2ee::wire::GROUP_E2EE_CIPHER_CONTENT_TYPE,
+        "group_cipher_object": {"consumed": true},
+        "content": {"group_cipher_object": {"consumed": true}}
+    })];
+
+    apply_cached_group_e2ee_messages(&client, &mut messages);
+
+    assert_eq!(messages[0]["content"], "cached group plaintext");
+    assert_eq!(messages[0]["content_type"], "text/plain");
+    assert_eq!(messages[0]["decryption_state"], "decrypted");
+    assert_eq!(messages[0]["decrypted"], true);
+    assert!(messages[0].get("group_cipher_object").is_none());
+}
+
+#[test]
+fn direct_attachment_manifest_cache_uses_peer_did_while_public_projection_redacts() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let mut messages = vec![json!({
+        "id": "msg-direct-e2ee-9",
+        "message_id": "msg-direct-e2ee-9",
+        "sender_did": "did:example:alice",
+        "receiver_did": client.did().as_str(),
+        "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+        "message_security_profile": "direct-e2ee",
+        "secure": true,
+        "decryption_state": "decrypted",
+        "content": direct_e2ee_attachment_manifest()
+    })];
+
+    cache_attachment_manifests_for_internal_download(&client, &messages);
+    redact_attachment_manifests_for_public_projection(&mut messages);
+
+    let public = serde_json::to_string(&messages).unwrap();
+    assert!(!public.contains("object_key_b64u"));
+    assert!(!public.contains("nonce_b64u"));
+    assert!(!public.contains("OBJECT-KEY-SECRET"));
+    assert!(!public.contains("NONCE-SECRET"));
+
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    let cached = crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
+        &connection,
+        client.current_identity().id.as_str(),
+        "direct",
+        "did:example:alice",
+        "msg-direct-e2ee-9",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(cached["message_security_profile"], "direct-e2ee");
+    assert_eq!(
+        cached["content"]["attachments"][0]["encryption_info"]["object_key_b64u"],
+        "OBJECT-KEY-SECRET"
     );
 }
 
@@ -2031,7 +2133,7 @@ async fn messages_read_async_projects_direct_init_without_legacy_fallback() {
         .local_state_db()
         .await
         .unwrap()
-        .get_direct_secure_session("alice-id", exchange.sender_did)
+        .get_direct_secure_session("alice-id", exchange.sender_did.clone())
         .await
         .unwrap()
         .unwrap();
@@ -2094,6 +2196,7 @@ async fn messages_read_async_replays_pending_direct_cipher_after_init() {
         ],
         "has_more": false
     });
+    let repeated_response = response.clone();
     let runtime = MessageReadRuntime::new(
         &client,
         ReadyAnyReadSessionProvider,
@@ -2149,7 +2252,7 @@ async fn messages_read_async_replays_pending_direct_cipher_after_init() {
         .local_state_db()
         .await
         .unwrap()
-        .get_direct_secure_session("alice-id", exchange.sender_did)
+        .get_direct_secure_session("alice-id", exchange.sender_did.clone())
         .await
         .unwrap()
         .unwrap();
@@ -2158,6 +2261,67 @@ async fn messages_read_async_replays_pending_direct_cipher_after_init() {
         crate::internal::secure_direct::sqlite_store::direct_session_from_blob(&saved.state_blob)
             .unwrap();
     assert_eq!(saved_session.recv_n, 2);
+    let cached = client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .list_decrypted_secure_messages("alice-id", vec!["msg-pending-follow-up".to_owned()])
+        .await
+        .unwrap();
+    assert_eq!(
+        cached.len(),
+        1,
+        "expected one committed decrypted projection"
+    );
+    assert_eq!(cached[0].content_type, "text/plain");
+    assert_eq!(cached[0].content, "follow-up after init");
+
+    let repeated_runtime = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: repeated_response,
+        },
+        NoopDirectoryTransport,
+    );
+    let repeated = repeated_runtime
+        .inbox_async(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::All,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: None,
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        repeated.page.items[0].body,
+        crate::messages::MessageBodyView::Text {
+            text: "follow-up after init".to_owned(),
+            kind: crate::messages::MessageKind::Text,
+        }
+    );
+    assert_eq!(repeated.raw["messages"][0]["decryption_state"], "decrypted");
+    let saved_after_repeat = client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .get_direct_secure_session("alice-id", exchange.sender_did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved_after_repeat.revision, saved.revision);
+    let session_after_repeat =
+        crate::internal::secure_direct::sqlite_store::direct_session_from_blob(
+            &saved_after_repeat.state_blob,
+        )
+        .unwrap();
+    assert_eq!(session_after_repeat.recv_n, saved_session.recv_n);
 }
 
 #[derive(Clone)]

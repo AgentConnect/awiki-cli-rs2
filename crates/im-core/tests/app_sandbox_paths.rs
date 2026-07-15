@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use im_core::prelude::*;
+use awiki_im_core::prelude::*;
 
 mod app_sandbox_paths {
     use super::*;
@@ -37,7 +37,7 @@ mod app_sandbox_paths {
         assert!(status.initialized);
         assert_eq!(
             status.schema_version,
-            Some(im_core::compat::local_state::SCHEMA_VERSION as u32)
+            Some(awiki_im_core::compat::local_state::SCHEMA_VERSION as u32)
         );
         assert!(fixture.sqlite_path().exists());
 
@@ -75,7 +75,7 @@ mod app_sandbox_paths {
         assert!(status.initialized);
         assert_eq!(
             status.schema_version,
-            Some(im_core::compat::local_state::SCHEMA_VERSION as u32)
+            Some(awiki_im_core::compat::local_state::SCHEMA_VERSION as u32)
         );
         assert!(fixture.sqlite_path().exists());
     }

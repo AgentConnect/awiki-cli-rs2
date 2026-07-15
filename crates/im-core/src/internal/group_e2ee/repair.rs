@@ -586,11 +586,20 @@ where
             ),
         }) {
             Ok(output) => {
+                let state_version = notice_group_state_version(notice);
                 self.persist_group_e2ee_summary(
                     group_did,
                     Some(output.epoch.as_str()),
-                    optional_string(notice.get("group_state_version")).as_deref(),
+                    (!state_version.is_empty()).then_some(state_version.as_str()),
                     Some(output.crypto_group_id_b64u.as_str()),
+                );
+                self.complete_rebind_from_remove_notice(
+                    group_did,
+                    device_id,
+                    &output.subject_did,
+                    &output.subject_status,
+                    notice,
+                    warnings,
                 );
                 true
             }
@@ -607,6 +616,16 @@ where
                     "group E2EE repair treated duplicate/already-applied commit notice as delivered"
                         .to_owned(),
                 );
+                if duplicate_rebind_notice_has_complete_binding(notice) {
+                    self.complete_rebind_from_remove_notice(
+                        group_did,
+                        device_id,
+                        &string_value(notice.get("subject_did")),
+                        &string_value(notice.get("subject_status")),
+                        notice,
+                        warnings,
+                    );
+                }
                 true
             }
             Err(err) => {
@@ -615,6 +634,48 @@ where
                 ));
                 false
             }
+        }
+    }
+
+    fn complete_rebind_from_remove_notice(
+        &self,
+        group_did: &str,
+        device_id: &str,
+        subject_did: &str,
+        subject_status: &str,
+        notice: &Map<String, Value>,
+        warnings: &mut Vec<String>,
+    ) {
+        let version = notice_group_state_version(notice);
+        let status = match self.mls_provider.status(StatusInput {
+            request_id: format!(
+                "group-rebind-roster-{}",
+                crate::internal::wire::common::generate_operation_id()
+            ),
+            device_id: device_id.to_owned(),
+            agent_did: Some(self.client.did().as_str().to_owned()),
+            group_did: Some(group_did.to_owned()),
+        }) {
+            Ok(status) => status,
+            Err(error) => {
+                warnings.push(format!("group rebind roster verification failed: {error}"));
+                return;
+            }
+        };
+        if let Err(error) =
+            crate::internal::group_rebind_recovery::complete_from_verified_remove_notice(
+                &self.client.core_inner().sdk_paths().local_state.sqlite_path,
+                self.client.current_identity().id.as_str(),
+                group_did,
+                subject_did,
+                subject_status,
+                &version,
+                &status.member_dids,
+            )
+        {
+            warnings.push(format!(
+                "group rebind completion evidence persistence failed: {error}"
+            ));
         }
     }
 
@@ -639,13 +700,14 @@ where
         warnings.extend(result.warnings);
         match result.outcome {
             ProcessNoticeOutcome::Processed(output) => {
+                let state_version = notice_group_state_version(notice);
                 if let Err(err) = persist_group_e2ee_summary_async(
                     self.client,
                     GroupE2eeSummaryUpdate {
                         group_did,
                         epoch: Some(output.epoch.as_str()),
-                        group_state_version: optional_string(notice.get("group_state_version"))
-                            .as_deref(),
+                        group_state_version: (!state_version.is_empty())
+                            .then_some(state_version.as_str()),
                         crypto_group_id_b64u: Some(output.crypto_group_id_b64u.as_str()),
                         epoch_authenticator: None,
                         suite: None,
@@ -659,10 +721,101 @@ where
                         "group E2EE repair processed commit notice but failed to persist local summary: {err}"
                     ));
                 }
+                self.complete_rebind_from_remove_notice_async(
+                    group_did,
+                    device_id,
+                    &output.subject_did,
+                    &output.subject_status,
+                    notice,
+                    warnings,
+                )
+                .await;
                 true
             }
-            ProcessNoticeOutcome::DeliveredDuplicate => true,
+            ProcessNoticeOutcome::DeliveredDuplicate => {
+                if duplicate_rebind_notice_has_complete_binding(notice) {
+                    self.complete_rebind_from_remove_notice_async(
+                        group_did,
+                        device_id,
+                        &string_value(notice.get("subject_did")),
+                        &string_value(notice.get("subject_status")),
+                        notice,
+                        warnings,
+                    )
+                    .await;
+                }
+                true
+            }
             ProcessNoticeOutcome::Skipped => false,
+        }
+    }
+
+    async fn complete_rebind_from_remove_notice_async(
+        &self,
+        group_did: &str,
+        device_id: &str,
+        subject_did: &str,
+        subject_status: &str,
+        notice: &Map<String, Value>,
+        warnings: &mut Vec<String>,
+    ) where
+        M: Clone + Send + 'static,
+    {
+        let provider = self.mls_provider.clone();
+        let status_input = StatusInput {
+            request_id: format!(
+                "group-rebind-roster-{}",
+                crate::internal::wire::common::generate_operation_id()
+            ),
+            device_id: device_id.to_owned(),
+            agent_did: Some(self.client.did().as_str().to_owned()),
+            group_did: Some(group_did.to_owned()),
+        };
+        let status =
+            match run_repair_mls_blocking("rebind roster", move || provider.status(status_input))
+                .await
+            {
+                Ok(Ok(status)) => status,
+                Ok(Err(error)) => {
+                    warnings.push(format!("group rebind roster verification failed: {error}"));
+                    return;
+                }
+                Err(error) => {
+                    warnings.push(error.to_string());
+                    return;
+                }
+            };
+        let path = self
+            .client
+            .core_inner()
+            .sdk_paths()
+            .local_state
+            .sqlite_path
+            .clone();
+        let owner = self.client.current_identity().id.as_str().to_owned();
+        let group = group_did.to_owned();
+        let subject = subject_did.to_owned();
+        let subject_status = subject_status.to_owned();
+        let version = notice_group_state_version(notice);
+        let member_dids = status.member_dids;
+        match run_repair_mls_blocking("rebind completion", move || {
+            crate::internal::group_rebind_recovery::complete_from_verified_remove_notice(
+                &path,
+                &owner,
+                &group,
+                &subject,
+                &subject_status,
+                &version,
+                &member_dids,
+            )
+        })
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => warnings.push(format!(
+                "group rebind completion evidence persistence failed: {error}"
+            )),
+            Err(error) => warnings.push(error.to_string()),
         }
     }
 
@@ -1254,6 +1407,25 @@ fn commit_notice_already_applied<M: GroupMlsProvider>(
     local_epoch(&status)
         .map(|local_epoch| local_epoch >= to_epoch)
         .unwrap_or(false)
+}
+
+fn notice_group_state_version(notice: &Map<String, Value>) -> String {
+    first_non_empty_string(&[
+        notice
+            .get("group_state_ref")
+            .and_then(Value::as_object)
+            .and_then(|value| value.get("group_state_version")),
+        notice.get("group_state_version"),
+    ])
+}
+
+fn duplicate_rebind_notice_has_complete_binding(notice: &Map<String, Value>) -> bool {
+    !string_value(notice.get("commit_b64u")).is_empty()
+        && !string_value(notice.get("operation_id")).is_empty()
+        && !string_value(notice.get("crypto_group_id_b64u")).is_empty()
+        && !string_value(notice.get("from_epoch")).is_empty()
+        && first_i64(&[notice.get("to_epoch"), notice.get("epoch")]).is_some()
+        && !notice_group_state_version(notice).is_empty()
 }
 
 fn welcome_notice_already_available<M: GroupMlsProvider>(

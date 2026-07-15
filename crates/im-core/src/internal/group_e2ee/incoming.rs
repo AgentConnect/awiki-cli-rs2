@@ -428,7 +428,7 @@ fn contains_group_e2ee_messages(messages: &[Value]) -> bool {
     messages.iter().any(is_group_e2ee_message)
 }
 
-fn is_group_e2ee_message(message: &Value) -> bool {
+pub(crate) fn is_group_e2ee_message(message: &Value) -> bool {
     string_from_message(message, "content_type") == super::wire::GROUP_E2EE_CIPHER_CONTENT_TYPE
         || group_cipher_object_from_message(message).is_some()
 }
@@ -512,6 +512,42 @@ fn apply_group_plaintext(
     } else {
         object.insert("content".to_owned(), Value::String(String::new()));
     }
+}
+
+pub(crate) fn apply_cached_group_plaintext(
+    message: &mut Value,
+    content_type: &str,
+    content: &str,
+) -> bool {
+    let content_type = default_string(content_type, "text/plain");
+    let (text, payload, payload_b64u) = if content_type == "application/json"
+        || content_type == crate::attachments::manifest::attachment_manifest_content_type()
+    {
+        let Ok(payload) = serde_json::from_str(content) else {
+            return false;
+        };
+        (None, Some(payload), None)
+    } else if content_type == "application/octet-stream" {
+        (None, None, Some(content.to_owned()))
+    } else {
+        (Some(content.to_owned()), None, None)
+    };
+    apply_group_plaintext(
+        message,
+        &anp::group_e2ee::GroupApplicationPlaintext {
+            application_content_type: content_type,
+            thread_id: None,
+            reply_to_message_id: None,
+            annotations: Default::default(),
+            text,
+            payload,
+            payload_b64u,
+        },
+    );
+    if let Some(object) = message.as_object_mut() {
+        object.remove("group_cipher_object");
+    }
+    true
 }
 
 fn redact_all_group_e2ee_messages(messages: &mut [Value], state: &str) {
@@ -704,6 +740,19 @@ mod tests {
                 .map(|input| input.group_did.as_str()),
             Some("did:example:groups:e2ee")
         );
+    }
+
+    #[test]
+    fn cached_group_plaintext_rejects_invalid_json_without_mutating_cipher() {
+        let mut message = group_cipher_message("secret-cipher");
+        let original = message.clone();
+
+        assert!(!apply_cached_group_plaintext(
+            &mut message,
+            "application/json",
+            "not-json",
+        ));
+        assert_eq!(message, original);
     }
 
     #[test]

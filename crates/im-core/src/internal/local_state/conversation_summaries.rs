@@ -101,6 +101,10 @@ impl SummaryMessageRow {
             && self.receiver_did.trim() == owner
     }
 
+    fn contributes_to_summary(&self) -> bool {
+        !self.is_self_direct() && !self.is_control_payload()
+    }
+
     fn unread_count_delta(&self) -> i64 {
         if self.is_unread_incoming() {
             1
@@ -154,6 +158,7 @@ pub(crate) fn ensure_owner_backfilled(
         .map_err(super::local_state_unavailable)?;
     if message_count > 0 {
         rebuild_owner(connection, &owner_identity_id)?;
+        super::conversation_registry::backfill_from_summaries(connection)?;
     }
     Ok(())
 }
@@ -201,6 +206,11 @@ pub(crate) fn rebuild_touched(
             continue;
         }
         if rebuild_conversation(connection, owner_identity_id, conversation_id)? {
+            super::conversation_registry::ensure_from_summary(
+                connection,
+                owner_identity_id,
+                conversation_id,
+            )?;
             rebuilt += 1;
         }
     }
@@ -259,6 +269,13 @@ pub(crate) fn apply_message_delta_or_rebuild(
     previous: Option<&SummaryMessageProjection>,
     next: &SummaryMessageProjection,
 ) -> crate::ImResult<usize> {
+    if !next.row.contributes_to_summary()
+        || previous
+            .map(|projection| !projection.row.contributes_to_summary())
+            .unwrap_or(false)
+    {
+        return rebuild_single(connection, &next.owner_identity_id, &next.conversation_id);
+    }
     if let Some(previous) = previous {
         if previous.owner_identity_id != next.owner_identity_id
             || previous.conversation_id != next.conversation_id
@@ -274,10 +291,6 @@ pub(crate) fn apply_message_delta_or_rebuild(
         if previous.row.is_unread_mention() || next.row.is_unread_mention() {
             return rebuild_single(connection, &next.owner_identity_id, &next.conversation_id);
         }
-    }
-
-    if next.row.is_self_direct() {
-        return rebuild_single(connection, &next.owner_identity_id, &next.conversation_id);
     }
 
     let Some(summary) = summary_state(connection, &next.owner_identity_id, &next.conversation_id)?
@@ -457,7 +470,7 @@ ORDER BY sort_at ASC,
 
     for row in rows {
         let row = row.map_err(super::local_state_unavailable)?;
-        if row.is_self_direct() {
+        if !row.contributes_to_summary() {
             continue;
         }
         message_count += 1;
@@ -551,13 +564,16 @@ fn rebuild_single(
     owner_identity_id: &str,
     conversation_id: &str,
 ) -> crate::ImResult<usize> {
-    Ok(
-        if rebuild_conversation(connection, owner_identity_id, conversation_id)? {
-            1
-        } else {
-            0
-        },
-    )
+    if rebuild_conversation(connection, owner_identity_id, conversation_id)? {
+        super::conversation_registry::ensure_from_summary(
+            connection,
+            owner_identity_id,
+            conversation_id,
+        )?;
+        Ok(1)
+    } else {
+        Ok(0)
+    }
 }
 
 fn apply_insert_delta(

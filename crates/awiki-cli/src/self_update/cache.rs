@@ -14,6 +14,8 @@ struct CacheFile {
     #[serde(default)]
     min_supported_version: String,
     #[serde(default)]
+    installer_url: String,
+    #[serde(default)]
     retrieved_at: String,
 }
 
@@ -67,13 +69,13 @@ pub fn load_metadata(
     }
 }
 
-fn fetch_from_registry(registry_urls: &[String]) -> Result<Metadata, String> {
-    fetch_from_registry_urls(registry_urls)
+fn fetch_from_registry(manifest_urls: &[String]) -> Result<Metadata, String> {
+    fetch_from_registry_urls(manifest_urls)
 }
 
 fn fetch_from_registry_urls(registry_urls: &[String]) -> Result<Metadata, String> {
     if registry_urls.is_empty() {
-        return Err("no npm registry URLs configured".to_string());
+        return Err("no awiki-cli manifest URLs configured".to_string());
     }
 
     let mut errors = Vec::new();
@@ -85,7 +87,7 @@ fn fetch_from_registry_urls(registry_urls: &[String]) -> Result<Metadata, String
     }
 
     Err(format!(
-        "failed to fetch awiki-cli metadata from npm registries: {}",
+        "failed to fetch awiki-cli release manifest: {}",
         errors.join("; ")
     ))
 }
@@ -97,31 +99,61 @@ fn fetch_from_registry_url(url: &str) -> Result<Metadata, String> {
         .map_err(|err| err.to_string())?;
     if response.status_code != 200 {
         return Err(format!(
-            "registry responded with status {}",
+            "release server responded with status {}",
             response.status_code
         ));
     }
 
-    let body: RegistryResponse =
+    let body: ManifestResponse =
         serde_json::from_slice(&response.body).map_err(|err| err.to_string())?;
-    let latest = body.version.trim().to_string();
+    let latest = if body.latest.trim().is_empty() {
+        body.version.trim().to_string()
+    } else {
+        body.latest.trim().to_string()
+    };
     if latest.is_empty() {
-        return Err("npm metadata missing version".to_string());
+        return Err("release manifest missing latest version".to_string());
     }
+    let min_supported_version = if body.min_supported_version.trim().is_empty() {
+        body.awiki_cli.min_supported_version.trim().to_string()
+    } else {
+        body.min_supported_version.trim().to_string()
+    };
+    let installer_url = if body.installer.url.trim().is_empty() {
+        format!(
+            "{}/awiki-cli.tgz",
+            url.rsplit_once('/').map(|(base, _)| base).unwrap_or(url)
+        )
+    } else {
+        body.installer.url.trim().to_string()
+    };
 
     Ok(Metadata {
         latest_version: latest,
-        min_supported_version: body.awiki_cli.min_supported_version.trim().to_string(),
+        min_supported_version,
+        installer_url,
         source: "network".to_string(),
     })
 }
 
 #[derive(Debug, Deserialize)]
-struct RegistryResponse {
+struct ManifestResponse {
+    #[serde(default)]
+    latest: String,
     #[serde(default)]
     version: String,
+    #[serde(default)]
+    min_supported_version: String,
+    #[serde(default)]
+    installer: ManifestInstaller,
     #[serde(default, rename = "awikiCli")]
     awiki_cli: RegistryAwikiCli,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ManifestInstaller {
+    #[serde(default)]
+    url: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -139,6 +171,7 @@ fn write_cache(path: &Path, metadata: &Metadata) -> Result<(), String> {
     let payload = CacheWrite {
         latest_version: metadata.latest_version.as_str(),
         min_supported_version: metadata.min_supported_version.as_str(),
+        installer_url: metadata.installer_url.as_str(),
         retrieved_at: OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .map_err(|err| err.to_string())?,
@@ -152,6 +185,7 @@ fn write_cache(path: &Path, metadata: &Metadata) -> Result<(), String> {
 struct CacheWrite<'a> {
     latest_version: &'a str,
     min_supported_version: &'a str,
+    installer_url: &'a str,
     retrieved_at: String,
     source: &'a str,
 }
@@ -224,6 +258,7 @@ fn read_cache(path: &Path, ttl_seconds: i64) -> Result<Option<CacheRead>, String
         metadata: Metadata {
             latest_version: file.latest_version.trim().to_string(),
             min_supported_version: file.min_supported_version.trim().to_string(),
+            installer_url: file.installer_url.trim().to_string(),
             source: "cache".to_string(),
         },
         fresh,
@@ -255,7 +290,7 @@ mod tests {
         let err = fetch_from_registry_urls(&[server.url("/latest")]).expect_err("error");
 
         assert!(
-            err.contains("npm metadata missing version"),
+            err.contains("release manifest missing latest version"),
             "error should report missing version: {err}"
         );
     }
@@ -271,5 +306,24 @@ mod tests {
         assert_eq!(metadata.latest_version, "1.0.9");
         assert_eq!(metadata.min_supported_version, "");
         assert_eq!(metadata.source, "network");
+    }
+
+    #[test]
+    fn fetch_manifest_preserves_self_hosted_installer_url() {
+        let server = crate::self_update::tests::TestServer::new(vec![
+            crate::self_update::tests::TestResponse::ok(
+                r#"{"schema_version":1,"latest":"1.0.17-beta.1","min_supported_version":"1.0.17-beta.1","installer":{"url":"https://example.com/cli/beta/awiki-cli.tgz"}}"#,
+            ),
+        ]);
+
+        let metadata = fetch_from_registry_urls(&[server.url("/manifest.json")])
+            .expect("self-hosted manifest");
+
+        assert_eq!(metadata.latest_version, "1.0.17-beta.1");
+        assert_eq!(metadata.min_supported_version, "1.0.17-beta.1");
+        assert_eq!(
+            metadata.installer_url,
+            "https://example.com/cli/beta/awiki-cli.tgz"
+        );
     }
 }

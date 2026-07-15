@@ -199,6 +199,25 @@ impl GroupE2eeApplicationBody {
     }
 }
 
+fn ensure_rebind_send_not_paused(
+    client: &crate::core::ImClient,
+    group: &crate::ids::GroupRef,
+) -> crate::ImResult<()> {
+    if crate::internal::group_rebind_recovery::is_group_send_paused(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+        client.current_identity().id.as_str(),
+        group.as_str(),
+    )? {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "group {} application send is paused until member credential rebinding completes",
+                group.as_str()
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn group_e2ee_application_body(
     body: &crate::messages::MessageBody,
 ) -> crate::ImResult<GroupE2eeApplicationBody> {
@@ -255,6 +274,7 @@ where
         input: GroupE2eeTextSend,
     ) -> crate::ImResult<GroupE2eeTextSendResult> {
         let group = group_target(&input.request.target)?;
+        ensure_rebind_send_not_paused(self.client, &group)?;
         let body = group_e2ee_application_body(&input.request.body)?;
         validate_group_e2ee_security(&input.request.security)?;
         self.session_provider
@@ -319,6 +339,7 @@ where
         input: GroupE2eeAttachmentSend,
     ) -> crate::ImResult<GroupE2eeTextSendResult> {
         let group = group_target(&input.request.target)?;
+        ensure_rebind_send_not_paused(self.client, &group)?;
         validate_group_e2ee_security(&input.request.security)?;
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
@@ -517,6 +538,7 @@ where
         input: GroupE2eeTextSend,
     ) -> crate::ImResult<GroupE2eeTextSendResult> {
         let group = group_target(&input.request.target)?;
+        ensure_rebind_send_not_paused(self.client, &group)?;
         let body = group_e2ee_application_body(&input.request.body)?;
         validate_group_e2ee_security(&input.request.security)?;
         self.session_provider
@@ -587,6 +609,7 @@ where
         input: GroupE2eeAttachmentSend,
     ) -> crate::ImResult<GroupE2eeTextSendResult> {
         let group = group_target(&input.request.target)?;
+        ensure_rebind_send_not_paused(self.client, &group)?;
         validate_group_e2ee_security(&input.request.security)?;
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)

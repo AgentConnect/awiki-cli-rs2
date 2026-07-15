@@ -548,6 +548,90 @@ fn attachments_download_runtime_group_object_e2ee_uses_internal_manifest_cache()
 }
 
 #[test]
+fn attachments_download_runtime_direct_object_e2ee_uses_internal_manifest_cache() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let object = object_e2ee_case(b"direct cached plaintext".to_vec());
+    {
+        let connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        crate::internal::local_state::attachment_manifest_cache::upsert_attachment_manifest_cache(
+            &connection,
+            &crate::internal::local_state::attachment_manifest_cache::AttachmentManifestCacheRecord {
+                owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                owner_did: client.did().as_str().to_owned(),
+                thread_kind: "direct".to_owned(),
+                thread_id: "did:web:example.com:bob".to_owned(),
+                message_id: "msg-direct-e2ee-7".to_owned(),
+                sender_did: "did:web:example.com:bob".to_owned(),
+                message_security_profile: "direct-e2ee".to_owned(),
+                content: serde_json::to_string(&object.full_manifest).unwrap(),
+                stored_at: "2026-06-02T00:00:00Z".to_owned(),
+            },
+        )
+        .unwrap();
+    }
+    let calls = Rc::new(RefCell::new(Vec::new()));
+
+    let result = AttachmentDownloadRuntime::new(
+        &client,
+        ReadySessionProvider {
+            scopes: Rc::new(RefCell::new(Vec::new())),
+        },
+        E2eeTransport {
+            calls: Rc::clone(&calls),
+            history: json!({
+                "messages": [],
+                "has_more": false
+            }),
+            object_body: object.ciphertext.clone(),
+            object_content_type: Some("application/octet-stream".to_string()),
+        },
+    )
+    .download(AttachmentDownloadInput {
+        request: crate::attachments::DownloadAttachmentRequest {
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
+            ),
+            message_id: crate::ids::MessageId::parse("msg-direct-e2ee-7").unwrap(),
+            attachment_id: Some("att-e2ee-1".to_string()),
+            destination: crate::attachments::AttachmentDestination::Memory,
+            overwrite: false,
+        },
+        resolved_peer_did: Some("did:web:example.com:bob".to_string()),
+    })
+    .unwrap();
+
+    assert_eq!(result.selection.message_security_profile, "direct-e2ee");
+    assert_eq!(result.selection.object_encryption_mode, "object-e2ee");
+    assert!(matches!(
+        result.sdk_result.destination,
+        crate::attachments::DownloadedAttachmentDestination::Memory(bytes)
+            if bytes == object.plaintext
+    ));
+    let public_selection = serde_json::to_string(&result.selection).unwrap();
+    assert!(!public_selection.contains("object_key_b64u"));
+    assert!(!public_selection.contains("nonce_b64u"));
+    assert!(!public_selection.contains(&object.object_key_b64u));
+    assert!(!public_selection.contains(&object.nonce_b64u));
+
+    let calls = calls.borrow();
+    assert_eq!(calls.len(), 3, "cached manifest must avoid history replay");
+    calls[0].get_json("https://example.com/bob/did.json");
+    let ticket = calls[1].rpc("attachment.get_download_ticket");
+    assert_eq!(
+        ticket.params["body"]["message_security_profile"],
+        "direct-e2ee"
+    );
+    assert_eq!(ticket.params["body"].get("group_did"), None);
+    assert_eq!(ticket.params["body"].get("object_key_b64u"), None);
+    assert_eq!(ticket.params["body"].get("nonce_b64u"), None);
+    calls[2].object_get("https://objects.example/att-e2ee-1");
+}
+
+#[test]
 fn attachments_download_runtime_object_e2ee_local_file_writes_plaintext() {
     let fixture = Fixture::new();
     let client = fixture.client();

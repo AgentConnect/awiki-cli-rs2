@@ -3,7 +3,7 @@ use anp::proof::{
     build_im_content_digest, build_signed_request_object, canonicalize_signed_request_object,
     verify_rfc9421_origin_proof, Rfc9421OriginProofVerificationOptions,
 };
-use im_core::compat;
+use awiki_im_core::compat;
 use serde_json::json;
 
 #[test]

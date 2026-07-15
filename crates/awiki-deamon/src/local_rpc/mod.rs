@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::app_bridge::action::queue_runtime_app_action_request;
@@ -13,7 +13,7 @@ use crate::outbox::{
 use crate::runtime::reply_payload::{
     group_did_from_conversation_id, structured_group_reply, StructuredGroupReplyInput,
 };
-use crate::runtime::{RuntimeRunStatus, RuntimeTaskTriggerKind};
+use crate::runtime::{RuntimeProgressUpdate, RuntimeRunStatus, RuntimeTaskTriggerKind};
 use crate::security::runtime_token::{RpcMethod, RuntimeRpcToken};
 use crate::state::{AuthorizedRuntimeContext, DaemonState};
 
@@ -232,10 +232,24 @@ pub fn call_uds_once(
     socket_path: &Path,
     request: &RuntimeRpcRequest,
 ) -> Result<RuntimeRpcResponse> {
+    call_uds_once_with_timeout(socket_path, request, None)
+}
+
+pub fn call_uds_once_with_timeout(
+    socket_path: &Path,
+    request: &RuntimeRpcRequest,
+    timeout: Option<std::time::Duration>,
+) -> Result<RuntimeRpcResponse> {
     #[cfg(unix)]
     {
         let mut stream = std::os::unix::net::UnixStream::connect(socket_path)
             .with_context(|| format!("connect daemon local RPC {}", socket_path.display()))?;
+        stream
+            .set_read_timeout(timeout)
+            .context("configure daemon local RPC read timeout")?;
+        stream
+            .set_write_timeout(timeout)
+            .context("configure daemon local RPC write timeout")?;
         serde_json::to_writer(&mut stream, request)?;
         stream.write_all(b"\n")?;
         stream.flush()?;
@@ -247,6 +261,7 @@ pub fn call_uds_once(
     {
         let _ = socket_path;
         let _ = request;
+        let _ = timeout;
         bail!("Unix domain socket local RPC is not supported on this platform yet");
     }
 }
@@ -322,11 +337,23 @@ fn apply_runtime_rpc_side_effects(
                 "failed" => RuntimeRunStatus::Failed,
                 _ => RuntimeRunStatus::Running,
             };
+            let progress = params
+                .get("progress")
+                .map(|value| serde_json::from_value::<RuntimeProgressUpdate>(value.clone()))
+                .transpose()
+                .context("parse task.status progress")?;
+            if let Some(progress) = progress.as_ref() {
+                progress.validate()?;
+            }
             state.update_runtime_run_status(&context.run_id, status)?;
-            outbox.send_status(
+            let metadata = progress.map(|progress| json!({ "progress": progress }));
+            outbox.send_status_with_metadata(
                 context,
                 state_value,
                 params.get("text").and_then(Value::as_str),
+                None,
+                None,
+                metadata.as_ref(),
             )?;
         }
         RpcMethod::TaskFinish => {

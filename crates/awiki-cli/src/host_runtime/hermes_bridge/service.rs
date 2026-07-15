@@ -1,5 +1,5 @@
 use super::{BridgeConfig, BridgeStatus};
-use crate::workspace_config::Resolved;
+use crate::workspace_config::{product_home_dir, Resolved};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
@@ -313,7 +313,7 @@ pub fn service_config_plan_for(
         } else {
             resolved.paths.workspace_home_dir.clone()
         },
-        env_workspace_home_dir: resolved.paths.workspace_home_dir.clone(),
+        env_workspace_home_dir: product_home_dir(resolved).to_string(),
         env_hermes_home: hermes_home.trim().to_string(),
         user_service: true,
         keep_alive: true,

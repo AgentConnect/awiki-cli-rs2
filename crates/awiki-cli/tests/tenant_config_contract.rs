@@ -144,6 +144,109 @@ fn tenant_create_use_and_global_tenant_override_switch_whole_workspace() {
 }
 
 #[test]
+fn tenant_setup_is_idempotent_switches_and_rejects_endpoint_drift() {
+    let workspace = TempDir::new("tenant-setup").expect("workspace");
+    let args = [
+        "tenant",
+        "setup",
+        "acme",
+        "--backend-base-url",
+        "https://api.acme.test/",
+        "--did-host",
+        "Acme.Test.",
+        "--display-name",
+        "Acme Team",
+    ];
+
+    let first = awiki_cmd(&args, workspace.path());
+    assert_success(&first);
+    let first = success_json(&first);
+    assert_eq!(first["data"]["result"]["action"], "created");
+    assert_eq!(first["data"]["result"]["tenant"]["active"], "acme");
+    assert_eq!(first["data"]["next_command"], "awiki-cli init");
+
+    assert_success(&awiki_cmd(&["tenant", "use", "default"], workspace.path()));
+    let repeated = awiki_cmd(&args, workspace.path());
+    assert_success(&repeated);
+    let repeated = success_json(&repeated);
+    assert_eq!(repeated["data"]["result"]["action"], "reused");
+    assert_eq!(
+        read_json(&workspace.path().join("global.json"))["active_tenant"],
+        "acme"
+    );
+
+    let conflict = awiki_cmd(
+        &[
+            "tenant",
+            "setup",
+            "acme",
+            "--backend-base-url",
+            "https://other.acme.test",
+            "--did-host",
+            "acme.test",
+        ],
+        workspace.path(),
+    );
+    assert_code(&conflict, 1);
+    let conflict = error_json(&conflict);
+    assert_eq!(conflict["error"]["code"], "conflict");
+    assert_value_contains(&conflict["error"]["message"], "different backend_base_url");
+}
+
+#[test]
+fn tenant_setup_dry_run_does_not_create_target_tenant() {
+    let workspace = TempDir::new("tenant-setup-dry-run").expect("workspace");
+    let output = awiki_cmd(
+        &[
+            "--dry-run",
+            "tenant",
+            "setup",
+            "acme",
+            "--backend-base-url",
+            "https://api.acme.test",
+            "--did-host",
+            "acme.test",
+        ],
+        workspace.path(),
+    );
+    assert_success(&output);
+    let output = success_json(&output);
+    assert_eq!(output["data"]["plan"]["action"], "tenant_setup");
+    assert_eq!(output["data"]["plan"]["result"]["action"], "created");
+    assert!(!workspace.path().join("tenants").join("acme").exists());
+}
+
+#[test]
+fn empty_workspace_can_take_atomic_default_tenant_endpoints_from_release_wrapper() {
+    let workspace = TempDir::new("tenant-default-env").expect("workspace");
+    let output = awiki_cmd_extra(
+        &["config", "show"],
+        workspace.path(),
+        &[
+            ("AWIKI_CLI_DEFAULT_BACKEND_BASE_URL", "https://anpclaw.com/"),
+            ("AWIKI_CLI_DEFAULT_DID_HOST", "AnpClaw.Com."),
+        ],
+    );
+    assert_success(&output);
+    let output = success_json(&output);
+    assert_eq!(output["data"]["service_base_url"], "https://anpclaw.com");
+    assert_eq!(output["data"]["did_domain"], "anpclaw.com");
+
+    let second = awiki_cmd_extra(
+        &["config", "show"],
+        workspace.path(),
+        &[
+            ("AWIKI_CLI_DEFAULT_BACKEND_BASE_URL", "https://other.test"),
+            ("AWIKI_CLI_DEFAULT_DID_HOST", "other.test"),
+        ],
+    );
+    assert_success(&second);
+    let second = success_json(&second);
+    assert_eq!(second["data"]["service_base_url"], "https://anpclaw.com");
+    assert_eq!(second["data"]["did_domain"], "anpclaw.com");
+}
+
+#[test]
 fn tenant_use_accepts_only_existing_tenant_names_not_ad_hoc_fields() {
     let workspace = TempDir::new("tenant-use-boundary").expect("workspace");
 

@@ -2,9 +2,10 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 22;
+pub(crate) const SCHEMA_VERSION: i64 = 27;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
-const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 18;
+const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
+const CONVERSATION_REGISTRY_SCHEMA_VERSION: i64 = 26;
 
 const V6_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS contacts (
@@ -122,6 +123,9 @@ CREATE TABLE IF NOT EXISTS group_members (
     user_id           TEXT NOT NULL,
     member_did        TEXT,
     member_handle     TEXT,
+    anchor_kind       TEXT NOT NULL DEFAULT 'did',
+    anchor_value      TEXT NOT NULL DEFAULT '',
+    handle_binding_generation TEXT,
     profile_url       TEXT,
     role              TEXT,
     status            TEXT NOT NULL DEFAULT 'active',
@@ -301,6 +305,22 @@ CREATE TABLE IF NOT EXISTS message_identity_aliases (
 
 CREATE INDEX IF NOT EXISTS idx_message_identity_aliases_owner_canonical
 ON message_identity_aliases(owner_identity_id, canonical_msg_id);
+"#;
+
+const DIRECT_PEER_ROUTES_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS direct_peer_routes (
+    owner_identity_id TEXT NOT NULL,
+    conversation_id   TEXT NOT NULL,
+    peer_user_id      TEXT NOT NULL,
+    full_handle       TEXT NOT NULL,
+    current_did       TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, conversation_id),
+    UNIQUE (owner_identity_id, peer_user_id, full_handle)
+);
+
+CREATE INDEX IF NOT EXISTS idx_direct_peer_routes_owner_did
+ON direct_peer_routes(owner_identity_id, current_did);
 "#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -931,6 +951,7 @@ fn create_schema(
     backfill_conversation_summaries: bool,
 ) -> crate::ImResult<()> {
     create_identity_owned_schema(connection, IdentityOwnedSchemaTableMode::Final)?;
+    ensure_group_member_identity_columns(connection)?;
     connection
         .execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL)
         .map_err(super::local_state_unavailable)?;
@@ -943,12 +964,19 @@ fn create_schema(
     connection
         .execute_batch(MESSAGE_IDENTITY_ALIASES_SQL)
         .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(crate::internal::group_rebind_recovery::GROUP_REBIND_RECOVERY_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(DIRECT_PEER_ROUTES_SQL)
+        .map_err(super::local_state_unavailable)?;
     let mut should_rebuild_conversation_summaries = backfill_conversation_summaries;
     if ensure_message_projection_columns(connection)? {
         backfill_message_mention_projection(connection)?;
         should_rebuild_conversation_summaries = true;
     }
     super::conversation_summaries::create_schema(connection)?;
+    super::conversation_registry::create_schema(connection)?;
     for view in ["threads", "inbox", "outbox"] {
         connection
             .execute(&format!("DROP VIEW IF EXISTS {view}"), [])
@@ -970,6 +998,11 @@ fn create_schema(
     }
     if should_rebuild_conversation_summaries {
         super::conversation_summaries::rebuild_all(connection)?;
+    }
+    if backfill_conversation_summaries
+        || current_schema_version(connection)? < CONVERSATION_REGISTRY_SCHEMA_VERSION
+    {
+        super::conversation_registry::backfill_from_summaries(connection)?;
     }
     Ok(())
 }
@@ -1084,6 +1117,9 @@ CREATE TABLE IF NOT EXISTS group_members{suffix} (
     user_id           TEXT NOT NULL,
     member_did        TEXT,
     member_handle     TEXT,
+    anchor_kind       TEXT NOT NULL DEFAULT 'did',
+    anchor_value      TEXT NOT NULL DEFAULT '',
+    handle_binding_generation TEXT,
     profile_url       TEXT,
     role              TEXT,
     status            TEXT NOT NULL DEFAULT 'active',
@@ -1287,6 +1323,37 @@ fn ensure_message_projection_columns(connection: &Connection) -> crate::ImResult
         "INTEGER NOT NULL DEFAULT 0",
     )?;
     Ok(true)
+}
+
+fn ensure_group_member_identity_columns(connection: &Connection) -> crate::ImResult<()> {
+    ensure_column(
+        connection,
+        "group_members",
+        "anchor_kind",
+        "TEXT NOT NULL DEFAULT 'did'",
+    )?;
+    ensure_column(
+        connection,
+        "group_members",
+        "anchor_value",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        connection,
+        "group_members",
+        "handle_binding_generation",
+        "TEXT",
+    )?;
+    connection
+        .execute(
+            r#"
+UPDATE group_members
+SET anchor_kind = 'did', anchor_value = COALESCE(member_did, user_id)
+WHERE TRIM(COALESCE(anchor_value, '')) = ''"#,
+            [],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
 }
 
 fn backfill_message_mention_projection(connection: &Connection) -> crate::ImResult<()> {

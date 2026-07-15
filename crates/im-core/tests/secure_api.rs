@@ -1,4 +1,4 @@
-use im_core::{
+use awiki_im_core::{
     ids::{GroupRef, PeerRef},
     secure::{SecureOutboxId, SecureOutboxStatus, SecureProblemCode},
     IdentityRegistryPaths, IdentitySelector, ImCore, ImCoreConfig, ImCorePaths, LocalStatePaths,
@@ -28,7 +28,7 @@ fn secure_service_sync_methods_fail_closed_by_default() {
         .status();
     assert!(matches!(
         direct_status,
-        Err(im_core::ImError::UnsupportedCapability { capability })
+        Err(awiki_im_core::ImError::UnsupportedCapability { capability })
             if capability == "sync-direct-secure-status"
     ));
 
@@ -38,7 +38,7 @@ fn secure_service_sync_methods_fail_closed_by_default() {
         .prepare();
     assert!(matches!(
         direct_prepare,
-        Err(im_core::ImError::UnsupportedCapability { capability })
+        Err(awiki_im_core::ImError::UnsupportedCapability { capability })
             if capability == "sync-direct-secure-prepare"
     ));
 
@@ -49,7 +49,7 @@ fn secure_service_sync_methods_fail_closed_by_default() {
     #[cfg(feature = "group-e2ee")]
     assert!(matches!(
         group_status,
-        Err(im_core::ImError::UnsupportedCapability { capability })
+        Err(awiki_im_core::ImError::UnsupportedCapability { capability })
             if capability == "sync-group-secure-status"
     ));
     #[cfg(not(feature = "group-e2ee"))]
@@ -57,7 +57,7 @@ fn secure_service_sync_methods_fail_closed_by_default() {
         let group_status = group_status.unwrap();
         assert_eq!(
             group_status.state,
-            im_core::secure::GroupSecureState::Unavailable
+            awiki_im_core::secure::GroupSecureState::Unavailable
         );
         assert_eq!(
             group_status.problem.as_ref().map(|problem| &problem.code),
@@ -68,7 +68,7 @@ fn secure_service_sync_methods_fail_closed_by_default() {
     let failed = client.secure().outbox().list_failed();
     assert!(matches!(
         failed,
-        Err(im_core::ImError::UnsupportedCapability { capability })
+        Err(awiki_im_core::ImError::UnsupportedCapability { capability })
             if capability == "sync-secure-outbox"
     ));
 }
@@ -79,8 +79,8 @@ fn direct_secure_file_outbox_flush_fails_closed_by_default() {
     let root = unique_temp_root("im-core-secure-file-outbox-sync-api");
     let identity = TestIdentity::new("alice.secure-file-outbox.example", "alice");
     let identity_dir = root.join("identities").join("alice");
-    let mut client = im_core::secure::new_direct_secure_file_runtime_client(
-        im_core::secure::DirectSecureFileRuntimeIdentity {
+    let mut client = awiki_im_core::secure::new_direct_secure_file_runtime_client(
+        awiki_im_core::secure::DirectSecureFileRuntimeIdentity {
             owner_identity_id: "alice-id".to_owned(),
             owner_did: identity.did.clone(),
             identity_name: "alice".to_owned(),
@@ -91,15 +91,15 @@ fn direct_secure_file_outbox_flush_fails_closed_by_default() {
         },
         Box::new(|_, _| Ok(serde_json::Map::new())),
         Box::new(|did| {
-            Err(im_core::ImError::PeerNotFound {
+            Err(awiki_im_core::ImError::PeerNotFound {
                 peer: did.to_owned(),
             })
         }),
     )
     .unwrap();
 
-    let warnings = im_core::secure::flush_direct_secure_file_outbox(
-        &im_core::secure::DirectSecureFileOutboxFlushScope {
+    let warnings = awiki_im_core::secure::flush_direct_secure_file_outbox(
+        &awiki_im_core::secure::DirectSecureFileOutboxFlushScope {
             owner_identity_id: "alice-id".to_owned(),
             owner_did: identity.did.clone(),
             credential_name: "alice".to_owned(),
@@ -139,7 +139,10 @@ async fn secure_service_async_api_shape_is_available_from_client() {
         direct.resolved_peer.as_ref().map(|did| did.as_str()),
         Some("did:example:bob")
     );
-    assert_eq!(direct.state, im_core::secure::DirectSecureState::Preparing);
+    assert_eq!(
+        direct.state,
+        awiki_im_core::secure::DirectSecureState::Preparing
+    );
     assert!(!direct.can_send_secure);
     assert_eq!(direct.pending_outbox_count, 0);
     assert_eq!(
@@ -157,10 +160,13 @@ async fn secure_service_async_api_shape_is_available_from_client() {
     #[cfg(feature = "group-e2ee")]
     assert_eq!(
         group.state,
-        im_core::secure::GroupSecureState::MissingLocalState
+        awiki_im_core::secure::GroupSecureState::MissingLocalState
     );
     #[cfg(not(feature = "group-e2ee"))]
-    assert_eq!(group.state, im_core::secure::GroupSecureState::Unavailable);
+    assert_eq!(
+        group.state,
+        awiki_im_core::secure::GroupSecureState::Unavailable
+    );
     assert!(!group.can_send_secure);
     assert!(!group.local_readiness.has_local_state);
     #[cfg(feature = "group-e2ee")]
@@ -190,7 +196,7 @@ async fn secure_direct_status_async_uses_db_actor() {
         .unwrap();
     std::fs::create_dir_all(paths.local_state.sqlite_path.parent().unwrap()).unwrap();
     let db = rusqlite::Connection::open(&paths.local_state.sqlite_path).unwrap();
-    im_core::compat::local_state::ensure_schema(&db).unwrap();
+    awiki_im_core::compat::local_state::ensure_schema(&db).unwrap();
     db.execute(
         r#"
 INSERT INTO direct_e2ee_sessions
@@ -209,7 +215,10 @@ VALUES ('alice-id', 'did:example:alice', 'did:example:bob', 'session-secret',
         .await
         .unwrap();
 
-    assert_eq!(status.state, im_core::secure::DirectSecureState::Ready);
+    assert_eq!(
+        status.state,
+        awiki_im_core::secure::DirectSecureState::Ready
+    );
     assert!(status.can_send_secure);
     assert_eq!(
         status.resolved_peer.as_ref().map(|did| did.as_str()),
@@ -238,13 +247,16 @@ async fn secure_group_status_async_api_shape_is_available() {
         .await
         .unwrap();
     assert_eq!(status.group.as_str(), group.as_str());
-    assert_eq!(status.state, im_core::secure::GroupSecureState::Unavailable);
+    assert_eq!(
+        status.state,
+        awiki_im_core::secure::GroupSecureState::Unavailable
+    );
     assert!(!status.can_send_secure);
 
     let prepare = client.secure().group(group).prepare_async().await.unwrap();
     assert_eq!(
         prepare.state,
-        im_core::secure::GroupSecureState::Unavailable
+        awiki_im_core::secure::GroupSecureState::Unavailable
     );
     assert!(!prepare.can_send_secure);
 }
@@ -270,16 +282,19 @@ async fn secure_group_repair_async_api_shape_is_available() {
 
     assert!(matches!(
         err,
-        im_core::ImError::UnsupportedCapability { .. }
-            | im_core::ImError::CredentialFileUnreadable { .. }
-            | im_core::ImError::AuthRequired
+        awiki_im_core::ImError::UnsupportedCapability { .. }
+            | awiki_im_core::ImError::CredentialFileUnreadable { .. }
+            | awiki_im_core::ImError::AuthRequired
     ));
 }
 
 #[test]
 fn secure_outbox_id_rejects_empty_values() {
-    let result = im_core::secure::SecureOutboxId::parse("  ");
-    assert!(matches!(result, Err(im_core::ImError::InvalidInput { .. })));
+    let result = awiki_im_core::secure::SecureOutboxId::parse("  ");
+    assert!(matches!(
+        result,
+        Err(awiki_im_core::ImError::InvalidInput { .. })
+    ));
 }
 
 #[cfg(feature = "blocking")]
@@ -308,7 +323,7 @@ fn secure_direct_prepare_initializes_send_state_and_returns_redacted_dto() {
     assert_eq!(result.peer.as_str(), "did:example:bob");
     assert_eq!(
         result.state,
-        im_core::secure::DirectSecureState::WaitingForPeer
+        awiki_im_core::secure::DirectSecureState::WaitingForPeer
     );
     assert!(!result.can_send_secure);
     assert!(result
@@ -359,7 +374,7 @@ async fn secure_direct_prepare_async_initializes_send_state_and_returns_redacted
     assert_eq!(result.peer.as_str(), "did:example:bob");
     assert_eq!(
         result.state,
-        im_core::secure::DirectSecureState::WaitingForPeer
+        awiki_im_core::secure::DirectSecureState::WaitingForPeer
     );
     assert!(!result.can_send_secure);
     assert!(result
@@ -394,7 +409,7 @@ async fn secure_outbox_failed_retry_drop_uses_redacted_public_dto() {
         .unwrap();
     std::fs::create_dir_all(paths.local_state.sqlite_path.parent().unwrap()).unwrap();
     let db = rusqlite::Connection::open(&paths.local_state.sqlite_path).unwrap();
-    im_core::compat::local_state::ensure_schema(&db).unwrap();
+    awiki_im_core::compat::local_state::ensure_schema(&db).unwrap();
     db.execute(
         r#"
 INSERT INTO e2ee_outbox
@@ -452,7 +467,7 @@ async fn secure_outbox_async_failed_retry_drop_uses_db_actor() {
         .unwrap();
     std::fs::create_dir_all(paths.local_state.sqlite_path.parent().unwrap()).unwrap();
     let db = rusqlite::Connection::open(&paths.local_state.sqlite_path).unwrap();
-    im_core::compat::local_state::ensure_schema(&db).unwrap();
+    awiki_im_core::compat::local_state::ensure_schema(&db).unwrap();
     db.execute(
         r#"
 INSERT INTO e2ee_outbox

@@ -13,6 +13,12 @@ enum LocalStateCommand {
     CurrentSchemaVersion {
         reply: oneshot::Sender<crate::ImResult<i64>>,
     },
+    EnsureConversation {
+        owner_identity_id: String,
+        owner_did: String,
+        conversation_id: String,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
     StoreMessages {
         records: Vec<super::messages::MessageRecord>,
         reply: oneshot::Sender<crate::ImResult<()>>,
@@ -27,6 +33,10 @@ enum LocalStateCommand {
     },
     UpsertContact {
         record: crate::internal::contact_store::records::ContactRecord,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    UpsertDirectPeerRoute {
+        record: super::direct_peer_routes::DirectPeerRouteRecord,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
     GetContactByDid {
@@ -124,6 +134,11 @@ enum LocalStateCommand {
         owner_identity_id: String,
         conversation_ids: Vec<String>,
         limit: i64,
+        reply: oneshot::Sender<crate::ImResult<Vec<super::messages::MessageRecord>>>,
+    },
+    ListDecryptedSecureMessages {
+        owner_identity_id: String,
+        message_ids: Vec<String>,
         reply: oneshot::Sender<crate::ImResult<Vec<super::messages::MessageRecord>>>,
     },
     ListMessagesForThreadRef {
@@ -332,6 +347,23 @@ enum LocalStateCommand {
 }
 
 impl LocalStateDb {
+    pub(crate) async fn ensure_conversation(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        conversation_id: impl Into<String>,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::EnsureConversation {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            conversation_id: conversation_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn open(sqlite_path: PathBuf) -> crate::ImResult<Self> {
         let (sender, receiver) = mpsc::channel(COMMAND_BUFFER);
         let (ready_sender, ready_receiver) = oneshot::channel();
@@ -391,6 +423,16 @@ impl LocalStateDb {
     ) -> crate::ImResult<()> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::UpsertContact { record, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn upsert_direct_peer_route(
+        &self,
+        record: super::direct_peer_routes::DirectPeerRouteRecord,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::UpsertDirectPeerRoute { record, reply })
             .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
@@ -639,6 +681,21 @@ impl LocalStateDb {
             owner_identity_id: owner_identity_id.into(),
             conversation_ids,
             limit,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_decrypted_secure_messages(
+        &self,
+        owner_identity_id: impl Into<String>,
+        message_ids: Vec<String>,
+    ) -> crate::ImResult<Vec<super::messages::MessageRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListDecryptedSecureMessages {
+            owner_identity_id: owner_identity_id.into(),
+            message_ids,
             reply,
         })
         .await?;
@@ -1124,6 +1181,20 @@ fn run_actor(
                 let result = super::schema::current_schema_version(&connection);
                 let _ = reply.send(result);
             }
+            LocalStateCommand::EnsureConversation {
+                owner_identity_id,
+                owner_did,
+                conversation_id,
+                reply,
+            } => {
+                let result = super::conversation_registry::ensure_validated(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &conversation_id,
+                );
+                let _ = reply.send(result);
+            }
             LocalStateCommand::StoreMessages { records, reply } => {
                 let result = super::messages::upsert_messages(&connection, &records);
                 let _ = reply.send(result);
@@ -1145,6 +1216,10 @@ fn run_actor(
                     &mut connection,
                     record,
                 );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::UpsertDirectPeerRoute { record, reply } => {
+                let result = super::direct_peer_routes::upsert(&connection, &record);
                 let _ = reply.send(result);
             }
             LocalStateCommand::GetContactByDid {
@@ -1344,6 +1419,18 @@ fn run_actor(
                     &owner_identity_id,
                     &conversation_ids,
                     limit,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListDecryptedSecureMessages {
+                owner_identity_id,
+                message_ids,
+                reply,
+            } => {
+                let result = super::messages::list_decrypted_secure_messages_for_owner_identity(
+                    &connection,
+                    &owner_identity_id,
+                    &message_ids,
                 );
                 let _ = reply.send(result);
             }
