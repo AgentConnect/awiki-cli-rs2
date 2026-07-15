@@ -19,10 +19,7 @@ for (const document of ['onboarding.md', 'skill.md']) {
 }
 for (const channel of ['stable', 'beta']) {
   process.stdout.write(`location = ${publicPath}${channel}/ {\n`);
-  process.stdout.write(`    alias ${webRoot}${channel}/manifest.json;\n`);
-  process.stdout.write('    default_type application/json;\n');
-  process.stdout.write('    add_header X-Content-Type-Options "nosniff" always;\n');
-  process.stdout.write('    add_header Cache-Control "no-cache, no-store, must-revalidate" always;\n');
+  process.stdout.write(`    rewrite ^ ${publicPath}${channel}/manifest.json last;\n`);
   process.stdout.write('}\n');
 }
 process.stdout.write(`location ^~ ${publicPath} {\n`);

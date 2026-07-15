@@ -14,8 +14,8 @@ test('renders all public CLI routes inside the configured namespace', () => {
   assert.match(result.stdout, /location = \/cli\/onboarding\.md \{/);
   assert.match(result.stdout, /location = \/cli\/skill\.md \{/);
   assert.match(result.stdout, /proxy_pass http:\/\/127\.0\.0\.1:9896\/cli\/onboarding\.md;/);
-  assert.match(result.stdout, /location = \/cli\/stable\/ \{\n    alias \/var\/www\/awiki-web\/cli\/stable\/manifest\.json;/);
-  assert.match(result.stdout, /location = \/cli\/beta\/ \{\n    alias \/var\/www\/awiki-web\/cli\/beta\/manifest\.json;/);
+  assert.match(result.stdout, /location = \/cli\/stable\/ \{\n    rewrite \^ \/cli\/stable\/manifest\.json last;/);
+  assert.match(result.stdout, /location = \/cli\/beta\/ \{\n    rewrite \^ \/cli\/beta\/manifest\.json last;/);
   assert.match(result.stdout, /location \^~ \/cli\/ \{/);
   assert.match(result.stdout, /autoindex off;/);
   assert.doesNotMatch(result.stdout, /location = \/onboarding\.md/);
