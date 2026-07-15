@@ -14,14 +14,15 @@ Linux AMD64 使用静态 musl 目标构建，并在归档前拒绝包含 GLIBC �
 
 所有平台的 `awiki-cli version` 都嵌入不可变 tag 对应的完整 40 位 Git commit；发布验收和系统测试使用它确认运行中的二进制与 manifest 来源一致。
 
-## 发布顺序
+## 发布方式
 
-1. 在干净且已推送的发布分支运行 `prepare-cli-tag.sh beta`。
-2. 在目标服务器运行 `publish-cli-release.sh beta`。
-3. 完成 beta 的 Linux、macOS、Skill、Onboarding 和更新检查。
-4. beta 全部通过后，在同一提交运行 `prepare-cli-tag.sh stable`。
-5. 在目标服务器运行 `publish-cli-release.sh stable`。
-6. stable 发布会让 beta channel 同时指向 stable，使 beta 安装自动毕业。
+Beta 和 Stable 是相互独立的发布通道，按实际需要选择其中一个发布，不要求成对执行，发布任一通道也不会改写另一个通道。
+
+1. 在干净且已推送的发布分支运行 `prepare-cli-tag.sh beta` 或 `prepare-cli-tag.sh stable`。
+2. 在目标服务器运行对应的 `publish-cli-release.sh beta` 或 `publish-cli-release.sh stable`。
+3. 验证本次所选通道的 Linux、macOS、Skill、Onboarding 和更新检查。
+
+只有 Stable 发布会更新 protocol-gateway 使用的 stable onboarding 快照；Beta 发布不会改变线上 onboarding。
 
 服务器脚本不会创建 commit 或 tag。任何失败都必须先修复并发布更高版本，不能移动 tag 或把旧归档重新提升为 latest。
 
