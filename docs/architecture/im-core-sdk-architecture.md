@@ -287,6 +287,15 @@ checkpoint advance. A later verified Handle projection replays matching rows
 into `messages` and removes them from the backlog without changing their
 `wire_thread_kind`, `wire_thread_ref`, or sender/receiver DID snapshots.
 
+Remote history, thread catch-up, and realtime incoming projection use that same
+canonical ingress rule even though they do not advance the account checkpoint.
+They must resolve Direct wire DID snapshots through the verified Persona route
+before writing `messages`. An unresolved record is written transactionally to
+`inbound_resolution_backlog` with a stable source/message key and must not first
+materialize a `dm:<DID>` message or registry row. Local pending/outgoing
+projection remains a separate write path because it is created from an already
+validated conversation/send boundary.
+
 The redacted canonical invariant doctor is available through the local-state
 compatibility diagnostics. It reports counts and invariant labels only: active
 Direct/Group exact-one violations, unresolved resolved rows, alias chains or
@@ -381,8 +390,11 @@ duplicate/gap/dirty detection and for deciding when to call `sync_delta`.
 Realtime projection is allowed to keep the UI fresh, but receiving a realtime
 hint or applying a realtime projection does not advance the reliable checkpoint.
 If a realtime incoming message cannot be projected or its local SQLite write
-fails, it must not emit an authoritative conversation/timeline patch; the next
-reliable sync or repair path remains responsible for convergence.
+fails, it must not emit an authoritative conversation/timeline patch. Identity-
+unresolved realtime messages are durably backlogged by the same canonical
+ingress used for remote history and are replayed only after verified Persona
+projection; the next reliable sync or repair path remains responsible for
+convergence.
 
 Schema version 20 adds `sync_state` with owner-scoped checkpoint rows:
 

@@ -215,7 +215,7 @@ pub(crate) fn apply_sync_delta_tx(
                 message.clone(),
             ) {
                 Ok(message) => messages.push(message),
-                Err(error) if is_backlog_identity_error(&error) => {
+                Err(error) if super::inbound_resolution_backlog::is_resolution_error(&error) => {
                     super::inbound_resolution_backlog::store(
                         transaction,
                         super::inbound_resolution_backlog::BacklogSource {
@@ -328,17 +328,6 @@ fn finish_sync_delta_apply(
         last_applied_event_seq: next_event_seq,
         invalidation,
     })
-}
-
-#[cfg(feature = "sqlite")]
-fn is_backlog_identity_error(error: &crate::ImError) -> bool {
-    matches!(
-        error,
-        crate::ImError::IdentityUnresolved { .. }
-            | crate::ImError::IdentityBindingConflict { .. }
-            | crate::ImError::ConversationAliasConflict { .. }
-            | crate::ImError::CanonicalGroupIdentityMissing { .. }
-    )
 }
 
 #[cfg(feature = "sqlite")]

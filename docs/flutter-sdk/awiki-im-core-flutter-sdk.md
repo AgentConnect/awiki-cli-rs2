@@ -238,6 +238,13 @@ realtime incoming message becomes patch-visible only after `im-core` has
 committed its SQLite local projection; failed or skipped realtime projection
 does not emit an authoritative conversation/thread patch.
 
+Remote history, conversation catch-up, and realtime incoming messages share one
+Core canonical-ingress gate. A Direct wire DID must resolve to a verified
+Persona before the message row is committed. Until then Core stores the record
+in its durable resolution backlog and exposes neither a `dm:<DID>` conversation
+nor a timeline patch; verified Persona projection later replays it under the
+single canonical conversation ID.
+
 These APIs currently live under `client.messages` for SDK compatibility. If a
 future `client.conversations` namespace is added, it must wrap the same core
 store and DTOs rather than introducing another source of truth.

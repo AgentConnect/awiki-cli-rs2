@@ -31,6 +31,12 @@ pub(crate) struct BacklogSource<'a> {
     pub(crate) event_type: &'a str,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RemoteMessageIngestOutcome {
+    pub(crate) stored_messages: usize,
+    pub(crate) backlogged_messages: usize,
+}
+
 pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
     connection
         .execute_batch(TABLE_SQL)
@@ -78,6 +84,52 @@ pub(crate) fn canonicalize_inbound_message(
     record.conversation_id = resolved.conversation_id.clone();
     record.thread_id = resolved.conversation_id;
     Ok(record)
+}
+
+pub(crate) fn ingest_remote_messages(
+    connection: &Connection,
+    records: &[super::messages::MessageRecord],
+    source_event_type: &str,
+) -> crate::ImResult<RemoteMessageIngestOutcome> {
+    let source_event_type = source_event_type.trim();
+    let mut resolved = Vec::new();
+    let mut backlogged_messages = 0usize;
+    for record in records {
+        match canonicalize_inbound_message(connection, record.clone()) {
+            Ok(record) => resolved.push(record),
+            Err(error) if is_resolution_error(&error) => {
+                let event_id = format!("{}:{}", source_event_type, record.msg_id.trim());
+                let event_seq = record.server_seq.unwrap_or_default().to_string();
+                store(
+                    connection,
+                    BacklogSource {
+                        event_id: &event_id,
+                        event_seq: &event_seq,
+                        event_type: source_event_type,
+                    },
+                    record,
+                    &error,
+                )?;
+                backlogged_messages = backlogged_messages.saturating_add(1);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    super::messages::upsert_messages(connection, &resolved)?;
+    Ok(RemoteMessageIngestOutcome {
+        stored_messages: resolved.len(),
+        backlogged_messages,
+    })
+}
+
+pub(crate) fn is_resolution_error(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::IdentityUnresolved { .. }
+            | crate::ImError::IdentityBindingConflict { .. }
+            | crate::ImError::ConversationAliasConflict { .. }
+            | crate::ImError::CanonicalGroupIdentityMissing { .. }
+    )
 }
 
 fn set_metadata_string(metadata: &mut String, key: &str, value: &str) {
@@ -295,19 +347,13 @@ mod tests {
             ..super::super::messages::MessageRecord::default()
         }
         .with_resolved_wire_thread("direct", "did:example:peer");
-        let error = canonicalize_inbound_message(&db, record.clone()).unwrap_err();
-        assert!(matches!(error, crate::ImError::IdentityUnresolved { .. }));
-        store(
-            &db,
-            BacklogSource {
-                event_id: "event-1",
-                event_seq: "1",
-                event_type: "message.created",
-            },
-            &record,
-            &error,
-        )
-        .unwrap();
+        let first =
+            ingest_remote_messages(&db, std::slice::from_ref(&record), "remote_history").unwrap();
+        let repeated =
+            ingest_remote_messages(&db, std::slice::from_ref(&record), "remote_history").unwrap();
+        assert_eq!(first.stored_messages, 0);
+        assert_eq!(first.backlogged_messages, 1);
+        assert_eq!(repeated, first);
         assert_eq!(pending_count(&db, "owner-a").unwrap(), 1);
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
@@ -335,6 +381,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(pending_count(&db, "owner-a").unwrap(), 0);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
         let stored: (String, String, String, String) = db
             .query_row(
                 r#"SELECT conversation_id, wire_thread_kind, wire_thread_ref, metadata
@@ -344,6 +396,7 @@ FROM messages WHERE owner_identity_id = 'owner-a' AND msg_id = 'msg-unresolved-1
             )
             .unwrap();
         assert_eq!(stored.0, conversation_id);
+        assert_ne!(stored.0, "dm:did:example:peer");
         assert_eq!(stored.1, "direct");
         assert_eq!(stored.2, "did:example:peer");
         assert_eq!(
@@ -358,6 +411,68 @@ FROM messages WHERE owner_identity_id = 'owner-a' AND msg_id = 'msg-unresolved-1
                 .unwrap()
                 .peer_persona_id
             )
+        );
+        assert!(
+            crate::internal::local_state::canonical_invariants::check(&db, "owner-a")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn verified_direct_remote_history_is_stored_only_under_canonical_conversation() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let lookup = crate::directory::HandleLookupResult {
+            handle: crate::ids::Handle::parse("peer.awiki.info", "").unwrap(),
+            did: crate::ids::Did::parse("did:example:peer").unwrap(),
+            user_id: "user-peer".to_owned(),
+            domain: Some("awiki.info".to_owned()),
+            status: Some("active".to_owned()),
+            binding_generation: Some("1".to_owned()),
+            profile: None,
+            warnings: Vec::new(),
+        };
+        let conversation_id = super::super::peer_personas::project_verified_handle(
+            &mut db,
+            "owner-a",
+            "did:example:owner",
+            &lookup,
+        )
+        .unwrap();
+        let record = super::super::messages::MessageRecord {
+            msg_id: "msg-resolved-1".to_owned(),
+            owner_identity_id: "owner-a".to_owned(),
+            owner_did: "did:example:owner".to_owned(),
+            conversation_id: "dm:did:example:peer".to_owned(),
+            thread_id: "dm:did:example:peer".to_owned(),
+            direction: 0,
+            sender_did: "did:example:peer".to_owned(),
+            receiver_did: "did:example:owner".to_owned(),
+            content_type: "application/json".to_owned(),
+            content: r#"{"type":"system.control"}"#.to_owned(),
+            stored_at: "2026-07-15T00:00:00Z".to_owned(),
+            credential_name: "owner-a".to_owned(),
+            ..super::super::messages::MessageRecord::default()
+        }
+        .with_resolved_wire_thread("direct", "did:example:peer");
+
+        let outcome = ingest_remote_messages(&db, &[record], "remote_history").unwrap();
+        assert_eq!(outcome.stored_messages, 1);
+        assert_eq!(outcome.backlogged_messages, 0);
+        assert_eq!(pending_count(&db, "owner-a").unwrap(), 0);
+        let stored_conversation_id: String = db
+            .query_row(
+                "SELECT conversation_id FROM messages WHERE msg_id = 'msg-resolved-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_conversation_id, conversation_id);
+        assert!(
+            crate::internal::local_state::canonical_invariants::check(&db, "owner-a")
+                .unwrap()
+                .is_empty()
         );
     }
 }

@@ -105,10 +105,21 @@ pub fn plan_realtime_message_local_projection(
 
 #[cfg(feature = "sqlite")]
 pub fn apply_realtime_message_local_projection(
-    connection: &rusqlite::Connection,
+    connection: &mut rusqlite::Connection,
     projection: RealtimeMessageLocalProjection,
-) -> crate::ImResult<()> {
-    crate::internal::local_state::messages::upsert_message(connection, &projection.record)
+) -> crate::ImResult<bool> {
+    let transaction = connection
+        .transaction()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let outcome = crate::internal::local_state::inbound_resolution_backlog::ingest_remote_messages(
+        &transaction,
+        &[projection.record],
+        "realtime_message",
+    )?;
+    transaction
+        .commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(outcome.stored_messages > 0)
 }
 
 #[cfg(feature = "sqlite")]
@@ -307,4 +318,52 @@ fn now_utc_like() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_realtime_direct_is_backlogged_without_creating_legacy_message() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let projection = RealtimeMessageLocalProjection {
+            record: crate::internal::local_state::messages::MessageRecord {
+                msg_id: "realtime-unresolved-1".to_owned(),
+                owner_identity_id: "owner-a".to_owned(),
+                owner_did: "did:example:owner".to_owned(),
+                conversation_id: "dm:did:example:peer".to_owned(),
+                thread_id: "dm:did:example:peer".to_owned(),
+                sender_did: "did:example:peer".to_owned(),
+                receiver_did: "did:example:owner".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "hello".to_owned(),
+                stored_at: "2026-07-15T00:00:00Z".to_owned(),
+                credential_name: "owner-a".to_owned(),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            }
+            .with_resolved_wire_thread("direct", "did:example:peer"),
+        };
+
+        let stored = apply_realtime_message_local_projection(&mut db, projection).unwrap();
+
+        assert!(!stored);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            crate::internal::local_state::inbound_resolution_backlog::pending_count(&db, "owner-a")
+                .unwrap(),
+            1
+        );
+        assert!(
+            crate::internal::local_state::canonical_invariants::check(&db, "owner-a")
+                .unwrap()
+                .is_empty()
+        );
+    }
 }

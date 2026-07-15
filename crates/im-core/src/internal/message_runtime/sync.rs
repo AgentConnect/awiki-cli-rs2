@@ -154,12 +154,15 @@ where
                     crate::ids::PageLimit(limit),
                 )?;
                 let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                crate::internal::message_runtime::local_projection::persist_messages(
-                    self.client,
-                    &result.messages,
-                )?;
-                self.client
-                    .emit_committed_message_projection("sync_thread_after");
+                let outcome =
+                    crate::internal::message_runtime::local_projection::persist_remote_messages(
+                        self.client,
+                        &result.messages,
+                    )?;
+                if outcome.stored_messages > 0 {
+                    self.client
+                        .emit_committed_message_projection("sync_thread_after");
+                }
                 Ok(result)
             }
             crate::messages::ThreadRef::Group(group) => {
@@ -188,12 +191,15 @@ where
                     Some(&group),
                 )?;
                 let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                crate::internal::message_runtime::local_projection::persist_messages(
-                    self.client,
-                    &result.messages,
-                )?;
-                self.client
-                    .emit_committed_message_projection("sync_thread_after");
+                let outcome =
+                    crate::internal::message_runtime::local_projection::persist_remote_messages(
+                        self.client,
+                        &result.messages,
+                    )?;
+                if outcome.stored_messages > 0 {
+                    self.client
+                        .emit_committed_message_projection("sync_thread_after");
+                }
                 Ok(result)
             }
             crate::messages::ThreadRef::Thread(_) => {
@@ -322,13 +328,15 @@ where
                     crate::ids::PageLimit(limit),
                 )?;
                 let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                crate::internal::message_runtime::local_projection::persist_messages_async(
+                let outcome = crate::internal::message_runtime::local_projection::persist_remote_messages_async(
                     self.client,
                     &result.messages,
                 )
                 .await?;
-                self.client
-                    .emit_committed_message_projection("sync_thread_after");
+                if outcome.stored_messages > 0 {
+                    self.client
+                        .emit_committed_message_projection("sync_thread_after");
+                }
                 Ok(result)
             }
             crate::messages::ThreadRef::Group(group) => {
@@ -358,13 +366,15 @@ where
                     Some(&group),
                 )?;
                 let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                crate::internal::message_runtime::local_projection::persist_messages_async(
+                let outcome = crate::internal::message_runtime::local_projection::persist_remote_messages_async(
                     self.client,
                     &result.messages,
                 )
                 .await?;
-                self.client
-                    .emit_committed_message_projection("sync_thread_after");
+                if outcome.stored_messages > 0 {
+                    self.client
+                        .emit_committed_message_projection("sync_thread_after");
+                }
                 Ok(result)
             }
             crate::messages::ThreadRef::Thread(_) => {
