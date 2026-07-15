@@ -54,17 +54,14 @@ impl<'a> DirectoryService<'a> {
             crate::internal::directory_runtime::DirectoryRuntime::new(self.client, transport)
                 .resolve_peer(peer)?;
         #[cfg(feature = "sqlite")]
-        project_direct_peer_route(
-            self.client,
-            &result.resolution,
-            result.peer_scope.as_ref(),
-            result.peer_current_did.as_ref(),
-        )?;
-        #[cfg(feature = "sqlite")]
-        crate::internal::contact_store::projection::project_directory_resolution(
-            self.client,
-            &result.resolution,
-        );
+        if let Some(lookup) = result.handle_lookup.as_ref() {
+            project_handle_lookup(self.client, lookup)?;
+        } else {
+            crate::internal::contact_store::projection::project_directory_resolution(
+                self.client,
+                &result.resolution,
+            );
+        }
         Ok(result)
     }
 
@@ -81,19 +78,15 @@ impl<'a> DirectoryService<'a> {
                 .resolve_peer_async(peer)
                 .await?;
         #[cfg(feature = "sqlite")]
-        project_direct_peer_route_async(
-            self.client,
-            &result.resolution,
-            result.peer_scope.as_ref(),
-            result.peer_current_did.as_ref(),
-        )
-        .await?;
-        #[cfg(feature = "sqlite")]
-        crate::internal::contact_store::projection::project_directory_resolution_async(
-            self.client,
-            &result.resolution,
-        )
-        .await?;
+        if let Some(lookup) = result.handle_lookup.as_ref() {
+            project_handle_lookup_async(self.client, lookup).await?;
+        } else {
+            crate::internal::contact_store::projection::project_directory_resolution_async(
+                self.client,
+                &result.resolution,
+            )
+            .await?;
+        }
         Ok(result)
     }
 
@@ -1054,11 +1047,16 @@ fn project_handle_lookup(
     lookup: &super::HandleLookupResult,
 ) -> crate::ImResult<()> {
     let resolution = handle_lookup_resolution(lookup);
-    let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
-        lookup.user_id.clone(),
-        lookup.handle.as_str(),
+    let owner = crate::internal::local_state::owner_scope::OwnerScope::for_client(client)?;
+    let mut connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
-    project_direct_peer_route(client, &resolution, Some(&peer_scope), Some(&lookup.did))?;
+    crate::internal::local_state::peer_personas::project_verified_handle(
+        &mut connection,
+        &owner.owner_identity_id,
+        &owner.owner_did,
+        lookup,
+    )?;
     crate::internal::contact_store::projection::project_directory_resolution(client, &resolution);
     Ok(())
 }
@@ -1069,65 +1067,18 @@ async fn project_handle_lookup_async(
     lookup: &super::HandleLookupResult,
 ) -> crate::ImResult<()> {
     let resolution = handle_lookup_resolution(lookup);
-    let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
-        lookup.user_id.clone(),
-        lookup.handle.as_str(),
-    )?;
-    project_direct_peer_route_async(client, &resolution, Some(&peer_scope), Some(&lookup.did))
+    let owner = crate::internal::local_state::owner_scope::OwnerScope::for_client(client)?;
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .project_verified_handle(&owner.owner_identity_id, &owner.owner_did, lookup.clone())
         .await?;
     crate::internal::contact_store::projection::project_directory_resolution_async(
         client,
         &resolution,
     )
     .await
-}
-
-#[cfg(feature = "sqlite")]
-fn project_direct_peer_route(
-    client: &crate::core::ImClient,
-    resolution: &super::DirectoryResolution,
-    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
-    peer_current_did: Option<&crate::ids::Did>,
-) -> crate::ImResult<()> {
-    let Some(peer_scope) = peer_scope else {
-        return Ok(());
-    };
-    let record =
-        crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::for_client(
-            client,
-            &resolution.conversation_id,
-            peer_scope,
-            peer_current_did.unwrap_or(&resolution.did).as_str(),
-        )?;
-    let connection = crate::internal::local_state::open_writable(
-        &client.core_inner().sdk_paths().local_state.sqlite_path,
-    )?;
-    crate::internal::local_state::direct_peer_routes::upsert(&connection, &record)
-}
-
-#[cfg(feature = "sqlite")]
-async fn project_direct_peer_route_async(
-    client: &crate::core::ImClient,
-    resolution: &super::DirectoryResolution,
-    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
-    peer_current_did: Option<&crate::ids::Did>,
-) -> crate::ImResult<()> {
-    let Some(peer_scope) = peer_scope else {
-        return Ok(());
-    };
-    let record =
-        crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::for_client(
-            client,
-            &resolution.conversation_id,
-            peer_scope,
-            peer_current_did.unwrap_or(&resolution.did).as_str(),
-        )?;
-    client
-        .core_inner()
-        .local_state_db()
-        .await?
-        .upsert_direct_peer_route(record)
-        .await
 }
 
 #[cfg(feature = "sqlite")]

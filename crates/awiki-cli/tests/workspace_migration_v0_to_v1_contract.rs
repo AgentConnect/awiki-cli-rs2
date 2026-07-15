@@ -248,7 +248,7 @@ fn ensure_target_store_schema_reuses_store_version_errors() {
         .expect_err("old schema should fail");
     assert_eq!(
         err.to_string(),
-        format!("sqlite schema version 5 requires owner-identity migration before schema {SCHEMA_VERSION}")
+        format!("local state upgrade required: schema 5 -> {SCHEMA_VERSION}")
     );
 }
 

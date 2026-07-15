@@ -23,6 +23,13 @@ enum LocalStateCommand {
         records: Vec<super::messages::MessageRecord>,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
+    StoreRemoteMessages {
+        records: Vec<super::messages::MessageRecord>,
+        source_event_type: String,
+        reply: oneshot::Sender<
+            crate::ImResult<super::inbound_resolution_backlog::RemoteMessageIngestOutcome>,
+        >,
+    },
     LoadGlobalCheckpoint {
         owner_identity_id: String,
         reply: oneshot::Sender<crate::ImResult<Option<super::sync_state::GlobalCheckpoint>>>,
@@ -38,6 +45,12 @@ enum LocalStateCommand {
     UpsertDirectPeerRoute {
         record: super::direct_peer_routes::DirectPeerRouteRecord,
         reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    ProjectVerifiedHandle {
+        owner_identity_id: String,
+        owner_did: String,
+        lookup: crate::directory::HandleLookupResult,
+        reply: oneshot::Sender<crate::ImResult<String>>,
     },
     GetContactByDid {
         owner_identity_id: String,
@@ -394,6 +407,21 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
+    pub(crate) async fn store_remote_messages(
+        &self,
+        records: Vec<super::messages::MessageRecord>,
+        source_event_type: impl Into<String>,
+    ) -> crate::ImResult<super::inbound_resolution_backlog::RemoteMessageIngestOutcome> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::StoreRemoteMessages {
+            records,
+            source_event_type: source_event_type.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn load_global_checkpoint(
         &self,
         owner_identity_id: impl Into<String>,
@@ -434,6 +462,23 @@ impl LocalStateDb {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::UpsertDirectPeerRoute { record, reply })
             .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn project_verified_handle(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        lookup: crate::directory::HandleLookupResult,
+    ) -> crate::ImResult<String> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ProjectVerifiedHandle {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            lookup,
+            reply,
+        })
+        .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
 
@@ -1199,6 +1244,27 @@ fn run_actor(
                 let result = super::messages::upsert_messages(&connection, &records);
                 let _ = reply.send(result);
             }
+            LocalStateCommand::StoreRemoteMessages {
+                records,
+                source_event_type,
+                reply,
+            } => {
+                let result = (|| {
+                    let transaction = connection
+                        .transaction()
+                        .map_err(super::local_state_unavailable)?;
+                    let outcome = super::inbound_resolution_backlog::ingest_remote_messages(
+                        &transaction,
+                        &records,
+                        &source_event_type,
+                    )?;
+                    transaction
+                        .commit()
+                        .map_err(super::local_state_unavailable)?;
+                    Ok(outcome)
+                })();
+                let _ = reply.send(result);
+            }
             LocalStateCommand::LoadGlobalCheckpoint {
                 owner_identity_id,
                 reply,
@@ -1220,6 +1286,20 @@ fn run_actor(
             }
             LocalStateCommand::UpsertDirectPeerRoute { record, reply } => {
                 let result = super::direct_peer_routes::upsert(&connection, &record);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ProjectVerifiedHandle {
+                owner_identity_id,
+                owner_did,
+                lookup,
+                reply,
+            } => {
+                let result = super::peer_personas::project_verified_handle(
+                    &mut connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &lookup,
+                );
                 let _ = reply.send(result);
             }
             LocalStateCommand::GetContactByDid {

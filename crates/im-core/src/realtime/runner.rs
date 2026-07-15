@@ -667,10 +667,11 @@ fn project_realtime_message_received(
     let mut connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
-    crate::internal::realtime::local_projection::apply_realtime_message_local_projection(
-        &connection,
-        projection,
-    )?;
+    let message_stored =
+        crate::internal::realtime::local_projection::apply_realtime_message_local_projection(
+            &mut connection,
+            projection,
+        )?;
     project_realtime_message_group(client, &connection, &group_did, sent_at.as_deref())?;
     project_realtime_message_contact(
         client,
@@ -683,7 +684,9 @@ fn project_realtime_message_received(
         },
         &group_did,
     )?;
-    client.emit_committed_local_message_projection("realtime_incoming");
+    if message_stored {
+        client.emit_committed_local_message_projection("realtime_incoming");
+    }
     Ok(())
 }
 
@@ -718,7 +721,9 @@ async fn project_realtime_message_received_async(
     let sender_did = projection.sender_did().to_string();
     let sent_at = event.message.sent_at.clone();
     let db = client.core_inner().local_state_db().await?;
-    db.store_messages(vec![projection.into_record()]).await?;
+    let outcome = db
+        .store_remote_messages(vec![projection.into_record()], "realtime_message")
+        .await?;
     if let Some(record) = realtime_message_group_record(client, &group_did, sent_at.as_deref()) {
         db.upsert_group(record).await?;
     }
@@ -734,7 +739,9 @@ async fn project_realtime_message_received_async(
     ) {
         db.upsert_contact(record).await?;
     }
-    client.emit_committed_local_message_projection("realtime_incoming");
+    if outcome.stored_messages > 0 {
+        client.emit_committed_local_message_projection("realtime_incoming");
+    }
     Ok(())
 }
 

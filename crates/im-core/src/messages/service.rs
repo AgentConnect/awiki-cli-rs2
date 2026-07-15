@@ -28,6 +28,16 @@ mod direct_send_result_identity_tests {
             }
             other => panic!("expected thread ref, got {other:?}"),
         }
+        let identity = result
+            .message
+            .metadata
+            .conversation_identity
+            .as_ref()
+            .expect("normalized send result should expose canonical identity");
+        assert_eq!(identity.conversation_id, expected_thread_id);
+        assert_eq!(identity.canonical_thread_id, expected_thread_id);
+        assert_eq!(identity.storage_thread_ref.kind, "thread");
+        assert_eq!(identity.storage_thread_ref.id, expected_thread_id);
         assert_eq!(
             attribute(&result, "peer_user_id").as_deref(),
             Some("user-bob")
@@ -92,7 +102,16 @@ mod direct_send_result_identity_tests {
                 },
                 sent_at: Some("2026-07-04T00:00:00Z".to_owned()),
                 received_at: None,
-                metadata: crate::messages::MessageMetadata::default(),
+                metadata: crate::messages::MessageMetadata {
+                    conversation_identity: Some(
+                        crate::messages::ConversationIdentity::from_thread_ref(
+                            &crate::messages::ThreadRef::Direct(
+                                crate::ids::PeerRef::parse("bob.awiki.test", "").unwrap(),
+                            ),
+                        ),
+                    ),
+                    ..crate::messages::MessageMetadata::default()
+                },
             },
             delivery: crate::messages::DeliveryState::Accepted,
             warnings: Vec::new(),
@@ -718,6 +737,50 @@ mod conversation_read_model_tests {
         assert_eq!(attachment_target.peer_scope.as_ref(), Some(&peer_scope));
     }
 
+    #[test]
+    fn conversation_send_surfaces_reject_legacy_did_conversation() {
+        let fixture = Fixture::new("conversation-send-legacy-did");
+        let client = fixture.client();
+        let conversation = crate::messages::ConversationReadRef::new("dm:did:example:bob").unwrap();
+
+        let text_error = match super::conversation_send_request(
+            &client,
+            conversation.clone(),
+            crate::messages::MessageBody::Text {
+                text: "must not send".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            crate::messages::MessageSecurityMode::DefaultPlain,
+            None,
+            None,
+            false,
+            None,
+        ) {
+            Ok(_) => panic!("legacy DID conversation must not be sendable"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            text_error,
+            crate::ImError::InvalidInput {
+                field: Some(ref field),
+                ..
+            } if field == "conversation_id"
+        ));
+
+        let attachment_error = match super::resolve_conversation_send_target(&client, &conversation)
+        {
+            Ok(_) => panic!("legacy DID conversation must not accept attachments"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            attachment_error,
+            crate::ImError::InvalidInput {
+                field: Some(ref field),
+                ..
+            } if field == "conversation_id"
+        ));
+    }
+
     #[tokio::test]
     async fn first_canonical_send_projection_creates_only_peer_scope_message_and_summary() {
         let fixture = Fixture::new("conversation-route-first-send-projection");
@@ -801,18 +864,6 @@ mod conversation_read_model_tests {
             crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
                 &requested_scope,
             );
-        let connection =
-            crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
-        connection
-            .execute(
-                r#"
-INSERT INTO direct_peer_routes
-    (owner_identity_id, conversation_id, peer_user_id, full_handle, current_did, updated_at)
-VALUES ('alice-id', ?1, 'user-mallory', 'mallory.awiki.test', 'did:example:mallory', '0')
-"#,
-                [conversation_id.as_str()],
-            )
-            .unwrap();
         fixture.seed_message(crate::internal::local_state::messages::MessageRecord {
             msg_id: "msg-valid-fallback-must-not-mask-corruption".to_owned(),
             conversation_id: conversation_id.clone(),
@@ -827,6 +878,18 @@ VALUES ('alice-id', ?1, 'user-mallory', 'mallory.awiki.test', 'did:example:mallo
             .to_string(),
             ..Fixture::message_record_defaults()
         });
+        let connection =
+            crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+        connection
+            .execute(
+                r#"
+INSERT INTO direct_peer_routes
+    (owner_identity_id, conversation_id, peer_user_id, full_handle, current_did, updated_at)
+VALUES ('alice-id', ?1, 'user-mallory', 'mallory.awiki.test', 'did:example:mallory', '0')
+"#,
+                [conversation_id.as_str()],
+            )
+            .unwrap();
 
         let err = super::resolve_service_conversation_thread(
             &client,
@@ -1039,15 +1102,52 @@ VALUES ('alice-id', ?1, 'user-mallory', 'mallory.awiki.test', 'did:example:mallo
         ) {
             let connection =
                 crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
-            let record =
-                crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::new(
-                    "alice-id",
-                    conversation_id,
-                    peer_scope.user_id.clone(),
-                    peer_scope.full_handle.clone(),
-                    current_did,
-                )
+            let authority = peer_scope
+                .full_handle
+                .split_once('.')
+                .map(|(_, domain)| domain)
                 .unwrap();
+            let persona = crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+                authority,
+                &peer_scope.user_id,
+                &peer_scope.full_handle,
+                Some("active"),
+            )
+            .unwrap();
+            assert_eq!(persona.direct_conversation_id(), conversation_id);
+            crate::internal::local_state::peer_personas::upsert(
+                &connection,
+                &crate::internal::local_state::peer_personas::PeerPersonaRecord {
+                    owner_identity_id: "alice-id".to_owned(),
+                    persona: persona.clone(),
+                    binding_generation: Some("1".to_owned()),
+                    subject_type: "human".to_owned(),
+                    source: "test_authority".to_owned(),
+                    authority_revision: None,
+                    verified_at: "2026-07-14T00:00:00Z".to_owned(),
+                },
+            )
+            .unwrap();
+            crate::internal::local_state::peer_identifiers::bind(
+                &connection,
+                &crate::internal::local_state::peer_identifiers::PeerIdentifierRecord {
+                    owner_identity_id: "alice-id".to_owned(),
+                    peer_persona_id: persona.peer_persona_id.clone(),
+                    identifier_kind: "did".to_owned(),
+                    identifier_value: current_did.to_owned(),
+                    is_current: true,
+                    binding_generation: Some("1".to_owned()),
+                    source: "test_authority".to_owned(),
+                    verified_at: "2026-07-14T00:00:00Z".to_owned(),
+                },
+            )
+            .unwrap();
+            let record = crate::internal::local_state::direct_peer_routes::DirectPeerRouteRecord::from_verified_persona(
+                "alice-id",
+                &persona,
+                current_did,
+            )
+            .unwrap();
             crate::internal::local_state::direct_peer_routes::upsert(&connection, &record).unwrap();
         }
 
@@ -3374,6 +3474,9 @@ pub(crate) fn normalize_direct_send_result_for_peer_scope(
         scope.full_handle.as_str(),
     )?;
     result.message.thread = super::ThreadRef::Thread(thread_id);
+    result.message.metadata.conversation_identity = Some(
+        crate::messages::ConversationIdentity::from_thread_ref(&result.message.thread),
+    );
     upsert_message_attribute(
         &mut result.message.metadata.attributes,
         "peer_user_id",
@@ -3419,6 +3522,7 @@ fn conversation_send_request(
     wait_for_final_acceptance: bool,
     delegated_signing: Option<super::DelegatedSigningOptions>,
 ) -> crate::ImResult<ResolvedConversationSendRequest> {
+    ensure_conversation_registry(client, &conversation)?;
     let conversation_id = conversation.conversation_id.clone();
     let resolved = resolve_service_conversation_thread(client, &conversation)?;
     let client_message_id = match client_message_id {
@@ -3496,6 +3600,7 @@ pub(crate) fn resolve_conversation_send_target(
     client: &crate::core::ImClient,
     conversation: &super::ConversationReadRef,
 ) -> crate::ImResult<ResolvedConversationSendTarget> {
+    ensure_conversation_registry(client, conversation)?;
     conversation_send_target(resolve_service_conversation_thread(client, conversation)?)
 }
 

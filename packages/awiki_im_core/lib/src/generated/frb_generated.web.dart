@@ -14,6 +14,7 @@ import 'api/directory.dart';
 import 'api/email.dart';
 import 'api/groups.dart';
 import 'api/identity.dart';
+import 'api/local_state_upgrade.dart';
 import 'api/messages.dart';
 import 'api/profile.dart';
 import 'api/realtime.dart';
@@ -29,6 +30,7 @@ import 'dto/email.dart';
 import 'dto/error.dart';
 import 'dto/group.dart';
 import 'dto/identity.dart';
+import 'dto/local_state_upgrade.dart';
 import 'dto/message.dart';
 import 'dto/profile.dart';
 import 'dto/realtime.dart';
@@ -414,6 +416,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartConversationReadRef dco_decode_dart_conversation_read_ref(dynamic raw);
 
   @protected
+  DartConversationResolutionState dco_decode_dart_conversation_resolution_state(
+    dynamic raw,
+  );
+
+  @protected
   DartConversationSnapshotItem dco_decode_dart_conversation_snapshot_item(
     dynamic raw,
   );
@@ -652,6 +659,33 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartJoinGroupRequest dco_decode_dart_join_group_request(dynamic raw);
 
   @protected
+  DartLocalStateConversationAliasMapping
+  dco_decode_dart_local_state_conversation_alias_mapping(dynamic raw);
+
+  @protected
+  DartLocalStateRestoreResult dco_decode_dart_local_state_restore_result(
+    dynamic raw,
+  );
+
+  @protected
+  DartLocalStateUpgradeEligibility
+  dco_decode_dart_local_state_upgrade_eligibility(dynamic raw);
+
+  @protected
+  DartLocalStateUpgradeInspection
+  dco_decode_dart_local_state_upgrade_inspection(dynamic raw);
+
+  @protected
+  DartLocalStateUpgradeResult dco_decode_dart_local_state_upgrade_result(
+    dynamic raw,
+  );
+
+  @protected
+  DartLocalStateUpgradeStatus dco_decode_dart_local_state_upgrade_status(
+    dynamic raw,
+  );
+
+  @protected
   DartMarkConversationReadRequest
   dco_decode_dart_mark_conversation_read_request(dynamic raw);
 
@@ -866,6 +900,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartIdentitySummary> dco_decode_list_dart_identity_summary(dynamic raw);
+
+  @protected
+  List<DartLocalStateConversationAliasMapping>
+  dco_decode_list_dart_local_state_conversation_alias_mapping(dynamic raw);
 
   @protected
   List<DartMessage> dco_decode_list_dart_message(dynamic raw);
@@ -1418,6 +1456,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartConversationResolutionState sse_decode_dart_conversation_resolution_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartConversationSnapshotItem sse_decode_dart_conversation_snapshot_item(
     SseDeserializer deserializer,
   );
@@ -1708,6 +1751,35 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartJoinGroupRequest sse_decode_dart_join_group_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartLocalStateConversationAliasMapping
+  sse_decode_dart_local_state_conversation_alias_mapping(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartLocalStateRestoreResult sse_decode_dart_local_state_restore_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartLocalStateUpgradeEligibility
+  sse_decode_dart_local_state_upgrade_eligibility(SseDeserializer deserializer);
+
+  @protected
+  DartLocalStateUpgradeInspection
+  sse_decode_dart_local_state_upgrade_inspection(SseDeserializer deserializer);
+
+  @protected
+  DartLocalStateUpgradeResult sse_decode_dart_local_state_upgrade_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartLocalStateUpgradeStatus sse_decode_dart_local_state_upgrade_status(
     SseDeserializer deserializer,
   );
 
@@ -2008,6 +2080,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartIdentitySummary> sse_decode_list_dart_identity_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartLocalStateConversationAliasMapping>
+  sse_decode_list_dart_local_state_conversation_alias_mapping(
     SseDeserializer deserializer,
   );
 
@@ -2655,6 +2733,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_conversation_resolution_state(
+    DartConversationResolutionState self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_conversation_snapshot_item(
     DartConversationSnapshotItem self,
     SseSerializer serializer,
@@ -3017,6 +3101,42 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_join_group_request(
     DartJoinGroupRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_conversation_alias_mapping(
+    DartLocalStateConversationAliasMapping self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_restore_result(
+    DartLocalStateRestoreResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_eligibility(
+    DartLocalStateUpgradeEligibility self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_inspection(
+    DartLocalStateUpgradeInspection self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_result(
+    DartLocalStateUpgradeResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_status(
+    DartLocalStateUpgradeStatus self,
     SseSerializer serializer,
   );
 
@@ -3386,6 +3506,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_identity_summary(
     List<DartIdentitySummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_local_state_conversation_alias_mapping(
+    List<DartLocalStateConversationAliasMapping> self,
     SseSerializer serializer,
   );
 

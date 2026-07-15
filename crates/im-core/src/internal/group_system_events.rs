@@ -59,30 +59,33 @@ pub(crate) fn record_from_input(
         sync_event_type: trim_optional(input.sync_event_type),
         source: input.source,
     });
-    Some(crate::internal::local_state::messages::MessageRecord {
-        msg_id: format!("{group_did}:{}", input.group_event_seq),
-        owner_identity_id: client.current_identity().id.as_str().to_owned(),
-        owner_did: client.did().as_str().to_owned(),
-        conversation_id: conversation_id.clone(),
-        thread_id: conversation_id,
-        direction: if actor_did.trim() == client.did().as_str() {
-            1
-        } else {
-            0
-        },
-        sender_did: actor_did,
-        group_id: group_did.to_owned(),
-        group_did: group_did.to_owned(),
-        content_type: "application/json".to_owned(),
-        content,
-        server_seq: Some(input.group_event_seq),
-        sent_at: changed_at.clone(),
-        stored_at: changed_at,
-        is_read: true,
-        metadata: metadata_json(input.group_event_seq),
-        credential_name: client.current_identity().id.as_str().to_owned(),
-        ..crate::internal::local_state::messages::MessageRecord::default()
-    })
+    Some(
+        crate::internal::local_state::messages::MessageRecord {
+            msg_id: format!("{group_did}:{}", input.group_event_seq),
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            owner_did: client.did().as_str().to_owned(),
+            conversation_id: conversation_id.clone(),
+            thread_id: conversation_id,
+            direction: if actor_did.trim() == client.did().as_str() {
+                1
+            } else {
+                0
+            },
+            sender_did: actor_did,
+            group_id: group_did.to_owned(),
+            group_did: group_did.to_owned(),
+            content_type: "application/json".to_owned(),
+            content,
+            server_seq: Some(input.group_event_seq),
+            sent_at: changed_at.clone(),
+            stored_at: changed_at,
+            is_read: true,
+            metadata: metadata_json(input.group_event_seq),
+            credential_name: client.current_identity().id.as_str().to_owned(),
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        }
+        .with_resolved_wire_thread("group", group_did),
+    )
 }
 
 #[cfg(feature = "sqlite")]

@@ -3,6 +3,9 @@ pub(crate) struct ConversationRecord {
     pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
     pub(crate) conversation_id: String,
+    pub(crate) peer_persona_id: String,
+    pub(crate) canonical_group_did: String,
+    pub(crate) resolution_state: String,
     pub(crate) thread_kind: String,
     pub(crate) thread_id: String,
     pub(crate) direct_peer_did: String,
@@ -42,6 +45,9 @@ SELECT
     r.owner_identity_id,
     r.owner_did,
     r.conversation_id,
+    COALESCE(r.peer_persona_id, '') AS peer_persona_id,
+    COALESCE(r.canonical_group_did, '') AS canonical_group_did,
+    r.resolution_state,
     r.thread_kind,
     r.thread_id,
     COALESCE(d.current_did, '') AS direct_peer_did,
@@ -159,6 +165,15 @@ fn conversation_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Con
     let conversation_id = row
         .get::<_, Option<String>>("conversation_id")?
         .unwrap_or_default();
+    let peer_persona_id = row
+        .get::<_, Option<String>>("peer_persona_id")?
+        .unwrap_or_default();
+    let canonical_group_did = row
+        .get::<_, Option<String>>("canonical_group_did")?
+        .unwrap_or_default();
+    let resolution_state = row
+        .get::<_, Option<String>>("resolution_state")?
+        .unwrap_or_default();
     let thread_kind = row
         .get::<_, Option<String>>("thread_kind")?
         .unwrap_or_default();
@@ -179,6 +194,9 @@ fn conversation_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Con
             owner_identity_id: owner_identity_id.clone(),
             owner_did: owner_did.clone(),
             conversation_id: conversation_id.clone(),
+            wire_thread_kind: String::new(),
+            wire_thread_ref: String::new(),
+            wire_identity_resolution_state: String::new(),
             thread_id: thread_id.clone(),
             direction: row.get::<_, Option<i64>>("direction")?.unwrap_or_default(),
             sender_did: row
@@ -224,6 +242,9 @@ fn conversation_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Con
         owner_identity_id,
         owner_did,
         conversation_id,
+        peer_persona_id,
+        canonical_group_did,
+        resolution_state,
         thread_kind,
         thread_id,
         direct_peer_did,

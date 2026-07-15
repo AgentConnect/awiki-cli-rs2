@@ -388,6 +388,8 @@ void main() {
       message: SendMessageResult(
         message: Message(
           id: 'msg-1',
+          conversationId: 'dm:peer-scope:v1:bob',
+          senderDidSnapshot: 'did:example:alice',
           threadKind: 'direct',
           threadId: 'did:example:bob',
           direction: MessageDirection.outgoing,

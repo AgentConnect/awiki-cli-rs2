@@ -1388,6 +1388,7 @@ fn handle_lookup_with_profile_value() -> Value {
     json!({
         "handle": "bob.awiki.test",
         "did": "did:example:bob",
+        "user_id": "user-bob",
         "domain": "awiki.test",
         "status": "active",
         "profile": {
@@ -1410,6 +1411,7 @@ fn handle_lookup_with_mismatched_profile_value() -> Value {
     json!({
         "handle": "bob.awiki.test",
         "did": "did:example:bob",
+        "user_id": "user-bob",
         "domain": "awiki.test",
         "status": "active",
         "profile": {

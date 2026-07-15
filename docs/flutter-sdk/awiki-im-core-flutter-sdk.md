@@ -30,6 +30,45 @@ The Rust facade exposes opaque `DartImCore` and `DartImClient` objects. Each obj
 
 `im-core` is blocking-first. Public Dart APIs are `Future<T>` and must not expose synchronous IO, SQLite, or HTTP calls into widget build paths. FRB generated calls should use the worker-thread model and the wrapper must keep App-facing methods async.
 
+### Local-state upgrade before Core open
+
+Applications upgrading from release/0710 must inspect and, when required, run
+the canonical local-state upgrade before `AwikiImCore.open`:
+
+```dart
+final inspection = await AwikiImCore.inspectLocalStateUpgrade(paths: paths);
+if (inspection.eligibility == LocalStateUpgradeEligibility.required) {
+  final result = await AwikiImCore.upgradeLocalState(paths: paths);
+  assert(result.status == LocalStateUpgradeStatus.completed);
+}
+final core = await AwikiImCore.open(config: config, paths: paths);
+```
+
+Inspection is read-only. Upgrade performs the Core-owned cross-process lock,
+SQLite online backup (including committed WAL state), shadow migration,
+conservation/invariant validation, and cutover. A missing SQLite file is a fresh
+install and returns `notRequired` without creating files. Ordinary Core open
+continues to fail closed with `local_state_upgrade_required`; hosts must not
+delete, archive, or recreate the database to bypass this gate. Public reports
+contain schema versions, aggregate counts, and owner-scoped legacy-to-canonical
+conversation mappings required by the App overlay migration. They never expose
+backup paths or message content. The mapping remains available after cutover so
+an App crash between the Core and overlay journals can resume idempotently.
+
+If a canary must be downgraded after cutover, dispose Core first and restore
+the complete verified release/0710 backup with the new SDK/tooling:
+
+```dart
+final restored = await AwikiImCore.restoreLocalStateBackup(paths: paths);
+assert(restored.restoredSchemaVersion == 27);
+assert(restored.targetSafetyCopyAvailable);
+```
+
+Restore is not an in-process rollback for an open Core. It only accepts a
+completed canonical-upgrade journal, keeps the schema 28 target as a private
+safety copy, and is idempotent across interruption. The public result exposes
+versions/availability only, never filesystem backup paths.
+
 ## DTO policy
 
 Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitives at the boundary. Time values remain ISO-8601 strings. The Dart wrapper may add convenience getters such as `AuthStatus.authenticated`, but it must not rename Rust DTO semantics such as `has_session` into a different facade meaning.
@@ -143,7 +182,18 @@ Before opening a newly resolved Direct conversation or a newly created/joined Gr
 await client.messages.ensureConversation(canonicalConversationId);
 ```
 
-The call is idempotent and fail-closed: Direct requires an owner-scoped peer-scope route, and Group requires active local membership. App-local rows may be used only as a temporary optimistic overlay while this call completes.
+The call is idempotent and fail-closed: Direct requires an owner-scoped
+peer-scope route bound to a verified `peerPersonaId`; Group requires an active
+local membership addressed by canonical Group DID. App-local rows may be used
+only as a temporary optimistic overlay while this call completes.
+
+Generated `DartConversation` and `DartConversationSnapshotItem` now expose a
+required `conversationId`, optional `peerPersonaId` / `canonicalGroupDid`, and a
+required `resolutionState`. A resolved Direct must have `peerPersonaId`; a
+resolved Group must have `canonicalGroupDid`. New App code must not fall back to
+`threadId` when any of these canonical facts is missing. `DartGroupMember`
+separates `membershipId`, `peerPersonaId`, and `credentialDid`; the credential
+DID is not the membership identity.
 
 Conversation list startup and realtime updates use snapshot / patch helpers under
 the same `client.messages` namespace:
@@ -173,7 +223,10 @@ discardable snapshot cache for the current owner; it does not clear SQLite local
 projection, runtime store, read state, or reliable checkpoint. `watchConversationPatches` streams versioned
 `ConversationStorePatch` values (`reset`, `upsert`, `remove`, `reorder`,
 `repairRequired`) emitted only after the underlying local projection commit
-succeeds. `repairConversationStore` returns a reset/repair patch after lag,
+succeeds. The conversation store is keyed only by canonical `conversationId`;
+`remove` and `reorder` carry that ID instead of thread kind/id or a legacy alias.
+Snapshot format v2 invalidates older discardable redb snapshots and rebuilds them
+from SQLite. `repairConversationStore` returns a reset/repair patch after lag,
 overflow, stream close, or version gaps. `watchConversationTimelinePatches` and
 `repairConversationTimelineStore` expose the same committed-projection rule for an
 opened conversation timeline keyed by `ConversationReadRef.conversationId`;
@@ -184,6 +237,13 @@ not the AWiki Me display-chain owner. A
 realtime incoming message becomes patch-visible only after `im-core` has
 committed its SQLite local projection; failed or skipped realtime projection
 does not emit an authoritative conversation/thread patch.
+
+Remote history, conversation catch-up, and realtime incoming messages share one
+Core canonical-ingress gate. A Direct wire DID must resolve to a verified
+Persona before the message row is committed. Until then Core stores the record
+in its durable resolution backlog and exposes neither a `dm:<DID>` conversation
+nor a timeline patch; verified Persona projection later replays it under the
+single canonical conversation ID.
 
 These APIs currently live under `client.messages` for SDK compatibility. If a
 future `client.conversations` namespace is added, it must wrap the same core

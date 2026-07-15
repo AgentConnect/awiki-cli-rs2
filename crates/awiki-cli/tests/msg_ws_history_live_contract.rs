@@ -94,8 +94,11 @@ fn msg_history_websocket_handle_resolution_uses_directory_then_im_core_http() {
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
             "did": alice_did,
+            "user_id": "user-alice",
             "handle": "alice.awiki.ai",
-            "full_handle": "alice.awiki.ai"
+            "full_handle": "alice.awiki.ai",
+            "domain": "awiki.ai",
+            "status": "active"
         }))),
         TestResponse::ok(&json_rpc_result(json!({
             "messages": [{

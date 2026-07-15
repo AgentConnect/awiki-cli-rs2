@@ -1,7 +1,7 @@
 # awiki-cli 本地状态升级系统设计
 
-**文档状态**：Draft v1.1
-**最后更新**：2026-05-31
+**文档状态**：Draft v1.2
+**最后更新**：2026-07-14
 **适用范围**：Rust `awiki-cli` 本地 config、identity store、SQLite、本地升级元数据，以及从 `awiki-agent-id-message` Python v1 布局导入 legacy 本地状态。
 
 ## 1. 目标
@@ -29,7 +29,7 @@
 crates/awiki-cli/src/workspace_upgrade/types.rs
 ```
 
-当前 local SQLite schema version 为 `21`，定义在：
+当前 canonical conversation target SQLite schema version 为 `28`，定义在：
 
 ```text
 crates/im-core/src/internal/local_state/schema.rs
@@ -44,6 +44,20 @@ crates/im-core/src/internal/local_state/schema.rs
 - `workspace schema 4`：SQLite 本地状态已收敛到 identity-owned schema 17，业务行使用 `owner_identity_id` 作为 owner partition key。DID recover/replace 只写 `identity_did_history` 并刷新 `owner_did` snapshot，不再做业务行 owner rebind。旧 SQLite schema 通过 backup 后 clean rebuild 进入干净 schema 17，不按 DID、credential、alias 或路径静默迁移业务所有权。
 
 SQLite schema 18 之后逐步增加 conversation summary projection、local-first history hot index、`sync_state`、`thread_read_state` 和当前 message display read/send projection contract。当前消息显示链路的 owner key 是 `owner_identity_id + conversation_id`；升级或 rebuild 不得把 owner DID、legacy direct alias 或 App display thread id 当成新的持久 correctness key。
+
+SQLite schema 28 增加 owner-scoped `peer_personas`、`peer_identifiers`、`peer_profiles`、append-only `conversation_aliases`，并将 conversation registry 的 `lifecycle_state` 与 `resolution_state` 分离。Handle Authority domain 由 Core 统一执行 IDNA/lowercase 归一化；缺少稳定 authority subject 或可用 binding status 时不得回退 DID 创建 Persona，DID 形式的 `peer_user_id` 也必须保持 canonical unresolved。Group fallback `membership_id` 不包含 Handle binding generation，DID rebind 不改变 membership identity。`messages` 新增 immutable `wire_thread_kind + wire_thread_ref + wire_identity_resolution_state`，`conversation_id` 只作为 mutable canonical projection；canonical merge 不得再改写 wire thread、DID/group snapshot 或 `server_seq`，相同 message ID 的 wire facts 冲突必须 fail closed。canonical Persona 暂未解析不会把已经能从 sender/receiver/group 原始事实恢复的 WireIdentity 降级为 unresolved。
+
+0710 migration 在创建 canonical Direct/Group registry row 后必须立即把对应 legacy registry row 标记为 `merged + resolved`，包括没有首条消息的空会话；不能依赖 message migration 顺带完成。已经离群或被移除的 Group 迁移为 `left + resolved` 且保持非 active，历史 alias 仍直接指向该 canonical row，不允许升级过程重新激活群会话。
+
+release/0710 的生产 SQLite schema 27 不允许在普通 `open_writable` 中原地自动 bump。schema 28 Core 在 migration runner 接管前返回 typed `local_state_upgrade_required`，避免在一致性 backup、shadow migration 和 validation gate 完成前修改 source DB。正式 27→28 runner 位于 `crates/im-core/src/internal/local_state/canonical_upgrade/`：只读 structural preflight 和 schema fingerprint 通过后获取跨进程文件锁，使用 SQLite Online Backup API（包含已提交 WAL）生成并复验 backup，再创建独立 shadow。部分 target schema、未知 source schema、source fingerprint 变化和 integrity check 失败均 fail closed，且不修改 source。
+
+当前只接受实际部署到 `awiki.info` 的 release/0710 daemon 0.1.76：source ref `d7c853a986a29e0c0457284a6b2c3d81ec637e10`、artifact SHA-256 `3134862f360acb73ca61867fe7d547f4ecd100369ba2bd4153d724251b45ce95`、schema fingerprint `sha256:0b8b6b902f8460ff1ea6c122d6b8b687722890136d9b7adb6e52d9d636ef6690`。脱敏 fixture 位于 `crates/im-core/tests/fixtures/release_0710/`，由 `scripts/generate_release_0710_fixture.py` 调用该发布二进制的 `init-state` 在隔离目录生成 schema 后，只写入确定性的 synthetic rows；未复制线上数据库、身份、消息、凭证或密钥。新增可支持的生产 fingerprint 必须逐个审计并显式加入白名单，不能放宽为任意 schema 27。
+
+canonical upgrade journal 只记录 upgrade ID、schema/fingerprint、相对 artifact 名和阶段，不记录 owner DID、消息内容、凭证或密钥。升级阶段固定为 `detected → preflight_passed → backup_verified → shadow_migrated → validation_passed → cutover_started → completed`；恢复阶段为 `restore_started → restored`。runner 在 shadow transaction 中先增加 target 物理字段，再从 0710 verified route 建 Persona/identifier/alias、按 Group DID 收敛群会话、回填 immutable WireIdentity、保留 unresolved 行、重建 summary 并迁移 read-state canonical reference。validation 对 message、outbox、read、contacts、Handle bindings、groups、members、group rebind/P6 jobs、DID history、relationship 和 sync facts 做逐行 hash/计数守恒，检查空会话、WireIdentity 完整性、SQLite integrity 和 canonical invariant doctor；全部通过后才设置 schema 28 并进入 cutover。
+
+cutover 先把完整 live SQLite file set 移到 owner-scope upgrade 目录的 rollback artifact，再把已验证 shadow 放到原路径。`cutover_started` 中断后，下一次 runner 会优先完成已验证 shadow，或在 shadow 不可用时恢复 rollback；backup 始终保留。相同 source/journal 可重复执行，schema 28 再次调用返回 NotRequired，不重复创建 alias、消息或 outbox。
+
+`restore_local_state_backup` / Dart `AwikiImCore.restoreLocalStateBackup` 是 Core 未打开时使用的完整降级入口。它只接受 journal 已完成 cutover 的已验证 backup，先把当前 schema 28 SQLite file set 保存为 private safety copy，再恢复并复验 schema 27；中断后可以按 journal 幂等续跑。旧 0710 二进制不得直接打开 schema 28，也不得按表回写或局部降级。
 
 ## 3. 工作区路径
 
@@ -281,4 +295,4 @@ awiki-cli id import-v1
 
 - listener runtime 私有状态纳入统一备份。
 - 更细粒度的 migration phase 持久化。
-- 显式 restore 命令与更完整的升级诊断输出。
+- 面向 CLI 用户的 restore 命令与更完整的升级诊断输出；底层 Core/Flutter restore API 已提供。

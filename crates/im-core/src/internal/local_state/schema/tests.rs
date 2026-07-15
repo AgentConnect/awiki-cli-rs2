@@ -1,5 +1,11 @@
 use super::*;
 
+fn upgrade_legacy_schema_for_test(connection: &Connection) -> crate::ImResult<()> {
+    let version = current_schema_version(connection)?;
+    create_schema(connection, version < CONVERSATION_SUMMARIES_SCHEMA_VERSION)?;
+    set_schema_version(connection, SCHEMA_VERSION)
+}
+
 #[test]
 fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     let db = Connection::open_in_memory().unwrap();
@@ -25,6 +31,10 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("table", "thread_read_state"),
         ("table", "message_identity_aliases"),
         ("table", "direct_peer_routes"),
+        ("table", "peer_personas"),
+        ("table", "peer_identifiers"),
+        ("table", "peer_profiles"),
+        ("table", "conversation_aliases"),
         ("table", "group_rebind_outbox"),
         ("table", "group_rebind_p6_jobs"),
         ("view", "threads"),
@@ -50,6 +60,11 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     assert_index_exists(&db, "idx_thread_read_state_owner_conversation");
     assert_index_exists(&db, "idx_message_identity_aliases_owner_canonical");
     assert_index_exists(&db, "idx_direct_peer_routes_owner_did");
+    assert_index_exists(&db, "idx_peer_identifiers_owner_persona");
+    assert_index_exists(&db, "idx_conversation_aliases_owner_target");
+    assert_index_exists(&db, "idx_conversation_registry_active_direct_persona");
+    assert_index_exists(&db, "idx_conversation_registry_active_group_did");
+    assert_index_exists(&db, "idx_group_members_owner_membership");
     assert_index_exists(&db, "idx_group_rebind_outbox_resume");
     assert_index_exists(&db, "idx_group_rebind_p6_resume");
     for table in [
@@ -76,6 +91,31 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         assert_column_exists(&db, table, "owner_identity_id");
     }
     assert_column_exists(&db, "direct_e2ee_sessions", "revision");
+    for column in [
+        "peer_persona_id",
+        "canonical_group_did",
+        "lifecycle_state",
+        "resolution_state",
+        "merged_into_conversation_id",
+    ] {
+        assert_column_exists(&db, "conversation_registry", column);
+    }
+    for column in [
+        "membership_id",
+        "peer_persona_id",
+        "member_credential_did",
+        "membership_epoch",
+    ] {
+        assert_column_exists(&db, "group_members", column);
+    }
+    for column in [
+        "wire_thread_kind",
+        "wire_thread_ref",
+        "wire_identity_resolution_state",
+    ] {
+        assert_column_exists(&db, "messages", column);
+    }
+    assert_column_exists(&db, "contacts", "peer_persona_id");
     for (table, key_columns) in [
         ("contacts", vec!["owner_identity_id", "did"]),
         (
@@ -131,7 +171,7 @@ fn local_state_schema_sync_state_is_created_during_v17_upgrade() {
     db.pragma_update(None, "user_version", IDENTITY_OWNED_SCHEMA_VERSION)
         .unwrap();
 
-    ensure_schema(&db).unwrap();
+    upgrade_legacy_schema_for_test(&db).unwrap();
 
     assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
     assert_schema_object_exists(&db, "table", "sync_state");
@@ -157,16 +197,16 @@ fn local_state_schema_backfills_existing_group_members_as_did_only() {
     db.execute(
         r#"
 INSERT INTO group_members
-    (owner_identity_id, owner_did, group_id, user_id, member_did, member_handle,
+    (owner_identity_id, owner_did, group_id, user_id, membership_id, member_did, member_handle,
      last_synced_at, credential_name)
-VALUES ('owner-id', 'did:owner', 'did:group', 'legacy-id', 'did:member',
+VALUES ('owner-id', 'did:owner', 'did:group', 'legacy-id', '', 'did:member',
         'member.example.com', '2026-07-12T00:00:00Z', 'owner')"#,
         [],
     )
     .unwrap();
     db.pragma_update(None, "user_version", 22).unwrap();
 
-    ensure_schema(&db).unwrap();
+    upgrade_legacy_schema_for_test(&db).unwrap();
 
     let identity = db
         .query_row(
@@ -209,7 +249,7 @@ VALUES ('owner-id', 'dm:alice.example.com', 'peer-id', 'alice.example.com',
     .unwrap();
     db.pragma_update(None, "user_version", 23).unwrap();
 
-    ensure_schema(&db).unwrap();
+    upgrade_legacy_schema_for_test(&db).unwrap();
 
     assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
     assert_schema_object_exists(&db, "table", "group_rebind_outbox");
@@ -256,7 +296,7 @@ VALUES ('job-1', 'owner-id', 'did:example:group', 'alice.example.com',
     .unwrap();
     db.pragma_update(None, "user_version", 24).unwrap();
 
-    ensure_schema(&db).unwrap();
+    upgrade_legacy_schema_for_test(&db).unwrap();
 
     assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
     assert_schema_object_exists(&db, "table", "direct_peer_routes");
@@ -302,7 +342,7 @@ VALUES
     db.pragma_update(None, "user_version", IDENTITY_OWNED_SCHEMA_VERSION)
         .unwrap();
 
-    ensure_schema(&db).unwrap();
+    upgrade_legacy_schema_for_test(&db).unwrap();
 
     assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
     assert_schema_object_exists(&db, "table", "conversation_summaries");
@@ -329,7 +369,7 @@ WHERE owner_identity_id = 'alice-id' AND conversation_id = 'dm:did:bob'"#,
 #[test]
 fn local_state_schema_v27_rebuilds_control_only_summaries_without_losing_registry() {
     let db = Connection::open_in_memory().unwrap();
-    ensure_schema(&db).unwrap();
+    upgrade_legacy_schema_for_test(&db).unwrap();
     db.execute_batch(
         r#"
 INSERT INTO messages
@@ -362,7 +402,7 @@ VALUES
     .unwrap();
     db.pragma_update(None, "user_version", 26).unwrap();
 
-    ensure_schema(&db).unwrap();
+    upgrade_legacy_schema_for_test(&db).unwrap();
 
     let summary_count: i64 = db
         .query_row(
@@ -407,7 +447,7 @@ VALUES
     db.pragma_update(None, "user_version", IDENTITY_OWNED_SCHEMA_VERSION)
         .unwrap();
 
-    ensure_schema(&db).unwrap();
+    upgrade_legacy_schema_for_test(&db).unwrap();
 
     let classification =
         crate::internal::local_state::messages::classify_mark_read_ids_for_owner_identity(
@@ -456,6 +496,9 @@ fn local_state_schema_v17_creates_identity_owned_primary_keys_without_bumping_ac
         assert_primary_key_columns(&db, table, &key_columns);
     }
     assert_column_exists(&db, "messages", "conversation_id");
+    assert_column_exists(&db, "messages", "wire_thread_kind");
+    assert_column_exists(&db, "messages", "wire_thread_ref");
+    assert_column_exists(&db, "messages", "wire_identity_resolution_state");
     assert_index_exists(&db, "idx_identity_did_history_current");
     assert_index_exists(&db, "idx_identity_did_history_live_did_unique");
 }
@@ -653,8 +696,10 @@ CREATE TABLE direct_e2ee_sessions (
 
     assert!(matches!(
         ensure_schema(&db),
-        Err(crate::ImError::LocalStateUnavailable { detail })
-            if detail.contains("requires owner-identity migration")
+        Err(crate::ImError::LocalStateUpgradeRequired {
+            from_version: 15,
+            target_version: SCHEMA_VERSION,
+        })
     ));
 }
 
@@ -664,8 +709,10 @@ fn local_state_schema_rejects_unsupported_versions() {
     old.pragma_update(None, "user_version", 5).unwrap();
     assert!(matches!(
         ensure_schema(&old),
-        Err(crate::ImError::LocalStateUnavailable { detail })
-            if detail.contains("requires owner-identity migration")
+        Err(crate::ImError::LocalStateUpgradeRequired {
+            from_version: 5,
+            target_version: SCHEMA_VERSION,
+        })
     ));
 
     let future = Connection::open_in_memory().unwrap();
@@ -702,8 +749,10 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
 
     assert!(matches!(
         ensure_schema(&db),
-        Err(crate::ImError::LocalStateUnavailable { detail })
-            if detail.contains("requires owner-identity migration")
+        Err(crate::ImError::LocalStateUpgradeRequired {
+            from_version: 6,
+            target_version: SCHEMA_VERSION,
+        })
     ));
 }
 

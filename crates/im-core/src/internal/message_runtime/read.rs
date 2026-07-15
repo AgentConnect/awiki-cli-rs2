@@ -592,9 +592,12 @@ pub(crate) fn persist_projection_best_effort(
     if messages.is_empty() {
         return;
     }
-    if crate::internal::message_runtime::local_projection::persist_messages(client, messages)
-        .is_ok()
-    {
+    if matches!(
+        crate::internal::message_runtime::local_projection::persist_remote_messages(
+            client, messages,
+        ),
+        Ok(outcome) if outcome.stored_messages > 0
+    ) {
         client.emit_committed_local_message_projection("remote_history");
     }
 }
@@ -606,10 +609,13 @@ pub(crate) async fn persist_projection_best_effort_async(
     if messages.is_empty() {
         return;
     }
-    if crate::internal::message_runtime::local_projection::persist_messages_async(client, messages)
-        .await
-        .is_ok()
-    {
+    if matches!(
+        crate::internal::message_runtime::local_projection::persist_remote_messages_async(
+            client, messages,
+        )
+        .await,
+        Ok(outcome) if outcome.stored_messages > 0
+    ) {
         client.emit_committed_local_message_projection("remote_history");
     }
 }
@@ -861,6 +867,9 @@ fn message_from_local_state_value(
         owner_identity_id: string_value(row.get("owner_identity_id")),
         owner_did: string_value(row.get("owner_did")),
         conversation_id: string_value(row.get("conversation_id")),
+        wire_thread_kind: string_value(row.get("wire_thread_kind")),
+        wire_thread_ref: string_value(row.get("wire_thread_ref")),
+        wire_identity_resolution_state: string_value(row.get("wire_identity_resolution_state")),
         thread_id: string_value(row.get("thread_id")),
         direction: row
             .get("direction")

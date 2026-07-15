@@ -2,11 +2,14 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use awiki_im_core::prelude::*;
 use serde_json::{json, Value};
+
+static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(not(feature = "blocking"))]
 #[test]
@@ -619,8 +622,9 @@ fn unique_temp_root() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    let counter = TEMP_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "im-core-phase2-relationship-{}-{nanos}",
+        "im-core-phase2-relationship-{}-{nanos}-{counter}",
         std::process::id()
     ))
 }

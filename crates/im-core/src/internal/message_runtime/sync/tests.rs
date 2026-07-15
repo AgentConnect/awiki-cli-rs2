@@ -13,6 +13,7 @@ use std::rc::Rc;
 #[tokio::test]
 async fn sync_delta_reads_checkpoint_calls_wire_and_advances_checkpoint() {
     let fixture = Fixture::new("sync-delta-basic");
+    fixture.seed_verified_peer();
     let client = fixture.client();
     fixture.store_checkpoint("4");
     let calls = Rc::new(RefCell::new(Vec::new()));
@@ -56,8 +57,43 @@ async fn sync_delta_reads_checkpoint_calls_wire_and_advances_checkpoint() {
 }
 
 #[tokio::test]
+async fn sync_delta_backlogs_unresolved_direct_before_advancing_checkpoint() {
+    let fixture = Fixture::new("sync-delta-unresolved-backlog");
+    let client = fixture.client();
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![delta_page(
+                vec![message_created_event("sev-1", "1", "msg-unresolved", 1)],
+                "1",
+                false,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(fixture.checkpoint(), Some("1".to_owned()));
+    assert_eq!(fixture.message_count("msg-unresolved"), 0);
+    assert_eq!(fixture.unresolved_backlog_count(), 1);
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning == "identity_unresolved_backlog:1"));
+}
+
+#[tokio::test]
 async fn sync_delta_success_emits_committed_invalidation_after_apply() {
     let fixture = Fixture::new("sync-delta-invalidation");
+    let conversation_id = fixture.seed_verified_peer();
     let client = fixture.client();
     fixture.store_checkpoint("776");
     let runtime = MessageSyncRuntime::new(
@@ -96,19 +132,14 @@ async fn sync_delta_success_emits_committed_invalidation_after_apply() {
     assert_eq!(invalidation.owner_identity_id, "alice-id");
     assert_eq!(invalidation.owner_did, "did:example:alice");
     assert_eq!(invalidation.reason, "sync_delta");
-    assert_eq!(
-        invalidation.conversation_ids,
-        vec!["dm:did:example:bob".to_owned()]
-    );
-    assert_eq!(
-        invalidation.thread_ids,
-        vec!["dm:did:example:bob".to_owned()]
-    );
+    assert_eq!(invalidation.conversation_ids, vec![conversation_id.clone()]);
+    assert_eq!(invalidation.thread_ids, vec![conversation_id]);
 }
 
 #[tokio::test]
 async fn sync_delta_success_emits_conversation_store_patch_after_commit() {
     let fixture = Fixture::new("sync-delta-store-patch");
+    fixture.seed_verified_peer();
     let client = fixture.client();
     fixture.store_checkpoint("776");
     let mut patches = client.messages().watch_conversation_patches().unwrap();
@@ -250,6 +281,7 @@ async fn sync_delta_group_member_changed_projects_system_timeline_message() {
 #[tokio::test]
 async fn sync_delta_has_more_reads_committed_checkpoint_for_next_page() {
     let fixture = Fixture::new("sync-delta-has-more");
+    fixture.seed_verified_peer();
     let client = fixture.client();
     let calls = Rc::new(RefCell::new(Vec::new()));
     let runtime = MessageSyncRuntime::new(
@@ -413,6 +445,7 @@ async fn sync_delta_duplicate_page_is_idempotent() {
 #[tokio::test]
 async fn sync_delta_metadata_only_event_preserves_existing_message_body() {
     let fixture = Fixture::new("sync-delta-metadata-only");
+    let conversation_id = fixture.seed_verified_peer();
     let client = fixture.client();
     fixture.seed_message(
         "msg-delta-body",
@@ -432,7 +465,7 @@ async fn sync_delta_metadata_only_event_preserves_existing_message_body() {
                     "sev-1",
                     "1",
                     "msg-delta-body",
-                    11,
+                    10,
                 )],
                 "1",
                 false,
@@ -456,7 +489,7 @@ async fn sync_delta_metadata_only_event_preserves_existing_message_body() {
     );
     assert_eq!(
         fixture
-            .conversation_last_content("dm:did:example:bob")
+            .conversation_last_content(&conversation_id)
             .as_deref(),
         Some("local")
     );
@@ -944,6 +977,26 @@ impl Fixture {
         self.root.join("local").join("im.sqlite")
     }
 
+    fn seed_verified_peer(&self) -> String {
+        let mut db = crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
+        crate::internal::local_state::peer_personas::project_verified_handle(
+            &mut db,
+            "alice-id",
+            "did:example:alice",
+            &crate::directory::HandleLookupResult {
+                handle: crate::ids::Handle::parse("bob.awiki.test", "").unwrap(),
+                did: crate::ids::Did::parse("did:example:bob").unwrap(),
+                user_id: "user-bob".to_owned(),
+                domain: Some("awiki.test".to_owned()),
+                status: Some("active".to_owned()),
+                binding_generation: Some("1".to_owned()),
+                profile: None,
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap()
+    }
+
     fn seed_message(
         &self,
         msg_id: &str,
@@ -1062,6 +1115,12 @@ impl Fixture {
             |row| row.get::<_, i64>(0),
         )
         .unwrap()
+    }
+
+    fn unresolved_backlog_count(&self) -> u64 {
+        let db = crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
+        crate::internal::local_state::inbound_resolution_backlog::pending_count(&db, "alice-id")
+            .unwrap()
     }
 }
 

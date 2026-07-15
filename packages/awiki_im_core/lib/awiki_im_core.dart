@@ -10,6 +10,7 @@ export 'src/models/email.dart';
 export 'src/models/error.dart';
 export 'src/models/group.dart';
 export 'src/models/identity.dart';
+export 'src/models/local_state_upgrade.dart';
 export 'src/models/message.dart';
 export 'src/models/message_mention.dart';
 export 'src/models/message_payload.dart';

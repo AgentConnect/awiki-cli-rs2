@@ -94,6 +94,65 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: local state unavailable: {detail}"),
             "Check the workspace database path and permissions.",
         ),
+        im_core::ImError::LocalStateUpgradeRequired {
+            from_version,
+            target_version,
+        } => ExitError::new(
+            "local_state_upgrade_required",
+            5,
+            format!(
+                "{context}: local state upgrade required: schema {from_version} -> {target_version}."
+            ),
+            "Run the matching AWiki upgrade flow before retrying; do not open this state with an older binary.",
+        ),
+        im_core::ImError::LocalStateUpgradeInProgress => ExitError::new(
+            "local_state_upgrade_in_progress",
+            5,
+            format!("{context}: local state upgrade is already in progress."),
+            "Wait for the current upgrade process to finish, then retry.",
+        ),
+        im_core::ImError::LocalStateUpgradeFailed { phase, code } => ExitError::new(
+            "local_state_upgrade_failed",
+            5,
+            format!("{context}: local state upgrade failed during {phase}: {code}."),
+            "Keep the verified backup and retry with the matching AWiki recovery flow.",
+        ),
+        im_core::ImError::IdentityUnresolved { .. } => ExitError::new(
+            "identity_unresolved",
+            5,
+            format!("{context}: identity could not be resolved to a canonical Persona."),
+            "Refresh the authoritative Handle binding and retry.",
+        ),
+        im_core::ImError::IdentityBindingConflict { .. } => ExitError::new(
+            "identity_binding_conflict",
+            5,
+            format!("{context}: authoritative identity bindings conflict."),
+            "Resolve the Handle binding conflict before retrying.",
+        ),
+        im_core::ImError::ConversationAliasConflict { .. } => ExitError::new(
+            "conversation_alias_conflict",
+            5,
+            format!("{context}: conversation alias has conflicting canonical targets."),
+            "Run the canonical conversation diagnostics before retrying.",
+        ),
+        im_core::ImError::MessageWireIdentityConflict { .. } => ExitError::new(
+            "message_wire_identity_conflict",
+            5,
+            format!("{context}: message wire identity conflicts with persisted state."),
+            "Stop processing this state and run the canonical conversation diagnostics.",
+        ),
+        im_core::ImError::CanonicalGroupIdentityMissing { .. } => ExitError::new(
+            "canonical_group_identity_missing",
+            5,
+            format!("{context}: canonical group identity is unavailable."),
+            "Refresh the authoritative Group state before retrying.",
+        ),
+        im_core::ImError::LocalProjectionUnavailable { .. } => ExitError::new(
+            "local_projection_unavailable",
+            5,
+            format!("{context}: canonical local projection is unavailable."),
+            "Repair the local projection from authoritative Core state and retry.",
+        ),
         im_core::ImError::PathUnavailable { path_kind, detail } => ExitError::new(
             "path_unavailable",
             5,
