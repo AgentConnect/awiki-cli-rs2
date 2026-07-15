@@ -25,6 +25,16 @@ test('server and release configuration schemas are strict', () => {
     fs.appendFileSync(server, 'unknown = "value"\n');
     assert.throws(() => readServerConfig(server), /unknown publish-server keys/);
 
+    const invalidGateway = path.join(root, 'invalid-gateway.toml');
+    fs.writeFileSync(
+      invalidGateway,
+      fs.readFileSync(example, 'utf8').replace(
+        'protocol_gateway_origin = "http://127.0.0.1:9896"',
+        'protocol_gateway_origin = "http://user@127.0.0.1:9896/path"',
+      ),
+    );
+    assert.throws(() => readServerConfig(invalidGateway), /protocol_gateway_origin/);
+
     const release = path.resolve(__dirname, 'release-config.json');
     const parsed = readReleaseConfig(release);
     assert.equal(parsed.channels.beta.version, '1.0.20-beta.1');

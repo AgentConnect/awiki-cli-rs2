@@ -8,7 +8,7 @@
 - `publish-server.example.toml`：服务器配置模板。
 - `publish-server.toml`：服务器真实配置，必须位于同目录、权限为 `0600`，且被 Git 忽略。
 
-编译产物与站点无关。域名、默认 tenant endpoint、公开路径、归档路径、Nginx 路径、gateway 路径和 GitHub token 只能来自 `publish-server.toml`。
+编译产物与站点无关。域名、默认 tenant endpoint、公开路径、归档路径、Nginx 路径、gateway checkout、gateway 内网 origin 和 GitHub token 只能来自 `publish-server.toml`。
 
 Linux AMD64 使用静态 musl 目标构建，并在归档前拒绝包含 GLIBC 版本符号的二进制，避免产物依赖 GitHub runner 的 glibc 版本。
 
@@ -39,6 +39,6 @@ node scripts/release/cli/render-nginx-snippet.js \
 
 ## 公开接口
 
-每个 channel 暴露 `manifest.json`、`awiki-cli.tgz`、`artifacts/`、`awiki-cli-skill.tar.gz` 和 `.well-known/agent-skills/index.json`。服务器只公开当前 channel 指针，历史版本保存在 `archive_root`。
+`/cli/onboarding.md` 和 `/cli/skill.md` 由生成的 Nginx snippet 代理到 protocol-gateway。每个 channel 暴露 `manifest.json`、`awiki-cli.tgz`、`artifacts/`、`awiki-cli-skill.tar.gz` 和 `.well-known/agent-skills/index.json`。服务器只公开当前 channel 指针，历史版本保存在 `archive_root`。
 
 Onboarding 只跟随 stable。protocol-gateway 应读取 `archive_root/channels/stable-onboarding.md`，而不是读取服务器上的活动 Git checkout。

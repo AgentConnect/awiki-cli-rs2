@@ -26,6 +26,7 @@ function writeServerConfig(filePath, root) {
     nginx_config: `${root}/nginx.conf`,
     nginx_snippet: `${root}/nginx-snippet.conf`,
     protocol_gateway_checkout: `${root}/gateway`,
+    protocol_gateway_origin: 'http://127.0.0.1:9896',
     protocol_gateway_service: 'protocol-gateway',
     github_repo: 'AgentConnect/awiki-cli-rs2',
     github_workflow: 'build-cli-release.yml',
