@@ -27,18 +27,14 @@ fn windows_listener_service_contract_matches_go_kardianos_config_intent() {
     );
     assert_eq!(
         contract.arguments,
-        vec![
-            "runtime".to_string(),
-            "listener".to_string(),
-            "service-run".to_string()
-        ]
+        listener_service::service_arguments_for(&resolved)
     );
     assert_eq!(
-        listener_windows_service::service_arguments(),
+        listener_windows_service::service_arguments(&resolved),
         contract.arguments
     );
     assert_eq!(contract.working_directory, "");
-    assert!(contract.dry_contract_only);
+    assert!(contract.managed_by_scm);
 
     let mut expected_env = BTreeMap::new();
     expected_env.insert(
@@ -77,11 +73,7 @@ fn windows_listener_service_config_plan_preserves_existing_listener_names_and_op
     assert_eq!(plan.working_directory, "");
     assert_eq!(
         plan.arguments,
-        vec![
-            "runtime".to_string(),
-            "listener".to_string(),
-            "service-run".to_string()
-        ]
+        listener_service::service_arguments_for(&resolved)
     );
 
     let mut expected_options = BTreeMap::new();
@@ -113,6 +105,33 @@ fn windows_listener_service_config_plan_preserves_existing_listener_names_and_op
         )),
     );
     assert_eq!(plan.options, expected_options);
+}
+
+#[test]
+fn windows_listener_service_binds_launch_and_pipe_access_to_installing_user() {
+    let resolved = test_resolved();
+    let user_sid = "S-1-5-21-1000-2000-3000-1001";
+    let arguments = listener_windows_service::service_launch_arguments(&resolved, user_sid)
+        .expect("service launch arguments");
+
+    assert!(arguments
+        .windows(2)
+        .any(|pair| { pair == [listener_service::INTERNAL_SERVICE_USER_SID_FLAG, user_sid,] }));
+    assert!(arguments.ends_with(&[
+        "runtime".to_string(),
+        "listener".to_string(),
+        "service-run".to_string(),
+    ]));
+    assert_eq!(
+        listener_windows_service::pipe_security_sddl(user_sid).expect("pipe security descriptor"),
+        format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;{user_sid})")
+    );
+
+    for invalid in ["", "S-1-", "S-1--5", "s-1-5-21", "S-1-5-user"] {
+        assert!(!listener_windows_service::valid_user_sid(invalid));
+        assert!(listener_windows_service::service_launch_arguments(&resolved, invalid).is_err());
+        assert!(listener_windows_service::pipe_security_sddl(invalid).is_err());
+    }
 }
 
 #[test]

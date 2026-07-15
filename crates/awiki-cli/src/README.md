@@ -158,11 +158,12 @@
 | `host_runtime/listener_im_event_adapter.rs` | `im-core` realtime events 到 host notify / local notification / 状态更新的适配。 |
 | `host_runtime/listener_json_helpers.rs` | listener JSON map / serialization helper。 |
 | `host_runtime/listener_known_sessions.rs` | 已知 session 加载、启动等待、错误记录。 |
-| `host_runtime/listener_launchd.rs` | macOS launchd service plist / status helper。 |
+| `host_runtime/listener_launchd.rs` | macOS LaunchAgent 安装、启停、重启、卸载和真实状态查询。 |
 | `host_runtime/listener_local_notification_flush.rs` | 本地通知队列 flush 到当前身份/session。 |
 | `host_runtime/listener_local_notifications.rs` | 本地通知队列文件读写。 |
 | `host_runtime/listener_notification_consume.rs` | realtime notification channel 消费循环和 ping / 取消逻辑。 |
-| `host_runtime/listener_service.rs` | listener 后台服务 install / start / stop / status / restart 跨平台计划。 |
+| `host_runtime/listener_service.rs` | listener 服务的共享命名、启动参数、boot ID、就绪等待和运行产物管理。 |
+| `host_runtime/listener_service_manager.rs` | 按目标平台分发 listener 服务生命周期操作。 |
 | `host_runtime/listener_service_did.rs` | 从 listener/session 查询 message service DID。 |
 | `host_runtime/listener_session_bootstrap.rs` | session bootstrap：选择身份、创建 session、等待 ready。 |
 | `host_runtime/listener_session_lookup.rs` | 根据 DID / identity 查找 active session / record。 |
@@ -172,8 +173,8 @@
 | `host_runtime/listener_supervisor_init.rs` | supervisor 初始化计划：打开 store、schema、host notify、remote client。 |
 | `host_runtime/listener_supervisor_run.rs` | supervisor 主运行循环和断连/错误记录。 |
 | `host_runtime/listener_supervisor_shutdown.rs` | supervisor shutdown 顺序：session、listener、notify sink、database。 |
-| `host_runtime/listener_systemd.rs` | Linux systemd unit / status helper。 |
-| `host_runtime/listener_windows_service.rs` | Windows service 配置/status helper。 |
+| `host_runtime/listener_systemd.rs` | Linux user-systemd unit 安装、启停、重启、卸载和真实状态查询。 |
+| `host_runtime/listener_windows_service.rs` | Windows SCM 服务安装、恢复策略、生命周期、用户 IPC 权限和真实状态查询。 |
 | `host_runtime/openclaw_host_notify.rs` | OpenClaw host notify sink，route delivery 和请求构造。 |
 | `host_runtime/openclaw_routes.rs` | OpenClaw route registry / config 解析、增删、probe。 |
 | `host_runtime/openclaw_webhook.rs` | OpenClaw webhook URL / request / confirmation helper。 |

@@ -64,6 +64,9 @@ pub struct GlobalOptions {
     pub tenant: String,
     pub tenant_changed: bool,
     pub verbose: bool,
+    pub internal_service: bool,
+    pub internal_workspace_home: String,
+    pub internal_service_user_sid: String,
 }
 
 impl Default for GlobalOptions {
@@ -80,6 +83,9 @@ impl Default for GlobalOptions {
             tenant: String::new(),
             tenant_changed: false,
             verbose: false,
+            internal_service: false,
+            internal_workspace_home: String::new(),
+            internal_service_user_sid: String::new(),
         }
     }
 }
@@ -110,6 +116,22 @@ pub async fn execute_async() -> i32 {
         Ok(command) => command,
         Err(err) => return App::default().handle_error(err),
     };
+    if command.globals.internal_service
+        && !command.globals.internal_workspace_home.trim().is_empty()
+    {
+        std::env::set_var(
+            "AWIKI_CLI_WORKSPACE_HOME_DIR",
+            command.globals.internal_workspace_home.trim(),
+        );
+        std::env::set_var("AWIKI_CLI_INTERNAL_ENTRY", "1");
+        std::env::set_var("AWIKI_LISTENER_SERVICE_MODE", "1");
+        if !command.globals.internal_service_user_sid.trim().is_empty() {
+            std::env::set_var(
+                crate::host_runtime::listener_service::INTERNAL_SERVICE_USER_SID_ENV,
+                command.globals.internal_service_user_sid.trim(),
+            );
+        }
+    }
     let trace_run = cli_trace::Run::new(&command.trace_command());
     cli_trace::set_current(Some(trace_run));
     let mut app = App {

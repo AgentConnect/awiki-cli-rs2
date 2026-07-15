@@ -44,7 +44,7 @@ function releaseEnvironment() {
   }
 }
 
-function serviceManagerEnvironment(
+function hermesServiceEnvironment(
   platform = process.platform,
   environment = process.env,
 ) {
@@ -52,12 +52,7 @@ function serviceManagerEnvironment(
     return {};
   }
 
-  // The Rust binary keeps real user-systemd writes opt-in so isolated tests can
-  // exercise runtime policy without touching the host. The npm entrypoint is
-  // the production boundary, so Linux installs enable those backends by default.
   return {
-    AWIKI_CLI_ENABLE_SYSTEMD_LISTENER_SERVICE:
-      environment.AWIKI_CLI_ENABLE_SYSTEMD_LISTENER_SERVICE || '1',
     AWIKI_CLI_ENABLE_SYSTEMD_HERMES_BRIDGE_SERVICE:
       environment.AWIKI_CLI_ENABLE_SYSTEMD_HERMES_BRIDGE_SERVICE || '1',
   };
@@ -83,7 +78,7 @@ function run() {
     env: {
       ...process.env,
       ...releaseEnvironment(),
-      ...serviceManagerEnvironment(),
+      ...hermesServiceEnvironment(),
     },
   });
 
@@ -106,6 +101,6 @@ module.exports = {
     findBinary,
     fileExists,
     releaseEnvironment,
-    serviceManagerEnvironment,
+    hermesServiceEnvironment,
   },
 };

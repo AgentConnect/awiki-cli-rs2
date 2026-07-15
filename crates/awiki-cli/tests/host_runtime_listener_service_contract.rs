@@ -45,7 +45,15 @@ fn listener_service_names_match_go_contract() {
 
 #[test]
 fn listener_service_config_plan_matches_go_new_service_config_shape() {
-    let resolved = test_resolved();
+    let mut resolved = test_resolved();
+    resolved.sources.insert(
+        "active_tenant".to_string(),
+        ValueSource {
+            source: "flag".to_string(),
+            key: "--tenant".to_string(),
+            value: "tenant-a".to_string(),
+        },
+    );
     let plan = listener_service::service_config_plan_for(&resolved, false);
 
     assert_eq!(plan.name, listener_service::service_name_for(&resolved));
@@ -56,12 +64,20 @@ fn listener_service_config_plan_matches_go_new_service_config_shape() {
     assert_eq!(plan.description, "awiki-cli realtime websocket listener");
     assert_eq!(
         plan.arguments,
-        vec![
-            "runtime".to_string(),
-            "listener".to_string(),
-            "service-run".to_string()
-        ]
+        listener_service::service_arguments_for(&resolved)
     );
+    assert_eq!(plan.arguments[0], "--internal-service");
+    assert_eq!(plan.arguments[1], "--internal-workspace-home");
+    assert_eq!(plan.arguments[2], product_home_dir(&resolved));
+    assert!(plan
+        .arguments
+        .windows(2)
+        .any(|values| values == ["--tenant", "tenant-a"]));
+    assert!(plan.arguments.ends_with(&[
+        "runtime".to_string(),
+        "listener".to_string(),
+        "service-run".to_string(),
+    ]));
     assert_eq!(plan.working_directory, resolved.paths.workspace_home_dir);
 
     let mut expected_options = BTreeMap::new();
@@ -429,6 +445,41 @@ fn wait_for_service_status_with_waits_for_expected_boot_id_like_go() {
 
     assert_eq!(status.boot_id, "boot-new");
     assert!(call_count >= 2);
+}
+
+#[test]
+fn listener_service_timeout_is_an_error_and_old_boot_cannot_clean_new_runtime() {
+    let error = listener_service::wait_for_service_status_with(
+        || {
+            Ok(Status {
+                installed: true,
+                running: true,
+                bridge_available: false,
+                boot_id: "boot-old".to_string(),
+                ..Status::default()
+            })
+        },
+        true,
+        true,
+        "boot-new",
+        Duration::from_millis(2),
+        Duration::from_millis(1),
+    )
+    .expect_err("a listener that never becomes ready must fail");
+    assert!(error.to_string().contains("did not become running"));
+
+    assert!(listener_service::runtime_artifacts_belong_to_boot_id(
+        Some("boot-current"),
+        "boot-current"
+    ));
+    assert!(!listener_service::runtime_artifacts_belong_to_boot_id(
+        Some("boot-new"),
+        "boot-old"
+    ));
+    assert!(listener_service::runtime_artifacts_belong_to_boot_id(
+        None,
+        "boot-foreground"
+    ));
 }
 
 #[test]

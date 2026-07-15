@@ -501,11 +501,23 @@ impl App {
 
     pub fn run_runtime_listener_service_run(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
+        #[cfg(windows)]
+        {
+            return host_runtime::listener_windows_service::run_dispatcher(resolved)
+                .map_err(internal_anyhow);
+        }
+        #[cfg(not(windows))]
         host_runtime::listener_supervisor_run::run_service(resolved).map_err(internal_anyhow)
     }
 
     pub async fn run_runtime_listener_service_run_async(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
+        #[cfg(windows)]
+        {
+            return host_runtime::listener_windows_service::run_dispatcher(resolved)
+                .map_err(internal_anyhow);
+        }
+        #[cfg(not(windows))]
         host_runtime::listener_supervisor_run::run_service_async(resolved)
             .await
             .map_err(internal_anyhow)

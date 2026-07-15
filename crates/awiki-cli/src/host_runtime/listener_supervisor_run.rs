@@ -19,7 +19,6 @@ use crate::m_core_cli_adapter::realtime::{
     self as im_core_realtime_adapter, ListenerRunHostKind, ListenerRunnerMode,
 };
 use crate::workspace_config::Resolved;
-use rand::RngCore;
 use serde_json::{Map, Value};
 use std::fs;
 use std::sync::{
@@ -28,7 +27,6 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
-use time::OffsetDateTime;
 
 pub fn run_foreground(resolved: Resolved) -> anyhow::Result<()> {
     run_listener(resolved, ListenerRunHostKind::Foreground)
@@ -79,7 +77,7 @@ impl ListenerSupervisor {
         host: ListenerRunHostKind,
     ) -> anyhow::Result<Self> {
         let runtime_paths = listener::paths(&resolved)?;
-        let boot_id = resolve_runtime_boot_id(&resolved)?;
+        let boot_id = super::listener_service::resolve_runtime_boot_id(&resolved)?;
         let (host_notify, host_notify_status) = new_host_notify_sink(&resolved)?;
         let status = Status {
             mode: host_runtime::resolve(&resolved).mode,
@@ -92,8 +90,8 @@ impl ListenerSupervisor {
             status_file: runtime_paths.status_file,
             socket_path: runtime_paths.socket_path,
             service_name: super::listener_service::service_name_for(&resolved),
-            service_platform: if running_in_listener_service_mode() && cfg!(target_os = "linux") {
-                "linux-systemd".to_string()
+            service_platform: if running_in_listener_service_mode() {
+                super::listener_service_manager::service_platform().to_string()
             } else {
                 "rust-local".to_string()
             },
@@ -243,7 +241,8 @@ impl ListenerSupervisor {
     }
 
     fn cleanup_runtime_artifacts(&self) {
-        cleanup_runtime_artifacts(&self.resolved);
+        let status = self.lock_status();
+        cleanup_runtime_artifacts(&self.resolved, &status.boot_id);
     }
 
     fn lock_status(&self) -> std::sync::MutexGuard<'_, Status> {
@@ -526,42 +525,20 @@ fn upsert_session(status: &mut Status, session: SessionStatus) {
         .sort_by(|left, right| left.identity_name.cmp(&right.identity_name));
 }
 
-fn resolve_runtime_boot_id(resolved: &Resolved) -> anyhow::Result<String> {
-    let path = listener::boot_id_path(resolved)?;
-    match listener::read_expected_boot_id(&path) {
-        Ok(boot_id) if !boot_id.trim().is_empty() => Ok(boot_id.trim().to_string()),
-        Ok(_) => Ok(generate_boot_id()),
-        Err(err) if is_not_found(&err) => Ok(generate_boot_id()),
-        Err(err) => Err(anyhow::anyhow!("read expected listener boot id: {err}")),
+fn cleanup_runtime_artifacts(resolved: &Resolved, boot_id: &str) {
+    if let Ok(path) = listener::boot_id_path(resolved) {
+        let expected_boot_id = listener::read_expected_boot_id(&path).ok();
+        if !super::listener_service::runtime_artifacts_belong_to_boot_id(
+            expected_boot_id.as_deref(),
+            boot_id,
+        ) {
+            return;
+        }
     }
-}
-
-fn generate_boot_id() -> String {
-    let mut suffix = [0_u8; 4];
-    rand::thread_rng().fill_bytes(&mut suffix);
-    format!(
-        "boot-{}-{}",
-        now_unix_nanos(),
-        suffix
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    )
-}
-
-fn now_unix_nanos() -> i128 {
-    let now = OffsetDateTime::now_utc();
-    i128::from(now.unix_timestamp()) * 1_000_000_000 + i128::from(now.nanosecond())
-}
-
-fn cleanup_runtime_artifacts(resolved: &Resolved) {
     if let Ok(paths) = listener::paths(resolved) {
         let _ = fs::remove_file(paths.pid_file);
         let _ = fs::remove_file(paths.status_file);
         let _ = fs::remove_file(paths.socket_path);
-    }
-    if let Ok(path) = listener::boot_id_path(resolved) {
-        let _ = fs::remove_file(path);
     }
 }
 
@@ -571,10 +548,11 @@ fn running_in_listener_service_mode() -> bool {
         return true;
     }
     let args = std::env::args().collect::<Vec<_>>();
-    args.len() >= 4
-        && args[1].eq_ignore_ascii_case("runtime")
-        && args[2].eq_ignore_ascii_case("listener")
-        && args[3].eq_ignore_ascii_case("service-run")
+    args.windows(3).any(|words| {
+        words[0].eq_ignore_ascii_case("runtime")
+            && words[1].eq_ignore_ascii_case("listener")
+            && words[2].eq_ignore_ascii_case("service-run")
+    })
 }
 
 fn wait_for_shutdown_signal(shutdown: Arc<AtomicBool>) {
@@ -583,12 +561,6 @@ fn wait_for_shutdown_signal(shutdown: Arc<AtomicBool>) {
 
 async fn wait_for_shutdown_signal_async(shutdown: Arc<AtomicBool>) {
     wait_for_foreground_shutdown_async(&shutdown).await;
-}
-
-fn is_not_found(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<std::io::Error>()
-        .is_some_and(|err| err.kind() == std::io::ErrorKind::NotFound)
-        || err.to_string().contains("No such file")
 }
 
 #[cfg(test)]

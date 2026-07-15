@@ -70,6 +70,17 @@ where
             Some(("verbose", _)) => {
                 globals.verbose = true;
             }
+            Some(("internal-service", _)) => {
+                globals.internal_service = true;
+            }
+            Some(("internal-workspace-home", value)) => {
+                globals.internal_workspace_home =
+                    take_flag_value("internal-workspace-home", value, &mut iter)?;
+            }
+            Some(("internal-service-user-sid", value)) => {
+                globals.internal_service_user_sid =
+                    take_flag_value("internal-service-user-sid", value, &mut iter)?;
+            }
             Some(("identity", value)) if !is_id_create_context(&command_words) => {
                 globals.identity = take_flag_value("identity", value, &mut iter)?;
                 globals.identity_changed = true;
@@ -577,7 +588,9 @@ fn enforce_command_policy(command: &ParsedCommand) -> Result<(), ExitError> {
             }
         }
         command_catalog::DirectInvocationPolicy::RequireInternalServiceGate => {
-            if std::env::var("AWIKI_CLI_INTERNAL_ENTRY").ok().as_deref() == Some("1") {
+            if command.globals.internal_service
+                || std::env::var("AWIKI_CLI_INTERNAL_ENTRY").ok().as_deref() == Some("1")
+            {
                 Ok(())
             } else {
                 Err(internal_command(&command.name))

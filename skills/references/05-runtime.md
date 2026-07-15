@@ -29,6 +29,9 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - When the listener service is missing, `runtime listener start` automatically installs the service
 - `runtime setup` and `runtime mode set` apply runtime policy after writing configuration; in websocket mode, if the listener is enabled and auto-install/auto-start are enabled, they may install and start the listener service
 - `runtime listener install` still exists as an explicit install-only path
+- The listener is managed by a LaunchAgent on macOS, a user systemd service on Linux, and Windows Service Control Manager on Windows
+- `runtime listener status` reports the platform service state separately from local bridge availability; a usable websocket listener requires both `running = true` and `bridge_available = true`
+- Installing or updating the Windows service requires permission to manage Windows services; the service and its named pipe remain bound to the user who installed it
 
 ## When to Use
 
@@ -155,6 +158,7 @@ Under the default websocket listener policy, step 3 may already have installed a
 
 - The runtime mode is unclear -> check `awiki-cli schema runtime mode set`
 - The listener state is unclear -> `awiki-cli runtime listener status`
+- The platform service manager is unavailable -> verify the current login session can use launchd, `systemctl --user`, or Windows Service Control Manager
 - The host-notify configuration is unclear -> `awiki-cli runtime host-notify config show`
 - The configuration or path is unclear -> `awiki-cli config show`
 - More general runtime failures -> `awiki-cli doctor`

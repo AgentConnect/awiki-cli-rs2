@@ -10,8 +10,6 @@ use super::listener_service::{
     self, ListenerServiceConfigValue, SERVICE_DESCRIPTION, SERVICE_PID_FILE_NAME,
 };
 
-pub const ENABLE_SYSTEMD_SERVICE_ENV: &str = "AWIKI_CLI_ENABLE_SYSTEMD_LISTENER_SERVICE";
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SystemdUnit {
     pub name: String,
@@ -28,19 +26,11 @@ pub struct SystemdStatus {
 }
 
 pub fn is_supported() -> bool {
-    cfg!(target_os = "linux") && enabled_by_env() && systemd_user_env_available()
+    cfg!(target_os = "linux") && user_home_available()
 }
 
 pub fn service_platform() -> &'static str {
-    if cfg!(target_os = "linux") {
-        "linux-systemd"
-    } else if cfg!(target_os = "macos") {
-        "launchd"
-    } else if cfg!(windows) {
-        "windows-service"
-    } else {
-        "unsupported"
-    }
+    "linux-systemd"
 }
 
 pub fn unit_name_for(resolved: &Resolved) -> String {
@@ -105,14 +95,7 @@ pub fn unit_for(resolved: &Resolved) -> anyhow::Result<SystemdUnit> {
 }
 
 pub fn status(resolved: &Resolved) -> anyhow::Result<SystemdStatus> {
-    if !is_supported() {
-        return Ok(SystemdStatus {
-            installed: false,
-            running: false,
-            load_state: String::new(),
-            active_state: String::new(),
-        });
-    }
+    require_supported()?;
     status_with_runner(resolved, run_systemctl)
 }
 
@@ -127,11 +110,19 @@ pub fn start(resolved: &Resolved) -> anyhow::Result<Status> {
     if super::resolve(resolved).mode != "websocket" {
         anyhow::bail!("runtime mode must be websocket before starting the listener");
     }
-    if !status(resolved)?.installed {
+    let current = status(resolved)?;
+    if !current.installed {
         install_with_runner(resolved, run_systemctl)?;
     }
+    if current.running {
+        let ready = listener_status(resolved)?;
+        if ready.bridge_available {
+            return Ok(ready);
+        }
+    }
     let expected_boot_id = listener_service::prepare_expected_boot_id(resolved)?;
-    run_systemctl(&["start", &unit_name_for(resolved)])?;
+    let action = if current.running { "restart" } else { "start" };
+    run_systemctl(&[action, &unit_name_for(resolved)])?;
     wait_for_listener_status(resolved, true, &expected_boot_id)
 }
 
@@ -147,6 +138,9 @@ pub fn stop(resolved: &Resolved) -> anyhow::Result<Status> {
 
 pub fn restart(resolved: &Resolved) -> anyhow::Result<Status> {
     require_supported()?;
+    if super::resolve(resolved).mode != super::bridge::MODE_WEBSOCKET {
+        anyhow::bail!("runtime mode must be websocket before starting the listener");
+    }
     if !status(resolved)?.installed {
         anyhow::bail!("listener service is not installed");
     }
@@ -237,7 +231,7 @@ fn install_with_runner(
     Ok(())
 }
 
-fn listener_status(resolved: &Resolved) -> anyhow::Result<Status> {
+pub fn listener_status(resolved: &Resolved) -> anyhow::Result<Status> {
     let service_status = status(resolved)?;
     let mut listener_status = listener::status_for(
         resolved,
@@ -277,24 +271,12 @@ fn require_supported() -> anyhow::Result<()> {
         return Ok(());
     }
     anyhow::bail!(
-        "listener service manager is unavailable; systemd user services require Linux with HOME, XDG_RUNTIME_DIR, and DBUS_SESSION_BUS_ADDRESS"
+        "systemd user services require Linux with HOME and a working systemd user manager"
     )
 }
 
-fn systemd_user_env_available() -> bool {
+fn user_home_available() -> bool {
     env::var_os("HOME").is_some_and(|value| !value.is_empty())
-        && env::var_os("XDG_RUNTIME_DIR").is_some_and(|value| !value.is_empty())
-        && env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|value| !value.is_empty())
-}
-
-fn enabled_by_env() -> bool {
-    env::var(ENABLE_SYSTEMD_SERVICE_ENV)
-        .ok()
-        .map(|value| {
-            let value = value.trim();
-            value == "1" || value.eq_ignore_ascii_case("true")
-        })
-        .unwrap_or(false)
 }
 
 fn run_systemctl(args: &[&str]) -> anyhow::Result<String> {
