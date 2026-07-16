@@ -21,7 +21,12 @@ test('server and release configuration schemas are strict', () => {
     const server = path.join(root, 'server.toml');
     const example = path.resolve(__dirname, 'publish-server.example.toml');
     fs.copyFileSync(example, server);
-    assert.equal(readServerConfig(server).public_base_path, '/cli');
+    const parsedServer = readServerConfig(server);
+    assert.equal(parsedServer.public_base_path, '/cli');
+    assert.equal(parsedServer.cli_download_max_per_ip, 2);
+    assert.equal(parsedServer.cli_download_max_total, 4);
+    assert.equal(parsedServer.cli_download_rate_after, '1m');
+    assert.equal(parsedServer.cli_download_rate, '512k');
     fs.appendFileSync(server, 'unknown = "value"\n');
     assert.throws(() => readServerConfig(server), /unknown publish-server keys/);
 
@@ -34,6 +39,26 @@ test('server and release configuration schemas are strict', () => {
       ),
     );
     assert.throws(() => readServerConfig(invalidGateway), /protocol_gateway_origin/);
+
+    const invalidDownloadLimit = path.join(root, 'invalid-download-limit.toml');
+    fs.writeFileSync(
+      invalidDownloadLimit,
+      fs.readFileSync(example, 'utf8').replace(
+        'cli_download_max_total = "4"',
+        'cli_download_max_total = "1"',
+      ),
+    );
+    assert.throws(() => readServerConfig(invalidDownloadLimit), /greater than or equal/);
+
+    const invalidDownloadRate = path.join(root, 'invalid-download-rate.toml');
+    fs.writeFileSync(
+      invalidDownloadRate,
+      fs.readFileSync(example, 'utf8').replace(
+        'cli_download_rate = "512k"',
+        'cli_download_rate = "512kb; include bad.conf"',
+      ),
+    );
+    assert.throws(() => readServerConfig(invalidDownloadRate), /positive Nginx size/);
 
     const release = path.resolve(__dirname, 'release-config.json');
     const parsed = readReleaseConfig(release);

@@ -6,9 +6,11 @@ const path = require('path');
 
 const SERVER_KEYS = new Set([
   'public_origin', 'public_base_path', 'default_backend_base_url', 'default_did_host',
-  'web_root', 'archive_root', 'nginx_config', 'nginx_snippet', 'protocol_gateway_checkout',
-  'protocol_gateway_origin', 'protocol_gateway_service', 'github_repo', 'github_workflow',
-  'github_token',
+  'web_root', 'archive_root', 'nginx_config', 'nginx_http_snippet', 'nginx_snippet',
+  'nginx_backup_root', 'protocol_gateway_checkout', 'protocol_gateway_origin',
+  'protocol_gateway_service', 'github_repo', 'github_workflow', 'github_token',
+  'cli_download_max_per_ip', 'cli_download_max_total', 'cli_download_rate_after',
+  'cli_download_rate',
 ]);
 const RELEASE_KEYS = new Set([
   'schema_version', 'channels', 'anp_commit', 'archive_keep_versions', 'targets',
@@ -68,7 +70,10 @@ function readServerConfig(filePath) {
       || config.public_base_path.split('/').some(part => part === '.' || part === '..')) {
     throw new Error('public_base_path must be an absolute URL path without a trailing slash');
   }
-  for (const key of ['web_root', 'archive_root', 'nginx_config', 'nginx_snippet', 'protocol_gateway_checkout']) {
+  for (const key of [
+    'web_root', 'archive_root', 'nginx_config', 'nginx_http_snippet', 'nginx_snippet',
+    'nginx_backup_root', 'protocol_gateway_checkout',
+  ]) {
     if (!path.isAbsolute(config[key])) throw new Error(`${key} must be an absolute filesystem path`);
     if (!/^\/[a-z0-9._/-]+$/i.test(config[key]) || config[key].split('/').includes('..')) {
       throw new Error(`${key} contains unsafe filesystem path characters`);
@@ -85,6 +90,23 @@ function readServerConfig(filePath) {
   }
   if (!/^[a-z0-9_.-]+\.ya?ml$/i.test(config.github_workflow)) {
     throw new Error('github_workflow must be a workflow YAML filename');
+  }
+  for (const key of ['cli_download_max_per_ip', 'cli_download_max_total']) {
+    if (!/^[1-9]\d*$/.test(config[key])) throw new Error(`${key} must be a positive integer`);
+    const value = Number(config[key]);
+    if (!Number.isSafeInteger(value) || value > 10000) {
+      throw new Error(`${key} must be an integer from 1 to 10000`);
+    }
+    config[key] = value;
+  }
+  if (config.cli_download_max_total < config.cli_download_max_per_ip) {
+    throw new Error('cli_download_max_total must be greater than or equal to cli_download_max_per_ip');
+  }
+  for (const key of ['cli_download_rate_after', 'cli_download_rate']) {
+    if (!/^[1-9]\d*(?:[kKmMgG])?$/.test(config[key])) {
+      throw new Error(`${key} must be a positive Nginx size such as 512k or 1m`);
+    }
+    config[key] = config[key].toLowerCase();
   }
   return config;
 }

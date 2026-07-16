@@ -20,6 +20,6 @@
   "scripts": {
     "install-binary": "node scripts/install.js",
     "postinstall": "node scripts/install.js",
-    "test:installer": "node --test scripts/install.test.js scripts/run.test.js scripts/release/cli/config.test.js scripts/release/cli/render-nginx-snippet.test.js scripts/release/cli/stage-release.test.js"
+    "test:installer": "node --test scripts/install.test.js scripts/run.test.js scripts/release/cli/config.test.js scripts/release/cli/deploy-nginx-config.test.js scripts/release/cli/render-nginx-download-zones.test.js scripts/release/cli/render-nginx-snippet.test.js scripts/release/cli/stage-release.test.js"
   }
 }

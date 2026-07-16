@@ -24,13 +24,19 @@ function writeServerConfig(filePath, root) {
     web_root: `${root}/web`,
     archive_root: `${root}/archive`,
     nginx_config: `${root}/nginx.conf`,
+    nginx_http_snippet: `${root}/nginx-http-snippet.conf`,
     nginx_snippet: `${root}/nginx-snippet.conf`,
+    nginx_backup_root: `${root}/backups`,
     protocol_gateway_checkout: `${root}/gateway`,
     protocol_gateway_origin: 'http://127.0.0.1:9896',
     protocol_gateway_service: 'protocol-gateway',
     github_repo: 'AgentConnect/awiki-cli-rs2',
     github_workflow: 'build-cli-release.yml',
     github_token: 'test-token',
+    cli_download_max_per_ip: '2',
+    cli_download_max_total: '4',
+    cli_download_rate_after: '1m',
+    cli_download_rate: '512k',
   };
   fs.writeFileSync(filePath, `${Object.entries(values).map(([key, value]) => `${key} = ${JSON.stringify(value)}`).join('\n')}\n`);
 }

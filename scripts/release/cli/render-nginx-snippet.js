@@ -17,9 +17,21 @@ for (const document of ['onboarding.md', 'skill.md']) {
   process.stdout.write('    proxy_set_header X-Forwarded-Proto $scheme;\n');
   process.stdout.write('}\n');
 }
+process.stdout.write('# Channel metadata remains mutable; only versioned platform packages use download limits and immutable caching.\n');
 for (const channel of ['stable', 'beta']) {
   process.stdout.write(`location = ${publicPath}${channel}/ {\n`);
   process.stdout.write(`    rewrite ^ ${publicPath}${channel}/manifest.json last;\n`);
+  process.stdout.write('}\n');
+  process.stdout.write(`location ^~ ${publicPath}${channel}/artifacts/ {\n`);
+  process.stdout.write(`    alias ${webRoot}${channel}/artifacts/;\n`);
+  process.stdout.write('    autoindex off;\n');
+  process.stdout.write(`    limit_conn cli_download_per_ip ${config.cli_download_max_per_ip};\n`);
+  process.stdout.write(`    limit_conn cli_download_total ${config.cli_download_max_total};\n`);
+  process.stdout.write('    limit_conn_status 429;\n');
+  process.stdout.write(`    limit_rate_after ${config.cli_download_rate_after};\n`);
+  process.stdout.write(`    limit_rate ${config.cli_download_rate};\n`);
+  process.stdout.write('    add_header X-Content-Type-Options "nosniff" always;\n');
+  process.stdout.write('    add_header Cache-Control "public, max-age=31536000, immutable" always;\n');
   process.stdout.write('}\n');
 }
 process.stdout.write(`location ^~ ${publicPath} {\n`);
