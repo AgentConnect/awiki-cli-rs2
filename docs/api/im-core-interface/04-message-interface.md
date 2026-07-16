@@ -551,6 +551,7 @@ conversation_id          // required canonical key
 peer_persona_id?         // resolved Direct required
 canonical_group_did?     // resolved Group required
 resolution_state         // resolved | legacy_unresolved | blocked_conflict
+title?                   // committed Group profile display name; not an App override
 ```
 
 新 App 主路径必须使用这些字段，不能再执行 `conversation_id ?? thread_id`。Core 在
@@ -734,6 +735,11 @@ checkpoint 边界：
   `storeGlobalCheckpoint`、手动 `since_event_seq` 或手动 checkpoint advance。
 - Realtime `RealtimeSyncHint` 只用于 duplicate/gap/dirty 判断和调度 `sync_delta`；即使
   realtime projection 成功，也不得推进 checkpoint。
+- 在线收到首条 Direct realtime 消息时，Core 必须先按 wire peer DID 调用权威 Handle
+  lookup，校验返回 DID 与 wire snapshot 一致，并先提交 verified Persona/route，再提交消息。
+  lookup 不可用、响应不合法、发生冲突或 DID 不一致时继续写入
+  `inbound_resolution_backlog`，不得用 DID 合成 Persona、创建 `dm:<DID>` 行或发送
+  authoritative patch。
 
 ### 5.3 Conversation / Thread Snapshot And Patch API
 
@@ -772,8 +778,9 @@ snapshot 只用于冷启动 first paint，随后仍必须用 SQLite local projec
 必须走 `repair_conversation_store()` / Dart `repairConversationStore()`，repair 返回的
 patch version 是后续 patch 连续性判断的基线。Conversation Store 的唯一 key 是
 `conversation_id`；`remove` / `reorder` 只携带 `conversation_id`，不得用
-`(thread_kind, thread_id)` 或 alias/DID 作为 Store identity。snapshot format v2 同样要求
-每项有 canonical `conversation_id`，旧的可丢弃 redb snapshot 会直接失效并从 SQLite 重建。
+`(thread_kind, thread_id)` 或 alias/DID 作为 Store identity。snapshot format v3 同样要求
+每项有 canonical `conversation_id`，并允许携带 owner-scoped Group profile 的 `title`；旧的
+可丢弃 redb snapshot 会直接失效并从 SQLite 重建，避免冷启动先显示 Group DID/ID 再切换群名。
 
 `watch_thread_patches(thread, limit)` / Dart `watchThreadPatches(thread, limit: ...)`
 返回当前 thread 的 versioned `ThreadMessageStorePatch` stream。patch kind 当前包括
@@ -782,7 +789,9 @@ patch version 是后续 patch 连续性判断的基线。Conversation Store 的�
 不得直接生成 authoritative thread patch。
 realtime incoming 消息如果成功写入 SQLite local projection，则按同一规则触发
 conversation patch 和对应 thread patch；如果 projection 不存在或写入失败，不得发
-authoritative patch。
+authoritative patch。首条在线 Direct 的 verified Persona projection 必须先于该消息写入，
+因此首次 patch 直接使用 canonical Persona conversation ID，不允许先发布 DID conversation
+再合并。
 
 `watch_conversation_timeline_patches(conversation, limit)` 和
 `repair_conversation_timeline_store(conversation, limit)` 是 conversationId-first timeline

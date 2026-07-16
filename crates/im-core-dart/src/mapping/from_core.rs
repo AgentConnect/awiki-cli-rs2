@@ -987,6 +987,7 @@ impl From<im_core::messages::ConversationSnapshotItem> for DartConversationSnaps
             resolution_state: value.resolution_state.into(),
             thread_kind: value.thread_kind,
             thread_id: value.thread_id,
+            title: value.title,
             conversation_identity: value.conversation_identity.map(Into::into),
             participants: value.participants,
             last_message: value.last_message.map(Into::into),

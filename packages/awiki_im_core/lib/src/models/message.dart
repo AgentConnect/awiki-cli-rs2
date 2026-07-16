@@ -451,6 +451,7 @@ class ConversationSnapshotItem {
     required this.resolutionState,
     required this.threadKind,
     required this.threadId,
+    this.title,
     this.conversationIdentity,
     this.participants = const [],
     this.lastMessage,
@@ -468,6 +469,7 @@ class ConversationSnapshotItem {
   final ConversationResolutionState resolutionState;
   final String threadKind;
   final String threadId;
+  final String? title;
   final ConversationIdentity? conversationIdentity;
   final List<String> participants;
   final ConversationSnapshotMessage? lastMessage;

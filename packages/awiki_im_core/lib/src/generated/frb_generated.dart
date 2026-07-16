@@ -5772,8 +5772,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 15)
-      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return DartConversationSnapshotItem(
       conversationId: dco_decode_String(arr[0]),
       peerPersonaId: dco_decode_opt_String(arr[1]),
@@ -5781,17 +5781,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       resolutionState: dco_decode_dart_conversation_resolution_state(arr[3]),
       threadKind: dco_decode_String(arr[4]),
       threadId: dco_decode_String(arr[5]),
+      title: dco_decode_opt_String(arr[6]),
       conversationIdentity:
-          dco_decode_opt_box_autoadd_dart_conversation_identity(arr[6]),
-      participants: dco_decode_list_String(arr[7]),
+          dco_decode_opt_box_autoadd_dart_conversation_identity(arr[7]),
+      participants: dco_decode_list_String(arr[8]),
       lastMessage:
-          dco_decode_opt_box_autoadd_dart_conversation_snapshot_message(arr[8]),
-      unreadCount: dco_decode_u_32(arr[9]),
-      unreadMentionCount: dco_decode_u_32(arr[10]),
-      firstUnreadMentionMessageId: dco_decode_opt_String(arr[11]),
-      messageCount: dco_decode_u_32(arr[12]),
-      lastMessageAt: dco_decode_opt_String(arr[13]),
-      activityAt: dco_decode_opt_String(arr[14]),
+          dco_decode_opt_box_autoadd_dart_conversation_snapshot_message(arr[9]),
+      unreadCount: dco_decode_u_32(arr[10]),
+      unreadMentionCount: dco_decode_u_32(arr[11]),
+      firstUnreadMentionMessageId: dco_decode_opt_String(arr[12]),
+      messageCount: dco_decode_u_32(arr[13]),
+      lastMessageAt: dco_decode_opt_String(arr[14]),
+      activityAt: dco_decode_opt_String(arr[15]),
     );
   }
 
@@ -8960,6 +8961,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     );
     var var_threadKind = sse_decode_String(deserializer);
     var var_threadId = sse_decode_String(deserializer);
+    var var_title = sse_decode_opt_String(deserializer);
     var var_conversationIdentity =
         sse_decode_opt_box_autoadd_dart_conversation_identity(deserializer);
     var var_participants = sse_decode_list_String(deserializer);
@@ -8980,6 +8982,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       resolutionState: var_resolutionState,
       threadKind: var_threadKind,
       threadId: var_threadId,
+      title: var_title,
       conversationIdentity: var_conversationIdentity,
       participants: var_participants,
       lastMessage: var_lastMessage,
@@ -12977,6 +12980,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     );
     sse_encode_String(self.threadKind, serializer);
     sse_encode_String(self.threadId, serializer);
+    sse_encode_opt_String(self.title, serializer);
     sse_encode_opt_box_autoadd_dart_conversation_identity(
       self.conversationIdentity,
       serializer,

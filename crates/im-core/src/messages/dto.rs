@@ -877,6 +877,8 @@ pub struct ConversationSnapshotItem {
     pub thread_kind: String,
     pub thread_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_identity: Option<ConversationIdentity>,
     pub participants: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

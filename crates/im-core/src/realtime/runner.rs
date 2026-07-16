@@ -639,7 +639,10 @@ fn project_realtime_message_received(
     client: &crate::core::ImClient,
     event: &super::MessageReceivedEvent,
 ) -> crate::ImResult<()> {
-    let peer_scope = realtime_direct_peer_scope(client, &event.message);
+    let peer_lookup = realtime_direct_peer_lookup(client, &event.message);
+    let peer_scope = peer_lookup
+        .as_ref()
+        .and_then(direct_peer_scope_from_verified_lookup);
     let Some(projection) =
         crate::internal::realtime::local_projection::plan_realtime_message_local_projection(
             &crate::internal::realtime::local_projection::RealtimeMessageLocalProjectionContext {
@@ -667,6 +670,9 @@ fn project_realtime_message_received(
     let mut connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
+    if let Some(lookup) = peer_lookup.as_ref() {
+        project_realtime_verified_handle(client, &mut connection, lookup)?;
+    }
     let message_stored =
         crate::internal::realtime::local_projection::apply_realtime_message_local_projection(
             &mut connection,
@@ -695,7 +701,19 @@ async fn project_realtime_message_received_async(
     client: &crate::core::ImClient,
     event: &super::MessageReceivedEvent,
 ) -> crate::ImResult<()> {
-    let peer_scope = realtime_direct_peer_scope_async(client, &event.message).await;
+    let peer_lookup = realtime_direct_peer_lookup_async(client, &event.message).await;
+    project_realtime_message_received_async_with_lookup(client, event, peer_lookup).await
+}
+
+#[cfg(feature = "sqlite")]
+async fn project_realtime_message_received_async_with_lookup(
+    client: &crate::core::ImClient,
+    event: &super::MessageReceivedEvent,
+    peer_lookup: Option<crate::directory::HandleLookupResult>,
+) -> crate::ImResult<()> {
+    let peer_scope = peer_lookup
+        .as_ref()
+        .and_then(direct_peer_scope_from_verified_lookup);
     let Some(projection) =
         crate::internal::realtime::local_projection::plan_realtime_message_local_projection(
             &crate::internal::realtime::local_projection::RealtimeMessageLocalProjectionContext {
@@ -721,6 +739,14 @@ async fn project_realtime_message_received_async(
     let sender_did = projection.sender_did().to_string();
     let sent_at = event.message.sent_at.clone();
     let db = client.core_inner().local_state_db().await?;
+    if let Some(lookup) = peer_lookup {
+        db.project_verified_handle(
+            client.current_identity().id.as_str(),
+            client.did().as_str(),
+            lookup,
+        )
+        .await?;
+    }
     let outcome = db
         .store_remote_messages(vec![projection.into_record()], "realtime_message")
         .await?;
@@ -793,10 +819,10 @@ fn realtime_message_group_record(
 }
 
 #[cfg(all(feature = "blocking", feature = "sqlite"))]
-fn realtime_direct_peer_scope(
+fn realtime_direct_peer_lookup(
     client: &crate::core::ImClient,
     message: &crate::messages::Message,
-) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+) -> Option<crate::directory::HandleLookupResult> {
     let peer_did = realtime_direct_peer_did(client, message)?;
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
     let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(
@@ -804,19 +830,17 @@ fn realtime_direct_peer_scope(
     )
     .ok()?;
     let raw = RpcTransport::rpc(&mut transport, call.endpoint, call.method, call.params).ok()?;
-    let lookup = crate::internal::directory_runtime::handle_lookup_from_value(&raw).ok()?;
-    crate::internal::local_state::owner_scope::DirectPeerScope::new(
-        lookup.user_id,
-        lookup.handle.as_str().to_owned(),
-    )
-    .ok()
+    let lookup =
+        crate::internal::directory_runtime::handle_lookup_from_value_with_client(client, &raw)
+            .ok()?;
+    (lookup.did.as_str() == peer_did).then_some(lookup)
 }
 
 #[cfg(feature = "sqlite")]
-async fn realtime_direct_peer_scope_async(
+async fn realtime_direct_peer_lookup_async(
     client: &crate::core::ImClient,
     message: &crate::messages::Message,
-) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+) -> Option<crate::directory::HandleLookupResult> {
     let peer_did = realtime_direct_peer_did(client, message)?;
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
     let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(
@@ -826,12 +850,35 @@ async fn realtime_direct_peer_scope_async(
     let raw = AsyncRpcTransport::rpc(&mut transport, call.endpoint, call.method, call.params)
         .await
         .ok()?;
-    let lookup = crate::internal::directory_runtime::handle_lookup_from_value(&raw).ok()?;
+    let lookup =
+        crate::internal::directory_runtime::handle_lookup_from_value_with_client(client, &raw)
+            .ok()?;
+    (lookup.did.as_str() == peer_did).then_some(lookup)
+}
+
+#[cfg(feature = "sqlite")]
+fn direct_peer_scope_from_verified_lookup(
+    lookup: &crate::directory::HandleLookupResult,
+) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
     crate::internal::local_state::owner_scope::DirectPeerScope::new(
-        lookup.user_id,
+        lookup.user_id.clone(),
         lookup.handle.as_str().to_owned(),
     )
     .ok()
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
+fn project_realtime_verified_handle(
+    client: &crate::core::ImClient,
+    connection: &mut rusqlite::Connection,
+    lookup: &crate::directory::HandleLookupResult,
+) -> crate::ImResult<String> {
+    crate::internal::local_state::peer_personas::project_verified_handle(
+        connection,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        lookup,
+    )
 }
 
 #[cfg(feature = "sqlite")]

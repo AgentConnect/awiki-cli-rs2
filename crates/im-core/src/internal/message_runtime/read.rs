@@ -827,18 +827,14 @@ fn merge_local_message_records_into_page(
     records: Vec<crate::internal::local_state::messages::MessageRecord>,
     requested_limit: crate::ids::PageLimit,
 ) {
-    let mut local_messages = records
+    let local_messages = records
         .iter()
         .filter_map(|record| {
             crate::internal::message_runtime::conversations::message_from_record(record).ok()
         })
         .filter(|message| !is_direct_e2ee_wire_sdk_message(message))
         .collect::<Vec<_>>();
-    if local_messages.is_empty() {
-        return;
-    }
-    page.items.append(&mut local_messages);
-    page.has_more |= sort_dedupe_and_truncate_messages(&mut page.items, requested_limit);
+    merge_committed_projection_into_page(page, local_messages, requested_limit);
 }
 
 #[cfg(feature = "sqlite")]
@@ -847,14 +843,33 @@ fn merge_local_message_values_into_page(
     rows: Vec<serde_json::Value>,
     requested_limit: crate::ids::PageLimit,
 ) {
-    let mut local_messages = rows
+    let local_messages = rows
         .iter()
         .filter_map(|row| message_from_local_state_value(row).ok())
         .collect::<Vec<_>>();
+    merge_committed_projection_into_page(page, local_messages, requested_limit);
+}
+
+#[cfg(feature = "sqlite")]
+fn merge_committed_projection_into_page(
+    page: &mut crate::ids::Page<crate::messages::Message>,
+    local_messages: Vec<crate::messages::Message>,
+    requested_limit: crate::ids::PageLimit,
+) {
     if local_messages.is_empty() {
         return;
     }
-    page.items.append(&mut local_messages);
+
+    let mut committed_by_id = local_messages
+        .into_iter()
+        .map(|message| (message.id.as_str().to_owned(), message))
+        .collect::<std::collections::HashMap<_, _>>();
+    for message in &mut page.items {
+        if let Some(committed) = committed_by_id.remove(message.id.as_str()) {
+            *message = committed;
+        }
+    }
+    page.items.extend(committed_by_id.into_values());
     page.has_more |= sort_dedupe_and_truncate_messages(&mut page.items, requested_limit);
 }
 

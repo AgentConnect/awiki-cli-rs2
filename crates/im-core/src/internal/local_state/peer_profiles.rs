@@ -1,6 +1,6 @@
 //! Persona-keyed display profile projection.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 pub(crate) const TABLE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS peer_profiles (
@@ -24,6 +24,76 @@ pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
     connection
         .execute_batch(TABLE_SQL)
         .map_err(super::local_state_unavailable)
+}
+
+pub(crate) fn display_profile_for_peer(
+    connection: &Connection,
+    owner_identity_id: &str,
+    peer: &crate::ids::PeerRef,
+) -> crate::ImResult<Option<crate::directory::DisplayProfile>> {
+    let peer_value = peer.as_str().trim();
+    let is_did = peer_value.starts_with("did:");
+    let identifier_kind = if is_did { "did" } else { "handle" };
+    let row = connection
+        .query_row(
+            r#"SELECT persona.full_handle, profile.display_name, profile.avatar_uri,
+                      COALESCE(profile.subject_type, persona.subject_type),
+                      current_did.identifier_value
+FROM peer_identifiers requested
+JOIN peer_personas persona
+  ON persona.owner_identity_id = requested.owner_identity_id
+ AND persona.peer_persona_id = requested.peer_persona_id
+LEFT JOIN peer_profiles profile
+  ON profile.owner_identity_id = persona.owner_identity_id
+ AND profile.peer_persona_id = persona.peer_persona_id
+LEFT JOIN peer_identifiers current_did
+  ON current_did.owner_identity_id = persona.owner_identity_id
+ AND current_did.peer_persona_id = persona.peer_persona_id
+ AND current_did.identifier_kind = 'did'
+ AND current_did.is_current = 1
+WHERE requested.owner_identity_id = ?1
+  AND requested.identifier_kind = ?2
+  AND CASE WHEN ?2 = 'handle'
+           THEN LOWER(TRIM(requested.identifier_value)) = LOWER(TRIM(?3))
+           ELSE requested.identifier_value = ?3
+      END
+ORDER BY requested.is_current DESC, current_did.is_current DESC
+LIMIT 1"#,
+            (owner_identity_id.trim(), identifier_kind, peer_value),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some((full_handle, display_name, avatar_uri, subject_type, current_did)) = row else {
+        return Ok(None);
+    };
+    let did = if is_did {
+        Some(crate::ids::Did::parse(peer_value)?)
+    } else {
+        current_did
+            .as_deref()
+            .map(crate::ids::Did::parse)
+            .transpose()?
+    };
+    Ok(Some(crate::directory::DisplayProfile {
+        did,
+        handle: Some(crate::ids::Handle::parse(&full_handle, "")?),
+        display_name,
+        avatar_uri,
+        avatar_url: None,
+        profile_uri: None,
+        subject_type,
+        cache_hit: true,
+        warnings: Vec::new(),
+    }))
 }
 
 pub(crate) fn upsert_from_verified_lookup(

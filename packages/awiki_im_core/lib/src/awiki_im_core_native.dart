@@ -2611,6 +2611,7 @@ extension on gen_message.DartConversationSnapshotItem {
     resolutionState: resolutionState._toModel(),
     threadKind: threadKind,
     threadId: threadId,
+    title: title,
     conversationIdentity: conversationIdentity?._toModel(),
     participants: participants,
     lastMessage: lastMessage?._toModel(),

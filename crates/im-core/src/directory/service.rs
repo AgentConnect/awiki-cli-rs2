@@ -411,6 +411,12 @@ impl<'a> DirectoryService<'a> {
                 .peers
                 .into_iter()
                 .map(|peer| {
+                    let persona_profile =
+                        crate::internal::local_state::peer_profiles::display_profile_for_peer(
+                            &connection,
+                            self.owner_identity_id(),
+                            &peer,
+                        )?;
                     let record = local_contact_for_peer(
                         |did| {
                             crate::internal::contact_store::records::get_contact_by_did(
@@ -430,7 +436,7 @@ impl<'a> DirectoryService<'a> {
                         },
                         &peer,
                     );
-                    display_profile_from_local_result(peer, record)
+                    display_profile_from_local_projections(peer, persona_profile, record)
                 })
                 .collect()
         }
@@ -460,6 +466,9 @@ impl<'a> DirectoryService<'a> {
             let db = self.client.core_inner().local_state_db().await?;
             let mut result = Vec::with_capacity(request.peers.len());
             for peer in request.peers {
+                let persona_profile = db
+                    .get_persona_display_profile(self.owner_identity_id(), peer.clone())
+                    .await?;
                 let record = if peer.as_str().trim().starts_with("did:") {
                     db.get_contact_by_did(
                         self.owner_identity_id(),
@@ -475,7 +484,11 @@ impl<'a> DirectoryService<'a> {
                     )
                     .await
                 };
-                result.push(display_profile_from_local_result(peer, record)?);
+                result.push(display_profile_from_local_projections(
+                    peer,
+                    persona_profile,
+                    record,
+                )?);
             }
             Ok(result)
         }
@@ -987,6 +1000,34 @@ fn display_profile_from_local_result(
         Err(crate::ImError::PeerNotFound { .. }) => display_profile_cache_miss(peer),
         Err(err) => Err(err),
     }
+}
+
+#[cfg(feature = "sqlite")]
+fn display_profile_from_local_projections(
+    peer: crate::ids::PeerRef,
+    persona_profile: Option<crate::directory::DisplayProfile>,
+    contact_record: crate::ImResult<crate::internal::contact_store::records::ContactRecord>,
+) -> crate::ImResult<crate::directory::DisplayProfile> {
+    let Some(mut profile) = persona_profile else {
+        return display_profile_from_local_result(peer, contact_record);
+    };
+    let contact = match contact_record {
+        Ok(record) => {
+            crate::internal::contact_store::records::display_profile_from_record(&record)?
+        }
+        Err(crate::ImError::PeerNotFound { .. }) => return Ok(profile),
+        Err(err) => return Err(err),
+    };
+    profile.did = profile.did.or(contact.did);
+    profile.handle = profile.handle.or(contact.handle);
+    profile.display_name = profile.display_name.or(contact.display_name);
+    profile.avatar_uri = profile.avatar_uri.or(contact.avatar_uri);
+    profile.avatar_url = profile.avatar_url.or(contact.avatar_url);
+    profile.profile_uri = profile.profile_uri.or(contact.profile_uri);
+    profile.subject_type = profile.subject_type.or(contact.subject_type);
+    profile.cache_hit |= contact.cache_hit;
+    profile.warnings.extend(contact.warnings);
+    Ok(profile)
 }
 
 #[cfg(feature = "sqlite")]

@@ -125,6 +125,7 @@ void main() {
       resolutionState: ConversationResolutionState.resolved,
       threadKind: 'group',
       threadId: 'wire-group-thread-7',
+      title: 'Project Group',
       unreadCount: 0,
       messageCount: 0,
     );
@@ -139,6 +140,7 @@ void main() {
     expect(conversation.peerPersonaId, 'peer-1');
     expect(conversation.threadId, 'did:example:peer-device-2');
     expect(groupSnapshot.canonicalGroupDid, 'did:example:group-1');
+    expect(groupSnapshot.title, 'Project Group');
     expect(member.membershipId, 'membership-1');
     expect(member.peerPersonaId, 'peer-1');
     expect(member.credentialDid, member.did);

@@ -52,6 +52,11 @@ enum LocalStateCommand {
         lookup: crate::directory::HandleLookupResult,
         reply: oneshot::Sender<crate::ImResult<String>>,
     },
+    GetPersonaDisplayProfile {
+        owner_identity_id: String,
+        peer: crate::ids::PeerRef,
+        reply: oneshot::Sender<crate::ImResult<Option<crate::directory::DisplayProfile>>>,
+    },
     GetContactByDid {
         owner_identity_id: String,
         owner_did: String,
@@ -476,6 +481,21 @@ impl LocalStateDb {
             owner_identity_id: owner_identity_id.into(),
             owner_did: owner_did.into(),
             lookup,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn get_persona_display_profile(
+        &self,
+        owner_identity_id: impl Into<String>,
+        peer: crate::ids::PeerRef,
+    ) -> crate::ImResult<Option<crate::directory::DisplayProfile>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::GetPersonaDisplayProfile {
+            owner_identity_id: owner_identity_id.into(),
+            peer,
             reply,
         })
         .await?;
@@ -1299,6 +1319,18 @@ fn run_actor(
                     &owner_identity_id,
                     &owner_did,
                     &lookup,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::GetPersonaDisplayProfile {
+                owner_identity_id,
+                peer,
+                reply,
+            } => {
+                let result = super::peer_profiles::display_profile_for_peer(
+                    &connection,
+                    &owner_identity_id,
+                    &peer,
                 );
                 let _ = reply.send(result);
             }

@@ -403,6 +403,7 @@ mod tests {
             resolution_state: crate::messages::ConversationResolutionState::LegacyUnresolved,
             thread_kind: thread_kind.to_owned(),
             thread_id: thread_id.to_owned(),
+            title: None,
             conversation_identity: None,
             participants: Vec::new(),
             last_message: Some(crate::messages::ConversationSnapshotMessage {

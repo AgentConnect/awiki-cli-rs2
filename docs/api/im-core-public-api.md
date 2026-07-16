@@ -555,6 +555,7 @@ Reliable sync 补充：
   conversationId-first snapshot / patch runtime store API，当前仍挂在 message service namespace
   下；`watch_thread_patches(ThreadRef)` 和 `repair_thread_store(ThreadRef)` 是 compatibility
   wrapper；
+  snapshot/patch DTO 的 optional `title` 只表示 committed Group profile display name；
   DTO 必须保持 core-only，不引用 `awiki-me` 的 `ConversationSummary`、`ChatMessage`
   或 presentation overlay 字段。
 - Public API 不得暴露 `loadGlobalCheckpoint`、`storeGlobalCheckpoint`、SQLite helper、

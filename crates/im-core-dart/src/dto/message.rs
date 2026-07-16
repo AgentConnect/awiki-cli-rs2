@@ -389,6 +389,7 @@ pub struct DartConversationSnapshotItem {
     pub resolution_state: DartConversationResolutionState,
     pub thread_kind: String,
     pub thread_id: String,
+    pub title: Option<String>,
     pub conversation_identity: Option<DartConversationIdentity>,
     pub participants: Vec<String>,
     pub last_message: Option<DartConversationSnapshotMessage>,

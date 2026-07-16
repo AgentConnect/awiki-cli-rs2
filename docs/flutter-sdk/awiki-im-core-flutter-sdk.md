@@ -193,7 +193,9 @@ required `resolutionState`. A resolved Direct must have `peerPersonaId`; a
 resolved Group must have `canonicalGroupDid`. New App code must not fall back to
 `threadId` when any of these canonical facts is missing. `DartGroupMember`
 separates `membershipId`, `peerPersonaId`, and `credentialDid`; the credential
-DID is not the membership identity.
+DID is not the membership identity. Conversation and snapshot projections may
+carry an optional `title`; for Group rows this is the committed local Group
+profile display name, not an App-local custom title.
 
 Conversation list startup and realtime updates use snapshot / patch helpers under
 the same `client.messages` namespace:
@@ -225,8 +227,9 @@ projection, runtime store, read state, or reliable checkpoint. `watchConversatio
 `repairRequired`) emitted only after the underlying local projection commit
 succeeds. The conversation store is keyed only by canonical `conversationId`;
 `remove` and `reorder` carry that ID instead of thread kind/id or a legacy alias.
-Snapshot format v2 invalidates older discardable redb snapshots and rebuilds them
-from SQLite. `repairConversationStore` returns a reset/repair patch after lag,
+Snapshot format v3 invalidates older discardable redb snapshots and rebuilds them
+from SQLite so Group first paint retains the committed profile title across a
+restart. `repairConversationStore` returns a reset/repair patch after lag,
 overflow, stream close, or version gaps. `watchConversationTimelinePatches` and
 `repairConversationTimelineStore` expose the same committed-projection rule for an
 opened conversation timeline keyed by `ConversationReadRef.conversationId`;
@@ -244,6 +247,12 @@ Persona before the message row is committed. Until then Core stores the record
 in its durable resolution backlog and exposes neither a `dm:<DID>` conversation
 nor a timeline patch; verified Persona projection later replays it under the
 single canonical conversation ID.
+
+For an online first inbound Direct, Core resolves the wire peer DID through the
+Handle authority and commits that verified Persona projection before the
+message. A missing, conflicting, malformed, or DID-mismatched lookup remains in
+the durable backlog and emits no authoritative patch; the SDK never synthesizes
+a Persona from the DID itself.
 
 These APIs currently live under `client.messages` for SDK compatibility. If a
 future `client.conversations` namespace is added, it must wrap the same core

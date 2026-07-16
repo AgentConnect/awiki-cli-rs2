@@ -114,6 +114,7 @@ pub(crate) fn snapshot_item_from_conversation(
         resolution_state: conversation.resolution_state,
         thread_kind,
         thread_id,
+        title: conversation.title.clone(),
         conversation_identity: Some(conversation_identity),
         participants: conversation
             .participants
@@ -314,7 +315,7 @@ fn conversation_from_record(
         resolution_state,
         thread,
         conversation_identity: Some(conversation_identity),
-        title: None,
+        title: non_empty_string(record.title()),
         participants,
         last_message,
         unread_count: u32_count(record.unread_count()),
@@ -370,6 +371,10 @@ impl ConversationRecordExt for crate::internal::local_state::conversations::Conv
 
     fn direct_peer_did(&self) -> &str {
         &self.direct_peer_did
+    }
+
+    fn title(&self) -> &str {
+        &self.title
     }
 
     fn activity_at(&self) -> &str {
@@ -429,6 +434,9 @@ impl ConversationRecordExt for NoSqliteConversationRecord {
     fn direct_peer_did(&self) -> &str {
         ""
     }
+    fn title(&self) -> &str {
+        ""
+    }
     fn activity_at(&self) -> &str {
         ""
     }
@@ -466,6 +474,7 @@ trait ConversationRecordExt {
     fn resolution_state(&self) -> &str;
     fn thread_kind(&self) -> &str;
     fn direct_peer_did(&self) -> &str;
+    fn title(&self) -> &str;
     fn activity_at(&self) -> &str;
     fn message_count(&self) -> i64;
     fn unread_count(&self) -> i64;
@@ -893,6 +902,34 @@ mod tests {
         );
         assert!(conversation.last_message.is_none());
         assert_eq!(conversation.message_count, 0);
+    }
+
+    #[test]
+    fn empty_group_conversation_keeps_local_group_title() {
+        let group_did = "did:wba:awiki.info:groups:group-1:e1_group";
+        let conversation = conversation_from_record(
+            "did:example:alice",
+            crate::internal::local_state::conversations::ConversationRecord {
+                owner_identity_id: "alice-id".into(),
+                owner_did: "did:example:alice".into(),
+                conversation_id: format!("group:{group_did}"),
+                canonical_group_did: group_did.into(),
+                resolution_state: "resolved".into(),
+                thread_kind: "group".into(),
+                thread_id: group_did.into(),
+                title: "Project Group".into(),
+                activity_at: "2026-07-13T00:00:00Z".into(),
+                ..crate::internal::local_state::conversations::ConversationRecord::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(conversation.title.as_deref(), Some("Project Group"));
+        assert!(conversation.last_message.is_none());
+        assert_eq!(
+            snapshot_item_from_conversation(&conversation).title,
+            conversation.title
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub(crate) struct ConversationRecord {
     pub(crate) resolution_state: String,
     pub(crate) thread_kind: String,
     pub(crate) thread_id: String,
+    pub(crate) title: String,
     pub(crate) direct_peer_did: String,
     pub(crate) activity_at: String,
     pub(crate) message_count: i64,
@@ -50,6 +51,22 @@ SELECT
     r.resolution_state,
     r.thread_kind,
     r.thread_id,
+    COALESCE(
+      (
+        SELECT g.name
+        FROM groups g
+        WHERE g.owner_identity_id = r.owner_identity_id
+          AND r.thread_kind = 'group'
+          AND (
+            g.group_did = r.canonical_group_did
+            OR g.group_id = r.canonical_group_did
+          )
+        ORDER BY g.stored_at DESC,
+        g.group_id DESC
+        LIMIT 1
+      ),
+      ''
+    ) AS conversation_title,
     COALESCE(d.current_did, '') AS direct_peer_did,
     r.activity_at,
     COALESCE(t.message_count, 0) AS message_count,
@@ -180,6 +197,9 @@ fn conversation_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Con
     let thread_id = row
         .get::<_, Option<String>>("thread_id")?
         .unwrap_or_default();
+    let title = row
+        .get::<_, Option<String>>("conversation_title")?
+        .unwrap_or_default();
     let direct_peer_did = row
         .get::<_, Option<String>>("direct_peer_did")?
         .unwrap_or_default();
@@ -247,6 +267,7 @@ fn conversation_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Con
         resolution_state,
         thread_kind,
         thread_id,
+        title,
         direct_peer_did,
         activity_at,
         message_count: row
@@ -401,6 +422,33 @@ mod tests {
         )
         .unwrap();
         crate::internal::local_state::direct_peer_routes::upsert(&db, &route).unwrap();
+        db.execute(
+            r#"INSERT INTO groups
+               (owner_identity_id, owner_did, group_id, group_did, name, stored_at)
+               VALUES (?1, ?2, ?3, ?3, ?4, ?5)"#,
+            (
+                "alice-id",
+                "did:example:alice",
+                "g1",
+                "Group One",
+                "2026-07-13T00:00:00Z",
+            ),
+        )
+        .unwrap();
+        db.execute(
+            r#"INSERT INTO groups
+               (owner_identity_id, owner_did, group_id, group_did, name, stored_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+            (
+                "alice-id",
+                "did:example:alice",
+                "legacy-g1-alias",
+                "g1",
+                "Legacy Group One",
+                "2026-07-12T00:00:00Z",
+            ),
+        )
+        .unwrap();
         for record in [
             crate::internal::local_state::conversation_registry::ConversationRegistryRecord {
                 owner_identity_id: "alice-id".into(),
@@ -441,6 +489,7 @@ mod tests {
         assert_eq!(rows[0].thread_kind, "direct");
         assert_eq!(rows[0].direct_peer_did, "did:example:bob");
         assert_eq!(rows[1].thread_kind, "group");
+        assert_eq!(rows[1].title, "Group One");
     }
 
     #[test]

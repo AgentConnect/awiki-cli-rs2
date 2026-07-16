@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -808,6 +809,107 @@ async fn directory_display_profile_hydration_reads_local_cache_only() {
 }
 
 #[tokio::test]
+async fn directory_display_profile_hydration_prefers_persona_profile_without_contact() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_with_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    client
+        .directory()
+        .resolve_peer_async(PeerRef::parse("bob.awiki.test", "").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(server.join().len(), 2);
+
+    let connection = rusqlite::Connection::open(fixture.root.join("local/im.sqlite")).unwrap();
+    connection.execute("DELETE FROM contacts", []).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM peer_profiles", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        1
+    );
+    drop(connection);
+
+    let hydrated = client
+        .directory()
+        .hydrate_display_profiles_async(DisplayProfileBatchRequest {
+            peers: vec![PeerRef::parse("did:example:bob", "").unwrap()],
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(hydrated.len(), 1);
+    assert!(hydrated[0].cache_hit);
+    assert_eq!(hydrated[0].display_name.as_deref(), Some("Bob WNS"));
+    assert_eq!(
+        hydrated[0].handle.as_ref().map(Handle::as_str),
+        Some("bob.awiki.test")
+    );
+}
+
+#[cfg(feature = "blocking")]
+#[test]
+fn directory_display_profile_hydration_blocking_prefers_persona_profile_without_contact() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_with_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    client
+        .directory()
+        .resolve_peer(PeerRef::parse("bob.awiki.test", "").unwrap())
+        .unwrap();
+    assert_eq!(server.join().len(), 2);
+
+    let connection = rusqlite::Connection::open(fixture.root.join("local/im.sqlite")).unwrap();
+    connection.execute("DELETE FROM contacts", []).unwrap();
+    drop(connection);
+
+    let hydrated = client
+        .directory()
+        .hydrate_display_profiles(DisplayProfileBatchRequest {
+            peers: vec![PeerRef::parse("did:example:bob", "").unwrap()],
+        })
+        .unwrap();
+
+    assert_eq!(hydrated.len(), 1);
+    assert!(hydrated[0].cache_hit);
+    assert_eq!(hydrated[0].display_name.as_deref(), Some("Bob WNS"));
+    assert_eq!(
+        hydrated[0].handle.as_ref().map(Handle::as_str),
+        Some("bob.awiki.test")
+    );
+}
+
+#[tokio::test]
 async fn messages_history_with_handle_merges_local_handle_history_in_im_core() {
     let fixture = Fixture::new();
     let old_did = "did:example:bob-old";
@@ -1456,11 +1558,16 @@ fn public_profile_value() -> Value {
 }
 
 fn unique_temp_root() -> PathBuf {
+    static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("im-core-phase2-{}-{nanos}", std::process::id()))
+    let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "im-core-phase2-{}-{nanos}-{sequence}",
+        std::process::id()
+    ))
 }
 
 struct RpcTestServer {

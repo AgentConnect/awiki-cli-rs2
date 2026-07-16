@@ -272,6 +272,7 @@ class DartConversationSnapshotItem {
   final DartConversationResolutionState resolutionState;
   final String threadKind;
   final String threadId;
+  final String? title;
   final DartConversationIdentity? conversationIdentity;
   final List<String> participants;
   final DartConversationSnapshotMessage? lastMessage;
@@ -289,6 +290,7 @@ class DartConversationSnapshotItem {
     required this.resolutionState,
     required this.threadKind,
     required this.threadId,
+    this.title,
     this.conversationIdentity,
     required this.participants,
     this.lastMessage,
@@ -308,6 +310,7 @@ class DartConversationSnapshotItem {
       resolutionState.hashCode ^
       threadKind.hashCode ^
       threadId.hashCode ^
+      title.hashCode ^
       conversationIdentity.hashCode ^
       participants.hashCode ^
       lastMessage.hashCode ^
@@ -329,6 +332,7 @@ class DartConversationSnapshotItem {
           resolutionState == other.resolutionState &&
           threadKind == other.threadKind &&
           threadId == other.threadId &&
+          title == other.title &&
           conversationIdentity == other.conversationIdentity &&
           participants == other.participants &&
           lastMessage == other.lastMessage &&

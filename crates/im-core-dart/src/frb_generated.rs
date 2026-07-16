@@ -7107,6 +7107,7 @@ impl SseDecode for crate::dto::message::DartConversationSnapshotItem {
             <crate::dto::message::DartConversationResolutionState>::sse_decode(deserializer);
         let mut var_threadKind = <String>::sse_decode(deserializer);
         let mut var_threadId = <String>::sse_decode(deserializer);
+        let mut var_title = <Option<String>>::sse_decode(deserializer);
         let mut var_conversationIdentity =
             <Option<crate::dto::message::DartConversationIdentity>>::sse_decode(deserializer);
         let mut var_participants = <Vec<String>>::sse_decode(deserializer);
@@ -7127,6 +7128,7 @@ impl SseDecode for crate::dto::message::DartConversationSnapshotItem {
             resolution_state: var_resolutionState,
             thread_kind: var_threadKind,
             thread_id: var_threadId,
+            title: var_title,
             conversation_identity: var_conversationIdentity,
             participants: var_participants,
             last_message: var_lastMessage,
@@ -11055,6 +11057,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartConversationSnap
             self.resolution_state.into_into_dart().into_dart(),
             self.thread_kind.into_into_dart().into_dart(),
             self.thread_id.into_into_dart().into_dart(),
+            self.title.into_into_dart().into_dart(),
             self.conversation_identity.into_into_dart().into_dart(),
             self.participants.into_into_dart().into_dart(),
             self.last_message.into_into_dart().into_dart(),
@@ -14588,6 +14591,7 @@ impl SseEncode for crate::dto::message::DartConversationSnapshotItem {
         );
         <String>::sse_encode(self.thread_kind, serializer);
         <String>::sse_encode(self.thread_id, serializer);
+        <Option<String>>::sse_encode(self.title, serializer);
         <Option<crate::dto::message::DartConversationIdentity>>::sse_encode(
             self.conversation_identity,
             serializer,

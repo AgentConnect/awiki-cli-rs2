@@ -8,7 +8,7 @@ use crate::messages::{ConversationListSnapshot, ConversationSnapshotItem};
 const SNAPSHOT_TABLE: TableDefinition<&str, &[u8]> =
     TableDefinition::new("conversation_snapshots_v1");
 const SNAPSHOT_FILE_NAME: &str = "conversation_snapshots.redb";
-const FORMAT_VERSION: u32 = 2;
+const FORMAT_VERSION: u32 = 3;
 const MAX_SNAPSHOT_ITEMS: usize = 200;
 
 #[derive(Debug, Clone)]
@@ -355,6 +355,7 @@ mod tests {
             resolution_state: crate::messages::ConversationResolutionState::LegacyUnresolved,
             thread_kind: "direct".to_owned(),
             thread_id: "did:example:bob".to_owned(),
+            title: None,
             conversation_identity: None,
             participants: vec!["did:example:bob".to_owned()],
             last_message: Some(crate::messages::ConversationSnapshotMessage {

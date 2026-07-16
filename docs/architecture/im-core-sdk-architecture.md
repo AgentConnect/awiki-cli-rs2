@@ -296,6 +296,14 @@ materialize a `dm:<DID>` message or registry row. Local pending/outgoing
 projection remains a separate write path because it is created from an already
 validated conversation/send boundary.
 
+For an online first inbound Direct, the realtime ingress performs an
+authoritative Handle lookup by the wire peer DID, verifies that the lookup DID
+matches that snapshot, and projects the verified Persona/route before committing
+the message. This is not a DID-derived Persona fallback. If authority lookup is
+unavailable, malformed, conflicting, or returns another DID, the normal
+canonical-ingress rule still places the message in the resolution backlog; no
+legacy Direct row or authoritative patch is emitted.
+
 The redacted canonical invariant doctor is available through the local-state
 compatibility diagnostics. It reports counts and invariant labels only: active
 Direct/Group exact-one violations, unresolved resolved rows, alias chains or
@@ -324,7 +332,7 @@ Because summaries contain message preview fields, diagnostics and tests should t
 Conversation snapshot and patch APIs are non-authoritative acceleration layers on top of committed local projection:
 
 - `messages.load_conversation_snapshot()` / Dart `client.messages.loadConversationSnapshot()` reads a redb snapshot generated from `conversation_summaries`.
-- Snapshot entries use `ConversationSnapshotItem`, a core-only DTO containing thread identity, participants, last message projection, unread counts, message count, and last message time.
+- Snapshot entries use `ConversationSnapshotItem`, a core-only DTO containing thread identity, the committed Group profile title when applicable, participants, last message projection, unread counts, message count, and last message time. Group title comes from Core's owner-scoped `groups` projection; it is not an App presentation overlay.
 - `messages.watch_conversation_patches()` / Dart `client.messages.watchConversationPatches()` streams versioned `ConversationStorePatch` values from an in-memory runtime store seeded by snapshot/local projection.
 - `messages.repair_conversation_store()` / Dart `client.messages.repairConversationStore()` returns a reset/repair patch and the current runtime store version after lag, overflow, stream close, or version gaps.
 - `messages.watch_conversation_timeline_patches(conversation, limit)` / Dart `client.messages.watchConversationTimelinePatches(conversation, limit: ...)` streams versioned `ThreadMessageStorePatch` values for the currently opened canonical conversation timeline.
@@ -335,7 +343,7 @@ Conversation snapshot and patch APIs are non-authoritative acceleration layers o
 
 The public APIs currently live under `messages()` / `client.messages` for compatibility with the existing SDK grouping. A future `conversations()` / `client.conversations` namespace may wrap the same core store, but both names must not expose divergent DTOs or ownership semantics.
 
-`ConversationSnapshotItem` and `ConversationStorePatch` must remain SDK/core DTOs. They must not include `awiki-me` App-only presentation fields such as `hidden`, `pinned`, `muted`, `customTitle`, `avatarSeed`, `peerLifecycleState`, `ConversationSummary`, or `ChatMessage`. AWiki Me composes those fields in its own application layer; see `awiki-me/docs/conversation-presentation-ownership.md`.
+`ConversationSnapshotItem` and `ConversationStorePatch` must remain SDK/core DTOs. Their optional Group `title` is a committed Group profile projection, not an App-local override. They must not include `awiki-me` App-only presentation fields such as `hidden`, `pinned`, `muted`, `customTitle`, `avatarSeed`, `peerLifecycleState`, `ConversationSummary`, or `ChatMessage`. AWiki Me composes those fields in its own application layer; see `awiki-me/docs/conversation-presentation-ownership.md`.
 
 Because snapshots and patches contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
 
@@ -394,7 +402,10 @@ fails, it must not emit an authoritative conversation/timeline patch. Identity-
 unresolved realtime messages are durably backlogged by the same canonical
 ingress used for remote history and are replayed only after verified Persona
 projection; the next reliable sync or repair path remains responsible for
-convergence.
+convergence. When the Handle authority lookup succeeds, Persona projection and
+the inbound message commit happen in that order in the same local-state actor
+sequence, so a first inbound Direct becomes patch-visible under its canonical
+Persona conversation without briefly materializing a DID conversation.
 
 Schema version 20 adds `sync_state` with owner-scoped checkpoint rows:
 
