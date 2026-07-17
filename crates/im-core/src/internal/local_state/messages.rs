@@ -1294,6 +1294,38 @@ WHERE owner_identity_id = ?
     for row in rows {
         result.push(row.map_err(super::local_state_unavailable)?);
     }
+    let mut known_message_ids = result
+        .iter()
+        .map(|record| record.msg_id.clone())
+        .collect::<BTreeSet<_>>();
+    let backlog_statement = format!(
+        r#"
+SELECT message_record_json
+FROM inbound_resolution_backlog
+WHERE owner_identity_id = ?
+  AND message_id IN ({placeholders})"#
+    );
+    let mut statement = connection
+        .prepare(&backlog_statement)
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(params.as_slice(), |row| row.get::<_, String>(0))
+        .map_err(super::local_state_unavailable)?;
+    for row in rows {
+        let payload = row.map_err(super::local_state_unavailable)?;
+        let record = serde_json::from_str::<MessageRecord>(&payload).map_err(|err| {
+            crate::ImError::LocalStateUnavailable {
+                detail: format!("failed to decode unresolved secure message: {err}"),
+            }
+        })?;
+        let is_decrypted = parse_metadata(&record.metadata)
+            .get("decryption_state")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|state| state == "decrypted");
+        if record.is_e2ee && is_decrypted && known_message_ids.insert(record.msg_id.clone()) {
+            result.push(record);
+        }
+    }
     Ok(result)
 }
 
@@ -3816,6 +3848,44 @@ fn now_utc_like() -> String {
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decrypted_secure_lookup_uses_unresolved_durable_projection() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let record = MessageRecord {
+            msg_id: "msg-secure-unresolved".to_owned(),
+            owner_identity_id: "owner-id".to_owned(),
+            owner_did: "did:example:owner".to_owned(),
+            conversation_id: "dm:did:example:peer".to_owned(),
+            thread_id: "dm:did:example:peer".to_owned(),
+            direction: 0,
+            sender_did: "did:example:peer".to_owned(),
+            receiver_did: "did:example:owner".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "decrypted text".to_owned(),
+            is_e2ee: true,
+            metadata: r#"{"decryption_state":"decrypted"}"#.to_owned(),
+            ..MessageRecord::default()
+        };
+        let outcome = super::super::inbound_resolution_backlog::ingest_remote_messages(
+            &db,
+            std::slice::from_ref(&record),
+            "remote_history",
+        )
+        .unwrap();
+        assert_eq!(outcome.stored_messages, 0);
+        assert_eq!(outcome.backlogged_messages, 1);
+
+        let cached = list_decrypted_secure_messages_for_owner_identity(
+            &db,
+            "owner-id",
+            &[record.msg_id.clone()],
+        )
+        .unwrap();
+
+        assert_eq!(cached, vec![record]);
+    }
 
     fn wire_identity_record() -> MessageRecord {
         MessageRecord {
