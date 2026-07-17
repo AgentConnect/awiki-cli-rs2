@@ -21,8 +21,8 @@ Step index：05
 
 ## 2. 目标
 
-- 结果：Daemon 使用 user delegated identity 拉取普通非 E2EE inbox/history，持久化 cursor 和 processed message，把消息投递给 active `app_message_agent_binding`。
-- 用户 / 系统可见行为：用户普通消息到达后，即使 APP 没打开，Daemon 也能同步给专用 Hermes Message Agent 处理；E2EE opaque notification 不进入 Agent pipeline。
+- 结果：Daemon 使用 user delegated identity 拉取普通非 E2EE inbox/history，持久化 cursor 和 processed message，把消息投递给 active `app_personal_agent_binding`。
+- 用户 / 系统可见行为：用户普通消息到达后，即使 APP 没打开，Daemon 也能同步给专用 Hermes Personal Agent 处理；E2EE opaque notification 不进入 Agent pipeline。
 - 非目标：不拉取或处理 E2EE 明文、摘要、metadata projection、private state；不实现 APP action 全部能力；不修改 message-service 服务器逻辑，本步骤只消费 Step 07 契约。
 - 完成标准：`process_user_delegated_inbox_once` 可使用 `InboxHistoryOptions` 拉取普通消息；durable `inbox_cursor` 与 `processed_message` 防重复/丢失；E2EE opaque 消息被丢弃或标记 `ignored_e2ee_opaque`。
 
@@ -30,7 +30,7 @@ Step index：05
 
 - 设计边界：user delegated inbox sync 与现有 Runtime Agent own inbox 分开，避免把用户普通消息和 agent command inbox 混为一个 cursor。
 - 核心决策：durable cursor + processed message 是上线前置；不能只用内存 HashSet。
-- 契约 / API / 数据流：foreground tick 调用 `process_user_delegated_inbox_once`；Daemon 从 `user_delegated_identity` 与 `app_message_agent_binding` 取 `inbox_owner_did` 和 `inbox_auth_verification_method`；通过 `im-core` 拉取普通消息；写入最小 `message_event` 投影；把消息以 untrusted content envelope 投递给 Hermes；通过 `message.sync` / `app.action.result` 同步给 APP。
+- 契约 / API / 数据流：foreground tick 调用 `process_user_delegated_inbox_once`；Daemon 从 `user_delegated_identity` 与 `app_personal_agent_binding` 取 `inbox_owner_did` 和 `inbox_auth_verification_method`；通过 `im-core` 拉取普通消息；写入最小 `message_event` 投影；把消息以 untrusted content envelope 投递给 Hermes；通过 `message.sync` / `app.action.result` 同步给 APP。
 - 兼容性：现有 agent inbox polling 不应被破坏；普通消息 default_plain 和系统 payload dispatch 分开。
 - 迁移策略：新增 state table/record：`inbox_cursor`、`processed_message`、`message_event`、`message_sync_outbox`。
 - 风险控制：处理消息前先判断类型和 E2EE 标记；E2EE opaque 不写入可处理明文事件，不进入 prompt。普通非 E2EE 消息进入 Agent 前也必须做最小投影和 prompt 注入隔离，不得把用户正文拼接成系统指令。
@@ -69,7 +69,7 @@ message_event(
 1. 阅读 `awiki-cli-rs2/crates/awiki-deamon/src/foreground.rs`、`runtime_inbox.rs`、`inbox/mod.rs`、`outbox/mod.rs` 和 `im_core_adapter.rs`。
 2. 定义 user delegated inbox state：`inbox_cursor(owner_did, inbox_scope, cursor, updated_at)` 和 `processed_message(owner_did, message_id, schema, processed_at, status)`。
 3. 实现 `process_user_delegated_inbox_once(binding_id)`：构造 `InboxHistoryOptions`，调用 Step 02 API 拉取普通非 E2EE消息。
-4. 实现 message dispatch：default plain 消息进入 Hermes Message Agent；`awiki.message.sync.v1`、`awiki.app.action.v1` 等 system/control payload 进入对应 handler；E2EE opaque notification 直接 ignore/drop。
+4. 实现 message dispatch：default plain 消息进入 Hermes Personal Agent；`awiki.message.sync.v1`、`awiki.app.action.v1` 等 system/control payload 进入对应 handler；E2EE opaque notification 直接 ignore/drop。
 5. 实现 ordinary message projection：构造 untrusted content envelope，写入最小 `message_event`，避免保存完整 prompt 或把用户正文当系统指令。
 6. 实现 crash recovery：先记录处理状态或使用事务，确保重复拉取不会重复投递；失败进入 retry/outbox。
 7. 增加状态和 final/action 回传路径：Agent processing status、final summary、draft/action request 通过 `message_sync_outbox` 或现有 outbox 同步给 APP。
@@ -89,7 +89,7 @@ message_event(
 
 ## 6. 依赖
 
-- 前置步骤：Step 02 optional inbox API；Step 04 active message agent binding；Step 07 message-service delegated inbox 契约。可先用 mock adapter 开发，但最终验收依赖 Step 07。
+- 前置步骤：Step 02 optional inbox API；Step 04 active personal agent binding；Step 07 message-service delegated inbox 契约。可先用 mock adapter 开发，但最终验收依赖 Step 07。
 - 外部文档或决策：`agent_im_core_design.md` 第 3.2、5.1、5.3、5.4；`agent_delegated_identity_message_proof_plan.md` 第 3.4、5.8、8。
 - 环境前提：能运行 awiki-deamon unit tests；如 message-service 尚未实现，必须用 mock 明确隔离。
 
@@ -97,7 +97,7 @@ message_event(
 
 - [x] `process_user_delegated_inbox_once` 使用 `inbox_owner_did` 和 `inbox_auth_verification_method` 拉取普通消息。
 - [x] `inbox_cursor` 和 `processed_message` 持久化，并能覆盖重启、重试、历史重放。
-- [x] 普通非 E2EE 消息投递给 active `app_message_agent_binding`。
+- [x] 普通非 E2EE 消息投递给 active `app_personal_agent_binding`。
 - [x] 普通非 E2EE 消息投递给 Hermes 前被包装为 untrusted content envelope，不把用户正文当系统指令。
 - [x] `message_event` 使用最小投影，不保存 E2EE 内容或 Hermes 完整 prompt；全文保留策略如需启用必须记录 retention class。
 - [x] E2EE opaque notification 不解密、不转发给 Hermes、不写入可处理明文事件。

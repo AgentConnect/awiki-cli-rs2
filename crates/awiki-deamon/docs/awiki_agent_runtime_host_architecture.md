@@ -1489,7 +1489,7 @@ WebSocket notification 只作为唤醒与 dirty hint。daemon 不读取或写入
 
 #### 9.5.1 ANP P9 群消息 mention 触发
 
-用户委托的 App Message Agent 可以拉取 controller 的 direct 与 group inbox。对群消息，daemon 只在消息 body 是合法 ANP P9 `text + mentions` JSON payload，并且 mention 命中当前 runtime agent 时创建 RuntimeTask：
+用户委托的 App Personal Agent 可以拉取 controller 的 direct 与 group inbox。对群消息，daemon 只在消息 body 是合法 ANP P9 `text + mentions` JSON payload，并且 mention 命中当前 runtime agent 时创建 RuntimeTask：
 
 - `target.kind = agent` 时只按 `target.did == runtime_agent_did` 精确命中；`display_name` 只可作为展示快照，不能参与身份判断。
 - `target.kind = group_selector` 不触发 runtime agent，包括 `selector = all` / `agents` / `humans`。当前版本不做群 selector 展开，也不允许 `@agents` / `@all` 作为 Agent 调用入口。

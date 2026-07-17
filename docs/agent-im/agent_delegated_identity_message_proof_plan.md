@@ -3,9 +3,9 @@
 
 > 历史文档说明：本文件记录的是早期 Agent delegated identity 讨论稿。
 > 其中“第一阶段 / MVP”里关于明文 bootstrap、`message.send.plain`
-> 默认能力和 Agent 代发的描述已经被当前 Message Agent MVP 收口取代。
+> 默认能力和 Agent 代发的描述已经被当前 Personal Agent MVP 收口取代。
 > 当前权威方案以
-> `awiki-me-message-agent/docs/message-agent/message-agent-design.md`
+> `awiki-me-personal-agent/docs/personal-agent/personal-agent-design.md`
 > 以及本仓库代码中的 secure bootstrap / no-send 实现为准；长期
 > Agent DID + human authorization double-proof 仍是后续技术债。
 
@@ -295,7 +295,7 @@ DID Document 示例：
 
 MVP 按当前决策采用“APP 创建用户 DID Document 时本地生成 `#daemon-key-1` 子私钥，只把由该 key package 导出的 public verification method 提交给 user-service 登记到 DID Document `verificationMethod` 与 `authentication`，并通过普通消息发送明文 JSON bootstrap payload 把该既有子私钥传给 Daemon”的直接方案。这里的明文传递是第一版安全缺口，后续必须在同一普通消息发送路径上把 bootstrap body 改为加密文本或加密 JSON envelope。
 
-这个 bootstrap 不只是传 key package，也是一条一次性声明式 session：APP 把用户 delegated subkey、APP capability policy 和 `desired_message_agent` 交给 Daemon。Daemon 收到后执行 `ensure_app_message_agent`，创建或复用专门处理 APP 普通消息的 Hermes Message Agent，并把该 Agent 与 user delegated inbox/send 能力绑定。APP 不应反复发送命令式 create runtime command；重复 bootstrap 必须通过 `bootstrap_id` / `idempotency_key` 幂等处理。
+这个 bootstrap 不只是传 key package，也是一条一次性声明式 session：APP 把用户 delegated subkey、APP capability policy 和 `desired_personal_agent` 交给 Daemon。Daemon 收到后执行 `ensure_app_personal_agent`，创建或复用专门处理 APP 普通消息的 Hermes Personal Agent，并把该 Agent 与 user delegated inbox/send 能力绑定。APP 不应反复发送命令式 create runtime command；重复 bootstrap 必须通过 `bootstrap_id` / `idempotency_key` 幂等处理。
 
 ```mermaid
 sequenceDiagram
@@ -311,8 +311,8 @@ sequenceDiagram
     App->>MS: 普通消息发送 awiki.daemon.bootstrap.v1 明文 JSON
     MS-->>D: 下发普通消息 JSON control payload
     D->>D: MVP 按现有 daemon identity private key 方式存储
-    D->>D: ensure_app_message_agent(role=app_message_handler)
-    D->>D: 保存 app_message_agent_binding / runtime token policy
+    D->>D: ensure_app_personal_agent(role=app_message_handler)
+    D->>D: 保存 app_personal_agent_binding / runtime token policy
     D->>MS: 使用 #daemon-key-1 做 did:wba/ANP proof 发送或拉取普通消息
     MS-->>D: 认证成功
 ```
@@ -355,7 +355,7 @@ MVP 明文 payload 结构建议如下。后续加密 body 落地后，该结构�
 {
   "schema": "awiki.daemon.bootstrap.v1",
   "bootstrap_id": "boot_20260609_001",
-  "idempotency_key": "message-agent-bootstrap:did:wba:example.com:user:alice:e1_userfingerprint:app_instance_1",
+  "idempotency_key": "personal-agent-bootstrap:did:wba:example.com:user:alice:e1_userfingerprint:app_instance_1",
   "pairing_session_id": "pair_123",
   "app_instance_id": "app_instance_1",
   "controller_did": "did:wba:example.com:user:alice:e1_userfingerprint",
@@ -381,11 +381,11 @@ MVP 明文 payload 结构建议如下。后续加密 body 落地后，该结构�
     "did_document_version_hint": "did-doc-version-or-etag",
     "one_time_install_nonce": "nonce_..."
   },
-  "desired_message_agent": {
+  "desired_personal_agent": {
     "role": "app_message_handler",
     "runtime": "hermes",
-    "display_name": "Hermes Message Agent",
-    "ensure_once_key": "app-message-agent:did:wba:example.com:user:alice:e1_userfingerprint:app_instance_1",
+    "display_name": "Hermes Personal Agent",
+    "ensure_once_key": "app-personal-agent:did:wba:example.com:user:alice:e1_userfingerprint:app_instance_1",
     "auto_create": true,
     "plain_message_visible": true,
     "e2ee_visible": false,
@@ -414,10 +414,10 @@ MVP 明文 payload 结构建议如下。后续加密 body 落地后，该结构�
 注意：
 
 1. `allowed_usage_hint` 在 MVP 中只是本域策略提示，不是 DID Core 标准强制语义。运行时真正权限由 message-service 根据 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 执行；user-service 只负责 DID Document 中 public verification method 的登记和移除；scoped token scope 是后续优化路径。
-2. `desired_message_agent` 表示期望状态，不是命令式创建请求。Daemon 应以 `ensure_once_key` 幂等创建或复用 `role=app_message_handler` 的 Runtime Agent。
-3. Hermes Message Agent 不直接持有子私钥；Daemon 只把 inbox/send 能力通过 local RPC、runtime token 和 policy 暴露给它。
+2. `desired_personal_agent` 表示期望状态，不是命令式创建请求。Daemon 应以 `ensure_once_key` 幂等创建或复用 `role=app_message_handler` 的 Runtime Agent。
+3. Hermes Personal Agent 不直接持有子私钥；Daemon 只把 inbox/send 能力通过 local RPC、runtime token 和 policy 暴露给它。
 4. APP / im-core 新写的 key package 必须使用 `awiki.daemon.user_subkey_package.v2`、`private_key_encoding: "pem"` 和 `private_key_pem`；Daemon 只为兼容旧 bootstrap 数据读取 v1 的 `private_key_multibase`。
-5. 新建 binding 的 APP action 授权必须来自显式 `capability_policy.schema = "awiki.app.capabilities.v1"`；空 `capabilities` 表示不允许执行 APP action。`desired_message_agent.allowed_actions` 只保留为旧 binding 兼容/展示提示。
+5. 新建 binding 的 APP action 授权必须来自显式 `capability_policy.schema = "awiki.app.capabilities.v1"`；空 `capabilities` 表示不允许执行 APP action。`desired_personal_agent.allowed_actions` 只保留为旧 binding 兼容/展示提示。
 
 ### 5.6 Daemon 存储要求
 
@@ -1085,7 +1085,7 @@ Scope 对应关系：
 
 1. `pairing` 模块
    - pairing session；
-   - MVP 接收明文 bootstrap envelope，其中包含 key package 和 `desired_message_agent`；
+   - MVP 接收明文 bootstrap envelope，其中包含 key package 和 `desired_personal_agent`；
    - 后续增加 ephemeral key agreement；
    - 后续解密普通消息 body 中的 encrypted bootstrap envelope；
    - bootstrap audit。
@@ -1098,12 +1098,12 @@ Scope 对应关系：
    - 提供 ordinary inbox/history receive proof 能力；
    - 支持 revoke / rotate / status。
 
-3. `message_agent` 模块
-   - 解析 `desired_message_agent`；
-   - 执行 `ensure_app_message_agent`；
+3. `personal_agent` 模块
+   - 解析 `desired_personal_agent`；
+   - 执行 `ensure_app_personal_agent`；
    - 用 `ensure_once_key` / `idempotency_key` 保证同一用户和 APP 只创建一个 active `app_message_handler`；
    - 创建或复用 Hermes Runtime Agent；
-   - 持久化 `app_message_agent_bindings`；
+   - 持久化 `app_personal_agent_bindings`；
    - 把 runtime_agent_did、user delegated subkey、APP capability policy 和 runtime token scope 绑定起来；
    - Daemon 重启后恢复 binding，不要求 APP 再次发送 create command。
 
@@ -1118,7 +1118,7 @@ Scope 对应关系：
 5. `foreground` / inbox loop
    - 当前以 agent identity 轮询 agent inbox；
    - 新增 user delegated inbox poller；
-   - 将普通消息投递给 `app_message_agent_bindings` 中 active 的 message handler agent；
+   - 将普通消息投递给 `app_personal_agent_bindings` 中 active 的 message handler agent；
    - 普通消息进入 Agent processing pipeline；
    - MVP 不把 E2EE 消息交给 Agent；服务器不应通过 delegated inbox/history pull 向 Daemon 返回 E2EE metadata projection、明文或 private state；
    - 如果 Daemon 通过同 DID WebSocket fanout 收到 E2EE opaque notification，直接丢弃或记录不可处理状态，不进入 Agent processing pipeline。
@@ -1133,7 +1133,7 @@ Scope 对应关系：
    - Hermes 调 `msg.send` 时由 Daemon 按 policy 决定是否使用 user delegated sender。
 
 8. `state`
-   - MVP 新增表：`user_delegated_subkeys`、`pairing_sessions`、`app_message_agent_bindings`；
+   - MVP 新增表：`user_delegated_subkeys`、`pairing_sessions`、`app_personal_agent_bindings`；
    - 后续再增加 `delegated_inbox_tokens`、`agent_delegations`。
 
 ### 10.3 message-service
@@ -1294,7 +1294,7 @@ CREATE TABLE user_delegated_subkeys (
   allowed_usage_hint_json TEXT
 );
 
-CREATE TABLE app_message_agent_bindings (
+CREATE TABLE app_personal_agent_bindings (
   binding_id TEXT PRIMARY KEY,
   ensure_once_key TEXT NOT NULL UNIQUE,
   pairing_session_id TEXT NOT NULL,
@@ -1382,11 +1382,11 @@ CREATE TABLE user_agent_delegations (
 ### 12.1 MVP 子私钥测试
 
 1. APP 创建用户 DID Document 前本地生成 `#daemon-key-1` private/public key package；调用最新 DID API 时 user-service 只接收由该 key package 导出的 public verification method，并登记到 DID Document 的 `verificationMethod` 与 `authentication`。
-2. APP 一次性 bootstrap envelope 包含 `#daemon-key-1` key package、APP capabilities 和 `desired_message_agent`。
-3. Daemon 执行 `ensure_app_message_agent` 后创建或复用 `role=app_message_handler` 的 Hermes Message Agent。
-4. `app_message_agent_bindings` 写入 user DID、verification method、app_instance、pairing_session、runtime_agent_did 和 capability policy。
+2. APP 一次性 bootstrap envelope 包含 `#daemon-key-1` key package、APP capabilities 和 `desired_personal_agent`。
+3. Daemon 执行 `ensure_app_personal_agent` 后创建或复用 `role=app_message_handler` 的 Hermes Personal Agent。
+4. `app_personal_agent_bindings` 写入 user DID、verification method、app_instance、pairing_session、runtime_agent_did 和 capability policy。
 5. 同一个 `bootstrap_id` / `idempotency_key` 重放时，不创建第二个 active message handler agent。
-6. Daemon 重启后恢复 `app_message_agent_bindings`，不要求 APP 再发 create runtime command。
+6. Daemon 重启后恢复 `app_personal_agent_bindings`，不要求 APP 再发 create runtime command。
 7. Daemon 使用 `#daemon-key-1` 签 `direct.send`。
 8. message-service 验证通过。
 9. 移除 `#daemon-key-1` 后，旧签名请求验证失败。

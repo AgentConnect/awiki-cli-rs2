@@ -2367,7 +2367,7 @@ fn runtime_recipient_policy(
     authority: RuntimeInvocationAuthority,
 ) -> Result<RecipientPolicy> {
     if let Some(binding) =
-        state.load_active_app_message_agent_binding_by_runtime(&profile.agent_did)?
+        state.load_active_app_personal_agent_binding_by_runtime(&profile.agent_did)?
     {
         return Ok(RecipientPolicy::app_message_handler(&binding.user_did));
     }

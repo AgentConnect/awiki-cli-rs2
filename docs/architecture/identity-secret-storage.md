@@ -14,7 +14,7 @@ Authority: authoritative for `awiki-cli-rs2` client-side identity secret storage
 - `im-core` identity private material 已有 `SecretVault` contract；host 使用 `VaultRequired` 时，新注册、恢复、daemon subkey package persistence 和 JWT/token refresh 不写新明文私钥/JWT 文件。
 - CLI 新 workspace 默认使用 `secret_storage.mode=vault_required`。root key 优先来自 `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64`，否则来自 `vault_dir/root-key.b64u` 本地私有文件；root key 不进入 workspace config、doctor 或 JSON/human 输出。
 - AWiki Me 生产路径使用 Dart SDK `VaultRequired`，App-local root key 存在平台 secure storage；只有显式 E2E state root 使用私有 JSON test provider。
-- daemon 的 agent identity 私钥、Message Agent delegated 私钥和 `agent_auth_state.jwt_token` 已按 sentinel + `SecretRef` 方式保存，真实 secret seal 到 daemon SecretVault。
+- daemon 的 agent identity 私钥、Personal Agent delegated 私钥和 `agent_auth_state.jwt_token` 已按 sentinel + `SecretRef` 方式保存，真实 secret seal 到 daemon SecretVault。
 - Direct E2EE session/prekey local state 已通过 SecretVault envelope 加密落盘。
 
 仍需单独规划的事项：
@@ -44,7 +44,7 @@ App 侧的具体接入说明放在 `awiki-me/docs/identity-secret-storage.md`。
 | CLI identity | CLI 注册/恢复得到的 identity 私钥和 auth state | `crates/awiki-cli` + `im-core` | 默认 `secret_storage.mode=vault_required`；root key 来自 env 或本地私有 root-key 文件 |
 | App identity | AWiki Me 当前账号 identity 私钥和 auth state | `awiki-me` host + `im-core` | App 使用 Dart SDK `VaultRequired`，root key 放在平台 secure storage；E2E 才使用私有 JSON test provider |
 | Daemon agent | daemon/runtime agent DID 私钥 | `crates/awiki-deamon` | `daemon.db` 只保存 `<awiki-secret-vault-ref>` sentinel 和 `SecretRef` JSON；真实私钥 seal 到 daemon SecretVault |
-| Message Agent delegated key | `user_delegated_identity.private_key_material` | `crates/awiki-deamon` | sentinel + `private_key_ref_json`；真实 delegated private key seal 到 daemon SecretVault |
+| Personal Agent delegated key | `user_delegated_identity.private_key_material` | `crates/awiki-deamon` | sentinel + `private_key_ref_json`；真实 delegated private key seal 到 daemon SecretVault |
 | Daemon auth token | `agent_auth_state.jwt_token` | `crates/awiki-deamon` | `jwt_token` 列只保存 sentinel；真实 bearer token seal 到 daemon SecretVault |
 | Direct E2EE | session state、signed prekey private key、one-time prekey private key | `im-core` secure direct local state | SQLite 中保存 SecretVault envelope；新写入没有 vault 时拒绝明文 fallback |
 | Daemon delegated inbox | `inbox_auth_key_ref` | daemon + `im-core` | 新路径使用 `vault:` key ref，密钥 seal 到 `im-core` file vault |

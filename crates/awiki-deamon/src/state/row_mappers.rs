@@ -479,9 +479,9 @@ pub(super) fn secure_bootstrap_replay_from_row(
     })
 }
 
-pub(super) fn app_message_agent_binding_from_row(
+pub(super) fn app_personal_agent_binding_from_row(
     row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<AppMessageAgentBindingRecord> {
+) -> rusqlite::Result<AppPersonalAgentBindingRecord> {
     let desired_agent_json_raw: String = row.get(10)?;
     let desired_agent_json = serde_json::from_str(&desired_agent_json_raw).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(
@@ -499,7 +499,7 @@ pub(super) fn app_message_agent_binding_from_row(
                 Box::new(err),
             )
         })?;
-    Ok(AppMessageAgentBindingRecord {
+    Ok(AppPersonalAgentBindingRecord {
         binding_id: row.get(0)?,
         user_did: row.get(1)?,
         inbox_auth_verification_method: row.get(2)?,

@@ -21,16 +21,16 @@ Step index：06
 
 ## 2. 目标
 
-- 结果：`awiki-me` 在用户 DID 创建时本地生成 `user_did#daemon-key-1` private package，把 public registration 交给 user-service，并通过 message-service 普通消息发送把本地既有 private package 一次性发送给 Daemon，同时展示 bootstrap 与 message agent 状态。
+- 结果：`awiki-me` 在用户 DID 创建时本地生成 `user_did#daemon-key-1` private package，把 public registration 交给 user-service，并通过 message-service 普通消息发送把本地既有 private package 一次性发送给 Daemon，同时展示 bootstrap 与 personal agent 状态。
 - 用户 / 系统可见行为：用户安装 Daemon 后，APP 发送一次声明式 bootstrap system/control payload；Daemon 自动创建或复用消息处理智能体。APP 不反复发送 create runtime command。
 - 非目标：不实现独立 APP ↔ Daemon pairing channel、本地 RPC、局域网通道或第二条传输链路；不实现 bootstrap 普通消息 body 加密；不在 APP 侧追加修改 DID Document；不支持 E2EE 明文/摘要/metadata 转发给 Agent。
-- 完成标准：APP 能构造 `awiki.daemon.bootstrap.v1`，包含 `user_subkey_package`、APP capabilities 和 `desired_message_agent`；system/control payload 不显示成普通聊天；错误和重试幂等。
+- 完成标准：APP 能构造 `awiki.daemon.bootstrap.v1`，包含 `user_subkey_package`、APP capabilities 和 `desired_personal_agent`；system/control payload 不显示成普通聊天；错误和重试幂等。
 
 ## 3. 设计方法
 
 - 设计边界：APP 是用户授权、展示端和 daemon subkey private material 初始生成方；user-service 只登记 public verification method；Agent 创建由 Daemon ensure。APP 和 Daemon 之间只有 message-service 普通消息发送这一条通道。
 - 核心决策：bootstrap 是一次性 desired state；APP 记录 `bootstrap_id` / `idempotency_key`，重试同一 desired state，不循环创建 runtime。
-- 契约 / API / 数据流：APP 创建 DID 时生成 `DaemonSubkeyPrivatePackage`，向 user-service 提交 `DaemonDelegatedKeyPublicRegistration`；APP 在本地 session/identity service 保存 private package 或 key ref；通过现有 `sendPayload` / message-service 普通消息发送向 `daemon_agent_did` 发送 `awiki.daemon.bootstrap.v1`；MVP body 是明文 JSON，后续可改为加密文本或加密 JSON envelope；接收 Daemon 返回的 bootstrap/message agent status；后续 `message.sync`、`app.action`、`app.action.result` 都继续走同一普通消息发送路径。
+- 契约 / API / 数据流：APP 创建 DID 时生成 `DaemonSubkeyPrivatePackage`，向 user-service 提交 `DaemonDelegatedKeyPublicRegistration`；APP 在本地 session/identity service 保存 private package 或 key ref；通过现有 `sendPayload` / message-service 普通消息发送向 `daemon_agent_did` 发送 `awiki.daemon.bootstrap.v1`；MVP body 是明文 JSON，后续可改为加密文本或加密 JSON envelope；接收 Daemon 返回的 bootstrap/personal agent status；后续 `message.sync`、`app.action`、`app.action.result` 都继续走同一普通消息发送路径。
 - 兼容性：现有 AgentControlService 的 daemon install、status、create runtime 功能保留；新增 flow 只用于 APP message handler agent。
 - 迁移策略：已有用户如果没有 daemon key，提示或触发 Step 01 的兼容补齐/rotate 流程。
 - 风险控制：private key package 不进入 UI 文本、日志、普通 state dump；system/control payload 过滤规则优先于聊天渲染。
@@ -39,9 +39,9 @@ Step index：06
 
 1. 阅读 `awiki-me/lib/src/application/agent/agent_control_service.dart`、`agent_control_projection.dart`、`data/im_core/*`、`domain/entities/agent/*`、`presentation/agents/*`。
 2. 扩展 identity adapter 或 session model，使 APP 在 DID 创建时本地生成并保存 daemon subkey private package，同时只把 public registration 交给 user-service；如果当前 session 未保存，需要实现安全的本地传递/短期持有策略。
-3. 定义 Dart model：`DaemonBootstrapEnvelope`、`UserSubkeyPackage`、`DesiredMessageAgent`、`AppCapabilityPolicy`；字段与 Step 03 schema 对齐。
-4. 在 `AgentControlService` 或新增 daemon bootstrap service 中实现 `ensureMessageAgentBootstrap`：生成稳定 `idempotency_key`，通过普通消息发送 `sendPayload` 发送 payload，处理 success/conflict/retry。
-5. UI 只展示 bootstrap status、message agent status、授权范围摘要和错误恢复入口；不展示 key material。
+3. 定义 Dart model：`DaemonBootstrapEnvelope`、`UserSubkeyPackage`、`DesiredPersonalAgent`、`AppCapabilityPolicy`；字段与 Step 03 schema 对齐。
+4. 在 `AgentControlService` 或新增 daemon bootstrap service 中实现 `ensurePersonalAgentBootstrap`：生成稳定 `idempotency_key`，通过普通消息发送 `sendPayload` 发送 payload，处理 success/conflict/retry。
+5. UI 只展示 bootstrap status、personal agent status、授权范围摘要和错误恢复入口；不展示 key material。
 6. 更新 `ChatMessage` / payload filter：`awiki.daemon.bootstrap.v1`、`awiki.message.sync.v1`、`awiki.app.action.v1`、`awiki.app.action.result.v1` 不显示为普通聊天内容。
 7. 增加 tests：bootstrap payload 构造、idempotency、control payload hidden、状态 reducer、缺少 daemon key 的错误提示。
 
@@ -55,21 +55,21 @@ Step index：06
 | `awiki-me/lib/src/domain/entities/agent/agent_control_payloads.dart` | 新增 bootstrap/status/action schema model | 与 Daemon schema 对齐 |
 | `awiki-me/lib/src/domain/entities/session_identity.dart` | 记录 daemon key ref / bootstrap state | private key 存储需谨慎 |
 | `awiki-me/lib/src/domain/entities/chat_message.dart` | 过滤 system/control payload | 防止普通聊天污染 |
-| `awiki-me/lib/src/presentation/agents/*` | 展示 bootstrap/message agent 状态 | 不做营销式新页面 |
+| `awiki-me/lib/src/presentation/agents/*` | 展示 bootstrap/personal agent 状态 | 不做营销式新页面 |
 | `awiki-me/test/*` | 新增 service/provider/model tests | 以现有测试结构为准 |
 
 ## 6. 依赖
 
-- 前置步骤：Step 01 public registration/private package schema；Step 03 Daemon bootstrap schema；Step 04 message agent status 契约。
+- 前置步骤：Step 01 public registration/private package schema；Step 03 Daemon bootstrap schema；Step 04 personal agent status 契约。
 - 外部文档或决策：`agent_im_core_design.md` 第 3.1、5.2、5.7；`agent_delegated_identity_message_proof_plan.md` 第 5.3、5.5。
 - 环境前提：Flutter SDK 可运行 analyze/test；如果 im-core binding 未完成，可用接口 mock，但最终需补真实 adapter。
 
 ## 7. 验收标准
 
 - [x] APP 不在 bootstrap 时修改 DID Document；im-core 在 DID 创建 / 注册路径本地生成 `#daemon-key-1` private package，向 user-service 提交的 DID Document 已包含 public verification method 和 `authentication`。
-- [x] APP 能通过 message-service 普通消息发送构造并发送一次性 `awiki.daemon.bootstrap.v1`，包含 `desired_message_agent`。
+- [x] APP 能通过 message-service 普通消息发送构造并发送一次性 `awiki.daemon.bootstrap.v1`，包含 `desired_personal_agent`。
 - [x] `bootstrap_id` / `idempotency_key` 稳定，重试不变成重复 create runtime。
-- [x] APP 能展示 bootstrap 和 message agent ready/active/failed 状态。
+- [x] APP 能展示 bootstrap 和 personal agent ready/active/failed 状态。
 - [x] system/control payload 不显示成普通聊天；bootstrap private package 不进入普通聊天 UI、Hermes prompt、错误文案或日志。
 - [x] private key package 不进入 UI、日志、普通错误消息；只通过 `IdentityCorePort.loadDaemonSubkeyPackage` 在 bootstrap 时读取并传给 `AgentControlService`。
 - [x] Review 发现已经修复或明确记录。
@@ -104,7 +104,7 @@ Step index：06
 
 - `awiki-cli-rs2`：im-core identity registration 在本地生成 `#daemon-key-1`，把 public verification method 写入注册 DID Document `verificationMethod` 与 `authentication`，把 private package 保存为本地 package 文件，并通过单独 `load_daemon_subkey_package` API 暴露；`RegisterHandleRequest` 和 `HandleRegistrationResult` 未增加 private material 字段，老调用签名保持不变。
 - `awiki-cli-rs2`：Dart binding 通过可选的新方法 `loadDaemonSubkeyPackage` 暴露 package；native/web 条件导出都具备同名 API，web stub 只返回 unsupported。
-- `awiki-me`：`AgentsController.bootstrapMessageAgent` 在调用方未显式传入 `UserSubkeyPackage` 时，通过 `identityCorePortProvider.loadDaemonSubkeyPackage(session.credentialName)` 读取本地 package，再复用现有 `AgentControlService.ensureMessageAgentBootstrap` 发送普通消息 JSON desired state。
+- `awiki-me`：`AgentsController.bootstrapPersonalAgent` 在调用方未显式传入 `UserSubkeyPackage` 时，通过 `identityCorePortProvider.loadDaemonSubkeyPackage(session.credentialName)` 读取本地 package，再复用现有 `AgentControlService.ensurePersonalAgentBootstrap` 发送普通消息 JSON desired state。
 - secret 边界：private package 不进入 UI 文案、provider state dump 或错误文案；测试 fake 只使用 fixture 字符串。MVP 明文普通消息传输仍是已接受安全债。
 
 ## 10. Commit 要求

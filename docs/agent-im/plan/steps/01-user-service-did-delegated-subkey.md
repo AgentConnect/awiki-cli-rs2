@@ -46,7 +46,7 @@ APP 传给 user-service 的 public registration：
 ```json
 {
   "schema": "awiki.user.delegated_key.public_registration.v1",
-  "purpose": "daemon_message_agent",
+  "purpose": "daemon_personal_agent",
   "key_fragment": "daemon-key-1",
   "verification_method": "did:wba:example.com:user:alice:e1_xxx#daemon-key-1",
   "key_type": "Multikey",
@@ -106,7 +106,7 @@ user-service 保存和返回的 registry record：
   "schema": "awiki.user.delegated_key.registry_record.v1",
   "user_did": "did:wba:example.com:user:alice:e1_xxx",
   "verification_method": "did:wba:example.com:user:alice:e1_xxx#daemon-key-1",
-  "purpose": "daemon_message_agent",
+  "purpose": "daemon_personal_agent",
   "status": "active",
   "scopes": [
     "message.send.plain",

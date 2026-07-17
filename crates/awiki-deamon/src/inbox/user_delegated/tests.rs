@@ -20,7 +20,7 @@ impl UserDelegatedInboxClient for MockClient {
     fn fetch_user_delegated_inbox(
         &self,
         identity: &UserDelegatedIdentityRecord,
-        binding: &AppMessageAgentBindingRecord,
+        binding: &AppPersonalAgentBindingRecord,
         cursor: Option<&str>,
         _limit: u32,
     ) -> Result<DelegatedInboxPage> {
@@ -50,7 +50,7 @@ struct RecordingDispatcher {
 impl UserDelegatedMessageDispatcher for RecordingDispatcher {
     fn dispatch_user_message(
         &self,
-        _binding: &AppMessageAgentBindingRecord,
+        _binding: &AppPersonalAgentBindingRecord,
         task: RuntimeTask,
         envelope: &UserMessageEnvelope,
     ) -> Result<()> {
@@ -77,7 +77,7 @@ struct RecordingMessageSyncSender {
 impl MessageSyncPayloadSender for RecordingMessageSyncSender {
     fn send_message_sync_payload(
         &self,
-        binding: &AppMessageAgentBindingRecord,
+        binding: &AppPersonalAgentBindingRecord,
         idempotency_key: &str,
         payload: Value,
     ) -> Result<Option<String>> {
@@ -196,9 +196,9 @@ fn delegated_inbox_skips_revoked_binding_without_fetch_or_dispatch() {
     let fixture = fixture();
     let state = &fixture.state;
     let mut binding = fixture.binding.clone();
-    binding.status = "message_agent_revoked".to_string();
+    binding.status = "personal_agent_revoked".to_string();
     binding.revoked_at_ms = Some(123);
-    state.upsert_app_message_agent_binding(&binding).unwrap();
+    state.upsert_app_personal_agent_binding(&binding).unwrap();
     let client = MockClient {
         pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
             messages: vec![plain_message("msg_after_revoke", "did:human:bob", "hello")],
@@ -229,7 +229,7 @@ fn delegated_inbox_skips_revoked_binding_without_fetch_or_dispatch() {
         .audit_event_exists(
             "user_delegated_inbox.sync.skipped_inactive_binding",
             Some(&binding.daemon_agent_did),
-            Some("message_agent_revoked"),
+            Some("personal_agent_revoked"),
         )
         .unwrap());
 }
@@ -239,8 +239,8 @@ fn delegated_inbox_skips_disabled_binding_without_fetch_or_dispatch() {
     let fixture = fixture();
     let state = &fixture.state;
     let mut binding = fixture.binding.clone();
-    binding.status = "message_agent_disabled".to_string();
-    state.upsert_app_message_agent_binding(&binding).unwrap();
+    binding.status = "personal_agent_disabled".to_string();
+    state.upsert_app_personal_agent_binding(&binding).unwrap();
     let client = MockClient {
         pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
             messages: vec![plain_message("msg_disabled", "did:human:bob", "hello")],
@@ -266,7 +266,7 @@ fn delegated_inbox_skips_disabled_binding_without_fetch_or_dispatch() {
         .audit_event_exists(
             "user_delegated_inbox.sync.skipped_inactive_binding",
             Some(&binding.daemon_agent_did),
-            Some("message_agent_disabled"),
+            Some("personal_agent_disabled"),
         )
         .unwrap());
 }
@@ -1139,20 +1139,20 @@ fn delegated_runtime_outbound_message_and_attachment_are_rejected_without_plaint
     assert!(!audit_dump.contains("sensitive user draft should not be audited"));
     assert!(!audit_dump.contains("attachment plaintext should not be audited"));
     assert!(!audit_dump.contains("/tmp/secret-report.txt"));
-    assert!(audit_dump.contains("user_delegated_message_agent_outbound_send_not_enabled"));
-    assert!(audit_dump.contains("user_delegated_message_agent_attachment_send_not_enabled"));
+    assert!(audit_dump.contains("user_delegated_personal_agent_outbound_send_not_enabled"));
+    assert!(audit_dump.contains("user_delegated_personal_agent_attachment_send_not_enabled"));
 }
 
 struct TestFixture {
     _root: TempDir,
     state: DaemonState,
     identity: UserDelegatedIdentityRecord,
-    binding: AppMessageAgentBindingRecord,
+    binding: AppPersonalAgentBindingRecord,
 }
 
 fn insert_delegated_runtime_task_and_run(
     state: &DaemonState,
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     task_id: &str,
     run_id: &str,
     source_message_id: &str,
@@ -1251,8 +1251,8 @@ fn fixture() -> TestFixture {
             workspace_mode: None,
         })
         .unwrap();
-    let binding = AppMessageAgentBindingRecord {
-        binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+    let binding = AppPersonalAgentBindingRecord {
+        binding_id: "app-personal-agent:did:human:alice:app_1".to_string(),
         user_did: identity.user_did.clone(),
         inbox_auth_verification_method: identity.verification_method.clone(),
         app_instance_id: identity.app_instance_id.clone(),
@@ -1271,12 +1271,12 @@ fn fixture() -> TestFixture {
             "capabilities": ["message.summarize_plain", "message.create_draft"],
             "require_confirmation_for_write_actions": true
         }),
-        status: "message_agent_ready".to_string(),
+        status: "personal_agent_ready".to_string(),
         created_at_ms: 0,
         updated_at_ms: 0,
         revoked_at_ms: None,
     };
-    state.upsert_app_message_agent_binding(&binding).unwrap();
+    state.upsert_app_personal_agent_binding(&binding).unwrap();
     TestFixture {
         _root: root,
         state,
@@ -1430,7 +1430,7 @@ fn group_plain_message(id: &str, sender: &str, text: &str) -> Message {
 fn group_e2ee_mention_cipher_message(
     id: &str,
     sender: &str,
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
 ) -> Message {
     Message {
         id: MessageId::parse(id).unwrap(),

@@ -11,24 +11,30 @@ use crate::commands::{
 use crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID;
 use crate::registration::AgentRegistrationClient;
 use crate::runtime::normalize_preferred_language;
-use crate::state::{AppMessageAgentBindingRecord, DaemonState, UserDelegatedIdentityRecord};
+use crate::state::{AppPersonalAgentBindingRecord, DaemonState, UserDelegatedIdentityRecord};
 use crate::DaemonConfig;
 
 pub const APP_MESSAGE_HANDLER_ROLE: &str = "app_message_handler";
-pub const APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES: &str = "hermes";
-pub const APP_MESSAGE_AGENT_RUNTIME_PROFILE: &str = "message_agent";
-pub const APP_MESSAGE_AGENT_STATUS_READY: &str = "message_agent_ready";
-pub const APP_MESSAGE_AGENT_STATUS_ACTIVE: &str = "message_agent_active";
-pub const APP_MESSAGE_AGENT_STATUS_ENSURING: &str = "message_agent_ensuring";
+pub const APP_PERSONAL_AGENT_RUNTIME_PROVIDER_HERMES: &str = "hermes";
+pub const APP_PERSONAL_AGENT_RUNTIME_PROFILE: &str = "personal_agent";
+pub const APP_PERSONAL_AGENT_STATUS_READY: &str = "personal_agent_ready";
+pub const APP_PERSONAL_AGENT_STATUS_ACTIVE: &str = "personal_agent_active";
+pub const APP_PERSONAL_AGENT_STATUS_ENSURING: &str = "personal_agent_ensuring";
+
+const LEGACY_MESSAGE_AGENT_RUNTIME_PROFILE: &str = "message_agent";
+const DEFAULT_PERSONAL_AGENT_DISPLAY_NAME: &str = "Hermes Personal Agent";
+const LEGACY_MESSAGE_AGENT_DISPLAY_NAME: &str = "Hermes Message Agent";
+const PERSONAL_AGENT_BINDING_PREFIX: &str = "app-personal-agent:";
+const LEGACY_MESSAGE_AGENT_BINDING_PREFIX: &str = "app-message-agent:";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnsureAppMessageAgentOutcome {
-    pub binding: AppMessageAgentBindingRecord,
+pub struct EnsureAppPersonalAgentOutcome {
+    pub binding: AppPersonalAgentBindingRecord,
     pub created_runtime_agent: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DesiredMessageAgent {
+pub struct DesiredPersonalAgent {
     #[serde(default)]
     pub role: Option<String>,
     #[serde(default)]
@@ -52,9 +58,9 @@ pub struct DesiredMessageAgent {
     pub extra: serde_json::Map<String, Value>,
 }
 
-impl std::fmt::Debug for DesiredMessageAgent {
+impl std::fmt::Debug for DesiredPersonalAgent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DesiredMessageAgent")
+        f.debug_struct("DesiredPersonalAgent")
             .field("role", &self.role)
             .field("runtime", &self.runtime)
             .field("runtime_provider", &self.runtime_provider)
@@ -73,52 +79,54 @@ impl std::fmt::Debug for DesiredMessageAgent {
     }
 }
 
-pub fn ensure_app_message_agent<C>(
+pub fn ensure_app_personal_agent<C>(
     config: &DaemonConfig,
     state: &DaemonState,
     registration_client: &C,
     daemon_agent: &AgentDefinition,
     identity: &UserDelegatedIdentityRecord,
-    desired_message_agent: &Value,
+    desired_personal_agent: &Value,
     capability_policy: &Value,
-) -> Result<EnsureAppMessageAgentOutcome>
+) -> Result<EnsureAppPersonalAgentOutcome>
 where
     C: AgentRegistrationClient,
 {
     identity.validate()?;
-    let desired = parse_desired_message_agent(desired_message_agent)?;
+    let desired = parse_desired_personal_agent(desired_personal_agent)?;
     let role = desired
         .role
         .as_deref()
         .unwrap_or(APP_MESSAGE_HANDLER_ROLE)
         .trim();
     if role != APP_MESSAGE_HANDLER_ROLE {
-        bail!("desired_message_agent.role must be app_message_handler");
+        bail!("desired_personal_agent.role must be app_message_handler");
     }
     let runtime_provider = desired
         .runtime_provider
         .as_deref()
         .or(desired.runtime.as_deref())
-        .unwrap_or(APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES)
+        .unwrap_or(APP_PERSONAL_AGENT_RUNTIME_PROVIDER_HERMES)
         .trim();
-    if runtime_provider != APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES {
-        bail!("MVP app message agent runtime_provider must be hermes");
+    if runtime_provider != APP_PERSONAL_AGENT_RUNTIME_PROVIDER_HERMES {
+        bail!("MVP app personal agent runtime_provider must be hermes");
     }
     let runtime = desired
         .runtime
         .as_deref()
-        .unwrap_or(APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES)
+        .unwrap_or(APP_PERSONAL_AGENT_RUNTIME_PROVIDER_HERMES)
         .trim();
-    if runtime != APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES {
-        bail!("MVP app message agent runtime must be hermes");
+    if runtime != APP_PERSONAL_AGENT_RUNTIME_PROVIDER_HERMES {
+        bail!("MVP app personal agent runtime must be hermes");
     }
     let runtime_profile = desired
         .runtime_profile
         .as_deref()
-        .unwrap_or(APP_MESSAGE_AGENT_RUNTIME_PROFILE)
+        .unwrap_or(APP_PERSONAL_AGENT_RUNTIME_PROFILE)
         .trim();
-    if runtime_profile != APP_MESSAGE_AGENT_RUNTIME_PROFILE {
-        bail!("MVP app message agent runtime_profile must be message_agent");
+    if runtime_profile != APP_PERSONAL_AGENT_RUNTIME_PROFILE
+        && runtime_profile != LEGACY_MESSAGE_AGENT_RUNTIME_PROFILE
+    {
+        bail!("MVP app personal agent runtime_profile must be personal_agent");
     }
     let preferred_language = normalize_preferred_language(&desired.preferred_language)
         .with_context(|| {
@@ -127,21 +135,22 @@ where
                 desired.preferred_language
             )
         })?;
-    let binding_id = desired
+    let requested_binding_id = desired
         .ensure_once_key
         .clone()
         .unwrap_or_else(|| default_binding_id(&identity.user_did, &identity.app_instance_id));
-    if let Some(existing) = state.load_active_app_message_agent_binding(
+    let binding_id = canonical_binding_id(&requested_binding_id);
+    if let Some(existing) = state.load_active_app_personal_agent_binding(
         &identity.user_did,
         &identity.app_instance_id,
         APP_MESSAGE_HANDLER_ROLE,
     )? {
-        if existing.binding_id != binding_id {
-            bail!("active app message agent binding conflicts with ensure_once_key");
+        if !binding_ids_are_compatible(&existing.binding_id, &binding_id) {
+            bail!("active app personal agent binding conflicts with ensure_once_key");
         }
         let _profile = state
             .load_runtime_agent_profile(&existing.runtime_agent_did)
-            .context("load existing app message runtime profile")?;
+            .context("load existing app personal agent runtime profile")?;
         revoke_superseded_bindings(
             state,
             daemon_agent,
@@ -149,20 +158,22 @@ where
             &existing.binding_id,
             &existing.app_instance_id,
         )?;
-        return Ok(EnsureAppMessageAgentOutcome {
+        return Ok(EnsureAppPersonalAgentOutcome {
             binding: existing,
             created_runtime_agent: false,
         });
     }
     parse_app_capabilities_payload(capability_policy.clone())
-        .context("validate app message agent capability_policy")?;
+        .context("validate app personal agent capability_policy")?;
 
     let token = desired
         .runtime_registration_token
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .context("desired_message_agent.runtime_registration_token is required for first create")?;
+        .context(
+            "desired_personal_agent.runtime_registration_token is required for first create",
+        )?;
     let outcome = create_runtime_agent_from_request(
         config,
         state,
@@ -174,16 +185,11 @@ where
                 &identity.user_did,
                 &identity.app_instance_id,
             )),
-            runtime: APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES.to_string(),
-            display_name: Some(
-                desired
-                    .display_name
-                    .clone()
-                    .unwrap_or_else(|| "Hermes Message Agent".to_string()),
-            ),
+            runtime: APP_PERSONAL_AGENT_RUNTIME_PROVIDER_HERMES.to_string(),
+            display_name: Some(canonical_display_name(desired.display_name.as_deref())),
             driver_id: None,
             driver_config: None,
-            recipient_policy: Some(message_agent_recipient_policy(&identity.user_did)),
+            recipient_policy: Some(personal_agent_recipient_policy(&identity.user_did)),
             workspace: None,
             workspace_mode: None,
             workspace_strategy: None,
@@ -197,7 +203,7 @@ where
     )?;
     validate_created_runtime(&outcome)?;
     let now = crate::security::runtime_token::current_time_millis()?;
-    let binding = AppMessageAgentBindingRecord {
+    let binding = AppPersonalAgentBindingRecord {
         binding_id,
         user_did: identity.user_did.clone(),
         inbox_auth_verification_method: identity.verification_method.clone(),
@@ -208,14 +214,14 @@ where
         runtime_agent_did: outcome.agent_did,
         runtime_profile_id: outcome.runtime_profile_id,
         role: APP_MESSAGE_HANDLER_ROLE.to_string(),
-        desired_agent_json: sanitized_desired_agent_json(desired_message_agent),
+        desired_agent_json: sanitized_desired_agent_json(desired_personal_agent),
         capability_policy_json: sanitized_capability_policy_json(capability_policy),
-        status: APP_MESSAGE_AGENT_STATUS_READY.to_string(),
+        status: APP_PERSONAL_AGENT_STATUS_READY.to_string(),
         created_at_ms: now,
         updated_at_ms: now,
         revoked_at_ms: None,
     };
-    state.upsert_app_message_agent_binding(&binding)?;
+    state.upsert_app_personal_agent_binding(&binding)?;
     revoke_superseded_bindings(
         state,
         daemon_agent,
@@ -224,7 +230,7 @@ where
         &binding.app_instance_id,
     )?;
     state.insert_audit_event_json(
-        "app_message_agent.binding.ready",
+        "app_personal_agent.binding.ready",
         Some(&daemon_agent.agent_did),
         Some(&binding.runtime_profile_id),
         None,
@@ -238,7 +244,7 @@ where
             "status": binding.status,
         }),
     )?;
-    Ok(EnsureAppMessageAgentOutcome {
+    Ok(EnsureAppPersonalAgentOutcome {
         binding,
         created_runtime_agent: true,
     })
@@ -251,14 +257,14 @@ fn revoke_superseded_bindings(
     keep_binding_id: &str,
     app_instance_id: &str,
 ) -> Result<()> {
-    let revoked = state.revoke_other_active_app_message_agent_bindings(
+    let revoked = state.revoke_other_active_app_personal_agent_bindings(
         user_did,
         APP_MESSAGE_HANDLER_ROLE,
         keep_binding_id,
     )?;
     if revoked > 0 {
         state.insert_audit_event_json(
-            "app_message_agent.binding.superseded",
+            "app_personal_agent.binding.superseded",
             Some(&daemon_agent.agent_did),
             None,
             None,
@@ -275,21 +281,21 @@ fn revoke_superseded_bindings(
     Ok(())
 }
 
-fn parse_desired_message_agent(value: &Value) -> Result<DesiredMessageAgent> {
+fn parse_desired_personal_agent(value: &Value) -> Result<DesiredPersonalAgent> {
     if !value.is_object() {
-        bail!("desired_message_agent must be a JSON object");
+        bail!("desired_personal_agent must be a JSON object");
     }
-    let desired: DesiredMessageAgent =
-        serde_json::from_value(value.clone()).context("parse desired_message_agent")?;
+    let desired: DesiredPersonalAgent =
+        serde_json::from_value(value.clone()).context("parse desired_personal_agent")?;
     if desired.preferred_language.trim().is_empty() {
-        bail!("desired_message_agent.preferred_language is required");
+        bail!("desired_personal_agent.preferred_language is required");
     }
     Ok(desired)
 }
 
 fn validate_created_runtime(outcome: &RuntimeAgentCreateOutcome) -> Result<()> {
     if outcome.runtime_plugin_id != HERMES_RUNTIME_PLUGIN_ID {
-        bail!("created app message agent must use Hermes runtime");
+        bail!("created app personal agent must use Hermes runtime");
     }
     Ok(())
 }
@@ -300,6 +306,33 @@ fn sanitized_desired_agent_json(value: &Value) -> Value {
         object.remove("runtime_registration_token");
         object.remove("registration_token");
         object.remove("token");
+        if object.get("runtime_profile").and_then(Value::as_str)
+            == Some(LEGACY_MESSAGE_AGENT_RUNTIME_PROFILE)
+        {
+            object.insert(
+                "runtime_profile".to_string(),
+                Value::String(APP_PERSONAL_AGENT_RUNTIME_PROFILE.to_string()),
+            );
+        }
+        if object.get("display_name").and_then(Value::as_str)
+            == Some(LEGACY_MESSAGE_AGENT_DISPLAY_NAME)
+        {
+            object.insert(
+                "display_name".to_string(),
+                Value::String(DEFAULT_PERSONAL_AGENT_DISPLAY_NAME.to_string()),
+            );
+        }
+        let canonical_ensure_once_key = object
+            .get("ensure_once_key")
+            .and_then(Value::as_str)
+            .and_then(|value| value.strip_prefix(LEGACY_MESSAGE_AGENT_BINDING_PREFIX))
+            .map(|suffix| format!("{PERSONAL_AGENT_BINDING_PREFIX}{suffix}"));
+        if let Some(canonical_ensure_once_key) = canonical_ensure_once_key {
+            object.insert(
+                "ensure_once_key".to_string(),
+                Value::String(canonical_ensure_once_key),
+            );
+        }
     }
     sanitized
 }
@@ -318,7 +351,7 @@ fn sanitized_capability_policy_json(value: &Value) -> Value {
     }
 }
 
-fn message_agent_recipient_policy(user_did: &str) -> Value {
+fn personal_agent_recipient_policy(user_did: &str) -> Value {
     json!({
         "allowed_dids": [user_did],
         "allowed_security": ["default_plain"]
@@ -326,11 +359,33 @@ fn message_agent_recipient_policy(user_did: &str) -> Value {
 }
 
 fn default_binding_id(user_did: &str, app_instance_id: &str) -> String {
-    format!("app-message-agent:{user_did}:{app_instance_id}")
+    format!("{PERSONAL_AGENT_BINDING_PREFIX}{user_did}:{app_instance_id}")
+}
+
+fn canonical_binding_id(binding_id: &str) -> String {
+    if let Some(suffix) = binding_id.strip_prefix(LEGACY_MESSAGE_AGENT_BINDING_PREFIX) {
+        format!("{PERSONAL_AGENT_BINDING_PREFIX}{suffix}")
+    } else {
+        binding_id.to_string()
+    }
+}
+
+fn binding_ids_are_compatible(existing_binding_id: &str, requested_binding_id: &str) -> bool {
+    existing_binding_id == requested_binding_id
+        || canonical_binding_id(existing_binding_id) == requested_binding_id
+}
+
+fn canonical_display_name(display_name: Option<&str>) -> String {
+    match display_name {
+        Some(LEGACY_MESSAGE_AGENT_DISPLAY_NAME) | None => {
+            DEFAULT_PERSONAL_AGENT_DISPLAY_NAME.to_string()
+        }
+        Some(display_name) => display_name.to_string(),
+    }
 }
 
 fn default_handle(user_did: &str, app_instance_id: &str) -> String {
-    const PREFIX: &str = "hermes-msg";
+    const PREFIX: &str = "hermes-personal";
     const MAX_HANDLE_LENGTH: usize = 48;
     let seed = format!("{}|{}", user_did.trim(), app_instance_id.trim());
     let digest = Sha256::digest(seed.as_bytes());
@@ -394,12 +449,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn desired_message_agent_debug_redacts_runtime_registration_token() {
-        let desired = parse_desired_message_agent(&json!({
+    fn desired_personal_agent_debug_redacts_runtime_registration_token() {
+        let desired = parse_desired_personal_agent(&json!({
             "role": "app_message_handler",
             "runtime": "hermes",
             "runtime_provider": "hermes",
-            "runtime_profile": "message_agent",
+            "runtime_profile": "personal_agent",
             "preferred_language": "en",
             "runtime_registration_token": "tok_runtime_secret"
         }))
@@ -412,50 +467,93 @@ mod tests {
     }
 
     #[test]
-    fn desired_message_agent_requires_object_and_preferred_language() {
-        assert!(parse_desired_message_agent(&Value::Null).is_err());
-        assert!(parse_desired_message_agent(&json!({
+    fn desired_personal_agent_requires_object_and_preferred_language() {
+        assert!(parse_desired_personal_agent(&Value::Null).is_err());
+        assert!(parse_desired_personal_agent(&json!({
             "role": "app_message_handler",
             "runtime": "hermes"
         }))
         .is_err());
 
-        let desired = parse_desired_message_agent(&json!({
+        let desired = parse_desired_personal_agent(&json!({
             "role": "app_message_handler",
             "runtime": "hermes",
             "runtime_provider": "hermes",
-            "runtime_profile": "message_agent",
+            "runtime_profile": "personal_agent",
             "preferred_language": "zh-Hans"
         }))
         .unwrap();
         assert_eq!(
             desired.runtime_provider.as_deref(),
-            Some(APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES)
+            Some(APP_PERSONAL_AGENT_RUNTIME_PROVIDER_HERMES)
         );
         assert_eq!(
             desired.runtime_profile.as_deref(),
-            Some(APP_MESSAGE_AGENT_RUNTIME_PROFILE)
+            Some(APP_PERSONAL_AGENT_RUNTIME_PROFILE)
         );
         assert_eq!(desired.preferred_language, "zh-Hans");
+    }
+
+    #[test]
+    fn legacy_runtime_profile_and_binding_id_decode_to_canonical_values() {
+        let desired = parse_desired_personal_agent(&json!({
+            "role": "app_message_handler",
+            "runtime": "hermes",
+            "runtime_provider": "hermes",
+            "runtime_profile": LEGACY_MESSAGE_AGENT_RUNTIME_PROFILE,
+            "preferred_language": "en"
+        }))
+        .unwrap();
+        assert_eq!(
+            desired.runtime_profile.as_deref(),
+            Some(LEGACY_MESSAGE_AGENT_RUNTIME_PROFILE)
+        );
+
+        let legacy = format!(
+            "{LEGACY_MESSAGE_AGENT_BINDING_PREFIX}{}:{}",
+            "did:human:alice", "app_1"
+        );
+        let canonical = default_binding_id("did:human:alice", "app_1");
+        assert_eq!(canonical_binding_id(&legacy), canonical);
+        assert!(binding_ids_are_compatible(&legacy, &canonical));
+        assert_eq!(
+            canonical_display_name(Some(LEGACY_MESSAGE_AGENT_DISPLAY_NAME)),
+            DEFAULT_PERSONAL_AGENT_DISPLAY_NAME
+        );
     }
 
     #[test]
     fn sanitized_desired_agent_removes_registration_token() {
         let sanitized = sanitized_desired_agent_json(&json!({
             "role": "app_message_handler",
+            "runtime_profile": LEGACY_MESSAGE_AGENT_RUNTIME_PROFILE,
+            "display_name": LEGACY_MESSAGE_AGENT_DISPLAY_NAME,
+            "ensure_once_key": "app-message-agent:did:human:alice:app_1",
             "runtime_registration_token": "tok_runtime_secret",
             "token": "tok_other"
         }));
         assert!(!sanitized.to_string().contains("tok_runtime_secret"));
         assert!(sanitized.get("runtime_registration_token").is_none());
         assert!(sanitized.get("token").is_none());
+        assert_eq!(
+            sanitized["runtime_profile"],
+            APP_PERSONAL_AGENT_RUNTIME_PROFILE
+        );
+        assert_eq!(
+            sanitized["display_name"],
+            DEFAULT_PERSONAL_AGENT_DISPLAY_NAME
+        );
+        assert_eq!(
+            sanitized["ensure_once_key"],
+            "app-personal-agent:did:human:alice:app_1"
+        );
     }
 
     #[test]
     fn default_handle_keeps_app_instance_entropy_under_handle_limit() {
         assert_eq!(
             default_handle("did:human:me", "app_1"),
-            "hermes-msg-app-1-334c10a06052"
+            "hermes-personal-app-1-334c10a06052"
         );
 
         let first = default_handle(

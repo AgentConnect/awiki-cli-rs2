@@ -22,7 +22,7 @@ Step index：02
 ## 2. 目标
 
 - 结果：新注册、恢复账号、已有本地身份在 APP 发送 bootstrap 前都能获得可用 `DaemonSubkeyPrivatePackage`。
-- 用户 / 系统可见行为：用户恢复账号或升级旧版本后，点击 bootstrap message agent 不会因为本地缺少 `daemon-key-1-private.pem` 直接失败；系统会幂等生成/补齐 daemon subkey、更新 signed DID Document、同步 user-service registry，然后再发送 bootstrap。
+- 用户 / 系统可见行为：用户恢复账号或升级旧版本后，点击 bootstrap personal agent 不会因为本地缺少 `daemon-key-1-private.pem` 直接失败；系统会幂等生成/补齐 daemon subkey、更新 signed DID Document、同步 user-service registry，然后再发送 bootstrap。
 - 非目标：不在缺少用户主 `#key-1` 私钥时强行修改 DID Document；不把用户主私钥交给 Daemon；不自动创建多个 daemon key；不支持设备化 fragment。
 - 完成标准：im-core 提供同步/异步 ensure API；recovery 路径能保存或补齐 package；awiki-me 使用 ensure API；无法安全重签时 fail closed 并给出可诊断错误。
 - 本步骤新增前置小修：user-service `did-auth.update_document` 省略 `is_public` / `is_agent` / `role` / `endpoint_url` 时必须保留既有元数据，避免 im-core migration 只更新 DID Document 却把身份可见性或 agent 标记意外重置；显式传入字段的旧行为保持不变。
@@ -60,7 +60,7 @@ Step index：02
    - codegen 更新。
 6. 修改 awiki-me：
    - `identityCorePort` 增加 ensure 方法；
-   - `agents_provider.bootstrapMessageAgent` 先 ensure，再构造 bootstrap；
+   - `agents_provider.bootstrapPersonalAgent` 先 ensure，再构造 bootstrap；
    - 错误 UI 不显示 secret；区分 retryable network error 和 terminal missing-main-key error。
 7. 增加测试：
    - 新注册仍生成 package；

@@ -4,11 +4,11 @@
 > 历史文档说明：本文件记录的是 2026-06-14 前后的 Agent IM Hutong
 > 方案和验证记录，其中关于明文 `awiki.daemon.bootstrap.v1`、默认
 > `message.send.plain` scope、普通 payload 传递 private package 的描述已经不是当前
-> Message Agent MVP 契约。当前权威方案以
-> `awiki-me-message-agent/docs/message-agent/message-agent-design.md`
+> Personal Agent MVP 契约。当前权威方案以
+> `awiki-me-personal-agent/docs/personal-agent/personal-agent-design.md`
 > 以及本仓库代码中的 secure bootstrap / no-send 实现为准。
 >
-> 2026-06-22 实现备注：daemon 的 Message Agent delegated inbox 会忽略
+> 2026-06-22 实现备注：daemon 的 Personal Agent delegated inbox 会忽略
 > 已绑定 daemon/runtime 自己发给 App 的状态、sync、action 控制消息，不再把它们
 > 当作用户消息二次同步；轮询页大小提升到 100，用于降低控制消息积压时真实
 > 用户消息被挤出首屏的风险。macOS 本地 RPC socket 默认使用 `run/d.sock`，
@@ -30,7 +30,7 @@
 
 1. App 通过真实 IM payload path 发送 `awiki.daemon.bootstrap.v1`；
 2. Daemon 收到 bootstrap 并导入 `#daemon-key-1` delegated key；
-3. Daemon 创建/复用 Hermes message agent；
+3. Daemon 创建/复用 Hermes personal agent；
 4. `awiki-cli-rs2` 的 `awiki-cli` 作为 peer 向 App 用户发送普通消息；
 5. Daemon/Hermes 完成消息处理并生成 runtime status/final；
 6. Daemon 将 `awiki.message.sync.v1` 回传给 App；
@@ -303,7 +303,7 @@ awiki-deamon foreground
 
 安装完成后，需要补一个 APP -> Daemon 的普通消息 bootstrap 流程。它的前置条件是：APP 在创建用户 DID Document 时已经本地生成 `user_did#daemon-key-1` 子私钥，并通过最新 user-service / DID API 只提交由该 key package 导出的 public verification method。user-service 只把该 public verification method 登记到 DID Document 的 `verificationMethod` 与 `authentication`，不接触 private material。因此 bootstrap 不再创建或追加 DID key，只负责把这把既有用户 DID 子私钥交给 Daemon。
 
-这个流程同时承担“一次性创建 APP 消息处理智能体”的职责。APP 不应该反复发送 `create runtime` 这类命令式消息；APP 只发送一次 bootstrap/session payload，把用户 delegated subkey、APP 能力和期望的消息处理 Agent 形态声明给 Daemon。Daemon 收到后执行 `ensure_app_message_agent`：如果这个用户和 APP 已经有 active message handler agent，就复用并刷新配置；如果不存在，Daemon 自己创建一个专门处理 APP 普通消息的 Runtime Agent。重复收到同一个 bootstrap 不得创建多个 Agent。
+这个流程同时承担“一次性创建 APP 消息处理智能体”的职责。APP 不应该反复发送 `create runtime` 这类命令式消息；APP 只发送一次 bootstrap/session payload，把用户 delegated subkey、APP 能力和期望的消息处理 Agent 形态声明给 Daemon。Daemon 收到后执行 `ensure_app_personal_agent`：如果这个用户和 APP 已经有 active message handler agent，就复用并刷新配置；如果不存在，Daemon 自己创建一个专门处理 APP 普通消息的 Runtime Agent。重复收到同一个 bootstrap 不得创建多个 Agent。
 
 APP 和 Daemon 之间不新增本地 RPC、局域网、QR pairing channel 或第二条传输链路。唯一通道是 message-service 的普通消息发送。MVP 为了快速跑通，普通消息内容是明文 JSON system/control payload；后续安全升级仍然使用普通消息发送，只把内容改为加密文本或加密 JSON envelope。这里的“加密文本”只是普通消息 body 的编码方式变化，不表示 E2EE 用户消息进入 Agent 处理链路。
 
@@ -323,9 +323,9 @@ sequenceDiagram
     App->>MsgSvc: 普通消息发送 awiki.daemon.bootstrap.v1 明文 JSON
     MsgSvc-->>Daemon: 下发普通消息 JSON control payload
     Daemon->>Daemon: 保存 user delegated identity / bootstrap state
-    Daemon->>Daemon: ensure_app_message_agent(role=app_message_handler)
+    Daemon->>Daemon: ensure_app_personal_agent(role=app_message_handler)
     Daemon->>Daemon: 绑定 inbox/send identity、runtime token 和 APP capabilities
-    Daemon->>MsgSvc: 普通消息发送 bootstrap ack + message_agent status
+    Daemon->>MsgSvc: 普通消息发送 bootstrap ack + personal_agent status
     MsgSvc-->>App: 下发普通消息 JSON control payload
 ```
 
@@ -335,7 +335,7 @@ sequenceDiagram
 {
   "schema": "awiki.daemon.bootstrap.v1",
   "bootstrap_id": "boot_...",
-  "idempotency_key": "message-agent-bootstrap:did:wba:...user...:app_...",
+  "idempotency_key": "personal-agent-bootstrap:did:wba:...user...:app_...",
   "app_instance_id": "app_...",
   "controller_did": "did:wba:...",
   "user_handle": "@alice",
@@ -361,11 +361,11 @@ sequenceDiagram
       "app.action.request"
     ]
   },
-  "desired_message_agent": {
+  "desired_personal_agent": {
     "role": "app_message_handler",
     "runtime": "hermes",
-    "display_name": "Hermes Message Agent",
-    "ensure_once_key": "app-message-agent:did:wba:...user...:app_...",
+    "display_name": "Hermes Personal Agent",
+    "ensure_once_key": "app-personal-agent:did:wba:...user...:app_...",
     "runtime_registration_token": "tok_runtime_...",
     "auto_create": true,
     "plain_message_visible": true,
@@ -408,7 +408,7 @@ sequenceDiagram
 7. `bootstrap_id` / `idempotency_key` 必须幂等；同一个用户、APP 和 `role=app_message_handler` 只能有一个 active 绑定。
 8. Daemon 创建消息处理 Agent 是 bootstrap 的后置效果，不是 APP 反复下发的命令；失败后重试应恢复同一条 binding，不创建重复 Agent。
 9. `runtime_registration_token` 只用于首次创建 Runtime Agent；已有 active binding 时不需要。该 token 与旧 `runtime.agent.create` 命令里的 registration token 语义一致，但随一次性 bootstrap desired state 传递，不持久化到 binding、audit detail、Hermes prompt 或 runtime temp。
-10. 新建 binding 必须带显式 `capability_policy.schema = "awiki.app.capabilities.v1"`；空 `capabilities` 表示不允许执行 APP action。`desired_message_agent.allowed_actions` 只作为旧 binding 兼容/展示提示，不能作为新授权主路径。
+10. 新建 binding 必须带显式 `capability_policy.schema = "awiki.app.capabilities.v1"`；空 `capabilities` 表示不允许执行 APP action。`desired_personal_agent.allowed_actions` 只作为旧 binding 兼容/展示提示，不能作为新授权主路径。
 
 ### 3.1.3 Daemon 一次性创建并绑定消息处理 Agent
 
@@ -417,18 +417,18 @@ Daemon 从普通消息 JSON dispatch 收到 `awiki.daemon.bootstrap.v1` 后，�
 ```text
 unpaired
   -> paired_key_received
-  -> message_agent_ensuring
-  -> message_agent_ready
-  -> message_agent_active
+  -> personal_agent_ensuring
+  -> personal_agent_ready
+  -> personal_agent_active
 ```
 
 处理规则：
 
 1. **接收用户 session / 子私钥**：Daemon 校验 `controller_did`、`pairing_id`、`idempotency_key` 和 `user_did#daemon-key-1`，保存 user delegated identity。这里的“私钥交给 Daemon”只指用户 DID 子私钥，不包括用户主私钥或 E2EE session state。
-2. **创建或复用智能体**：Daemon 按 `ensure_once_key` 查询本地 `app_message_agent_binding`。不存在时创建专用 Runtime Agent，例如 Hermes Message Agent；已存在且 active 时复用，不再创建第二个。
+2. **创建或复用智能体**：Daemon 按 `ensure_once_key` 查询本地 `app_personal_agent_binding`。不存在时创建专用 Runtime Agent，例如 Hermes Personal Agent；已存在且 active 时复用，不再创建第二个。
 3. **配置身份**：消息处理 Agent 自己可以有 Runtime Agent DID，但它不持有用户子私钥。Daemon 把 `user_delegated_identity` 绑定为该 Agent 的 inbox/send 授权上下文，Hermes 只能通过 local RPC / runtime token 请求 `msg.send`、摘要、联系人 action 等能力。
 4. **接入消息链路**：Daemon 启动或恢复 user delegated inbox poller，把普通非 E2EE 消息投递给这个 message handler agent；Agent 的 status/final/action/result 通过 `message.sync`、`app.action`、`app.action.result` 与 APP 打通。
-5. **一次性和可恢复**：APP 重启或 Daemon 重启时只恢复 bootstrap state 和 `app_message_agent_binding`，不重新创建 Agent。只有用户撤销、换设备或显式重建时，才进入新的 bootstrap。
+5. **一次性和可恢复**：APP 重启或 Daemon 重启时只恢复 bootstrap state 和 `app_personal_agent_binding`，不重新创建 Agent。只有用户撤销、换设备或显式重建时，才进入新的 bootstrap。
 
 这个 Agent 的角色应固定为 `app_message_handler`。它和用户手动创建的通用 Runtime Agent 不同：它是 APP 消息处理链路的一部分，默认由 Daemon 在 bootstrap 后自动 ensure，并受用户 delegated inbox/send policy、APP capability allowlist 和 runtime token scope 共同约束。
 
@@ -910,11 +910,11 @@ MVP 临时策略：user delegated subkey 可以沿用现有 daemon identity priv
 - 接收时使用该子 key 向 message-service 证明普通 inbox/history 读取权限；message-service MVP 直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope。
 - 所有使用记录 audit fields：`logical_user_did`、`verification_method`、`actor_daemon_agent_did`、`runtime_agent_did`。
 
-#### `crates/awiki-deamon/src/app_bridge/message_agent.rs`
+#### `crates/awiki-deamon/src/app_bridge/personal_agent.rs`
 
 能力：
 
-- 接收 `desired_message_agent`，执行 `ensure_app_message_agent`。
+- 接收 `desired_personal_agent`，执行 `ensure_app_personal_agent`。
 - 使用 `ensure_once_key` / `idempotency_key` 做幂等保护，避免重复创建消息处理 Agent。
 - 创建或复用 Hermes Runtime Agent，并把角色标记为 `app_message_handler`。
 - 把 `runtime_agent_did`、`user_did`、`verification_method`、`app_instance_id`、`pairing_id` 和 APP capability policy 绑定到同一条记录。
@@ -987,7 +987,7 @@ user_delegated_identity(
   updated_at_ms INTEGER NOT NULL
 );
 
-app_message_agent_binding(
+app_personal_agent_binding(
   binding_id TEXT PRIMARY KEY,
   ensure_once_key TEXT NOT NULL UNIQUE,
   pairing_id TEXT NOT NULL,
@@ -1487,10 +1487,10 @@ MVP 主路径。
 
 1. `awiki.daemon.bootstrap.v1`。
 2. APP bootstrap 状态入口。
-3. MVP 通过普通消息发送明文 JSON，携带用户 DID 子私钥和 `desired_message_agent`；记录后续把普通消息 body 改为加密文本 / 加密 JSON envelope。
+3. MVP 通过普通消息发送明文 JSON，携带用户 DID 子私钥和 `desired_personal_agent`；记录后续把普通消息 body 改为加密文本 / 加密 JSON envelope。
 4. Daemon bootstrap state / user delegated identity store。
-5. Daemon 幂等执行 `ensure_app_message_agent`，创建或复用 `role=app_message_handler` 的 Hermes Message Agent。
-6. `app_message_agent_binding` 持久化用户、APP、Runtime Agent、delegated subkey 和 capability policy 的绑定。
+5. Daemon 幂等执行 `ensure_app_personal_agent`，创建或复用 `role=app_message_handler` 的 Hermes Personal Agent。
+6. `app_personal_agent_binding` 持久化用户、APP、Runtime Agent、delegated subkey 和 capability policy 的绑定。
 7. user-service / DID API 在创建用户 DID Document 时只接收 APP 提交的 `user_did#daemon-key-1` public verification method，并把它登记到 DID Document 的 `verificationMethod` 与 `authentication`；该 public verification method 由 APP 本地 key package 导出，并支持后续撤销。user-service 不接触 daemon subkey private material。
 8. message-service 支持该子 key 的普通消息发送和接收权限校验；MVP 直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope。
 9. APP capabilities 发布。
@@ -1573,17 +1573,17 @@ MVP 主路径。
 ### 10.2 功能验收
 
 1. APP 能安装 Daemon，并通过普通消息发送与 Daemon 建立 bootstrap 状态。
-2. APP 能通过普通消息发送一次性 bootstrap/session payload，包含既有 `user_did#daemon-key-1` 子私钥、APP capabilities 和 `desired_message_agent`。
-3. Daemon 能根据 bootstrap 自动 `ensure_app_message_agent`，创建或复用 `role=app_message_handler` 的 Hermes Message Agent；APP 不需要反复发送 create runtime command。
-4. Daemon 能写入并恢复 `app_message_agent_binding`，绑定 user DID、verification method、app_instance、bootstrap_id、runtime_agent_did 和 capability policy。
+2. APP 能通过普通消息发送一次性 bootstrap/session payload，包含既有 `user_did#daemon-key-1` 子私钥、APP capabilities 和 `desired_personal_agent`。
+3. Daemon 能根据 bootstrap 自动 `ensure_app_personal_agent`，创建或复用 `role=app_message_handler` 的 Hermes Personal Agent；APP 不需要反复发送 create runtime command。
+4. Daemon 能写入并恢复 `app_personal_agent_binding`，绑定 user DID、verification method、app_instance、bootstrap_id、runtime_agent_did 和 capability policy。
 5. 重复发送同一个 `bootstrap_id` / `idempotency_key` 不会创建第二个 active message handler agent。
 6. user-service / DID API 能在创建用户 DID Document 时只接收 APP 提交的 `user_did#daemon-key-1` public verification method，并把它登记到 DID Document 的 `verificationMethod` 与 `authentication`；该 public verification method 由 APP 本地 key package 导出，并支持后续撤销；user-service 不接触 daemon subkey private material。
 7. message-service 能接受该子 key 的普通消息发送 proof，并支持普通 inbox/history 接收权限校验；MVP 授权来源是 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope。
 8. message-service 能支持同一个 user DID 的 APP 连接和 Daemon 连接同时在线，并把普通消息与 E2EE opaque notification fanout 给这些连接。
-9. Daemon 能使用 user delegated identity 拉取普通非 E2EE inbox/history，并投递给绑定的 Hermes Message Agent。
+9. Daemon 能使用 user delegated identity 拉取普通非 E2EE inbox/history，并投递给绑定的 Hermes Personal Agent。
 10. Daemon 能收到 Agent command JSON 并处理。
-11. Hermes Message Agent 能处理普通文本消息并回传 final。
-12. Hermes Message Agent 能通过 local RPC 使用 user delegated sender 发送 default_plain 消息。
+11. Hermes Personal Agent 能处理普通文本消息并回传 final。
+12. Hermes Personal Agent 能通过 local RPC 使用 user delegated sender 发送 default_plain 消息。
 13. Agent 发送记录能同步回 APP。
 14. APP 发送记录能同步给 Agent。
 15. Agent 能发起 `message.summarize_plain` / `message.create_draft` / `contact.read` / `contact.update_display_name` / `contact.update_note` action。
@@ -1595,7 +1595,7 @@ MVP 主路径。
 
 1. Daemon 重启后不会重复处理已处理消息。
 2. APP 重启后能恢复 bootstrap state。
-3. Daemon 重启后能恢复 `app_message_agent_binding`，不重新创建 message handler agent。
+3. Daemon 重启后能恢复 `app_personal_agent_binding`，不重新创建 message handler agent。
 4. message.sync 重试不会造成重复消息。
 5. app.action 重试不会重复弹窗或重复创建提醒。
 6. Hermes session 丢失后能 reset/recreate，但 binding 不变。

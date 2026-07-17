@@ -170,7 +170,7 @@ Hermes TUI Gateway 约定在 stdout 上输出 line-delimited JSON-RPC response/e
 - 显式 delegated `key_ref` 仍兼容 `file:`、`local:` 和裸路径读取 caller-provided delegated private key；新 daemon-owned delegated key 应使用 `vault:`。
 - App bridge bootstrap 的 `user_subkey_package.private_key_pem` 仍是临时兼容 DTO，传输可以暂时明文；daemon 接收后持久化必须按上面的 vault ref 存储。后续应改为端到端加密 bootstrap envelope。
 
-因此，当前安全结论是：daemon 持久化的 agent identity 私钥、Message Agent delegated 私钥、agent auth token 以及 Direct E2EE session/prekey secret 已按 SecretVault 密文保存；daemon root key 由 env 或本机 `root-key.b64u` 解锁，不进入 daemon DB、日志、audit 或 UI。App -> daemon 的 bootstrap 传输加密、真实平台 no-prompt vault backend、root key rotation/backup、legacy file-backed identity provider 下线和 user-service DID-auth 兼容文件收敛仍是后续独立加固范围。不要在日志、audit、E2E 报告或 UI 中输出任何私钥、token、root key 或 E2EE 本地 secret。
+因此，当前安全结论是：daemon 持久化的 agent identity 私钥、Personal Agent delegated 私钥、agent auth token 以及 Direct E2EE session/prekey secret 已按 SecretVault 密文保存；daemon root key 由 env 或本机 `root-key.b64u` 解锁，不进入 daemon DB、日志、audit 或 UI。App -> daemon 的 bootstrap 传输加密、真实平台 no-prompt vault backend、root key rotation/backup、legacy file-backed identity provider 下线和 user-service DID-auth 兼容文件收敛仍是后续独立加固范围。不要在日志、audit、E2E 报告或 UI 中输出任何私钥、token、root key 或 E2EE 本地 secret。
 
 ## 本地验证
 
@@ -180,7 +180,7 @@ cargo run -p awiki-deamon -- status --state-root /tmp/awiki-deamon-state
 cargo test -p awiki-deamon --locked
 ```
 
-App Message Agent 的 ANP P9 群消息 mention 路由可以用 focused tests 验证：
+App Personal Agent 的 ANP P9 群消息 mention 路由可以用 focused tests 验证：
 
 ```bash
 cargo test -p awiki-deamon --locked mention
@@ -189,12 +189,12 @@ cargo test -p awiki-deamon --locked user_delegated -- --nocapture
 
 该路径验证 daemon 会拉取 direct + group inbox；只有合法 P9 `text + mentions` 群 payload 中的 `target.kind = agent` 精确命中 runtime agent DID 时才创建 RuntimeTask。`target.kind = group_selector`（包括 `@agents` / `@all` / `@humans`）、`target.kind = human`、纯文本 `@AgentName`、invalid range 和 E2EE opaque 都不能触发 runtime。mention 只是注意力信号，不是授权；daemon 仍会通过 user-service invocation policy 做硬权限判断，并且 task 只携带群内回复 allowlist。权限拒绝时 daemon 不创建 RuntimeTask，但会用 runtime agent 身份向当前私聊或群聊发送一条幂等的可见反馈；具体拒绝原因只进入 failed status payload 和 audit，不暴露给普通聊天消息。
 
-App Message Agent 的 delegated inbox 还有以下产品级安全契约：
+App Personal Agent 的 delegated inbox 还有以下产品级安全契约：
 
-- 只有 `message_agent_ready`、`message_agent_active`、`message_agent_ensuring` 且未 revoked 的 binding 才会被拉取和处理；`message_agent_disabled`、`message_agent_revoked` 或存在 `revoked_at_ms` 的 binding 会直接跳过，并写入 `user_delegated_inbox.sync.skipped_inactive_binding` audit。
+- 只有 `personal_agent_ready`、`personal_agent_active`、`personal_agent_ensuring` 且未 revoked 的 binding 才会被拉取和处理；`personal_agent_disabled`、`personal_agent_revoked` 或存在 `revoked_at_ms` 的 binding 会直接跳过，并写入 `user_delegated_inbox.sync.skipped_inactive_binding` audit。
 - E2EE / cipher / secure-direct 消息只记录 opaque 事件，不写 plaintext excerpt，不进入 Hermes prompt。
 - runtime final/status/action recovery 只通过 `awiki.message.sync.v1` / `awiki.app.action.v1` / `awiki.app.action.result.v1` 控制 payload 与 App 闭环；daemon 发送给 App 的 `awiki.app.action.v1` 必须携带 `daemon_agent_did` 和 `runtime_agent_did`，让 App 回传 action result 时能稳定定向到 daemon controller DID，而不是依赖异步 agent inventory 兜底；audit 只记录 action id/state/error，不记录 draft/result body。
-- Message Agent runtime 默认拒绝 `msg.send` 和 `attachment.send`；唯一例外是 daemon host 内部 `host-runtime-final-outbox` token，可把 runtime final 转成发给 owner DID 的 message sync。拒绝 audit 不记录消息正文、附件路径、token 或本地 secret。
+- Personal Agent runtime 默认拒绝 `msg.send` 和 `attachment.send`；唯一例外是 daemon host 内部 `host-runtime-final-outbox` token，可把 runtime final 转成发给 owner DID 的 message sync。拒绝 audit 不记录消息正文、附件路径、token 或本地 secret。
 
 产品级 full UI gate 由 `awiki-system-test` 调用 `awiki-me` E2E runner 完成：
 
@@ -205,15 +205,15 @@ AWIKI_ME_REPO=../awiki-me \
 AWIKI_SYSTEM_TEST_MODE=local \
 CARGO_BUILD_JOBS=1 \
 uv run --no-sync pytest \
-  tests_v2/daemon/test_message_agent_full_ui_real_backend_e2e.py \
+  tests_v2/daemon/test_personal_agent_full_ui_real_backend_e2e.py \
   -q -rs --tb=short
 ```
 
 该 gate 会构建当前 checkout 的 `awiki-cli` 和 `awiki-deamon`，启动 foreground daemon，
 用 fake Hermes TUI Gateway 触发 `message.create_draft`，再由真实 App UI 完成
-Message Agent 启用、CLI peer direct text、daemon `runtime_final`、App 草稿确认、
+Personal Agent 启用、CLI peer direct text、daemon `runtime_final`、App 草稿确认、
 redacted `awiki.app.action.result.v1` 回传和撤销 Daemon 消息授权。报告必须包含
-`MSGAGENT-E2E-001..005` 以及 `uiEnabled`、`runtimeFinalReceived`、
+`PERSONALAGENT-E2E-001..005` 以及 `uiEnabled`、`runtimeFinalReceived`、
 `draftConfirmed`、`actionResultReturned`、`authorizationRevoked`。
 
 该 gate 不等同于 real Hermes smoke。P0 使用 deterministic fake Hermes gateway 验证
