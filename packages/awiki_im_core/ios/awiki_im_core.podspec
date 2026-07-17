@@ -7,7 +7,7 @@ Pod::Spec.new do |s|
   s.license          = { :type => 'MIT' }
   s.author           = { 'AgentConnect' => 'dev@awiki.ai' }
   s.source           = { :path => '.' }
-  s.platform         = :ios, '12.0'
+  s.platform         = :ios, '13.0'
   s.source_files     = 'Classes/**/*'
   s.vendored_frameworks = 'Frameworks/AwikiImCore.xcframework'
   s.user_target_xcconfig = {
