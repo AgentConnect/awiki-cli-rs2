@@ -896,7 +896,17 @@ fn messages_read_runtime_group_history_merges_committed_local_projection() {
         RecordingTransport {
             calls: Rc::clone(&calls),
             response: json!({
-                "messages": [],
+                "messages": [{
+                    "id": "did:example:group:77",
+                    "message_id": "did:example:group:77",
+                    "group_did": "did:example:group",
+                    "sender_did": "did:example:alice",
+                    "content": "local group send",
+                    "content_type": "text/plain",
+                    "group_event_seq": "77",
+                    "server_seq": 77,
+                    "sent_at": "2026-05-21T00:00:03Z"
+                }],
                 "has_more": false
             }),
         },

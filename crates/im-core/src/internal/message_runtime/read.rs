@@ -851,7 +851,7 @@ fn merge_local_message_values_into_page(
         !page
             .items
             .iter()
-            .any(|remote| same_group_message_position(remote, local))
+            .any(|remote| remote.id != local.id && same_group_message_position(remote, local))
     });
     merge_committed_projection_into_page(page, local_messages, requested_limit);
 }
