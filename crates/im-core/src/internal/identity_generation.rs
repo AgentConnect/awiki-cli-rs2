@@ -10,6 +10,7 @@ const DEFAULT_ANP_SERVICE_PATH: &str = "/anp-im/rpc";
 const AGENT_MESSAGE_SERVICE_PROFILES: &[&str] = &[
     "anp.core.binding.v1",
     "anp.direct.base.v1",
+    "anp.group.base.v1",
     "anp.attachment.v1",
 ];
 const AGENT_MESSAGE_SERVICE_SECURITY_PROFILES: &[&str] = &["transport-protected"];
@@ -314,3 +315,6 @@ fn random_hex(num_bytes: usize) -> String {
     rand::thread_rng().fill_bytes(&mut buffer);
     buffer.iter().map(|byte| format!("{byte:02x}")).collect()
 }
+
+#[cfg(test)]
+mod tests;
