@@ -474,7 +474,7 @@ fn identity_default_cutover_resolve_handle_routes_directory_sequence() {
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
         TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","handle":"alice","full_handle":"alice.awiki.ai"},"id":"req-1"}"#,
+            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","user_id":"user-alice","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","status":"active"},"id":"req-1"}"#,
         ),
         TestResponse::ok(r#"{"jsonrpc":"2.0","result":{"nick_name":"Alice Public"},"id":"req-1"}"#),
         TestResponse::ok(

@@ -831,7 +831,13 @@ pub struct GroupSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupMember {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_persona_id: Option<String>,
     pub did: Option<crate::ids::Did>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_did: Option<crate::ids::Did>,
     pub handle: Option<crate::ids::Handle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handle_binding_generation: Option<String>,
@@ -953,6 +959,14 @@ fn group_member_from_value(value: Value) -> Option<GroupMember> {
     let use_agent_handle =
         did_source_is_agent || subject_type.as_deref().is_some_and(is_agent_subject_type);
     Some(GroupMember {
+        membership_id: optional_string(object.get("membership_id"))
+            .or_else(|| optional_string(object.get("member_id")))
+            .or_else(|| optional_string(object.get("join_event_id"))),
+        peer_persona_id: optional_string(object.get("peer_persona_id")),
+        credential_did: optional_string(object.get("member_credential_did"))
+            .or_else(|| optional_string(object.get("credential_did")))
+            .and_then(|value| crate::ids::Did::parse(value).ok())
+            .or_else(|| did.clone()),
         did,
         handle: optional_string(object.get("handle"))
             .or_else(|| optional_string(object.get("member_handle")))
@@ -1216,7 +1230,10 @@ mod tests {
                     "membership_status": "active"
                 }],
                 "members": [{
+                    "membership_id": "join-event-1",
+                    "peer_persona_id": "persona:v1:bob",
                     "member_did": "did:example:bob",
+                    "member_credential_did": "did:example:bob-credential",
                     "handle": "bob.example",
                     "handle_binding_generation": "100000000000000000000000",
                     "role": "member",
@@ -1244,6 +1261,21 @@ mod tests {
         assert_eq!(
             result.members[0].did.as_ref().map(crate::ids::Did::as_str),
             Some("did:example:bob")
+        );
+        assert_eq!(
+            result.members[0].membership_id.as_deref(),
+            Some("join-event-1")
+        );
+        assert_eq!(
+            result.members[0].peer_persona_id.as_deref(),
+            Some("persona:v1:bob")
+        );
+        assert_eq!(
+            result.members[0]
+                .credential_did
+                .as_ref()
+                .map(crate::ids::Did::as_str),
+            Some("did:example:bob-credential")
         );
         assert_eq!(
             result.members[0].handle_binding_generation.as_deref(),

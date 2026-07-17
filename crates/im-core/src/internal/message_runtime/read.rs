@@ -592,9 +592,12 @@ pub(crate) fn persist_projection_best_effort(
     if messages.is_empty() {
         return;
     }
-    if crate::internal::message_runtime::local_projection::persist_messages(client, messages)
-        .is_ok()
-    {
+    if matches!(
+        crate::internal::message_runtime::local_projection::persist_remote_messages(
+            client, messages,
+        ),
+        Ok(outcome) if outcome.stored_messages > 0
+    ) {
         client.emit_committed_local_message_projection("remote_history");
     }
 }
@@ -606,10 +609,13 @@ pub(crate) async fn persist_projection_best_effort_async(
     if messages.is_empty() {
         return;
     }
-    if crate::internal::message_runtime::local_projection::persist_messages_async(client, messages)
-        .await
-        .is_ok()
-    {
+    if matches!(
+        crate::internal::message_runtime::local_projection::persist_remote_messages_async(
+            client, messages,
+        )
+        .await,
+        Ok(outcome) if outcome.stored_messages > 0
+    ) {
         client.emit_committed_local_message_projection("remote_history");
     }
 }
@@ -821,18 +827,14 @@ fn merge_local_message_records_into_page(
     records: Vec<crate::internal::local_state::messages::MessageRecord>,
     requested_limit: crate::ids::PageLimit,
 ) {
-    let mut local_messages = records
+    let local_messages = records
         .iter()
         .filter_map(|record| {
             crate::internal::message_runtime::conversations::message_from_record(record).ok()
         })
         .filter(|message| !is_direct_e2ee_wire_sdk_message(message))
         .collect::<Vec<_>>();
-    if local_messages.is_empty() {
-        return;
-    }
-    page.items.append(&mut local_messages);
-    page.has_more |= sort_dedupe_and_truncate_messages(&mut page.items, requested_limit);
+    merge_committed_projection_into_page(page, local_messages, requested_limit);
 }
 
 #[cfg(feature = "sqlite")]
@@ -841,14 +843,33 @@ fn merge_local_message_values_into_page(
     rows: Vec<serde_json::Value>,
     requested_limit: crate::ids::PageLimit,
 ) {
-    let mut local_messages = rows
+    let local_messages = rows
         .iter()
         .filter_map(|row| message_from_local_state_value(row).ok())
         .collect::<Vec<_>>();
+    merge_committed_projection_into_page(page, local_messages, requested_limit);
+}
+
+#[cfg(feature = "sqlite")]
+fn merge_committed_projection_into_page(
+    page: &mut crate::ids::Page<crate::messages::Message>,
+    local_messages: Vec<crate::messages::Message>,
+    requested_limit: crate::ids::PageLimit,
+) {
     if local_messages.is_empty() {
         return;
     }
-    page.items.append(&mut local_messages);
+
+    let mut committed_by_id = local_messages
+        .into_iter()
+        .map(|message| (message.id.as_str().to_owned(), message))
+        .collect::<std::collections::HashMap<_, _>>();
+    for message in &mut page.items {
+        if let Some(committed) = committed_by_id.remove(message.id.as_str()) {
+            *message = committed;
+        }
+    }
+    page.items.extend(committed_by_id.into_values());
     page.has_more |= sort_dedupe_and_truncate_messages(&mut page.items, requested_limit);
 }
 
@@ -861,6 +882,9 @@ fn message_from_local_state_value(
         owner_identity_id: string_value(row.get("owner_identity_id")),
         owner_did: string_value(row.get("owner_did")),
         conversation_id: string_value(row.get("conversation_id")),
+        wire_thread_kind: string_value(row.get("wire_thread_kind")),
+        wire_thread_ref: string_value(row.get("wire_thread_ref")),
+        wire_identity_resolution_state: string_value(row.get("wire_identity_resolution_state")),
         thread_id: string_value(row.get("thread_id")),
         direction: row
             .get("direction")

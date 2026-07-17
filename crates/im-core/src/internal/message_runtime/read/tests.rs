@@ -563,6 +563,7 @@ fn messages_read_runtime_rejects_scoped_inbox_token_until_enabled() {
 #[test]
 fn messages_read_runtime_persists_inbox_projection_for_conversations() {
     let fixture = Fixture::new();
+    fixture.seed_verified_peer_identity("user-bob", "bob.awiki.test", &["did:example:bob"]);
     let client = fixture.client();
     let runtime = MessageReadRuntime::new(
         &client,
@@ -626,6 +627,11 @@ fn messages_read_runtime_persists_inbox_projection_for_conversations() {
 #[test]
 fn messages_read_runtime_projects_direct_inbox_by_peer_scope() {
     let fixture = Fixture::new();
+    fixture.seed_verified_peer_identity(
+        "user-bob",
+        "bob.anpclaw.com",
+        &["did:example:bob-old", "did:example:bob-new"],
+    );
     let client = fixture.client();
     let runtime = MessageReadRuntime::new(
         &client,
@@ -705,6 +711,7 @@ fn messages_read_runtime_projects_direct_inbox_by_peer_scope() {
 #[test]
 fn messages_read_runtime_preserves_remote_read_state_in_projection() {
     let fixture = Fixture::new();
+    fixture.seed_verified_peer_identity("user-bob", "bob.awiki.test", &["did:example:bob"]);
     let client = fixture.client();
     let runtime = MessageReadRuntime::new(
         &client,
@@ -1275,6 +1282,90 @@ fn messages_read_runtime_merges_local_direct_projection_into_history() {
 }
 
 #[test]
+fn messages_read_runtime_uses_committed_direct_projection_for_remote_duplicate() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-bob",
+        "bob.awiki.test",
+    )
+    .unwrap();
+    let conversation_id =
+        crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+            &peer_scope,
+        );
+    crate::internal::local_state::messages::upsert_message(
+        &connection,
+        &crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-overlap".to_owned(),
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:example:alice".to_owned(),
+            conversation_id: conversation_id.clone(),
+            thread_id: conversation_id.clone(),
+            direction: 1,
+            sender_did: "did:example:alice".to_owned(),
+            receiver_did: "did:example:bob".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "one committed message".to_owned(),
+            sent_at: "2026-05-21T00:00:00Z".to_owned(),
+            stored_at: "2026-05-21T00:00:00Z".to_owned(),
+            metadata: r#"{"peer_user_id":"user-bob","peer_full_handle":"bob.awiki.test","peer_current_did":"did:example:bob"}"#.to_owned(),
+            is_read: true,
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        },
+    )
+    .unwrap();
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadySessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [{
+                    "id": "msg-overlap",
+                    "sender_did": "did:example:alice",
+                    "receiver_did": "did:example:bob",
+                    "content": "one committed message",
+                    "content_type": "text/plain",
+                    "sent_at": "2026-05-21T00:00:00Z",
+                    "direction": 1
+                }],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .history(HistoryRead {
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+            ),
+            query: crate::messages::HistoryQuery {
+                limit: crate::ids::PageLimit(10),
+                cursor: None,
+                inbox_history_options: None,
+            },
+            resolved_peer_did: None,
+            peer_scope: Some(peer_scope),
+        })
+        .unwrap();
+
+    assert_eq!(result.page.items.len(), 1);
+    let message = &result.page.items[0];
+    assert_eq!(message.id.as_str(), "msg-overlap");
+    assert_eq!(
+        message
+            .metadata
+            .conversation_identity
+            .as_ref()
+            .map(|identity| identity.conversation_id.as_str()),
+        Some(conversation_id.as_str())
+    );
+}
+
+#[test]
 fn messages_read_runtime_uses_remote_created_at_as_sent_at() {
     let fixture = Fixture::new();
     let client = fixture.client();
@@ -1321,6 +1412,7 @@ fn messages_read_runtime_uses_remote_created_at_as_sent_at() {
 #[tokio::test]
 async fn messages_read_runtime_emits_conversation_patch_after_history_projection_commit() {
     let fixture = Fixture::new();
+    fixture.seed_verified_peer_identity("user-bob", "bob.awiki.test", &["did:example:bob"]);
     let client = fixture.client();
     let mut session = client
         .messages()
@@ -2075,6 +2167,11 @@ async fn messages_read_async_projects_direct_init_without_legacy_fallback() {
     let fixture = Fixture::new();
     let exchange =
         crate::internal::secure_direct::async_receive::test_support::incoming_init_exchange();
+    fixture.seed_verified_peer_identity(
+        "user-secure-sender",
+        "secure-sender.awiki.test",
+        &[exchange.sender_did.as_str()],
+    );
     fixture.write_direct_credentials(&exchange);
     fixture.write_peer_document("bob", &exchange.sender_did, &exchange.sender_document);
     fixture.seed_direct_prekeys(&exchange);
@@ -2151,6 +2248,11 @@ async fn messages_read_async_replays_pending_direct_cipher_after_init() {
     let fixture = Fixture::new();
     let exchange =
         crate::internal::secure_direct::async_receive::test_support::incoming_init_exchange();
+    fixture.seed_verified_peer_identity(
+        "user-secure-sender",
+        "secure-sender.awiki.test",
+        &[exchange.sender_did.as_str()],
+    );
     fixture.write_direct_credentials(&exchange);
     fixture.write_peer_document("bob", &exchange.sender_did, &exchange.sender_document);
     fixture.seed_direct_prekeys(&exchange);
@@ -2221,6 +2323,15 @@ async fn messages_read_async_replays_pending_direct_cipher_after_init() {
         .unwrap();
 
     assert_eq!(result.page.items.len(), 2);
+    assert_eq!(
+        result
+            .page
+            .items
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["msg-pending-follow-up", "msg-init-async"]
+    );
     assert_eq!(
         result.page.items[0].body,
         crate::messages::MessageBodyView::Text {
@@ -2649,6 +2760,44 @@ impl Fixture {
 
     fn sqlite_path(&self) -> PathBuf {
         self.root.join("local").join("im.sqlite")
+    }
+
+    fn seed_verified_peer_identity(
+        &self,
+        user_id: &str,
+        full_handle: &str,
+        peer_dids: &[&str],
+    ) -> String {
+        assert!(
+            !peer_dids.is_empty(),
+            "verified peer requires at least one DID"
+        );
+        let authority = full_handle
+            .split_once('.')
+            .map(|(_, authority)| authority)
+            .expect("verified peer Handle must include an authority");
+        let mut connection =
+            crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
+        let mut conversation_id = String::new();
+        for (index, peer_did) in peer_dids.iter().enumerate() {
+            conversation_id = crate::internal::local_state::peer_personas::project_verified_handle(
+                &mut connection,
+                "alice-id",
+                "did:example:alice",
+                &crate::directory::HandleLookupResult {
+                    handle: crate::ids::Handle::parse(full_handle, "").unwrap(),
+                    did: crate::ids::Did::parse(*peer_did).unwrap(),
+                    user_id: user_id.to_owned(),
+                    domain: Some(authority.to_owned()),
+                    status: Some("active".to_owned()),
+                    binding_generation: Some((index + 1).to_string()),
+                    profile: None,
+                    warnings: Vec::new(),
+                },
+            )
+            .unwrap();
+        }
+        conversation_id
     }
 
     fn write_direct_credentials(

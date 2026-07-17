@@ -817,6 +817,7 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
             "did": bob_did,
+            "user_id": "user-bob",
             "full_handle": "bob.awiki.ai",
             "domain": "awiki.ai",
             "status": "active"

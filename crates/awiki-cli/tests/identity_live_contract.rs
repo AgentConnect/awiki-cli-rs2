@@ -589,7 +589,7 @@ fn identity_profile_get_handle_live_resolves_handle_then_reads_public_profile_li
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
         TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","handle":"alice","full_handle":"alice.awiki.ai","domain":"awiki.ai","status":"active"},"id":"req-1"}"#,
+            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","user_id":"user-alice","handle":"alice","full_handle":"alice.awiki.ai","domain":"awiki.ai","status":"active"},"id":"req-1"}"#,
         ),
         TestResponse::ok(r#"{"jsonrpc":"2.0","result":{"nick_name":"Alice Public"},"id":"req-1"}"#),
     ]);

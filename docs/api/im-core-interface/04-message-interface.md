@@ -437,6 +437,19 @@ pub struct MessageMetadataAttribute {
 }
 ```
 
+Flutter 展示 DTO 额外把 canonical identity 提升为顶层强字段：
+
+```text
+conversationId          // required；来自 metadata.conversation_identity
+senderPeerPersonaId?    // verified Persona 已解析时提供
+senderDidSnapshot       // 消息发生时的不可变 sender DID
+```
+
+`threadKind/threadId` 仅保留作 wire/legacy 兼容，不得再作为 App 会话主键。可靠入站
+Direct 在 Persona 解析后把 `sender_peer_persona_id` 写入本地 projection metadata；若发送者
+Persona 尚不可解析，`senderPeerPersonaId` 保持空而 `senderDidSnapshot` 仍必须保留。新 App
+展示路径遇到空 `conversationId` 必须 fail closed，不得退回构造 `dm:<DID>`。
+
 `MessageMetadata` 只承载业务可解释的补充字段。不要把完整 wire payload 塞进 `metadata`。
 `conversation_identity.conversation_id` 是 list/detail/read/send/timeline repair 的跨层 routing
 key；`send_state` 和 `retry_plan` 是 pending/accepted/sent/failed 展示事实，不能由 App memory
@@ -530,6 +543,28 @@ pub struct MarkThreadReadResult {
 ```
 
 ### 5.0 Local History 当前补充
+
+Schema 28 的 conversation list/snapshot contract 直接携带：
+
+```text
+conversation_id          // required canonical key
+peer_persona_id?         // resolved Direct required
+canonical_group_did?     // resolved Group required
+resolution_state         // resolved | legacy_unresolved | blocked_conflict
+title?                   // committed Group profile display name; not an App override
+```
+
+新 App 主路径必须使用这些字段，不能再执行 `conversation_id ?? thread_id`。Core 在
+`resolved` 行缺少对应 Persona/Group DID 时返回 typed projection error；显式
+`ensure_conversation` 只接受绑定到 verified Persona 的 Direct route 和以权威 Group DID
+为 key 的 active Group membership。`legacy_unresolved` 仍可用于历史列表/诊断，但不能通过
+ensure/send 边界伪装成 resolved canonical conversation。conversation text、payload 和
+attachment 发送会在写 local echo 或上传对象前执行同一 `ensure_conversation` 校验；
+`dm:<DID>`、缺少 verified Persona route 的 Direct，以及没有 active membership 的 Group
+都 fail closed。target-first legacy send API 的兼容行为不因此改变。
+
+Group member DTO 同时分离 `membership_id`、`peer_persona_id?`、`credential_did` 和
+Handle；Handle binding generation/DID 轮换只更新属性，不改变 membership identity。
 
 `history(thread, query)` 保持远端 history + 本地 projection/reconcile 语义。AWiki Me 首屏读取应使用 `local_conversation_timeline(conversation, query)`；`local_history(thread, query)` 是兼容入口：
 
@@ -662,7 +697,10 @@ pub struct RealtimeSyncHint {
 3. `limit`、`device_id`、`reason` 只作为分页和诊断输入；`reason` 是字符串，不是封闭
    enum，便于 App 记录 `startup`、`app_resumed`、`reconnect`、`realtime_gap` 等来源。
 4. 在同一个本地 SQLite transaction 中 apply 所有事件、更新 conversation/message
-   projection，并在 apply 成功后写入 `next_event_seq` checkpoint。
+   projection。Direct 的 peer DID 尚未绑定 verified Persona 时，不创建 `dm:<DID>`：先把
+   保留原 WireIdentity 的消息写入 owner-scoped `inbound_resolution_backlog`，成功后才能写入
+   `next_event_seq` checkpoint。后续权威 Handle projection 会幂等重放对应 backlog；冲突保持
+   blocked/conflict-visible，不猜测合并。
 5. 返回 `events_applied`、`pages_fetched` 和 `last_applied_event_seq` 作为诊断和 UI 状态；
    `last_applied_event_seq` 不是 public checkpoint setter。
 6. 当服务端返回 `snapshot_required=true` 时 fail-closed：不推进 checkpoint、不清空本地
@@ -697,6 +735,11 @@ checkpoint 边界：
   `storeGlobalCheckpoint`、手动 `since_event_seq` 或手动 checkpoint advance。
 - Realtime `RealtimeSyncHint` 只用于 duplicate/gap/dirty 判断和调度 `sync_delta`；即使
   realtime projection 成功，也不得推进 checkpoint。
+- 在线收到首条 Direct realtime 消息时，Core 必须先按 wire peer DID 调用权威 Handle
+  lookup，校验返回 DID 与 wire snapshot 一致，并先提交 verified Persona/route，再提交消息。
+  lookup 不可用、响应不合法、发生冲突或 DID 不一致时继续写入
+  `inbound_resolution_backlog`，不得用 DID 合成 Persona、创建 `dm:<DID>` 行或发送
+  authoritative patch。
 
 ### 5.3 Conversation / Thread Snapshot And Patch API
 
@@ -733,7 +776,11 @@ snapshot 只用于冷启动 first paint，随后仍必须用 SQLite local projec
 `ConversationStorePatch` stream。patch kind 当前包括 `reset`、`upsert`、`remove`、
 `reorder`、`repairRequired`。subscriber lag、stream drop、session switch 或 version gap
 必须走 `repair_conversation_store()` / Dart `repairConversationStore()`，repair 返回的
-patch version 是后续 patch 连续性判断的基线。
+patch version 是后续 patch 连续性判断的基线。Conversation Store 的唯一 key 是
+`conversation_id`；`remove` / `reorder` 只携带 `conversation_id`，不得用
+`(thread_kind, thread_id)` 或 alias/DID 作为 Store identity。snapshot format v3 同样要求
+每项有 canonical `conversation_id`，并允许携带 owner-scoped Group profile 的 `title`；旧的
+可丢弃 redb snapshot 会直接失效并从 SQLite 重建，避免冷启动先显示 Group DID/ID 再切换群名。
 
 `watch_thread_patches(thread, limit)` / Dart `watchThreadPatches(thread, limit: ...)`
 返回当前 thread 的 versioned `ThreadMessageStorePatch` stream。patch kind 当前包括
@@ -742,7 +789,9 @@ patch version 是后续 patch 连续性判断的基线。
 不得直接生成 authoritative thread patch。
 realtime incoming 消息如果成功写入 SQLite local projection，则按同一规则触发
 conversation patch 和对应 thread patch；如果 projection 不存在或写入失败，不得发
-authoritative patch。
+authoritative patch。首条在线 Direct 的 verified Persona projection 必须先于该消息写入，
+因此首次 patch 直接使用 canonical Persona conversation ID，不允许先发布 DID conversation
+再合并。
 
 `watch_conversation_timeline_patches(conversation, limit)` 和
 `repair_conversation_timeline_store(conversation, limit)` 是 conversationId-first timeline

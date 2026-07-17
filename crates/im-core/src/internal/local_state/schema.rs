@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 27;
+pub(crate) const SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
 const CONVERSATION_REGISTRY_SCHEMA_VERSION: i64 = 26;
@@ -311,6 +311,8 @@ const DIRECT_PEER_ROUTES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS direct_peer_routes (
     owner_identity_id TEXT NOT NULL,
     conversation_id   TEXT NOT NULL,
+    peer_persona_id   TEXT,
+    authority_namespace TEXT,
     peer_user_id      TEXT NOT NULL,
     full_handle       TEXT NOT NULL,
     current_did       TEXT NOT NULL,
@@ -929,15 +931,13 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
-    if version < IDENTITY_OWNED_SCHEMA_VERSION {
-        return Err(crate::ImError::LocalStateUnavailable {
-            detail: format!(
-                "sqlite schema version {version} requires owner-identity migration before schema {SCHEMA_VERSION}"
-            ),
+    if version < SCHEMA_VERSION {
+        return Err(crate::ImError::LocalStateUpgradeRequired {
+            from_version: version,
+            target_version: SCHEMA_VERSION,
         });
     }
-    create_schema(connection, version < CONVERSATION_SUMMARIES_SCHEMA_VERSION)?;
-    set_schema_version(connection, SCHEMA_VERSION)
+    create_schema(connection, false)
 }
 
 pub(crate) fn current_schema_version(connection: &Connection) -> crate::ImResult<i64> {
@@ -946,11 +946,12 @@ pub(crate) fn current_schema_version(connection: &Connection) -> crate::ImResult
         .map_err(super::local_state_unavailable)
 }
 
-fn create_schema(
+pub(super) fn create_schema(
     connection: &Connection,
     backfill_conversation_summaries: bool,
 ) -> crate::ImResult<()> {
     create_identity_owned_schema(connection, IdentityOwnedSchemaTableMode::Final)?;
+    ensure_column(connection, "contacts", "peer_persona_id", "TEXT")?;
     ensure_group_member_identity_columns(connection)?;
     connection
         .execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL)
@@ -970,6 +971,13 @@ fn create_schema(
     connection
         .execute_batch(DIRECT_PEER_ROUTES_SQL)
         .map_err(super::local_state_unavailable)?;
+    ensure_column(connection, "direct_peer_routes", "peer_persona_id", "TEXT")?;
+    ensure_column(
+        connection,
+        "direct_peer_routes",
+        "authority_namespace",
+        "TEXT",
+    )?;
     let mut should_rebuild_conversation_summaries = backfill_conversation_summaries;
     if ensure_message_projection_columns(connection)? {
         backfill_message_mention_projection(connection)?;
@@ -977,6 +985,11 @@ fn create_schema(
     }
     super::conversation_summaries::create_schema(connection)?;
     super::conversation_registry::create_schema(connection)?;
+    super::peer_personas::create_schema(connection)?;
+    super::peer_identifiers::create_schema(connection)?;
+    super::peer_profiles::create_schema(connection)?;
+    super::conversation_aliases::create_schema(connection)?;
+    super::inbound_resolution_backlog::create_schema(connection)?;
     for view in ["threads", "inbox", "outbox"] {
         connection
             .execute(&format!("DROP VIEW IF EXISTS {view}"), [])
@@ -1015,6 +1028,7 @@ CREATE TABLE IF NOT EXISTS contacts{suffix} (
     owner_identity_id TEXT NOT NULL,
     owner_did         TEXT NOT NULL DEFAULT '',
     did               TEXT NOT NULL,
+    peer_persona_id   TEXT,
     name              TEXT,
     handle            TEXT,
     nick_name         TEXT,
@@ -1057,6 +1071,9 @@ CREATE TABLE IF NOT EXISTS messages{suffix} (
     owner_identity_id TEXT NOT NULL,
     owner_did         TEXT NOT NULL DEFAULT '',
     conversation_id   TEXT NOT NULL DEFAULT '',
+    wire_thread_kind  TEXT NOT NULL DEFAULT '',
+    wire_thread_ref   TEXT NOT NULL DEFAULT '',
+    wire_identity_resolution_state TEXT NOT NULL DEFAULT 'legacy_unresolved',
     thread_id         TEXT NOT NULL,
     direction         INTEGER NOT NULL DEFAULT 0,
     sender_did        TEXT,
@@ -1115,11 +1132,15 @@ CREATE TABLE IF NOT EXISTS group_members{suffix} (
     owner_did         TEXT NOT NULL DEFAULT '',
     group_id          TEXT NOT NULL,
     user_id           TEXT NOT NULL,
+    membership_id     TEXT,
+    peer_persona_id   TEXT,
     member_did        TEXT,
+    member_credential_did TEXT,
     member_handle     TEXT,
     anchor_kind       TEXT NOT NULL DEFAULT 'did',
     anchor_value      TEXT NOT NULL DEFAULT '',
     handle_binding_generation TEXT,
+    membership_epoch TEXT,
     profile_url       TEXT,
     role              TEXT,
     status            TEXT NOT NULL DEFAULT 'active',
@@ -1128,7 +1149,8 @@ CREATE TABLE IF NOT EXISTS group_members{suffix} (
     last_synced_at    TEXT NOT NULL,
     metadata          TEXT,
     credential_name   TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (owner_identity_id, group_id, user_id)
+    PRIMARY KEY (owner_identity_id, group_id, user_id),
+    UNIQUE (owner_identity_id, group_id, membership_id)
 );
 
 CREATE TABLE IF NOT EXISTS relationship_events{suffix} (
@@ -1300,6 +1322,7 @@ fn ensure_owner_identity_columns(connection: &Connection) -> crate::ImResult<()>
         "credential_name",
         "TEXT NOT NULL DEFAULT ''",
     )?;
+    ensure_column(connection, "contacts", "peer_persona_id", "TEXT")?;
     Ok(())
 }
 
@@ -1313,19 +1336,36 @@ fn ensure_direct_e2ee_session_columns(connection: &Connection) -> crate::ImResul
 }
 
 fn ensure_message_projection_columns(connection: &Connection) -> crate::ImResult<bool> {
-    if has_column(connection, "messages", "mentions_current_user")? {
-        return Ok(false);
+    let mut changed = false;
+    for (column, definition) in [
+        ("wire_thread_kind", "TEXT NOT NULL DEFAULT ''"),
+        ("wire_thread_ref", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "wire_identity_resolution_state",
+            "TEXT NOT NULL DEFAULT 'legacy_unresolved'",
+        ),
+    ] {
+        if !has_column(connection, "messages", column)? {
+            ensure_column(connection, "messages", column, definition)?;
+            changed = true;
+        }
     }
-    ensure_column(
-        connection,
-        "messages",
-        "mentions_current_user",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    Ok(true)
+    if !has_column(connection, "messages", "mentions_current_user")? {
+        ensure_column(
+            connection,
+            "messages",
+            "mentions_current_user",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        changed = true;
+    }
+    Ok(changed)
 }
 
 fn ensure_group_member_identity_columns(connection: &Connection) -> crate::ImResult<()> {
+    ensure_column(connection, "group_members", "membership_id", "TEXT")?;
+    ensure_column(connection, "group_members", "peer_persona_id", "TEXT")?;
+    ensure_column(connection, "group_members", "member_credential_did", "TEXT")?;
     ensure_column(
         connection,
         "group_members",
@@ -1344,6 +1384,7 @@ fn ensure_group_member_identity_columns(connection: &Connection) -> crate::ImRes
         "handle_binding_generation",
         "TEXT",
     )?;
+    ensure_column(connection, "group_members", "membership_epoch", "TEXT")?;
     connection
         .execute(
             r#"
@@ -1351,6 +1392,62 @@ UPDATE group_members
 SET anchor_kind = 'did', anchor_value = COALESCE(member_did, user_id)
 WHERE TRIM(COALESCE(anchor_value, '')) = ''"#,
             [],
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = {
+        let mut statement = connection
+            .prepare(
+                r#"SELECT owner_identity_id, group_id, anchor_kind, anchor_value,
+                          COALESCE(membership_epoch, ''), COALESCE(membership_id, '')
+FROM group_members"#,
+            )
+            .map_err(super::local_state_unavailable)?;
+        let mapped = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(super::local_state_unavailable)?;
+        let mut rows = Vec::new();
+        for row in mapped {
+            rows.push(row.map_err(super::local_state_unavailable)?);
+        }
+        rows
+    };
+    for (owner, group, kind, anchor, epoch, membership_id) in rows {
+        if membership_id.trim().is_empty() {
+            connection
+                .execute(
+                    r#"UPDATE group_members SET membership_id = ?1,
+                           member_credential_did = COALESCE(member_credential_did, member_did)
+WHERE owner_identity_id = ?2 AND group_id = ?3
+  AND anchor_kind = ?4 AND anchor_value = ?5"#,
+                    rusqlite::params![
+                        super::groups::fallback_membership_id(
+                            &group,
+                            &kind,
+                            &anchor,
+                            (!epoch.trim().is_empty()).then_some(epoch.as_str()),
+                        ),
+                        owner,
+                        group,
+                        kind,
+                        anchor,
+                    ],
+                )
+                .map_err(super::local_state_unavailable)?;
+        }
+    }
+    connection
+        .execute_batch(
+            r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_group_members_owner_membership
+ON group_members(owner_identity_id, group_id, membership_id);"#,
         )
         .map_err(super::local_state_unavailable)?;
     Ok(())
@@ -1613,7 +1710,7 @@ WHERE EXISTS (
     Ok(())
 }
 
-fn set_schema_version(connection: &Connection, version: i64) -> crate::ImResult<()> {
+pub(super) fn set_schema_version(connection: &Connection, version: i64) -> crate::ImResult<()> {
     connection
         .pragma_update(None, "user_version", version)
         .map_err(super::local_state_unavailable)

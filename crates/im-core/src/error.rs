@@ -67,6 +67,35 @@ pub enum ImError {
     LocalStateUnavailable {
         detail: String,
     },
+    LocalStateUpgradeRequired {
+        from_version: i64,
+        target_version: i64,
+    },
+    LocalStateUpgradeInProgress,
+    LocalStateUpgradeFailed {
+        phase: String,
+        code: String,
+    },
+    IdentityUnresolved {
+        detail: String,
+    },
+    IdentityBindingConflict {
+        detail: String,
+    },
+    ConversationAliasConflict {
+        alias: String,
+        existing_target: String,
+        requested_target: String,
+    },
+    MessageWireIdentityConflict {
+        message_id: String,
+    },
+    CanonicalGroupIdentityMissing {
+        group: String,
+    },
+    LocalProjectionUnavailable {
+        detail: String,
+    },
     PathUnavailable {
         path_kind: String,
         detail: String,
@@ -145,6 +174,38 @@ impl fmt::Display for ImError {
             }
             Self::LocalStateUnavailable { detail } => {
                 write!(f, "local state unavailable: {detail}")
+            }
+            Self::LocalStateUpgradeRequired {
+                from_version,
+                target_version,
+            } => write!(
+                f,
+                "local state upgrade required: schema {from_version} -> {target_version}"
+            ),
+            Self::LocalStateUpgradeInProgress => f.write_str("local state upgrade in progress"),
+            Self::LocalStateUpgradeFailed { phase, code } => {
+                write!(f, "local state upgrade failed during {phase}: {code}")
+            }
+            Self::IdentityUnresolved { detail } => write!(f, "identity unresolved: {detail}"),
+            Self::IdentityBindingConflict { detail } => {
+                write!(f, "identity binding conflict: {detail}")
+            }
+            Self::ConversationAliasConflict {
+                alias,
+                existing_target,
+                requested_target,
+            } => write!(
+                f,
+                "conversation alias conflict for {alias}: existing target {existing_target}, requested target {requested_target}"
+            ),
+            Self::MessageWireIdentityConflict { message_id } => {
+                write!(f, "message wire identity conflict: {message_id}")
+            }
+            Self::CanonicalGroupIdentityMissing { group } => {
+                write!(f, "canonical group identity missing: {group}")
+            }
+            Self::LocalProjectionUnavailable { detail } => {
+                write!(f, "local projection unavailable: {detail}")
             }
             Self::PathUnavailable { path_kind, detail } => {
                 write!(f, "{path_kind} path unavailable: {detail}")

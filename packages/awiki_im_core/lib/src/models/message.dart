@@ -284,6 +284,9 @@ enum ConversationMigrationState {
 class Message {
   const Message({
     required this.id,
+    required this.conversationId,
+    this.senderPeerPersonaId,
+    required this.senderDidSnapshot,
     required this.threadKind,
     required this.threadId,
     required this.direction,
@@ -297,6 +300,9 @@ class Message {
   });
 
   final String id;
+  final String conversationId;
+  final String? senderPeerPersonaId;
+  final String senderDidSnapshot;
   final String threadKind;
   final String threadId;
   final MessageDirection direction;
@@ -389,9 +395,7 @@ class ConversationStorePatch {
     this.items = const [],
     this.item,
     this.index,
-    this.threadKind,
-    this.threadId,
-    this.conversationIdentity,
+    this.conversationId,
     this.reason,
   });
 
@@ -403,9 +407,7 @@ class ConversationStorePatch {
   final List<ConversationSnapshotItem> items;
   final ConversationSnapshotItem? item;
   final int? index;
-  final String? threadKind;
-  final String? threadId;
-  final ConversationIdentity? conversationIdentity;
+  final String? conversationId;
   final String? reason;
 }
 
@@ -443,8 +445,13 @@ class ThreadMessageStorePatch {
 
 class ConversationSnapshotItem {
   const ConversationSnapshotItem({
+    required this.conversationId,
+    this.peerPersonaId,
+    this.canonicalGroupDid,
+    required this.resolutionState,
     required this.threadKind,
     required this.threadId,
+    this.title,
     this.conversationIdentity,
     this.participants = const [],
     this.lastMessage,
@@ -456,8 +463,13 @@ class ConversationSnapshotItem {
     this.activityAt,
   });
 
+  final String conversationId;
+  final String? peerPersonaId;
+  final String? canonicalGroupDid;
+  final ConversationResolutionState resolutionState;
   final String threadKind;
   final String threadId;
+  final String? title;
   final ConversationIdentity? conversationIdentity;
   final List<String> participants;
   final ConversationSnapshotMessage? lastMessage;
@@ -468,6 +480,8 @@ class ConversationSnapshotItem {
   final String? lastMessageAt;
   final String? activityAt;
 }
+
+enum ConversationResolutionState { resolved, legacyUnresolved, blockedConflict }
 
 class ConversationSnapshotMessage {
   const ConversationSnapshotMessage({
@@ -563,6 +577,10 @@ class SyncThreadAfterResult {
 
 class Conversation {
   const Conversation({
+    required this.conversationId,
+    this.peerPersonaId,
+    this.canonicalGroupDid,
+    required this.resolutionState,
     required this.threadKind,
     required this.threadId,
     this.conversationIdentity,
@@ -577,6 +595,10 @@ class Conversation {
     this.activityAt,
   });
 
+  final String conversationId;
+  final String? peerPersonaId;
+  final String? canonicalGroupDid;
+  final ConversationResolutionState resolutionState;
   final String threadKind;
   final String threadId;
   final ConversationIdentity? conversationIdentity;

@@ -212,21 +212,12 @@ fn diff_patch(
         .collect::<Vec<_>>();
 
     if removed.len() == 1 && added_or_changed.is_empty() {
-        let (thread_kind, thread_id) = removed[0].clone();
         return Some(crate::messages::ConversationStorePatch::Remove {
             owner_identity_id: owner_identity_id.to_owned(),
             owner_did: owner_did.to_owned(),
             version,
             unread_total,
-            conversation_identity: Some(
-                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
-                    thread_kind.clone(),
-                    thread_id.clone(),
-                    owner_did,
-                ),
-            ),
-            thread_kind,
-            thread_id,
+            conversation_id: removed[0].clone(),
         });
     }
     if removed.is_empty() && added_or_changed.len() == 1 {
@@ -243,8 +234,8 @@ fn diff_patch(
     None
 }
 
-fn item_key(item: &crate::messages::ConversationSnapshotItem) -> (String, String) {
-    (item.thread_kind.clone(), item.thread_id.clone())
+fn item_key(item: &crate::messages::ConversationSnapshotItem) -> String {
+    item.conversation_id.clone()
 }
 
 fn unread_total(items: &[crate::messages::ConversationSnapshotItem]) -> u32 {
@@ -278,8 +269,8 @@ mod tests {
 
     #[test]
     fn conversation_store_diff_emits_upsert_for_single_changed_item() {
-        let previous = vec![item("direct", "a", "old", 1)];
-        let next = vec![item("direct", "a", "new", 0)];
+        let previous = vec![item("dm:persona:a", "direct", "a-old-did", "old", 1)];
+        let next = vec![item("dm:persona:a", "direct", "a-new-did", "new", 0)];
 
         let patch = diff_patch("owner-id", "did:example:owner", 2, 0, &previous, &next)
             .expect("single upsert patch");
@@ -306,7 +297,7 @@ mod tests {
 
     #[test]
     fn conversation_store_diff_emits_remove_for_single_removed_item() {
-        let previous = vec![item("direct", "a", "old", 1)];
+        let previous = vec![item("dm:persona:a", "direct", "a", "old", 1)];
         let next = Vec::new();
 
         let patch = diff_patch("owner-id", "did:example:owner", 3, 0, &previous, &next)
@@ -314,14 +305,12 @@ mod tests {
 
         match patch {
             crate::messages::ConversationStorePatch::Remove {
-                thread_kind,
-                thread_id,
+                conversation_id,
                 version,
                 ..
             } => {
                 assert_eq!(version, 3);
-                assert_eq!(thread_kind, "direct");
-                assert_eq!(thread_id, "a");
+                assert_eq!(conversation_id, "dm:persona:a");
             }
             other => panic!("expected remove, got {other:?}"),
         }
@@ -329,10 +318,10 @@ mod tests {
 
     #[test]
     fn conversation_store_diff_falls_back_to_reset_for_multi_item_change() {
-        let previous = vec![item("direct", "a", "old", 1)];
+        let previous = vec![item("dm:persona:a", "direct", "a", "old", 1)];
         let next = vec![
-            item("direct", "a", "new", 0),
-            item("direct", "b", "other", 1),
+            item("dm:persona:a", "direct", "a", "new", 0),
+            item("dm:persona:b", "direct", "b", "other", 1),
         ];
 
         assert!(
@@ -401,14 +390,20 @@ mod tests {
     }
 
     fn item(
+        conversation_id: &str,
         thread_kind: &str,
         thread_id: &str,
         message_id: &str,
         unread_count: u32,
     ) -> crate::messages::ConversationSnapshotItem {
         crate::messages::ConversationSnapshotItem {
+            conversation_id: conversation_id.to_owned(),
+            peer_persona_id: None,
+            canonical_group_did: None,
+            resolution_state: crate::messages::ConversationResolutionState::LegacyUnresolved,
             thread_kind: thread_kind.to_owned(),
             thread_id: thread_id.to_owned(),
+            title: None,
             conversation_identity: None,
             participants: Vec::new(),
             last_message: Some(crate::messages::ConversationSnapshotMessage {

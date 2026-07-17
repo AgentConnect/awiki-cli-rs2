@@ -180,6 +180,9 @@ pub struct DartMessageMetadataAttribute {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartMessage {
     pub id: String,
+    pub conversation_id: String,
+    pub sender_peer_persona_id: Option<String>,
+    pub sender_did_snapshot: String,
     pub thread_kind: String,
     pub thread_id: String,
     pub direction: DartMessageDirection,
@@ -201,6 +204,10 @@ pub struct DartMessagePage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartConversation {
+    pub conversation_id: String,
+    pub peer_persona_id: Option<String>,
+    pub canonical_group_did: Option<String>,
+    pub resolution_state: DartConversationResolutionState,
     pub thread_kind: String,
     pub thread_id: String,
     pub conversation_identity: Option<DartConversationIdentity>,
@@ -213,6 +220,13 @@ pub struct DartConversation {
     pub message_count: u32,
     pub last_message_at: Option<String>,
     pub activity_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartConversationResolutionState {
+    Resolved,
+    LegacyUnresolved,
+    BlockedConflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,18 +321,14 @@ pub enum DartConversationStorePatch {
         owner_did: String,
         version: u64,
         unread_total: u32,
-        thread_kind: String,
-        thread_id: String,
-        conversation_identity: Option<DartConversationIdentity>,
+        conversation_id: String,
     },
     Reorder {
         owner_identity_id: String,
         owner_did: String,
         version: u64,
         unread_total: u32,
-        thread_kind: String,
-        thread_id: String,
-        conversation_identity: Option<DartConversationIdentity>,
+        conversation_id: String,
         index: u32,
     },
     RepairRequired {
@@ -373,8 +383,13 @@ pub enum DartThreadMessageStorePatch {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartConversationSnapshotItem {
+    pub conversation_id: String,
+    pub peer_persona_id: Option<String>,
+    pub canonical_group_did: Option<String>,
+    pub resolution_state: DartConversationResolutionState,
     pub thread_kind: String,
     pub thread_id: String,
+    pub title: Option<String>,
     pub conversation_identity: Option<DartConversationIdentity>,
     pub participants: Vec<String>,
     pub last_message: Option<DartConversationSnapshotMessage>,

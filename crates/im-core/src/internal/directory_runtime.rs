@@ -5,8 +5,7 @@ use crate::internal::transport::{AsyncRpcTransport, RpcTransport};
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DirectoryResolveResult {
     pub(crate) resolution: crate::directory::DirectoryResolution,
-    pub(crate) peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
-    pub(crate) peer_current_did: Option<crate::ids::Did>,
+    pub(crate) handle_lookup: Option<crate::directory::HandleLookupResult>,
     pub(crate) resolve: Option<Value>,
     pub(crate) lookup: Option<Value>,
     pub(crate) public_profile: Option<Value>,
@@ -88,12 +87,6 @@ where
             .map_err(|err| map_directory_not_found(err, &handle))?;
         let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
         let conversation_id = lookup.direct_conversation_id();
-        let peer_scope = Some(
-            crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                lookup.user_id.clone(),
-                lookup.handle.as_str(),
-            )?,
-        );
         let warnings = lookup.warnings.clone();
         let fallback_profile = if lookup.profile.is_none() {
             public_profile_by_did(&mut self.transport, lookup.did.as_str()).ok()
@@ -118,13 +111,12 @@ where
             resolution: crate::directory::DirectoryResolution {
                 input: handle,
                 did: lookup.did.clone(),
-                handle: Some(lookup.handle),
+                handle: Some(lookup.handle.clone()),
                 conversation_id,
                 profile: profile_dto,
                 warnings,
             },
-            peer_scope,
-            peer_current_did: Some(lookup.did.clone()),
+            handle_lookup: Some(lookup.clone()),
             resolve: Some(resolve_raw),
             lookup: Some(lookup_raw),
             public_profile: fallback_profile,
@@ -137,8 +129,6 @@ where
         let mut warnings = Vec::new();
         let mut lookup_raw = None;
         let mut handle = None;
-        let mut peer_scope = None;
-        let mut peer_current_did = None;
         let mut conversation_id =
             crate::internal::local_state::owner_scope::direct_conversation_id(did.as_str());
         match lookup_by_did(&mut self.transport, did.as_str()) {
@@ -146,13 +136,6 @@ where
                 let lookup = handle_lookup_from_value_with_client(self.client, &raw)?;
                 conversation_id = lookup.direct_conversation_id();
                 warnings.extend(lookup.warnings);
-                peer_scope = Some(
-                    crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                        lookup.user_id,
-                        lookup.handle.as_str(),
-                    )?,
-                );
-                peer_current_did = Some(lookup.did.clone());
                 handle = Some(lookup.handle);
                 lookup_raw = Some(raw);
             }
@@ -179,8 +162,10 @@ where
                 profile,
                 warnings,
             },
-            peer_scope,
-            peer_current_did,
+            handle_lookup: lookup_raw
+                .as_ref()
+                .map(|raw| handle_lookup_from_value_with_client(self.client, raw))
+                .transpose()?,
             resolve: Some(resolve_raw),
             lookup: lookup_raw,
             public_profile: profile_raw,
@@ -198,7 +183,7 @@ where
             return Ok(crate::directory::PublicProfile {
                 subject: crate::directory::IdentitySubject::Handle(handle),
                 did: lookup.did,
-                handle: Some(lookup.handle),
+                handle: Some(lookup.handle.clone()),
                 profile,
                 warnings: lookup.warnings,
             });
@@ -302,12 +287,6 @@ where
             .map_err(|err| map_directory_not_found(err, &handle))?;
         let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
         let conversation_id = lookup.direct_conversation_id();
-        let peer_scope = Some(
-            crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                lookup.user_id.clone(),
-                lookup.handle.as_str(),
-            )?,
-        );
         let warnings = lookup.warnings.clone();
         let fallback_profile = if lookup.profile.is_none() {
             public_profile_by_did_async(&mut self.transport, lookup.did.as_str())
@@ -335,13 +314,12 @@ where
             resolution: crate::directory::DirectoryResolution {
                 input: handle,
                 did: lookup.did.clone(),
-                handle: Some(lookup.handle),
+                handle: Some(lookup.handle.clone()),
                 conversation_id,
                 profile: profile_dto,
                 warnings,
             },
-            peer_scope,
-            peer_current_did: Some(lookup.did.clone()),
+            handle_lookup: Some(lookup.clone()),
             resolve: Some(resolve_raw),
             lookup: Some(lookup_raw),
             public_profile: fallback_profile,
@@ -354,8 +332,6 @@ where
         let mut warnings = Vec::new();
         let mut lookup_raw = None;
         let mut handle = None;
-        let mut peer_scope = None;
-        let mut peer_current_did = None;
         let mut conversation_id =
             crate::internal::local_state::owner_scope::direct_conversation_id(did.as_str());
         match lookup_by_did_async(&mut self.transport, did.as_str()).await {
@@ -363,13 +339,6 @@ where
                 let lookup = handle_lookup_from_value_with_client(self.client, &raw)?;
                 conversation_id = lookup.direct_conversation_id();
                 warnings.extend(lookup.warnings);
-                peer_scope = Some(
-                    crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                        lookup.user_id,
-                        lookup.handle.as_str(),
-                    )?,
-                );
-                peer_current_did = Some(lookup.did.clone());
                 handle = Some(lookup.handle);
                 lookup_raw = Some(raw);
             }
@@ -396,8 +365,10 @@ where
                 profile,
                 warnings,
             },
-            peer_scope,
-            peer_current_did,
+            handle_lookup: lookup_raw
+                .as_ref()
+                .map(|raw| handle_lookup_from_value_with_client(self.client, raw))
+                .transpose()?,
             resolve: Some(resolve_raw),
             lookup: lookup_raw,
             public_profile: profile_raw,
@@ -563,14 +534,22 @@ pub(crate) fn handle_lookup_from_value_with_client(
     }
     let did = crate::ids::Did::parse(did)?;
     let handle = crate::ids::Handle::parse(handle, "")?;
-    let user_id = stable_user_id_from_lookup(value, did.as_str());
+    let user_id = stable_user_id_from_lookup(value)?;
+    let domain = string_option(value, "domain");
+    let status = string_option(value, "status");
+    crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+        domain.as_deref().unwrap_or_default(),
+        &user_id,
+        handle.as_str(),
+        status.as_deref(),
+    )?;
     let (profile, warnings) = profile_from_lookup(client, value.get("profile"), &did, &handle)?;
     Ok(crate::directory::HandleLookupResult {
         handle,
         did,
         user_id,
-        domain: string_option(value, "domain"),
-        status: string_option(value, "status"),
+        domain,
+        status,
         binding_generation: string_option(value, "binding_generation"),
         profile,
         warnings,
@@ -590,26 +569,37 @@ pub(crate) fn handle_lookup_from_value(
     if handle.trim().is_empty() {
         return Err(crate::ImError::PeerNotFound { peer: did.clone() });
     }
-    let user_id = stable_user_id_from_lookup(value, &did);
+    let user_id = stable_user_id_from_lookup(value)?;
+    let domain = string_option(value, "domain");
+    let status = string_option(value, "status");
+    let handle = crate::ids::Handle::parse(handle, "")?;
+    crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+        domain.as_deref().unwrap_or_default(),
+        &user_id,
+        handle.as_str(),
+        status.as_deref(),
+    )?;
     Ok(crate::directory::HandleLookupResult {
-        handle: crate::ids::Handle::parse(handle, "")?,
+        handle,
         did: crate::ids::Did::parse(did)?,
         user_id,
-        domain: string_option(value, "domain"),
-        status: string_option(value, "status"),
+        domain,
+        status,
         binding_generation: string_option(value, "binding_generation"),
         profile: None,
         warnings: Vec::new(),
     })
 }
 
-fn stable_user_id_from_lookup(value: &Value, did: &str) -> String {
+fn stable_user_id_from_lookup(value: &Value) -> crate::ImResult<String> {
     let value = first_string_value(value, &["user_id", "userId", "subject_id", "subjectId"]);
     let value = value.trim();
     if value.is_empty() {
-        did.trim().to_owned()
+        Err(crate::ImError::IdentityUnresolved {
+            detail: "Handle authority did not return a stable user_id/subject_id".to_owned(),
+        })
     } else {
-        value.to_owned()
+        Ok(value.to_owned())
     }
 }
 
@@ -698,6 +688,7 @@ mod tests {
             "did": "did:wba:awiki.info:alice:e1_current",
             "full_handle": "alice.awiki.info",
             "user_id": "user-alice",
+            "domain": "awiki.info",
             "status": "active",
             "binding_generation": "3"
         }))
@@ -711,6 +702,8 @@ mod tests {
         let lookup = handle_lookup_from_value(&json!({
             "did": "did:wba:awiki.info:alice:e1_current",
             "full_handle": "alice.awiki.info",
+            "user_id": "user-alice",
+            "domain": "awiki.info",
             "status": "active",
             "binding_generation": 3
         }))

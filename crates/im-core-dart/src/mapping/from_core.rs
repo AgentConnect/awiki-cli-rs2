@@ -24,13 +24,13 @@ use crate::dto::{
     message::{
         DartConversation, DartConversationAlias, DartConversationAliasSource,
         DartConversationIdentity, DartConversationIdentityScope, DartConversationListSnapshot,
-        DartConversationMigrationState, DartConversationPage, DartConversationSnapshotItem,
-        DartConversationSnapshotMessage, DartConversationSnapshotMessageBody,
-        DartConversationStorageThreadRef, DartConversationStorePatch, DartMarkReadResult,
-        DartMarkThreadReadResult, DartMessage, DartMessageBodyView, DartMessageDirection,
-        DartMessageMetadata, DartMessageMetadataAttribute, DartMessagePage, DartReadWatermark,
-        DartSendMessageResult, DartSyncDeltaResult, DartSyncThreadAfterResult,
-        DartThreadMessageStorePatch,
+        DartConversationMigrationState, DartConversationPage, DartConversationResolutionState,
+        DartConversationSnapshotItem, DartConversationSnapshotMessage,
+        DartConversationSnapshotMessageBody, DartConversationStorageThreadRef,
+        DartConversationStorePatch, DartMarkReadResult, DartMarkThreadReadResult, DartMessage,
+        DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
+        DartMessageMetadataAttribute, DartMessagePage, DartReadWatermark, DartSendMessageResult,
+        DartSyncDeltaResult, DartSyncThreadAfterResult, DartThreadMessageStorePatch,
     },
     profile::DartUserProfile,
     realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint},
@@ -700,9 +700,26 @@ impl From<im_core::messages::MessageTarget> for crate::dto::message::DartMessage
 
 impl From<im_core::messages::Message> for DartMessage {
     fn from(value: im_core::messages::Message) -> Self {
+        let conversation_id = value
+            .metadata
+            .conversation_identity
+            .as_ref()
+            .map(|identity| identity.conversation_id.clone())
+            .unwrap_or_default();
+        let sender_peer_persona_id = value
+            .metadata
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key == "sender_peer_persona_id")
+            .map(|attribute| attribute.value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        let sender_did_snapshot = value.sender.as_str().to_owned();
         let (thread_kind, thread_id) = thread_ref_parts(value.thread);
         Self {
             id: value.id.as_str().to_string(),
+            conversation_id,
+            sender_peer_persona_id,
+            sender_did_snapshot,
             thread_kind,
             thread_id,
             direction: value.direction.into(),
@@ -743,6 +760,10 @@ impl From<im_core::messages::Conversation> for DartConversation {
     fn from(value: im_core::messages::Conversation) -> Self {
         let (thread_kind, thread_id) = thread_ref_parts(value.thread);
         Self {
+            conversation_id: value.conversation_id,
+            peer_persona_id: value.peer_persona_id,
+            canonical_group_did: value.canonical_group_did,
+            resolution_state: value.resolution_state.into(),
             thread_kind,
             thread_id,
             conversation_identity: value.conversation_identity.map(Into::into),
@@ -761,6 +782,20 @@ impl From<im_core::messages::Conversation> for DartConversation {
             message_count: value.message_count,
             last_message_at: value.last_message_at,
             activity_at: value.activity_at,
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationResolutionState> for DartConversationResolutionState {
+    fn from(value: im_core::messages::ConversationResolutionState) -> Self {
+        match value {
+            im_core::messages::ConversationResolutionState::Resolved => Self::Resolved,
+            im_core::messages::ConversationResolutionState::LegacyUnresolved => {
+                Self::LegacyUnresolved
+            }
+            im_core::messages::ConversationResolutionState::BlockedConflict => {
+                Self::BlockedConflict
+            }
         }
     }
 }
@@ -826,35 +861,27 @@ impl From<im_core::messages::ConversationStorePatch> for DartConversationStorePa
                 owner_did,
                 version,
                 unread_total,
-                thread_kind,
-                thread_id,
-                conversation_identity,
+                conversation_id,
             } => DartConversationStorePatch::Remove {
                 owner_identity_id,
                 owner_did,
                 version,
                 unread_total,
-                thread_kind,
-                thread_id,
-                conversation_identity: conversation_identity.map(Into::into),
+                conversation_id,
             },
             im_core::messages::ConversationStorePatch::Reorder {
                 owner_identity_id,
                 owner_did,
                 version,
                 unread_total,
-                thread_kind,
-                thread_id,
-                conversation_identity,
+                conversation_id,
                 index,
             } => DartConversationStorePatch::Reorder {
                 owner_identity_id,
                 owner_did,
                 version,
                 unread_total,
-                thread_kind,
-                thread_id,
-                conversation_identity: conversation_identity.map(Into::into),
+                conversation_id,
                 index,
             },
             im_core::messages::ConversationStorePatch::RepairRequired {
@@ -954,8 +981,13 @@ impl From<im_core::messages::ThreadMessageStorePatch> for DartThreadMessageStore
 impl From<im_core::messages::ConversationSnapshotItem> for DartConversationSnapshotItem {
     fn from(value: im_core::messages::ConversationSnapshotItem) -> Self {
         Self {
+            conversation_id: value.conversation_id,
+            peer_persona_id: value.peer_persona_id,
+            canonical_group_did: value.canonical_group_did,
+            resolution_state: value.resolution_state.into(),
             thread_kind: value.thread_kind,
             thread_id: value.thread_id,
+            title: value.title,
             conversation_identity: value.conversation_identity.map(Into::into),
             participants: value.participants,
             last_message: value.last_message.map(Into::into),
@@ -1350,7 +1382,9 @@ impl From<im_core::messages::SyncThreadAfterResult> for DartSyncThreadAfterResul
 
 impl From<im_core::groups::GroupSummary> for DartGroupSummary {
     fn from(value: im_core::groups::GroupSummary) -> Self {
+        let conversation_id = format!("group:{}", value.did.as_str());
         Self {
+            conversation_id,
             id: value.id,
             did: value.did.as_str().to_string(),
             name: value.name,
@@ -1366,7 +1400,9 @@ impl From<im_core::groups::GroupSummary> for DartGroupSummary {
 
 impl From<im_core::groups::GroupSnapshot> for DartGroupSnapshot {
     fn from(value: im_core::groups::GroupSnapshot) -> Self {
+        let conversation_id = format!("group:{}", value.did.as_str());
         Self {
+            conversation_id,
             id: value.id,
             did: value.did.as_str().to_string(),
             name: value.name,
@@ -1384,7 +1420,10 @@ impl From<im_core::groups::GroupSnapshot> for DartGroupSnapshot {
 impl From<im_core::groups::GroupMember> for DartGroupMember {
     fn from(value: im_core::groups::GroupMember) -> Self {
         Self {
+            membership_id: value.membership_id,
+            peer_persona_id: value.peer_persona_id,
             did: value.did.map(|did| did.as_str().to_string()),
+            credential_did: value.credential_did.map(|did| did.as_str().to_string()),
             handle: value.handle.map(|handle| handle.as_str().to_string()),
             role: value.role,
             status: value.status,
@@ -1607,7 +1646,7 @@ fn realtime_subscription_to_string(value: im_core::realtime::RealtimeSubscriptio
 
 #[cfg(test)]
 mod tests {
-    use super::{realtime_event_to_dart, DartRelationStatus};
+    use super::{realtime_event_to_dart, DartGroupSummary, DartRelationStatus};
     use im_core::{
         directory::RelationshipStatus,
         ids::{Did, GroupRef, MessageId, PeerRef, ThreadId},
@@ -1784,5 +1823,22 @@ mod tests {
         assert_eq!(hint.event_type.as_deref(), Some("message.created"));
         assert!(hint.sync_dirty);
         assert!(hint.gap_detected);
+    }
+
+    #[test]
+    fn group_summary_mapping_exposes_core_canonical_conversation_id() {
+        let mapped = DartGroupSummary::from(im_core::groups::GroupSummary {
+            id: None,
+            did: im_core::ids::GroupRef::parse("did:example:group").unwrap(),
+            name: Some("Group".to_owned()),
+            display_name: None,
+            avatar_uri: None,
+            my_role: Some("member".to_owned()),
+            membership_status: Some("active".to_owned()),
+            member_count: Some(1),
+            last_message_at: None,
+        });
+
+        assert_eq!(mapped.conversation_id, "group:did:example:group");
     }
 }

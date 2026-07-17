@@ -11,6 +11,7 @@ import 'api/directory.dart';
 import 'api/email.dart';
 import 'api/groups.dart';
 import 'api/identity.dart';
+import 'api/local_state_upgrade.dart';
 import 'api/messages.dart';
 import 'api/profile.dart';
 import 'api/realtime.dart';
@@ -26,6 +27,7 @@ import 'dto/email.dart';
 import 'dto/error.dart';
 import 'dto/group.dart';
 import 'dto/identity.dart';
+import 'dto/local_state_upgrade.dart';
 import 'dto/message.dart';
 import 'dto/profile.dart';
 import 'dto/realtime.dart';
@@ -88,7 +90,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 1410935846;
+  int get rustContentHash => -1548759808;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -241,6 +243,11 @@ abstract class RustLibApi extends BaseApi {
     String? cursor,
     required bool unreadOnly,
     DartInboxHistoryOptions? inboxHistoryOptions,
+  });
+
+  Future<DartLocalStateUpgradeInspection>
+  crateApiLocalStateUpgradeInspectLocalStateUpgrade({
+    required DartImCorePaths paths,
   });
 
   Future<DartGroupReadResult> crateApiGroupsJoinGroup({
@@ -498,6 +505,11 @@ abstract class RustLibApi extends BaseApi {
     required String peer,
   });
 
+  Future<DartLocalStateRestoreResult>
+  crateApiLocalStateUpgradeRestoreLocalStateBackup({
+    required DartImCorePaths paths,
+  });
+
   Future<DartGroupRebindRecoverySummary>
   crateApiGroupsResumeGroupRebindRecovery({
     required ArcDartImClient client,
@@ -633,6 +645,9 @@ abstract class RustLibApi extends BaseApi {
     required ArcDartImClient client,
     required DartProfilePatch patch,
   });
+
+  Future<DartLocalStateUpgradeResult>
+  crateApiLocalStateUpgradeUpgradeLocalState({required DartImCorePaths paths});
 
   Future<List<String>> crateApiCoreValidatePaths({required ArcDartImCore core});
 
@@ -1794,6 +1809,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<DartLocalStateUpgradeInspection>
+  crateApiLocalStateUpgradeInspectLocalStateUpgrade({
+    required DartImCorePaths paths,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_dart_im_core_paths(paths, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 29,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_local_state_upgrade_inspection,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiLocalStateUpgradeInspectLocalStateUpgradeConstMeta,
+        argValues: [paths],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiLocalStateUpgradeInspectLocalStateUpgradeConstMeta =>
+      const TaskConstMeta(
+        debugName: "inspect_local_state_upgrade",
+        argNames: ["paths"],
+      );
+
+  @override
   Future<DartGroupReadResult> crateApiGroupsJoinGroup({
     required ArcDartImClient client,
     required String groupDid,
@@ -1810,7 +1860,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 30,
             port: port_,
           );
         },
@@ -1847,7 +1897,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 31,
             port: port_,
           );
         },
@@ -1885,7 +1935,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 32,
             port: port_,
           );
         },
@@ -1926,7 +1976,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 33,
             port: port_,
           );
         },
@@ -1968,7 +2018,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 34,
             port: port_,
           );
         },
@@ -2008,7 +2058,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 35,
             port: port_,
           );
         },
@@ -2050,7 +2100,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 36,
             port: port_,
           );
         },
@@ -2088,7 +2138,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 37,
             port: port_,
           );
         },
@@ -2123,7 +2173,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 38,
             port: port_,
           );
         },
@@ -2155,7 +2205,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 39,
             port: port_,
           );
         },
@@ -2195,7 +2245,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 40,
             port: port_,
           );
         },
@@ -2231,7 +2281,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 41,
             port: port_,
           );
         },
@@ -2266,7 +2316,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 42,
             port: port_,
           );
         },
@@ -2311,7 +2361,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 43,
             port: port_,
           );
         },
@@ -2353,7 +2403,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 43,
+            funcId: 44,
             port: port_,
           );
         },
@@ -2391,7 +2441,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 45,
             port: port_,
           );
         },
@@ -2432,7 +2482,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 46,
             port: port_,
           );
         },
@@ -2472,7 +2522,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 46,
+            funcId: 47,
             port: port_,
           );
         },
@@ -2509,7 +2559,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 47,
+            funcId: 48,
             port: port_,
           );
         },
@@ -2550,7 +2600,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 48,
+            funcId: 49,
             port: port_,
           );
         },
@@ -2589,7 +2639,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 49,
+            funcId: 50,
             port: port_,
           );
         },
@@ -2627,7 +2677,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 51,
             port: port_,
           );
         },
@@ -2661,7 +2711,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 51,
+            funcId: 52,
             port: port_,
           );
         },
@@ -2701,7 +2751,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 52,
+            funcId: 53,
             port: port_,
           );
         },
@@ -2739,7 +2789,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 53,
+            funcId: 54,
             port: port_,
           );
         },
@@ -2778,7 +2828,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 54,
+            funcId: 55,
             port: port_,
           );
         },
@@ -2811,7 +2861,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 55,
+            funcId: 56,
             port: port_,
           );
         },
@@ -2847,7 +2897,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 56,
+            funcId: 57,
             port: port_,
           );
         },
@@ -2883,7 +2933,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 57,
+              funcId: 58,
               port: port_,
             );
           },
@@ -2921,7 +2971,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 58,
+            funcId: 59,
             port: port_,
           );
         },
@@ -2959,7 +3009,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 59,
+            funcId: 60,
             port: port_,
           );
         },
@@ -2996,7 +3046,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 60,
+            funcId: 61,
             port: port_,
           );
         },
@@ -3029,7 +3079,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 61,
+            funcId: 62,
             port: port_,
           );
         },
@@ -3068,7 +3118,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 62,
+            funcId: 63,
             port: port_,
           );
         },
@@ -3106,7 +3156,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 63,
+            funcId: 64,
             port: port_,
           );
         },
@@ -3156,7 +3206,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 64,
+            funcId: 65,
             port: port_,
           );
         },
@@ -3224,7 +3274,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 65,
+            funcId: 66,
             port: port_,
           );
         },
@@ -3289,7 +3339,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 66,
+            funcId: 67,
             port: port_,
           );
         },
@@ -3343,7 +3393,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 67,
+            funcId: 68,
             port: port_,
           );
         },
@@ -3383,7 +3433,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 68,
+            funcId: 69,
             port: port_,
           );
         },
@@ -3419,7 +3469,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 69,
+            funcId: 70,
             port: port_,
           );
         },
@@ -3463,7 +3513,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 70,
+            funcId: 71,
             port: port_,
           );
         },
@@ -3503,7 +3553,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 71,
+            funcId: 72,
             port: port_,
           );
         },
@@ -3541,7 +3591,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 72,
+            funcId: 73,
             port: port_,
           );
         },
@@ -3579,7 +3629,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 73,
+            funcId: 74,
             port: port_,
           );
         },
@@ -3601,6 +3651,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<DartLocalStateRestoreResult>
+  crateApiLocalStateUpgradeRestoreLocalStateBackup({
+    required DartImCorePaths paths,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_dart_im_core_paths(paths, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 75,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_local_state_restore_result,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiLocalStateUpgradeRestoreLocalStateBackupConstMeta,
+        argValues: [paths],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiLocalStateUpgradeRestoreLocalStateBackupConstMeta =>
+      const TaskConstMeta(
+        debugName: "restore_local_state_backup",
+        argNames: ["paths"],
+      );
+
+  @override
   Future<DartGroupRebindRecoverySummary>
   crateApiGroupsResumeGroupRebindRecovery({
     required ArcDartImClient client,
@@ -3618,7 +3703,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 74,
+            funcId: 76,
             port: port_,
           );
         },
@@ -3656,7 +3741,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 75,
+            funcId: 77,
             port: port_,
           );
         },
@@ -3695,7 +3780,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 76,
+            funcId: 78,
             port: port_,
           );
         },
@@ -3734,7 +3819,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 77,
+            funcId: 79,
             port: port_,
           );
         },
@@ -3772,7 +3857,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 78,
+            funcId: 80,
             port: port_,
           );
         },
@@ -3810,7 +3895,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 79,
+            funcId: 81,
             port: port_,
           );
         },
@@ -3848,7 +3933,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 80,
+            funcId: 82,
             port: port_,
           );
         },
@@ -3886,7 +3971,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 81,
+            funcId: 83,
             port: port_,
           );
         },
@@ -3924,7 +4009,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 82,
+            funcId: 84,
             port: port_,
           );
         },
@@ -3962,7 +4047,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 83,
+            funcId: 85,
             port: port_,
           );
         },
@@ -3998,7 +4083,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 84,
+            funcId: 86,
             port: port_,
           );
         },
@@ -4036,7 +4121,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 85,
+            funcId: 87,
             port: port_,
           );
         },
@@ -4074,7 +4159,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 86,
+            funcId: 88,
             port: port_,
           );
         },
@@ -4112,7 +4197,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 87,
+            funcId: 89,
             port: port_,
           );
         },
@@ -4154,7 +4239,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 88,
+            funcId: 90,
             port: port_,
           );
         },
@@ -4195,7 +4280,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 89,
+            funcId: 91,
             port: port_,
           );
         },
@@ -4236,7 +4321,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 90,
+            funcId: 92,
             port: port_,
           );
         },
@@ -4274,7 +4359,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 91,
+            funcId: 93,
             port: port_,
           );
         },
@@ -4312,7 +4397,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 92,
+            funcId: 94,
             port: port_,
           );
         },
@@ -4347,7 +4432,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 93,
+            funcId: 95,
             port: port_,
           );
         },
@@ -4383,7 +4468,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 94,
+            funcId: 96,
             port: port_,
           );
         },
@@ -4424,7 +4509,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 95,
+            funcId: 97,
             port: port_,
           );
         },
@@ -4462,7 +4547,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 96,
+            funcId: 98,
             port: port_,
           );
         },
@@ -4502,7 +4587,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 97,
+            funcId: 99,
             port: port_,
           );
         },
@@ -4544,7 +4629,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 98,
+              funcId: 100,
               port: port_,
             );
           },
@@ -4584,7 +4669,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 99,
+            funcId: 101,
             port: port_,
           );
         },
@@ -4612,7 +4697,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 100,
+            funcId: 102,
             port: port_,
           );
         },
@@ -4647,7 +4732,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 101,
+            funcId: 103,
             port: port_,
           );
         },
@@ -4669,6 +4754,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<DartLocalStateUpgradeResult>
+  crateApiLocalStateUpgradeUpgradeLocalState({required DartImCorePaths paths}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_dart_im_core_paths(paths, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 104,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_local_state_upgrade_result,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiLocalStateUpgradeUpgradeLocalStateConstMeta,
+        argValues: [paths],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiLocalStateUpgradeUpgradeLocalStateConstMeta =>
+      const TaskConstMeta(
+        debugName: "upgrade_local_state",
+        argNames: ["paths"],
+      );
+
+  @override
   Future<List<String>> crateApiCoreValidatePaths({
     required ArcDartImCore core,
   }) {
@@ -4683,7 +4800,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 102,
+            funcId: 105,
             port: port_,
           );
         },
@@ -4719,7 +4836,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 103,
+            funcId: 106,
             port: port_,
           );
         },
@@ -4754,7 +4871,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 104,
+            funcId: 107,
             port: port_,
           );
         },
@@ -4799,7 +4916,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 105,
+            funcId: 108,
             port: port_,
           );
         },
@@ -4841,7 +4958,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 106,
+            funcId: 109,
             port: port_,
           );
         },
@@ -5522,22 +5639,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartConversation dco_decode_dart_conversation(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return DartConversation(
-      threadKind: dco_decode_String(arr[0]),
-      threadId: dco_decode_String(arr[1]),
+      conversationId: dco_decode_String(arr[0]),
+      peerPersonaId: dco_decode_opt_String(arr[1]),
+      canonicalGroupDid: dco_decode_opt_String(arr[2]),
+      resolutionState: dco_decode_dart_conversation_resolution_state(arr[3]),
+      threadKind: dco_decode_String(arr[4]),
+      threadId: dco_decode_String(arr[5]),
       conversationIdentity:
-          dco_decode_opt_box_autoadd_dart_conversation_identity(arr[2]),
-      title: dco_decode_opt_String(arr[3]),
-      participants: dco_decode_list_String(arr[4]),
-      lastMessage: dco_decode_opt_box_autoadd_dart_message(arr[5]),
-      unreadCount: dco_decode_u_32(arr[6]),
-      unreadMentionCount: dco_decode_u_32(arr[7]),
-      firstUnreadMentionMessageId: dco_decode_opt_String(arr[8]),
-      messageCount: dco_decode_u_32(arr[9]),
-      lastMessageAt: dco_decode_opt_String(arr[10]),
-      activityAt: dco_decode_opt_String(arr[11]),
+          dco_decode_opt_box_autoadd_dart_conversation_identity(arr[6]),
+      title: dco_decode_opt_String(arr[7]),
+      participants: dco_decode_list_String(arr[8]),
+      lastMessage: dco_decode_opt_box_autoadd_dart_message(arr[9]),
+      unreadCount: dco_decode_u_32(arr[10]),
+      unreadMentionCount: dco_decode_u_32(arr[11]),
+      firstUnreadMentionMessageId: dco_decode_opt_String(arr[12]),
+      messageCount: dco_decode_u_32(arr[13]),
+      lastMessageAt: dco_decode_opt_String(arr[14]),
+      activityAt: dco_decode_opt_String(arr[15]),
     );
   }
 
@@ -5638,27 +5759,40 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartConversationResolutionState dco_decode_dart_conversation_resolution_state(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartConversationResolutionState.values[raw as int];
+  }
+
+  @protected
   DartConversationSnapshotItem dco_decode_dart_conversation_snapshot_item(
     dynamic raw,
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return DartConversationSnapshotItem(
-      threadKind: dco_decode_String(arr[0]),
-      threadId: dco_decode_String(arr[1]),
+      conversationId: dco_decode_String(arr[0]),
+      peerPersonaId: dco_decode_opt_String(arr[1]),
+      canonicalGroupDid: dco_decode_opt_String(arr[2]),
+      resolutionState: dco_decode_dart_conversation_resolution_state(arr[3]),
+      threadKind: dco_decode_String(arr[4]),
+      threadId: dco_decode_String(arr[5]),
+      title: dco_decode_opt_String(arr[6]),
       conversationIdentity:
-          dco_decode_opt_box_autoadd_dart_conversation_identity(arr[2]),
-      participants: dco_decode_list_String(arr[3]),
+          dco_decode_opt_box_autoadd_dart_conversation_identity(arr[7]),
+      participants: dco_decode_list_String(arr[8]),
       lastMessage:
-          dco_decode_opt_box_autoadd_dart_conversation_snapshot_message(arr[4]),
-      unreadCount: dco_decode_u_32(arr[5]),
-      unreadMentionCount: dco_decode_u_32(arr[6]),
-      firstUnreadMentionMessageId: dco_decode_opt_String(arr[7]),
-      messageCount: dco_decode_u_32(arr[8]),
-      lastMessageAt: dco_decode_opt_String(arr[9]),
-      activityAt: dco_decode_opt_String(arr[10]),
+          dco_decode_opt_box_autoadd_dart_conversation_snapshot_message(arr[9]),
+      unreadCount: dco_decode_u_32(arr[10]),
+      unreadMentionCount: dco_decode_u_32(arr[11]),
+      firstUnreadMentionMessageId: dco_decode_opt_String(arr[12]),
+      messageCount: dco_decode_u_32(arr[13]),
+      lastMessageAt: dco_decode_opt_String(arr[14]),
+      activityAt: dco_decode_opt_String(arr[15]),
     );
   }
 
@@ -5746,10 +5880,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           ownerDid: dco_decode_String(raw[2]),
           version: dco_decode_u_64(raw[3]),
           unreadTotal: dco_decode_u_32(raw[4]),
-          threadKind: dco_decode_String(raw[5]),
-          threadId: dco_decode_String(raw[6]),
-          conversationIdentity:
-              dco_decode_opt_box_autoadd_dart_conversation_identity(raw[7]),
+          conversationId: dco_decode_String(raw[5]),
         );
       case 3:
         return DartConversationStorePatch_Reorder(
@@ -5757,11 +5888,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           ownerDid: dco_decode_String(raw[2]),
           version: dco_decode_u_64(raw[3]),
           unreadTotal: dco_decode_u_32(raw[4]),
-          threadKind: dco_decode_String(raw[5]),
-          threadId: dco_decode_String(raw[6]),
-          conversationIdentity:
-              dco_decode_opt_box_autoadd_dart_conversation_identity(raw[7]),
-          index: dco_decode_u_32(raw[8]),
+          conversationId: dco_decode_String(raw[5]),
+          index: dco_decode_u_32(raw[6]),
         );
       case 4:
         return DartConversationStorePatch_RepairRequired(
@@ -6204,15 +6332,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartGroupMember dco_decode_dart_group_member(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return DartGroupMember(
-      did: dco_decode_opt_String(arr[0]),
-      handle: dco_decode_opt_String(arr[1]),
-      role: dco_decode_opt_String(arr[2]),
-      status: dco_decode_opt_String(arr[3]),
-      joinedAt: dco_decode_opt_String(arr[4]),
-      subjectType: dco_decode_opt_String(arr[5]),
+      membershipId: dco_decode_opt_String(arr[0]),
+      peerPersonaId: dco_decode_opt_String(arr[1]),
+      did: dco_decode_opt_String(arr[2]),
+      credentialDid: dco_decode_opt_String(arr[3]),
+      handle: dco_decode_opt_String(arr[4]),
+      role: dco_decode_opt_String(arr[5]),
+      status: dco_decode_opt_String(arr[6]),
+      joinedAt: dco_decode_opt_String(arr[7]),
+      subjectType: dco_decode_opt_String(arr[8]),
     );
   }
 
@@ -6356,19 +6487,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartGroupSnapshot dco_decode_dart_group_snapshot(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return DartGroupSnapshot(
-      id: dco_decode_opt_String(arr[0]),
-      did: dco_decode_String(arr[1]),
-      name: dco_decode_opt_String(arr[2]),
-      displayName: dco_decode_opt_String(arr[3]),
-      description: dco_decode_opt_String(arr[4]),
-      avatarUri: dco_decode_opt_String(arr[5]),
-      myRole: dco_decode_opt_String(arr[6]),
-      membershipStatus: dco_decode_opt_String(arr[7]),
-      memberCount: dco_decode_opt_box_autoadd_u_32(arr[8]),
-      lastMessageAt: dco_decode_opt_String(arr[9]),
+      conversationId: dco_decode_String(arr[0]),
+      id: dco_decode_opt_String(arr[1]),
+      did: dco_decode_String(arr[2]),
+      name: dco_decode_opt_String(arr[3]),
+      displayName: dco_decode_opt_String(arr[4]),
+      description: dco_decode_opt_String(arr[5]),
+      avatarUri: dco_decode_opt_String(arr[6]),
+      myRole: dco_decode_opt_String(arr[7]),
+      membershipStatus: dco_decode_opt_String(arr[8]),
+      memberCount: dco_decode_opt_box_autoadd_u_32(arr[9]),
+      lastMessageAt: dco_decode_opt_String(arr[10]),
     );
   }
 
@@ -6376,18 +6508,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartGroupSummary dco_decode_dart_group_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 9)
-      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return DartGroupSummary(
-      id: dco_decode_opt_String(arr[0]),
-      did: dco_decode_String(arr[1]),
-      name: dco_decode_opt_String(arr[2]),
-      displayName: dco_decode_opt_String(arr[3]),
-      avatarUri: dco_decode_opt_String(arr[4]),
-      myRole: dco_decode_opt_String(arr[5]),
-      membershipStatus: dco_decode_opt_String(arr[6]),
-      memberCount: dco_decode_opt_box_autoadd_u_32(arr[7]),
-      lastMessageAt: dco_decode_opt_String(arr[8]),
+      conversationId: dco_decode_String(arr[0]),
+      id: dco_decode_opt_String(arr[1]),
+      did: dco_decode_String(arr[2]),
+      name: dco_decode_opt_String(arr[3]),
+      displayName: dco_decode_opt_String(arr[4]),
+      avatarUri: dco_decode_opt_String(arr[5]),
+      myRole: dco_decode_opt_String(arr[6]),
+      membershipStatus: dco_decode_opt_String(arr[7]),
+      memberCount: dco_decode_opt_box_autoadd_u_32(arr[8]),
+      lastMessageAt: dco_decode_opt_String(arr[9]),
     );
   }
 
@@ -6667,6 +6800,86 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartLocalStateConversationAliasMapping
+  dco_decode_dart_local_state_conversation_alias_mapping(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return DartLocalStateConversationAliasMapping(
+      ownerIdentityId: dco_decode_String(arr[0]),
+      ownerDid: dco_decode_String(arr[1]),
+      legacyConversationId: dco_decode_String(arr[2]),
+      canonicalConversationId: dco_decode_String(arr[3]),
+    );
+  }
+
+  @protected
+  DartLocalStateRestoreResult dco_decode_dart_local_state_restore_result(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return DartLocalStateRestoreResult(
+      restoredSchemaVersion: dco_decode_i_64(arr[0]),
+      targetSafetyCopyAvailable: dco_decode_bool(arr[1]),
+    );
+  }
+
+  @protected
+  DartLocalStateUpgradeEligibility
+  dco_decode_dart_local_state_upgrade_eligibility(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartLocalStateUpgradeEligibility.values[raw as int];
+  }
+
+  @protected
+  DartLocalStateUpgradeInspection
+  dco_decode_dart_local_state_upgrade_inspection(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return DartLocalStateUpgradeInspection(
+      eligibility: dco_decode_dart_local_state_upgrade_eligibility(arr[0]),
+      sourceSchemaVersion: dco_decode_i_64(arr[1]),
+      targetSchemaVersion: dco_decode_i_64(arr[2]),
+    );
+  }
+
+  @protected
+  DartLocalStateUpgradeResult dco_decode_dart_local_state_upgrade_result(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    return DartLocalStateUpgradeResult(
+      status: dco_decode_dart_local_state_upgrade_status(arr[0]),
+      sourceSchemaVersion: dco_decode_i_64(arr[1]),
+      targetSchemaVersion: dco_decode_i_64(arr[2]),
+      migratedPersonas: dco_decode_u_64(arr[3]),
+      migratedConversations: dco_decode_u_64(arr[4]),
+      unresolvedMessages: dco_decode_u_64(arr[5]),
+      aliasCount: dco_decode_u_64(arr[6]),
+      backupAvailable: dco_decode_bool(arr[7]),
+      aliasMappings:
+          dco_decode_list_dart_local_state_conversation_alias_mapping(arr[8]),
+    );
+  }
+
+  @protected
+  DartLocalStateUpgradeStatus dco_decode_dart_local_state_upgrade_status(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartLocalStateUpgradeStatus.values[raw as int];
+  }
+
+  @protected
   DartMarkConversationReadRequest
   dco_decode_dart_mark_conversation_read_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -6719,20 +6932,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartMessage dco_decode_dart_message(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return DartMessage(
       id: dco_decode_String(arr[0]),
-      threadKind: dco_decode_String(arr[1]),
-      threadId: dco_decode_String(arr[2]),
-      direction: dco_decode_dart_message_direction(arr[3]),
-      sender: dco_decode_String(arr[4]),
-      receiver: dco_decode_opt_String(arr[5]),
-      group: dco_decode_opt_String(arr[6]),
-      body: dco_decode_dart_message_body_view(arr[7]),
-      sentAt: dco_decode_opt_String(arr[8]),
-      receivedAt: dco_decode_opt_String(arr[9]),
-      metadata: dco_decode_dart_message_metadata(arr[10]),
+      conversationId: dco_decode_String(arr[1]),
+      senderPeerPersonaId: dco_decode_opt_String(arr[2]),
+      senderDidSnapshot: dco_decode_String(arr[3]),
+      threadKind: dco_decode_String(arr[4]),
+      threadId: dco_decode_String(arr[5]),
+      direction: dco_decode_dart_message_direction(arr[6]),
+      sender: dco_decode_String(arr[7]),
+      receiver: dco_decode_opt_String(arr[8]),
+      group: dco_decode_opt_String(arr[9]),
+      body: dco_decode_dart_message_body_view(arr[10]),
+      sentAt: dco_decode_opt_String(arr[11]),
+      receivedAt: dco_decode_opt_String(arr[12]),
+      metadata: dco_decode_dart_message_metadata(arr[13]),
     );
   }
 
@@ -7567,6 +7783,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>)
         .map(dco_decode_dart_identity_summary)
+        .toList();
+  }
+
+  @protected
+  List<DartLocalStateConversationAliasMapping>
+  dco_decode_list_dart_local_state_conversation_alias_mapping(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_dart_local_state_conversation_alias_mapping)
         .toList();
   }
 
@@ -8553,6 +8778,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   DartConversation sse_decode_dart_conversation(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_conversationId = sse_decode_String(deserializer);
+    var var_peerPersonaId = sse_decode_opt_String(deserializer);
+    var var_canonicalGroupDid = sse_decode_opt_String(deserializer);
+    var var_resolutionState = sse_decode_dart_conversation_resolution_state(
+      deserializer,
+    );
     var var_threadKind = sse_decode_String(deserializer);
     var var_threadId = sse_decode_String(deserializer);
     var var_conversationIdentity =
@@ -8567,6 +8798,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_lastMessageAt = sse_decode_opt_String(deserializer);
     var var_activityAt = sse_decode_opt_String(deserializer);
     return DartConversation(
+      conversationId: var_conversationId,
+      peerPersonaId: var_peerPersonaId,
+      canonicalGroupDid: var_canonicalGroupDid,
+      resolutionState: var_resolutionState,
       threadKind: var_threadKind,
       threadId: var_threadId,
       conversationIdentity: var_conversationIdentity,
@@ -8705,12 +8940,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartConversationResolutionState sse_decode_dart_conversation_resolution_state(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartConversationResolutionState.values[inner];
+  }
+
+  @protected
   DartConversationSnapshotItem sse_decode_dart_conversation_snapshot_item(
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_conversationId = sse_decode_String(deserializer);
+    var var_peerPersonaId = sse_decode_opt_String(deserializer);
+    var var_canonicalGroupDid = sse_decode_opt_String(deserializer);
+    var var_resolutionState = sse_decode_dart_conversation_resolution_state(
+      deserializer,
+    );
     var var_threadKind = sse_decode_String(deserializer);
     var var_threadId = sse_decode_String(deserializer);
+    var var_title = sse_decode_opt_String(deserializer);
     var var_conversationIdentity =
         sse_decode_opt_box_autoadd_dart_conversation_identity(deserializer);
     var var_participants = sse_decode_list_String(deserializer);
@@ -8725,8 +8976,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_lastMessageAt = sse_decode_opt_String(deserializer);
     var var_activityAt = sse_decode_opt_String(deserializer);
     return DartConversationSnapshotItem(
+      conversationId: var_conversationId,
+      peerPersonaId: var_peerPersonaId,
+      canonicalGroupDid: var_canonicalGroupDid,
+      resolutionState: var_resolutionState,
       threadKind: var_threadKind,
       threadId: var_threadId,
+      title: var_title,
       conversationIdentity: var_conversationIdentity,
       participants: var_participants,
       lastMessage: var_lastMessage,
@@ -8855,37 +9111,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         var var_ownerDid = sse_decode_String(deserializer);
         var var_version = sse_decode_u_64(deserializer);
         var var_unreadTotal = sse_decode_u_32(deserializer);
-        var var_threadKind = sse_decode_String(deserializer);
-        var var_threadId = sse_decode_String(deserializer);
-        var var_conversationIdentity =
-            sse_decode_opt_box_autoadd_dart_conversation_identity(deserializer);
+        var var_conversationId = sse_decode_String(deserializer);
         return DartConversationStorePatch_Remove(
           ownerIdentityId: var_ownerIdentityId,
           ownerDid: var_ownerDid,
           version: var_version,
           unreadTotal: var_unreadTotal,
-          threadKind: var_threadKind,
-          threadId: var_threadId,
-          conversationIdentity: var_conversationIdentity,
+          conversationId: var_conversationId,
         );
       case 3:
         var var_ownerIdentityId = sse_decode_String(deserializer);
         var var_ownerDid = sse_decode_String(deserializer);
         var var_version = sse_decode_u_64(deserializer);
         var var_unreadTotal = sse_decode_u_32(deserializer);
-        var var_threadKind = sse_decode_String(deserializer);
-        var var_threadId = sse_decode_String(deserializer);
-        var var_conversationIdentity =
-            sse_decode_opt_box_autoadd_dart_conversation_identity(deserializer);
+        var var_conversationId = sse_decode_String(deserializer);
         var var_index = sse_decode_u_32(deserializer);
         return DartConversationStorePatch_Reorder(
           ownerIdentityId: var_ownerIdentityId,
           ownerDid: var_ownerDid,
           version: var_version,
           unreadTotal: var_unreadTotal,
-          threadKind: var_threadKind,
-          threadId: var_threadId,
-          conversationIdentity: var_conversationIdentity,
+          conversationId: var_conversationId,
           index: var_index,
         );
       case 4:
@@ -9433,14 +9679,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   DartGroupMember sse_decode_dart_group_member(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_membershipId = sse_decode_opt_String(deserializer);
+    var var_peerPersonaId = sse_decode_opt_String(deserializer);
     var var_did = sse_decode_opt_String(deserializer);
+    var var_credentialDid = sse_decode_opt_String(deserializer);
     var var_handle = sse_decode_opt_String(deserializer);
     var var_role = sse_decode_opt_String(deserializer);
     var var_status = sse_decode_opt_String(deserializer);
     var var_joinedAt = sse_decode_opt_String(deserializer);
     var var_subjectType = sse_decode_opt_String(deserializer);
     return DartGroupMember(
+      membershipId: var_membershipId,
+      peerPersonaId: var_peerPersonaId,
       did: var_did,
+      credentialDid: var_credentialDid,
       handle: var_handle,
       role: var_role,
       status: var_status,
@@ -9623,6 +9875,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_conversationId = sse_decode_String(deserializer);
     var var_id = sse_decode_opt_String(deserializer);
     var var_did = sse_decode_String(deserializer);
     var var_name = sse_decode_opt_String(deserializer);
@@ -9634,6 +9887,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_memberCount = sse_decode_opt_box_autoadd_u_32(deserializer);
     var var_lastMessageAt = sse_decode_opt_String(deserializer);
     return DartGroupSnapshot(
+      conversationId: var_conversationId,
       id: var_id,
       did: var_did,
       name: var_name,
@@ -9650,6 +9904,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   DartGroupSummary sse_decode_dart_group_summary(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_conversationId = sse_decode_String(deserializer);
     var var_id = sse_decode_opt_String(deserializer);
     var var_did = sse_decode_String(deserializer);
     var var_name = sse_decode_opt_String(deserializer);
@@ -9660,6 +9915,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_memberCount = sse_decode_opt_box_autoadd_u_32(deserializer);
     var var_lastMessageAt = sse_decode_opt_String(deserializer);
     return DartGroupSummary(
+      conversationId: var_conversationId,
       id: var_id,
       did: var_did,
       name: var_name,
@@ -10034,6 +10290,102 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartLocalStateConversationAliasMapping
+  sse_decode_dart_local_state_conversation_alias_mapping(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_ownerIdentityId = sse_decode_String(deserializer);
+    var var_ownerDid = sse_decode_String(deserializer);
+    var var_legacyConversationId = sse_decode_String(deserializer);
+    var var_canonicalConversationId = sse_decode_String(deserializer);
+    return DartLocalStateConversationAliasMapping(
+      ownerIdentityId: var_ownerIdentityId,
+      ownerDid: var_ownerDid,
+      legacyConversationId: var_legacyConversationId,
+      canonicalConversationId: var_canonicalConversationId,
+    );
+  }
+
+  @protected
+  DartLocalStateRestoreResult sse_decode_dart_local_state_restore_result(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_restoredSchemaVersion = sse_decode_i_64(deserializer);
+    var var_targetSafetyCopyAvailable = sse_decode_bool(deserializer);
+    return DartLocalStateRestoreResult(
+      restoredSchemaVersion: var_restoredSchemaVersion,
+      targetSafetyCopyAvailable: var_targetSafetyCopyAvailable,
+    );
+  }
+
+  @protected
+  DartLocalStateUpgradeEligibility
+  sse_decode_dart_local_state_upgrade_eligibility(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartLocalStateUpgradeEligibility.values[inner];
+  }
+
+  @protected
+  DartLocalStateUpgradeInspection
+  sse_decode_dart_local_state_upgrade_inspection(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_eligibility = sse_decode_dart_local_state_upgrade_eligibility(
+      deserializer,
+    );
+    var var_sourceSchemaVersion = sse_decode_i_64(deserializer);
+    var var_targetSchemaVersion = sse_decode_i_64(deserializer);
+    return DartLocalStateUpgradeInspection(
+      eligibility: var_eligibility,
+      sourceSchemaVersion: var_sourceSchemaVersion,
+      targetSchemaVersion: var_targetSchemaVersion,
+    );
+  }
+
+  @protected
+  DartLocalStateUpgradeResult sse_decode_dart_local_state_upgrade_result(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_status = sse_decode_dart_local_state_upgrade_status(deserializer);
+    var var_sourceSchemaVersion = sse_decode_i_64(deserializer);
+    var var_targetSchemaVersion = sse_decode_i_64(deserializer);
+    var var_migratedPersonas = sse_decode_u_64(deserializer);
+    var var_migratedConversations = sse_decode_u_64(deserializer);
+    var var_unresolvedMessages = sse_decode_u_64(deserializer);
+    var var_aliasCount = sse_decode_u_64(deserializer);
+    var var_backupAvailable = sse_decode_bool(deserializer);
+    var var_aliasMappings =
+        sse_decode_list_dart_local_state_conversation_alias_mapping(
+          deserializer,
+        );
+    return DartLocalStateUpgradeResult(
+      status: var_status,
+      sourceSchemaVersion: var_sourceSchemaVersion,
+      targetSchemaVersion: var_targetSchemaVersion,
+      migratedPersonas: var_migratedPersonas,
+      migratedConversations: var_migratedConversations,
+      unresolvedMessages: var_unresolvedMessages,
+      aliasCount: var_aliasCount,
+      backupAvailable: var_backupAvailable,
+      aliasMappings: var_aliasMappings,
+    );
+  }
+
+  @protected
+  DartLocalStateUpgradeStatus sse_decode_dart_local_state_upgrade_status(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartLocalStateUpgradeStatus.values[inner];
+  }
+
+  @protected
   DartMarkConversationReadRequest
   sse_decode_dart_mark_conversation_read_request(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -10097,6 +10449,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartMessage sse_decode_dart_message(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_id = sse_decode_String(deserializer);
+    var var_conversationId = sse_decode_String(deserializer);
+    var var_senderPeerPersonaId = sse_decode_opt_String(deserializer);
+    var var_senderDidSnapshot = sse_decode_String(deserializer);
     var var_threadKind = sse_decode_String(deserializer);
     var var_threadId = sse_decode_String(deserializer);
     var var_direction = sse_decode_dart_message_direction(deserializer);
@@ -10109,6 +10464,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_metadata = sse_decode_dart_message_metadata(deserializer);
     return DartMessage(
       id: var_id,
+      conversationId: var_conversationId,
+      senderPeerPersonaId: var_senderPeerPersonaId,
+      senderDidSnapshot: var_senderDidSnapshot,
       threadKind: var_threadKind,
       threadId: var_threadId,
       direction: var_direction,
@@ -11261,6 +11619,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <DartIdentitySummary>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_dart_identity_summary(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<DartLocalStateConversationAliasMapping>
+  sse_decode_list_dart_local_state_conversation_alias_mapping(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <DartLocalStateConversationAliasMapping>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(
+        sse_decode_dart_local_state_conversation_alias_mapping(deserializer),
+      );
     }
     return ans_;
   }
@@ -12462,6 +12837,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.conversationId, serializer);
+    sse_encode_opt_String(self.peerPersonaId, serializer);
+    sse_encode_opt_String(self.canonicalGroupDid, serializer);
+    sse_encode_dart_conversation_resolution_state(
+      self.resolutionState,
+      serializer,
+    );
     sse_encode_String(self.threadKind, serializer);
     sse_encode_String(self.threadId, serializer);
     sse_encode_opt_box_autoadd_dart_conversation_identity(
@@ -12575,13 +12957,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_conversation_resolution_state(
+    DartConversationResolutionState self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_dart_conversation_snapshot_item(
     DartConversationSnapshotItem self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.conversationId, serializer);
+    sse_encode_opt_String(self.peerPersonaId, serializer);
+    sse_encode_opt_String(self.canonicalGroupDid, serializer);
+    sse_encode_dart_conversation_resolution_state(
+      self.resolutionState,
+      serializer,
+    );
     sse_encode_String(self.threadKind, serializer);
     sse_encode_String(self.threadId, serializer);
+    sse_encode_opt_String(self.title, serializer);
     sse_encode_opt_box_autoadd_dart_conversation_identity(
       self.conversationIdentity,
       serializer,
@@ -12692,29 +13091,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ownerDid: final ownerDid,
         version: final version,
         unreadTotal: final unreadTotal,
-        threadKind: final threadKind,
-        threadId: final threadId,
-        conversationIdentity: final conversationIdentity,
+        conversationId: final conversationId,
       ):
         sse_encode_i_32(2, serializer);
         sse_encode_String(ownerIdentityId, serializer);
         sse_encode_String(ownerDid, serializer);
         sse_encode_u_64(version, serializer);
         sse_encode_u_32(unreadTotal, serializer);
-        sse_encode_String(threadKind, serializer);
-        sse_encode_String(threadId, serializer);
-        sse_encode_opt_box_autoadd_dart_conversation_identity(
-          conversationIdentity,
-          serializer,
-        );
+        sse_encode_String(conversationId, serializer);
       case DartConversationStorePatch_Reorder(
         ownerIdentityId: final ownerIdentityId,
         ownerDid: final ownerDid,
         version: final version,
         unreadTotal: final unreadTotal,
-        threadKind: final threadKind,
-        threadId: final threadId,
-        conversationIdentity: final conversationIdentity,
+        conversationId: final conversationId,
         index: final index,
       ):
         sse_encode_i_32(3, serializer);
@@ -12722,12 +13112,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_String(ownerDid, serializer);
         sse_encode_u_64(version, serializer);
         sse_encode_u_32(unreadTotal, serializer);
-        sse_encode_String(threadKind, serializer);
-        sse_encode_String(threadId, serializer);
-        sse_encode_opt_box_autoadd_dart_conversation_identity(
-          conversationIdentity,
-          serializer,
-        );
+        sse_encode_String(conversationId, serializer);
         sse_encode_u_32(index, serializer);
       case DartConversationStorePatch_RepairRequired(
         ownerIdentityId: final ownerIdentityId,
@@ -13119,7 +13504,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.membershipId, serializer);
+    sse_encode_opt_String(self.peerPersonaId, serializer);
     sse_encode_opt_String(self.did, serializer);
+    sse_encode_opt_String(self.credentialDid, serializer);
     sse_encode_opt_String(self.handle, serializer);
     sse_encode_opt_String(self.role, serializer);
     sse_encode_opt_String(self.status, serializer);
@@ -13247,6 +13635,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.conversationId, serializer);
     sse_encode_opt_String(self.id, serializer);
     sse_encode_String(self.did, serializer);
     sse_encode_opt_String(self.name, serializer);
@@ -13265,6 +13654,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.conversationId, serializer);
     sse_encode_opt_String(self.id, serializer);
     sse_encode_String(self.did, serializer);
     sse_encode_opt_String(self.name, serializer);
@@ -13540,6 +13930,80 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_local_state_conversation_alias_mapping(
+    DartLocalStateConversationAliasMapping self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.ownerIdentityId, serializer);
+    sse_encode_String(self.ownerDid, serializer);
+    sse_encode_String(self.legacyConversationId, serializer);
+    sse_encode_String(self.canonicalConversationId, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_local_state_restore_result(
+    DartLocalStateRestoreResult self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_64(self.restoredSchemaVersion, serializer);
+    sse_encode_bool(self.targetSafetyCopyAvailable, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_eligibility(
+    DartLocalStateUpgradeEligibility self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_inspection(
+    DartLocalStateUpgradeInspection self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_local_state_upgrade_eligibility(
+      self.eligibility,
+      serializer,
+    );
+    sse_encode_i_64(self.sourceSchemaVersion, serializer);
+    sse_encode_i_64(self.targetSchemaVersion, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_result(
+    DartLocalStateUpgradeResult self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_local_state_upgrade_status(self.status, serializer);
+    sse_encode_i_64(self.sourceSchemaVersion, serializer);
+    sse_encode_i_64(self.targetSchemaVersion, serializer);
+    sse_encode_u_64(self.migratedPersonas, serializer);
+    sse_encode_u_64(self.migratedConversations, serializer);
+    sse_encode_u_64(self.unresolvedMessages, serializer);
+    sse_encode_u_64(self.aliasCount, serializer);
+    sse_encode_bool(self.backupAvailable, serializer);
+    sse_encode_list_dart_local_state_conversation_alias_mapping(
+      self.aliasMappings,
+      serializer,
+    );
+  }
+
+  @protected
+  void sse_encode_dart_local_state_upgrade_status(
+    DartLocalStateUpgradeStatus self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_dart_mark_conversation_read_request(
     DartMarkConversationReadRequest self,
     SseSerializer serializer,
@@ -13584,6 +14048,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_dart_message(DartMessage self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.id, serializer);
+    sse_encode_String(self.conversationId, serializer);
+    sse_encode_opt_String(self.senderPeerPersonaId, serializer);
+    sse_encode_String(self.senderDidSnapshot, serializer);
     sse_encode_String(self.threadKind, serializer);
     sse_encode_String(self.threadId, serializer);
     sse_encode_dart_message_direction(self.direction, serializer);
@@ -14467,6 +14934,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_dart_identity_summary(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_dart_local_state_conversation_alias_mapping(
+    List<DartLocalStateConversationAliasMapping> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_dart_local_state_conversation_alias_mapping(item, serializer);
     }
   }
 

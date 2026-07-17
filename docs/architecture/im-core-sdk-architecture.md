@@ -210,7 +210,7 @@ These files describe the SDK public surface and interface-level contracts. They 
 
 ## 11. Durable Conversation Registry And Summary Projection
 
-The SQLite local state keeps `messages` as the durable message projection truth, while schema version 27 uses `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
+The SQLite local state keeps `messages` as the durable message projection truth, while target schema version 28 uses `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
 
 - primary key: `(owner_identity_id, conversation_id)`;
 - hot index: `idx_conversation_summaries_owner_last(owner_identity_id, last_message_at DESC, conversation_id)`;
@@ -225,9 +225,11 @@ Summary rows are derived state and may be rebuilt from `messages`, but hot write
 - bounded mark-read, `mark_conversation_read`, and legacy `mark_thread_read` update unread / unread mention counters by delta where the previous state is known;
 - fallback rebuild remains for message conversation moves, legacy DID-to-peer-scope direct merges, last-message ambiguity, missing/corrupt summary rows, first unread mention ambiguity, and explicit owner repair;
 - committed invalidation and runtime store patches are emitted only after the local projection transaction commits;
-- peer-scope direct compatibility uses a SQLite TEMP, owner-scoped memo per local-state connection: after a legacy DID fold, or after a peer handle has been recognized, later upserts in the same actor/session do not rescan all legacy DID rows or rerun the large UPDATE; late legacy rows that match the memoized DID/handle are normalized into the peer-scope conversation before insert.
+- verified Direct alias correctness is persisted in owner-scoped `conversation_aliases`; a SQLite TEMP memo may skip repeated work within one connection, but it is only a performance cache and is never identity evidence. Legacy DID rows are folded only when the DID belongs to the target `peer_persona_id` in verified identifier history. The alias insert is conflict-visible and the legacy registry row becomes `merged + resolved` with an explicit target.
 
-`messages.ensure_conversation()` / Dart `client.messages.ensureConversation(...)` is the explicit creation boundary. Direct creation fails closed unless the owner has a valid `direct_peer_routes` entry for the canonical `dm:peer-scope:v1:*` ID. Group creation fails closed unless the owner has an active local membership projection. The registry stores `activity_at` independently of `last_message_at`; list pagination uses the opaque v2 cursor ordered by `activity_at DESC, conversation_id DESC`. Migration only backfills conversations already represented by summaries and never synthesizes every known route or group.
+`messages.ensure_conversation()` / Dart `client.messages.ensureConversation(...)` is the explicit user-open creation boundary. Direct creation fails closed unless the owner has a valid `direct_peer_routes` entry for the canonical `dm:peer-scope:v1:*` ID. Group creation fails closed unless the owner has an active local membership projection. Successful active Group create/join/get/add-member/refresh projection also idempotently ensures that same canonical Group DID registry row inside Core, so an empty Group conversation does not depend on an App navigation callback or first message to remain visible. The registry stores `activity_at` independently of `last_message_at`; list pagination uses the opaque v2 cursor ordered by `activity_at DESC, conversation_id DESC`. Migration only backfills conversations represented by verified routes, Group projections, summaries, or preserved legacy rows and never invents an identity from display data.
+
+Every fresh Handle discovery path must receive an available authority status and a stable non-DID `user_id`/`subject_id` before it can build a Direct Persona. Both local directory lookup and public `/.well-known/handle/` discovery validate the same authority/subject/Handle contract, and public discovery additionally verifies that its `did:wba` provider domain matches the Handle authority; a missing or DID-shaped subject returns `identity_unresolved` instead of manufacturing a canonical Direct ID.
 
 `ConversationIdentity.conversation_id` is the SDK-level routing key for message display. Conversation list rows, message metadata, timeline patches, read-state updates, conversation-scoped send, and local repair must carry or derive from this canonical identity. `ThreadRef::{Direct, Group, Thread}` remains a compatibility / adapter surface for CLI migration, legacy callers, and low-level diagnostics. New AWiki Me and Flutter SDK message-display paths must not reconstruct a route from DID, handle, or legacy direct aliases when a canonical `conversation_id` is available.
 
@@ -242,6 +244,87 @@ message metadata/participants remain a compatibility fallback for conversations
 that predate the route projection. App and CLI callers must never manufacture a
 `dm:<DID>` alias to bypass this resolver.
 
+Schema 28 makes the verified authority identity explicit. A canonical Direct is
+created from `authority_namespace + authority_subject_id + full_handle`, where
+the namespace is the IDNA-normalized authoritative Handle provider domain and
+the subject comes from a usable Handle Authority response. The projection is
+persisted in `peer_personas` and `peer_identifiers`; `direct_peer_routes`
+references the Persona while keeping `current_did` as a replaceable delivery
+route. A verified legacy DID reference is written to append-only
+`conversation_aliases`. Alias insertion is conflict-visible (`INSERT OR IGNORE`
+followed by target verification), never last-write-wins. Registry lifecycle and
+canonical resolution are orthogonal, so `active + legacy_unresolved` cannot be
+mistaken for a resolved canonical row. An alias may continue to target a
+resolved canonical conversation after that target becomes `archived`, `left`,
+or `deleted`; it must never target an unresolved or `merged` registry row.
+Once a legacy registry row is `merged`, ordinary summary refresh or
+`ensure` calls cannot reactivate it; only the canonical target remains eligible
+for the active conversation list.
+
+Schema 28 also separates immutable protocol facts from mutable local
+conversation projection. Each message stores `wire_thread_kind`,
+`wire_thread_ref`, and `wire_identity_resolution_state` alongside the canonical
+`conversation_id`; the old `thread_id` column is deprecated compatibility data.
+Canonical alias merge may update only `conversation_id`. It must not rewrite
+wire thread facts, sender/receiver DID snapshots, group identifiers, or
+`server_seq`. Replaying the same owner/message ID with different non-empty wire
+facts fails with `message_wire_identity_conflict`; a replay may only fill wire
+facts that were genuinely absent in a legacy row.
+
+Verified Handle projection writes the Persona, current and historical
+identifiers, route, Persona-keyed profile, and matching contact association as
+one local transaction. It is the only directory path that writes a canonical
+Direct route; the former parallel scope/DID route projection is intentionally
+absent so a route cannot bypass Persona validation or be written twice.
+UI/profile consumers must eventually read display data by `peer_persona_id`;
+DID remains a credential snapshot or route address, not a profile identity key.
+
+Inbound Direct sync performs the same Persona lookup inside
+the checkpoint transaction. If the peer DID is not yet bound to a verified
+Persona, the immutable message projection is serialized into the owner-scoped
+`inbound_resolution_backlog`; only after that durable write may the global
+checkpoint advance. A later verified Handle projection replays matching rows
+into `messages` and removes them from the backlog without changing their
+`wire_thread_kind`, `wire_thread_ref`, or sender/receiver DID snapshots.
+
+Remote history, thread catch-up, and realtime incoming projection use that same
+canonical ingress rule even though they do not advance the account checkpoint.
+They must resolve Direct wire DID snapshots through the verified Persona route
+before writing `messages`. An unresolved record is written transactionally to
+`inbound_resolution_backlog` with a stable source/message key and must not first
+materialize a `dm:<DID>` message or registry row. Local pending/outgoing
+projection remains a separate write path because it is created from an already
+validated conversation/send boundary.
+
+For an online first inbound Direct, the realtime ingress performs an
+authoritative Handle lookup by the wire peer DID, verifies that the lookup DID
+matches that snapshot, and projects the verified Persona/route before committing
+the message. This is not a DID-derived Persona fallback. If authority lookup is
+unavailable, malformed, conflicting, or returns another DID, the normal
+canonical-ingress rule still places the message in the resolution backlog; no
+legacy Direct row or authoritative patch is emitted.
+
+The redacted canonical invariant doctor is available through the local-state
+compatibility diagnostics. It reports counts and invariant labels only: active
+Direct/Group exact-one violations, unresolved resolved rows, alias chains or
+missing targets, route/Persona/registry mismatches, orphan profiles, invalid
+merged rows, and messages without a canonical registry owner. It never logs
+message bodies, complete identifiers, credentials, or key material.
+
+An existing schema 27 database is not modified by ordinary schema open. Core
+returns `local_state_upgrade_required` until the release/0710 backup/shadow/
+validation runner performs the explicit 27→28 cutover. The runner uses a
+cross-process file lock and SQLite Online Backup, performs canonical mapping
+inside a disposable shadow transaction, verifies conservation and canonical
+invariants, and records a resumable redacted journal before replacing the live
+SQLite file set. Re-running against schema 28 is a no-op.
+The source allowlist is pinned to the exact deployed release/0710 daemon
+artifact, source ref, and schema fingerprint. Its checked-in fixture is built
+by that binary in an isolated state root and contains synthetic rows only.
+After a completed cutover, the pre-open restore API verifies the retained
+backup, keeps the schema 28 target as a private safety copy, and restores the
+whole schema 27 file set; partial table-level downgrade is unsupported.
+
 Because summaries contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
 
 ## 12. Conversation Snapshot And Runtime Store
@@ -249,7 +332,7 @@ Because summaries contain message preview fields, diagnostics and tests should t
 Conversation snapshot and patch APIs are non-authoritative acceleration layers on top of committed local projection:
 
 - `messages.load_conversation_snapshot()` / Dart `client.messages.loadConversationSnapshot()` reads a redb snapshot generated from `conversation_summaries`.
-- Snapshot entries use `ConversationSnapshotItem`, a core-only DTO containing thread identity, participants, last message projection, unread counts, message count, and last message time.
+- Snapshot entries use `ConversationSnapshotItem`, a core-only DTO containing thread identity, the committed Group profile title when applicable, participants, last message projection, unread counts, message count, and last message time. Group title comes from Core's owner-scoped `groups` projection; it is not an App presentation overlay.
 - `messages.watch_conversation_patches()` / Dart `client.messages.watchConversationPatches()` streams versioned `ConversationStorePatch` values from an in-memory runtime store seeded by snapshot/local projection.
 - `messages.repair_conversation_store()` / Dart `client.messages.repairConversationStore()` returns a reset/repair patch and the current runtime store version after lag, overflow, stream close, or version gaps.
 - `messages.watch_conversation_timeline_patches(conversation, limit)` / Dart `client.messages.watchConversationTimelinePatches(conversation, limit: ...)` streams versioned `ThreadMessageStorePatch` values for the currently opened canonical conversation timeline.
@@ -260,7 +343,7 @@ Conversation snapshot and patch APIs are non-authoritative acceleration layers o
 
 The public APIs currently live under `messages()` / `client.messages` for compatibility with the existing SDK grouping. A future `conversations()` / `client.conversations` namespace may wrap the same core store, but both names must not expose divergent DTOs or ownership semantics.
 
-`ConversationSnapshotItem` and `ConversationStorePatch` must remain SDK/core DTOs. They must not include `awiki-me` App-only presentation fields such as `hidden`, `pinned`, `muted`, `customTitle`, `avatarSeed`, `peerLifecycleState`, `ConversationSummary`, or `ChatMessage`. AWiki Me composes those fields in its own application layer; see `awiki-me/docs/conversation-presentation-ownership.md`.
+`ConversationSnapshotItem` and `ConversationStorePatch` must remain SDK/core DTOs. Their optional Group `title` is a committed Group profile projection, not an App-local override. They must not include `awiki-me` App-only presentation fields such as `hidden`, `pinned`, `muted`, `customTitle`, `avatarSeed`, `peerLifecycleState`, `ConversationSummary`, or `ChatMessage`. AWiki Me composes those fields in its own application layer; see `awiki-me/docs/conversation-presentation-ownership.md`.
 
 Because snapshots and patches contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
 
@@ -279,7 +362,7 @@ The API is for fast first paint. Apps should show local conversation timeline ro
 
 ## 13.1 Conversation Send And Local Echo
 
-Conversation-surface sends should use `messages.send_conversation_text()` / Dart `client.messages.sendConversationText(...)`, `messages.send_conversation_payload()` / Dart `client.messages.sendConversationPayload(...)`, or `attachments.send_conversation()` / Dart `client.attachments.sendConversation(...)` when the caller already has a `ConversationReadRef`. `im-core` resolves the canonical conversation through its owner-scoped route projection, writes a durable pending projection row under that same canonical ID before network send, updates the row to accepted/sent/failed as the network result arrives, and emits committed patches only after the SQLite transaction succeeds. The first message in a peer-scope conversation does not require a pre-existing message row and must not be bootstrapped with a legacy DID conversation alias.
+Conversation-surface sends should use `messages.send_conversation_text()` / Dart `client.messages.sendConversationText(...)`, `messages.send_conversation_payload()` / Dart `client.messages.sendConversationPayload(...)`, or `attachments.send_conversation()` / Dart `client.attachments.sendConversation(...)` when the caller already has a `ConversationReadRef`. `im-core` resolves the canonical conversation through its owner-scoped route projection, writes a durable pending projection row under that same canonical ID before network send, updates the row to accepted/sent/failed as the network result arrives, and emits committed patches only after the SQLite transaction succeeds. The returned `SendMessageResult.message.metadata.conversation_identity` must expose that same canonical ID after direct-route normalization; it must not retain the transport target Handle or DID identity used before the network send. The first message in a peer-scope conversation does not require a pre-existing message row and must not be bootstrapped with a legacy DID conversation alias.
 
 `MessageMetadata.send_state`, `MessageMetadata.retry_plan`, and `MessageMetadata.conversation_identity` are the SDK facts for pending/accepted/sent/failed presentation. AWiki Me may render those states, but it must not create a second durable optimistic message store or decide send correctness from memory-only pending rows. Attachment local file preview may exist only as transient UI state during upload; list/detail timeline truth, retry correctness, and final send state must come from the SDK durable projection. Secure/E2EE conversation-surface local echo remains fail-closed where unsupported by the secure route.
 
@@ -301,6 +384,11 @@ the SDK architecture boundary.
   `next_event_seq`, or equivalent manual checkpoint advance.
 - `snapshot_required=true` is fail-closed until a documented repair API exists:
   no checkpoint advance and no local projection wipe.
+- An identity-unresolved inbound message is not a failed apply and is never
+  projected into a `dm:<DID>` conversation. The same transaction stores it in
+  `inbound_resolution_backlog` before advancing the checkpoint; verified
+  Persona projection later performs idempotent replay. Binding conflicts remain
+  conflict-visible rather than being guessed or last-write-wins.
 
 `messages.sync_conversation_after()` / Dart `client.messages.syncConversationAfter(...)` is the conversationId-first catch-up API for AWiki Me and the Flutter SDK display chain. It resolves `ConversationReadRef.conversation_id` to the syncable storage thread/ref, uses `after_server_seq`, and does not read or advance the account-level checkpoint. `messages.sync_thread_after()` / Dart `client.messages.syncThreadAfter(...)` remains a legacy / debug adapter. Implementations must not return a locally merged `history_async` page as a catch-up result; they use a raw remote path or strictly filter `server_seq > after_server_seq`.
 
@@ -310,8 +398,14 @@ duplicate/gap/dirty detection and for deciding when to call `sync_delta`.
 Realtime projection is allowed to keep the UI fresh, but receiving a realtime
 hint or applying a realtime projection does not advance the reliable checkpoint.
 If a realtime incoming message cannot be projected or its local SQLite write
-fails, it must not emit an authoritative conversation/timeline patch; the next
-reliable sync or repair path remains responsible for convergence.
+fails, it must not emit an authoritative conversation/timeline patch. Identity-
+unresolved realtime messages are durably backlogged by the same canonical
+ingress used for remote history and are replayed only after verified Persona
+projection; the next reliable sync or repair path remains responsible for
+convergence. When the Handle authority lookup succeeds, Persona projection and
+the inbound message commit happen in that order in the same local-state actor
+sequence, so a first inbound Direct becomes patch-visible under its canonical
+Persona conversation without briefly materializing a DID conversation.
 
 Schema version 20 adds `sync_state` with owner-scoped checkpoint rows:
 

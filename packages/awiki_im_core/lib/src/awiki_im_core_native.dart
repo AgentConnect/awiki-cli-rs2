@@ -9,6 +9,7 @@ import 'generated/api/directory.dart' as gen_directory;
 import 'generated/api/email.dart' as gen_email;
 import 'generated/api/groups.dart' as gen_groups;
 import 'generated/api/identity.dart' as gen_identity_api;
+import 'generated/api/local_state_upgrade.dart' as gen_local_state_upgrade;
 import 'generated/api/messages.dart' as gen_messages;
 import 'generated/api/profile.dart' as gen_profile;
 import 'generated/api/realtime.dart' as gen_realtime;
@@ -21,6 +22,7 @@ import 'generated/dto/email.dart' as gen_email_dto;
 import 'generated/dto/error.dart' as gen_error;
 import 'generated/dto/group.dart' as gen_group_dto;
 import 'generated/dto/identity.dart' as gen_identity;
+import 'generated/dto/local_state_upgrade.dart' as gen_local_state_upgrade_dto;
 import 'generated/dto/message.dart' as gen_message;
 import 'generated/dto/profile.dart' as gen_profile_dto;
 import 'generated/dto/realtime.dart' as gen_realtime_dto;
@@ -34,6 +36,7 @@ import 'models/email.dart';
 import 'models/error.dart';
 import 'models/group.dart';
 import 'models/identity.dart';
+import 'models/local_state_upgrade.dart';
 import 'models/message.dart';
 import 'models/message_payload.dart';
 import 'models/profile.dart';
@@ -85,6 +88,40 @@ class AwikiImCore {
       ),
     );
     return AwikiImCore._(inner);
+  }
+
+  static Future<LocalStateUpgradeInspection> inspectLocalStateUpgrade({
+    required AwikiImCorePaths paths,
+  }) async {
+    await _ensureRustLibInitialized();
+    final result = await _mapNativeErrors(
+      () => gen_local_state_upgrade.inspectLocalStateUpgrade(
+        paths: paths._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
+  static Future<LocalStateUpgradeResult> upgradeLocalState({
+    required AwikiImCorePaths paths,
+  }) async {
+    await _ensureRustLibInitialized();
+    final result = await _mapNativeErrors(
+      () => gen_local_state_upgrade.upgradeLocalState(paths: paths._toGen()),
+    );
+    return result._toModel();
+  }
+
+  static Future<LocalStateRestoreResult> restoreLocalStateBackup({
+    required AwikiImCorePaths paths,
+  }) async {
+    await _ensureRustLibInitialized();
+    final result = await _mapNativeErrors(
+      () => gen_local_state_upgrade.restoreLocalStateBackup(
+        paths: paths._toGen(),
+      ),
+    );
+    return result._toModel();
   }
 
   Future<AwikiImClient> client(IdentitySelector selector) async {
@@ -1529,6 +1566,56 @@ extension on DeviceVaultRootKey {
       gen_config.DartDeviceVaultRootKey(bytes: bytes);
 }
 
+extension on gen_local_state_upgrade_dto.DartLocalStateUpgradeInspection {
+  LocalStateUpgradeInspection _toModel() => LocalStateUpgradeInspection(
+    eligibility: switch (eligibility) {
+      gen_local_state_upgrade_dto
+          .DartLocalStateUpgradeEligibility
+          .notRequired =>
+        LocalStateUpgradeEligibility.notRequired,
+      gen_local_state_upgrade_dto.DartLocalStateUpgradeEligibility.required_ =>
+        LocalStateUpgradeEligibility.required,
+    },
+    sourceSchemaVersion: sourceSchemaVersion,
+    targetSchemaVersion: targetSchemaVersion,
+  );
+}
+
+extension on gen_local_state_upgrade_dto.DartLocalStateUpgradeResult {
+  LocalStateUpgradeResult _toModel() => LocalStateUpgradeResult(
+    status: switch (status) {
+      gen_local_state_upgrade_dto.DartLocalStateUpgradeStatus.notRequired =>
+        LocalStateUpgradeStatus.notRequired,
+      gen_local_state_upgrade_dto.DartLocalStateUpgradeStatus.completed =>
+        LocalStateUpgradeStatus.completed,
+    },
+    sourceSchemaVersion: sourceSchemaVersion,
+    targetSchemaVersion: targetSchemaVersion,
+    migratedPersonas: migratedPersonas.toInt(),
+    migratedConversations: migratedConversations.toInt(),
+    unresolvedMessages: unresolvedMessages.toInt(),
+    aliasCount: aliasCount.toInt(),
+    backupAvailable: backupAvailable,
+    aliasMappings: aliasMappings
+        .map(
+          (mapping) => LocalStateConversationAliasMapping(
+            ownerIdentityId: mapping.ownerIdentityId,
+            ownerDid: mapping.ownerDid,
+            legacyConversationId: mapping.legacyConversationId,
+            canonicalConversationId: mapping.canonicalConversationId,
+          ),
+        )
+        .toList(growable: false),
+  );
+}
+
+extension on gen_local_state_upgrade_dto.DartLocalStateRestoreResult {
+  LocalStateRestoreResult _toModel() => LocalStateRestoreResult(
+    restoredSchemaVersion: restoredSchemaVersion,
+    targetSafetyCopyAvailable: targetSafetyCopyAvailable,
+  );
+}
+
 extension on MessageTransportPolicy {
   gen_config.DartMessageTransportPolicy _toGen() => switch (this) {
     MessageTransportPolicy.auto => gen_config.DartMessageTransportPolicy.auto,
@@ -2346,6 +2433,9 @@ extension on gen_message.DartMessageMetadata {
 extension on gen_message.DartMessage {
   Message _toModel() => Message(
     id: id,
+    conversationId: conversationId,
+    senderPeerPersonaId: senderPeerPersonaId,
+    senderDidSnapshot: senderDidSnapshot,
     threadKind: threadKind,
     threadId: threadId,
     direction: direction._toModel(),
@@ -2369,6 +2459,10 @@ extension on gen_message.DartMessagePage {
 
 extension on gen_message.DartConversation {
   Conversation _toModel() => Conversation(
+    conversationId: conversationId,
+    peerPersonaId: peerPersonaId,
+    canonicalGroupDid: canonicalGroupDid,
+    resolutionState: resolutionState._toModel(),
     threadKind: threadKind,
     threadId: threadId,
     conversationIdentity: conversationIdentity?._toModel(),
@@ -2382,6 +2476,17 @@ extension on gen_message.DartConversation {
     lastMessageAt: lastMessageAt,
     activityAt: activityAt,
   );
+}
+
+extension on gen_message.DartConversationResolutionState {
+  ConversationResolutionState _toModel() => switch (this) {
+    gen_message.DartConversationResolutionState.resolved =>
+      ConversationResolutionState.resolved,
+    gen_message.DartConversationResolutionState.legacyUnresolved =>
+      ConversationResolutionState.legacyUnresolved,
+    gen_message.DartConversationResolutionState.blockedConflict =>
+      ConversationResolutionState.blockedConflict,
+  };
 }
 
 extension on gen_message.DartConversationPage {
@@ -2430,9 +2535,7 @@ extension on gen_message.DartConversationStorePatch {
       ownerDid: value.ownerDid,
       version: value.version.toInt(),
       unreadTotal: value.unreadTotal,
-      threadKind: value.threadKind,
-      threadId: value.threadId,
-      conversationIdentity: value.conversationIdentity?._toModel(),
+      conversationId: value.conversationId,
     ),
     reorder: (value) => ConversationStorePatch(
       kind: ConversationStorePatchKind.reorder,
@@ -2440,9 +2543,7 @@ extension on gen_message.DartConversationStorePatch {
       ownerDid: value.ownerDid,
       version: value.version.toInt(),
       unreadTotal: value.unreadTotal,
-      threadKind: value.threadKind,
-      threadId: value.threadId,
-      conversationIdentity: value.conversationIdentity?._toModel(),
+      conversationId: value.conversationId,
       index: value.index,
     ),
     repairRequired: (value) => ConversationStorePatch(
@@ -2504,8 +2605,13 @@ extension on gen_message.DartThreadMessageStorePatch {
 
 extension on gen_message.DartConversationSnapshotItem {
   ConversationSnapshotItem _toModel() => ConversationSnapshotItem(
+    conversationId: conversationId,
+    peerPersonaId: peerPersonaId,
+    canonicalGroupDid: canonicalGroupDid,
+    resolutionState: resolutionState._toModel(),
     threadKind: threadKind,
     threadId: threadId,
+    title: title,
     conversationIdentity: conversationIdentity?._toModel(),
     participants: participants,
     lastMessage: lastMessage?._toModel(),
@@ -2654,6 +2760,7 @@ extension on GroupIdentityMode {
 
 extension on gen_group_dto.DartGroupSummary {
   GroupSummary _toModel() => GroupSummary(
+    conversationId: conversationId,
     id: id,
     did: did,
     name: name,
@@ -2668,6 +2775,7 @@ extension on gen_group_dto.DartGroupSummary {
 
 extension on gen_group_dto.DartGroupSnapshot {
   GroupSnapshot _toModel() => GroupSnapshot(
+    conversationId: conversationId,
     id: id,
     did: did,
     name: name,
@@ -2683,7 +2791,10 @@ extension on gen_group_dto.DartGroupSnapshot {
 
 extension on gen_group_dto.DartGroupMember {
   GroupMember _toModel() => GroupMember(
+    membershipId: membershipId,
+    peerPersonaId: peerPersonaId,
     did: did,
+    credentialDid: credentialDid,
     handle: handle,
     role: role,
     status: status,

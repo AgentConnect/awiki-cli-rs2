@@ -405,6 +405,79 @@ fn common_im_errors_map_to_exit_errors() {
 }
 
 #[test]
+fn canonical_identity_and_upgrade_errors_map_to_stable_redacted_codes() {
+    let private_marker = "did:wba:private.example:alice:e1_private";
+    let cases = [
+        (
+            ImError::LocalStateUpgradeRequired {
+                from_version: 27,
+                target_version: 28,
+            },
+            "local_state_upgrade_required",
+        ),
+        (
+            ImError::LocalStateUpgradeInProgress,
+            "local_state_upgrade_in_progress",
+        ),
+        (
+            ImError::LocalStateUpgradeFailed {
+                phase: "validate".to_string(),
+                code: "message_conservation_failed".to_string(),
+            },
+            "local_state_upgrade_failed",
+        ),
+        (
+            ImError::IdentityUnresolved {
+                detail: private_marker.to_string(),
+            },
+            "identity_unresolved",
+        ),
+        (
+            ImError::IdentityBindingConflict {
+                detail: private_marker.to_string(),
+            },
+            "identity_binding_conflict",
+        ),
+        (
+            ImError::ConversationAliasConflict {
+                alias: private_marker.to_string(),
+                existing_target: "dm:existing-private".to_string(),
+                requested_target: "dm:requested-private".to_string(),
+            },
+            "conversation_alias_conflict",
+        ),
+        (
+            ImError::MessageWireIdentityConflict {
+                message_id: "msg-private".to_string(),
+            },
+            "message_wire_identity_conflict",
+        ),
+        (
+            ImError::CanonicalGroupIdentityMissing {
+                group: private_marker.to_string(),
+            },
+            "canonical_group_identity_missing",
+        ),
+        (
+            ImError::LocalProjectionUnavailable {
+                detail: private_marker.to_string(),
+            },
+            "local_projection_unavailable",
+        ),
+    ];
+
+    for (source, expected_code) in cases {
+        let mapped = error::map_im_error(source, "adapter test");
+        assert_eq!(mapped.exit_code, 5);
+        assert_eq!(mapped.detail.code, expected_code);
+        assert!(!mapped.detail.message.contains(private_marker));
+        assert!(!mapped.detail.message.contains("dm:existing-private"));
+        assert!(!mapped.detail.message.contains("dm:requested-private"));
+        assert!(!mapped.detail.message.contains("msg-private"));
+    }
+}
+
+#[test]
 fn identity_vault_error_maps_to_stable_redacted_exit_error() {
     let mapped = error::map_im_error(
         ImError::IdentityVault {

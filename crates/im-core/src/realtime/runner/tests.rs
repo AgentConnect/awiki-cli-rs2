@@ -294,6 +294,53 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND did = ?3 AND messaged = 1"#,
 }
 
 #[tokio::test]
+async fn realtime_verified_lookup_commits_first_inbound_direct_to_canonical_persona() {
+    let fixture = TestClientFixture::new_without_verified_peer("async-first-inbound-persona");
+    let client = fixture.client();
+    let lookup = verified_bob_lookup();
+    let expected_conversation_id = lookup.direct_conversation_id();
+
+    project_realtime_message_received_async_with_lookup(
+        &client,
+        &direct_message_event(client.did().as_str()),
+        Some(lookup.clone()),
+    )
+    .await
+    .unwrap();
+
+    let db = client.core_inner().local_state_db().await.unwrap();
+    db.shutdown().await.unwrap();
+    let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+    let stored = connection
+        .query_row(
+            r#"SELECT conversation_id FROM messages
+WHERE owner_identity_id = 'alice' AND msg_id = 'msg-direct-1'"#,
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    assert_eq!(stored, expected_conversation_id);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM peer_personas WHERE owner_identity_id = 'alice'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        crate::internal::local_state::inbound_resolution_backlog::pending_count(
+            &connection,
+            "alice",
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
 async fn realtime_async_local_state_projector_emits_committed_message_patches() {
     let fixture = TestClientFixture::new("async-local-state-patches");
     let client = fixture.client();
@@ -906,6 +953,12 @@ struct TestClientFixture {
 
 impl TestClientFixture {
     fn new(name: &str) -> Self {
+        let fixture = Self::new_without_verified_peer(name);
+        fixture.seed_verified_peer();
+        fixture
+    }
+
+    fn new_without_verified_peer(name: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "im-core-realtime-runner-{name}-{}-{}",
             std::process::id(),
@@ -920,6 +973,18 @@ impl TestClientFixture {
         let fixture = Self { root };
         fixture.write_identity("did:example:alice", "test-key", "test-key");
         fixture
+    }
+
+    fn seed_verified_peer(&self) {
+        let mut connection =
+            crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
+        crate::internal::local_state::peer_personas::project_verified_handle(
+            &mut connection,
+            "alice",
+            "did:example:alice",
+            &verified_bob_lookup(),
+        )
+        .unwrap();
     }
 
     fn client(&self) -> crate::core::ImClient {
@@ -1058,6 +1123,19 @@ impl TestClientFixture {
             "missing": []
         }));
         std::fs::write(registry_path, registry.to_string()).unwrap();
+    }
+}
+
+fn verified_bob_lookup() -> crate::directory::HandleLookupResult {
+    crate::directory::HandleLookupResult {
+        handle: crate::ids::Handle::parse("bob.awiki.info", "").unwrap(),
+        did: crate::ids::Did::parse("did:example:bob").unwrap(),
+        user_id: "user-bob".to_owned(),
+        domain: Some("awiki.info".to_owned()),
+        status: Some("active".to_owned()),
+        binding_generation: Some("1".to_owned()),
+        profile: None,
+        warnings: Vec::new(),
     }
 }
 
