@@ -845,11 +845,30 @@ fn merge_local_message_values_into_page(
         .iter()
         .filter_map(|row| message_from_local_state_value(row).ok())
         .collect::<Vec<_>>();
+    local_messages.retain(|local| {
+        !page
+            .items
+            .iter()
+            .any(|remote| same_group_message_position(remote, local))
+    });
     if local_messages.is_empty() {
         return;
     }
     page.items.append(&mut local_messages);
     page.has_more |= sort_dedupe_and_truncate_messages(&mut page.items, requested_limit);
+}
+
+#[cfg(feature = "sqlite")]
+fn same_group_message_position(
+    left: &crate::messages::Message,
+    right: &crate::messages::Message,
+) -> bool {
+    let (Some(left_group), Some(right_group)) = (left.group.as_ref(), right.group.as_ref()) else {
+        return false;
+    };
+    left_group == right_group
+        && left.metadata.server_sequence.is_some()
+        && left.metadata.server_sequence == right.metadata.server_sequence
 }
 
 #[cfg(feature = "sqlite")]

@@ -939,6 +939,74 @@ fn messages_read_runtime_group_history_merges_committed_local_projection() {
 }
 
 #[test]
+fn messages_read_runtime_prefers_remote_group_message_id_at_same_event_position() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    crate::internal::local_state::messages::upsert_message(
+        &connection,
+        &crate::internal::local_state::messages::MessageRecord {
+            msg_id: "did:example:group:77".to_owned(),
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:example:alice".to_owned(),
+            conversation_id: "group:did:example:group".to_owned(),
+            thread_id: "group:did:example:group".to_owned(),
+            direction: 0,
+            sender_did: "did:example:bob".to_owned(),
+            group_id: "did:example:group".to_owned(),
+            group_did: "did:example:group".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "same accepted message".to_owned(),
+            sent_at: "2026-05-21T00:00:03Z".to_owned(),
+            stored_at: "2026-05-21T00:00:03Z".to_owned(),
+            server_seq: Some(77),
+            metadata: json!({
+                "content_type": "text/plain",
+                "server_sequence": 77,
+                "operation_id": "op-77"
+            })
+            .to_string(),
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        },
+    )
+    .unwrap();
+    let remote = crate::groups::GroupReadResult::from_raw_response(
+        json!({
+            "messages": [{
+                "id": "msg-original-77",
+                "message_id": "msg-original-77",
+                "group_did": "did:example:group",
+                "sender_did": "did:example:bob",
+                "content": "same accepted message",
+                "content_type": "text/plain",
+                "operation_id": "op-77",
+                "group_event_seq": "77",
+                "server_seq": 77,
+                "sent_at": "2026-05-21T00:00:03Z"
+            }],
+            "has_more": false
+        }),
+        Vec::new(),
+    );
+    let mut page = remote.messages;
+    let rows = crate::internal::local_state::groups::list_group_messages_for_owner_identity(
+        &connection,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        "did:example:group",
+        20,
+        None,
+    )
+    .unwrap();
+
+    merge_local_message_values_into_page(&mut page, rows, crate::ids::PageLimit(20));
+
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].id.as_str(), "msg-original-77");
+    assert_eq!(page.items[0].metadata.server_sequence, Some(77));
+}
+
+#[test]
 fn messages_read_runtime_local_history_reads_projection_without_rpc() {
     let fixture = Fixture::new();
     let client = fixture.client();
