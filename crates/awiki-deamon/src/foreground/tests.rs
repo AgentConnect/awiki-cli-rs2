@@ -3315,6 +3315,64 @@ fn app_capabilities_and_action_result_are_system_control_payloads() {
     assert!(state
         .audit_event_exists("app.action.result.received", Some(&daemon.agent_did), None,)
         .unwrap());
+    let action_result_audit: String = state
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT COALESCE(detail_json, '') FROM audit_log \
+             WHERE event_type = 'app.action.result.received' \
+             ORDER BY created_at_ms DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(action_result_audit.contains("act_draft_1"));
+    assert!(!action_result_audit.contains("Looks good"));
+    assert!(!action_result_audit.contains("draft_text"));
+}
+
+#[test]
+fn app_action_result_from_non_controller_is_rejected_without_audit() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient;
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let result_payload = json!({
+        "schema": "awiki.app.action.result.v1",
+        "action_id": "act_draft_intruder",
+        "action": "message.create_draft",
+        "state": "succeeded",
+        "result": {"draft_text": "intruder text"}
+    });
+
+    let error = handle_app_control_payload(
+        &config,
+        &state,
+        &registration,
+        IncomingAppControlPayload {
+            message_id: "msg_app_action_result_intruder".to_string(),
+            conversation_id: Some("direct:did:agent:daemon".to_string()),
+            sender_did: "did:human:bob".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: result_payload,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("message sender is not the configured controller_did"));
+    assert!(!state
+        .audit_event_exists("app.action.result.received", Some(&daemon.agent_did), None,)
+        .unwrap());
 }
 
 #[test]

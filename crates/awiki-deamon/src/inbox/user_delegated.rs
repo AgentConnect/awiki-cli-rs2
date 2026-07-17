@@ -19,7 +19,10 @@ use crate::app_bridge::bootstrap::{
     validate_user_delegated_identity_against_did_document, BootstrapDidDocumentResolver,
     DefaultBootstrapDidDocumentResolver,
 };
-use crate::app_bridge::message_agent::APP_MESSAGE_HANDLER_ROLE;
+use crate::app_bridge::message_agent::{
+    APP_MESSAGE_AGENT_STATUS_ACTIVE, APP_MESSAGE_AGENT_STATUS_ENSURING,
+    APP_MESSAGE_AGENT_STATUS_READY, APP_MESSAGE_HANDLER_ROLE,
+};
 use crate::app_bridge::secret_store::normalize_delegated_private_key_pem;
 use crate::im_core_adapter::ImCoreAdapter;
 use crate::outbox::{
@@ -907,6 +910,23 @@ where
     D: UserDelegatedMessageDispatcher,
 {
     binding.validate()?;
+    if !binding_is_active_for_inbox_processing(binding) {
+        state.insert_audit_event_json(
+            "user_delegated_inbox.sync.skipped_inactive_binding",
+            Some(&binding.daemon_agent_did),
+            Some(&binding.runtime_profile_id),
+            None,
+            None,
+            json!({
+                "binding_id": binding.binding_id,
+                "user_did": binding.user_did,
+                "app_instance_id": binding.app_instance_id,
+                "status": binding.status,
+                "revoked": binding.revoked_at_ms.is_some(),
+            }),
+        )?;
+        return Ok(empty_inbox_outcome(binding));
+    }
     let identity = state
         .load_user_delegated_identity(&binding.inbox_auth_verification_method)?
         .with_context(|| {
@@ -1415,6 +1435,29 @@ fn inbox_scope_for_binding(binding: &AppMessageAgentBindingRecord) -> String {
         stable_id_suffix(&binding.binding_id),
         stable_id_suffix(&binding.runtime_agent_did),
     )
+}
+
+fn binding_is_active_for_inbox_processing(binding: &AppMessageAgentBindingRecord) -> bool {
+    binding.revoked_at_ms.is_none()
+        && matches!(
+            binding.status.as_str(),
+            APP_MESSAGE_AGENT_STATUS_READY
+                | APP_MESSAGE_AGENT_STATUS_ACTIVE
+                | APP_MESSAGE_AGENT_STATUS_ENSURING
+        )
+}
+
+fn empty_inbox_outcome(binding: &AppMessageAgentBindingRecord) -> ProcessUserDelegatedInboxOutcome {
+    ProcessUserDelegatedInboxOutcome {
+        binding_id: binding.binding_id.clone(),
+        fetched_messages: 0,
+        dispatched_messages: 0,
+        ignored_e2ee_messages: 0,
+        skipped_app_control_messages: 0,
+        skipped_unsupported_messages: 0,
+        skipped_processed_messages: 0,
+        next_cursor: None,
+    }
 }
 
 fn is_system_control_payload(payload: &Value) -> bool {

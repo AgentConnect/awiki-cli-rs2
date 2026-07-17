@@ -192,6 +192,86 @@ fn explicit_empty_capabilities_project_empty_allowed_actions() {
 }
 
 #[test]
+fn delegated_inbox_skips_revoked_binding_without_fetch_or_dispatch() {
+    let fixture = fixture();
+    let state = &fixture.state;
+    let mut binding = fixture.binding.clone();
+    binding.status = "message_agent_revoked".to_string();
+    binding.revoked_at_ms = Some(123);
+    state.upsert_app_message_agent_binding(&binding).unwrap();
+    let client = MockClient {
+        pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+            messages: vec![plain_message("msg_after_revoke", "did:human:bob", "hello")],
+            next_cursor: Some("cursor_after_revoke".to_string()),
+            has_more: false,
+        }])),
+        calls: Arc::new(Mutex::new(Vec::new())),
+    };
+    let dispatcher = RecordingDispatcher::default();
+
+    let outcome =
+        process_user_delegated_inbox_for_binding(state, &client, &dispatcher, &binding).unwrap();
+
+    assert_eq!(outcome.fetched_messages, 0);
+    assert_eq!(outcome.dispatched_messages, 0);
+    assert_eq!(outcome.next_cursor, None);
+    assert!(client.calls.lock().unwrap().is_empty());
+    assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+    assert!(state
+        .load_message_event(&event_id(&binding.user_did, "msg_after_revoke"))
+        .unwrap()
+        .is_none());
+    assert!(state
+        .load_inbox_cursor(&binding.user_did, &inbox_scope_for_binding(&binding))
+        .unwrap()
+        .is_none());
+    assert!(state
+        .audit_event_exists(
+            "user_delegated_inbox.sync.skipped_inactive_binding",
+            Some(&binding.daemon_agent_did),
+            Some("message_agent_revoked"),
+        )
+        .unwrap());
+}
+
+#[test]
+fn delegated_inbox_skips_disabled_binding_without_fetch_or_dispatch() {
+    let fixture = fixture();
+    let state = &fixture.state;
+    let mut binding = fixture.binding.clone();
+    binding.status = "message_agent_disabled".to_string();
+    state.upsert_app_message_agent_binding(&binding).unwrap();
+    let client = MockClient {
+        pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+            messages: vec![plain_message("msg_disabled", "did:human:bob", "hello")],
+            next_cursor: Some("cursor_disabled".to_string()),
+            has_more: false,
+        }])),
+        calls: Arc::new(Mutex::new(Vec::new())),
+    };
+    let dispatcher = RecordingDispatcher::default();
+
+    let outcome =
+        process_user_delegated_inbox_for_binding(state, &client, &dispatcher, &binding).unwrap();
+
+    assert_eq!(outcome.fetched_messages, 0);
+    assert_eq!(outcome.dispatched_messages, 0);
+    assert!(client.calls.lock().unwrap().is_empty());
+    assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+    assert!(state
+        .load_message_event(&event_id(&binding.user_did, "msg_disabled"))
+        .unwrap()
+        .is_none());
+    assert!(state
+        .audit_event_exists(
+            "user_delegated_inbox.sync.skipped_inactive_binding",
+            Some(&binding.daemon_agent_did),
+            Some("message_agent_disabled"),
+        )
+        .unwrap());
+}
+
+#[test]
 fn delegated_inbox_uses_cursor_and_skips_processed_replay() {
     let fixture = fixture();
     let state = &fixture.state;
@@ -925,11 +1005,198 @@ fn delegated_inbox_key_ref_uses_vault_without_private_key_files() {
         .is_dir());
 }
 
+#[test]
+fn delegated_runtime_host_final_rejects_non_controller_target() {
+    let fixture = fixture();
+    let state = &fixture.state;
+    let binding = &fixture.binding;
+    insert_delegated_runtime_task_and_run(
+        state,
+        binding,
+        "task_user_msg_host_final_wrong_target",
+        "run_user_msg_host_final_wrong_target",
+        "msg_user_host_final_wrong_target",
+    );
+    let outbox = UserDelegatedRuntimeOutbox::new_for_test(state);
+    let context = AuthorizedRuntimeContext {
+        token_id: HOST_RUNTIME_FINAL_OUTBOX_TOKEN_ID.to_string(),
+        agent_did: binding.runtime_agent_did.clone(),
+        runtime_profile_id: binding.runtime_profile_id.clone(),
+        run_id: "run_user_msg_host_final_wrong_target".to_string(),
+        method: crate::security::runtime_token::RpcMethod::MsgSend,
+    };
+
+    let error = outbox
+        .send_message(
+            &context,
+            &RuntimeMessageSend {
+                target: crate::outbox::RuntimeMessageTarget::Direct {
+                    recipient: "did:human:bob".to_string(),
+                    raw_recipient: "did:human:bob".to_string(),
+                    resolved_did: Some("did:human:bob".to_string()),
+                },
+                text: "must not leave owner sync channel".to_string(),
+                payload: None,
+                file_path: None,
+                display_filename: None,
+                mime_type: None,
+                idempotency_key: Some("runtime-final:wrong-target".to_string()),
+                security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
+            },
+        )
+        .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("host runtime final must target the delegated controller DID"));
+    assert!(state
+        .load_message_sync_outbox(
+            "message-sync:did:human:alice:runtime-final:run_user_msg_host_final_wrong_target",
+        )
+        .unwrap()
+        .is_none());
+    let connection = state.connection().unwrap();
+    let audit_dump: String = connection
+        .query_row(
+            "SELECT COALESCE(detail_json, '') FROM audit_log \
+             WHERE event_type = 'user_delegated_inbox.runtime_final.host_sync.rejected' \
+             ORDER BY created_at_ms DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(audit_dump.contains("host_runtime_final_must_target_controller_did"));
+    assert!(!audit_dump.contains("must not leave owner sync channel"));
+}
+
+#[test]
+fn delegated_runtime_outbound_message_and_attachment_are_rejected_without_plaintext_audit() {
+    let fixture = fixture();
+    let state = &fixture.state;
+    let binding = &fixture.binding;
+    insert_delegated_runtime_task_and_run(
+        state,
+        binding,
+        "task_user_msg_outbound_reject",
+        "run_user_msg_outbound_reject",
+        "msg_user_outbound_reject",
+    );
+    let outbox = UserDelegatedRuntimeOutbox::new_for_test(state);
+    let context = AuthorizedRuntimeContext {
+        token_id: "token_plaintext_secret".to_string(),
+        agent_did: binding.runtime_agent_did.clone(),
+        runtime_profile_id: binding.runtime_profile_id.clone(),
+        run_id: "run_user_msg_outbound_reject".to_string(),
+        method: crate::security::runtime_token::RpcMethod::MsgSend,
+    };
+
+    let message_error = outbox
+        .send_message(
+            &context,
+            &RuntimeMessageSend {
+                target: crate::outbox::RuntimeMessageTarget::Direct {
+                    recipient: "did:human:bob".to_string(),
+                    raw_recipient: "did:human:bob".to_string(),
+                    resolved_did: Some("did:human:bob".to_string()),
+                },
+                text: "sensitive user draft should not be audited".to_string(),
+                payload: None,
+                file_path: None,
+                display_filename: None,
+                mime_type: None,
+                idempotency_key: Some("runtime-msg:blocked".to_string()),
+                security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
+            },
+        )
+        .unwrap_err();
+    let attachment_error = outbox
+        .send_attachment(
+            &context,
+            &RuntimeAttachmentSend {
+                target: "current_conversation".to_string(),
+                target_did: Some("did:human:bob".to_string()),
+                file_path: std::path::PathBuf::from("/tmp/secret-report.txt"),
+                display_filename: Some("secret-report.txt".to_string()),
+                caption: Some("attachment plaintext should not be audited".to_string()),
+            },
+        )
+        .unwrap_err();
+
+    assert!(message_error
+        .to_string()
+        .contains("outbound send is not enabled"));
+    assert!(attachment_error
+        .to_string()
+        .contains("attachment send is not enabled"));
+    let connection = state.connection().unwrap();
+    let audit_dump: String = connection
+        .query_row(
+            "SELECT GROUP_CONCAT(COALESCE(detail_json, ''), '\n') FROM audit_log",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!audit_dump.contains("sensitive user draft should not be audited"));
+    assert!(!audit_dump.contains("attachment plaintext should not be audited"));
+    assert!(!audit_dump.contains("/tmp/secret-report.txt"));
+    assert!(audit_dump.contains("user_delegated_message_agent_outbound_send_not_enabled"));
+    assert!(audit_dump.contains("user_delegated_message_agent_attachment_send_not_enabled"));
+}
+
 struct TestFixture {
     _root: TempDir,
     state: DaemonState,
     identity: UserDelegatedIdentityRecord,
     binding: AppMessageAgentBindingRecord,
+}
+
+fn insert_delegated_runtime_task_and_run(
+    state: &DaemonState,
+    binding: &AppMessageAgentBindingRecord,
+    task_id: &str,
+    run_id: &str,
+    source_message_id: &str,
+) {
+    let task = RuntimeTask {
+        task_id: task_id.to_string(),
+        agent_did: binding.runtime_agent_did.clone(),
+        agent_handle: "alice-hermes".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:user-alice:alice.anpclaw.com".to_string(),
+        controller_did: binding.user_did.clone(),
+        sender_did: "did:human:bob".to_string(),
+        requester_did: "did:human:bob".to_string(),
+        requester_user_id: Some("user-bob".to_string()),
+        requester_full_handle: Some("bob.example.com".to_string()),
+        trigger_kind: RuntimeTaskTriggerKind::DelegatedDirect,
+        conversation_scope: RuntimeConversationScope::direct("user-bob", "bob.example.com")
+            .unwrap(),
+        invocation_authority: RuntimeInvocationAuthority::Requester,
+        reply_recipient_did: binding.user_did.clone(),
+        conversation_id: Some("direct:did:human:bob".to_string()),
+        text: serde_json::to_string(&json!({
+            "schema": "awiki.runtime.user_message_task.v1",
+            "source_message_id": source_message_id,
+            "source_conversation_id": "direct:did:human:bob",
+            "source_sender_did": "did:human:bob",
+            "content_hash": "sha256:test",
+            "content_text": "hello agent"
+        }))
+        .unwrap(),
+    };
+    state.insert_runtime_task(&task).unwrap();
+    state
+        .insert_runtime_run(&RuntimeRun {
+            run_id: run_id.to_string(),
+            task_id: task.task_id,
+            agent_did: binding.runtime_agent_did.clone(),
+            runtime_profile_id: binding.runtime_profile_id.clone(),
+            runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+            workspace_id: None,
+            status: RuntimeRunStatus::Running,
+        })
+        .unwrap();
 }
 
 fn fixture() -> TestFixture {

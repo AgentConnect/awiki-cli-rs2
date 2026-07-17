@@ -200,6 +200,7 @@ pub fn queue_runtime_app_action_request(
             "binding_id": binding.binding_id,
             "owner_did": binding.user_did,
             "app_instance_id": binding.app_instance_id,
+            "daemon_agent_did": binding.daemon_agent_did,
             "runtime_agent_did": context.agent_did,
             "runtime_profile_id": context.runtime_profile_id,
             "run_id": context.run_id,
@@ -335,6 +336,7 @@ fn queue_app_action_rejected_result(
             "binding_id": binding.binding_id,
             "owner_did": binding.user_did,
             "app_instance_id": binding.app_instance_id,
+            "daemon_agent_did": binding.daemon_agent_did,
             "runtime_agent_did": context.agent_did,
             "runtime_profile_id": context.runtime_profile_id,
             "run_id": context.run_id,
@@ -519,6 +521,8 @@ mod tests {
         assert_eq!(record.payload_json["action"], "contact.update_note");
         assert_eq!(record.payload_json["state"], "requires_confirmation");
         assert_eq!(record.payload_json["requires_confirmation"], true);
+        assert_eq!(record.payload_json["daemon_agent_did"], "did:agent:daemon");
+        assert_eq!(record.payload_json["runtime_agent_did"], "did:agent:hermes");
         assert_eq!(record.payload_json["args"]["contact_did"], "did:human:bob");
     }
 
@@ -553,6 +557,8 @@ mod tests {
         assert_eq!(record.payload_json["schema"], APP_ACTION_RESULT_SCHEMA);
         assert_eq!(record.payload_json["action"], "message.send");
         assert_eq!(record.payload_json["state"], "rejected");
+        assert_eq!(record.payload_json["daemon_agent_did"], "did:agent:daemon");
+        assert_eq!(record.payload_json["runtime_agent_did"], "did:agent:hermes");
         assert_eq!(record.payload_json["error_code"], "action_not_allowed");
     }
 
