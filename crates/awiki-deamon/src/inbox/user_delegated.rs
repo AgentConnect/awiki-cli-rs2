@@ -12,7 +12,6 @@ use im_core::vault::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::fs;
 
 use crate::app_bridge::action::{APP_ACTION_RESULT_SCHEMA, APP_ACTION_SCHEMA, MVP_ALLOWED_ACTIONS};
 use crate::app_bridge::bootstrap::{
@@ -322,9 +321,14 @@ impl UserDelegatedInboxClient for ImCoreDelegatedInboxClient<'_> {
             &did_document,
             time::OffsetDateTime::now_utc(),
         )?;
-        let key_ref = ensure_delegated_inbox_key_ref(self.config, identity)?;
-        ensure_delegated_inbox_did_shadow(self.config, identity)?;
-        let client = self.im_core.client_for_did(&identity.user_did)?;
+        let private_key_pem = normalize_delegated_private_key_pem(&identity.private_key_material)?;
+        let key_ref = ensure_delegated_inbox_key_ref(self.config, identity, &private_key_pem)?;
+        let client = self.im_core.client_for_delegated_signing_identity(
+            delegated_identity_alias(&identity.user_did),
+            identity.user_did.clone(),
+            minimal_user_did_document(identity),
+            private_key_pem,
+        )?;
         let auth_status = client
             .auth()
             .status()
@@ -1588,8 +1592,8 @@ fn allowed_actions(binding: &AppPersonalAgentBindingRecord) -> Vec<String> {
 fn ensure_delegated_inbox_key_ref(
     config: &DaemonConfig,
     identity: &UserDelegatedIdentityRecord,
+    private_key_pem: &str,
 ) -> Result<String> {
-    let private_key_pem = normalize_delegated_private_key_pem(&identity.private_key_material)?;
     let vault = im_core_file_vault(config)?;
     let secret_ref = vault
         .seal(SealSecretRequest {
@@ -1613,51 +1617,6 @@ fn ensure_delegated_inbox_key_ref(
         bail!("delegated inbox key_ref vault verification failed");
     }
     Ok(im_core::vault::encode_delegated_key_ref(&secret_ref)?)
-}
-
-fn ensure_delegated_inbox_did_shadow(
-    config: &DaemonConfig,
-    identity: &UserDelegatedIdentityRecord,
-) -> Result<()> {
-    let alias = delegated_identity_alias(&identity.user_did);
-    let identity_dir = config.identity_root_dir.join(&alias);
-    fs::create_dir_all(&identity_dir)?;
-    let did_document_path = identity_dir.join("did.json");
-    fs::write(
-        &did_document_path,
-        serde_json::to_vec_pretty(&minimal_user_did_document(identity))?,
-    )?;
-    let mut registry = read_identity_registry(config)?;
-    let identities = registry
-        .as_object_mut()
-        .and_then(|object| object.get_mut("identities"))
-        .and_then(Value::as_array_mut)
-        .context("identity registry must contain identities array")?;
-    let exists = identities.iter().any(|entry| {
-        entry
-            .get("did")
-            .and_then(Value::as_str)
-            .is_some_and(|did| did == identity.user_did)
-    });
-    if !exists {
-        identities.push(json!({
-            "id": alias,
-            "did": identity.user_did,
-            "dir_name": alias,
-            "local_alias": alias,
-            "ready_for_auth": true,
-            "ready_for_messaging": true,
-            "missing": []
-        }));
-        if let Some(parent) = config.identity_registry_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(
-            &config.identity_registry_path,
-            serde_json::to_vec_pretty(&registry)?,
-        )?;
-    }
-    Ok(())
 }
 
 fn im_core_file_vault(config: &DaemonConfig) -> Result<FileSecretVault> {
@@ -1708,24 +1667,6 @@ fn parse_im_core_vault_root_key(raw: &str) -> Result<DeviceVaultRootKey> {
 
 fn im_core_vault_root_key_env() -> &'static str {
     "AWIKI_IM_CORE_VAULT_ROOT_KEY_B64"
-}
-
-fn read_identity_registry(config: &DaemonConfig) -> Result<Value> {
-    if !config.identity_registry_path.exists() {
-        return Ok(json!({
-            "default_identity": "",
-            "identities": []
-        }));
-    }
-    let raw = fs::read(&config.identity_registry_path)?;
-    let mut value: Value = serde_json::from_slice(&raw)?;
-    if !value.is_object() {
-        value = json!({});
-    }
-    if value.get("identities").is_none() {
-        value["identities"] = json!([]);
-    }
-    Ok(value)
 }
 
 fn minimal_user_did_document(identity: &UserDelegatedIdentityRecord) -> Value {

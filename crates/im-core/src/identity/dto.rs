@@ -78,7 +78,7 @@ pub struct HostedIdentityMaterial {
     pub display_name: Option<String>,
     pub did_document: serde_json::Value,
     pub default_signing_private_key_pem: String,
-    pub e2ee_agreement_private_key_pem: String,
+    pub e2ee_agreement_private_key_pem: Option<String>,
     pub auth_token: Option<String>,
 }
 

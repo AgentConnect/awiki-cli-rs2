@@ -6,7 +6,7 @@ use serde_json::Value;
 pub(crate) struct HostedKeyMaterialProvider {
     did_document: Value,
     default_signing_private_pem: String,
-    e2ee_agreement_private_pem: String,
+    e2ee_agreement_private_pem: Option<String>,
     auth_state: Mutex<crate::internal::auth::state::AuthStateSnapshot>,
 }
 
@@ -18,10 +18,11 @@ impl HostedKeyMaterialProvider {
                 "default_signing_private_key_pem",
                 &material.default_signing_private_key_pem,
             )?,
-            e2ee_agreement_private_pem: require_non_empty_secret(
-                "e2ee_agreement_private_key_pem",
-                &material.e2ee_agreement_private_key_pem,
-            )?,
+            e2ee_agreement_private_pem: material
+                .e2ee_agreement_private_key_pem
+                .as_deref()
+                .map(|value| require_non_empty_secret("e2ee_agreement_private_key_pem", value))
+                .transpose()?,
             auth_state: Mutex::new(auth_state_from_token(material.auth_token.as_deref())?),
         })
     }
@@ -53,7 +54,12 @@ impl super::KeyMaterialProvider for HostedKeyMaterialProvider {
     }
 
     fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self.e2ee_agreement_private_pem.clone())
+        self.e2ee_agreement_private_pem
+            .clone()
+            .ok_or_else(|| crate::ImError::IdentityNotReady {
+                identity: "hosted-memory".to_owned(),
+                missing: vec!["e2ee_agreement_private_key".to_owned()],
+            })
     }
 
     fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
@@ -118,7 +124,7 @@ mod tests {
             display_name: None,
             did_document: json!({"id": "did:example:daemon"}),
             default_signing_private_key_pem: "signing-secret".to_owned(),
-            e2ee_agreement_private_key_pem: "agreement-secret".to_owned(),
+            e2ee_agreement_private_key_pem: Some("agreement-secret".to_owned()),
             auth_token: Some("token-secret".to_owned()),
         })
         .unwrap();
@@ -145,5 +151,30 @@ mod tests {
         assert!(!debug.contains("agreement-secret"));
         assert!(!debug.contains("token-secret"));
         assert!(!debug.contains("fresh-secret"));
+    }
+
+    #[test]
+    fn signing_only_hosted_provider_fails_closed_for_e2ee_material() {
+        let provider = HostedKeyMaterialProvider::new(&crate::identity::HostedIdentityMaterial {
+            identity_id: "delegated-inbox".to_owned(),
+            did: "did:example:alice".to_owned(),
+            handle: None,
+            display_name: None,
+            did_document: json!({"id": "did:example:alice"}),
+            default_signing_private_key_pem: "signing-secret".to_owned(),
+            e2ee_agreement_private_key_pem: None,
+            auth_token: None,
+        })
+        .unwrap();
+
+        assert_eq!(
+            provider.default_signing_private_pem().unwrap(),
+            "signing-secret"
+        );
+        assert!(matches!(
+            provider.e2ee_agreement_private_pem(),
+            Err(crate::ImError::IdentityNotReady { missing, .. })
+                if missing == vec!["e2ee_agreement_private_key"]
+        ));
     }
 }

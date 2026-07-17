@@ -980,8 +980,11 @@ fn delegated_inbox_key_ref_uses_vault_without_private_key_files() {
     identity.private_key_material =
         crate::app_bridge::secret_store::ed25519_private_key_pem_for_test(&[17_u8; 32]);
 
-    let key_ref = ensure_delegated_inbox_key_ref(&config, &identity).unwrap();
-    ensure_delegated_inbox_did_shadow(&config, &identity).unwrap();
+    let private_key_pem = crate::app_bridge::secret_store::normalize_delegated_private_key_pem(
+        &identity.private_key_material,
+    )
+    .unwrap();
+    let key_ref = ensure_delegated_inbox_key_ref(&config, &identity, &private_key_pem).unwrap();
 
     assert!(key_ref.starts_with("vault:"));
     let legacy_key_path = config
