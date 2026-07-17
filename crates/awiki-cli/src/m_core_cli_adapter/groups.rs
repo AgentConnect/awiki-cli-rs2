@@ -1394,7 +1394,7 @@ fn normalize_group_member_json(mut member: Value) -> Value {
 
 fn group_message_to_json(message: &Message) -> Value {
     let content = message_body_content(&message.body);
-    let content_type = message_content_type(&message.body);
+    let content_type = message_content_type(message);
     let mut value = json!({
         "id": message.id.as_str(),
         "msg_id": message.id.as_str(),
@@ -1413,6 +1413,9 @@ fn group_message_to_json(message: &Message) -> Value {
             im_core::prelude::MessageDirection::Unknown => -1,
         },
     });
+    if content_type == im_core::attachments::attachment_manifest_content_type() {
+        value["type"] = json!("attachment_manifest");
+    }
     if let Some(sequence) = message.metadata.server_sequence {
         value["server_seq"] = json!(sequence);
     }
@@ -1438,16 +1441,59 @@ fn message_body_content(body: &im_core::prelude::MessageBodyView) -> Value {
     }
 }
 
-fn message_content_type(body: &im_core::prelude::MessageBodyView) -> &'static str {
-    match body {
+fn message_content_type(message: &Message) -> String {
+    if let Some(content_type) = message
+        .metadata
+        .content_type
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return content_type.to_string();
+    }
+    if matches!(
+        &message.body,
+        im_core::prelude::MessageBodyView::Payload { payload }
+            if is_attachment_manifest_payload(payload)
+    ) {
+        return im_core::attachments::attachment_manifest_content_type().to_string();
+    }
+    match &message.body {
         im_core::prelude::MessageBodyView::Text {
             kind: im_core::prelude::MessageKind::Markdown,
             ..
-        } => "text/markdown",
-        im_core::prelude::MessageBodyView::Text { .. } => "text/plain",
-        im_core::prelude::MessageBodyView::Payload { .. } => "application/json",
-        im_core::prelude::MessageBodyView::Unsupported { .. } => "application/octet-stream",
+        } => "text/markdown".to_string(),
+        im_core::prelude::MessageBodyView::Text { .. } => "text/plain".to_string(),
+        im_core::prelude::MessageBodyView::Payload { .. } => "application/json".to_string(),
+        im_core::prelude::MessageBodyView::Unsupported { content_type } => content_type
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("application/octet-stream")
+            .to_string(),
     }
+}
+
+fn is_attachment_manifest_payload(payload: &Value) -> bool {
+    let Some(primary_attachment_id) = payload
+        .get("primary_attachment_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    payload
+        .get("attachments")
+        .and_then(Value::as_array)
+        .is_some_and(|attachments| {
+            attachments.iter().any(|attachment| {
+                attachment
+                    .get("attachment_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == primary_attachment_id)
+            })
+        })
 }
 
 fn group_message_is_secure(message: &Message) -> bool {
@@ -1719,4 +1765,27 @@ fn group_e2ee_service_unsupported(rpc_code: i64, message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("group e2ee contract-test apis are disabled")
         || message.contains("group e2ee p6 apis are disabled")
+}
+
+#[cfg(test)]
+mod group_message_projection_tests {
+    use serde_json::json;
+
+    use super::is_attachment_manifest_payload;
+
+    #[test]
+    fn attachment_manifest_payload_requires_matching_primary_attachment() {
+        assert!(is_attachment_manifest_payload(&json!({
+            "attachments": [{"attachment_id": "att-1"}],
+            "primary_attachment_id": "att-1"
+        })));
+        assert!(!is_attachment_manifest_payload(&json!({
+            "attachments": [{"attachment_id": "att-1"}],
+            "primary_attachment_id": "att-2"
+        })));
+        assert!(!is_attachment_manifest_payload(&json!({
+            "attachments": [],
+            "text": "ordinary payload"
+        })));
+    }
 }

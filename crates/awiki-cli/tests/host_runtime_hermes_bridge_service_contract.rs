@@ -292,10 +292,14 @@ fn hermes_bridge_run_service_starts_adapter_until_stop_requested_like_go_run() {
     };
     let calls = Arc::new(AtomicUsize::new(0));
     let stop_calls = calls.clone();
+    let stop_marker = marker.clone();
 
     hermes_bridge::run_bridge_service_with_stop(
         &plan,
-        move || stop_calls.fetch_add(1, Ordering::SeqCst) >= 2,
+        move || {
+            let poll_count = stop_calls.fetch_add(1, Ordering::SeqCst);
+            stop_marker.is_file() && poll_count >= 2
+        },
         Duration::from_millis(10),
     )
     .expect("run bridge service");
