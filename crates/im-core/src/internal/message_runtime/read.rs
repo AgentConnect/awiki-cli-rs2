@@ -843,10 +843,16 @@ fn merge_local_message_values_into_page(
     rows: Vec<serde_json::Value>,
     requested_limit: crate::ids::PageLimit,
 ) {
-    let local_messages = rows
+    let mut local_messages = rows
         .iter()
         .filter_map(|row| message_from_local_state_value(row).ok())
         .collect::<Vec<_>>();
+    local_messages.retain(|local| {
+        !page
+            .items
+            .iter()
+            .any(|remote| same_group_message_position(remote, local))
+    });
     merge_committed_projection_into_page(page, local_messages, requested_limit);
 }
 
@@ -871,6 +877,19 @@ fn merge_committed_projection_into_page(
     }
     page.items.extend(committed_by_id.into_values());
     page.has_more |= sort_dedupe_and_truncate_messages(&mut page.items, requested_limit);
+}
+
+#[cfg(feature = "sqlite")]
+fn same_group_message_position(
+    left: &crate::messages::Message,
+    right: &crate::messages::Message,
+) -> bool {
+    let (Some(left_group), Some(right_group)) = (left.group.as_ref(), right.group.as_ref()) else {
+        return false;
+    };
+    left_group == right_group
+        && left.metadata.server_sequence.is_some()
+        && left.metadata.server_sequence == right.metadata.server_sequence
 }
 
 #[cfg(feature = "sqlite")]
