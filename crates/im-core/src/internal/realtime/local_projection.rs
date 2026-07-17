@@ -64,6 +64,7 @@ pub fn plan_realtime_message_local_projection(
     if conversation_id.trim().is_empty() || (group_did.trim().is_empty() && !has_thread_peer) {
         return None;
     }
+    let received_at = message.received_at.clone().unwrap_or_else(now_utc_like);
 
     Some(RealtimeMessageLocalProjection {
         record: crate::internal::local_state::messages::MessageRecord {
@@ -80,11 +81,8 @@ pub fn plan_realtime_message_local_projection(
             content_type: message_content_type(message),
             content: message_content(message),
             server_seq: message.metadata.server_sequence,
-            sent_at: message
-                .sent_at
-                .clone()
-                .or_else(|| message.received_at.clone())
-                .unwrap_or_else(now_utc_like),
+            sent_at: local_projection_sent_at(message, &received_at),
+            stored_at: received_at,
             is_read: matches!(
                 message.direction,
                 crate::messages::MessageDirection::Outgoing
@@ -101,6 +99,22 @@ pub fn plan_realtime_message_local_projection(
         }
         .with_wire_thread_ref(&message.thread),
     })
+}
+
+#[cfg(feature = "sqlite")]
+fn local_projection_sent_at(message: &crate::messages::Message, received_at: &str) -> String {
+    if !matches!(
+        message.direction,
+        crate::messages::MessageDirection::Outgoing
+    ) && message.metadata.server_sequence.is_none()
+    {
+        return received_at.to_owned();
+    }
+    message
+        .sent_at
+        .clone()
+        .or_else(|| message.received_at.clone())
+        .unwrap_or_else(|| received_at.to_owned())
 }
 
 #[cfg(feature = "sqlite")]
@@ -323,6 +337,91 @@ fn now_utc_like() -> String {
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsequenced_incoming_realtime_uses_recipient_timestamp_for_local_order() {
+        let message = crate::messages::Message {
+            id: crate::ids::MessageId::parse("realtime-order-1").unwrap(),
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:peer", "").unwrap(),
+            ),
+            direction: crate::messages::MessageDirection::Incoming,
+            sender: crate::ids::PeerRef::parse("did:example:peer", "").unwrap(),
+            receiver: Some(crate::ids::PeerRef::parse("did:example:owner", "").unwrap()),
+            group: None,
+            body: crate::messages::MessageBodyView::Text {
+                text: "same body".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            sent_at: Some("2026-07-17T05:20:31Z".to_owned()),
+            received_at: Some("2026-07-17T05:20:32.207005Z".to_owned()),
+            metadata: crate::messages::MessageMetadata {
+                content_type: Some("text/plain".to_owned()),
+                ..crate::messages::MessageMetadata::default()
+            },
+        };
+
+        let projection = plan_realtime_message_local_projection(
+            &RealtimeMessageLocalProjectionContext {
+                owner_identity_id: "owner-a".to_owned(),
+                owner_did: "did:example:owner".to_owned(),
+                credential_name: "owner-a".to_owned(),
+                peer_scope: None,
+            },
+            &message,
+            None,
+            None,
+            &[],
+        )
+        .unwrap()
+        .into_record();
+
+        assert_eq!(projection.sent_at, "2026-07-17T05:20:32.207005Z");
+        assert_eq!(projection.stored_at, "2026-07-17T05:20:32.207005Z");
+    }
+
+    #[test]
+    fn sequenced_incoming_realtime_keeps_authoritative_sent_timestamp() {
+        let message = crate::messages::Message {
+            id: crate::ids::MessageId::parse("realtime-order-2").unwrap(),
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:peer", "").unwrap(),
+            ),
+            direction: crate::messages::MessageDirection::Incoming,
+            sender: crate::ids::PeerRef::parse("did:example:peer", "").unwrap(),
+            receiver: Some(crate::ids::PeerRef::parse("did:example:owner", "").unwrap()),
+            group: None,
+            body: crate::messages::MessageBodyView::Text {
+                text: "same body".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            sent_at: Some("2026-07-17T05:20:31.558059Z".to_owned()),
+            received_at: Some("2026-07-17T05:20:32.207005Z".to_owned()),
+            metadata: crate::messages::MessageMetadata {
+                server_sequence: Some(21_263),
+                content_type: Some("text/plain".to_owned()),
+                ..crate::messages::MessageMetadata::default()
+            },
+        };
+
+        let projection = plan_realtime_message_local_projection(
+            &RealtimeMessageLocalProjectionContext {
+                owner_identity_id: "owner-a".to_owned(),
+                owner_did: "did:example:owner".to_owned(),
+                credential_name: "owner-a".to_owned(),
+                peer_scope: None,
+            },
+            &message,
+            None,
+            None,
+            &[],
+        )
+        .unwrap()
+        .into_record();
+
+        assert_eq!(projection.sent_at, "2026-07-17T05:20:31.558059Z");
+        assert_eq!(projection.stored_at, "2026-07-17T05:20:32.207005Z");
+    }
 
     #[test]
     fn unresolved_realtime_direct_is_backlogged_without_creating_legacy_message() {

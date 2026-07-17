@@ -443,6 +443,11 @@ Realtime integration:
 - Successfully projecting a realtime incoming message to local SQLite does emit
   committed conversation/thread patches for active subscribers; the hint alone
   is never an authoritative patch source.
+- Before reliable sync supplies a thread-local `serverSequence`, an incoming
+  realtime projection uses the recipient-side receive timestamp rather than the
+  sender-provided `sentAt`. Once two timeline rows both have `serverSequence`,
+  consumers must order them by that sequence and use time only as the fallback
+  for mixed or legacy rows.
 
 The SDK must not add public APIs named `loadGlobalCheckpoint`, `storeGlobalCheckpoint`,
 `setGlobalCheckpoint`, or equivalents. Any checkpoint inspection needed for debugging
