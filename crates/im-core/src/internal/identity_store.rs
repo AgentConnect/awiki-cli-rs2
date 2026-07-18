@@ -7,7 +7,7 @@ use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-const INDEX_SCHEMA_VERSION: i64 = 3;
+const INDEX_SCHEMA_VERSION: i64 = 4;
 const IDENTITY_FILE_NAME: &str = "identity.json";
 const AUTH_FILE_NAME: &str = "auth.json";
 const DID_DOCUMENT_FILE_NAME: &str = "did_document.json";
@@ -303,6 +303,10 @@ impl<'a> IdentityStore<'a> {
             index.default_credential_name = local_alias.clone();
         }
         let is_default = index.default_credential_name == local_alias;
+        let device_state = index
+            .credentials
+            .get(&local_alias)
+            .and_then(|entry| entry.device_state.clone());
         index.credentials.insert(
             local_alias.clone(),
             IndexEntry {
@@ -317,6 +321,7 @@ impl<'a> IdentityStore<'a> {
                 created_at: created_at.clone(),
                 is_default,
                 vault_migration: vault_metadata,
+                device_state,
             },
         );
         self.save_index(index)?;
@@ -1002,6 +1007,31 @@ impl<'a> IdentityStore<'a> {
         Ok(())
     }
 
+    pub(crate) fn save_device_state(
+        &self,
+        local_alias: &str,
+        state: crate::internal::identity_device_state::IdentityDeviceState,
+    ) -> crate::ImResult<()> {
+        let local_alias = local_alias.trim();
+        if local_alias.is_empty() {
+            return Err(crate::ImError::invalid_input(
+                Some("local_alias".to_owned()),
+                "local alias is required",
+            ));
+        }
+        let mut index = self.load_index()?;
+        let entry = index.credentials.get_mut(local_alias).ok_or_else(|| {
+            crate::ImError::IdentityNotFound {
+                selector: local_alias.to_owned(),
+            }
+        })?;
+        let did = crate::ids::Did::parse(&entry.did)?;
+        state.validate_for_did(&did)?;
+        entry.device_state = Some(state);
+        index.schema_version = INDEX_SCHEMA_VERSION;
+        self.save_index(index)
+    }
+
     pub(crate) fn write_default_identity(&self, local_alias: &str) -> crate::ImResult<()> {
         let Some(path) = self.paths.default_identity_path.as_deref() else {
             return Ok(());
@@ -1155,6 +1185,8 @@ pub(crate) struct IndexEntry {
     pub(crate) is_default: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) vault_migration: Option<IdentityVaultMigrationMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) device_state: Option<crate::internal::identity_device_state::IdentityDeviceState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1320,7 +1352,7 @@ fn sdk_registry_to_index(file: SdkRegistryFile) -> IndexPayload {
 }
 
 fn normalize_index_payload(mut payload: IndexPayload) -> crate::ImResult<IndexPayload> {
-    if !matches!(payload.schema_version, 0 | 2 | INDEX_SCHEMA_VERSION) {
+    if !matches!(payload.schema_version, 0 | 2 | 3 | INDEX_SCHEMA_VERSION) {
         return Err(crate::ImError::invalid_input(
             Some("identity_registry.schema_version".to_string()),
             format!(
@@ -1867,6 +1899,88 @@ mod tests {
         assert_eq!(index.schema_version, INDEX_SCHEMA_VERSION);
         assert!(index.default_credential_name.is_empty());
         assert!(index.credentials.is_empty());
+    }
+
+    #[test]
+    fn schema_three_identity_remains_legacy_until_explicit_device_state_write() {
+        let index = parse_index_payload(
+            br#"{
+              "schema_version": 3,
+              "default_credential_name": "alice",
+              "credentials": {
+                "alice": {
+                  "credential_name": "alice",
+                  "dir_name": "alice-id",
+                  "did": "did:example:alice",
+                  "unique_id": "alice-id"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(index.schema_version, 3);
+        assert!(index.credentials["alice"].device_state.is_none());
+    }
+
+    #[test]
+    fn save_device_state_is_explicit_validated_and_repeat_safe() {
+        use crate::internal::identity_device_state::{
+            DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
+            IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
+            IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        let did = "did:wba:awiki.info:user:alice:e1_root";
+        store
+            .save_identity(SaveIdentityInput {
+                local_alias: "alice".to_owned(),
+                did: crate::ids::Did::parse(did).unwrap(),
+                unique_id: "alice-id".to_owned(),
+                user_id: "user-1".to_owned(),
+                display_name: "Alice".to_owned(),
+                handle: "alice".to_owned(),
+                full_handle: "alice.awiki.info".to_owned(),
+                jwt_token: "token".to_owned(),
+                did_document: Some(json!({"id": did})),
+                key1_private_pem: "root-private".to_owned(),
+                key1_public_pem: "root-public".to_owned(),
+                e2ee_signing_private_pem: "device-signing-private".to_owned(),
+                e2ee_agreement_private_pem: "device-e2ee-private".to_owned(),
+                daemon_subkey_package: None,
+                make_default: true,
+            })
+            .unwrap();
+        let state = IdentityDeviceState {
+            schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+            mode: IdentityDeviceMode::VNext,
+            authorization: Some(DeviceAuthorizationProjection {
+                protocol_device_id: crate::ids::ProtocolDeviceId::parse("dev-device-a").unwrap(),
+                signing_key_id: format!("{did}#device-sign"),
+                e2ee_key_id: format!("{did}#device-e2ee"),
+                status: DeviceAuthorizationStatus::Active,
+                role: DeviceAuthorizationRole::Member,
+                management_ready: false,
+            }),
+            checkpoint: Some(IdentityInternalCheckpoint {
+                document_version: 1,
+                document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+                registry_version: 1,
+            }),
+        };
+
+        store.save_device_state("alice", state.clone()).unwrap();
+        store.save_device_state("alice", state.clone()).unwrap();
+
+        let index = store.load_index().unwrap();
+        assert_eq!(index.schema_version, INDEX_SCHEMA_VERSION);
+        assert_eq!(index.credentials["alice"].device_state, Some(state));
+        assert!(!std::fs::read_to_string(&paths.registry_path)
+            .unwrap()
+            .contains("root-private"));
     }
 
     #[test]

@@ -81,6 +81,22 @@ Rules:
 - auth/session, local state, direct secure state, and MLS state must be identity-scoped.
 - Business queries inject owner internally; callers do not hand-write owner filters.
 
+### 4.1 Local multi-device authorization projection
+
+Identity registry schema v4 can optionally persist an AWiki-local `device_state` for a
+vNext identity. It keeps the random `ProtocolDeviceId`, public signing/E2EE key IDs,
+`active|revoked`, `member|admin`, server-confirmed `management_ready`, and the internal
+Document/Registry checkpoint. None of these local Registry/checkpoint fields are added
+to ANP wire objects; the interoperable device list remains the DID Document's embedded
+`deviceManifest`.
+
+Legacy identities keep `device_state` absent and are never assigned a synthetic
+`default` protocol device. A vNext state is written only after its key IDs and positive
+checkpoint validate against the selected DID. Runtime readiness is derived rather than
+persisted: active members do not require a root private key, while an admin becomes
+ready only when both the server completion state and the local Root Vault are available.
+Revoked devices and local Vault/auth inconsistencies fail closed as blocked.
+
 ## 5. Paths and Configuration
 
 Hosts pass explicit `ImCoreConfig` and `ImCorePaths`.
