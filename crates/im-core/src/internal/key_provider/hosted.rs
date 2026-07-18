@@ -5,7 +5,7 @@ use serde_json::Value;
 
 pub(crate) struct HostedKeyMaterialProvider {
     did_document: Value,
-    default_signing_private_pem: String,
+    legacy_key1_private_pem: String,
     e2ee_agreement_private_pem: Option<String>,
     auth_state: Mutex<crate::internal::auth::state::AuthStateSnapshot>,
 }
@@ -14,7 +14,7 @@ impl HostedKeyMaterialProvider {
     pub(crate) fn new(material: &crate::identity::HostedIdentityMaterial) -> crate::ImResult<Self> {
         Ok(Self {
             did_document: material.did_document.clone(),
-            default_signing_private_pem: require_non_empty_secret(
+            legacy_key1_private_pem: require_non_empty_secret(
                 "default_signing_private_key_pem",
                 &material.default_signing_private_key_pem,
             )?,
@@ -33,7 +33,7 @@ impl fmt::Debug for HostedKeyMaterialProvider {
         f.debug_struct("HostedKeyMaterialProvider")
             .field("backend", &"hosted-memory")
             .field("did_document", &"<redacted-hosted-did-document>")
-            .field("default_signing_private_pem", &"<redacted-private-key>")
+            .field("legacy_key1_private_pem", &"<redacted-private-key>")
             .field("e2ee_agreement_private_pem", &"<redacted-private-key>")
             .field("auth_state", &"<redacted-auth-state>")
             .finish_non_exhaustive()
@@ -49,8 +49,16 @@ impl super::KeyMaterialProvider for HostedKeyMaterialProvider {
         Ok(Some(self.did_document.clone()))
     }
 
-    fn default_signing_private_pem(&self) -> crate::ImResult<String> {
-        Ok(self.default_signing_private_pem.clone())
+    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
+        Ok(self
+            .legacy_key1_role_adapter()
+            .device_request_signing_private_pem())
+    }
+
+    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
+        Ok(self
+            .legacy_key1_role_adapter()
+            .did_document_root_private_pem())
     }
 
     fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
@@ -85,6 +93,12 @@ impl super::KeyMaterialProvider for HostedKeyMaterialProvider {
             })?;
         *guard = next;
         Ok(())
+    }
+}
+
+impl HostedKeyMaterialProvider {
+    fn legacy_key1_role_adapter(&self) -> super::LegacyKey1RoleAdapter {
+        super::LegacyKey1RoleAdapter::new(self.legacy_key1_private_pem.clone())
     }
 }
 
@@ -130,7 +144,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            provider.default_signing_private_pem().unwrap(),
+            provider.device_request_signing_private_pem().unwrap(),
+            "signing-secret"
+        );
+        assert_eq!(
+            provider.did_document_root_private_pem().unwrap(),
             "signing-secret"
         );
         assert_eq!(
@@ -151,6 +169,9 @@ mod tests {
         assert!(!debug.contains("agreement-secret"));
         assert!(!debug.contains("token-secret"));
         assert!(!debug.contains("fresh-secret"));
+        let adapter_debug = format!("{:?}", provider.legacy_key1_role_adapter());
+        assert!(!adapter_debug.contains("signing-secret"));
+        assert!(adapter_debug.contains("<redacted-private-key>"));
     }
 
     #[test]
@@ -168,7 +189,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            provider.default_signing_private_pem().unwrap(),
+            provider.device_request_signing_private_pem().unwrap(),
             "signing-secret"
         );
         assert!(matches!(

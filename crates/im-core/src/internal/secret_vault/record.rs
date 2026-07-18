@@ -8,6 +8,7 @@ pub(crate) const VAULT_RECORD_SCHEMA_VERSION: u32 = 1;
 #[serde(rename_all = "snake_case")]
 pub enum SecretKind {
     IdentityRootPrivate,
+    IdentityDeviceSigningPrivate,
     IdentityE2eeSigningPrivate,
     IdentityE2eeAgreementPrivate,
     IdentityDaemonPrivate,
@@ -23,6 +24,7 @@ impl SecretKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::IdentityRootPrivate => "identity.root.private",
+            Self::IdentityDeviceSigningPrivate => "identity.device.signing.private",
             Self::IdentityE2eeSigningPrivate => "identity.e2ee.signing.private",
             Self::IdentityE2eeAgreementPrivate => "identity.e2ee.agreement.private",
             Self::IdentityDaemonPrivate => "identity.daemon.private",

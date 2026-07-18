@@ -515,30 +515,6 @@ impl<'a> IdentityStore<'a> {
         )
     }
 
-    pub(crate) fn load_key1_private_pem_from_vault(
-        &self,
-        identity_dir_name: &str,
-        did: &crate::ids::Did,
-        metadata: &IdentityVaultMigrationMetadata,
-        workspace_id: &str,
-        device_id: &str,
-        vault: &dyn crate::internal::secret_vault::SecretVault,
-    ) -> crate::ImResult<String> {
-        let _ = local_identity_dir(&self.paths.identity_root_dir, identity_dir_name)?;
-        ensure_verified_vault_metadata_context(metadata, workspace_id, device_id)?;
-        if metadata.refs.default_signing_private.did.as_deref() != Some(did.as_str()) {
-            return Err(crate::ImError::IdentityNotReady {
-                identity: did.as_str().to_string(),
-                missing: vec!["identity_vault_did_match".to_string()],
-            });
-        }
-        open_vault_utf8_secret(
-            vault,
-            &metadata.refs.default_signing_private,
-            "default_signing_private_key",
-        )
-    }
-
     pub(crate) fn save_daemon_subkey_package_with_secret_storage(
         &self,
         identity_dir_name: &str,
@@ -1203,8 +1179,12 @@ pub(crate) struct IdentityVaultMigrationMetadata {
 }
 
 impl IdentityVaultMigrationMetadata {
-    pub(crate) fn key_material_refs(&self) -> crate::internal::key_provider::VaultKeyMaterialRefs {
-        crate::internal::key_provider::VaultKeyMaterialRefs {
+    /// Maps schema-v1 migration metadata through the explicit legacy key-1
+    /// compatibility provider. vNext identities use separate refs.
+    pub(crate) fn legacy_key_material_refs(
+        &self,
+    ) -> crate::internal::key_provider::LegacyVaultKeyMaterialRefs {
+        crate::internal::key_provider::LegacyVaultKeyMaterialRefs {
             default_signing_private: self.refs.default_signing_private.clone(),
             e2ee_agreement_private: self.refs.e2ee_agreement_private.clone(),
             auth_jwt: self.refs.auth_jwt.clone(),
@@ -2074,10 +2054,10 @@ mod tests {
         let provider = crate::internal::key_provider::vault::VaultBackedKeyMaterialProvider::new(
             identity_dir,
             vault,
-            result.metadata.key_material_refs(),
+            result.metadata.legacy_key_material_refs(),
         );
         assert_eq!(
-            provider.default_signing_private_pem().unwrap(),
+            provider.device_request_signing_private_pem().unwrap(),
             "signing-private-secret"
         );
         assert_eq!(

@@ -5,32 +5,73 @@ use serde_json::Value;
 
 use crate::internal::platform_secret::SecretBytes;
 use crate::internal::secret_vault::policy::SecretAccessPolicy;
-use crate::internal::secret_vault::record::{SecretMetadata, SecretRef};
+use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
 use crate::internal::secret_vault::{SealSecretRequest, SecretVault};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct VaultKeyMaterialRefs {
+pub(crate) struct LegacyVaultKeyMaterialRefs {
     pub(crate) default_signing_private: SecretRef,
     pub(crate) e2ee_agreement_private: SecretRef,
     pub(crate) auth_jwt: SecretRef,
 }
 
+/// vNext key refs keep device request signing separate from optional DID root
+/// control. This is side-by-side with legacy vault migration metadata so old
+/// records continue to deserialize unchanged.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct VNextVaultKeyMaterialRefs {
+    pub(crate) device_request_signing_private: SecretRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) did_document_root_private: Option<SecretRef>,
+    pub(crate) e2ee_agreement_private: SecretRef,
+    pub(crate) auth_jwt: SecretRef,
+}
+
+impl fmt::Debug for VNextVaultKeyMaterialRefs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VNextVaultKeyMaterialRefs")
+            .field("refs", &"<redacted-secret-refs>")
+            .field(
+                "has_did_document_root_private",
+                &self.did_document_root_private.is_some(),
+            )
+            .finish()
+    }
+}
+
+enum VaultKeyRoleRefs {
+    Legacy(LegacyVaultKeyMaterialRefs),
+    VNext(VNextVaultKeyMaterialRefs),
+}
+
 pub(crate) struct VaultBackedKeyMaterialProvider {
     file_provider: super::FileBackedKeyMaterialProvider,
     vault: Arc<dyn SecretVault + Send + Sync>,
-    refs: VaultKeyMaterialRefs,
+    refs: VaultKeyRoleRefs,
 }
 
 impl VaultBackedKeyMaterialProvider {
     pub(crate) fn new(
         identity_dir: std::path::PathBuf,
         vault: Arc<dyn SecretVault + Send + Sync>,
-        refs: VaultKeyMaterialRefs,
+        refs: LegacyVaultKeyMaterialRefs,
     ) -> Self {
         Self {
             file_provider: super::FileBackedKeyMaterialProvider::new(identity_dir),
             vault,
-            refs,
+            refs: VaultKeyRoleRefs::Legacy(refs),
+        }
+    }
+
+    pub(crate) fn new_vnext(
+        identity_dir: std::path::PathBuf,
+        vault: Arc<dyn SecretVault + Send + Sync>,
+        refs: VNextVaultKeyMaterialRefs,
+    ) -> Self {
+        Self {
+            file_provider: super::FileBackedKeyMaterialProvider::new(identity_dir),
+            vault,
+            refs: VaultKeyRoleRefs::VNext(refs),
         }
     }
 
@@ -49,6 +90,51 @@ impl VaultBackedKeyMaterialProvider {
             });
         }
         Ok(value)
+    }
+
+    fn open_utf8_secret_for_kind(
+        &self,
+        secret_ref: &SecretRef,
+        expected_kind: SecretKind,
+        role: &str,
+    ) -> crate::ImResult<String> {
+        if secret_ref.kind != expected_kind {
+            return Err(crate::ImError::IdentityNotReady {
+                identity: secret_ref
+                    .did
+                    .clone()
+                    .or_else(|| secret_ref.identity_id.clone())
+                    .unwrap_or_else(|| "vault-backed".to_owned()),
+                missing: vec![format!("{role}_secret_kind")],
+            });
+        }
+        self.open_utf8_secret(secret_ref, role)
+    }
+
+    fn legacy_key1_role_adapter(
+        &self,
+        refs: &LegacyVaultKeyMaterialRefs,
+    ) -> crate::ImResult<super::LegacyKey1RoleAdapter> {
+        self.open_utf8_secret_for_kind(
+            &refs.default_signing_private,
+            SecretKind::IdentityRootPrivate,
+            "legacy_key1_private_key",
+        )
+        .map(super::LegacyKey1RoleAdapter::new)
+    }
+
+    fn e2ee_agreement_private_ref(&self) -> &SecretRef {
+        match &self.refs {
+            VaultKeyRoleRefs::Legacy(refs) => &refs.e2ee_agreement_private,
+            VaultKeyRoleRefs::VNext(refs) => &refs.e2ee_agreement_private,
+        }
+    }
+
+    fn auth_jwt_ref(&self) -> &SecretRef {
+        match &self.refs {
+            VaultKeyRoleRefs::Legacy(refs) => &refs.auth_jwt,
+            VaultKeyRoleRefs::VNext(refs) => &refs.auth_jwt,
+        }
     }
 
     fn metadata_from_ref(secret_ref: &SecretRef) -> SecretMetadata {
@@ -84,22 +170,55 @@ impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
         self.file_provider.optional_did_document()
     }
 
-    fn default_signing_private_pem(&self) -> crate::ImResult<String> {
-        self.open_utf8_secret(
-            &self.refs.default_signing_private,
-            "vault_default_signing_private_key",
-        )
+    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
+        match &self.refs {
+            VaultKeyRoleRefs::Legacy(refs) => Ok(self
+                .legacy_key1_role_adapter(refs)?
+                .device_request_signing_private_pem()),
+            VaultKeyRoleRefs::VNext(refs) => self.open_utf8_secret_for_kind(
+                &refs.device_request_signing_private,
+                SecretKind::IdentityDeviceSigningPrivate,
+                "device_request_signing_private_key",
+            ),
+        }
+    }
+
+    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
+        match &self.refs {
+            VaultKeyRoleRefs::Legacy(refs) => Ok(self
+                .legacy_key1_role_adapter(refs)?
+                .did_document_root_private_pem()),
+            VaultKeyRoleRefs::VNext(refs) => {
+                let secret_ref = refs.did_document_root_private.as_ref().ok_or_else(|| {
+                    crate::ImError::IdentityNotReady {
+                        identity: refs
+                            .device_request_signing_private
+                            .did
+                            .clone()
+                            .or_else(|| refs.device_request_signing_private.identity_id.clone())
+                            .unwrap_or_else(|| "vault-backed".to_owned()),
+                        missing: vec!["did_document_root_private_key".to_owned()],
+                    }
+                })?;
+                self.open_utf8_secret_for_kind(
+                    secret_ref,
+                    SecretKind::IdentityRootPrivate,
+                    "did_document_root_private_key",
+                )
+            }
+        }
     }
 
     fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
         self.open_utf8_secret(
-            &self.refs.e2ee_agreement_private,
+            self.e2ee_agreement_private_ref(),
             "vault_e2ee_agreement_private_key",
         )
     }
 
     fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
-        let secret = self.vault.open(&self.refs.auth_jwt)?;
+        let auth_ref = self.auth_jwt_ref();
+        let secret = self.vault.open(auth_ref)?;
         crate::internal::auth::state::parse_auth_state(secret.expose_secret())
     }
 
@@ -114,8 +233,9 @@ impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
 
     fn persist_auth_token(&self, token: &str) -> crate::ImResult<()> {
         let raw = crate::internal::auth::state::auth_state_json_for_token(token)?;
+        let auth_ref = self.auth_jwt_ref();
         self.vault.seal(SealSecretRequest {
-            metadata: Self::metadata_from_ref(&self.refs.auth_jwt),
+            metadata: Self::metadata_from_ref(auth_ref),
             plaintext: SecretBytes::from_vec(raw),
         })?;
         Ok(())
@@ -169,7 +289,7 @@ mod tests {
         let provider = VaultBackedKeyMaterialProvider::new(
             identity_dir,
             vault,
-            VaultKeyMaterialRefs {
+            LegacyVaultKeyMaterialRefs {
                 default_signing_private: signing_ref,
                 e2ee_agreement_private: agreement_ref,
                 auth_jwt: auth_ref,
@@ -177,7 +297,11 @@ mod tests {
         );
 
         assert_eq!(
-            provider.default_signing_private_pem().unwrap(),
+            provider.device_request_signing_private_pem().unwrap(),
+            "signing-secret"
+        );
+        assert_eq!(
+            provider.did_document_root_private_pem().unwrap(),
             "signing-secret"
         );
         assert_eq!(
@@ -192,6 +316,175 @@ mod tests {
         assert!(!debug.contains("signing-secret"));
         assert!(!debug.contains("agreement-secret"));
         assert!(!debug.contains("token-secret"));
+    }
+
+    #[test]
+    fn secret_kind_keeps_legacy_root_deserialization_and_adds_device_signing() {
+        let legacy: SecretKind = serde_json::from_str(r#""identity_root_private""#).unwrap();
+        let device: SecretKind =
+            serde_json::from_str(r#""identity_device_signing_private""#).unwrap();
+
+        assert_eq!(legacy, SecretKind::IdentityRootPrivate);
+        assert_eq!(legacy.as_str(), "identity.root.private");
+        assert_eq!(device, SecretKind::IdentityDeviceSigningPrivate);
+        assert_eq!(device.as_str(), "identity.device.signing.private");
+    }
+
+    #[test]
+    fn vnext_member_uses_device_signing_without_did_root() {
+        let root = tempfile::tempdir().unwrap();
+        let identity_dir = root.path().join("identity");
+        std::fs::create_dir_all(&identity_dir).unwrap();
+        let bundle = anp::authentication::create_did_wba_document(
+            "member.example",
+            anp::authentication::DidDocumentOptions::default(),
+        )
+        .unwrap();
+        let device_signing_pem = bundle.keys["key-1"].private_key_pem.clone();
+        std::fs::write(
+            identity_dir.join("did_document.json"),
+            serde_json::to_vec(&bundle.did_document).unwrap(),
+        )
+        .unwrap();
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([5_u8; 32]),
+            FileSecretVaultStore::new(root.path().join("vault")),
+        ));
+        let device_signing_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityDeviceSigningPrivate,
+            "member-sign",
+            device_signing_pem.as_bytes(),
+        );
+        let agreement_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityE2eeAgreementPrivate,
+            "member-e2ee",
+            b"agreement-secret",
+        );
+        let auth_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::AuthJwt,
+            "auth.json",
+            &crate::internal::auth::state::auth_state_json_for_token("token-secret").unwrap(),
+        );
+        let refs = VNextVaultKeyMaterialRefs {
+            device_request_signing_private: device_signing_ref,
+            did_document_root_private: None,
+            e2ee_agreement_private: agreement_ref,
+            auth_jwt: auth_ref,
+        };
+        let serialized_refs = serde_json::to_value(&refs).unwrap();
+        assert!(serialized_refs.get("did_document_root_private").is_none());
+        let refs: VNextVaultKeyMaterialRefs = serde_json::from_value(serialized_refs).unwrap();
+        let provider = Arc::new(VaultBackedKeyMaterialProvider::new_vnext(
+            identity_dir,
+            vault,
+            refs,
+        ));
+
+        assert_eq!(
+            provider.device_request_signing_private_pem().unwrap(),
+            device_signing_pem
+        );
+        assert!(matches!(
+            provider.did_document_root_private_pem(),
+            Err(crate::ImError::IdentityNotReady { missing, .. })
+                if missing == vec!["did_document_root_private_key"]
+        ));
+        assert_eq!(
+            provider.valid_auth_token().unwrap().as_deref(),
+            Some("token-secret")
+        );
+        let mut auth = crate::internal::key_provider::ProviderBackedDidAuth::new(
+            provider.clone(),
+            anp::authentication::AuthMode::HttpSignatures,
+        );
+        let headers = auth
+            .get_auth_header(
+                "https://api.member.example/messages",
+                false,
+                "POST",
+                None,
+                Some(br#"{"message":"hello"}"#),
+            )
+            .unwrap();
+        assert!(headers.contains_key("Signature-Input"));
+        assert!(headers.contains_key("Signature"));
+        let debug = format!("{provider:?}");
+        assert!(!debug.contains(&device_signing_pem));
+        assert!(!debug.contains("agreement-secret"));
+        assert!(!debug.contains("token-secret"));
+    }
+
+    #[test]
+    fn vnext_provider_rejects_root_and_device_signing_kind_swap() {
+        let root = tempfile::tempdir().unwrap();
+        let identity_dir = root.path().join("identity");
+        std::fs::create_dir_all(&identity_dir).unwrap();
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([6_u8; 32]),
+            FileSecretVaultStore::new(root.path().join("vault")),
+        ));
+        let root_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityRootPrivate,
+            "root",
+            b"root-secret",
+        );
+        let device_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityDeviceSigningPrivate,
+            "device-sign",
+            b"device-secret",
+        );
+        let agreement_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityE2eeAgreementPrivate,
+            "device-e2ee",
+            b"agreement-secret",
+        );
+        let auth_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::AuthJwt,
+            "auth.json",
+            &crate::internal::auth::state::auth_state_json_for_token("token-secret").unwrap(),
+        );
+        let provider = VaultBackedKeyMaterialProvider::new_vnext(
+            identity_dir,
+            vault,
+            VNextVaultKeyMaterialRefs {
+                device_request_signing_private: root_ref,
+                did_document_root_private: Some(device_ref),
+                e2ee_agreement_private: agreement_ref,
+                auth_jwt: auth_ref,
+            },
+        );
+
+        assert!(matches!(
+            provider.device_request_signing_private_pem(),
+            Err(crate::ImError::IdentityNotReady { missing, .. })
+                if missing == vec!["device_request_signing_private_key_secret_kind"]
+        ));
+        assert!(matches!(
+            provider.did_document_root_private_pem(),
+            Err(crate::ImError::IdentityNotReady { missing, .. })
+                if missing == vec!["did_document_root_private_key_secret_kind"]
+        ));
+    }
+
+    fn seal_test_secret(
+        vault: &FileSecretVault,
+        kind: SecretKind,
+        key_id: &str,
+        plaintext: &[u8],
+    ) -> SecretRef {
+        vault
+            .seal(SealSecretRequest {
+                metadata: test_metadata(kind, key_id),
+                plaintext: SecretBytes::from_vec(plaintext.to_vec()),
+            })
+            .unwrap()
     }
 
     fn test_metadata(kind: SecretKind, key_id: &str) -> SecretMetadata {

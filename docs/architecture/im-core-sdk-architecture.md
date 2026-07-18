@@ -173,7 +173,7 @@ The full current technical design is documented in
 `docs/architecture/identity-secret-storage.md`. This section is the short
 architecture summary.
 
-Identity private material is an internal SDK concern. Business flows must not read `private_key_path`, `e2ee_agreement_private_key_path`, PEM files, or `auth.json` directly. DID-WBA auth, direct/group message signing, attachment signing, and secure direct static key loading go through the internal `KeyMaterialProvider` contract.
+Identity private material is an internal SDK concern. Business flows must not read `private_key_path`, `e2ee_agreement_private_key_path`, PEM files, or `auth.json` directly. DID-WBA auth, direct/group message signing, attachment signing, and secure direct static key loading go through the internal `KeyMaterialProvider` contract. That contract exposes separate device-request-signing and DID-Document-root accessors: daily authentication and messaging use the device accessor, while only DID Document creation/re-sign/update may request the root accessor. Legacy `key-1` identities retain their dual-role behavior only through an explicit compatibility adapter. vNext vault refs require a device-signing key but make the root ref optional, so a member device can authenticate without possessing DID root control material and root-only operations fail closed.
 
 The compatibility default remains file-backed when a host opens `ImCore` without
 explicit vault options:

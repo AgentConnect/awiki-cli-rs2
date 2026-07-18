@@ -329,6 +329,10 @@ business-read contract. DID-WBA proof generation, business signing, secure
 direct static key loading, daemon subkey package persistence, and auth/JWT
 refresh must use the runtime `KeyMaterialProvider`. When verified vault metadata
 and the host workspace/device context match, the provider is vault-backed.
+Daily login/HTTP auth/Direct/Group/Attachment signing uses
+`device_request_signing_private_pem`; only DID Document create/re-sign/update
+uses `did_document_root_private_pem`. A vNext member may omit the root ref, and
+root-only access then fails closed without blocking daily device signing.
 
 ## 7. Auth Retry Contract
 

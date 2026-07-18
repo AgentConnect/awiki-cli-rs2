@@ -38,7 +38,7 @@ impl ProviderBackedDidAuth {
         }
 
         let did_document = self.provider.did_document()?;
-        let private_key = self.default_signing_key()?;
+        let private_key = self.device_request_signing_key()?;
         match self.auth_mode {
             anp::authentication::AuthMode::HttpSignatures | anp::authentication::AuthMode::Auto => {
                 anp::authentication::generate_http_signature_headers(
@@ -139,7 +139,7 @@ impl ProviderBackedDidAuth {
         let nonce = challenge.get("nonce").cloned();
 
         let did_document = self.provider.did_document()?;
-        let private_key = self.default_signing_key()?;
+        let private_key = self.device_request_signing_key()?;
         match self.auth_mode {
             anp::authentication::AuthMode::HttpSignatures | anp::authentication::AuthMode::Auto => {
                 anp::authentication::generate_http_signature_headers(
@@ -174,8 +174,8 @@ impl ProviderBackedDidAuth {
         }
     }
 
-    fn default_signing_key(&self) -> crate::ImResult<anp::PrivateKeyMaterial> {
-        let pem = self.provider.default_signing_private_pem()?;
+    fn device_request_signing_key(&self) -> crate::ImResult<anp::PrivateKeyMaterial> {
+        let pem = self.provider.device_request_signing_private_pem()?;
         anp::PrivateKeyMaterial::from_pem(&pem).map_err(|err| {
             crate::ImError::TransportUnavailable {
                 detail: format!("DID-WBA private key material is invalid: {err}"),

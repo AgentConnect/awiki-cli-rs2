@@ -67,6 +67,10 @@ App 侧的具体接入说明放在 `awiki-me/docs/identity-secret-storage.md`。
 - `ImCoreSecretVaultOptions` 包含 32-byte `DeviceVaultRootKey`、`vault_dir`、`workspace_id` 和 `device_id`。
 - `SecretVault` 保存每条 secret 的 AEAD ciphertext，并把 workspace、device、identity、DID、kind、key id/version、schema、cipher、KDF 和 no-prompt policy 绑定到认证 metadata。
 - DID-WBA auth、业务签名、secure direct static key material 读取路径收敛到内部 `KeyMaterialProvider`，业务流程不应直接读 `private.key`、`key-*-private.pem`、`e2ee-agreement-private.pem` 或 `auth.json`。
+- `KeyMaterialProvider` 明确区分 `device_request_signing_private_pem` 与 `did_document_root_private_pem`：前者只服务登录、HTTP auth、Direct、Group 和 Attachment 等日常设备请求；后者只服务 DID Document 创建、重签和更新。调用方不得用其中一个 accessor 代替另一个。
+- legacy File/Hosted/Vault 身份仍只有同一把 `key-1`，只能经内部 `LegacyKey1RoleAdapter` 显式映射为上述两个角色；这是兼容语义，不得用于创建新的多设备身份。
+- vNext Vault 使用 `IdentityDeviceSigningPrivate` 保存设备签名密钥，并采用 side-by-side `VNextVaultKeyMaterialRefs`：设备签名 ref 必需，DID root ref 可空。普通 member 没有 root ref 时仍可进行日常签名，调用 DID root accessor 必须 fail closed。root/device signing 的 `SecretKind` 不可互换。
+- 现有 `vault_migration` metadata 保持 legacy schema 不变；vNext refs 的正式 metadata 持久化与迁移由后续 genesis/Join 切片接入。本切片的 key role、ref 和 provider 类型均为 im-core 内部边界，不进入 ANP wire、DID Document 或 App 公共 DTO。
 - identity vault status/migrate/verify 只返回 backend、metadata、warning、missing items 和兼容文件保留状态，不返回 root key、private PEM、JWT、完整 `SecretRef` 或 ciphertext。
 
 三种 identity secret storage policy：

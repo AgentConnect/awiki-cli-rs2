@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 const DID_DOCUMENT_FILES: &[&str] = &["did.json", "did_document.json"];
-const DEFAULT_SIGNING_PRIVATE_FILES: &[&str] = &["private.key", "key-1-private.pem"];
+const LEGACY_KEY1_PRIVATE_FILES: &[&str] = &["private.key", "key-1-private.pem"];
 const E2EE_AGREEMENT_PRIVATE_FILES: &[&str] = &["e2ee-agreement-private.pem", "key-3-private.pem"];
 const AUTH_STATE_FILE: &str = "auth.json";
 
@@ -21,8 +21,8 @@ impl FileBackedKeyMaterialProvider {
         first_existing_path(&self.identity_dir, DID_DOCUMENT_FILES)
     }
 
-    pub(crate) fn default_signing_private_key_path(&self) -> PathBuf {
-        first_existing_path(&self.identity_dir, DEFAULT_SIGNING_PRIVATE_FILES)
+    pub(crate) fn legacy_key1_private_key_path(&self) -> PathBuf {
+        first_existing_path(&self.identity_dir, LEGACY_KEY1_PRIVATE_FILES)
     }
 
     pub(crate) fn e2ee_agreement_private_key_path(&self) -> PathBuf {
@@ -52,11 +52,16 @@ impl super::KeyMaterialProvider for FileBackedKeyMaterialProvider {
         read_optional_json_file(&self.did_document_path(), "did_document")
     }
 
-    fn default_signing_private_pem(&self) -> crate::ImResult<String> {
-        read_non_empty_text_file(
-            &self.default_signing_private_key_path(),
-            "default_signing_private_key",
-        )
+    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
+        Ok(self
+            .legacy_key1_role_adapter()?
+            .device_request_signing_private_pem())
+    }
+
+    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
+        Ok(self
+            .legacy_key1_role_adapter()?
+            .did_document_root_private_pem())
     }
 
     fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
@@ -76,6 +81,16 @@ impl super::KeyMaterialProvider for FileBackedKeyMaterialProvider {
 
     fn persist_auth_token(&self, token: &str) -> crate::ImResult<()> {
         crate::internal::auth::state::persist_jwt_token(&self.auth_state_path(), token)
+    }
+}
+
+impl FileBackedKeyMaterialProvider {
+    fn legacy_key1_role_adapter(&self) -> crate::ImResult<super::LegacyKey1RoleAdapter> {
+        read_non_empty_text_file(
+            &self.legacy_key1_private_key_path(),
+            "legacy_key1_private_key",
+        )
+        .map(super::LegacyKey1RoleAdapter::new)
     }
 }
 
@@ -174,7 +189,11 @@ mod tests {
             Some("did:wba:alice.example")
         );
         assert_eq!(
-            provider.default_signing_private_pem().unwrap(),
+            provider.device_request_signing_private_pem().unwrap(),
+            TEST_SIGNING_PEM
+        );
+        assert_eq!(
+            provider.did_document_root_private_pem().unwrap(),
             TEST_SIGNING_PEM
         );
         assert_eq!(
@@ -217,7 +236,11 @@ mod tests {
             Some("did:wba:legacy.example")
         );
         assert_eq!(
-            provider.default_signing_private_pem().unwrap(),
+            provider.device_request_signing_private_pem().unwrap(),
+            "legacy-signing"
+        );
+        assert_eq!(
+            provider.did_document_root_private_pem().unwrap(),
             "legacy-signing"
         );
         assert_eq!(
@@ -263,11 +286,11 @@ mod tests {
         std::fs::write(identity_dir.join("private.key"), "   \n").unwrap();
 
         let err = FileBackedKeyMaterialProvider::new(identity_dir)
-            .default_signing_private_pem()
+            .device_request_signing_private_pem()
             .unwrap_err()
             .to_string();
 
-        assert!(err.contains("default_signing_private_key"));
+        assert!(err.contains("legacy_key1_private_key"));
         assert!(err.contains("file is empty"));
         assert!(!err.contains("BEGIN PRIVATE KEY"));
     }

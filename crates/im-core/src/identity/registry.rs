@@ -742,22 +742,29 @@ impl<'a> IdentityRegistry<'a> {
         dir_name: &str,
         did: &crate::ids::Did,
     ) -> crate::ImResult<String> {
-        let store = crate::internal::identity_store::IdentityStore::new(
-            &self.core.inner().sdk_paths().identities,
-        );
+        let identity_dir = self
+            .core
+            .inner()
+            .sdk_paths()
+            .identities
+            .identity_root_dir
+            .join(dir_name);
         let policy = self.core.inner().identity_secret_storage_policy();
         if let Some(metadata) = entry.vault_migration.as_ref() {
             if vault_metadata_is_verified(metadata) {
                 if let Some(context) = self.core.inner().identity_vault() {
                     if vault_context_matches_metadata(context, metadata) {
-                        return store.load_key1_private_pem_from_vault(
-                            dir_name,
-                            did,
-                            metadata,
-                            context.workspace_id(),
-                            context.vault_context_device_id().as_str(),
-                            context.vault().as_ref(),
-                        );
+                        if metadata.refs.default_signing_private.did.as_deref()
+                            != Some(did.as_str())
+                        {
+                            return Err(crate::ImError::IdentityNotReady {
+                                identity: did.as_str().to_string(),
+                                missing: vec!["identity_vault_did_match".to_string()],
+                            });
+                        }
+                        return self
+                            .key_provider_for_entry(identity_dir, Some(entry), &entry.summary)?
+                            .did_document_root_private_pem();
                     }
                     if matches!(
                         policy,
@@ -798,13 +805,14 @@ impl<'a> IdentityRegistry<'a> {
                 missing: vec!["identity_vault_metadata".to_string()],
             });
         }
-        store
-            .load_key1_private_pem(dir_name)
+        let provider =
+            crate::internal::key_provider::FileBackedKeyMaterialProvider::new(identity_dir);
+        crate::internal::key_provider::KeyMaterialProvider::did_document_root_private_pem(&provider)
             .map_err(|err| match err {
                 crate::ImError::CredentialFileUnreadable { .. } => {
                     crate::ImError::IdentityNotReady {
                         identity: did.as_str().to_string(),
-                        missing: vec!["key1_private".to_string()],
+                        missing: vec!["did_document_root_private_key".to_string()],
                     }
                 }
                 other => other,
@@ -1208,7 +1216,7 @@ impl IdentityRegistry<'_> {
                             crate::internal::key_provider::vault::VaultBackedKeyMaterialProvider::new(
                                 identity_dir,
                                 context.vault(),
-                                metadata.key_material_refs(),
+                                metadata.legacy_key_material_refs(),
                             ),
                         ));
                     }
@@ -1270,7 +1278,7 @@ impl IdentityRegistry<'_> {
             let runtime =
                 self.load_runtime(super::IdentitySelector::Id(status.identity.id.clone()))?;
             let _ = runtime.key_provider.optional_did_document()?;
-            let _ = runtime.key_provider.default_signing_private_pem()?;
+            let _ = runtime.key_provider.device_request_signing_private_pem()?;
             let _ = runtime.key_provider.e2ee_agreement_private_pem()?;
             let _ = runtime.key_provider.auth_state()?;
             Ok(())
@@ -2349,7 +2357,10 @@ mod tests {
             .load_runtime(crate::identity::IdentitySelector::Default)
             .unwrap();
         assert_eq!(
-            runtime.key_provider.default_signing_private_pem().unwrap(),
+            runtime
+                .key_provider
+                .device_request_signing_private_pem()
+                .unwrap(),
             "vault-signing-secret"
         );
         assert_eq!(
