@@ -45,7 +45,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1548759808;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 354452677;
 
 // Section: executor
 
@@ -1546,6 +1546,67 @@ fn wire__crate__api__directory__hydrate_display_profiles_impl(
                         let output_ok = crate::api::directory::hydrate_display_profiles(
                             &*api_client_guard,
                             api_peers,
+                        )
+                        .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__identity__identity_device_summary_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "identity_device_summary",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_core = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImCore>>,
+            >>::sse_decode(&mut deserializer);
+            let api_selector =
+                <crate::dto::identity::DartIdentitySelector>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let mut api_core_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_core, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_core_guard =
+                                        Some(api_core.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_core_guard = api_core_guard.unwrap();
+                        let output_ok = crate::api::identity::identity_device_summary(
+                            &*api_core_guard,
+                            api_selector,
                         )
                         .await?;
                         Ok(output_ok)
@@ -8091,6 +8152,72 @@ impl SseDecode for crate::dto::identity::DartHandleRegistrationResult {
     }
 }
 
+impl SseDecode for crate::dto::identity::DartIdentityDeviceMode {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::identity::DartIdentityDeviceMode::Legacy,
+            1 => crate::dto::identity::DartIdentityDeviceMode::VNext,
+            _ => unreachable!("Invalid variant for DartIdentityDeviceMode: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::dto::identity::DartIdentityDeviceReadiness {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::identity::DartIdentityDeviceReadiness::Legacy,
+            1 => crate::dto::identity::DartIdentityDeviceReadiness::MemberReady,
+            2 => crate::dto::identity::DartIdentityDeviceReadiness::AdminAwaitingRoot,
+            3 => crate::dto::identity::DartIdentityDeviceReadiness::AdminReady,
+            4 => crate::dto::identity::DartIdentityDeviceReadiness::Blocked,
+            _ => unreachable!("Invalid variant for DartIdentityDeviceReadiness: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::dto::identity::DartIdentityDeviceRole {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::identity::DartIdentityDeviceRole::Member,
+            1 => crate::dto::identity::DartIdentityDeviceRole::Admin,
+            _ => unreachable!("Invalid variant for DartIdentityDeviceRole: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::dto::identity::DartIdentityDeviceSummary {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_identity =
+            <crate::dto::identity::DartIdentitySummary>::sse_decode(deserializer);
+        let mut var_mode = <crate::dto::identity::DartIdentityDeviceMode>::sse_decode(deserializer);
+        let mut var_protocolDeviceId = <Option<String>>::sse_decode(deserializer);
+        let mut var_role =
+            <Option<crate::dto::identity::DartIdentityDeviceRole>>::sse_decode(deserializer);
+        let mut var_signingKeyId = <Option<String>>::sse_decode(deserializer);
+        let mut var_e2EeKeyId = <Option<String>>::sse_decode(deserializer);
+        let mut var_readiness =
+            <crate::dto::identity::DartIdentityDeviceReadiness>::sse_decode(deserializer);
+        let mut var_blockedReason = <Option<String>>::sse_decode(deserializer);
+        return crate::dto::identity::DartIdentityDeviceSummary {
+            identity: var_identity,
+            mode: var_mode,
+            protocol_device_id: var_protocolDeviceId,
+            role: var_role,
+            signing_key_id: var_signingKeyId,
+            e2ee_key_id: var_e2EeKeyId,
+            readiness: var_readiness,
+            blocked_reason: var_blockedReason,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::identity::DartIdentitySecretStorageBackend {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -9968,6 +10095,19 @@ impl SseDecode for Option<crate::dto::group::DartGroupSnapshot> {
     }
 }
 
+impl SseDecode for Option<crate::dto::identity::DartIdentityDeviceRole> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::dto::identity::DartIdentityDeviceRole>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::dto::identity::DartIdentitySummary> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -10270,268 +10410,276 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
-        26 => wire__crate__api__identity__identity_vault_status_impl(
+        26 => wire__crate__api__identity__identity_device_summary_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        27 => wire__crate__api__email__inbox_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__messages__inbox_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__local_state_upgrade__inspect_local_state_upgrade_impl(
+        27 => wire__crate__api__identity__identity_vault_status_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        30 => wire__crate__api__groups__join_group_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__groups__join_group_with_identity_impl(
+        28 => wire__crate__api__email__inbox_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__messages__inbox_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__local_state_upgrade__inspect_local_state_upgrade_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        32 => wire__crate__api__groups__leave_group_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__directory__list_followers_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__directory__list_following_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__groups__list_group_members_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__groups__list_group_messages_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__groups__list_groups_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__identity__list_identities_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__messages__load_conversation_snapshot_impl(
+        31 => wire__crate__api__groups__join_group_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__groups__join_group_with_identity_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        40 => wire__crate__api__identity__load_daemon_subkey_package_impl(
+        33 => wire__crate__api__groups__leave_group_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__directory__list_followers_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__directory__list_following_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__groups__list_group_members_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__groups__list_group_messages_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__groups__list_groups_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__identity__list_identities_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__messages__load_conversation_snapshot_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        41 => wire__crate__api__profile__load_my_profile_impl(port, ptr, rust_vec_len, data_len),
-        42 => {
+        41 => wire__crate__api__identity__load_daemon_subkey_package_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        42 => wire__crate__api__profile__load_my_profile_impl(port, ptr, rust_vec_len, data_len),
+        43 => {
             wire__crate__api__profile__load_public_profile_impl(port, ptr, rust_vec_len, data_len)
         }
-        43 => wire__crate__api__messages__local_conversation_timeline_impl(
+        44 => wire__crate__api__messages__local_conversation_timeline_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        44 => wire__crate__api__messages__local_history_impl(port, ptr, rust_vec_len, data_len),
-        45 => wire__crate__api__directory__lookup_handle_impl(port, ptr, rust_vec_len, data_len),
-        46 => wire__crate__api__messages__mark_conversation_read_impl(
+        45 => wire__crate__api__messages__local_history_impl(port, ptr, rust_vec_len, data_len),
+        46 => wire__crate__api__directory__lookup_handle_impl(port, ptr, rust_vec_len, data_len),
+        47 => wire__crate__api__messages__mark_conversation_read_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        47 => wire__crate__api__email__mark_read_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__crate__api__messages__mark_read_impl(port, ptr, rust_vec_len, data_len),
-        49 => wire__crate__api__messages__mark_thread_read_impl(port, ptr, rust_vec_len, data_len),
-        50 => wire__crate__api__identity__migrate_identity_vault_impl(
+        48 => wire__crate__api__email__mark_read_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__crate__api__messages__mark_read_impl(port, ptr, rust_vec_len, data_len),
+        50 => wire__crate__api__messages__mark_thread_read_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__api__identity__migrate_identity_vault_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        51 => wire__crate__api__email__notifications_impl(port, ptr, rust_vec_len, data_len),
-        52 => wire__crate__api__core__open_core_impl(port, ptr, rust_vec_len, data_len),
-        53 => wire__crate__api__core__open_core_with_optional_options_impl(
+        52 => wire__crate__api__email__notifications_impl(port, ptr, rust_vec_len, data_len),
+        53 => wire__crate__api__core__open_core_impl(port, ptr, rust_vec_len, data_len),
+        54 => wire__crate__api__core__open_core_with_optional_options_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        54 => {
+        55 => {
             wire__crate__api__core__open_core_with_options_impl(port, ptr, rust_vec_len, data_len)
         }
-        55 => wire__crate__api__email__read_impl(port, ptr, rust_vec_len, data_len),
-        56 => {
+        56 => wire__crate__api__email__read_impl(port, ptr, rust_vec_len, data_len),
+        57 => {
             wire__crate__api__realtime__realtime_capability_impl(port, ptr, rust_vec_len, data_len)
         }
-        57 => wire__crate__api__realtime__realtime_connect_impl(port, ptr, rust_vec_len, data_len),
-        58 => wire__crate__api__realtime__realtime_event_stream_impl(
+        58 => wire__crate__api__realtime__realtime_connect_impl(port, ptr, rust_vec_len, data_len),
+        59 => wire__crate__api__realtime__realtime_event_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        59 => wire__crate__api__realtime__realtime_session_status_impl(
+        60 => wire__crate__api__realtime__realtime_session_status_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        60 => wire__crate__api__realtime__realtime_start_impl(port, ptr, rust_vec_len, data_len),
-        61 => wire__crate__api__realtime__realtime_status_impl(port, ptr, rust_vec_len, data_len),
-        62 => wire__crate__api__realtime__realtime_stop_impl(port, ptr, rust_vec_len, data_len),
-        63 => wire__crate__api__identity__recover_handle_impl(port, ptr, rust_vec_len, data_len),
-        64 => wire__crate__api__groups__refresh_group_join_code_impl(
+        61 => wire__crate__api__realtime__realtime_start_impl(port, ptr, rust_vec_len, data_len),
+        62 => wire__crate__api__realtime__realtime_status_impl(port, ptr, rust_vec_len, data_len),
+        63 => wire__crate__api__realtime__realtime_stop_impl(port, ptr, rust_vec_len, data_len),
+        64 => wire__crate__api__identity__recover_handle_impl(port, ptr, rust_vec_len, data_len),
+        65 => wire__crate__api__groups__refresh_group_join_code_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        65 => wire__crate__api__identity__register_handle_with_email_impl(
+        66 => wire__crate__api__identity__register_handle_with_email_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        66 => wire__crate__api__identity__register_handle_with_phone_impl(
+        67 => wire__crate__api__identity__register_handle_with_phone_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        67 => wire__crate__api__identity__register_handle_without_contact_verification_impl(
+        68 => wire__crate__api__identity__register_handle_without_contact_verification_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        68 => wire__crate__api__directory__relation_status_impl(port, ptr, rust_vec_len, data_len),
-        69 => wire__crate__api__groups__remove_group_member_impl(port, ptr, rust_vec_len, data_len),
-        70 => wire__crate__api__messages__repair_conversation_store_impl(
+        69 => wire__crate__api__directory__relation_status_impl(port, ptr, rust_vec_len, data_len),
+        70 => wire__crate__api__groups__remove_group_member_impl(port, ptr, rust_vec_len, data_len),
+        71 => wire__crate__api__messages__repair_conversation_store_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        71 => wire__crate__api__messages__repair_conversation_timeline_store_impl(
+        72 => wire__crate__api__messages__repair_conversation_timeline_store_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        72 => {
+        73 => {
             wire__crate__api__messages__repair_thread_store_impl(port, ptr, rust_vec_len, data_len)
         }
-        73 => wire__crate__api__identity__resolve_identity_impl(port, ptr, rust_vec_len, data_len),
-        74 => wire__crate__api__directory__resolve_peer_impl(port, ptr, rust_vec_len, data_len),
-        75 => wire__crate__api__local_state_upgrade__restore_local_state_backup_impl(
+        74 => wire__crate__api__identity__resolve_identity_impl(port, ptr, rust_vec_len, data_len),
+        75 => wire__crate__api__directory__resolve_peer_impl(port, ptr, rust_vec_len, data_len),
+        76 => wire__crate__api__local_state_upgrade__restore_local_state_backup_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        76 => wire__crate__api__groups__resume_group_rebind_recovery_impl(
+        77 => wire__crate__api__groups__resume_group_rebind_recovery_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        77 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
-        78 => wire__crate__api__identity__revoke_daemon_subkey_authorization_impl(
+        78 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
+        79 => wire__crate__api__identity__revoke_daemon_subkey_authorization_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        79 => {
+        80 => {
             wire__crate__api__secure__secure_direct_prepare_impl(port, ptr, rust_vec_len, data_len)
         }
-        80 => {
+        81 => {
             wire__crate__api__secure__secure_direct_repair_impl(port, ptr, rust_vec_len, data_len)
         }
-        81 => {
+        82 => {
             wire__crate__api__secure__secure_direct_status_impl(port, ptr, rust_vec_len, data_len)
         }
-        82 => {
+        83 => {
             wire__crate__api__secure__secure_group_prepare_impl(port, ptr, rust_vec_len, data_len)
         }
-        83 => wire__crate__api__secure__secure_group_repair_impl(port, ptr, rust_vec_len, data_len),
-        84 => wire__crate__api__secure__secure_group_status_impl(port, ptr, rust_vec_len, data_len),
-        85 => wire__crate__api__secure__secure_outbox_drop_impl(port, ptr, rust_vec_len, data_len),
-        86 => wire__crate__api__secure__secure_outbox_list_failed_impl(
+        84 => wire__crate__api__secure__secure_group_repair_impl(port, ptr, rust_vec_len, data_len),
+        85 => wire__crate__api__secure__secure_group_status_impl(port, ptr, rust_vec_len, data_len),
+        86 => wire__crate__api__secure__secure_outbox_drop_impl(port, ptr, rust_vec_len, data_len),
+        87 => wire__crate__api__secure__secure_outbox_list_failed_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        87 => wire__crate__api__secure__secure_outbox_retry_impl(port, ptr, rust_vec_len, data_len),
-        88 => wire__crate__api__email__send_impl(port, ptr, rust_vec_len, data_len),
-        89 => {
+        88 => wire__crate__api__secure__secure_outbox_retry_impl(port, ptr, rust_vec_len, data_len),
+        89 => wire__crate__api__email__send_impl(port, ptr, rust_vec_len, data_len),
+        90 => {
             wire__crate__api__attachments__send_attachment_impl(port, ptr, rust_vec_len, data_len)
         }
-        90 => wire__crate__api__attachments__send_conversation_attachment_impl(
+        91 => wire__crate__api__attachments__send_conversation_attachment_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        91 => wire__crate__api__messages__send_conversation_payload_impl(
+        92 => wire__crate__api__messages__send_conversation_payload_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        92 => wire__crate__api__messages__send_conversation_text_impl(
+        93 => wire__crate__api__messages__send_conversation_text_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        93 => wire__crate__api__messages__send_payload_impl(port, ptr, rust_vec_len, data_len),
-        94 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
-        95 => wire__crate__api__messages__stop_conversation_patch_session_impl(
+        94 => wire__crate__api__messages__send_payload_impl(port, ptr, rust_vec_len, data_len),
+        95 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
+        96 => wire__crate__api__messages__stop_conversation_patch_session_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        96 => wire__crate__api__messages__stop_thread_message_patch_session_impl(
+        97 => wire__crate__api__messages__stop_thread_message_patch_session_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        97 => wire__crate__api__messages__sync_conversation_after_impl(
+        98 => wire__crate__api__messages__sync_conversation_after_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        98 => wire__crate__api__messages__sync_delta_impl(port, ptr, rust_vec_len, data_len),
-        99 => wire__crate__api__messages__sync_thread_after_impl(port, ptr, rust_vec_len, data_len),
-        100 => wire__crate__api__messages__thread_message_patch_stream_impl(
+        99 => wire__crate__api__messages__sync_delta_impl(port, ptr, rust_vec_len, data_len),
+        100 => {
+            wire__crate__api__messages__sync_thread_after_impl(port, ptr, rust_vec_len, data_len)
+        }
+        101 => wire__crate__api__messages__thread_message_patch_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        101 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
-        102 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
-        103 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
-        104 => wire__crate__api__local_state_upgrade__upgrade_local_state_impl(
+        102 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
+        103 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
+        104 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
+        105 => wire__crate__api__local_state_upgrade__upgrade_local_state_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        105 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
-        106 => wire__crate__api__identity__verify_identity_vault_impl(
+        106 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
+        107 => wire__crate__api__identity__verify_identity_vault_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        107 => wire__crate__api__messages__watch_conversation_patches_impl(
+        108 => wire__crate__api__messages__watch_conversation_patches_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        108 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
+        109 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        109 => {
+        110 => {
             wire__crate__api__messages__watch_thread_patches_impl(port, ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),
@@ -12250,6 +12398,99 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartHandleRegistrat
     for crate::dto::identity::DartHandleRegistrationResult
 {
     fn into_into_dart(self) -> crate::dto::identity::DartHandleRegistrationResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartIdentityDeviceMode {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Legacy => 0.into_dart(),
+            Self::VNext => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::identity::DartIdentityDeviceMode
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartIdentityDeviceMode>
+    for crate::dto::identity::DartIdentityDeviceMode
+{
+    fn into_into_dart(self) -> crate::dto::identity::DartIdentityDeviceMode {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartIdentityDeviceReadiness {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Legacy => 0.into_dart(),
+            Self::MemberReady => 1.into_dart(),
+            Self::AdminAwaitingRoot => 2.into_dart(),
+            Self::AdminReady => 3.into_dart(),
+            Self::Blocked => 4.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::identity::DartIdentityDeviceReadiness
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartIdentityDeviceReadiness>
+    for crate::dto::identity::DartIdentityDeviceReadiness
+{
+    fn into_into_dart(self) -> crate::dto::identity::DartIdentityDeviceReadiness {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartIdentityDeviceRole {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Member => 0.into_dart(),
+            Self::Admin => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::identity::DartIdentityDeviceRole
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartIdentityDeviceRole>
+    for crate::dto::identity::DartIdentityDeviceRole
+{
+    fn into_into_dart(self) -> crate::dto::identity::DartIdentityDeviceRole {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartIdentityDeviceSummary {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.identity.into_into_dart().into_dart(),
+            self.mode.into_into_dart().into_dart(),
+            self.protocol_device_id.into_into_dart().into_dart(),
+            self.role.into_into_dart().into_dart(),
+            self.signing_key_id.into_into_dart().into_dart(),
+            self.e2ee_key_id.into_into_dart().into_dart(),
+            self.readiness.into_into_dart().into_dart(),
+            self.blocked_reason.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::identity::DartIdentityDeviceSummary
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartIdentityDeviceSummary>
+    for crate::dto::identity::DartIdentityDeviceSummary
+{
+    fn into_into_dart(self) -> crate::dto::identity::DartIdentityDeviceSummary {
         self
     }
 }
@@ -15260,6 +15501,71 @@ impl SseEncode for crate::dto::identity::DartHandleRegistrationResult {
     }
 }
 
+impl SseEncode for crate::dto::identity::DartIdentityDeviceMode {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::identity::DartIdentityDeviceMode::Legacy => 0,
+                crate::dto::identity::DartIdentityDeviceMode::VNext => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::dto::identity::DartIdentityDeviceReadiness {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::identity::DartIdentityDeviceReadiness::Legacy => 0,
+                crate::dto::identity::DartIdentityDeviceReadiness::MemberReady => 1,
+                crate::dto::identity::DartIdentityDeviceReadiness::AdminAwaitingRoot => 2,
+                crate::dto::identity::DartIdentityDeviceReadiness::AdminReady => 3,
+                crate::dto::identity::DartIdentityDeviceReadiness::Blocked => 4,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::dto::identity::DartIdentityDeviceRole {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::identity::DartIdentityDeviceRole::Member => 0,
+                crate::dto::identity::DartIdentityDeviceRole::Admin => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::dto::identity::DartIdentityDeviceSummary {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::dto::identity::DartIdentitySummary>::sse_encode(self.identity, serializer);
+        <crate::dto::identity::DartIdentityDeviceMode>::sse_encode(self.mode, serializer);
+        <Option<String>>::sse_encode(self.protocol_device_id, serializer);
+        <Option<crate::dto::identity::DartIdentityDeviceRole>>::sse_encode(self.role, serializer);
+        <Option<String>>::sse_encode(self.signing_key_id, serializer);
+        <Option<String>>::sse_encode(self.e2ee_key_id, serializer);
+        <crate::dto::identity::DartIdentityDeviceReadiness>::sse_encode(self.readiness, serializer);
+        <Option<String>>::sse_encode(self.blocked_reason, serializer);
+    }
+}
+
 impl SseEncode for crate::dto::identity::DartIdentitySecretStorageBackend {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -16632,6 +16938,16 @@ impl SseEncode for Option<crate::dto::group::DartGroupSnapshot> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::dto::group::DartGroupSnapshot>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::dto::identity::DartIdentityDeviceRole> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::identity::DartIdentityDeviceRole>::sse_encode(value, serializer);
         }
     }
 }

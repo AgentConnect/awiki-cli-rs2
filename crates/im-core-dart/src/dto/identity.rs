@@ -22,6 +22,39 @@ pub struct DartIdentitySummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartIdentityDeviceMode {
+    Legacy,
+    VNext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartIdentityDeviceRole {
+    Member,
+    Admin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartIdentityDeviceReadiness {
+    Legacy,
+    MemberReady,
+    AdminAwaitingRoot,
+    AdminReady,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartIdentityDeviceSummary {
+    pub identity: DartIdentitySummary,
+    pub mode: DartIdentityDeviceMode,
+    pub protocol_device_id: Option<String>,
+    pub role: Option<DartIdentityDeviceRole>,
+    pub signing_key_id: Option<String>,
+    pub e2ee_key_id: Option<String>,
+    pub readiness: DartIdentityDeviceReadiness,
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DartIdentitySecretStorageBackend {
     FileCompat,
     Vault,

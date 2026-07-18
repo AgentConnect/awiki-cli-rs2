@@ -229,6 +229,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartGroupSnapshot dco_decode_box_autoadd_dart_group_snapshot(dynamic raw);
 
   @protected
+  DartIdentityDeviceRole dco_decode_box_autoadd_dart_identity_device_role(
+    dynamic raw,
+  );
+
+  @protected
   DartIdentitySelector dco_decode_box_autoadd_dart_identity_selector(
     dynamic raw,
   );
@@ -602,6 +607,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartIdentityDeviceMode dco_decode_dart_identity_device_mode(dynamic raw);
+
+  @protected
+  DartIdentityDeviceReadiness dco_decode_dart_identity_device_readiness(
+    dynamic raw,
+  );
+
+  @protected
+  DartIdentityDeviceRole dco_decode_dart_identity_device_role(dynamic raw);
+
+  @protected
+  DartIdentityDeviceSummary dco_decode_dart_identity_device_summary(
+    dynamic raw,
+  );
+
+  @protected
   DartIdentitySecretStorageBackend
   dco_decode_dart_identity_secret_storage_backend(dynamic raw);
 
@@ -957,6 +978,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartIdentityDeviceRole? dco_decode_opt_box_autoadd_dart_identity_device_role(
+    dynamic raw,
+  );
+
+  @protected
   DartIdentitySummary? dco_decode_opt_box_autoadd_dart_identity_summary(
     dynamic raw,
   );
@@ -1211,6 +1237,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartGroupSnapshot sse_decode_box_autoadd_dart_group_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityDeviceRole sse_decode_box_autoadd_dart_identity_device_role(
     SseDeserializer deserializer,
   );
 
@@ -1676,6 +1707,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartHandleRegistrationResult sse_decode_dart_handle_registration_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityDeviceMode sse_decode_dart_identity_device_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityDeviceReadiness sse_decode_dart_identity_device_readiness(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityDeviceRole sse_decode_dart_identity_device_role(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityDeviceSummary sse_decode_dart_identity_device_summary(
     SseDeserializer deserializer,
   );
 
@@ -2151,6 +2202,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartIdentityDeviceRole? sse_decode_opt_box_autoadd_dart_identity_device_role(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartIdentitySummary? sse_decode_opt_box_autoadd_dart_identity_summary(
     SseDeserializer deserializer,
   );
@@ -2441,6 +2497,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_group_snapshot(
     DartGroupSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_identity_device_role(
+    DartIdentityDeviceRole self,
     SseSerializer serializer,
   );
 
@@ -3005,6 +3067,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_handle_registration_result(
     DartHandleRegistrationResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_device_mode(
+    DartIdentityDeviceMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_device_readiness(
+    DartIdentityDeviceReadiness self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_device_role(
+    DartIdentityDeviceRole self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_device_summary(
+    DartIdentityDeviceSummary self,
     SseSerializer serializer,
   );
 
@@ -3584,6 +3670,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_group_snapshot(
     DartGroupSnapshot? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_identity_device_role(
+    DartIdentityDeviceRole? self,
     SseSerializer serializer,
   );
 

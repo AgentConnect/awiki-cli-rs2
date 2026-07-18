@@ -4,7 +4,7 @@ use anp::authentication::{
     VM_KEY_AUTH, VM_KEY_E2EE_AGREEMENT, VM_KEY_E2EE_SIGNING,
 };
 use rand::RngCore;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 const DEFAULT_ANP_SERVICE_PATH: &str = "/anp-im/rpc";
 const AGENT_MESSAGE_SERVICE_PROFILES: &[&str] = &[
@@ -14,6 +14,26 @@ const AGENT_MESSAGE_SERVICE_PROFILES: &[&str] = &[
     "anp.attachment.v1",
 ];
 const AGENT_MESSAGE_SERVICE_SECURITY_PROFILES: &[&str] = &["transport-protected"];
+const VNEXT_DEVICE_PROFILES: &[&str] = &[
+    anp::authentication::PROFILE_CORE_BINDING_V2,
+    anp::authentication::PROFILE_IDENTITY_DISCOVERY_V2,
+    anp::authentication::PROFILE_DIRECT_BASE_V2,
+    anp::authentication::PROFILE_DIRECT_E2EE_V2,
+    anp::authentication::PROFILE_GROUP_BASE_V2,
+    anp::authentication::PROFILE_GROUP_E2EE_V2,
+];
+const VNEXT_SERVICE_PROFILES: &[&str] = &[
+    anp::authentication::PROFILE_CORE_BINDING_V2,
+    anp::authentication::PROFILE_IDENTITY_DISCOVERY_V2,
+    anp::authentication::PROFILE_DIRECT_BASE_V2,
+    anp::authentication::PROFILE_DIRECT_E2EE_V2,
+    anp::authentication::PROFILE_GROUP_BASE_V2,
+    anp::authentication::PROFILE_GROUP_E2EE_V2,
+    "anp.attachment.v2",
+    "anp.federation.relay.v2",
+];
+const VNEXT_SERVICE_SECURITY_PROFILES: &[&str] =
+    &["transport-protected", "direct-e2ee", "group-e2ee"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GeneratedIdentity {
@@ -30,6 +50,255 @@ pub(crate) struct GeneratedIdentity {
 pub(crate) struct GeneratedIdentityWithDaemonSubkey {
     pub(crate) identity: GeneratedIdentity,
     pub(crate) daemon_subkey_package: crate::identity::DaemonSubkeyPrivatePackage,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct GeneratedVNextIdentityWithDaemonSubkey {
+    pub(crate) did: crate::ids::Did,
+    pub(crate) unique_id: String,
+    pub(crate) did_document: Value,
+    pub(crate) protocol_device_id: crate::ids::ProtocolDeviceId,
+    pub(crate) root_key_id: String,
+    pub(crate) root_private_pem: String,
+    pub(crate) root_public_pem: String,
+    pub(crate) device_signing_key_id: String,
+    pub(crate) device_signing_private_pem: String,
+    pub(crate) device_signing_public_pem: String,
+    pub(crate) device_e2ee_key_id: String,
+    pub(crate) device_e2ee_private_pem: String,
+    pub(crate) device_e2ee_public_pem: String,
+    pub(crate) daemon_subkey_package: crate::identity::DaemonSubkeyPrivatePackage,
+}
+
+impl std::fmt::Debug for GeneratedVNextIdentityWithDaemonSubkey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeneratedVNextIdentityWithDaemonSubkey")
+            .field("did", &self.did)
+            .field("unique_id", &self.unique_id)
+            .field("did_document", &self.did_document)
+            .field("protocol_device_id", &self.protocol_device_id)
+            .field("root_key_id", &self.root_key_id)
+            .field("root_private_pem", &"<redacted-private-key>")
+            .field("root_public_pem", &self.root_public_pem)
+            .field("device_signing_key_id", &self.device_signing_key_id)
+            .field("device_signing_private_pem", &"<redacted-private-key>")
+            .field("device_signing_public_pem", &self.device_signing_public_pem)
+            .field("device_e2ee_key_id", &self.device_e2ee_key_id)
+            .field("device_e2ee_private_pem", &"<redacted-private-key>")
+            .field("device_e2ee_public_pem", &self.device_e2ee_public_pem)
+            .field("daemon_subkey_package", &"<redacted-private-package>")
+            .finish()
+    }
+}
+
+/// Generates a root-signed vNext DID Document for the bootstrap device.
+///
+/// This is intentionally not wired into legacy registration yet. The caller
+/// must complete `device_genesis` and persist its Registry authorization before
+/// exposing the identity as ready.
+pub(crate) fn generate_vnext_handle_identity_with_default_daemon_subkey(
+    hostname: &str,
+    local_part: &str,
+    service_endpoint: Option<&crate::config::ServiceEndpoint>,
+    service_did: Option<&crate::ids::Did>,
+) -> crate::ImResult<GeneratedVNextIdentityWithDaemonSubkey> {
+    let local_part = local_part.trim().to_ascii_lowercase();
+    if local_part.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("handle".to_owned()),
+            "Handle local-part is required",
+        ));
+    }
+    generate_vnext_identity_with_path_segments(
+        hostname,
+        [local_part.as_str()],
+        service_endpoint,
+        service_did,
+    )
+}
+
+fn generate_vnext_identity_with_path_segments<I, S>(
+    hostname: &str,
+    path_segments: I,
+    service_endpoint: Option<&crate::config::ServiceEndpoint>,
+    service_did: Option<&crate::ids::Did>,
+) -> crate::ImResult<GeneratedVNextIdentityWithDaemonSubkey>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let hostname = hostname.trim();
+    if hostname.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("hostname".to_owned()),
+            "hostname is required",
+        ));
+    }
+    let path_segments = path_segments
+        .into_iter()
+        .map(|segment| segment.as_ref().trim().to_owned())
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if path_segments.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("path_segments".to_owned()),
+            "DID path prefix is required",
+        ));
+    }
+    let endpoint = service_endpoint.map_or_else(
+        || default_anp_service_endpoint(hostname),
+        |endpoint| endpoint.as_str().to_owned(),
+    );
+    let service_did = service_did.map_or_else(
+        || default_anp_service_did(hostname),
+        |did| did.as_str().to_owned(),
+    );
+    validate_anp_service_did(&service_did)?;
+
+    // Reuse the DID Method generator for the root-bound e1 identifier and root
+    // proof material, but deliberately disable its legacy E2EE keys. Device
+    // keys are generated separately below and bound by the vNext SDK builder.
+    let root_bundle = create_did_wba_document_with_creation_options(
+        hostname,
+        DidDocumentCreationOptions::from(DidDocumentOptions {
+            path_segments,
+            domain: Some(hostname.to_owned()),
+            challenge: Some(random_hex(16)),
+            services: vec![build_vnext_agent_anp_message_service(
+                &endpoint,
+                &service_did,
+            )],
+            enable_e2ee: false,
+            did_profile: DidProfile::E1,
+            ..DidDocumentOptions::default()
+        }),
+    )
+    .map_err(|err| crate::ImError::Internal {
+        message: format!("generate vNext DID root: {err}"),
+    })?;
+    let did_value = root_bundle
+        .did()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| crate::ImError::Internal {
+            message: "generated vNext DID document is missing id".to_owned(),
+        })?;
+    let did = crate::ids::Did::parse(did_value)?;
+    let root_key_id = format!("{}#{VM_KEY_AUTH}", did.as_str());
+    let root_verification_method = required_verification_method(
+        &root_bundle.did_document,
+        &root_key_id,
+        "root verification method",
+    )?;
+    let root_private_pem = required_private_key(&root_bundle, VM_KEY_AUTH)?;
+    let root_public_pem = required_public_key(&root_bundle, VM_KEY_AUTH)?;
+
+    let protocol_device_id = crate::ids::ProtocolDeviceId::generate()?;
+    let device_signing_key_id = format!("{}#{}-sign", did.as_str(), protocol_device_id.as_str());
+    let device_e2ee_key_id = format!("{}#{}-e2ee", did.as_str(), protocol_device_id.as_str());
+    let device_signing_private = anp::PrivateKeyMaterial::Ed25519(
+        ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng),
+    );
+    let device_signing_public = device_signing_private.public_key();
+    let device_e2ee_private = anp::PrivateKeyMaterial::X25519(
+        x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng),
+    );
+    let device_e2ee_public = device_e2ee_private.public_key();
+    let device_signing_verification_method = json!({
+        "id": device_signing_key_id,
+        "type": "Multikey",
+        "controller": did.as_str(),
+        "publicKeyMultibase": public_key_multibase(&device_signing_public)?,
+    });
+    let device_e2ee_verification_method = json!({
+        "id": device_e2ee_key_id,
+        "type": "X25519KeyAgreementKey2019",
+        "controller": did.as_str(),
+        "publicKeyMultibase": public_key_multibase(&device_e2ee_public)?,
+    });
+    let device_entry = anp::authentication::DeviceManifestEntry {
+        device_id: protocol_device_id.as_str().to_owned(),
+        signing_key_id: device_signing_key_id.clone(),
+        e2ee_key_id: device_e2ee_key_id.clone(),
+        profiles: VNEXT_DEVICE_PROFILES
+            .iter()
+            .map(|profile| (*profile).to_owned())
+            .collect(),
+    };
+
+    let mut base_document = root_bundle.did_document.clone();
+    let base_object = base_document
+        .as_object_mut()
+        .ok_or_else(|| crate::ImError::Internal {
+            message: "generated vNext DID base is not an object".to_owned(),
+        })?;
+    for field in [
+        "verificationMethod",
+        "authentication",
+        "assertionMethod",
+        "keyAgreement",
+        "deviceManifest",
+        "proof",
+    ] {
+        base_object.remove(field);
+    }
+    let mut did_document = anp::authentication::build_vnext_did_document(
+        &base_document,
+        &root_key_id,
+        &root_verification_method,
+        &device_entry,
+        &device_signing_verification_method,
+        &device_e2ee_verification_method,
+    )
+    .map_err(|err| crate::ImError::Internal {
+        message: format!("build vNext DID document: {err}"),
+    })?;
+
+    let daemon_subkey = crate::internal::identity_daemon_subkey::generate_for_did(&did);
+    crate::internal::identity_daemon_subkey::apply_to_did_document(
+        &mut did_document,
+        &did,
+        &daemon_subkey,
+    )?;
+    crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+        &mut did_document,
+        &did,
+        &root_private_pem,
+    )?;
+    let manifest = anp::authentication::validate_device_manifest(&did_document).map_err(|err| {
+        crate::ImError::Internal {
+            message: format!("validate generated vNext DID document: {err}"),
+        }
+    })?;
+    if manifest
+        .as_ref()
+        .is_none_or(|manifest| manifest.devices.len() != 1)
+    {
+        return Err(crate::ImError::Internal {
+            message: "generated vNext DID document must contain one bootstrap device".to_owned(),
+        });
+    }
+
+    Ok(GeneratedVNextIdentityWithDaemonSubkey {
+        did: did.clone(),
+        unique_id: did_suffix(did.as_str()),
+        did_document,
+        protocol_device_id,
+        root_key_id,
+        root_private_pem,
+        root_public_pem,
+        device_signing_key_id,
+        device_signing_private_pem: device_signing_private.to_pem(),
+        device_signing_public_pem: device_signing_public.to_pem(),
+        device_e2ee_key_id,
+        device_e2ee_private_pem: device_e2ee_private.to_pem(),
+        device_e2ee_public_pem: device_e2ee_public.to_pem(),
+        daemon_subkey_package: crate::internal::identity_daemon_subkey::package_from_parts(
+            did,
+            daemon_subkey.verification_method,
+            daemon_subkey.public_key_multibase,
+            daemon_subkey.private_key_pem,
+        ),
+    })
 }
 
 pub(crate) fn generate_identity_with_default_daemon_subkey<I, S>(
@@ -261,6 +530,17 @@ fn build_agent_anp_message_service(
     ))
 }
 
+fn build_vnext_agent_anp_message_service(service_endpoint: &str, service_did: &str) -> Value {
+    build_anp_message_service(
+        "#message",
+        service_endpoint.trim().to_owned(),
+        AnpMessageServiceOptions::default()
+            .with_service_did(service_did.trim().to_owned())
+            .with_profiles(VNEXT_SERVICE_PROFILES.iter().copied())
+            .with_security_profiles(VNEXT_SERVICE_SECURITY_PROFILES.iter().copied()),
+    )
+}
+
 fn validate_anp_service_did(service_did: &str) -> crate::ImResult<()> {
     let trimmed = service_did.trim();
     let Some(remainder) = trimmed.strip_prefix("did:wba:") else {
@@ -308,6 +588,41 @@ fn required_public_key(
         .ok_or_else(|| crate::ImError::Internal {
             message: format!("generated did document is missing {name}"),
         })
+}
+
+fn required_verification_method(
+    did_document: &Value,
+    key_id: &str,
+    description: &str,
+) -> crate::ImResult<Value> {
+    did_document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .and_then(|methods| {
+            methods
+                .iter()
+                .find(|method| method.get("id").and_then(Value::as_str) == Some(key_id))
+        })
+        .cloned()
+        .ok_or_else(|| crate::ImError::Internal {
+            message: format!("generated DID document is missing {description}"),
+        })
+}
+
+fn public_key_multibase(public_key: &anp::PublicKeyMaterial) -> crate::ImResult<String> {
+    let (codec, bytes): ([u8; 2], Vec<u8>) = match public_key {
+        anp::PublicKeyMaterial::Ed25519(key) => ([0xed, 0x01], key.to_bytes().to_vec()),
+        anp::PublicKeyMaterial::X25519(key) => ([0xec, 0x01], key.to_vec()),
+        _ => {
+            return Err(crate::ImError::Internal {
+                message: "vNext device keys must use Ed25519 or X25519".to_owned(),
+            })
+        }
+    };
+    let mut encoded = Vec::with_capacity(codec.len() + bytes.len());
+    encoded.extend_from_slice(&codec);
+    encoded.extend_from_slice(&bytes);
+    Ok(format!("z{}", bs58::encode(encoded).into_string()))
 }
 
 fn random_hex(num_bytes: usize) -> String {

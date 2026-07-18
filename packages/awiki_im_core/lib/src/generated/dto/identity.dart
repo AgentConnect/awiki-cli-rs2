@@ -186,6 +186,65 @@ class DartHandleRegistrationResult {
           warnings == other.warnings;
 }
 
+enum DartIdentityDeviceMode { legacy, vNext }
+
+enum DartIdentityDeviceReadiness {
+  legacy,
+  memberReady,
+  adminAwaitingRoot,
+  adminReady,
+  blocked,
+}
+
+enum DartIdentityDeviceRole { member, admin }
+
+class DartIdentityDeviceSummary {
+  final DartIdentitySummary identity;
+  final DartIdentityDeviceMode mode;
+  final String? protocolDeviceId;
+  final DartIdentityDeviceRole? role;
+  final String? signingKeyId;
+  final String? e2EeKeyId;
+  final DartIdentityDeviceReadiness readiness;
+  final String? blockedReason;
+
+  const DartIdentityDeviceSummary({
+    required this.identity,
+    required this.mode,
+    this.protocolDeviceId,
+    this.role,
+    this.signingKeyId,
+    this.e2EeKeyId,
+    required this.readiness,
+    this.blockedReason,
+  });
+
+  @override
+  int get hashCode =>
+      identity.hashCode ^
+      mode.hashCode ^
+      protocolDeviceId.hashCode ^
+      role.hashCode ^
+      signingKeyId.hashCode ^
+      e2EeKeyId.hashCode ^
+      readiness.hashCode ^
+      blockedReason.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartIdentityDeviceSummary &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          mode == other.mode &&
+          protocolDeviceId == other.protocolDeviceId &&
+          role == other.role &&
+          signingKeyId == other.signingKeyId &&
+          e2EeKeyId == other.e2EeKeyId &&
+          readiness == other.readiness &&
+          blockedReason == other.blockedReason;
+}
+
 enum DartIdentitySecretStorageBackend { fileCompat, vault }
 
 @freezed

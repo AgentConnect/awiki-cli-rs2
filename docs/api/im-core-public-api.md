@@ -252,6 +252,27 @@ pub struct IdentityReadiness {
     pub missing: Vec<String>,
 }
 
+pub enum IdentityDeviceMode { Legacy, VNext }
+pub enum IdentityDeviceRole { Member, Admin }
+pub enum IdentityDeviceReadiness {
+    Legacy,
+    MemberReady,
+    AdminAwaitingRoot,
+    AdminReady,
+    Blocked,
+}
+
+pub struct IdentityDeviceSummary {
+    pub identity: IdentitySummary,
+    pub mode: IdentityDeviceMode,
+    pub protocol_device_id: Option<ProtocolDeviceId>,
+    pub role: Option<IdentityDeviceRole>,
+    pub signing_key_id: Option<String>,
+    pub e2ee_key_id: Option<String>,
+    pub readiness: IdentityDeviceReadiness,
+    pub blocked_reason: Option<String>,
+}
+
 pub struct IdentityRegistry<'a> {
     core: &'a ImCore,
 }
@@ -260,6 +281,10 @@ impl IdentityRegistry<'_> {
     pub fn list(&self) -> ImResult<Vec<IdentitySummary>>;
     pub fn default_identity(&self) -> ImResult<Option<IdentitySummary>>;
     pub fn resolve(&self, selector: IdentitySelector) -> ImResult<IdentitySummary>;
+    pub fn device_summary(
+        &self,
+        selector: IdentitySelector,
+    ) -> ImResult<IdentityDeviceSummary>;
     pub fn vault_status(&self, selector: IdentitySelector) -> ImResult<IdentityVaultStatus>;
     pub fn migrate_identity_vault(
         &self,
@@ -281,6 +306,11 @@ impl IdentityRegistry<'_> {
     ) -> ImResult<DefaultIdentityChange>;
 }
 ```
+
+`IdentityDeviceSummary` 是面向产品层的安全投影，只公开协议设备 ID、公开
+key ID、角色和由本地密钥可用性与服务端授权共同计算出的 readiness。它不公开
+Vault 引用、根私钥存在标志或 AWiki 域内的 `document_version`、
+`document_hash`、`registry_version`、`auth_generation` checkpoint。
 
 Identity vault DTOs are redacted status/report surfaces. They report selected
 backend, storage policy, vault availability, metadata verification, workspace /

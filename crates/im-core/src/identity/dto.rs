@@ -30,6 +30,44 @@ pub struct IdentityReadiness {
     pub missing: Vec<IdentityMissingItem>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityDeviceMode {
+    Legacy,
+    VNext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityDeviceRole {
+    Member,
+    Admin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityDeviceReadiness {
+    Legacy,
+    MemberReady,
+    AdminAwaitingRoot,
+    AdminReady,
+    Blocked,
+}
+
+/// Safe local device projection. It intentionally excludes Vault references,
+/// private-key presence flags and internal document/Registry checkpoints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityDeviceSummary {
+    pub identity: IdentitySummary,
+    pub mode: IdentityDeviceMode,
+    pub protocol_device_id: Option<crate::ids::ProtocolDeviceId>,
+    pub role: Option<IdentityDeviceRole>,
+    pub signing_key_id: Option<String>,
+    pub e2ee_key_id: Option<String>,
+    pub readiness: IdentityDeviceReadiness,
+    pub blocked_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentitySecretStorageBackend {

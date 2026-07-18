@@ -858,6 +858,64 @@ fn identity_vault_status_maps_without_secret_refs() {
 }
 
 #[test]
+fn identity_device_summary_maps_only_safe_product_state() {
+    let core_summary = im_core::identity::IdentityDeviceSummary {
+        identity: im_core::identity::IdentitySummary {
+            id: im_core::ids::IdentityId::parse("id-alice").expect("identity id"),
+            did: im_core::ids::Did::parse("did:example:alice").expect("did"),
+            handle: None,
+            display_name: Some("Alice".to_string()),
+            local_alias: Some("alice".to_string()),
+            device_id: Some("local-vault-device".to_string()),
+            is_default: true,
+            readiness: im_core::identity::IdentityReadiness {
+                ready_for_auth: true,
+                ready_for_messaging: true,
+                missing: vec![],
+            },
+        },
+        mode: im_core::identity::IdentityDeviceMode::VNext,
+        protocol_device_id: Some(
+            im_core::ids::ProtocolDeviceId::parse("protocol-device-a").expect("protocol device id"),
+        ),
+        role: Some(im_core::identity::IdentityDeviceRole::Admin),
+        signing_key_id: Some("did:example:alice#device-signing".to_string()),
+        e2ee_key_id: Some("did:example:alice#device-e2ee".to_string()),
+        readiness: im_core::identity::IdentityDeviceReadiness::AdminReady,
+        blocked_reason: None,
+    };
+
+    let dart: awiki_im_core::dto::identity::DartIdentityDeviceSummary = core_summary.into();
+    assert_eq!(dart.identity.did, "did:example:alice");
+    assert_eq!(
+        dart.protocol_device_id.as_deref(),
+        Some("protocol-device-a")
+    );
+    assert!(matches!(
+        dart.mode,
+        awiki_im_core::dto::identity::DartIdentityDeviceMode::VNext
+    ));
+    assert!(matches!(
+        dart.role,
+        Some(awiki_im_core::dto::identity::DartIdentityDeviceRole::Admin)
+    ));
+    assert!(matches!(
+        dart.readiness,
+        awiki_im_core::dto::identity::DartIdentityDeviceReadiness::AdminReady
+    ));
+    let debug = format!("{dart:?}");
+    for forbidden in [
+        "document_version",
+        "document_hash",
+        "registry_version",
+        "auth_generation",
+        "SecretRef",
+    ] {
+        assert!(!debug.contains(forbidden));
+    }
+}
+
+#[test]
 fn identity_vault_reports_map_without_secret_refs() {
     let core_status = im_core::identity::IdentityVaultStatus {
         identity: im_core::identity::IdentitySummary {

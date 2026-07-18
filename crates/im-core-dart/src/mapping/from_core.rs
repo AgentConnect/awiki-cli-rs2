@@ -18,8 +18,10 @@ use crate::dto::{
     identity::{
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
         DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartHandleRegistrationResult,
-        DartIdentitySecretStorageBackend, DartIdentitySummary, DartIdentityVaultMigrationReport,
-        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartRecoverHandleResult,
+        DartIdentityDeviceMode, DartIdentityDeviceReadiness, DartIdentityDeviceRole,
+        DartIdentityDeviceSummary, DartIdentitySecretStorageBackend, DartIdentitySummary,
+        DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
+        DartIdentityVaultVerificationReport, DartRecoverHandleResult,
     },
     message::{
         DartConversation, DartConversationAlias, DartConversationAliasSource,
@@ -61,6 +63,45 @@ impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
                 .into_iter()
                 .map(identity_missing_item_to_string)
                 .collect(),
+        }
+    }
+}
+
+impl From<im_core::identity::IdentityDeviceSummary> for DartIdentityDeviceSummary {
+    fn from(value: im_core::identity::IdentityDeviceSummary) -> Self {
+        Self {
+            identity: value.identity.into(),
+            mode: match value.mode {
+                im_core::identity::IdentityDeviceMode::Legacy => DartIdentityDeviceMode::Legacy,
+                im_core::identity::IdentityDeviceMode::VNext => DartIdentityDeviceMode::VNext,
+            },
+            protocol_device_id: value
+                .protocol_device_id
+                .map(|device_id| device_id.as_str().to_owned()),
+            role: value.role.map(|role| match role {
+                im_core::identity::IdentityDeviceRole::Member => DartIdentityDeviceRole::Member,
+                im_core::identity::IdentityDeviceRole::Admin => DartIdentityDeviceRole::Admin,
+            }),
+            signing_key_id: value.signing_key_id,
+            e2ee_key_id: value.e2ee_key_id,
+            readiness: match value.readiness {
+                im_core::identity::IdentityDeviceReadiness::Legacy => {
+                    DartIdentityDeviceReadiness::Legacy
+                }
+                im_core::identity::IdentityDeviceReadiness::MemberReady => {
+                    DartIdentityDeviceReadiness::MemberReady
+                }
+                im_core::identity::IdentityDeviceReadiness::AdminAwaitingRoot => {
+                    DartIdentityDeviceReadiness::AdminAwaitingRoot
+                }
+                im_core::identity::IdentityDeviceReadiness::AdminReady => {
+                    DartIdentityDeviceReadiness::AdminReady
+                }
+                im_core::identity::IdentityDeviceReadiness::Blocked => {
+                    DartIdentityDeviceReadiness::Blocked
+                }
+            },
+            blocked_reason: value.blocked_reason,
         }
     }
 }

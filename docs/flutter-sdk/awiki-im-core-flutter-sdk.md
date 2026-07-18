@@ -129,6 +129,17 @@ plaintext compatibility retention only. They do not expose root key material,
 JWTs, bearer tokens, or secret refs. Flutter Web remains a stub and cannot run
 the native vault-backed backend.
 
+Native hosts can read the current identity's safe device projection without
+opening any private key:
+
+```dart
+final device = await core.identityDeviceSummary(selector);
+```
+
+The result distinguishes legacy/member/admin readiness and exposes only the
+protocol device ID and public key IDs. It intentionally omits Vault references,
+root-key presence flags, and internal Document/Registry/auth checkpoints.
+
 ## Directory profile metadata
 
 `client.directory.resolvePeer(handle)` and `client.directory.lookupHandle(handle)` return a

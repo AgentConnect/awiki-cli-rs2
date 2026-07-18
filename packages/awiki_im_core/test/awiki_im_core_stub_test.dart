@@ -94,6 +94,31 @@ void main() {
     expect(status.warnings, isEmpty);
   });
 
+  test('identity device summary exposes safe local readiness only', () {
+    const summary = IdentityDeviceSummary(
+      identity: IdentitySummary(
+        id: 'id-alice',
+        did: 'did:example:alice',
+        localAlias: 'alice',
+        isDefault: true,
+        readyForAuth: true,
+        readyForMessaging: true,
+      ),
+      mode: IdentityDeviceMode.vNext,
+      protocolDeviceId: 'protocol-device-a',
+      role: IdentityDeviceRole.admin,
+      signingKeyId: 'did:example:alice#device-signing',
+      e2eeKeyId: 'did:example:alice#device-e2ee',
+      readiness: IdentityDeviceReadiness.adminReady,
+    );
+
+    expect(summary.identity.did, 'did:example:alice');
+    expect(summary.protocolDeviceId, 'protocol-device-a');
+    expect(summary.role, IdentityDeviceRole.admin);
+    expect(summary.readiness, IdentityDeviceReadiness.adminReady);
+    expect(summary.blockedReason, isNull);
+  });
+
   test(
     'identity vault migration and verification reports expose safe fields',
     () {

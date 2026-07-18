@@ -61,6 +61,40 @@ class IdentitySummary {
   final List<String> missing;
 }
 
+enum IdentityDeviceMode { legacy, vNext }
+
+enum IdentityDeviceRole { member, admin }
+
+enum IdentityDeviceReadiness {
+  legacy,
+  memberReady,
+  adminAwaitingRoot,
+  adminReady,
+  blocked,
+}
+
+class IdentityDeviceSummary {
+  const IdentityDeviceSummary({
+    required this.identity,
+    required this.mode,
+    this.protocolDeviceId,
+    this.role,
+    this.signingKeyId,
+    this.e2eeKeyId,
+    required this.readiness,
+    this.blockedReason,
+  });
+
+  final IdentitySummary identity;
+  final IdentityDeviceMode mode;
+  final String? protocolDeviceId;
+  final IdentityDeviceRole? role;
+  final String? signingKeyId;
+  final String? e2eeKeyId;
+  final IdentityDeviceReadiness readiness;
+  final String? blockedReason;
+}
+
 enum IdentitySecretStorageBackend { fileCompat, vault }
 
 class IdentityVaultStatus {

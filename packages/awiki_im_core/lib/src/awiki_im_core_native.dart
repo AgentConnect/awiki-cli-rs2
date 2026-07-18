@@ -164,6 +164,19 @@ class AwikiImCore {
     return identity._toModel();
   }
 
+  Future<IdentityDeviceSummary> identityDeviceSummary(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final summary = await _mapNativeErrors(
+      () => gen_identity_api.identityDeviceSummary(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return summary._toModel();
+  }
+
   Future<IdentityVaultStatus> identityVaultStatus(
     IdentitySelector selector,
   ) async {
@@ -1677,6 +1690,37 @@ extension on gen_identity.DartIdentitySummary {
     readyForAuth: readyForAuth,
     readyForMessaging: readyForMessaging,
     missing: missing,
+  );
+}
+
+extension on gen_identity.DartIdentityDeviceSummary {
+  IdentityDeviceSummary _toModel() => IdentityDeviceSummary(
+    identity: identity._toModel(),
+    mode: switch (mode) {
+      gen_identity.DartIdentityDeviceMode.legacy => IdentityDeviceMode.legacy,
+      gen_identity.DartIdentityDeviceMode.vNext => IdentityDeviceMode.vNext,
+    },
+    protocolDeviceId: protocolDeviceId,
+    role: switch (role) {
+      gen_identity.DartIdentityDeviceRole.member => IdentityDeviceRole.member,
+      gen_identity.DartIdentityDeviceRole.admin => IdentityDeviceRole.admin,
+      null => null,
+    },
+    signingKeyId: signingKeyId,
+    e2eeKeyId: e2EeKeyId,
+    readiness: switch (readiness) {
+      gen_identity.DartIdentityDeviceReadiness.legacy =>
+        IdentityDeviceReadiness.legacy,
+      gen_identity.DartIdentityDeviceReadiness.memberReady =>
+        IdentityDeviceReadiness.memberReady,
+      gen_identity.DartIdentityDeviceReadiness.adminAwaitingRoot =>
+        IdentityDeviceReadiness.adminAwaitingRoot,
+      gen_identity.DartIdentityDeviceReadiness.adminReady =>
+        IdentityDeviceReadiness.adminReady,
+      gen_identity.DartIdentityDeviceReadiness.blocked =>
+        IdentityDeviceReadiness.blocked,
+    },
+    blockedReason: blockedReason,
   );
 }
 

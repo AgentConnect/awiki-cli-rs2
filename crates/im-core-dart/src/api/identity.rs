@@ -4,9 +4,10 @@ use crate::dto::{
     error::DartImError,
     identity::{
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
-        DartDeleteLocalIdentityResult, DartHandleRegistrationResult, DartIdentitySelector,
-        DartIdentitySummary, DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
-        DartIdentityVaultVerificationReport, DartInitialProfile, DartRecoverHandleResult,
+        DartDeleteLocalIdentityResult, DartHandleRegistrationResult, DartIdentityDeviceSummary,
+        DartIdentitySelector, DartIdentitySummary, DartIdentityVaultMigrationReport,
+        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartInitialProfile,
+        DartRecoverHandleResult,
     },
 };
 
@@ -42,6 +43,19 @@ pub async fn resolve_identity(
     inner
         .identities()
         .resolve_async(selector.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn identity_device_summary(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<DartIdentityDeviceSummary, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .device_summary_async(selector.try_into()?)
         .await
         .map(Into::into)
         .map_err(DartImError::from)

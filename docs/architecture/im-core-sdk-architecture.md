@@ -97,6 +97,16 @@ persisted: active members do not require a root private key, while an admin beco
 ready only when both the server completion state and the local Root Vault are available.
 Revoked devices and local Vault/auth inconsistencies fail closed as blocked.
 
+The vNext bootstrap generator creates the DID root, an independent Ed25519
+device request-signing key, an independent X25519 device E2EE key, and a random
+protocol device ID. It builds the genesis DID Document through the ANP SDK so
+the embedded Manifest and verification relationships are validated together.
+The three private-key roles are sealed as separate Vault records; runtime
+request signing resolves the device key, while DID Document proof/update
+resolves the root key. The generator is not a legacy-registration fallback:
+the identity becomes usable only after the user-service genesis transaction
+returns an active admin authorization projection.
+
 ## 5. Paths and Configuration
 
 Hosts pass explicit `ImCoreConfig` and `ImCorePaths`.

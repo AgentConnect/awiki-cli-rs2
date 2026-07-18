@@ -48,6 +48,12 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<IdentityDeviceSummary> identityDeviceSummary(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
   Future<IdentityVaultStatus> identityVaultStatus(
     IdentitySelector selector,
   ) async {

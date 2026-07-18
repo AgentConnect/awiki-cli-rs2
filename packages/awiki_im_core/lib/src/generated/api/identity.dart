@@ -28,6 +28,14 @@ Future<DartIdentitySummary> resolveIdentity({
   selector: selector,
 );
 
+Future<DartIdentityDeviceSummary> identityDeviceSummary({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityIdentityDeviceSummary(
+  core: core,
+  selector: selector,
+);
+
 Future<DartIdentityVaultStatus> identityVaultStatus({
   required ArcDartImCore core,
   required DartIdentitySelector selector,
