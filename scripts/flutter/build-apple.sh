@@ -43,7 +43,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 LIB_NAME="awiki_im_core"
-IOS_DEPLOYMENT_TARGET="${AWIKI_IOS_DEPLOYMENT_TARGET:-12.0}"
+IOS_DEPLOYMENT_TARGET="${AWIKI_IOS_DEPLOYMENT_TARGET:-13.0}"
+IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET="${AWIKI_IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET:-14.0}"
 MACOS_X86_64_DEPLOYMENT_TARGET="${AWIKI_MACOS_X86_64_DEPLOYMENT_TARGET:-10.15}"
 MACOS_ARM64_DEPLOYMENT_TARGET="${AWIKI_MACOS_ARM64_DEPLOYMENT_TARGET:-11.0}"
 IOS_FRAMEWORK_DIR="${ROOT_DIR}/packages/awiki_im_core/ios/Frameworks"
@@ -72,6 +73,7 @@ fi
 if [[ "${DRY_RUN}" == "1" ]]; then
   echo "Would rustup target add: ${TARGETS[*]}"
   echo "Would use iOS deployment target: ${IOS_DEPLOYMENT_TARGET}"
+  echo "Would use iOS arm64 simulator deployment target: ${IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET}"
   echo "Would use macOS deployment targets: arm64=${MACOS_ARM64_DEPLOYMENT_TARGET}, x86_64=${MACOS_X86_64_DEPLOYMENT_TARGET}"
   if [[ "${BUILD_IOS}" == "1" && "${BUILD_MACOS}" == "1" ]]; then
     echo "Would build staticlibs and create iOS/macOS XCFrameworks"
@@ -117,7 +119,16 @@ for target in "${IOS_TARGETS[@]}"; do
   if [[ "${BUILD_IOS}" != "1" ]]; then
     continue
   fi
-  IPHONEOS_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET}" cargo build \
+  ios_cflags="-mios-simulator-version-min=${IOS_DEPLOYMENT_TARGET}"
+  if [[ "${target}" == "aarch64-apple-ios" ]]; then
+    ios_cflags="-miphoneos-version-min=${IOS_DEPLOYMENT_TARGET}"
+  elif [[ "${target}" == "aarch64-apple-ios-sim" ]]; then
+    ios_cflags="-mios-simulator-version-min=${IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET}"
+  fi
+  if [[ -n "${CFLAGS:-}" ]]; then
+    ios_cflags="${CFLAGS} ${ios_cflags}"
+  fi
+  CFLAGS="${ios_cflags}" IPHONEOS_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET}" cargo build \
     -p im-core-dart \
     --release \
     --target "${target}" \
@@ -157,6 +168,45 @@ if [[ "${BUILD_IOS}" == "1" ]]; then
     "target/aarch64-apple-ios-sim/release/lib${LIB_NAME}.a" \
     "target/x86_64-apple-ios/release/lib${LIB_NAME}.a" \
     -output "${SIM_DIR}/lib${LIB_NAME}.a"
+
+  verify_ios_archive() {
+    local archive="$1"
+    local arch="$2"
+    local maximum_version="$3"
+    local versions
+    versions="$(xcrun otool -arch "${arch}" -l "${archive}" 2>/dev/null \
+      | awk '/^[[:space:]]+(version|minos) / { print $2 }' \
+      | sort -Vu)"
+    if [[ -z "${versions}" ]]; then
+      echo "No Mach-O deployment versions found in ${archive} (${arch})." >&2
+      return 1
+    fi
+    while IFS= read -r version; do
+      if awk -v actual="${version}" -v maximum="${maximum_version}" '
+        function number(value, parts) {
+          split(value, parts, ".")
+          return (parts[1] + 0) * 1000000 + (parts[2] + 0) * 1000 + (parts[3] + 0)
+        }
+        BEGIN { exit !(number(actual) > number(maximum)) }
+      '; then
+        echo "${archive} (${arch}) contains minimum OS ${version}, above ${maximum_version}." >&2
+        return 1
+      fi
+    done <<< "${versions}"
+  }
+
+  verify_ios_archive \
+    "target/aarch64-apple-ios/release/lib${LIB_NAME}.a" \
+    arm64 \
+    "${IOS_DEPLOYMENT_TARGET}"
+  verify_ios_archive \
+    "${SIM_DIR}/lib${LIB_NAME}.a" \
+    x86_64 \
+    "${IOS_DEPLOYMENT_TARGET}"
+  verify_ios_archive \
+    "${SIM_DIR}/lib${LIB_NAME}.a" \
+    arm64 \
+    "${IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET}"
 
   rm -rf "${IOS_XCFRAMEWORK}"
   xcodebuild -create-xcframework \
