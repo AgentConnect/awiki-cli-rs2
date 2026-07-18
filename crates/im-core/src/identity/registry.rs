@@ -218,7 +218,7 @@ impl<'a> IdentityRegistry<'a> {
         .migrate_identity_to_vault(
             &local_alias,
             context.workspace_id(),
-            context.device_id(),
+            context.vault_context_device_id().as_str(),
             context.vault().as_ref(),
         )?;
         let status = self.vault_status(super::IdentitySelector::LocalAlias(local_alias))?;
@@ -257,7 +257,7 @@ impl<'a> IdentityRegistry<'a> {
                 })?;
         let paths = self.core.inner().sdk_paths().identities.clone();
         let workspace_id = context.workspace_id().to_owned();
-        let device_id = context.device_id().to_owned();
+        let device_id = context.vault_context_device_id().as_str().to_owned();
         let vault = context.vault();
         let local_alias_for_migration = local_alias.clone();
         crate::internal::runtime::worker::run_blocking(move || {
@@ -755,7 +755,7 @@ impl<'a> IdentityRegistry<'a> {
                             did,
                             metadata,
                             context.workspace_id(),
-                            context.device_id(),
+                            context.vault_context_device_id().as_str(),
                             context.vault().as_ref(),
                         );
                     }
@@ -1312,7 +1312,9 @@ impl IdentityRegistry<'_> {
             .unwrap_or(false);
         let vault_device_matches = metadata
             .zip(context)
-            .map(|(metadata, context)| metadata.device_id == context.device_id())
+            .map(|(metadata, context)| {
+                metadata.device_id == context.vault_context_device_id().as_str()
+            })
             .unwrap_or(false);
         let vault_context_matches = vault_workspace_matches && vault_device_matches;
         let selected_backend =
@@ -2012,7 +2014,8 @@ fn vault_context_matches_metadata(
     context: &crate::core::options::IdentityVaultContext,
     metadata: &crate::internal::identity_store::IdentityVaultMigrationMetadata,
 ) -> bool {
-    context.workspace_id() == metadata.workspace_id && context.device_id() == metadata.device_id
+    context.workspace_id() == metadata.workspace_id
+        && context.vault_context_device_id().as_str() == metadata.device_id
 }
 
 fn default_alias_from_file(path: Option<&Path>) -> crate::ImResult<Option<String>> {

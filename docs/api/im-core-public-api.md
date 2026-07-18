@@ -85,6 +85,14 @@ pub struct ImCoreSecretVaultOptions {
 }
 ```
 
+`ImCoreSecretVaultOptions.device_id` is the existing compatibility spelling for
+the **local vault context device id**. Internally it is parsed as
+`VaultContextDeviceId`; it is not the public ANP device endpoint and must never
+be copied into a DID Document or message. New multi-device identity code uses a
+separate `ProtocolDeviceId` for the opaque Manifest/P5/P6 identifier. New V1
+protocol identifiers reject the legacy sentinel `default` and can be generated
+with cryptographic randomness; neither type is derived from the other.
+
 P1 API：
 
 ```rust

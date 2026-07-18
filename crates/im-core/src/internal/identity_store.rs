@@ -61,7 +61,7 @@ impl SaveIdentitySecretStorage {
                 match core.inner().identity_vault() {
                     Some(context) => Ok(Self::Vault {
                         workspace_id: context.workspace_id().to_owned(),
-                        device_id: context.device_id().to_owned(),
+                        device_id: context.vault_context_device_id().as_str().to_owned(),
                         vault: context.vault(),
                     }),
                     None => Ok(Self::FileCompat),
@@ -76,7 +76,7 @@ impl SaveIdentitySecretStorage {
                 })?;
                 Ok(Self::Vault {
                     workspace_id: context.workspace_id().to_owned(),
-                    device_id: context.device_id().to_owned(),
+                    device_id: context.vault_context_device_id().as_str().to_owned(),
                     vault: context.vault(),
                 })
             }
@@ -437,7 +437,7 @@ impl<'a> IdentityStore<'a> {
         }) {
             if let Some(context) = context {
                 if metadata.workspace_id == context.workspace_id()
-                    && metadata.device_id == context.device_id()
+                    && metadata.device_id == context.vault_context_device_id().as_str()
                 {
                     let did_document = self.load_did_document(identity_dir_name)?;
                     return self.load_daemon_subkey_package_from_vault(
@@ -446,7 +446,7 @@ impl<'a> IdentityStore<'a> {
                         &did_document,
                         metadata,
                         context.workspace_id(),
-                        context.device_id(),
+                        context.vault_context_device_id().as_str(),
                         context.vault().as_ref(),
                     );
                 }
