@@ -18,6 +18,7 @@ pub(crate) struct ImCoreInner {
     pub(crate) sdk_paths: crate::ImCorePaths,
     pub(crate) identity_secret_storage_policy: IdentitySecretStoragePolicy,
     pub(crate) identity_vault: Option<options::IdentityVaultContext>,
+    pub(crate) device_join_lock: std::sync::Mutex<()>,
     #[cfg(feature = "sqlite")]
     pub(crate) local_state_db: OnceCell<crate::internal::local_state::actor::LocalStateDb>,
 }
@@ -81,6 +82,7 @@ impl ImCore {
                 sdk_paths,
                 identity_secret_storage_policy: options.identity_secret_storage_policy,
                 identity_vault,
+                device_join_lock: std::sync::Mutex::new(()),
                 #[cfg(feature = "sqlite")]
                 local_state_db: OnceCell::new(),
             }),
@@ -89,6 +91,10 @@ impl ImCore {
 
     pub fn identities(&self) -> crate::identity::IdentityRegistry<'_> {
         crate::identity::IdentityRegistry::new(self)
+    }
+
+    pub fn device_join(&self) -> crate::identity::DeviceJoinService<'_> {
+        crate::identity::DeviceJoinService::new(self)
     }
 
     pub fn bootstrap(&self) -> CoreBootstrap<'_> {
