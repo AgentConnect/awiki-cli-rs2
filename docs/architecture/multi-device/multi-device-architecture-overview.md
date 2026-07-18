@@ -65,9 +65,9 @@ AWiki Device Registry 是域内设备授权状态源。远端 ANP 节点只需�
 
 ---
 
-## 4. 最小状态与版本
+## 4. AWiki 域内最小状态与版本
 
-V1 只保留三个版本维度：
+以下版本只用于 AWiki 域内数据库并发、第一方客户端 pin 和撤销控制，不是 ANP wire 字段。V1 只保留三个域内版本维度：
 
 ```text
 DID Document
@@ -102,18 +102,23 @@ management_ready = true | false
 
 服务端通过数据库事务、expected version 和 CAS 防止并发覆盖。V1 不保存前驱链，不提供任意版本间 transition proof，也不实现透明日志或复杂分叉修复。
 
+远端 ANP 实现不读取这些域内版本；它只解析当前根签名 DID Document、验证 `deviceManifest`，并在设备资格可能变化时重新 resolve。
+
 ---
 
 ## 5. ANP vNext 调整
 
-ANP vNext 需要增加四类公开能力：
+ANP vNext 通过[独立版本化草案](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/README.md)增加以下公开能力：
 
 1. DID Document 顶层 `deviceManifest` 扩展；
 2. Direct 的发送与接收 `device_id`；
 3. PreKey、Session、Ratchet 和 Mailbox 按 DID + device_id 绑定；
 4. 同一 DID 的不同设备使用独立 MLS KeyPackage 和 Leaf。
+5. Attachment Ticket 的可信设备上下文及 Federation 的设备选择器保留、资格重验证。
 
 AWiki 域内的 `member/admin`、Registry、token、根私钥传输和 Handle 恢复不属于跨域 ANP 协议。
+
+对应 Profile 为 `anp.core.binding.v2`、`anp.identity.discovery.v2`、`anp.direct.base.v2`、`anp.group.base.v2`、`anp.direct.e2ee.v2`、`anp.group.e2ee.v2`、`anp.attachment.v2` 和 `anp.federation.relay.v2`；P9 只增加 vNext binding，不把 Mention 目标改成设备。
 
 无 Manifest 的旧 DID 和旧 Profile 由独立 Legacy Adapter 处理，不进入 V1 Core 状态机，也不能访问管理角色或根私钥控制消息。
 

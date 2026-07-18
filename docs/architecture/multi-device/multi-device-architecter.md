@@ -15,7 +15,9 @@
 1. 定义 AWiki 产品内部如何管理一个 DID 下的多台设备；
 2. 定义为实现跨域多设备互操作，ANP vNext 在 Identity、Direct E2EE、MLS 和 Federation 层需要增加的公开协议语义。
 
-本文确定架构边界和第一阶段主流程，不把尚未注册的字段或占位 Profile 描述成当前 ANP 已有能力。正式 wire schema、Profile ID、错误码和一致性测试向量仍需落入 ANP 权威规范。
+本文确定架构边界和第一阶段主流程，不把草案字段或 Profile 描述成已发布 ANP 能力。正式 wire schema、Profile ID 和错误语义现由 [ANP vNext 多设备草案](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/README.md)承载；在草案完成评审、测试向量和公开发现 gate 前，产品仍不得宣告已支持这些能力。
+
+ANP 规范采用最小公开原则：只有不同域为了互操作而必须共同生成、解析或验证的字段才进入规范。仅用于 AWiki 域内数据库并发、缓存、token、设备管理、恢复或本地状态的字段，只在本文等内部架构文档中定义。
 
 
 本方案只管理：
@@ -233,7 +235,7 @@ Local Device State
 
 ### 2.5 ANP vNext 与 AWiki 域内能力边界
 
-本文中的“ANP 多设备能力”是多个版本化 Profile 的架构统称，不是可以直接写入 wire 的单一 Profile ID。
+本文中的“ANP 多设备能力”是多个版本化 Profile 的架构统称，不是可以直接写入 wire 的单一 Profile ID。当前对应的权威草案入口是 [ANP vNext 中文索引](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/README.md)。
 
 ANP vNext 需要公开定义：
 
@@ -241,16 +243,17 @@ ANP vNext 需要公开定义：
 * Direct 的发送/接收 `device_id` 和设备级投递语义；
 * PreKey、Session、Ratchet、AAD 与 Mailbox 的设备绑定；
 * 同一 DID 多个 MLS Client/Leaf 的资格绑定；
-* Federation 对设备寻址、文档刷新和 stale device set 的处理。
+* Federation 对设备寻址、文档刷新和设备资格变化后的重新 resolve 处理。
 
 AWiki 域内继续负责：
 
 * member/admin、`management_ready` 和 Device Registry；
+* `document_version`、`document_hash`、`registry_version` 和 `auth_generation`；
 * 设备 token、加入/恢复会话和用户确认；
 * 根私钥控制消息与 imported ACK；
 * Handle 恢复、通知和冷静期。
 
-远端 ANP 实现只需要知道某个 `device_id` 是否是当前合法通信端点，不需要理解 AWiki 管理角色。对端不支持所需 ANP vNext 能力时，不得静默退化为共享 Ratchet、共享 MLS 私钥或明文；旧版兼容由第 6.2 节的 Legacy Adapter 单独处理。
+远端 ANP 实现只需要知道某个 `device_id` 是否是当前合法通信端点，不需要理解 AWiki 管理角色或内部 document version/hash。`document_version` 和 `document_hash` 不进入 DID Document、DID resolve/update 元数据、跨域 `direct.send`、PreKey、MLS 或 Federation schema。对端不支持所需 ANP vNext 能力时，不得静默退化为共享 Ratchet、共享 MLS 私钥或明文；旧版兼容由第 6.2 节的 Legacy Adapter 单独处理。
 
 ### 2.6 两条授权验证链
 
@@ -297,6 +300,7 @@ AWiki 域内 API：
 9. `device_id` 必须由密码学安全随机源生成且保持不透明，不能直接使用或可逆编码硬件序列号、IMEI、MAC 地址等可追踪标识。
 10. DID Document 和 Device Registry 只能保存公钥、引用和授权状态，绝不能保存任何设备私钥或 DID 根私钥。
 11. DID 根控制私钥是身份管理授权密钥；设备本地 KEK 只用于加密保护 Root Key Vault 中的根私钥密文，不能替代根私钥签署 DID 更新。
+12. ANP 规范只定义跨域互操作必须理解的字段；AWiki 域内版本、角色、token、恢复和控制消息字段不得进入公开协议。
 
 ---
 
@@ -411,12 +415,12 @@ KEK 应尽量由 Secure Enclave、Android Keystore/StrongBox、TPM、Windows Hel
 
 ---
 
-## 4. 第一阶段权威状态
+## 4. AWiki 第一阶段域内权威状态
 
-第一阶段只保留三个版本维度：
+以下字段只属于 AWiki 域内 Identity、Registry 和第一方客户端实现，不是跨域 ANP 字段。第一阶段只保留三个域内版本维度：
 
 ```text
-DID Document
+AWiki Identity 的 DID Document 记录
     document_version
     document_hash
 
@@ -487,12 +491,9 @@ AWiki 第一阶段新建的 DID 从 genesis 起始终携带 `deviceManifest`，�
       }
     ]
   },
-  "document_version": 1,
   "proof": {}
 }
 ```
-
-`document_hash` 按 ANP vNext 固定的规范化规则计算，由 DID resolve 结果或更新响应携带。它不需要写回被计算的文档对象。
 
 `deviceManifest` 只表达：
 
@@ -577,7 +578,11 @@ auth_generation = 单调递增整数
 
 ---
 
-## 5. 版本、并发与新鲜度
+## 5. AWiki 域内版本、并发与新鲜度
+
+`document_version` 是 AWiki Identity 数据库中的单调递增版本，用于域内 CAS 和防回滚；`document_hash` 是 AWiki 对已保存完整 DID Document 计算的内部内容摘要，用于第一方客户端缓存校验和“同版本不同内容”告警。
+
+二者可以出现在 AWiki 内部数据库、管理 API 和本地 checkpoint 中，但不得写入 DID Document，也不得成为 DID Resolution、ANP Direct、PreKey、MLS、附件或 Federation 的协议字段。远端域只需要 resolve 当前 DID Document 并验证根 proof 与 `deviceManifest`；HTTP 缓存可以使用现有 `ETag` 等机制。
 
 ### 5.1 服务端并发控制
 
@@ -603,13 +608,13 @@ CAS 冲突时，客户端重新拉取当前状态、重新展示影响并重新�
 
 ### 5.2 客户端验证规则
 
-客户端只 pin：
+AWiki 第一方客户端只 pin：
 
 ```text
 最高 document_version + document_hash
 ```
 
-处理规则：
+该规则只用于 AWiki 域内客户端和 Identity 响应，不要求跨域 ANP 实现理解这两个字段。处理规则：
 
 * 低于已接受 version：拒绝并强制刷新；
 * 同 version、同 hash：接受；
@@ -636,13 +641,18 @@ Handle/WNS 只维护当前 Handle → DID 绑定。恢复时通过数据库事�
 
 AWiki 第一阶段需要推动以下公开协议调整：
 
-| 协议部分 | 第一阶段调整 |
-| --- | --- |
-| Identity/Discovery | 注册 DID Document 顶层 `deviceManifest` 扩展 |
-| Direct | 增加发送/接收 `device_id` 和设备级投递语义 |
-| Direct E2EE | PreKey、Session、Ratchet 和 Mailbox 绑定 DID + device_id |
-| MLS | 允许同一 DID 的不同设备使用独立 KeyPackage/Leaf |
-| Federation | 按当前 DID Document 验证设备资格，陈旧时重新 resolve |
+| 协议部分 | vNext 草案 | 第一阶段调整 |
+| --- | --- | --- |
+| Core / Identity | [`anp.core.binding.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/01-核心绑定.md)、[`anp.identity.discovery.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/02-身份与发现.md) | 注册通用设备绑定与 DID Document 顶层 `deviceManifest` 扩展 |
+| Direct | [`anp.direct.base.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/03-私聊基础语义.md) | 增加发送/接收 `device_id`、`logical_message_id` 和逐设备投递语义 |
+| Group Base | [`anp.group.base.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/04-群组基础语义.md) | 业务成员仍按 DID，发送设备和接收通知按设备绑定 |
+| Direct E2EE | [`anp.direct.e2ee.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/05-私聊端到端加密.md) | PreKey、Session、Ratchet 和 Mailbox 绑定 DID + `device_id` |
+| MLS | [`anp.group.e2ee.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/06-群组端到端加密.md) | 允许同一 DID 的不同设备使用独立 KeyPackage/Leaf |
+| Attachment | [`anp.attachment.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/07-附件与对象传输.md) | Ticket 校验可信设备上下文，object key 经设备会话或 MLS 分发 |
+| Federation | [`anp.federation.relay.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/08-联邦与跨域.md) | 保留设备选择器，按当前 DID Document 验证资格，陈旧时重新 resolve |
+| Mention | [P9 vNext binding](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/09-消息Mention扩展.md) | 绑定 v2 Group/Core 依赖，Mention 目标仍是 DID/群 selector |
+
+上述公开调整只包含跨域互操作所需的设备标识、公开 key 引用、Profile 和路由/密码学绑定。AWiki 域内版本、角色、token、根密钥导入和同步控制字段不进入 ANP 规范。
 
 ### 6.1 AWiki V1 Core 固定规则
 
@@ -916,6 +926,8 @@ ACK 首次提交时只要求 importing device 仍具备待就绪资格。原 Env
 
 整个对象位于 Direct E2EE 密文内部。
 
+其中 `document_version` 和 `document_hash` 只是 AWiki 域内根密钥导入授权快照，不是 Direct E2EE 或 ANP 的通用字段；跨域实现不得发送或解析该控制消息。
+
 该消息：
 
 * 只发送给指定设备；
@@ -1066,9 +1078,9 @@ Alice A1 ↔ Bob B3
 
 Mailbox 是接收设备级资源，可以容纳来自多条会话的密文，不属于某一条 Ratchet State。
 
-设备级 PreKey 必须绑定 DID、`device_id`、设备签名 key、有效期和发布时的 `document_version`，并由设备签名。获取方使用当前 DID Document 和 `deviceManifest` 验证设备资格。
+设备级 PreKey 必须绑定 DID、`device_id`、设备签名 key 和有效期，并由设备签名。获取方使用当前 DID Document 和 `deviceManifest` 验证设备资格。
 
-正式会话至少绑定双方 DID、双方 `device_id`、设备 key、Session ID、Direct Profile，以及建链时验证的 document version/hash。该版本只是建链快照；无关文档更新不要求重建会话。不同设备不得共享设备私钥、消息密钥或 Double Ratchet State。
+正式会话至少绑定双方 DID、双方 `device_id`、设备 key、Session ID 和 Direct Profile。无关文档更新不要求重建会话；目标设备被移除、key 变化或失去 Direct Profile 时才停止对应会话。不同设备不得共享设备私钥、消息密钥或 Double Ratchet State。
 
 ### 11.2 一条逻辑消息，多份设备密文
 
@@ -1101,9 +1113,9 @@ Direct E2EE 内层可以承载文本和结构化内容。自有设备同步及�
 
 ### 11.3 设备集合变化、离线与历史
 
-发送或新建会话前，发送方使用当前 DID Document 的 `document_version + document_hash`，并在每次逐设备 `direct.send` 的认证元数据中绑定该快照，使服务端可以检测陈旧设备集合；不绑定独立 Manifest epoch/hash。
+发送或新建会话前，发送方 resolve 或使用仍然有效的当前 DID Document。跨域 `direct.send` 不携带 AWiki 内部 `document_version`、`document_hash`，也不绑定独立 Manifest epoch/hash。
 
-设备集合发生变化时，服务端返回 stale device set，发送方重新 resolve：
+目标设备不存在、已撤销、key/Profile 不匹配，或服务端提示设备资格可能变化时，发送方重新 resolve：
 
 * 为新增设备建立新会话并补充尚未成功的当前消息；
 * 停止向已删除设备发送未来消息；
