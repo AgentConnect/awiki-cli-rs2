@@ -2,6 +2,9 @@ use super::*;
 
 use std::path::Path;
 
+const FIXED_DOCUMENT_HASH: &str = "sha256:UD5TmycQ6gS539AFNjM5cGoQUmeq2fQGPpwD00lMPlg";
+const FIXED_CHALLENGE_HASH: &str = "sha256:CNkA2F600Hf0nbZLaSSALDLOq6wK2OC7fXmxIhYAbzs";
+
 fn test_config() -> crate::ImCoreConfig {
     crate::ImCoreConfig {
         service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
@@ -62,6 +65,87 @@ fn sample_proof() -> DeviceProof {
 }
 
 #[test]
+fn challenge_plaintext_canonical_bytes_and_hash_fixture_are_frozen() {
+    let checkpoint = InternalCheckpoint {
+        document_version: 7,
+        document_hash: FIXED_DOCUMENT_HASH.to_owned(),
+    };
+    let canonical =
+        encode_challenge_plaintext(&[0xa5_u8; JOIN_CHALLENGE_LEN], &checkpoint).unwrap();
+    let expected = concat!(
+        r#"{"document_hash":"sha256:UD5TmycQ6gS539AFNjM5cGoQUmeq2fQGPpwD00lMPlg","document_version":7,"random_challenge_b64u":"paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaU","type":"awiki.device.join.challenge-plaintext.v1"}"#,
+    );
+
+    assert_eq!(canonical.as_slice(), expected.as_bytes());
+    assert_eq!(
+        hash_bytes(canonical.as_slice()),
+        FIXED_CHALLENGE_HASH,
+        "cross-repository challenge plaintext fixture changed"
+    );
+    let parsed = parse_challenge_plaintext(SecretBytes::from_vec(canonical.to_vec())).unwrap();
+    assert_eq!(parsed.checkpoint, checkpoint);
+    assert_eq!(
+        parsed.canonical_plaintext.expose_secret(),
+        expected.as_bytes()
+    );
+}
+
+#[test]
+fn challenge_plaintext_rejects_noncanonical_unknown_or_invalid_fields() {
+    let noncanonical = format!(
+        "{{\"type\":\"{JOIN_CHALLENGE_PLAINTEXT_TYPE}\",\"random_challenge_b64u\":\"{}\",\"document_version\":7,\"document_hash\":\"{FIXED_DOCUMENT_HASH}\"}}",
+        URL_SAFE_NO_PAD.encode([0xa5_u8; JOIN_CHALLENGE_LEN])
+    );
+    assert!(matches!(
+        parse_challenge_plaintext(SecretBytes::from_vec(noncanonical.into_bytes())),
+        Err(crate::ImError::PermissionDenied)
+    ));
+
+    let unknown = canonical_bytes(&json!({
+        "type": JOIN_CHALLENGE_PLAINTEXT_TYPE,
+        "random_challenge_b64u": URL_SAFE_NO_PAD.encode([0xa5_u8; JOIN_CHALLENGE_LEN]),
+        "document_version": 7,
+        "document_hash": FIXED_DOCUMENT_HASH,
+        "unexpected": true,
+    }))
+    .unwrap();
+    assert!(matches!(
+        parse_challenge_plaintext(SecretBytes::from_vec(unknown)),
+        Err(crate::ImError::PermissionDenied)
+    ));
+
+    let invalid_random = canonical_bytes(&json!({
+        "type": JOIN_CHALLENGE_PLAINTEXT_TYPE,
+        "random_challenge_b64u": URL_SAFE_NO_PAD.encode([0xa5_u8; JOIN_CHALLENGE_LEN - 1]),
+        "document_version": 7,
+        "document_hash": FIXED_DOCUMENT_HASH,
+    }))
+    .unwrap();
+    assert!(matches!(
+        parse_challenge_plaintext(SecretBytes::from_vec(invalid_random)),
+        Err(crate::ImError::PermissionDenied)
+    ));
+}
+
+#[test]
+fn challenge_plaintext_checkpoint_must_match_local_did_resolution() {
+    let encrypted_checkpoint = InternalCheckpoint {
+        document_version: 7,
+        document_hash: FIXED_DOCUMENT_HASH.to_owned(),
+    };
+    let local_checkpoint = InternalCheckpoint {
+        document_version: 8,
+        document_hash: FIXED_DOCUMENT_HASH.to_owned(),
+    };
+
+    assert!(matches!(
+        ensure_challenge_checkpoint(&encrypted_checkpoint, &local_checkpoint),
+        Err(crate::ImError::PermissionDenied)
+    ));
+    ensure_challenge_checkpoint(&encrypted_checkpoint, &encrypted_checkpoint).unwrap();
+}
+
+#[test]
 fn device_proof_canonical_bytes_and_hash_fixture_are_frozen() {
     let params = json!({
         "z": 3,
@@ -97,7 +181,7 @@ fn join_transcript_hash_and_sas_fixture_are_frozen() {
         "new_device_id": "new-b",
         "join_request_hash": "sha256:join-fixed",
         "challenge_id": "challenge-fixed",
-        "challenge_hash": "sha256:challenge-fixed",
+        "challenge_hash": FIXED_CHALLENGE_HASH,
         "new_pairing_public_key": "new-pairing-fixed",
         "admin_pairing_public_key": "admin-pairing-fixed",
         "new_signing_public_key": {
@@ -113,24 +197,24 @@ fn join_transcript_hash_and_sas_fixture_are_frozen() {
             "publicKeyMultibase": "zE2eeFixed"
         },
         "document_version": 7,
-        "document_hash": "sha256:document-fixed"
+        "document_hash": FIXED_DOCUMENT_HASH
     });
     let canonical = canonical_bytes(&transcript).unwrap();
 
     assert_eq!(
         hash_bytes(&canonical),
-        "sha256:ppcgk77uz_4SWvSPr5liRB7ZDngFnIph9s6di2OHgtI",
+        "sha256:EE0Bm2QXgeNqSCSmkBcKXWIZLzhm4HHBga21ipRqPnc",
         "cross-repository transcript fixture changed"
     );
     assert_eq!(
         derive_sas(&[0x42_u8; 32], &transcript).unwrap(),
-        "270643",
+        "791912",
         "both devices must derive the same six-digit SAS from the frozen transcript"
     );
 
     let mut tampered = transcript;
     tampered["new_device_id"] = Value::String("attacker-device".to_owned());
-    assert_ne!(derive_sas(&[0x42_u8; 32], &tampered).unwrap(), "270643");
+    assert_ne!(derive_sas(&[0x42_u8; 32], &tampered).unwrap(), "791912");
 }
 
 #[test]
@@ -173,7 +257,12 @@ fn encrypted_challenge_round_trips_and_binds_aad() {
         signature: "unused-in-this-crypto-fixture".to_owned(),
     };
     let join_request_hash = canonical_hash(&serde_json::to_value(&join_request).unwrap()).unwrap();
-    let challenge_plaintext = [0xa5_u8; JOIN_CHALLENGE_LEN];
+    let checkpoint = InternalCheckpoint {
+        document_version: 7,
+        document_hash: FIXED_DOCUMENT_HASH.to_owned(),
+    };
+    let challenge_plaintext =
+        encode_challenge_plaintext(&[0xa5_u8; JOIN_CHALLENGE_LEN], &checkpoint).unwrap();
     let encrypted = encrypt_challenge(
         &admin_pairing_private,
         &join_request,
@@ -182,7 +271,7 @@ fn encrypted_challenge_round_trips_and_binds_aad() {
         "admin-a",
         &admin_pairing_public_key,
         "2026-07-19T01:07:03Z",
-        &challenge_plaintext,
+        challenge_plaintext.as_slice(),
     )
     .unwrap();
     let challenge = DeviceJoinChallenge {
@@ -196,17 +285,21 @@ fn encrypted_challenge_round_trips_and_binds_aad() {
         authorizing_device_proof: sample_proof(),
     };
 
+    let decrypted = decrypt_challenge(
+        &new_e2ee_private,
+        &join_request,
+        &join_request_hash,
+        &challenge,
+    )
+    .unwrap();
     assert_eq!(
-        decrypt_challenge(
-            &new_e2ee_private,
-            &join_request,
-            &join_request_hash,
-            &challenge,
-        )
-        .unwrap()
-        .expose_secret(),
-        challenge_plaintext
+        decrypted.canonical_plaintext.expose_secret(),
+        challenge_plaintext.as_slice()
     );
+    assert_eq!(decrypted.checkpoint, checkpoint);
+    let serialized_challenge = serde_json::to_string(&challenge).unwrap();
+    assert!(!serialized_challenge.contains("random_challenge_b64u"));
+    assert!(!serialized_challenge.contains(FIXED_DOCUMENT_HASH));
 
     let mut tampered = challenge;
     tampered.admin_device_id = "attacker-admin".to_owned();

@@ -48,11 +48,33 @@ const JOIN_CHALLENGE_PURPOSE: &str = "awiki.device.join.challenge.v1";
 const JOIN_RESPONSE_PURPOSE: &str = "awiki.device.join.challenge-response.v1";
 const JOIN_CHALLENGE_METHOD: &str = "device_join_challenge";
 const JOIN_RESPONSE_METHOD: &str = "device_join_challenge_response";
+const JOIN_CHALLENGE_PLAINTEXT_TYPE: &str = "awiki.device.join.challenge-plaintext.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct InternalCheckpoint {
     document_version: u64,
     document_hash: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JoinChallengePlaintext {
+    #[serde(rename = "type")]
+    plaintext_type: String,
+    random_challenge_b64u: String,
+    document_version: u64,
+    document_hash: String,
+}
+
+impl Drop for JoinChallengePlaintext {
+    fn drop(&mut self) {
+        self.random_challenge_b64u.zeroize();
+    }
+}
+
+struct DecryptedJoinChallenge {
+    canonical_plaintext: SecretBytes,
+    checkpoint: InternalCheckpoint,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -343,13 +365,14 @@ pub(crate) fn prepare_admin_challenge(
         return Err(crate::ImError::SessionExpired);
     }
     let challenge_id = random_id("challenge", JOIN_RANDOM_ID_LEN)?;
-    let mut challenge_plaintext = Zeroizing::new([0_u8; JOIN_CHALLENGE_LEN]);
+    let mut random_challenge = Zeroizing::new([0_u8; JOIN_CHALLENGE_LEN]);
     rand::rngs::OsRng
-        .try_fill_bytes(challenge_plaintext.as_mut())
+        .try_fill_bytes(random_challenge.as_mut())
         .map_err(|_| crate::ImError::Internal {
             message: "secure Join challenge generation failed".to_owned(),
         })?;
-    let challenge_hash = hash_bytes(challenge_plaintext.as_ref());
+    let challenge_plaintext = encode_challenge_plaintext(&random_challenge, &checkpoint)?;
+    let challenge_hash = hash_bytes(challenge_plaintext.as_slice());
     let admin_pairing_private =
         anp::PrivateKeyMaterial::X25519(X25519StaticSecret::random_from_rng(rand::rngs::OsRng));
     let admin_pairing_public_key = x25519_public_b64u(&admin_pairing_private.public_key())?;
@@ -362,7 +385,7 @@ pub(crate) fn prepare_admin_challenge(
         &admin_device_id,
         &admin_pairing_public_key,
         &challenge_expires_at,
-        challenge_plaintext.as_ref(),
+        challenge_plaintext.as_slice(),
     )?;
     let created_at = format_time(now)?;
     let params = challenge_params_value(
@@ -464,7 +487,8 @@ pub(crate) fn respond_as_new_device(
         })?;
     normalize_expiry(core, &store, &mut stored)?;
     ensure_not_expired(&stored)?;
-    let checkpoint = validate_checkpoint(request.document_version, &request.document_hash)?;
+    let resolved_checkpoint =
+        validate_checkpoint(request.document_version, &request.document_hash)?;
     let input_hash = canonical_hash(&json!({
         "operation_id": request.operation_id,
         "challenge": request.challenge,
@@ -535,19 +559,20 @@ pub(crate) fn respond_as_new_device(
         .ok_or_else(|| invalid_state("new-device E2EE key reference missing"))?;
     let e2ee_private =
         open_private_key(&*vault, e2ee_ref, SecretKind::IdentityE2eeAgreementPrivate)?;
-    let challenge_plaintext = decrypt_challenge(
+    let decrypted_challenge = decrypt_challenge(
         &e2ee_private,
         &stored.join_request,
         &stored.join_request_hash,
         &request.challenge,
     )?;
-    let challenge_hash = hash_bytes(challenge_plaintext.expose_secret());
+    ensure_challenge_checkpoint(&decrypted_challenge.checkpoint, &resolved_checkpoint)?;
+    let challenge_hash = hash_bytes(decrypted_challenge.canonical_plaintext.expose_secret());
     let transcript = join_transcript(
         &stored.join_request,
         &stored.join_request_hash,
         &request.challenge,
         &challenge_hash,
-        &checkpoint,
+        &decrypted_challenge.checkpoint,
     )?;
     let pairing_transcript_hash = canonical_hash(&transcript)?;
     let created_at = format_time(OffsetDateTime::now_utc())?;
@@ -593,7 +618,7 @@ pub(crate) fn respond_as_new_device(
     stored.phase = DeviceJoinLocalPhase::ResponsePrepared;
     stored.transition_operation_id = Some(request.operation_id);
     stored.transition_input_hash = Some(input_hash);
-    stored.checkpoint = Some(checkpoint);
+    stored.checkpoint = Some(decrypted_challenge.checkpoint);
     stored.challenge = Some(request.challenge);
     stored.challenge_hash = Some(challenge_hash);
     stored.response = Some(response.clone());
@@ -1172,7 +1197,7 @@ fn decrypt_challenge(
     join_request: &DeviceJoinRequest,
     join_request_hash: &str,
     challenge: &DeviceJoinChallenge,
-) -> crate::ImResult<SecretBytes> {
+) -> crate::ImResult<DecryptedJoinChallenge> {
     if challenge.ciphertext.algorithm != DEVICE_JOIN_CHALLENGE_ALGORITHM {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -1209,10 +1234,68 @@ fn decrypt_challenge(
             },
         )
         .map_err(|_| crate::ImError::PermissionDenied)?;
-    if plaintext.len() != JOIN_CHALLENGE_LEN {
+    parse_challenge_plaintext(SecretBytes::from_vec(plaintext))
+}
+
+fn encode_challenge_plaintext(
+    random_challenge: &[u8; JOIN_CHALLENGE_LEN],
+    checkpoint: &InternalCheckpoint,
+) -> crate::ImResult<Zeroizing<Vec<u8>>> {
+    let plaintext = JoinChallengePlaintext {
+        plaintext_type: JOIN_CHALLENGE_PLAINTEXT_TYPE.to_owned(),
+        random_challenge_b64u: URL_SAFE_NO_PAD.encode(random_challenge),
+        document_version: checkpoint.document_version,
+        document_hash: checkpoint.document_hash.clone(),
+    };
+    serde_json_canonicalizer::to_vec(&plaintext)
+        .map(Zeroizing::new)
+        .map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })
+}
+
+fn parse_challenge_plaintext(
+    canonical_plaintext: SecretBytes,
+) -> crate::ImResult<DecryptedJoinChallenge> {
+    let plaintext: JoinChallengePlaintext =
+        serde_json::from_slice(canonical_plaintext.expose_secret())
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+    if plaintext.plaintext_type != JOIN_CHALLENGE_PLAINTEXT_TYPE {
         return Err(crate::ImError::PermissionDenied);
     }
-    Ok(SecretBytes::from_vec(plaintext))
+    let canonical = Zeroizing::new(
+        serde_json_canonicalizer::to_vec(&plaintext)
+            .map_err(|_| crate::ImError::PermissionDenied)?,
+    );
+    if canonical.as_slice() != canonical_plaintext.expose_secret() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let mut random_challenge = URL_SAFE_NO_PAD
+        .decode(plaintext.random_challenge_b64u.as_bytes())
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let canonical_random_challenge = Zeroizing::new(URL_SAFE_NO_PAD.encode(&random_challenge));
+    let valid_random_challenge = random_challenge.len() == JOIN_CHALLENGE_LEN
+        && canonical_random_challenge.as_str() == plaintext.random_challenge_b64u;
+    random_challenge.zeroize();
+    if !valid_random_challenge {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let checkpoint = validate_checkpoint(plaintext.document_version, &plaintext.document_hash)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    Ok(DecryptedJoinChallenge {
+        canonical_plaintext,
+        checkpoint,
+    })
+}
+
+fn ensure_challenge_checkpoint(
+    challenge_checkpoint: &InternalCheckpoint,
+    resolved_checkpoint: &InternalCheckpoint,
+) -> crate::ImResult<()> {
+    if challenge_checkpoint != resolved_checkpoint {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
 }
 
 fn challenge_aad(
