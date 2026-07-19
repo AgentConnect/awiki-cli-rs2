@@ -1,0 +1,1053 @@
+//! Minimal product runtime for established P5 v2 exact-device sessions.
+//!
+//! This layer is reusable by text/JSON callers. It owns no AWiki control
+//! schema: callers provide a validated P5 application plaintext and may attach
+//! same-domain transport metadata that is persisted beside (never inside) the
+//! exact retry ciphertext.
+
+use anp::direct_e2ee::{
+    direct_send_request_v2, parse_direct_send_result_v2, V2ApplicationPlaintext, V2DirectBody,
+    V2DirectCipherBody, V2DirectE2eeSession, V2DirectInitBody, V2DirectMetadata,
+    V2DirectSendResult, V2DirectSessionState, V2GetPrekeyBundleResult, V2PendingOutboundRecord,
+    V2SessionBinding, V2Target, CONTENT_TYPE_DIRECT_CIPHER_V2, CONTENT_TYPE_DIRECT_INIT_V2,
+    DIRECT_E2EE_PROFILE_V2, DIRECT_E2EE_SECURITY_PROFILE,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use sha2::{Digest as _, Sha256};
+
+use super::v2_store::{
+    SqliteV2DirectStateStore, V2InboundCommit, V2PrivateOutboundSidecar, V2SessionExpectation,
+};
+
+pub(crate) const SESSION_ESTABLISH_SYSTEM_TYPE: &str = "awiki.device.session-establish.v1";
+pub(crate) const SESSION_ESTABLISHED_SYSTEM_TYPE: &str = "awiki.device.session-established.v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V2SessionControlKind {
+    Establish,
+    Established,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct V2SessionControlPayload {
+    system_type: String,
+    #[serde(default)]
+    init_message_id: Option<String>,
+}
+
+pub(crate) fn session_establish_plaintext() -> V2ApplicationPlaintext {
+    session_control_plaintext(
+        serde_json::json!({"system_type": SESSION_ESTABLISH_SYSTEM_TYPE}),
+        None,
+    )
+}
+
+pub(crate) fn session_established_plaintext(
+    init_message_id: &str,
+) -> crate::ImResult<V2ApplicationPlaintext> {
+    require_operation_id(init_message_id)?;
+    Ok(session_control_plaintext(
+        serde_json::json!({
+            "init_message_id": init_message_id,
+            "system_type": SESSION_ESTABLISHED_SYSTEM_TYPE
+        }),
+        Some(init_message_id.to_owned()),
+    ))
+}
+
+pub(crate) fn classify_session_control(
+    plaintext: &V2ApplicationPlaintext,
+) -> crate::ImResult<Option<V2SessionControlKind>> {
+    if plaintext.application_content_type != "application/json" {
+        return Ok(None);
+    }
+    let Some(payload) = plaintext.payload.as_ref() else {
+        return Ok(None);
+    };
+    let Some(system_type) = payload
+        .get("system_type")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Ok(None);
+    };
+    if !matches!(
+        system_type,
+        SESSION_ESTABLISH_SYSTEM_TYPE | SESSION_ESTABLISHED_SYSTEM_TYPE
+    ) {
+        return Ok(None);
+    }
+    let control: V2SessionControlPayload =
+        serde_json::from_value(payload.clone()).map_err(serialization_error)?;
+    match control.system_type.as_str() {
+        SESSION_ESTABLISH_SYSTEM_TYPE if control.init_message_id.is_none() => {
+            Ok(Some(V2SessionControlKind::Establish))
+        }
+        SESSION_ESTABLISHED_SYSTEM_TYPE => {
+            let init_message_id = control
+                .init_message_id
+                .as_deref()
+                .ok_or(crate::ImError::PermissionDenied)?;
+            require_operation_id(init_message_id)?;
+            if plaintext.reply_to_message_id.as_deref() != Some(init_message_id) {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            Ok(Some(V2SessionControlKind::Established))
+        }
+        _ => Err(crate::ImError::PermissionDenied),
+    }
+}
+
+fn session_control_plaintext(
+    payload: serde_json::Value,
+    reply_to_message_id: Option<String>,
+) -> V2ApplicationPlaintext {
+    V2ApplicationPlaintext {
+        application_content_type: "application/json".to_owned(),
+        logical_message_id: None,
+        conversation_id: None,
+        reply_to_message_id,
+        annotations: None,
+        text: None,
+        payload: Some(payload),
+        payload_b64u: None,
+    }
+}
+
+pub(crate) struct V2EstablishedDirectRuntime<'a, 'connection> {
+    store: &'a SqliteV2DirectStateStore<'connection>,
+}
+
+impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
+    pub(crate) fn new(store: &'a SqliteV2DirectStateStore<'connection>) -> Self {
+        Self { store }
+    }
+
+    /// Encrypts and persists a follow-up before it can be sent. Repeating the
+    /// same operation returns the byte-identical pending ciphertext.
+    pub(crate) fn prepare_outbound(
+        &self,
+        binding: &V2SessionBinding,
+        operation_id: &str,
+        plaintext: &V2ApplicationPlaintext,
+        now: &str,
+    ) -> crate::ImResult<PreparedV2Outbound> {
+        self.prepare_outbound_inner(binding, operation_id, plaintext, now, None)
+    }
+
+    /// Creates and durably persists the first standard P5 v2 Init for an
+    /// exact device pair. The caller must verify the fetched bundle against
+    /// the current target DID document before calling this method.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_session_init(
+        &self,
+        binding: &V2SessionBinding,
+        operation_id: &str,
+        plaintext: &V2ApplicationPlaintext,
+        local_static_private: &x25519_dalek::StaticSecret,
+        recipient: &V2GetPrekeyBundleResult,
+        recipient_static_public: &[u8; 32],
+        now: &str,
+    ) -> crate::ImResult<PreparedV2Outbound> {
+        binding.validate().map_err(v2_error)?;
+        plaintext.validate().map_err(v2_error)?;
+        recipient.validate().map_err(v2_error)?;
+        require_operation_id(operation_id)?;
+        if recipient.target_did != binding.peer_did
+            || recipient.target_device_id != binding.peer_device_id
+            || recipient.prekey_bundle.static_key_agreement_id != binding.peer_e2ee_key_id
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if let Some(existing) = self.store.load_pending(binding, operation_id)? {
+            if self
+                .store
+                .load_private_outbound_sidecar(binding, operation_id)?
+                .is_some()
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            return prepared_from_pending(existing, None);
+        }
+        if self.store.select_established_session(binding)?.is_some() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let metadata =
+            outbound_metadata_for_content_type(binding, operation_id, CONTENT_TYPE_DIRECT_INIT_V2);
+        let (state, pending, body) = V2DirectE2eeSession::initiate_session(
+            binding,
+            &metadata,
+            local_static_private,
+            &recipient.prekey_bundle,
+            recipient_static_public,
+            recipient.one_time_prekey.as_ref(),
+            plaintext,
+        )
+        .map_err(v2_error)?;
+        self.store
+            .commit_outbound(&state, &pending, V2SessionExpectation::Absent, now)?;
+        Ok(PreparedV2Outbound {
+            binding: binding.clone(),
+            metadata,
+            body: V2DirectBody::Init(body),
+            sidecar: None,
+        })
+    }
+
+    /// Same as `prepare_outbound`, but atomically persists a same-domain
+    /// sidecar needed to resume a private control request after restart.
+    pub(crate) fn prepare_private_outbound(
+        &self,
+        binding: &V2SessionBinding,
+        operation_id: &str,
+        plaintext: &V2ApplicationPlaintext,
+        now: &str,
+        sidecar: V2PrivateOutboundSidecar,
+    ) -> crate::ImResult<PreparedV2Outbound> {
+        self.prepare_outbound_inner(binding, operation_id, plaintext, now, Some(sidecar))
+    }
+
+    fn prepare_outbound_inner(
+        &self,
+        binding: &V2SessionBinding,
+        operation_id: &str,
+        plaintext: &V2ApplicationPlaintext,
+        now: &str,
+        sidecar: Option<V2PrivateOutboundSidecar>,
+    ) -> crate::ImResult<PreparedV2Outbound> {
+        binding.validate().map_err(v2_error)?;
+        plaintext.validate().map_err(v2_error)?;
+        require_operation_id(operation_id)?;
+        if let Some(existing) = self.store.load_pending(binding, operation_id)? {
+            let existing_sidecar = self
+                .store
+                .load_private_outbound_sidecar(binding, operation_id)?;
+            if existing_sidecar != sidecar {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            return prepared_from_pending(existing, existing_sidecar);
+        }
+        let stored = self
+            .store
+            .select_established_session(binding)?
+            .ok_or_else(|| crate::ImError::unsupported("p5-v2-established-session-required"))?;
+        let metadata = outbound_metadata(binding, operation_id);
+        let mut next_state = stored.state;
+        let (pending, body) =
+            V2DirectE2eeSession::encrypt_follow_up(&mut next_state, binding, &metadata, plaintext)
+                .map_err(v2_error)?;
+        match sidecar.as_ref() {
+            Some(sidecar) => self.store.commit_outbound_with_private_sidecar(
+                &next_state,
+                &pending,
+                V2SessionExpectation::Revision(stored.revision),
+                now,
+                sidecar,
+            )?,
+            None => self.store.commit_outbound(
+                &next_state,
+                &pending,
+                V2SessionExpectation::Revision(stored.revision),
+                now,
+            )?,
+        }
+        Ok(PreparedV2Outbound {
+            binding: binding.clone(),
+            metadata,
+            body: V2DirectBody::Cipher(body),
+            sidecar,
+        })
+    }
+
+    /// Loads an exact private-control retry without opening or reconstructing
+    /// its encrypted inner plaintext.
+    pub(crate) fn resume_private_outbound(
+        &self,
+        binding: &V2SessionBinding,
+        operation_id: &str,
+    ) -> crate::ImResult<Option<PreparedV2Outbound>> {
+        let Some(pending) = self.store.load_pending(binding, operation_id)? else {
+            if self
+                .store
+                .load_private_outbound_sidecar(binding, operation_id)?
+                .is_some()
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            return Ok(None);
+        };
+        let sidecar = self
+            .store
+            .load_private_outbound_sidecar(binding, operation_id)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        prepared_from_pending(pending, Some(sidecar)).map(Some)
+    }
+
+    /// Loads a standard P5 v2 Init/Cipher retry without advancing a ratchet.
+    pub(crate) fn resume_outbound(
+        &self,
+        binding: &V2SessionBinding,
+        operation_id: &str,
+    ) -> crate::ImResult<Option<PreparedV2Outbound>> {
+        let Some(pending) = self.store.load_pending(binding, operation_id)? else {
+            return Ok(None);
+        };
+        if self
+            .store
+            .load_private_outbound_sidecar(binding, operation_id)?
+            .is_some()
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        prepared_from_pending(pending, None).map(Some)
+    }
+
+    pub(crate) fn mark_outbound_accepted(
+        &self,
+        prepared: &PreparedV2Outbound,
+    ) -> crate::ImResult<bool> {
+        self.store
+            .mark_pending_accepted(&prepared.binding(), &prepared.metadata.operation_id)
+    }
+
+    /// Decrypts one exact cipher and atomically commits the advanced ratchet
+    /// and replay marker. Exact replay is reported without a second decrypt.
+    pub(crate) fn decrypt_inbound(
+        &self,
+        binding: &V2SessionBinding,
+        metadata: &V2DirectMetadata,
+        body: &V2DirectCipherBody,
+        now: &str,
+    ) -> crate::ImResult<V2InboundDecryptOutcome> {
+        binding.validate().map_err(v2_error)?;
+        metadata.validate().map_err(v2_error)?;
+        body.validate().map_err(v2_error)?;
+        let session_id = body.session_id.as_str();
+        let digest = cipher_digest(body)?;
+        if self
+            .store
+            .is_exact_inbound_replay(binding, &metadata.message_id, &digest, session_id)?
+        {
+            let stored = self
+                .store
+                .load_session(binding, session_id)?
+                .ok_or(crate::ImError::PermissionDenied)?;
+            return Ok(V2InboundDecryptOutcome::Replay {
+                session: stored.state,
+            });
+        }
+        let stored = self
+            .store
+            .load_session(binding, &body.session_id)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let mut next_state = stored.state;
+        let plaintext =
+            V2DirectE2eeSession::decrypt_follow_up(&mut next_state, binding, metadata, body)
+                .map_err(v2_error)?;
+        match self.store.commit_inbound(
+            &next_state,
+            &metadata.message_id,
+            &digest,
+            None,
+            V2SessionExpectation::Revision(stored.revision),
+            now,
+        )? {
+            V2InboundCommit::Applied => Ok(V2InboundDecryptOutcome::Decrypted {
+                plaintext,
+                session: next_state,
+            }),
+            V2InboundCommit::Replay => {
+                let stored = self
+                    .store
+                    .load_session(binding, &body.session_id)?
+                    .ok_or(crate::ImError::PermissionDenied)?;
+                Ok(V2InboundDecryptOutcome::Replay {
+                    session: stored.state,
+                })
+            }
+        }
+    }
+
+    /// Accepts an Init once the caller has resolved the peer's current DID
+    /// document and extracted both exact-device static X25519 keys.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decrypt_inbound_init(
+        &self,
+        binding: &V2SessionBinding,
+        metadata: &V2DirectMetadata,
+        body: &V2DirectInitBody,
+        local_static_private: &x25519_dalek::StaticSecret,
+        sender_static_public: &[u8; 32],
+        now: &str,
+    ) -> crate::ImResult<V2InboundDecryptOutcome> {
+        binding.validate().map_err(v2_error)?;
+        metadata.validate().map_err(v2_error)?;
+        body.validate().map_err(v2_error)?;
+        let session_id = body.session_id.as_str();
+        let digest = init_digest(body)?;
+        if self
+            .store
+            .is_exact_inbound_replay(binding, &metadata.message_id, &digest, session_id)?
+        {
+            let stored = self
+                .store
+                .load_session(binding, session_id)?
+                .ok_or(crate::ImError::PermissionDenied)?;
+            return Ok(V2InboundDecryptOutcome::Replay {
+                session: stored.state,
+            });
+        }
+        let local = self
+            .store
+            .load_active_bundle()?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let opk = body
+            .recipient_one_time_prekey_id
+            .as_deref()
+            .map(|key_id| self.store.load_available_opk(key_id))
+            .transpose()?
+            .flatten();
+        if body.recipient_one_time_prekey_id.is_some() != opk.is_some() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let (next_state, plaintext, consumed_opk_id) = V2DirectE2eeSession::accept_incoming_init(
+            binding,
+            metadata,
+            local_static_private,
+            &local.bundle,
+            &local.signed_prekey_private,
+            opk.as_ref().map(|opk| (&opk.public, &opk.private)),
+            sender_static_public,
+            body,
+        )
+        .map_err(v2_error)?;
+        match self.store.commit_inbound(
+            &next_state,
+            &metadata.message_id,
+            &digest,
+            consumed_opk_id.as_deref(),
+            V2SessionExpectation::Absent,
+            now,
+        )? {
+            V2InboundCommit::Applied => Ok(V2InboundDecryptOutcome::Decrypted {
+                plaintext,
+                session: next_state,
+            }),
+            V2InboundCommit::Replay => {
+                let stored = self
+                    .store
+                    .load_session(binding, &body.session_id)?
+                    .ok_or(crate::ImError::PermissionDenied)?;
+                Ok(V2InboundDecryptOutcome::Replay {
+                    session: stored.state,
+                })
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PreparedV2Outbound {
+    binding: V2SessionBinding,
+    pub(crate) metadata: V2DirectMetadata,
+    pub(crate) body: V2DirectBody,
+    pub(crate) sidecar: Option<V2PrivateOutboundSidecar>,
+}
+
+impl PreparedV2Outbound {
+    pub(crate) fn binding(&self) -> V2SessionBinding {
+        self.binding.clone()
+    }
+
+    pub(crate) fn direct_request(&self) -> crate::ImResult<serde_json::Value> {
+        direct_send_request_v2(self.metadata.clone(), self.body.clone()).map_err(v2_error)
+    }
+
+    pub(crate) fn init_body(&self) -> crate::ImResult<&V2DirectInitBody> {
+        match &self.body {
+            V2DirectBody::Init(body) => Ok(body),
+            V2DirectBody::Cipher(_) => Err(crate::ImError::PermissionDenied),
+        }
+    }
+
+    pub(crate) fn cipher_body(&self) -> crate::ImResult<&V2DirectCipherBody> {
+        match &self.body {
+            V2DirectBody::Cipher(body) => Ok(body),
+            V2DirectBody::Init(_) => Err(crate::ImError::PermissionDenied),
+        }
+    }
+}
+
+pub(crate) enum V2InboundDecryptOutcome {
+    Decrypted {
+        plaintext: V2ApplicationPlaintext,
+        session: V2DirectSessionState,
+    },
+    Replay {
+        session: V2DirectSessionState,
+    },
+}
+
+pub(crate) fn parse_send_result(
+    value: &serde_json::Value,
+    prepared: &PreparedV2Outbound,
+) -> crate::ImResult<V2DirectSendResult> {
+    let result = parse_direct_send_result_v2(value).map_err(v2_error)?;
+    if result.message_id != prepared.metadata.message_id
+        || result.operation_id != prepared.metadata.operation_id
+        || result.target_did != prepared.metadata.target.did
+        || result.recipient_device_id != prepared.metadata.recipient_device_id
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(result)
+}
+
+fn prepared_from_pending(
+    pending: V2PendingOutboundRecord,
+    sidecar: Option<V2PrivateOutboundSidecar>,
+) -> crate::ImResult<PreparedV2Outbound> {
+    pending.validate().map_err(v2_error)?;
+    let body = match pending.wire_content_type.as_str() {
+        CONTENT_TYPE_DIRECT_INIT_V2 => {
+            V2DirectBody::Init(serde_json::from_value(pending.body).map_err(serialization_error)?)
+        }
+        CONTENT_TYPE_DIRECT_CIPHER_V2 => {
+            V2DirectBody::Cipher(serde_json::from_value(pending.body).map_err(serialization_error)?)
+        }
+        _ => return Err(crate::ImError::PermissionDenied),
+    };
+    Ok(PreparedV2Outbound {
+        binding: pending.binding.clone(),
+        metadata: outbound_metadata_for_content_type(
+            &pending.binding,
+            &pending.operation_id,
+            &pending.wire_content_type,
+        ),
+        body,
+        sidecar,
+    })
+}
+
+fn outbound_metadata(binding: &V2SessionBinding, operation_id: &str) -> V2DirectMetadata {
+    outbound_metadata_for_content_type(binding, operation_id, CONTENT_TYPE_DIRECT_CIPHER_V2)
+}
+
+fn outbound_metadata_for_content_type(
+    binding: &V2SessionBinding,
+    operation_id: &str,
+    content_type: &str,
+) -> V2DirectMetadata {
+    V2DirectMetadata {
+        anp_version: None,
+        profile: DIRECT_E2EE_PROFILE_V2.to_owned(),
+        security_profile: DIRECT_E2EE_SECURITY_PROFILE.to_owned(),
+        sender_did: binding.local_did.clone(),
+        sender_device_id: binding.local_device_id.clone(),
+        target: V2Target {
+            kind: "agent".to_owned(),
+            did: binding.peer_did.clone(),
+        },
+        recipient_device_id: binding.peer_device_id.clone(),
+        operation_id: operation_id.to_owned(),
+        message_id: operation_id.to_owned(),
+        content_type: content_type.to_owned(),
+        created_at: None,
+    }
+}
+
+fn init_digest(body: &V2DirectInitBody) -> crate::ImResult<String> {
+    body_digest(body)
+}
+
+fn cipher_digest(body: &V2DirectCipherBody) -> crate::ImResult<String> {
+    body_digest(body)
+}
+
+fn body_digest<T: serde::Serialize>(body: &T) -> crate::ImResult<String> {
+    let encoded = serde_json::to_vec(body).map_err(serialization_error)?;
+    Ok(format!(
+        "sha256:{}",
+        URL_SAFE_NO_PAD.encode(Sha256::digest(encoded))
+    ))
+}
+
+fn require_operation_id(value: &str) -> crate::ImResult<()> {
+    if value.trim().is_empty() || value != value.trim() {
+        Err(crate::ImError::invalid_input(
+            Some("operation_id".to_owned()),
+            "operation_id must be a non-empty exact value",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn serialization_error(error: serde_json::Error) -> crate::ImError {
+    crate::ImError::Serialization {
+        detail: error.to_string(),
+    }
+}
+
+fn v2_error(_: anp::direct_e2ee::DirectE2eeV2Error) -> crate::ImError {
+    crate::ImError::PermissionDenied
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
+        IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
+        IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+    };
+    use crate::internal::secure_direct::secret_store::DirectSecretVault;
+    use crate::internal::secure_direct::v2_store::{SqliteV2DirectStateStore, V2OwnerScope};
+    use crate::vault::{DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore};
+    use anp::direct_e2ee::{
+        V2DirectSessionState, V2GetPrekeyBundleResult, V2OneTimePrekey, V2PrekeyBundle,
+        V2SignedPrekey, DIRECT_E2EE_V2_SESSION_STATE_FORMAT, MTI_DIRECT_E2EE_SUITE_V2,
+        V2_SESSION_STATUS_ESTABLISHED,
+    };
+    use rusqlite::Connection;
+    use std::sync::Arc;
+
+    fn scope(identity_id: &str, did: &str, device_id: &str, key_id: &str) -> V2OwnerScope {
+        let did = crate::ids::Did::parse(did).unwrap();
+        V2OwnerScope::from_identity_state(
+            &crate::ids::IdentityId::parse(identity_id).unwrap(),
+            &did,
+            &IdentityDeviceState {
+                schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                mode: IdentityDeviceMode::VNext,
+                authorization: Some(DeviceAuthorizationProjection {
+                    protocol_device_id: crate::ids::ProtocolDeviceId::parse(device_id).unwrap(),
+                    signing_key_id: format!("{}#sign", did.as_str()),
+                    e2ee_key_id: key_id.to_owned(),
+                    status: DeviceAuthorizationStatus::Active,
+                    role: DeviceAuthorizationRole::Admin,
+                    management_ready: true,
+                    auth_generation: 1,
+                }),
+                checkpoint: Some(IdentityInternalCheckpoint {
+                    document_version: 1,
+                    document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+                    registry_version: 1,
+                }),
+            },
+        )
+        .unwrap()
+    }
+
+    fn vault(path: &std::path::Path, byte: u8) -> DirectSecretVault {
+        Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([byte; 32]),
+            FileSecretVaultStore::new(path),
+        ))
+    }
+
+    fn established_pair() -> (V2DirectSessionState, V2DirectSessionState) {
+        let alice_ratchet = x25519_dalek::StaticSecret::from([7; 32]);
+        let bob_ratchet = x25519_dalek::StaticSecret::from([8; 32]);
+        let alice_public = x25519_dalek::PublicKey::from(&alice_ratchet).to_bytes();
+        let bob_public = x25519_dalek::PublicKey::from(&bob_ratchet).to_bytes();
+        let session_id = URL_SAFE_NO_PAD.encode([1; 16]);
+        let common_root = URL_SAFE_NO_PAD.encode([2; 32]);
+        let alice_binding = V2SessionBinding {
+            local_did: "did:example:alice".to_owned(),
+            local_device_id: "alice-phone".to_owned(),
+            peer_did: "did:example:alice".to_owned(),
+            peer_device_id: "alice-laptop".to_owned(),
+            suite: MTI_DIRECT_E2EE_SUITE_V2.to_owned(),
+            local_e2ee_key_id: "did:example:alice#phone-e2ee".to_owned(),
+            peer_e2ee_key_id: "did:example:alice#laptop-e2ee".to_owned(),
+        };
+        let bob_binding = V2SessionBinding {
+            local_did: alice_binding.peer_did.clone(),
+            local_device_id: alice_binding.peer_device_id.clone(),
+            peer_did: alice_binding.local_did.clone(),
+            peer_device_id: alice_binding.local_device_id.clone(),
+            suite: alice_binding.suite.clone(),
+            local_e2ee_key_id: alice_binding.peer_e2ee_key_id.clone(),
+            peer_e2ee_key_id: alice_binding.local_e2ee_key_id.clone(),
+        };
+        let alice = V2DirectSessionState {
+            state_format: DIRECT_E2EE_V2_SESSION_STATE_FORMAT.to_owned(),
+            binding: alice_binding,
+            session_id: session_id.clone(),
+            root_key_b64u: common_root.clone(),
+            send_chain_key_b64u: Some(URL_SAFE_NO_PAD.encode([3; 32])),
+            recv_chain_key_b64u: Some(URL_SAFE_NO_PAD.encode([4; 32])),
+            ratchet_private_key_b64u: URL_SAFE_NO_PAD.encode(alice_ratchet.to_bytes()),
+            ratchet_public_key_b64u: URL_SAFE_NO_PAD.encode(alice_public),
+            peer_ratchet_public_key_b64u: Some(URL_SAFE_NO_PAD.encode(bob_public)),
+            send_n: 0,
+            recv_n: 0,
+            previous_send_chain_length: 0,
+            skipped_message_keys: vec![],
+            is_initiator: true,
+            status: V2_SESSION_STATUS_ESTABLISHED.to_owned(),
+            disabled: false,
+        };
+        let bob = V2DirectSessionState {
+            state_format: DIRECT_E2EE_V2_SESSION_STATE_FORMAT.to_owned(),
+            binding: bob_binding,
+            session_id,
+            root_key_b64u: common_root,
+            send_chain_key_b64u: Some(URL_SAFE_NO_PAD.encode([4; 32])),
+            recv_chain_key_b64u: Some(URL_SAFE_NO_PAD.encode([3; 32])),
+            ratchet_private_key_b64u: URL_SAFE_NO_PAD.encode(bob_ratchet.to_bytes()),
+            ratchet_public_key_b64u: URL_SAFE_NO_PAD.encode(bob_public),
+            peer_ratchet_public_key_b64u: Some(URL_SAFE_NO_PAD.encode(alice_public)),
+            send_n: 0,
+            recv_n: 0,
+            previous_send_chain_length: 0,
+            skipped_message_keys: vec![],
+            is_initiator: false,
+            status: V2_SESSION_STATUS_ESTABLISHED.to_owned(),
+            disabled: false,
+        };
+        (alice, bob)
+    }
+
+    #[test]
+    fn exact_private_retry_survives_restart_and_decrypts_once() {
+        let root = tempfile::tempdir().unwrap();
+        let alice_db = Connection::open(root.path().join("alice.sqlite")).unwrap();
+        let bob_db = Connection::open(root.path().join("bob.sqlite")).unwrap();
+        let alice_vault = vault(&root.path().join("alice-vault"), 31);
+        let bob_vault = vault(&root.path().join("bob-vault"), 32);
+        let (alice_state, bob_state) = established_pair();
+        let alice_scope = scope(
+            "identity-alice-phone",
+            "did:example:alice",
+            "alice-phone",
+            "did:example:alice#phone-e2ee",
+        );
+        let bob_scope = scope(
+            "identity-alice-laptop",
+            "did:example:alice",
+            "alice-laptop",
+            "did:example:alice#laptop-e2ee",
+        );
+        let alice_store = SqliteV2DirectStateStore::new_with_secret_vault(
+            &alice_db,
+            alice_vault.clone(),
+            alice_scope.clone(),
+        )
+        .unwrap();
+        let bob_store =
+            SqliteV2DirectStateStore::new_with_secret_vault(&bob_db, bob_vault, bob_scope).unwrap();
+        alice_store
+            .commit_inbound(
+                &alice_state,
+                "setup-alice",
+                "sha256:setup-alice",
+                None,
+                V2SessionExpectation::Absent,
+                "2026-07-20T00:00:00Z",
+            )
+            .unwrap();
+        bob_store
+            .commit_inbound(
+                &bob_state,
+                "setup-bob",
+                "sha256:setup-bob",
+                None,
+                V2SessionExpectation::Absent,
+                "2026-07-20T00:00:00Z",
+            )
+            .unwrap();
+
+        let sidecar = V2PrivateOutboundSidecar {
+            operation_id: "root-message-1".to_owned(),
+            delivery_class: "awiki-root-key-control".to_owned(),
+            context: serde_json::json!({
+                "transport_context": {"message_id": "root-message-1"},
+                "completion": null
+            }),
+        };
+        let plaintext = V2ApplicationPlaintext {
+            application_content_type: "application/json".to_owned(),
+            logical_message_id: None,
+            conversation_id: None,
+            reply_to_message_id: None,
+            annotations: None,
+            text: None,
+            payload: Some(serde_json::json!({
+                "system_type": "awiki.device.root-key.v1",
+                "opaque_test_value": "secret"
+            })),
+            payload_b64u: None,
+        };
+        let runtime = V2EstablishedDirectRuntime::new(&alice_store);
+        let first = runtime
+            .prepare_private_outbound(
+                &alice_state.binding,
+                "root-message-1",
+                &plaintext,
+                "2026-07-20T00:00:01Z",
+                sidecar.clone(),
+            )
+            .unwrap();
+        drop(runtime);
+        drop(alice_store);
+
+        let restarted_store =
+            SqliteV2DirectStateStore::new_with_secret_vault(&alice_db, alice_vault, alice_scope)
+                .unwrap();
+        let restarted = V2EstablishedDirectRuntime::new(&restarted_store);
+        let retry = restarted
+            .resume_private_outbound(&alice_state.binding, "root-message-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.body, first.body);
+        assert_eq!(retry.sidecar, Some(sidecar));
+        assert_eq!(
+            retry.direct_request().unwrap(),
+            first.direct_request().unwrap()
+        );
+
+        let bob_runtime = V2EstablishedDirectRuntime::new(&bob_store);
+        let inbound = bob_runtime
+            .decrypt_inbound(
+                &bob_state.binding,
+                &first.metadata,
+                first.cipher_body().unwrap(),
+                "2026-07-20T00:00:02Z",
+            )
+            .unwrap();
+        let V2InboundDecryptOutcome::Decrypted { plaintext, .. } = inbound else {
+            panic!("first delivery must decrypt");
+        };
+        assert_eq!(plaintext.payload.unwrap()["opaque_test_value"], "secret");
+        assert!(matches!(
+            bob_runtime
+                .decrypt_inbound(
+                    &bob_state.binding,
+                    &first.metadata,
+                    first.cipher_body().unwrap(),
+                    "2026-07-20T00:00:03Z"
+                )
+                .unwrap(),
+            V2InboundDecryptOutcome::Replay { .. }
+        ));
+
+        assert!(restarted.mark_outbound_accepted(&retry).unwrap());
+        assert!(restarted
+            .resume_private_outbound(&alice_state.binding, "root-message-1")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn empty_stores_establish_with_init_accept_first_reply_and_exact_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let alice_db = Connection::open(root.path().join("alice-empty.sqlite")).unwrap();
+        let bob_db = Connection::open(root.path().join("bob-empty.sqlite")).unwrap();
+        let alice_vault = vault(&root.path().join("alice-empty-vault"), 41);
+        let bob_vault = vault(&root.path().join("bob-empty-vault"), 42);
+        let alice_scope = scope(
+            "identity-alice-phone-empty",
+            "did:example:alice",
+            "alice-phone",
+            "did:example:alice#phone-e2ee",
+        );
+        let bob_scope = scope(
+            "identity-alice-laptop-empty",
+            "did:example:alice",
+            "alice-laptop",
+            "did:example:alice#laptop-e2ee",
+        );
+        let alice_binding = V2SessionBinding {
+            local_did: "did:example:alice".to_owned(),
+            local_device_id: "alice-phone".to_owned(),
+            peer_did: "did:example:alice".to_owned(),
+            peer_device_id: "alice-laptop".to_owned(),
+            suite: MTI_DIRECT_E2EE_SUITE_V2.to_owned(),
+            local_e2ee_key_id: "did:example:alice#phone-e2ee".to_owned(),
+            peer_e2ee_key_id: "did:example:alice#laptop-e2ee".to_owned(),
+        };
+        let bob_binding = V2SessionBinding {
+            local_did: alice_binding.peer_did.clone(),
+            local_device_id: alice_binding.peer_device_id.clone(),
+            peer_did: alice_binding.local_did.clone(),
+            peer_device_id: alice_binding.local_device_id.clone(),
+            suite: alice_binding.suite.clone(),
+            local_e2ee_key_id: alice_binding.peer_e2ee_key_id.clone(),
+            peer_e2ee_key_id: alice_binding.local_e2ee_key_id.clone(),
+        };
+        let alice_static = x25519_dalek::StaticSecret::from([43; 32]);
+        let bob_static = x25519_dalek::StaticSecret::from([44; 32]);
+        let bob_spk = x25519_dalek::StaticSecret::from([45; 32]);
+        let bob_opk = x25519_dalek::StaticSecret::from([46; 32]);
+        let opk = V2OneTimePrekey {
+            key_id: "bob-opk-1".to_owned(),
+            public_key_b64u: URL_SAFE_NO_PAD
+                .encode(x25519_dalek::PublicKey::from(&bob_opk).to_bytes()),
+        };
+        let bundle = V2PrekeyBundle {
+            bundle_id: "bob-bundle-1".to_owned(),
+            owner_did: bob_binding.local_did.clone(),
+            owner_device_id: bob_binding.local_device_id.clone(),
+            suite: MTI_DIRECT_E2EE_SUITE_V2.to_owned(),
+            static_key_agreement_id: bob_binding.local_e2ee_key_id.clone(),
+            signed_prekey: V2SignedPrekey {
+                key_id: "bob-spk-1".to_owned(),
+                public_key_b64u: URL_SAFE_NO_PAD
+                    .encode(x25519_dalek::PublicKey::from(&bob_spk).to_bytes()),
+                expires_at: "2030-01-01T00:00:00Z".to_owned(),
+            },
+            proof: serde_json::json!({
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "verificationMethod": "did:example:alice#laptop-sign",
+                "proofPurpose": "assertionMethod",
+                "created": "2026-07-20T00:00:00Z",
+                "proofValue": "zTestProof"
+            }),
+        };
+
+        let alice_store = SqliteV2DirectStateStore::new_with_secret_vault(
+            &alice_db,
+            alice_vault.clone(),
+            alice_scope.clone(),
+        )
+        .unwrap();
+        let bob_store = SqliteV2DirectStateStore::new_with_secret_vault(
+            &bob_db,
+            bob_vault.clone(),
+            bob_scope.clone(),
+        )
+        .unwrap();
+        assert!(alice_store
+            .select_established_session(&alice_binding)
+            .unwrap()
+            .is_none());
+        assert!(bob_store
+            .select_established_session(&bob_binding)
+            .unwrap()
+            .is_none());
+        bob_store
+            .publish_local_bundle(
+                &bundle,
+                &bob_spk,
+                &[(opk.clone(), bob_opk)],
+                "2026-07-20T00:00:00Z",
+            )
+            .unwrap();
+        let fetched = V2GetPrekeyBundleResult {
+            target_did: bob_binding.local_did.clone(),
+            target_device_id: bob_binding.local_device_id.clone(),
+            prekey_bundle: bundle,
+            one_time_prekey: Some(opk.clone()),
+        };
+        let init_plaintext = session_establish_plaintext();
+        let alice_runtime = V2EstablishedDirectRuntime::new(&alice_store);
+        let init = alice_runtime
+            .prepare_session_init(
+                &alice_binding,
+                "session-init-1",
+                &init_plaintext,
+                &alice_static,
+                &fetched,
+                &x25519_dalek::PublicKey::from(&bob_static).to_bytes(),
+                "2026-07-20T00:00:01Z",
+            )
+            .unwrap();
+        assert!(matches!(init.body, V2DirectBody::Init(_)));
+        drop(alice_runtime);
+        drop(alice_store);
+
+        let restarted_alice_store =
+            SqliteV2DirectStateStore::new_with_secret_vault(&alice_db, alice_vault, alice_scope)
+                .unwrap();
+        let restarted_alice = V2EstablishedDirectRuntime::new(&restarted_alice_store);
+        let init_retry = restarted_alice
+            .prepare_session_init(
+                &alice_binding,
+                "session-init-1",
+                &init_plaintext,
+                &alice_static,
+                &fetched,
+                &x25519_dalek::PublicKey::from(&bob_static).to_bytes(),
+                "2026-07-20T00:00:02Z",
+            )
+            .unwrap();
+        assert_eq!(init_retry, init);
+
+        let bob_runtime = V2EstablishedDirectRuntime::new(&bob_store);
+        let accepted = bob_runtime
+            .decrypt_inbound_init(
+                &bob_binding,
+                &init.metadata,
+                init.init_body().unwrap(),
+                &bob_static,
+                &x25519_dalek::PublicKey::from(&alice_static).to_bytes(),
+                "2026-07-20T00:00:03Z",
+            )
+            .unwrap();
+        let V2InboundDecryptOutcome::Decrypted { plaintext, .. } = accepted else {
+            panic!("fresh init must decrypt");
+        };
+        assert_eq!(
+            classify_session_control(&plaintext).unwrap(),
+            Some(V2SessionControlKind::Establish)
+        );
+        assert_eq!(
+            plaintext.payload.unwrap()["system_type"],
+            "awiki.device.session-establish.v1"
+        );
+        assert!(bob_store.load_available_opk(&opk.key_id).unwrap().is_none());
+        assert!(matches!(
+            bob_runtime
+                .decrypt_inbound_init(
+                    &bob_binding,
+                    &init.metadata,
+                    init.init_body().unwrap(),
+                    &bob_static,
+                    &x25519_dalek::PublicKey::from(&alice_static).to_bytes(),
+                    "2026-07-20T00:00:04Z",
+                )
+                .unwrap(),
+            V2InboundDecryptOutcome::Replay { .. }
+        ));
+        assert!(restarted_alice.mark_outbound_accepted(&init_retry).unwrap());
+
+        let reply_plaintext = session_established_plaintext("session-init-1").unwrap();
+        let reply = bob_runtime
+            .prepare_outbound(
+                &bob_binding,
+                "session-reply-1",
+                &reply_plaintext,
+                "2026-07-20T00:00:05Z",
+            )
+            .unwrap();
+        let received_reply = restarted_alice
+            .decrypt_inbound(
+                &alice_binding,
+                &reply.metadata,
+                reply.cipher_body().unwrap(),
+                "2026-07-20T00:00:06Z",
+            )
+            .unwrap();
+        let V2InboundDecryptOutcome::Decrypted { plaintext, session } = received_reply else {
+            panic!("first reply must decrypt");
+        };
+        assert_eq!(
+            classify_session_control(&plaintext).unwrap(),
+            Some(V2SessionControlKind::Established)
+        );
+        assert_eq!(session.status, V2_SESSION_STATUS_ESTABLISHED);
+
+        let next = restarted_alice
+            .prepare_outbound(
+                &alice_binding,
+                "post-establish-control",
+                &init_plaintext,
+                "2026-07-20T00:00:07Z",
+            )
+            .unwrap();
+        assert!(matches!(next.body, V2DirectBody::Cipher(_)));
+    }
+}
