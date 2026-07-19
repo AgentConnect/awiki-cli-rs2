@@ -134,7 +134,7 @@ pub async fn poll_admin_via_im_core_async(
     )
 }
 
-pub async fn approve_via_im_core_async<F>(
+pub(crate) async fn approve_via_im_core_async<F>(
     resolved: &crate::workspace_config::Resolved,
     selector: IdentitySelector,
     join_session_id: &str,

@@ -6,6 +6,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const SECRET_SENTINEL: &str = "otp-grant-must-never-appear";
 
 #[test]
+fn approval_confirmation_injection_is_not_public_api() {
+    let source = include_str!("../src/m_core_cli_adapter/device_join.rs");
+
+    assert!(source.contains("pub(crate) async fn approve_via_im_core_async<F>"));
+    assert!(!source.contains("pub async fn approve_via_im_core_async<F>"));
+}
+
+#[test]
 fn device_join_commands_fail_closed_before_workspace_open() {
     let workspace = TempDir::new("device-join-gate").expect("workspace");
     let output = awiki_cmd(
