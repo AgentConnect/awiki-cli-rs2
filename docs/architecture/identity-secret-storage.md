@@ -83,6 +83,47 @@ App 侧的具体接入说明放在 `awiki-me/docs/identity-secret-storage.md`。
 
 `VaultRequired` 下注册、恢复、daemon subkey package persistence 和 JWT/token refresh 都必须走 vault-backed persistence，不写新的明文私钥/JWT 文件。
 
+### 4.1 多设备管理设备的 DID root 导入
+
+AWiki 的 root 导入是域内、默认关闭的能力，边界停在现有设备级 Direct E2EE
+结构化 JSON 的加解密 hook，不扩展 ANP P5、AAD 或跨域协议。DID root private key
+与用于打开本地 Vault 的 `DeviceVaultRootKey` / KEK 是两种不同密钥：前者只作为
+`IdentityRootPrivate` secret seal 到接收设备的 `SecretVault`，Identity Registry 只保存
+`SecretRef`，Vault record 由本地 KEK 加密。Core 自己拥有的 RootKeyEnvelope 字符串、
+`SecretBytes` 和序列化缓冲区使用 zeroizing secret 类型，并尽量缩短第三方密钥解析对象的
+作用域；这里不宣称第三方解析库内部的所有临时分配都具备 zeroize 保证。根密钥明文只允许
+短暂存在于 Direct AEAD 边界，不进入普通消息、日志、通知、崩溃报告或常规备份。
+
+root 导入的本地非秘密状态包括：
+
+- Identity index schema v5 的可选 `root_key_import`：保存已消费的 Direct `message_id`、
+  DID/root key id、内部 Document version/hash、两端 device、expiry，以及唯一的设备签名
+  imported completion；不保存 root private key。
+- identity 目录中的短生命周期 pending reservation：只用于 Vault seal 与 index commit
+  之间的崩溃恢复，不包含私钥或 Direct 明文。完全相同 reservation 可恢复；未过期冲突
+  fail closed；旧 reservation 过期后，若当前接收设备仍是 not-ready admin，新的合法
+  `message_id` 可在确认 Vault 中是同一 root 后原子替换 ACK reservation，且不重新 seal。
+- imported completion 是唯一业务 ACK。相同 Envelope/ACK 重放复用首次持久化的完整签名
+  声明，不重新 seal 或覆盖 root；同一 `message_id` 的不同 Envelope 被拒绝。
+
+一致性顺序为：在共享 IdentityIndex mutation lock 内验证当前 Document/Registry 和设备资格，
+写入非秘密 pending reservation，以 seal-if-absent 发布 root Vault record，再原子写入同一份 index image（root
+`SecretRef` + consumed reservation + signed completion + checkpoint），最后尽力删除 pending。
+index image 是本地导入线性化点。若进程在 Vault seal 后、index commit 前退出，后续只能在
+重新验证后的 root 与既有 Vault record 完全相同时复用该 record，绝不覆盖不同 root。
+
+所有 IdentityStore index 的 load-modify-save，以及本地 identity 删除路径，共享同一 OS
+mutation lock；index 本身通过 private temp file、`fsync` 和跨平台 atomic replace 替换
+（Unix rename；Windows `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`）。前者防止
+并发 stale writer 丢失 root `SecretRef`、completion、token/device state 等字段，后者防止
+崩溃留下截断 JSON。上述 schema、lock、pending 和 Document version/hash 都是端内实现状态，
+不进入 DID Document、ANP SDK model 或跨域 wire。
+
+已有 `root_key_import` 的 identity 只能以同 alias、DID、unique id、Vault context 和同一组
+设备密钥做 rootless vNext 重存。重存前会验证现有 Vault root 与 DID public 一致，并逐字节验证 device/auth material，
+并原样保留全部 Vault refs 与 import record；普通 save 不允许借同一 key id 覆盖设备私钥，
+token 轮换继续使用专用 mutation 路径。
+
 ## 5. CLI 当前方案
 
 CLI 的配置入口是 workspace `config.yaml` 的 `secret_storage`：

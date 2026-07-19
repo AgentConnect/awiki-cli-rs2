@@ -1,3 +1,4 @@
+pub(crate) mod atomic_file;
 pub(crate) mod attachment_runtime;
 pub(crate) mod auth;
 pub(crate) mod blob;
@@ -31,6 +32,7 @@ pub(crate) mod identity_recovery_runtime;
 pub(crate) mod identity_registration_runtime;
 pub(crate) mod identity_replace_did_execution;
 pub(crate) mod identity_replace_did_plan;
+pub(crate) mod identity_root_transfer;
 pub(crate) mod identity_runtime;
 pub(crate) mod identity_store;
 pub(crate) mod identity_wire;

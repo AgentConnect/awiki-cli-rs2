@@ -47,6 +47,8 @@ impl<'a> IdentityRegistry<'a> {
         selector: super::IdentitySelector,
     ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
         let paths = &self.core.inner().sdk_paths().identities;
+        let store = crate::internal::identity_store::IdentityStore::new(paths);
+        let index_lock = store.lock_index_mutation()?;
         let mut registry = self.load_registry()?;
         let deleted_index = registry.find_index(selector)?;
         let deleted_entry = registry.entries.remove(deleted_index);
@@ -56,7 +58,7 @@ impl<'a> IdentityRegistry<'a> {
 
         let mut warnings = Vec::new();
         if let Some(identity_dir_name) = deleted_entry.identity_dir_name() {
-            let identity_dir = local_identity_dir(&paths.identity_root_dir, &identity_dir_name)?;
+            let identity_dir = store.local_identity_dir(&identity_dir_name)?;
             match fs::remove_dir_all(&identity_dir) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -82,7 +84,22 @@ impl<'a> IdentityRegistry<'a> {
         }
         registry.apply_default_flags();
         let next_default = registry.default_identity();
-        write_registry(&paths.registry_path, &registry)?;
+        let mut index = store.load_index()?;
+        let index_name = index
+            .credentials
+            .iter()
+            .find(|(name, entry)| {
+                deleted_entry.local_alias.as_deref() == Some(name.as_str())
+                    || entry.unique_id == deleted.id.as_str()
+                    || entry.did == deleted.did.as_str()
+            })
+            .map(|(name, _)| name.clone())
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: deleted.id.as_str().to_owned(),
+            })?;
+        index.credentials.remove(&index_name);
+        index.default_credential_name = registry.default_alias.clone().unwrap_or_default();
+        store.save_index_locked(&index_lock, index)?;
         write_default_identity(
             paths.default_identity_path.as_deref(),
             registry.default_alias.as_deref(),
@@ -100,55 +117,14 @@ impl<'a> IdentityRegistry<'a> {
         &self,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
-        let paths = &self.core.inner().sdk_paths().identities;
-        let mut registry = self.load_registry_async().await?;
-        let deleted_index = registry.find_index(selector)?;
-        let deleted_entry = registry.entries.remove(deleted_index);
-        let deleted = deleted_entry.summary.clone();
-        let was_default = deleted.is_default
-            || registry.default_alias.as_deref() == deleted_entry.local_alias.as_deref();
-
-        let mut warnings = Vec::new();
-        if let Some(identity_dir_name) = deleted_entry.identity_dir_name() {
-            let identity_dir = local_identity_dir(&paths.identity_root_dir, &identity_dir_name)?;
-            match tokio::fs::remove_dir_all(&identity_dir).await {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    warnings.push(format!(
-                        "local identity directory was already missing: {}",
-                        identity_dir.display()
-                    ));
-                }
-                Err(err) => return Err(crate::ImError::from(err)),
-            }
-        } else {
-            warnings.push(format!(
-                "local identity {} did not include a usable directory name",
-                deleted.id.as_str()
-            ));
-        }
-
-        if was_default {
-            registry.default_alias = registry
-                .entries
-                .first()
-                .and_then(|entry| entry.local_alias.clone());
-        }
-        registry.apply_default_flags();
-        let next_default = registry.default_identity();
-        write_registry_async(&paths.registry_path, &registry).await?;
-        write_default_identity_async(
-            paths.default_identity_path.clone(),
-            registry.default_alias.clone(),
-        )
-        .await?;
-
-        Ok(super::DeleteLocalIdentityResult {
-            deleted,
-            was_default,
-            next_default,
-            warnings,
+        let core = self.core.clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            IdentityRegistry::new(&core).delete_local_identity(selector)
         })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?
     }
 
     pub fn resolve(
@@ -1994,6 +1970,7 @@ fn sdk_registry_snapshot(file: SdkRegistryFile) -> crate::ImResult<RegistrySnaps
     Ok(snapshot)
 }
 
+#[cfg(test)]
 fn write_registry(path: &Path, registry: &RegistrySnapshot) -> crate::ImResult<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -2040,52 +2017,6 @@ fn write_registry(path: &Path, registry: &RegistrySnapshot) -> crate::ImResult<(
     Ok(())
 }
 
-async fn write_registry_async(path: &Path, registry: &RegistrySnapshot) -> crate::ImResult<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let file = SdkRegistryFile {
-        default_identity: registry.default_alias.clone(),
-        identities: registry
-            .entries
-            .iter()
-            .map(|entry| SdkIdentityRecord {
-                id: entry.summary.id.as_str().to_string(),
-                did: entry.summary.did.as_str().to_string(),
-                dir_name: entry.dir_name.clone(),
-                handle: entry
-                    .summary
-                    .handle
-                    .as_ref()
-                    .map(|handle| handle.as_str().to_string()),
-                display_name: entry.summary.display_name.clone(),
-                local_alias: entry
-                    .local_alias
-                    .clone()
-                    .or_else(|| entry.summary.local_alias.clone()),
-                device_id: entry.summary.device_id.clone(),
-                is_default: entry.summary.is_default,
-                ready_for_auth: entry.summary.readiness.ready_for_auth,
-                ready_for_messaging: entry.summary.readiness.ready_for_messaging,
-                missing: entry
-                    .summary
-                    .readiness
-                    .missing
-                    .iter()
-                    .map(identity_missing_item_to_string)
-                    .collect(),
-                vault_migration: entry.vault_migration.clone(),
-                device_state: entry.device_state.clone(),
-            })
-            .collect(),
-    };
-    let raw = serde_json::to_vec_pretty(&file).map_err(|err| crate::ImError::Serialization {
-        detail: err.to_string(),
-    })?;
-    tokio::fs::write(path, raw).await?;
-    Ok(())
-}
-
 fn write_default_identity(path: Option<&Path>, default_alias: Option<&str>) -> crate::ImResult<()> {
     let Some(path) = path else {
         return Ok(());
@@ -2098,29 +2029,6 @@ fn write_default_identity(path: Option<&Path>, default_alias: Option<&str>) -> c
             fs::write(path, format!("{alias}\n"))?;
         }
         None => match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(crate::ImError::from(err)),
-        },
-    }
-    Ok(())
-}
-
-async fn write_default_identity_async(
-    path: Option<PathBuf>,
-    default_alias: Option<String>,
-) -> crate::ImResult<()> {
-    let Some(path) = path else {
-        return Ok(());
-    };
-    match default_alias {
-        Some(alias) => {
-            if let Some(parent) = path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-            tokio::fs::write(path, format!("{alias}\n")).await?;
-        }
-        None => match tokio::fs::remove_file(path).await {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(crate::ImError::from(err)),
@@ -2412,6 +2320,92 @@ mod tests {
         .unwrap_err();
 
         assert_registry_error_contains(err, "default identity alias");
+    }
+
+    #[test]
+    fn delete_identity_preserves_other_identity_root_import_replay_record() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = crate::internal::identity_store::IdentityStore::new(&paths.identities);
+        for (alias, did, identity_id, make_default) in [
+            ("alice", "did:example:alice", "alice-id", true),
+            ("bob", "did:example:bob", "bob-id", false),
+        ] {
+            store
+                .save_identity(crate::internal::identity_store::SaveIdentityInput {
+                    local_alias: alias.to_owned(),
+                    did: crate::ids::Did::parse(did).unwrap(),
+                    unique_id: identity_id.to_owned(),
+                    user_id: format!("user-{alias}"),
+                    display_name: alias.to_owned(),
+                    handle: alias.to_owned(),
+                    full_handle: format!("{alias}.example"),
+                    jwt_token: "token".to_owned(),
+                    did_document: Some(json!({"id": did})),
+                    key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,
+                    device_state: None,
+                    key1_private_pem: "private".to_owned(),
+                    key1_public_pem: "public".to_owned(),
+                    e2ee_signing_private_pem: "signing".to_owned(),
+                    e2ee_agreement_private_pem: "agreement".to_owned(),
+                    daemon_subkey_package: None,
+                    make_default,
+                })
+                .unwrap();
+        }
+        let replay_record = json!({
+            "schema_version": 1,
+            "reservation": {
+                "message_id": "root-message-123",
+                "did": "did:example:alice",
+                "root_key_id": "did:example:alice#root",
+                "document_version": 2,
+                "document_hash": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "sender_device_id": "dev-a",
+                "recipient_device_id": "dev-b",
+                "expires_at": "2026-07-19T00:05:00Z"
+            },
+            "completion": {
+                "type": "awiki.device.root-key-imported.v1",
+                "ack_for_message_id": "root-message-123",
+                "did": "did:example:alice",
+                "sending_device_id": "dev-a",
+                "importing_device_id": "dev-b",
+                "root_key_id": "did:example:alice#root",
+                "root_public_key_fingerprint": "e1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "document_version": 2,
+                "document_hash": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "result": "imported",
+                "imported_at": "2026-07-19T00:03:00Z",
+                "device_signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            }
+        });
+        let mut raw: Value =
+            serde_json::from_slice(&std::fs::read(&paths.identities.registry_path).unwrap())
+                .unwrap();
+        raw["credentials"]["alice"]["root_key_import"] = replay_record.clone();
+        std::fs::write(
+            &paths.identities.registry_path,
+            serde_json::to_vec_pretty(&raw).unwrap(),
+        )
+        .unwrap();
+
+        let core = crate::ImCore::new(test_config(), paths).unwrap();
+        core.identities()
+            .delete_local_identity(crate::identity::IdentitySelector::LocalAlias(
+                "bob".to_owned(),
+            ))
+            .unwrap();
+
+        let committed: Value = serde_json::from_slice(
+            &std::fs::read(&core.inner().sdk_paths().identities.registry_path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            committed["credentials"]["alice"]["root_key_import"],
+            replay_record
+        );
+        assert!(committed["credentials"].get("bob").is_none());
     }
 
     #[test]

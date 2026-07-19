@@ -261,6 +261,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "webpki-roots 0.26.11",
+ "windows-sys 0.52.0",
  "x25519-dalek",
  "zeroize",
 ]

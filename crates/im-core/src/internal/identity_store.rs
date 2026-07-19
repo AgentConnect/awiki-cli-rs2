@@ -1,13 +1,15 @@
+use fs2::FileExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use zeroize::Zeroizing;
 
-const INDEX_SCHEMA_VERSION: i64 = 4;
+const INDEX_SCHEMA_VERSION: i64 = 5;
 const IDENTITY_FILE_NAME: &str = "identity.json";
 const AUTH_FILE_NAME: &str = "auth.json";
 const DID_DOCUMENT_FILE_NAME: &str = "did_document.json";
@@ -17,6 +19,7 @@ const E2EE_SIGNING_PRIVATE_FILE_NAME: &str = "e2ee-signing-private.pem";
 const E2EE_AGREEMENT_PRIVATE_FILE_NAME: &str = "e2ee-agreement-private.pem";
 const DAEMON_SUBKEY_PRIVATE_FILE_NAME: &str = "daemon-key-1-private.pem";
 const DAEMON_SUBKEY_PACKAGE_FILE_NAME: &str = "daemon-subkey-package.json";
+const IDENTITY_INDEX_MUTATION_LOCK_FILE: &str = ".identity-index-mutation.lock";
 pub(crate) const IDENTITY_VAULT_MIGRATION_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
@@ -150,9 +153,30 @@ pub(crate) struct IdentityVaultMigrationResult {
     pub(crate) metadata: IdentityVaultMigrationMetadata,
 }
 
+/// Process-wide/repository-wide serialization token for identity-index
+/// load-modify-save operations. Atomic rename protects crash integrity only;
+/// this lock additionally prevents a stale writer from replacing a newer
+/// complete index image.
+pub(crate) struct IdentityIndexMutationLock {
+    file: fs::File,
+    registry_path: PathBuf,
+}
+
+impl Drop for IdentityIndexMutationLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
 impl<'a> IdentityStore<'a> {
     pub(crate) fn new(paths: &'a crate::paths::IdentityRegistryPaths) -> Self {
         Self { paths }
+    }
+
+    /// Resolves one identity index directory without allowing traversal or an
+    /// existing filesystem object that could redirect identity-local writes.
+    pub(crate) fn local_identity_dir(&self, dir_name: &str) -> crate::ImResult<PathBuf> {
+        local_identity_dir(&self.paths.identity_root_dir, dir_name)
     }
 
     pub(crate) fn save_identity(
@@ -164,8 +188,18 @@ impl<'a> IdentityStore<'a> {
 
     pub(crate) fn save_identity_with_secret_storage(
         &self,
+        input: SaveIdentityInput,
+        secret_storage: SaveIdentitySecretStorage,
+    ) -> crate::ImResult<StoredIdentity> {
+        let lock = self.lock_index_mutation()?;
+        self.save_identity_with_secret_storage_locked(input, secret_storage, &lock)
+    }
+
+    fn save_identity_with_secret_storage_locked(
+        &self,
         mut input: SaveIdentityInput,
         secret_storage: SaveIdentitySecretStorage,
+        lock: &IdentityIndexMutationLock,
     ) -> crate::ImResult<StoredIdentity> {
         let local_alias = sanitize_identity_name(&input.local_alias);
         if local_alias.is_empty() {
@@ -188,9 +222,9 @@ impl<'a> IdentityStore<'a> {
         input.handle = handle;
         input.full_handle = full_handle;
 
-        fs::create_dir_all(&self.paths.identity_root_dir)?;
-        set_private_dir_mode(&self.paths.identity_root_dir)?;
         let mut index = self.load_index()?;
+        let preserved_root_import =
+            preserve_imported_root_for_resave(&index, &local_alias, &input, &secret_storage)?;
         let dir_name = preferred_dir_name(&input.unique_id)?;
         for (name, entry) in &index.credentials {
             if name == &local_alias {
@@ -203,7 +237,7 @@ impl<'a> IdentityStore<'a> {
                 ));
             }
         }
-        let identity_dir = self.paths.identity_root_dir.join(&dir_name);
+        let identity_dir = self.local_identity_dir(&dir_name)?;
         let created_at = index
             .credentials
             .get(&local_alias)
@@ -218,18 +252,28 @@ impl<'a> IdentityStore<'a> {
                 ));
             }
         }
-        let vault_metadata = match &secret_storage {
-            SaveIdentitySecretStorage::FileCompat => None,
-            SaveIdentitySecretStorage::Vault {
-                workspace_id,
-                device_id,
-                vault,
-            } => Some(seal_identity_input_to_vault(
-                &input,
-                workspace_id,
-                device_id,
-                vault.as_ref(),
-            )?),
+        fs::create_dir_all(&self.paths.identity_root_dir)?;
+        set_private_dir_mode(&self.paths.identity_root_dir)?;
+        let vault_metadata = if let Some(preserved) = preserved_root_import.as_ref() {
+            // Imported-root identities preserve all deterministic Vault refs.
+            // The preflight below has already proven immutable device/root
+            // material and auth state byte-for-byte, so ordinary save performs
+            // no Vault write. Token rotation uses its dedicated mutation path.
+            Some(preserved.metadata.clone())
+        } else {
+            match &secret_storage {
+                SaveIdentitySecretStorage::FileCompat => None,
+                SaveIdentitySecretStorage::Vault {
+                    workspace_id,
+                    device_id,
+                    vault,
+                } => Some(seal_identity_input_to_vault(
+                    &input,
+                    workspace_id,
+                    device_id,
+                    vault.as_ref(),
+                )?),
+            }
         };
 
         fs::create_dir_all(&identity_dir)?;
@@ -324,6 +368,7 @@ impl<'a> IdentityStore<'a> {
                 .get(&local_alias)
                 .and_then(|entry| entry.device_state.clone())
         });
+        let root_key_import = preserved_root_import.map(|preserved| preserved.import);
         index.credentials.insert(
             local_alias.clone(),
             IndexEntry {
@@ -339,9 +384,10 @@ impl<'a> IdentityStore<'a> {
                 is_default,
                 vault_migration: vault_metadata,
                 device_state,
+                root_key_import,
             },
         );
-        self.save_index(index)?;
+        self.save_index_locked(lock, index)?;
         if is_default {
             self.write_default_identity(&local_alias)?;
         }
@@ -371,6 +417,7 @@ impl<'a> IdentityStore<'a> {
         secret_storage: SaveIdentitySecretStorage,
         archived_identity_names: &[String],
     ) -> crate::ImResult<StoredIdentity> {
+        let lock = self.lock_index_mutation()?;
         let original = self.load_index()?;
         let mut prepared = original.clone();
         let archived = archived_identity_names
@@ -386,11 +433,11 @@ impl<'a> IdentityStore<'a> {
             prepared.default_credential_name.clear();
             input.make_default = true;
         }
-        self.save_index(prepared)?;
-        match self.save_identity_with_secret_storage(input, secret_storage) {
+        self.save_index_locked(&lock, prepared)?;
+        match self.save_identity_with_secret_storage_locked(input, secret_storage, &lock) {
             Ok(stored) => Ok(stored),
             Err(error) => {
-                let _ = self.save_index(original);
+                let _ = self.save_index_locked(&lock, original);
                 Err(error)
             }
         }
@@ -671,6 +718,7 @@ impl<'a> IdentityStore<'a> {
         device_id: &str,
         vault: &dyn crate::internal::secret_vault::SecretVault,
     ) -> crate::ImResult<()> {
+        let lock = self.lock_index_mutation()?;
         let identity_dir = local_identity_dir(&self.paths.identity_root_dir, identity_dir_name)?;
         let mut index = self.load_index()?;
         let entry = index
@@ -707,7 +755,7 @@ impl<'a> IdentityStore<'a> {
         )?;
         verify_vault_utf8_secret(vault, &secret_ref, package.private_key_material())?;
         metadata.refs.daemon_subkey_private = Some(secret_ref);
-        self.save_index(index)?;
+        self.save_index_locked(&lock, index)?;
         remove_file_if_exists(&identity_dir.join(DAEMON_SUBKEY_PRIVATE_FILE_NAME))?;
         write_sanitized_daemon_subkey_package(
             &identity_dir.join(DAEMON_SUBKEY_PACKAGE_FILE_NAME),
@@ -841,6 +889,7 @@ impl<'a> IdentityStore<'a> {
             ));
         }
 
+        let lock = self.lock_index_mutation()?;
         let mut index = self.load_index()?;
         let entry = index.credentials.get(local_alias).cloned().ok_or_else(|| {
             crate::ImError::IdentityNotFound {
@@ -979,7 +1028,7 @@ impl<'a> IdentityStore<'a> {
             }
         })?;
         index_entry.vault_migration = Some(metadata.clone());
-        self.save_index(index)?;
+        self.save_index_locked(&lock, index)?;
 
         Ok(IdentityVaultMigrationResult {
             local_alias: local_alias.to_string(),
@@ -1021,6 +1070,7 @@ impl<'a> IdentityStore<'a> {
                 "temporary identity name is required",
             ));
         }
+        let lock = self.lock_index_mutation()?;
         let mut index = self.load_index()?;
         let mut temp_entry = index
             .credentials
@@ -1069,11 +1119,32 @@ impl<'a> IdentityStore<'a> {
             index.default_credential_name = final_identity_name.to_string();
             default_updated = true;
         }
-        self.save_index(index)?;
+        self.save_index_locked(&lock, index)?;
         if default_updated {
             self.write_default_identity(final_identity_name)?;
         }
         Ok(RecoverPromotionResult { default_updated })
+    }
+
+    pub(crate) fn lock_index_mutation(&self) -> crate::ImResult<IdentityIndexMutationLock> {
+        let parent =
+            self.paths
+                .registry_path
+                .parent()
+                .ok_or_else(|| crate::ImError::PathUnavailable {
+                    path_kind: "identity_registry".to_owned(),
+                    detail: "identity registry path has no parent directory".to_owned(),
+                })?;
+        fs::create_dir_all(parent)?;
+        set_private_dir_mode(parent)?;
+        let path = parent.join(IDENTITY_INDEX_MUTATION_LOCK_FILE);
+        let file = open_private_lock_file(&path)?;
+        set_private_file_mode(&path)?;
+        file.lock_exclusive().map_err(crate::ImError::from)?;
+        Ok(IdentityIndexMutationLock {
+            file,
+            registry_path: self.paths.registry_path.clone(),
+        })
     }
 
     pub(crate) fn load_index(&self) -> crate::ImResult<IndexPayload> {
@@ -1090,7 +1161,14 @@ impl<'a> IdentityStore<'a> {
         }
     }
 
-    pub(crate) fn save_index(&self, index: IndexPayload) -> crate::ImResult<()> {
+    pub(crate) fn save_index_locked(
+        &self,
+        lock: &IdentityIndexMutationLock,
+        index: IndexPayload,
+    ) -> crate::ImResult<()> {
+        if lock.registry_path != self.paths.registry_path {
+            return Err(crate::ImError::PermissionDenied);
+        }
         if let Some(parent) = self.paths.registry_path.parent() {
             fs::create_dir_all(parent)?;
             set_private_dir_mode(parent)?;
@@ -1100,9 +1178,7 @@ impl<'a> IdentityStore<'a> {
             serde_json::to_vec_pretty(&index).map_err(|err| crate::ImError::Serialization {
                 detail: err.to_string(),
             })?;
-        fs::write(&self.paths.registry_path, raw)?;
-        set_private_file_mode(&self.paths.registry_path)?;
-        Ok(())
+        write_secure_bytes_atomic(&self.paths.registry_path, &raw)
     }
 
     pub(crate) fn save_device_state(
@@ -1117,6 +1193,7 @@ impl<'a> IdentityStore<'a> {
                 "local alias is required",
             ));
         }
+        let lock = self.lock_index_mutation()?;
         let mut index = self.load_index()?;
         let entry = index.credentials.get_mut(local_alias).ok_or_else(|| {
             crate::ImError::IdentityNotFound {
@@ -1127,7 +1204,7 @@ impl<'a> IdentityStore<'a> {
         state.validate_for_did(&did)?;
         entry.device_state = Some(state);
         index.schema_version = INDEX_SCHEMA_VERSION;
-        self.save_index(index)
+        self.save_index_locked(&lock, index)
     }
 
     pub(crate) fn write_default_identity(&self, local_alias: &str) -> crate::ImResult<()> {
@@ -1207,6 +1284,7 @@ impl<'a> IdentityStore<'a> {
         alias: &str,
         display_name: &str,
     ) -> crate::ImResult<()> {
+        let _lock = self.lock_index_mutation()?;
         let raw = match fs::read(&self.paths.registry_path) {
             Ok(raw) => raw,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -1253,7 +1331,12 @@ impl<'a> IdentityStore<'a> {
             }
         }
         if changed {
-            write_secure_json(&self.paths.registry_path, &registry)?;
+            let raw = serde_json::to_vec_pretty(&registry).map_err(|error| {
+                crate::ImError::Serialization {
+                    detail: error.to_string(),
+                }
+            })?;
+            write_secure_bytes_atomic(&self.paths.registry_path, &raw)?;
         }
         Ok(())
     }
@@ -1285,6 +1368,11 @@ pub(crate) struct IndexEntry {
     pub(crate) vault_migration: Option<IdentityVaultMigrationMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) device_state: Option<crate::internal::identity_device_state::IdentityDeviceState>,
+    /// Non-secret, AWiki-local replay record for the one imported root ACK.
+    /// The root private key itself remains only in SecretVault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) root_key_import:
+        Option<crate::internal::identity_root_transfer::PersistedRootKeyImport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1462,7 +1550,7 @@ fn sdk_registry_to_index(file: SdkRegistryFile) -> IndexPayload {
 }
 
 fn normalize_index_payload(mut payload: IndexPayload) -> crate::ImResult<IndexPayload> {
-    if !matches!(payload.schema_version, 0 | 2 | 3 | INDEX_SCHEMA_VERSION) {
+    if !matches!(payload.schema_version, 0 | 2 | 3 | 4 | INDEX_SCHEMA_VERSION) {
         return Err(crate::ImError::invalid_input(
             Some("identity_registry.schema_version".to_string()),
             format!(
@@ -1528,20 +1616,235 @@ fn derive_full_handle_from_did(handle: &str, did: &str) -> String {
     format!("{local_part}.{}", domain.trim().to_lowercase())
 }
 
+struct PreservedImportedRoot {
+    import: crate::internal::identity_root_transfer::PersistedRootKeyImport,
+    metadata: IdentityVaultMigrationMetadata,
+}
+
+/// Root import is a one-way security transition. Ordinary identity save paths
+/// may refresh the same rootless vNext identity, but must not silently move,
+/// replace, or downgrade its imported root state.
+fn preserve_imported_root_for_resave(
+    index: &IndexPayload,
+    local_alias: &str,
+    input: &SaveIdentityInput,
+    storage: &SaveIdentitySecretStorage,
+) -> crate::ImResult<Option<PreservedImportedRoot>> {
+    for (name, entry) in &index.credentials {
+        if name != local_alias
+            && entry.root_key_import.is_some()
+            && (entry.did == input.did.as_str() || entry.unique_id == input.unique_id)
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+
+    let Some(entry) = index
+        .credentials
+        .get(local_alias)
+        .filter(|entry| entry.root_key_import.is_some())
+    else {
+        return Ok(None);
+    };
+    if input.local_alias.trim() != local_alias
+        || entry.did != input.did.as_str()
+        || entry.unique_id != input.unique_id
+        || entry.dir_name != preferred_dir_name(&input.unique_id)?
+        || !input.key1_private_pem.trim().is_empty()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let SaveIdentitySecretStorage::Vault {
+        workspace_id,
+        device_id,
+        vault,
+    } = storage
+    else {
+        return Err(crate::ImError::PermissionDenied);
+    };
+    let metadata = entry
+        .vault_migration
+        .as_ref()
+        .filter(|metadata| {
+            metadata.status == IdentityVaultMigrationStatus::Verified
+                && metadata.backend == "vault"
+                && metadata.workspace_id == *workspace_id
+                && metadata.device_id == *device_id
+        })
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let refs = metadata
+        .vnext_refs
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let root_ref = refs
+        .did_document_root_private
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let SaveIdentityKeyMode::VNext {
+        root_key_id,
+        device_signing_key_id,
+        device_e2ee_key_id,
+    } = &input.key_mode
+    else {
+        return Err(crate::ImError::PermissionDenied);
+    };
+    if root_ref.workspace_id != *workspace_id
+        || root_ref.device_id != *device_id
+        || root_ref.identity_id.as_deref() != Some(input.unique_id.as_str())
+        || root_ref.did.as_deref() != Some(input.did.as_str())
+        || root_ref.kind != crate::internal::secret_vault::record::SecretKind::IdentityRootPrivate
+        || root_ref.key_id != *root_key_id
+        || root_ref.key_version != 1
+        || refs.device_request_signing_private.key_id != *device_signing_key_id
+        || refs.e2ee_agreement_private.key_id != *device_e2ee_key_id
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    if metadata.refs.default_signing_private != refs.device_request_signing_private
+        || metadata.refs.e2ee_signing_private.as_ref() != Some(&refs.device_request_signing_private)
+        || metadata.refs.e2ee_agreement_private != refs.e2ee_agreement_private
+        || metadata.refs.auth_jwt != refs.auth_jwt
+        || refs.auth_jwt.workspace_id != *workspace_id
+        || refs.auth_jwt.device_id != *device_id
+        || refs.auth_jwt.identity_id.as_deref() != Some(input.unique_id.as_str())
+        || refs.auth_jwt.did.as_deref() != Some(input.did.as_str())
+        || refs.auth_jwt.kind != crate::internal::secret_vault::record::SecretKind::AuthJwt
+        || refs.auth_jwt.key_id != AUTH_FILE_NAME
+        || refs.auth_jwt.key_version != 1
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    for (secret_ref, kind, expected) in [
+        (
+            &refs.device_request_signing_private,
+            crate::internal::secret_vault::record::SecretKind::IdentityDeviceSigningPrivate,
+            input.e2ee_signing_private_pem.as_bytes(),
+        ),
+        (
+            &refs.e2ee_agreement_private,
+            crate::internal::secret_vault::record::SecretKind::IdentityE2eeAgreementPrivate,
+            input.e2ee_agreement_private_pem.as_bytes(),
+        ),
+    ] {
+        if secret_ref.workspace_id != *workspace_id
+            || secret_ref.device_id != *device_id
+            || secret_ref.identity_id.as_deref() != Some(input.unique_id.as_str())
+            || secret_ref.did.as_deref() != Some(input.did.as_str())
+            || secret_ref.kind != kind
+            || secret_ref.key_version != 1
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let opened = vault.open(secret_ref)?;
+        if opened.expose_secret() != expected {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    let root_secret = vault.open(root_ref)?;
+    let root_private = std::str::from_utf8(root_secret.expose_secret())
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let root_material = anp::PrivateKeyMaterial::from_pem(root_private)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    if !matches!(root_material, anp::PrivateKeyMaterial::Ed25519(_))
+        || root_material.public_key().to_pem() != input.key1_public_pem
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    drop(root_material);
+    drop(root_secret);
+    let expected_auth = Zeroizing::new(crate::internal::auth::state::auth_state_json_for_token(
+        &input.jwt_token,
+    )?);
+    let opened_auth = vault.open(&refs.auth_jwt)?;
+    if opened_auth.expose_secret() != expected_auth.as_slice() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    match (
+        metadata.refs.daemon_subkey_private.as_ref(),
+        input.daemon_subkey_package.as_ref(),
+    ) {
+        (None, None) => {}
+        (Some(secret_ref), Some(package)) => {
+            let opened = vault.open(secret_ref)?;
+            if opened.expose_secret() != package.private_key_material().as_bytes() {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+        _ => return Err(crate::ImError::PermissionDenied),
+    }
+    if let Some(incoming_state) = input.device_state.as_ref() {
+        let existing_authorization = entry
+            .device_state
+            .as_ref()
+            .and_then(|state| state.authorization.as_ref())
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let incoming_authorization = incoming_state
+            .authorization
+            .as_ref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if incoming_state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
+            || incoming_authorization.protocol_device_id
+                != existing_authorization.protocol_device_id
+            || incoming_authorization.signing_key_id != existing_authorization.signing_key_id
+            || incoming_authorization.e2ee_key_id != existing_authorization.e2ee_key_id
+            || incoming_authorization.signing_key_id != *device_signing_key_id
+            || incoming_authorization.e2ee_key_id != *device_e2ee_key_id
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if let Some(document) = input.did_document.as_ref() {
+            if !anp::authentication::validate_did_document_binding(document, true) {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            let manifest_device = anp::authentication::find_eligible_device(
+                document,
+                incoming_authorization.protocol_device_id.as_str(),
+                anp::authentication::PROFILE_DIRECT_E2EE_V2,
+            )
+            .map_err(|_| crate::ImError::PermissionDenied)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+            if manifest_device.signing_key_id != incoming_authorization.signing_key_id
+                || manifest_device.e2ee_key_id != incoming_authorization.e2ee_key_id
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+    }
+
+    Ok(Some(PreservedImportedRoot {
+        import: entry
+            .root_key_import
+            .clone()
+            .ok_or(crate::ImError::PermissionDenied)?,
+        metadata: metadata.clone(),
+    }))
+}
+
 fn local_identity_dir(root: &Path, dir_name: &str) -> crate::ImResult<std::path::PathBuf> {
     let relative = Path::new(dir_name);
-    if dir_name.trim().is_empty()
-        || relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
+    let mut components = relative.components();
+    let is_single_normal_segment =
+        matches!(components.next(), Some(std::path::Component::Normal(_)))
+            && components.next().is_none();
+    if dir_name.trim().is_empty() || relative.is_absolute() || !is_single_normal_segment {
         return Err(crate::ImError::invalid_input(
             Some("identity".to_string()),
             "local identity directory name must be a simple relative path segment",
         ));
     }
-    Ok(root.join(relative))
+    let path = root.join(relative);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err(crate::ImError::PermissionDenied)
+        }
+        Ok(_) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path),
+        Err(error) => Err(crate::ImError::CredentialFileUnreadable {
+            path_kind: "identity_directory".to_owned(),
+            detail: error.to_string(),
+        }),
+    }
 }
 
 fn first_existing_path(root: &Path, names: &[&str]) -> std::path::PathBuf {
@@ -1599,6 +1902,48 @@ fn write_secure_json(path: &Path, payload: &impl Serialize) -> crate::ImResult<(
     fs::write(path, raw)?;
     set_private_file_mode(path)?;
     Ok(())
+}
+
+/// Atomically replaces a security-sensitive metadata file.
+///
+/// Root import commits a Vault reference and its non-secret replay record in
+/// one index image. A crash may leave the previous complete image or the new
+/// complete image, but never a truncated JSON registry.
+fn write_secure_bytes_atomic(path: &Path, raw: &[u8]) -> crate::ImResult<()> {
+    use std::io::Write as _;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| crate::ImError::PathUnavailable {
+            path_kind: "identity_registry".to_owned(),
+            detail: "identity registry path has no parent directory".to_owned(),
+        })?;
+    fs::create_dir_all(parent)?;
+    set_private_dir_mode(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("identity-index.json");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let temporary = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
+    let write_result = (|| -> crate::ImResult<()> {
+        let mut file = create_private_file(&temporary)?;
+        file.write_all(raw)?;
+        file.sync_all()?;
+        crate::internal::atomic_file::replace(&temporary, path)?;
+        set_private_file_mode(path)?;
+        if let Ok(directory) = fs::File::open(parent) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    write_result
 }
 
 fn read_required_non_empty_text(
@@ -2056,6 +2401,50 @@ fn is_false(value: &bool) -> bool {
 }
 
 #[cfg(unix)]
+fn open_private_lock_file(path: &Path) -> crate::ImResult<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(crate::ImError::from)
+}
+
+#[cfg(not(unix))]
+fn open_private_lock_file(path: &Path) -> crate::ImResult<fs::File> {
+    fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(crate::ImError::from)
+}
+
+#[cfg(unix)]
+fn create_private_file(path: &Path) -> crate::ImResult<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(crate::ImError::from)
+}
+
+#[cfg(not(unix))]
+fn create_private_file(path: &Path) -> crate::ImResult<fs::File> {
+    fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(crate::ImError::from)
+}
+
+#[cfg(unix)]
 fn set_private_dir_mode(path: &Path) -> crate::ImResult<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
@@ -2095,6 +2484,38 @@ mod tests {
         assert_eq!(index.schema_version, INDEX_SCHEMA_VERSION);
         assert!(index.default_credential_name.is_empty());
         assert!(index.credentials.is_empty());
+    }
+
+    #[test]
+    fn identity_directory_helper_rejects_traversal_and_existing_non_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        std::fs::create_dir_all(&paths.identity_root_dir).unwrap();
+        std::fs::write(paths.identity_root_dir.join("not-a-directory"), b"sentinel").unwrap();
+
+        for invalid in ["", "../outside", "nested/child", "not-a-directory"] {
+            assert!(store.local_identity_dir(invalid).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_directory_helper_rejects_existing_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(&paths.identity_root_dir).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, paths.identity_root_dir.join("linked")).unwrap();
+
+        assert_eq!(
+            store.local_identity_dir("linked").unwrap_err(),
+            crate::ImError::PermissionDenied
+        );
     }
 
     #[test]
@@ -2180,6 +2601,91 @@ mod tests {
         assert!(!std::fs::read_to_string(&paths.registry_path)
             .unwrap()
             .contains("root-private"));
+    }
+
+    #[test]
+    fn identity_index_mutations_serialize_load_modify_save_without_lost_updates() {
+        use crate::internal::identity_device_state::{
+            DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
+            IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
+            IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+        };
+        use std::sync::mpsc;
+        use std::time::Duration as StdDuration;
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        let did = "did:example:alice";
+        let initial_lock = store.lock_index_mutation().unwrap();
+        let mut initial = IndexPayload::default();
+        initial.credentials.insert(
+            "alice".to_owned(),
+            IndexEntry {
+                credential_name: "alice".to_owned(),
+                dir_name: "alice-id".to_owned(),
+                did: did.to_owned(),
+                unique_id: "alice-id".to_owned(),
+                name: "before".to_owned(),
+                ..IndexEntry::default()
+            },
+        );
+        store.save_index_locked(&initial_lock, initial).unwrap();
+        drop(initial_lock);
+
+        let state = IdentityDeviceState {
+            schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+            mode: IdentityDeviceMode::VNext,
+            authorization: Some(DeviceAuthorizationProjection {
+                protocol_device_id: crate::ids::ProtocolDeviceId::parse("dev-device-a").unwrap(),
+                signing_key_id: format!("{did}#device-sign"),
+                e2ee_key_id: format!("{did}#device-e2ee"),
+                status: DeviceAuthorizationStatus::Active,
+                role: DeviceAuthorizationRole::Member,
+                management_ready: false,
+                auth_generation: 2,
+            }),
+            checkpoint: Some(IdentityInternalCheckpoint {
+                document_version: 2,
+                document_hash: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_owned(),
+                registry_version: 2,
+            }),
+        };
+
+        let writer_a_lock = store.lock_index_mutation().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let writer_paths = paths.clone();
+        let expected_state = state.clone();
+        let writer = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = IdentityStore::new(&writer_paths).save_device_state("alice", state);
+            finished_tx.send(result).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(matches!(
+            finished_rx.recv_timeout(StdDuration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        let mut writer_a_index = store.load_index().unwrap();
+        writer_a_index.credentials.get_mut("alice").unwrap().name = "root-import-commit".to_owned();
+        store
+            .save_index_locked(&writer_a_lock, writer_a_index)
+            .unwrap();
+        drop(writer_a_lock);
+
+        finished_rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        writer.join().unwrap();
+        let committed = store.load_index().unwrap();
+        assert_eq!(committed.credentials["alice"].name, "root-import-commit");
+        assert_eq!(
+            committed.credentials["alice"].device_state,
+            Some(expected_state)
+        );
     }
 
     #[test]
@@ -2756,6 +3262,13 @@ mod tests {
             request: crate::internal::secret_vault::SealSecretRequest,
         ) -> crate::ImResult<SecretRef> {
             self.inner.seal(request)
+        }
+
+        fn seal_if_absent(
+            &self,
+            request: crate::internal::secret_vault::SealSecretRequest,
+        ) -> crate::ImResult<crate::internal::secret_vault::SealIfAbsentResult> {
+            self.inner.seal_if_absent(request)
         }
 
         fn open(
