@@ -1,4 +1,5 @@
 pub(crate) mod bind;
+pub(crate) mod device_join;
 pub(crate) mod directory;
 pub(crate) mod profile;
 pub(crate) mod recovery;

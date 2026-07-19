@@ -1,6 +1,10 @@
 use super::*;
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
+
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRpcTransport};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RecordedCall {
@@ -94,6 +98,7 @@ impl DeviceJoinRemote for RecordingRemote {
 
     async fn status_as_new_device(
         &mut self,
+        _expected_join_session_id: &str,
         _join_session_token: &SecretBytes,
     ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus> {
         self.calls.push(RecordedCall::StatusNew {
@@ -210,7 +215,10 @@ async fn recording_remote_never_retains_account_or_join_session_tokens() {
     let created = remote.create(create_request).await.unwrap();
     let result_debug = format!("{created:?}");
     assert!(!result_debug.contains("server-session-secret"));
-    remote.status_as_new_device(&join_token).await.unwrap();
+    remote
+        .status_as_new_device("join-1", &join_token)
+        .await
+        .unwrap();
 
     let recorded = format!("{:?}", remote.calls);
     assert!(!recorded.contains("account-token-must-not-be-recorded"));
@@ -311,4 +319,241 @@ fn sample_challenge() -> DeviceJoinChallenge {
             signature: "signature".to_owned(),
         },
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordedWireCall {
+    authenticated: bool,
+    endpoint: String,
+    method: String,
+    param_keys: Vec<String>,
+}
+
+#[derive(Clone)]
+struct QueuedWireTransport {
+    calls: Rc<RefCell<Vec<RecordedWireCall>>>,
+    responses: Rc<RefCell<VecDeque<crate::ImResult<Value>>>>,
+}
+
+impl QueuedWireTransport {
+    fn new(responses: Vec<Value>) -> Self {
+        Self {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            responses: Rc::new(RefCell::new(
+                responses.into_iter().map(Ok).collect::<VecDeque<_>>(),
+            )),
+        }
+    }
+
+    fn record(&self, authenticated: bool, endpoint: &str, method: &str, params: &Value) {
+        let mut param_keys = params
+            .as_object()
+            .map(|object| object.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        param_keys.sort();
+        self.calls.borrow_mut().push(RecordedWireCall {
+            authenticated,
+            endpoint: endpoint.to_owned(),
+            method: method.to_owned(),
+            param_keys,
+        });
+    }
+
+    fn respond(&self) -> crate::ImResult<Value> {
+        self.responses
+            .borrow_mut()
+            .pop_front()
+            .expect("queued wire response")
+    }
+}
+
+impl AsyncRpcTransport for QueuedWireTransport {
+    async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+        self.record(false, endpoint, method, &params);
+        self.respond()
+    }
+}
+
+impl AsyncAuthenticatedRpcTransport for QueuedWireTransport {
+    async fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> crate::ImResult<Value> {
+        self.record(true, endpoint, method, &params);
+        self.respond()
+    }
+}
+
+#[tokio::test]
+async fn http_adapter_routes_only_frozen_join_methods_to_the_correct_auth_view() {
+    const DOCUMENT_HASH: &str = "sha256:UD5TmycQ6gS539AFNjM5cGoQUmeq2fQGPpwD00lMPlg";
+    let checkpoint_json = serde_json::json!({
+        "document_version": 7,
+        "document_hash": DOCUMENT_HASH,
+        "registry_version": 3,
+    });
+    let device_json = serde_json::json!({
+        "device_id": "dev-new",
+        "signing_key_id": "did:wba:awiki.test:alice#dev-new-sign",
+        "e2ee_key_id": "did:wba:awiki.test:alice#dev-new-e2ee",
+        "status": "active",
+        "role": "member",
+        "management_ready": false,
+        "auth_generation": 1,
+    });
+    let join_request = sample_join_request();
+    let challenge = sample_challenge();
+    let response = sample_response();
+    let plain = QueuedWireTransport::new(vec![
+        serde_json::json!({
+            "join_session_id": "join-1",
+            "join_session_token": "join-token-issued",
+            "state": "pending",
+            "expires_at": "2026-07-19T00:10:00Z",
+        }),
+        serde_json::json!({
+            "join_session_id": "join-1",
+            "state": "pending",
+            "expires_at": "2026-07-19T00:10:00Z",
+        }),
+        serde_json::json!({
+            "join_session_id": "join-1",
+            "state": "response_verified",
+        }),
+    ]);
+    let authenticated = QueuedWireTransport::new(vec![
+        serde_json::json!({
+            "did": "did:wba:awiki.test:alice",
+            "checkpoint": checkpoint_json.clone(),
+            "devices": [],
+        }),
+        serde_json::json!({
+            "join_session_id": "join-1",
+            "state": "claimed",
+            "expires_at": "2026-07-19T00:10:00Z",
+        }),
+        serde_json::json!({
+            "join_session_id": "join-1",
+            "state": "claimed",
+            "claimed_by_device_id": "dev-admin",
+            "claim_expires_at": "2026-07-19T00:05:00Z",
+            "join_request": join_request.clone(),
+        }),
+        serde_json::json!({
+            "join_session_id": "join-1",
+            "state": "challenge_sent",
+            "challenge_id": "challenge-1",
+        }),
+        serde_json::json!({
+            "join_session_id": "join-1",
+            "state": "consumed",
+            "checkpoint": checkpoint_json.clone(),
+            "device": device_json,
+        }),
+    ]);
+    let plain_calls = plain.calls.clone();
+    let authenticated_calls = authenticated.calls.clone();
+    let mut adapter = DeviceJoinHttpAdapter::new(plain, authenticated);
+    let did = crate::ids::Did::parse("did:wba:awiki.test:alice").unwrap();
+    let account_token = SecretBytes::from_vec(b"account-token".to_vec());
+    let join_token = SecretBytes::from_vec(b"join-token-issued".to_vec());
+    let admin_proof = challenge.authorizing_device_proof.clone();
+    let checkpoint = IdentityInternalCheckpoint {
+        document_version: 7,
+        document_hash: DOCUMENT_HASH.to_owned(),
+        registry_version: 3,
+    };
+    let pairing_confirmation = DeviceJoinRemotePairingConfirmation {
+        join_request_hash: "sha256:join".to_owned(),
+        pairing_transcript_hash: "sha256:transcript".to_owned(),
+        sas_confirmed: true,
+        user_presence_at: "2026-07-19T00:04:00Z".to_owned(),
+    };
+    let new_document = serde_json::json!({"id": did.as_str()});
+
+    adapter.registry(&did, false).await.unwrap();
+    adapter
+        .create(DeviceJoinRemoteCreateRequest {
+            operation_id: "op-create-1",
+            account_verification_token: &account_token,
+            join_request: &join_request,
+        })
+        .await
+        .unwrap();
+    adapter
+        .status_as_new_device("join-1", &join_token)
+        .await
+        .unwrap();
+    adapter.status_as_admin("join-1").await.unwrap();
+    adapter
+        .claim(DeviceJoinRemoteClaimRequest {
+            operation_id: "op-claim-1",
+            join_session_id: "join-1",
+            authorizing_device_id: "dev-admin",
+            authorizing_device_proof: &admin_proof,
+        })
+        .await
+        .unwrap();
+    adapter.submit_challenge(&challenge).await.unwrap();
+    adapter
+        .submit_response(DeviceJoinRemoteResponseRequest {
+            join_session_token: &join_token,
+            response: &response,
+        })
+        .await
+        .unwrap();
+    adapter
+        .approve(DeviceJoinRemoteApproveRequest {
+            operation_id: "op-approve-1",
+            join_session_id: "join-1",
+            expected_checkpoint: &checkpoint,
+            role: DeviceAuthorizationRole::Member,
+            new_document: &new_document,
+            pairing_confirmation: &pairing_confirmation,
+            authorizing_device_id: "dev-admin",
+            authorizing_device_proof: &admin_proof,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        plain_calls
+            .borrow()
+            .iter()
+            .map(|call| call.method.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "device_join_create",
+            "device_join_status",
+            "device_join_challenge_response",
+        ]
+    );
+    assert!(plain_calls.borrow().iter().all(|call| !call.authenticated));
+    assert_eq!(
+        authenticated_calls
+            .borrow()
+            .iter()
+            .map(|call| call.method.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "device_registry_get",
+            "device_join_status",
+            "device_join_claim",
+            "device_join_challenge",
+            "device_join_approve",
+        ]
+    );
+    assert!(authenticated_calls
+        .borrow()
+        .iter()
+        .all(|call| call.authenticated));
+    let recorded = format!(
+        "{:?}{:?}",
+        plain_calls.borrow(),
+        authenticated_calls.borrow()
+    );
+    assert!(!recorded.contains("account-token"));
+    assert!(!recorded.contains("join-token-issued"));
 }

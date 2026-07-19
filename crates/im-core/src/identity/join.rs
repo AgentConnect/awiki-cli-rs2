@@ -59,6 +59,7 @@ pub struct DeviceJoinStartRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceJoinRequest {
     #[serde(rename = "type")]
     pub request_type: String,
@@ -82,6 +83,7 @@ pub struct DeviceJoinStartResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceProof {
     #[serde(rename = "type")]
     pub proof_type: String,
@@ -93,6 +95,7 @@ pub struct DeviceProof {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EncryptedJoinChallenge {
     pub algorithm: String,
     pub nonce_b64u: String,
@@ -100,6 +103,7 @@ pub struct EncryptedJoinChallenge {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceJoinChallenge {
     pub operation_id: String,
     pub join_session_id: String,
@@ -112,6 +116,7 @@ pub struct DeviceJoinChallenge {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceJoinChallengeResponse {
     pub operation_id: String,
     pub join_session_id: String,

@@ -15,6 +15,7 @@ use crate::internal::identity_device_state::{
     DeviceAuthorizationRole, DeviceAuthorizationStatus, IdentityInternalCheckpoint,
 };
 use crate::internal::platform_secret::SecretBytes;
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRpcTransport};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -148,7 +149,7 @@ impl std::fmt::Debug for DeviceJoinRemoteResponseRequest<'_> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct DeviceJoinRemotePairingConfirmation {
     pub(crate) join_request_hash: String,
     pub(crate) pairing_transcript_hash: String,
@@ -208,6 +209,7 @@ pub(crate) trait DeviceJoinRemote {
 
     async fn status_as_new_device(
         &mut self,
+        expected_join_session_id: &str,
         join_session_token: &SecretBytes,
     ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus>;
 
@@ -235,6 +237,166 @@ pub(crate) trait DeviceJoinRemote {
         &mut self,
         request: DeviceJoinRemoteApproveRequest<'_>,
     ) -> crate::ImResult<DeviceJoinRemoteApproveResult>;
+}
+
+pub(crate) struct DeviceJoinHttpAdapter<P, A> {
+    plain: P,
+    authenticated: A,
+}
+
+impl<P, A> DeviceJoinHttpAdapter<P, A> {
+    pub(crate) fn new(plain: P, authenticated: A) -> Self {
+        Self {
+            plain,
+            authenticated,
+        }
+    }
+}
+
+impl<'a>
+    DeviceJoinHttpAdapter<
+        crate::internal::transport::CorePlainTransport<'a>,
+        crate::internal::transport::CoreHttpTransport<'a>,
+    >
+{
+    pub(crate) fn production(
+        core: &'a crate::core::ImCore,
+        admin_client: &'a crate::core::ImClient,
+    ) -> Self {
+        Self::new(
+            crate::internal::transport::CorePlainTransport::new(core),
+            crate::internal::transport::CoreHttpTransport::new(admin_client),
+        )
+    }
+}
+
+impl<P, A> DeviceJoinRemote for DeviceJoinHttpAdapter<P, A>
+where
+    P: AsyncRpcTransport,
+    A: AsyncAuthenticatedRpcTransport,
+{
+    async fn registry(
+        &mut self,
+        did: &crate::ids::Did,
+        include_pending_join_requests: bool,
+    ) -> crate::ImResult<DeviceJoinRemoteRegistry> {
+        let call = crate::internal::identity_wire::device_join::build_registry_call(
+            did,
+            include_pending_join_requests,
+        );
+        let raw = self
+            .authenticated
+            .authenticated_rpc(call.endpoint, call.method, call.params)
+            .await?;
+        crate::internal::identity_wire::device_join::parse_registry_result(
+            raw,
+            did,
+            include_pending_join_requests,
+        )
+    }
+
+    async fn create(
+        &mut self,
+        request: DeviceJoinRemoteCreateRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteCreateResult> {
+        let expected_join_session_id = request.join_request.join_session_id.clone();
+        let call = crate::internal::identity_wire::device_join::build_create_call(request)?;
+        let raw = self
+            .plain
+            .rpc(call.endpoint, call.method, call.params)
+            .await?;
+        crate::internal::identity_wire::device_join::parse_create_result(
+            raw,
+            &expected_join_session_id,
+        )
+    }
+
+    async fn status_as_new_device(
+        &mut self,
+        expected_join_session_id: &str,
+        join_session_token: &SecretBytes,
+    ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus> {
+        let call =
+            crate::internal::identity_wire::device_join::build_new_status_call(join_session_token)?;
+        let raw = self
+            .plain
+            .rpc(call.endpoint, call.method, call.params)
+            .await?;
+        crate::internal::identity_wire::device_join::parse_new_status_result(
+            raw,
+            expected_join_session_id,
+        )
+    }
+
+    async fn status_as_admin(
+        &mut self,
+        join_session_id: &str,
+    ) -> crate::ImResult<DeviceJoinRemoteAdminStatus> {
+        let call =
+            crate::internal::identity_wire::device_join::build_admin_status_call(join_session_id)?;
+        let raw = self
+            .authenticated
+            .authenticated_rpc(call.endpoint, call.method, call.params)
+            .await?;
+        crate::internal::identity_wire::device_join::parse_admin_status_result(raw, join_session_id)
+    }
+
+    async fn claim(
+        &mut self,
+        request: DeviceJoinRemoteClaimRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteClaimResult> {
+        let expected_join_session_id = request.join_session_id.to_owned();
+        let call = crate::internal::identity_wire::device_join::build_claim_call(request)?;
+        let raw = self
+            .authenticated
+            .authenticated_rpc(call.endpoint, call.method, call.params)
+            .await?;
+        crate::internal::identity_wire::device_join::parse_claim_result(
+            raw,
+            &expected_join_session_id,
+        )
+    }
+
+    async fn submit_challenge(
+        &mut self,
+        challenge: &DeviceJoinChallenge,
+    ) -> crate::ImResult<DeviceJoinRemoteChallengeResult> {
+        let call = crate::internal::identity_wire::device_join::build_challenge_call(challenge)?;
+        let raw = self
+            .authenticated
+            .authenticated_rpc(call.endpoint, call.method, call.params)
+            .await?;
+        crate::internal::identity_wire::device_join::parse_challenge_result(raw, challenge)
+    }
+
+    async fn submit_response(
+        &mut self,
+        request: DeviceJoinRemoteResponseRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+        let response = request.response.clone();
+        let call = crate::internal::identity_wire::device_join::build_response_call(request)?;
+        let raw = self
+            .plain
+            .rpc(call.endpoint, call.method, call.params)
+            .await?;
+        crate::internal::identity_wire::device_join::parse_response_result(raw, &response)
+    }
+
+    async fn approve(
+        &mut self,
+        request: DeviceJoinRemoteApproveRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteApproveResult> {
+        let expected_join_session_id = request.join_session_id.to_owned();
+        let call = crate::internal::identity_wire::device_join::build_approve_call(request)?;
+        let raw = self
+            .authenticated
+            .authenticated_rpc(call.endpoint, call.method, call.params)
+            .await?;
+        crate::internal::identity_wire::device_join::parse_approve_result(
+            raw,
+            &expected_join_session_id,
+        )
+    }
 }
 
 #[cfg(test)]
