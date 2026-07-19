@@ -37,14 +37,19 @@ pub use crate::groups::{
 };
 pub use crate::identity::{
     ContactBindingMethod, ContactBindingRequest, ContactBindingState, DaemonSubkeyPrivatePackage,
-    DefaultIdentityChange, DeleteLocalIdentityResult, HandleRegistrationResult,
-    HandleRegistrationState, HostedIdentityMaterial, IdentityMissingItem, IdentityReadiness,
-    IdentityRegistry, IdentitySecretStorageBackend, IdentitySelector, IdentityService,
-    IdentitySummary, IdentityVaultMigrationReport, IdentityVaultStatus,
-    IdentityVaultVerificationReport, InitialProfile, Profile, ProfileAttribute, ProfilePatch,
-    RecoverHandleLocalFinalizeRequest, RecoverHandlePlan, RecoverHandlePlanRequest,
-    RecoverHandleRequest, RecoverHandleState, RecoverLocalIdentitySummary, RecoverLocalUserState,
-    RecoveredIdentity, RegisterHandleRequest, RegistrationMethod, VerificationInput,
+    DefaultIdentityChange, DeleteLocalIdentityResult, DeviceJoinAccountVerificationGrant,
+    DeviceJoinApprovalPrompt, DeviceJoinAuthorizationStatus, DeviceJoinAuthorizedDeviceSummary,
+    DeviceJoinBeginRequest, DeviceJoinConfirmApprovalRequest, DeviceJoinLocalPhase,
+    DeviceJoinPendingSummary, DeviceJoinProgress, DeviceJoinRegistrySnapshot,
+    DeviceJoinRemoteState, DeviceJoinRole, DeviceJoinSessionSummary, DeviceJoinSessionView,
+    DeviceJoinSide, HandleRegistrationResult, HandleRegistrationState, HostedIdentityMaterial,
+    IdentityMissingItem, IdentityReadiness, IdentityRegistry, IdentitySecretStorageBackend,
+    IdentitySelector, IdentityService, IdentitySummary, IdentityVaultMigrationReport,
+    IdentityVaultStatus, IdentityVaultVerificationReport, InitialProfile, Profile,
+    ProfileAttribute, ProfilePatch, RecoverHandleLocalFinalizeRequest, RecoverHandlePlan,
+    RecoverHandlePlanRequest, RecoverHandleRequest, RecoverHandleState,
+    RecoverLocalIdentitySummary, RecoverLocalUserState, RecoveredIdentity, RegisterHandleRequest,
+    RegistrationMethod, VerificationInput,
 };
 pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,

@@ -23,10 +23,14 @@ pub use self::dto::{
     DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM,
 };
 pub use self::join::{
-    DeviceJoinAdminPrepareRequest, DeviceJoinAdminPrepareResult, DeviceJoinAdminVerifyRequest,
-    DeviceJoinAdminVerifyResult, DeviceJoinChallenge, DeviceJoinChallengeResponse,
-    DeviceJoinLocalPhase, DeviceJoinNewDeviceRespondRequest, DeviceJoinNewDeviceRespondResult,
-    DeviceJoinRequest, DeviceJoinService, DeviceJoinSessionSummary, DeviceJoinSide,
+    DeviceJoinAccountVerificationGrant, DeviceJoinAdminPrepareRequest,
+    DeviceJoinAdminPrepareResult, DeviceJoinAdminVerifyRequest, DeviceJoinAdminVerifyResult,
+    DeviceJoinApprovalPrompt, DeviceJoinAuthorizationStatus, DeviceJoinAuthorizedDeviceSummary,
+    DeviceJoinBeginRequest, DeviceJoinChallenge, DeviceJoinChallengeResponse,
+    DeviceJoinConfirmApprovalRequest, DeviceJoinLocalPhase, DeviceJoinNewDeviceRespondRequest,
+    DeviceJoinNewDeviceRespondResult, DeviceJoinPendingSummary, DeviceJoinProgress,
+    DeviceJoinRegistrySnapshot, DeviceJoinRemoteState, DeviceJoinRequest, DeviceJoinRole,
+    DeviceJoinService, DeviceJoinSessionSummary, DeviceJoinSessionView, DeviceJoinSide,
     DeviceJoinStartRequest, DeviceJoinStartResult, DeviceProof, EncryptedJoinChallenge,
     DEVICE_JOIN_CHALLENGE_ALGORITHM, DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS,
     DEVICE_JOIN_MAX_TTL_SECONDS, DEVICE_JOIN_REQUEST_TYPE, DEVICE_JOIN_VNEXT_PROFILES,

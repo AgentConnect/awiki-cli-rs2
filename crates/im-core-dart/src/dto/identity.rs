@@ -55,6 +55,114 @@ pub struct DartIdentityDeviceSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartDeviceJoinSide {
+    NewDevice,
+    Admin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartDeviceJoinPhase {
+    Pending,
+    ChallengePrepared,
+    ResponsePrepared,
+    ResponseVerified,
+    ApprovalPrepared,
+    Authorized,
+    Cancelled,
+    Expired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartDeviceJoinRole {
+    Member,
+    Admin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartDeviceJoinAuthorizationStatus {
+    Active,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartDeviceJoinRemoteState {
+    Pending,
+    Claimed,
+    ChallengeSent,
+    ResponseVerified,
+    Consumed,
+    Expired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDeviceJoinSessionSummary {
+    pub join_session_id: String,
+    pub did: String,
+    pub protocol_device_id: String,
+    pub side: DartDeviceJoinSide,
+    pub phase: DartDeviceJoinPhase,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDeviceJoinAuthorizedDeviceSummary {
+    pub protocol_device_id: String,
+    pub signing_key_id: String,
+    pub e2ee_key_id: String,
+    pub status: DartDeviceJoinAuthorizationStatus,
+    pub role: DartDeviceJoinRole,
+    pub management_ready: bool,
+    pub is_current: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDeviceJoinPendingSummary {
+    pub join_session_id: String,
+    pub protocol_device_id: String,
+    pub signing_key_id: String,
+    pub e2ee_key_id: String,
+    pub requested_role: DartDeviceJoinRole,
+    pub issued_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDeviceJoinRegistrySnapshot {
+    pub did: String,
+    pub devices: Vec<DartDeviceJoinAuthorizedDeviceSummary>,
+    pub pending_join_requests: Vec<DartDeviceJoinPendingSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDeviceJoinProgress {
+    pub session: DartDeviceJoinSessionSummary,
+    pub remote_state: DartDeviceJoinRemoteState,
+    pub sas: Option<String>,
+    pub authorized_device: Option<DartDeviceJoinAuthorizedDeviceSummary>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DartDeviceJoinApprovalPrompt {
+    pub approval_handle: String,
+    pub join_session_id: String,
+    pub role: DartDeviceJoinRole,
+    pub sas: String,
+    pub expires_at: String,
+}
+
+impl std::fmt::Debug for DartDeviceJoinApprovalPrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DartDeviceJoinApprovalPrompt")
+            .field("approval_handle", &"<redacted-approval-handle>")
+            .field("join_session_id", &self.join_session_id)
+            .field("role", &self.role)
+            .field("sas", &"<redacted-sas>")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DartIdentitySecretStorageBackend {
     FileCompat,
     Vault,

@@ -220,6 +220,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_dart_delegated_signing_options(dynamic raw);
 
   @protected
+  DartDeviceJoinAuthorizedDeviceSummary
+  dco_decode_box_autoadd_dart_device_join_authorized_device_summary(
+    dynamic raw,
+  );
+
+  @protected
   DartDownloadAttachmentRequest
   dco_decode_box_autoadd_dart_download_attachment_request(dynamic raw);
 
@@ -472,6 +478,51 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartDeleteLocalIdentityResult dco_decode_dart_delete_local_identity_result(
     dynamic raw,
   );
+
+  @protected
+  DartDeviceJoinApprovalPrompt dco_decode_dart_device_join_approval_prompt(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceJoinAuthorizationStatus
+  dco_decode_dart_device_join_authorization_status(dynamic raw);
+
+  @protected
+  DartDeviceJoinAuthorizedDeviceSummary
+  dco_decode_dart_device_join_authorized_device_summary(dynamic raw);
+
+  @protected
+  DartDeviceJoinPendingSummary dco_decode_dart_device_join_pending_summary(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceJoinPhase dco_decode_dart_device_join_phase(dynamic raw);
+
+  @protected
+  DartDeviceJoinProgress dco_decode_dart_device_join_progress(dynamic raw);
+
+  @protected
+  DartDeviceJoinRegistrySnapshot dco_decode_dart_device_join_registry_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceJoinRemoteState dco_decode_dart_device_join_remote_state(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceJoinRole dco_decode_dart_device_join_role(dynamic raw);
+
+  @protected
+  DartDeviceJoinSessionSummary dco_decode_dart_device_join_session_summary(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceJoinSide dco_decode_dart_device_join_side(dynamic raw);
 
   @protected
   DartDeviceVaultRootKey dco_decode_dart_device_vault_root_key(dynamic raw);
@@ -888,6 +939,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_dart_conversation_snapshot_item(dynamic raw);
 
   @protected
+  List<DartDeviceJoinAuthorizedDeviceSummary>
+  dco_decode_list_dart_device_join_authorized_device_summary(dynamic raw);
+
+  @protected
+  List<DartDeviceJoinPendingSummary>
+  dco_decode_list_dart_device_join_pending_summary(dynamic raw);
+
+  @protected
+  List<DartDeviceJoinSessionSummary>
+  dco_decode_list_dart_device_join_session_summary(dynamic raw);
+
+  @protected
   List<DartDisplayProfile> dco_decode_list_dart_display_profile(dynamic raw);
 
   @protected
@@ -942,6 +1005,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
@@ -969,6 +1035,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartDelegatedSigningOptions?
   dco_decode_opt_box_autoadd_dart_delegated_signing_options(dynamic raw);
+
+  @protected
+  DartDeviceJoinAuthorizedDeviceSummary?
+  dco_decode_opt_box_autoadd_dart_device_join_authorized_device_summary(
+    dynamic raw,
+  );
 
   @protected
   DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
@@ -1224,6 +1296,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartDelegatedSigningOptions
   sse_decode_box_autoadd_dart_delegated_signing_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinAuthorizedDeviceSummary
+  sse_decode_box_autoadd_dart_device_join_authorized_device_summary(
     SseDeserializer deserializer,
   );
 
@@ -1542,6 +1620,63 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartDeleteLocalIdentityResult sse_decode_dart_delete_local_identity_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinApprovalPrompt sse_decode_dart_device_join_approval_prompt(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinAuthorizationStatus
+  sse_decode_dart_device_join_authorization_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinAuthorizedDeviceSummary
+  sse_decode_dart_device_join_authorized_device_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinPendingSummary sse_decode_dart_device_join_pending_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinPhase sse_decode_dart_device_join_phase(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinProgress sse_decode_dart_device_join_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinRegistrySnapshot sse_decode_dart_device_join_registry_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinRemoteState sse_decode_dart_device_join_remote_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinRole sse_decode_dart_device_join_role(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinSessionSummary sse_decode_dart_device_join_session_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinSide sse_decode_dart_device_join_side(
     SseDeserializer deserializer,
   );
 
@@ -2090,6 +2225,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   sse_decode_list_dart_conversation_snapshot_item(SseDeserializer deserializer);
 
   @protected
+  List<DartDeviceJoinAuthorizedDeviceSummary>
+  sse_decode_list_dart_device_join_authorized_device_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartDeviceJoinPendingSummary>
+  sse_decode_list_dart_device_join_pending_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartDeviceJoinSessionSummary>
+  sse_decode_list_dart_device_join_session_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<DartDisplayProfile> sse_decode_list_dart_display_profile(
     SseDeserializer deserializer,
   );
@@ -2156,6 +2309,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer);
+
+  @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
@@ -2191,6 +2347,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartDelegatedSigningOptions?
   sse_decode_opt_box_autoadd_dart_delegated_signing_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinAuthorizedDeviceSummary?
+  sse_decode_opt_box_autoadd_dart_device_join_authorized_device_summary(
     SseDeserializer deserializer,
   );
 
@@ -2483,6 +2645,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_delegated_signing_options(
     DartDelegatedSigningOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_device_join_authorized_device_summary(
+    DartDeviceJoinAuthorizedDeviceSummary self,
     SseSerializer serializer,
   );
 
@@ -2861,6 +3029,72 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_delete_local_identity_result(
     DartDeleteLocalIdentityResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_approval_prompt(
+    DartDeviceJoinApprovalPrompt self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_authorization_status(
+    DartDeviceJoinAuthorizationStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_authorized_device_summary(
+    DartDeviceJoinAuthorizedDeviceSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_pending_summary(
+    DartDeviceJoinPendingSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_phase(
+    DartDeviceJoinPhase self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_progress(
+    DartDeviceJoinProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_registry_snapshot(
+    DartDeviceJoinRegistrySnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_remote_state(
+    DartDeviceJoinRemoteState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_role(
+    DartDeviceJoinRole self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_session_summary(
+    DartDeviceJoinSessionSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_side(
+    DartDeviceJoinSide self,
     SseSerializer serializer,
   );
 
@@ -3540,6 +3774,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_dart_device_join_authorized_device_summary(
+    List<DartDeviceJoinAuthorizedDeviceSummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_device_join_pending_summary(
+    List<DartDeviceJoinPendingSummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_device_join_session_summary(
+    List<DartDeviceJoinSessionSummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_dart_display_profile(
     List<DartDisplayProfile> self,
     SseSerializer serializer,
@@ -3624,6 +3876,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
     SseSerializer serializer,
@@ -3662,6 +3917,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_delegated_signing_options(
     DartDelegatedSigningOptions? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_device_join_authorized_device_summary(
+    DartDeviceJoinAuthorizedDeviceSummary? self,
     SseSerializer serializer,
   );
 

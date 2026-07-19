@@ -122,6 +122,25 @@ Device-token issuance and local
 identity promotion remain a separate activation step, and an admin requested during
 Join remains non-ready until the root-import flow completes.
 
+The host-facing Join facade is deliberately narrower than the internal
+orchestrator. `ImCoreOpenOptions.multi_device_join_enabled` defaults to `false`;
+App/CLI/daemon hosts must opt in explicitly. New-device creation consumes a
+write-only `DeviceJoinAccountVerificationGrant`, while resume/poll/cancel use the
+persisted session ID. The admin facade exposes the safe Registry projection,
+claim/poll with a locally derived six-digit SAS, and a two-call approval boundary:
+`prepare_device_join_approval` returns a short-lived in-memory handle only after
+SAS confirmation, and `confirm_device_join_approval` consumes it only after host
+user-presence confirmation. Re-preparing invalidates the previous handle for that
+session/admin pair only while it is unused; an in-flight confirmation cannot be
+replaced.
+
+Public host DTOs contain only session/DID/protocol-device/role/status/readiness
+facts and the short-lived SAS when needed. Join tokens, account verification
+grants, pairing secrets/private keys, root material, challenge ciphertext, and
+AWiki-internal document/Registry/auth checkpoints do not cross the host facade or
+CLI output boundary. These AWiki-local controls do not add fields to cross-domain
+ANP messages.
+
 ## 5. Paths and Configuration
 
 Hosts pass explicit `ImCoreConfig` and `ImCorePaths`.

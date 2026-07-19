@@ -16,6 +16,7 @@ pub mod auth;
 pub mod content;
 pub mod core;
 pub mod core_config;
+pub mod device_join;
 pub mod email;
 pub mod error;
 pub mod groups;

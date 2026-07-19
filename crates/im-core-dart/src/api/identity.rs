@@ -4,12 +4,175 @@ use crate::dto::{
     error::DartImError,
     identity::{
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
-        DartDeleteLocalIdentityResult, DartHandleRegistrationResult, DartIdentityDeviceSummary,
-        DartIdentitySelector, DartIdentitySummary, DartIdentityVaultMigrationReport,
-        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartInitialProfile,
-        DartRecoverHandleResult,
+        DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt, DartDeviceJoinProgress,
+        DartDeviceJoinRegistrySnapshot, DartDeviceJoinRole, DartDeviceJoinSessionSummary,
+        DartHandleRegistrationResult, DartIdentityDeviceSummary, DartIdentitySelector,
+        DartIdentitySummary, DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
+        DartIdentityVaultVerificationReport, DartInitialProfile, DartRecoverHandleResult,
     },
 };
+
+pub async fn local_device_join_sessions(
+    core: &Arc<crate::api::core::DartImCore>,
+) -> Result<Vec<DartDeviceJoinSessionSummary>, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .device_join()
+        .local_sessions()
+        .map(|items| items.into_iter().map(Into::into).collect())
+        .map_err(DartImError::from)
+}
+
+pub async fn begin_device_join(
+    core: &Arc<crate::api::core::DartImCore>,
+    did: String,
+    operation_id: String,
+    ttl_seconds: u64,
+    account_verification_grant: Vec<u8>,
+) -> Result<DartDeviceJoinProgress, DartImError> {
+    let inner = core.clone_inner()?;
+    let grant = im_core::identity::DeviceJoinAccountVerificationGrant::from_bytes(
+        account_verification_grant,
+    )
+    .map_err(DartImError::from)?;
+    inner
+        .device_join()
+        .begin_new_device_join(im_core::identity::DeviceJoinBeginRequest {
+            operation_id,
+            did: im_core::ids::Did::parse(did).map_err(DartImError::from)?,
+            ttl_seconds,
+            account_verification_grant: grant,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn poll_new_device_join(
+    core: &Arc<crate::api::core::DartImCore>,
+    join_session_id: String,
+) -> Result<DartDeviceJoinProgress, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .device_join()
+        .poll_new_device_join(&join_session_id)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn cancel_new_device_join(
+    core: &Arc<crate::api::core::DartImCore>,
+    join_session_id: String,
+) -> Result<DartDeviceJoinSessionSummary, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .device_join()
+        .cancel_new_device_join(&join_session_id)
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn identity_device_registry(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<DartDeviceJoinRegistrySnapshot, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .device_join()
+        .registry(selector.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn claim_device_join(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+    join_session_id: String,
+    operation_id: String,
+    challenge_ttl_seconds: u64,
+) -> Result<DartDeviceJoinProgress, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .device_join()
+        .claim_device_join(
+            selector.try_into()?,
+            &join_session_id,
+            &operation_id,
+            challenge_ttl_seconds,
+        )
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn poll_admin_device_join(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+    join_session_id: String,
+) -> Result<DartDeviceJoinProgress, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .device_join()
+        .poll_admin_device_join(selector.try_into()?, &join_session_id)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn prepare_device_join_approval(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+    join_session_id: String,
+    role: DartDeviceJoinRole,
+    sas_confirmed: bool,
+) -> Result<DartDeviceJoinApprovalPrompt, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .device_join()
+        .prepare_device_join_approval(
+            selector.try_into()?,
+            &join_session_id,
+            match role {
+                DartDeviceJoinRole::Member => im_core::identity::DeviceJoinRole::Member,
+                DartDeviceJoinRole::Admin => im_core::identity::DeviceJoinRole::Admin,
+            },
+            sas_confirmed,
+        )
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn confirm_device_join_approval(
+    core: &Arc<crate::api::core::DartImCore>,
+    approval_handle: String,
+    user_presence_confirmed: bool,
+) -> Result<DartDeviceJoinProgress, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .device_join()
+        .confirm_device_join_approval(im_core::identity::DeviceJoinConfirmApprovalRequest {
+            approval_handle,
+            user_presence_confirmed,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn cancel_admin_device_join(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+    join_session_id: String,
+) -> Result<DartDeviceJoinSessionSummary, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .device_join()
+        .cancel_admin_device_join(selector.try_into()?, &join_session_id)
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
 
 pub async fn list_identities(
     core: &Arc<crate::api::core::DartImCore>,

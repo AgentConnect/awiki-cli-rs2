@@ -1334,6 +1334,60 @@ pub(crate) fn session(
     summary(&stored)
 }
 
+pub(crate) fn list_sessions(
+    core: &crate::core::ImCore,
+) -> crate::ImResult<Vec<DeviceJoinSessionSummary>> {
+    let _guard = lock_join_state(core)?;
+    let store = JoinStateStore::new(core);
+    let mut sessions = Vec::new();
+    for mut stored in store.list()? {
+        normalize_expiry(core, &store, &mut stored)?;
+        sessions.push(summary(&stored)?);
+    }
+    sessions.sort_by(|left, right| {
+        left.expires_at
+            .cmp(&right.expires_at)
+            .then_with(|| left.join_session_id.cmp(&right.join_session_id))
+    });
+    Ok(sessions)
+}
+
+pub(crate) fn admin_approval_context(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<(
+    DeviceJoinSessionSummary,
+    String,
+    Option<PreparedAdminApproval>,
+)> {
+    let _guard = lock_join_state(core)?;
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let store = JoinStateStore::new(core);
+    let mut stored = store
+        .load(&join_session_id, DeviceJoinSide::Admin)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.clone(),
+        })?;
+    normalize_expiry(core, &store, &mut stored)?;
+    ensure_not_expired(&stored)?;
+    if !matches!(
+        stored.phase,
+        DeviceJoinLocalPhase::ResponseVerified | DeviceJoinLocalPhase::ApprovalPrepared
+    ) {
+        return Err(invalid_state("admin Join response is not verified"));
+    }
+    let approval = stored
+        .approval
+        .as_ref()
+        .map(|value| prepared_approval_result(&stored, value))
+        .transpose()?;
+    Ok((
+        summary(&stored)?,
+        derive_stored_sas(core, &stored)?,
+        approval,
+    ))
+}
+
 fn verified_result(
     core: &crate::core::ImCore,
     stored: &StoredJoinSession,

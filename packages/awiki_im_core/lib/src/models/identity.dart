@@ -267,3 +267,134 @@ class RecoverHandleResult {
   final bool accessTokenPresent;
   final List<String> warnings;
 }
+
+enum DeviceJoinSide { newDevice, admin }
+
+enum DeviceJoinPhase {
+  pending,
+  challengePrepared,
+  responsePrepared,
+  responseVerified,
+  approvalPrepared,
+  authorized,
+  cancelled,
+  expired,
+}
+
+enum DeviceJoinRole { member, admin }
+
+enum DeviceJoinAuthorizationStatus { active, revoked }
+
+enum DeviceJoinRemoteState {
+  pending,
+  claimed,
+  challengeSent,
+  responseVerified,
+  consumed,
+  expired,
+}
+
+class DeviceJoinSessionSummary {
+  const DeviceJoinSessionSummary({
+    required this.joinSessionId,
+    required this.did,
+    required this.protocolDeviceId,
+    required this.side,
+    required this.phase,
+    required this.expiresAt,
+  });
+
+  final String joinSessionId;
+  final String did;
+  final String protocolDeviceId;
+  final DeviceJoinSide side;
+  final DeviceJoinPhase phase;
+  final String expiresAt;
+}
+
+class DeviceJoinAuthorizedDeviceSummary {
+  const DeviceJoinAuthorizedDeviceSummary({
+    required this.protocolDeviceId,
+    required this.signingKeyId,
+    required this.e2eeKeyId,
+    required this.status,
+    required this.role,
+    required this.managementReady,
+    required this.isCurrent,
+  });
+
+  final String protocolDeviceId;
+  final String signingKeyId;
+  final String e2eeKeyId;
+  final DeviceJoinAuthorizationStatus status;
+  final DeviceJoinRole role;
+  final bool managementReady;
+  final bool isCurrent;
+}
+
+class DeviceJoinPendingSummary {
+  const DeviceJoinPendingSummary({
+    required this.joinSessionId,
+    required this.protocolDeviceId,
+    required this.signingKeyId,
+    required this.e2eeKeyId,
+    required this.requestedRole,
+    required this.issuedAt,
+    required this.expiresAt,
+  });
+
+  final String joinSessionId;
+  final String protocolDeviceId;
+  final String signingKeyId;
+  final String e2eeKeyId;
+  final DeviceJoinRole requestedRole;
+  final String issuedAt;
+  final String expiresAt;
+}
+
+class DeviceJoinRegistrySnapshot {
+  const DeviceJoinRegistrySnapshot({
+    required this.did,
+    required this.devices,
+    required this.pendingJoinRequests,
+  });
+
+  final String did;
+  final List<DeviceJoinAuthorizedDeviceSummary> devices;
+  final List<DeviceJoinPendingSummary> pendingJoinRequests;
+}
+
+class DeviceJoinProgress {
+  const DeviceJoinProgress({
+    required this.session,
+    required this.remoteState,
+    this.sas,
+    this.authorizedDevice,
+  });
+
+  final DeviceJoinSessionSummary session;
+  final DeviceJoinRemoteState remoteState;
+  final String? sas;
+  final DeviceJoinAuthorizedDeviceSummary? authorizedDevice;
+}
+
+class DeviceJoinApprovalPrompt {
+  const DeviceJoinApprovalPrompt({
+    required this.approvalHandle,
+    required this.joinSessionId,
+    required this.role,
+    required this.sas,
+    required this.expiresAt,
+  });
+
+  final String approvalHandle;
+  final String joinSessionId;
+  final DeviceJoinRole role;
+  final String sas;
+  final String expiresAt;
+
+  @override
+  String toString() =>
+      'DeviceJoinApprovalPrompt(joinSessionId: $joinSessionId, role: $role, '
+      'approvalHandle: <redacted>, sas: <redacted>)';
+}

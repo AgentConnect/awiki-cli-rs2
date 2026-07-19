@@ -769,6 +769,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
             workspace_id: "workspace-a".to_string(),
             device_id: "device-a".to_string(),
         }),
+        multi_device_join_enabled: true,
     };
 
     let mapped: im_core::ImCoreOpenOptions = options.try_into().expect("open options map");
@@ -776,6 +777,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
         mapped.identity_secret_storage_policy,
         im_core::IdentitySecretStoragePolicy::VaultRequired
     ));
+    assert!(mapped.multi_device_join_enabled);
     let vault = mapped.identity_secret_vault.expect("vault options");
     assert_eq!(
         vault.vault_dir,
@@ -801,6 +803,7 @@ fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
             workspace_id: "workspace-a".to_string(),
             device_id: "device-a".to_string(),
         }),
+        multi_device_join_enabled: false,
     };
 
     let error = im_core::ImCoreOpenOptions::try_from(options).unwrap_err();
@@ -1006,6 +1009,41 @@ fn realtime_runner_capability_is_exposed_after_bridge_plan_lands() {
     assert!(capability.connect_supported);
     assert!(capability.runner_exposed);
     assert!(capability.reason.is_none());
+}
+
+#[test]
+fn device_join_bridge_projection_excludes_internal_state_and_redacts_prompt() {
+    let session = im_core::identity::DeviceJoinSessionView {
+        join_session_id: "join-safe-id".to_owned(),
+        did: im_core::ids::Did::parse("did:wba:example.test:alice").unwrap(),
+        protocol_device_id: im_core::ids::ProtocolDeviceId::parse("device-new").unwrap(),
+        side: im_core::identity::DeviceJoinSide::NewDevice,
+        phase: im_core::identity::DeviceJoinLocalPhase::Pending,
+        expires_at: "2026-07-19T12:00:00Z".to_owned(),
+    };
+    let dart: awiki_im_core::dto::identity::DartDeviceJoinSessionSummary = session.into();
+    let debug = format!("{dart:?}");
+    assert!(debug.contains("join-safe-id"));
+    for forbidden in [
+        "join_request_hash",
+        "challenge_id",
+        "document_hash",
+        "registry_version",
+        "auth_generation",
+    ] {
+        assert!(!debug.contains(forbidden));
+    }
+
+    let prompt = awiki_im_core::dto::identity::DartDeviceJoinApprovalPrompt {
+        approval_handle: "approval-secret-handle".to_owned(),
+        join_session_id: "join-safe-id".to_owned(),
+        role: awiki_im_core::dto::identity::DartDeviceJoinRole::Member,
+        sas: "123456".to_owned(),
+        expires_at: "2026-07-19T12:00:00Z".to_owned(),
+    };
+    let debug = format!("{prompt:?}");
+    assert!(!debug.contains("approval-secret-handle"));
+    assert!(!debug.contains("123456"));
 }
 
 #[test]

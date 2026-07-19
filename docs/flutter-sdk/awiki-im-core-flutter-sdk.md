@@ -140,6 +140,29 @@ The result distinguishes legacy/member/admin readiness and exposes only the
 protocol device ID and public key IDs. It intentionally omits Vault references,
 root-key presence flags, and internal Document/Registry/auth checkpoints.
 
+## Multi-device Join
+
+Native hosts opt in explicitly with
+`AwikiImCoreOpenOptions(multiDeviceJoinEnabled: true)`; the default remains
+fail closed. The new device immediately wraps its short-lived account
+verification result with `DeviceJoinAccountVerificationGrant.fromToken(...)`.
+The grant has no getter, copy/JSON API, or revealing `toString`, and
+`beginDeviceJoin` consumes it once. Resume uses `localDeviceJoinSessions`,
+`pollNewDeviceJoin`, and `cancelNewDeviceJoin`.
+
+An existing management device uses `identityDeviceRegistry`,
+`claimDeviceJoin`, and `pollAdminDeviceJoin`. After comparing the locally
+derived six-digit SAS on both devices and obtaining local user presence, the
+host calls `prepareDeviceJoinApproval` followed by
+`confirmDeviceJoinApproval`. The approval handle stays in memory and must not
+be logged or persisted.
+
+Join models expose only safe session, device, role/status, expiry, and
+short-lived SAS facts. They do not expose OTP/Join tokens, pairing or private
+key material, root material, challenge ciphertext, or AWiki-internal
+Document/Registry/auth versions and hashes. Flutter Web keeps this native flow
+unsupported.
+
 ## Directory profile metadata
 
 `client.directory.resolvePeer(handle)` and `client.directory.lookupHandle(handle)` return a

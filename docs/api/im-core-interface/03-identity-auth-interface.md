@@ -169,6 +169,20 @@ JWT/token refresh must persist secret material through SecretVault. Existing
 legacy PEM/auth.json files are a compatibility bridge until explicit cleanup is
 available; migration failure must not delete them.
 
+## 3.1 Device Join control plane
+
+`ImCore::device_join()` exposes the rollout-gated host operations for
+new-device begin/resume/poll/cancel and management-device Registry,
+claim/poll/approval/cancel. The account verification grant is a write-only
+input. Approval is split into a locally confirmed SAS preparation call and a
+one-time handle confirmation call after host user presence.
+
+The host session projection intentionally omits internal transcript hashes and
+challenge IDs. Registry/progress DTOs likewise omit AWiki domain-internal
+`document_version`, `document_hash`, `registry_version`, and `auth_generation`.
+Those values remain server/local concurrency state and are not cross-domain ANP
+or public host fields.
+
 ## 4. Register Handle
 
 P1 只做注册，不做 recover/replace DID。

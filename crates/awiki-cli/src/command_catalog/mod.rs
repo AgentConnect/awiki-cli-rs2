@@ -466,6 +466,9 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             phase: "future people search API",
         });
     }
+    if has_command_prefix(name, "id.device") {
+        return Some(CutoverStatus::ImCore);
+    }
     if is_one_of(
         name,
         &[
@@ -616,6 +619,9 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
 pub fn command_audience(raw: &str) -> CommandAudience {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "id.device") {
+        return CommandAudience::AdvancedUser;
+    }
     if is_one_of(
         name,
         &[
@@ -811,6 +817,9 @@ pub fn secondary_owners(raw: &str) -> &'static [CommandOwner] {
 pub fn cli_shell_role(raw: &str) -> CliShellRole {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if name == "id.device.join.approve" {
+        return CliShellRole::ParsesInputOnly;
+    }
     if name == "id.use" {
         return CliShellRole::WritesDefaultIdentityFile;
     }
@@ -1220,6 +1229,17 @@ macro_rules! flag {
             deprecated: false,
         }
     };
+    ($name:expr, $ty:expr, $usage:expr, required, choices = [$($choice:expr),+ $(,)?]) => {
+        FlagSpec {
+            name: $name,
+            flag_type: $ty,
+            usage: $usage,
+            default: "",
+            required: true,
+            choices: &[$($choice),+],
+            deprecated: false,
+        }
+    };
     ($name:expr, $ty:expr, $usage:expr, deprecated) => {
         FlagSpec {
             name: $name,
@@ -1303,6 +1323,15 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "id.list", use_: "list", short: "List local identities", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.list", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "id.current", use_: "current", short: "Show the default identity", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.current", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "id.use", use_: "use <identity>", short: "Switch the default identity", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.use", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "id.device", use_: "device", short: "Inspect and authorize devices for one DID", long: "AWiki-local device management. These commands are rollout-gated and do not add AWiki-internal checkpoints or secrets to cross-domain ANP payloads.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "id.device.list", use_: "list", short: "List authorized devices and pending Join requests", long: "Returns a safe Device Registry projection without tokens, key material, internal checkpoints, or document hashes.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.list", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
+        CommandSpec { name: "id.device.join", use_: "join", short: "Run the gated new-device Join flow", long: "Join state is restart-safe. Account verification grants are read only from AWIKI_ACCOUNT_VERIFICATION_TOKEN and are never accepted as command arguments or returned in output.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "id.device.join.sessions", use_: "sessions", short: "List restart-safe local Join sessions", long: "Lists only the safe host projection; transcript hashes, challenges, tokens, and private material stay internal.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.sessions", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
+        CommandSpec { name: "id.device.join.start", use_: "start", short: "Create a pending Join request as a new device", long: "Requires AWIKI_MULTI_DEVICE_JOIN_ENABLED=1 and a short-lived AWIKI_ACCOUNT_VERIFICATION_TOKEN environment value. The verification grant is never accepted in argv or emitted.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.start", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("did", "string", "Existing account DID", required), flag!("operation-id", "string", "Caller idempotency operation id", required), flag!("ttl-seconds", "int", "Join session lifetime in seconds", default = "600")] },
+        CommandSpec { name: "id.device.join.poll", use_: "poll", short: "Advance and inspect a local Join session", long: "By default advances the new-device side. Pass --admin for the selected management identity; a locally derived short-lived SAS is shown only when available.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.poll", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id", required), flag!("admin", "bool", "Poll the management-device side")] },
+        CommandSpec { name: "id.device.join.claim", use_: "claim", short: "Claim a pending Join and prepare its challenge", long: "Uses the selected active management identity. Pairing secrets and challenge plaintext never cross the CLI boundary.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.claim", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id", required), flag!("operation-id", "string", "Caller idempotency operation id", required), flag!("challenge-ttl-seconds", "int", "Challenge lifetime in seconds", default = "300")] },
+        CommandSpec { name: "id.device.join.approve", use_: "approve", short: "Interactively approve a verified device Join", long: "Requires a foreground TTY. The user must type the locally derived SAS and APPROVE. The one-time approval handle is created and consumed in-process and never printed.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.approve", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id", required), flag!("role", "string", "Authorize the new device as member or admin", required, choices = ["member", "admin"])] },
+        CommandSpec { name: "id.device.join.cancel", use_: "cancel", short: "Cancel one local Join side", long: "Cancels the new-device side by default; pass --admin for the selected management identity.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.cancel", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id", required), flag!("admin", "bool", "Cancel the management-device side")] },
         CommandSpec { name: "id.profile", use_: "profile", short: "Read or update DID profile data", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "id.profile.get", use_: "get", short: "Get DID profile data", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.profile.get", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("self", "bool", "Read the active identity profile"), flag!("handle", "string", "Read a profile by handle"), flag!("did", "string", "Read a profile by DID")] },
         CommandSpec { name: "id.profile.set", use_: "set", short: "Update DID profile data", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.profile.set", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("display-name", "string", "Profile display name"), flag!("bio", "string", "Profile bio"), flag!("tags", "string", "Comma-separated tags"), flag!("markdown", "string", "Inline markdown body"), flag!("markdown-file", "string", "Markdown file path"), flag!("avatar-uri", "string", "Profile avatar URI"), flag!("avatar-url", "string", "Compatibility alias for --avatar-uri", deprecated)] },

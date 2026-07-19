@@ -150,6 +150,13 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "id.replace-did" => app.run_id_replace_did(command),
         "id.profile.get" => app.run_id_profile_get(command),
         "id.profile.set" => app.run_id_profile_set(command),
+        "id.device.list"
+        | "id.device.join.sessions"
+        | "id.device.join.start"
+        | "id.device.join.poll"
+        | "id.device.join.claim"
+        | "id.device.join.approve"
+        | "id.device.join.cancel" => Err(async_only_error(&command.name)),
         "msg.send" => app.run_msg_send(command),
         "msg.attachment.download" => app.run_msg_attachment_download(command),
         "msg.inbox" => app.run_msg_inbox(command),
@@ -293,6 +300,13 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "id.recover" => app.run_id_recover_async(command).await,
         "id.profile.get" => app.run_id_profile_get_async(command).await,
         "id.profile.set" => app.run_id_profile_set_async(command).await,
+        "id.device.list" => app.run_id_device_list_async().await,
+        "id.device.join.sessions" => app.run_id_device_join_sessions_async().await,
+        "id.device.join.start" => app.run_id_device_join_start_async(command).await,
+        "id.device.join.poll" => app.run_id_device_join_poll_async(command).await,
+        "id.device.join.claim" => app.run_id_device_join_claim_async(command).await,
+        "id.device.join.approve" => app.run_id_device_join_approve_async(command).await,
+        "id.device.join.cancel" => app.run_id_device_join_cancel_async(command).await,
         "group.create" => app.run_group_create_async(command).await,
         "group.get" => app.run_group_get_async(command).await,
         "group.join" => app.run_group_join_async(command).await,
@@ -691,5 +705,14 @@ fn stub_error(command: &str) -> ExitError {
         1,
         format!("{command} is not implemented in this Rust port slice."),
         format!("Use `awiki-cli schema {command}` to inspect the {target} contract."),
+    )
+}
+
+fn async_only_error(command: &str) -> ExitError {
+    ExitError::new(
+        "unsupported_capability",
+        1,
+        format!("sync {command} is disabled in the async cutover."),
+        "Use the async CLI entrypoint.",
     )
 }

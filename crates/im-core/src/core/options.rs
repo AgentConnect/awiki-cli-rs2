@@ -59,6 +59,11 @@ impl fmt::Debug for ImCoreSecretVaultOptions {
 pub struct ImCoreOpenOptions {
     pub identity_secret_storage_policy: IdentitySecretStoragePolicy,
     pub identity_secret_vault: Option<ImCoreSecretVaultOptions>,
+    /// Enables the AWiki-local vNext device Join control plane.
+    ///
+    /// This rollout gate defaults to `false`. It is not an ANP capability and
+    /// is never serialized into a DID Document or cross-domain request.
+    pub multi_device_join_enabled: bool,
 }
 
 impl ImCoreOpenOptions {
@@ -73,6 +78,11 @@ impl ImCoreOpenOptions {
     ) -> Self {
         self.identity_secret_storage_policy = identity_secret_storage_policy;
         self.identity_secret_vault = Some(identity_secret_vault);
+        self
+    }
+
+    pub fn with_multi_device_join_enabled(mut self, enabled: bool) -> Self {
+        self.multi_device_join_enabled = enabled;
         self
     }
 }

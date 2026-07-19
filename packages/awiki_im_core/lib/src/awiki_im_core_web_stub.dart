@@ -9,6 +9,17 @@ UnsupportedError _unsupported() => UnsupportedError(
   'awiki_im_core native Rust backend is not supported on Flutter Web.',
 );
 
+class DeviceJoinAccountVerificationGrant {
+  DeviceJoinAccountVerificationGrant.fromToken(String token) {
+    if (token.trim().isEmpty) {
+      throw ArgumentError('account verification grant must not be empty');
+    }
+  }
+
+  @override
+  String toString() => 'DeviceJoinAccountVerificationGrant(<redacted>)';
+}
+
 class AwikiImCore {
   static Future<LocalStateUpgradeInspection> inspectLocalStateUpgrade({
     required AwikiImCorePaths paths,
@@ -51,6 +62,74 @@ class AwikiImCore {
   Future<IdentityDeviceSummary> identityDeviceSummary(
     IdentitySelector selector,
   ) async {
+    throw _unsupported();
+  }
+
+  Future<List<DeviceJoinSessionSummary>> localDeviceJoinSessions() async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> beginDeviceJoin({
+    required String did,
+    required String operationId,
+    int ttlSeconds = 600,
+    required DeviceJoinAccountVerificationGrant accountVerificationGrant,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> pollNewDeviceJoin(String joinSessionId) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinSessionSummary> cancelNewDeviceJoin(
+    String joinSessionId,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinRegistrySnapshot> identityDeviceRegistry(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> claimDeviceJoin({
+    required IdentitySelector selector,
+    required String joinSessionId,
+    required String operationId,
+    int challengeTtlSeconds = 300,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> pollAdminDeviceJoin({
+    required IdentitySelector selector,
+    required String joinSessionId,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinApprovalPrompt> prepareDeviceJoinApproval({
+    required IdentitySelector selector,
+    required String joinSessionId,
+    DeviceJoinRole role = DeviceJoinRole.member,
+    required bool sasConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> confirmDeviceJoinApproval({
+    required String approvalHandle,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinSessionSummary> cancelAdminDeviceJoin({
+    required IdentitySelector selector,
+    required String joinSessionId,
+  }) async {
     throw _unsupported();
   }
 

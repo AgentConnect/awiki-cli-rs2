@@ -19,6 +19,9 @@ pub(crate) struct ImCoreInner {
     pub(crate) identity_secret_storage_policy: IdentitySecretStoragePolicy,
     pub(crate) identity_vault: Option<options::IdentityVaultContext>,
     pub(crate) device_join_lock: std::sync::Mutex<()>,
+    pub(crate) device_join_enabled: bool,
+    pub(crate) device_join_approvals:
+        crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleStore,
     #[cfg(feature = "sqlite")]
     pub(crate) local_state_db: OnceCell<crate::internal::local_state::actor::LocalStateDb>,
 }
@@ -83,6 +86,8 @@ impl ImCore {
                 identity_secret_storage_policy: options.identity_secret_storage_policy,
                 identity_vault,
                 device_join_lock: std::sync::Mutex::new(()),
+                device_join_enabled: options.multi_device_join_enabled,
+                device_join_approvals: Default::default(),
                 #[cfg(feature = "sqlite")]
                 local_state_db: OnceCell::new(),
             }),
@@ -176,6 +181,10 @@ impl ImCoreInner {
 
     pub(crate) fn identity_vault(&self) -> Option<&options::IdentityVaultContext> {
         self.identity_vault.as_ref()
+    }
+
+    pub(crate) fn device_join_enabled(&self) -> bool {
+        self.device_join_enabled
     }
 
     #[cfg(feature = "sqlite")]

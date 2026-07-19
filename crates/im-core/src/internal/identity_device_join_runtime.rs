@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 use crate::identity::{
     DeviceJoinChallenge, DeviceJoinChallengeResponse, DeviceJoinRequest, DeviceProof,
@@ -20,6 +21,166 @@ use crate::internal::platform_secret::SecretBytes;
 use crate::internal::transport::{
     AsyncAuthenticatedRpcTransport, AsyncRawJsonTransport, AsyncRpcTransport,
 };
+
+#[derive(Debug, Clone)]
+pub(crate) struct DeviceJoinApprovalHandleState {
+    pub(crate) admin_identity: crate::identity::IdentitySelector,
+    pub(crate) join_session_id: String,
+    pub(crate) operation_id: String,
+    pub(crate) role: DeviceAuthorizationRole,
+    pub(crate) expires_at: String,
+    pub(crate) user_presence_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeviceJoinApprovalHandleLease {
+    Ready,
+    InFlight,
+}
+
+#[derive(Debug, Clone)]
+struct DeviceJoinApprovalHandleEntry {
+    state: DeviceJoinApprovalHandleState,
+    lease: DeviceJoinApprovalHandleLease,
+}
+
+#[derive(Default)]
+pub(crate) struct DeviceJoinApprovalHandleStore {
+    entries: std::sync::Mutex<HashMap<String, DeviceJoinApprovalHandleEntry>>,
+}
+
+impl std::fmt::Debug for DeviceJoinApprovalHandleStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self.entries.lock().map(|entries| entries.len()).ok();
+        f.debug_struct("DeviceJoinApprovalHandleStore")
+            .field("entry_count", &count)
+            .finish()
+    }
+}
+
+impl DeviceJoinApprovalHandleStore {
+    pub(crate) fn issue(&self, state: DeviceJoinApprovalHandleState) -> crate::ImResult<String> {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        use rand::RngCore as _;
+
+        let mut random = [0_u8; 24];
+        rand::rngs::OsRng.fill_bytes(&mut random);
+        let handle = format!("approval_{}", URL_SAFE_NO_PAD.encode(random));
+        let mut entries =
+            self.entries
+                .lock()
+                .map_err(|_| crate::ImError::LocalStateUnavailable {
+                    detail: "device Join approval handle lock poisoned".to_owned(),
+                })?;
+        if entries.values().any(|existing| {
+            existing.state.join_session_id == state.join_session_id
+                && existing.state.admin_identity == state.admin_identity
+                && existing.lease == DeviceJoinApprovalHandleLease::InFlight
+        }) {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        entries.retain(|_, existing| {
+            existing.state.join_session_id != state.join_session_id
+                || existing.state.admin_identity != state.admin_identity
+        });
+        entries.insert(
+            handle.clone(),
+            DeviceJoinApprovalHandleEntry {
+                state,
+                lease: DeviceJoinApprovalHandleLease::Ready,
+            },
+        );
+        Ok(handle)
+    }
+
+    pub(crate) fn claim(
+        &self,
+        handle: &str,
+        confirmed_at: &str,
+        now: time::OffsetDateTime,
+    ) -> crate::ImResult<DeviceJoinApprovalHandleState> {
+        let mut entries =
+            self.entries
+                .lock()
+                .map_err(|_| crate::ImError::LocalStateUnavailable {
+                    detail: "device Join approval handle lock poisoned".to_owned(),
+                })?;
+        let expires_at = entries
+            .get(handle)
+            .ok_or(crate::ImError::PermissionDenied)?
+            .state
+            .expires_at
+            .clone();
+        let expires_at = time::OffsetDateTime::parse(
+            &expires_at,
+            &time::format_description::well_known::Rfc3339,
+        );
+        let Ok(expires_at) = expires_at else {
+            entries.remove(handle);
+            return Err(crate::ImError::PermissionDenied);
+        };
+        if expires_at <= now {
+            entries.remove(handle);
+            return Err(crate::ImError::SessionExpired);
+        }
+
+        let entry = entries
+            .get_mut(handle)
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if entry.lease != DeviceJoinApprovalHandleLease::Ready {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if entry.state.user_presence_at.is_none() {
+            entry.state.user_presence_at = Some(confirmed_at.to_owned());
+        }
+        entry.lease = DeviceJoinApprovalHandleLease::InFlight;
+        Ok(entry.state.clone())
+    }
+
+    pub(crate) fn release(&self, handle: &str) -> crate::ImResult<()> {
+        let mut entries =
+            self.entries
+                .lock()
+                .map_err(|_| crate::ImError::LocalStateUnavailable {
+                    detail: "device Join approval handle lock poisoned".to_owned(),
+                })?;
+        let entry = entries
+            .get_mut(handle)
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if entry.lease != DeviceJoinApprovalHandleLease::InFlight {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        entry.lease = DeviceJoinApprovalHandleLease::Ready;
+        Ok(())
+    }
+
+    pub(crate) fn cancel_ready(&self, handle: &str) -> crate::ImResult<()> {
+        let mut entries =
+            self.entries
+                .lock()
+                .map_err(|_| crate::ImError::LocalStateUnavailable {
+                    detail: "device Join approval handle lock poisoned".to_owned(),
+                })?;
+        let entry = entries
+            .get(handle)
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if entry.lease != DeviceJoinApprovalHandleLease::Ready {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        entries.remove(handle);
+        Ok(())
+    }
+
+    pub(crate) fn consume(&self, handle: &str) -> crate::ImResult<()> {
+        self.entries
+            .lock()
+            .map_err(|_| crate::ImError::LocalStateUnavailable {
+                detail: "device Join approval handle lock poisoned".to_owned(),
+            })?
+            .remove(handle);
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -290,15 +451,18 @@ where
         request: DeviceJoinRemoteCreateRequest<'_>,
     ) -> crate::ImResult<DeviceJoinRemoteCreateResult> {
         let expected_join_session_id = request.join_request.join_session_id.clone();
-        let call = crate::internal::identity_wire::device_join::build_create_call(request)?;
+        let call = crate::internal::identity_wire::device_join::build_create_call(request)
+            .map_err(redact_new_device_remote_error)?;
         let raw = self
             .plain
             .rpc(call.endpoint, call.method, call.params)
-            .await?;
+            .await
+            .map_err(redact_new_device_remote_error)?;
         crate::internal::identity_wire::device_join::parse_create_result(
             raw,
             &expected_join_session_id,
         )
+        .map_err(redact_new_device_remote_error)
     }
 
     async fn status(
@@ -307,15 +471,18 @@ where
         join_session_token: &SecretBytes,
     ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus> {
         let call =
-            crate::internal::identity_wire::device_join::build_new_status_call(join_session_token)?;
+            crate::internal::identity_wire::device_join::build_new_status_call(join_session_token)
+                .map_err(redact_new_device_remote_error)?;
         let raw = self
             .plain
             .rpc(call.endpoint, call.method, call.params)
-            .await?;
+            .await
+            .map_err(redact_new_device_remote_error)?;
         crate::internal::identity_wire::device_join::parse_new_status_result(
             raw,
             expected_join_session_id,
         )
+        .map_err(redact_new_device_remote_error)
     }
 
     async fn submit_response(
@@ -323,12 +490,38 @@ where
         request: DeviceJoinRemoteResponseRequest<'_>,
     ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
         let response = request.response.clone();
-        let call = crate::internal::identity_wire::device_join::build_response_call(request)?;
+        let call = crate::internal::identity_wire::device_join::build_response_call(request)
+            .map_err(redact_new_device_remote_error)?;
         let raw = self
             .plain
             .rpc(call.endpoint, call.method, call.params)
-            .await?;
+            .await
+            .map_err(redact_new_device_remote_error)?;
         crate::internal::identity_wire::device_join::parse_response_result(raw, &response)
+            .map_err(redact_new_device_remote_error)
+    }
+}
+
+fn redact_new_device_remote_error(error: crate::ImError) -> crate::ImError {
+    match error {
+        crate::ImError::Service {
+            status_code, code, ..
+        } => crate::ImError::Service {
+            status_code,
+            code,
+            message: "device Join request failed".to_owned(),
+            data: None,
+        },
+        crate::ImError::TransportUnavailable { .. } => crate::ImError::TransportUnavailable {
+            detail: "device Join transport failed".to_owned(),
+        },
+        crate::ImError::Serialization { .. } => crate::ImError::Serialization {
+            detail: "device Join response was invalid".to_owned(),
+        },
+        crate::ImError::Internal { .. } => crate::ImError::Internal {
+            message: "device Join request failed".to_owned(),
+        },
+        other => other,
     }
 }
 
@@ -743,6 +936,12 @@ impl<R> DeviceJoinAdminRuntime<'_, R>
 where
     R: DeviceJoinAdminRemote,
 {
+    pub(crate) async fn registry(&mut self) -> crate::ImResult<DeviceJoinRemoteRegistry> {
+        self.gate.require_enabled()?;
+        let did = self.core.client(self.admin_identity.clone())?.did().clone();
+        self.remote.registry(&did, true).await
+    }
+
     pub(crate) async fn pending(&mut self) -> crate::ImResult<Vec<DeviceJoinRemotePendingSummary>> {
         self.gate.require_enabled()?;
         let did = self.core.client(self.admin_identity.clone())?.did().clone();

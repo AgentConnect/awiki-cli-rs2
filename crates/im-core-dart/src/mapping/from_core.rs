@@ -17,7 +17,11 @@ use crate::dto::{
     },
     identity::{
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
-        DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartHandleRegistrationResult,
+        DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt,
+        DartDeviceJoinAuthorizationStatus, DartDeviceJoinAuthorizedDeviceSummary,
+        DartDeviceJoinPendingSummary, DartDeviceJoinPhase, DartDeviceJoinProgress,
+        DartDeviceJoinRegistrySnapshot, DartDeviceJoinRemoteState, DartDeviceJoinRole,
+        DartDeviceJoinSessionSummary, DartDeviceJoinSide, DartHandleRegistrationResult,
         DartIdentityDeviceMode, DartIdentityDeviceReadiness, DartIdentityDeviceRole,
         DartIdentityDeviceSummary, DartIdentitySecretStorageBackend, DartIdentitySummary,
         DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
@@ -44,6 +48,143 @@ use crate::dto::{
         DartSecureOutboxStatus, DartSecureProblem, DartSecureProblemCode,
     },
 };
+
+impl From<im_core::identity::DeviceJoinSessionView> for DartDeviceJoinSessionSummary {
+    fn from(value: im_core::identity::DeviceJoinSessionView) -> Self {
+        Self {
+            join_session_id: value.join_session_id,
+            did: value.did.as_str().to_owned(),
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            side: match value.side {
+                im_core::identity::DeviceJoinSide::NewDevice => DartDeviceJoinSide::NewDevice,
+                im_core::identity::DeviceJoinSide::Admin => DartDeviceJoinSide::Admin,
+            },
+            phase: match value.phase {
+                im_core::identity::DeviceJoinLocalPhase::Pending => DartDeviceJoinPhase::Pending,
+                im_core::identity::DeviceJoinLocalPhase::ChallengePrepared => {
+                    DartDeviceJoinPhase::ChallengePrepared
+                }
+                im_core::identity::DeviceJoinLocalPhase::ResponsePrepared => {
+                    DartDeviceJoinPhase::ResponsePrepared
+                }
+                im_core::identity::DeviceJoinLocalPhase::ResponseVerified => {
+                    DartDeviceJoinPhase::ResponseVerified
+                }
+                im_core::identity::DeviceJoinLocalPhase::ApprovalPrepared => {
+                    DartDeviceJoinPhase::ApprovalPrepared
+                }
+                im_core::identity::DeviceJoinLocalPhase::Authorized => {
+                    DartDeviceJoinPhase::Authorized
+                }
+                im_core::identity::DeviceJoinLocalPhase::Cancelled => {
+                    DartDeviceJoinPhase::Cancelled
+                }
+                im_core::identity::DeviceJoinLocalPhase::Expired => DartDeviceJoinPhase::Expired,
+            },
+            expires_at: value.expires_at,
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinAuthorizedDeviceSummary>
+    for DartDeviceJoinAuthorizedDeviceSummary
+{
+    fn from(value: im_core::identity::DeviceJoinAuthorizedDeviceSummary) -> Self {
+        Self {
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            signing_key_id: value.signing_key_id,
+            e2ee_key_id: value.e2ee_key_id,
+            status: match value.status {
+                im_core::identity::DeviceJoinAuthorizationStatus::Active => {
+                    DartDeviceJoinAuthorizationStatus::Active
+                }
+                im_core::identity::DeviceJoinAuthorizationStatus::Revoked => {
+                    DartDeviceJoinAuthorizationStatus::Revoked
+                }
+            },
+            role: dart_device_join_role(value.role),
+            management_ready: value.management_ready,
+            is_current: value.is_current,
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinPendingSummary> for DartDeviceJoinPendingSummary {
+    fn from(value: im_core::identity::DeviceJoinPendingSummary) -> Self {
+        Self {
+            join_session_id: value.join_session_id,
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            signing_key_id: value.signing_key_id,
+            e2ee_key_id: value.e2ee_key_id,
+            requested_role: dart_device_join_role(value.requested_role),
+            issued_at: value.issued_at,
+            expires_at: value.expires_at,
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinRegistrySnapshot> for DartDeviceJoinRegistrySnapshot {
+    fn from(value: im_core::identity::DeviceJoinRegistrySnapshot) -> Self {
+        Self {
+            did: value.did.as_str().to_owned(),
+            devices: value.devices.into_iter().map(Into::into).collect(),
+            pending_join_requests: value
+                .pending_join_requests
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinProgress> for DartDeviceJoinProgress {
+    fn from(value: im_core::identity::DeviceJoinProgress) -> Self {
+        Self {
+            session: value.session.into(),
+            remote_state: match value.remote_state {
+                im_core::identity::DeviceJoinRemoteState::Pending => {
+                    DartDeviceJoinRemoteState::Pending
+                }
+                im_core::identity::DeviceJoinRemoteState::Claimed => {
+                    DartDeviceJoinRemoteState::Claimed
+                }
+                im_core::identity::DeviceJoinRemoteState::ChallengeSent => {
+                    DartDeviceJoinRemoteState::ChallengeSent
+                }
+                im_core::identity::DeviceJoinRemoteState::ResponseVerified => {
+                    DartDeviceJoinRemoteState::ResponseVerified
+                }
+                im_core::identity::DeviceJoinRemoteState::Consumed => {
+                    DartDeviceJoinRemoteState::Consumed
+                }
+                im_core::identity::DeviceJoinRemoteState::Expired => {
+                    DartDeviceJoinRemoteState::Expired
+                }
+            },
+            sas: value.sas,
+            authorized_device: value.authorized_device.map(Into::into),
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinApprovalPrompt> for DartDeviceJoinApprovalPrompt {
+    fn from(value: im_core::identity::DeviceJoinApprovalPrompt) -> Self {
+        Self {
+            approval_handle: value.approval_handle,
+            join_session_id: value.join_session_id,
+            role: dart_device_join_role(value.role),
+            sas: value.sas,
+            expires_at: value.expires_at,
+        }
+    }
+}
+
+fn dart_device_join_role(value: im_core::identity::DeviceJoinRole) -> DartDeviceJoinRole {
+    match value {
+        im_core::identity::DeviceJoinRole::Member => DartDeviceJoinRole::Member,
+        im_core::identity::DeviceJoinRole::Admin => DartDeviceJoinRole::Admin,
+    }
+}
 
 impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
     fn from(value: im_core::identity::IdentitySummary) -> Self {

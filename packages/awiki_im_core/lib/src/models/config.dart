@@ -30,22 +30,27 @@ class AwikiImCoreOpenOptions {
   const AwikiImCoreOpenOptions({
     this.identitySecretStoragePolicy = IdentitySecretStoragePolicy.fileCompat,
     this.identitySecretVault,
+    this.multiDeviceJoinEnabled = false,
   });
 
   const AwikiImCoreOpenOptions.fileCompat()
     : identitySecretStoragePolicy = IdentitySecretStoragePolicy.fileCompat,
-      identitySecretVault = null;
+      identitySecretVault = null,
+      multiDeviceJoinEnabled = false;
 
   const AwikiImCoreOpenOptions.vaultPreferred({
     required ImCoreSecretVaultOptions this.identitySecretVault,
+    this.multiDeviceJoinEnabled = false,
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultPreferred;
 
   const AwikiImCoreOpenOptions.vaultRequired({
     required ImCoreSecretVaultOptions this.identitySecretVault,
+    this.multiDeviceJoinEnabled = false,
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultRequired;
 
   final IdentitySecretStoragePolicy identitySecretStoragePolicy;
   final ImCoreSecretVaultOptions? identitySecretVault;
+  final bool multiDeviceJoinEnabled;
 }
 
 class ImCoreSecretVaultOptions {

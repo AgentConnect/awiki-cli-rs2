@@ -67,6 +67,7 @@ pub struct ImCorePaths {
 pub struct ImCoreOpenOptions {
     pub identity_secret_storage_policy: IdentitySecretStoragePolicy,
     pub identity_secret_vault: Option<ImCoreSecretVaultOptions>,
+    pub multi_device_join_enabled: bool, // default false
 }
 
 pub enum IdentitySecretStoragePolicy {
@@ -311,6 +312,29 @@ impl IdentityRegistry<'_> {
 key ID、角色和由本地密钥可用性与服务端授权共同计算出的 readiness。它不公开
 Vault 引用、根私钥存在标志或 AWiki 域内的 `document_version`、
 `document_hash`、`registry_version`、`auth_generation` checkpoint。
+
+### 5.1 Device Join host facade
+
+Device Join is an AWiki-local control-plane API and is disabled unless the host
+opens Core with `with_multi_device_join_enabled(true)`. The host facade provides
+new-device begin/resume/poll/cancel plus management-device Registry,
+claim/poll/approval/cancel operations through `core.device_join()`.
+
+`DeviceJoinAccountVerificationGrant` is a write-only input consumed by
+`begin_new_device_join`; it is not serializable and its `Debug` output is
+redacted. Approval is intentionally split: after the host confirms the
+independently derived SAS, `prepare_device_join_approval` returns a short-lived
+process-local handle; after real local user presence,
+`confirm_device_join_approval` consumes it. Preparing another handle for the
+same session/admin invalidates the previous unused handle; an in-flight
+confirmation cannot be replaced.
+
+`DeviceJoinSessionView`, progress, Registry, device, and pending summaries are
+safe projections. They exclude account/Join tokens, pairing secrets/private
+keys, root material, challenge/ciphertext details, `document_version`,
+`document_hash`, `registry_version`, and `auth_generation`. Those version and
+hash fields are AWiki domain-internal concurrency state, not cross-domain ANP
+fields and not host-facing Join DTOs.
 
 Identity vault DTOs are redacted status/report surfaces. They report selected
 backend, storage policy, vault availability, metadata verification, workspace /

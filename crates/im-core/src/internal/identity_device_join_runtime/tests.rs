@@ -7,6 +7,175 @@ use std::rc::Rc;
 
 use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRpcTransport};
 
+#[test]
+fn approval_handle_is_single_active_intent_and_redacts_handle_state() {
+    let store = DeviceJoinApprovalHandleStore::default();
+    let state = DeviceJoinApprovalHandleState {
+        admin_identity: crate::identity::IdentitySelector::Default,
+        join_session_id: "join-approval-handle".to_owned(),
+        operation_id: "op-approval-handle".to_owned(),
+        role: DeviceAuthorizationRole::Member,
+        expires_at: "2026-07-19T12:00:00Z".to_owned(),
+        user_presence_at: None,
+    };
+    let first = store.issue(state.clone()).unwrap();
+    let second = store.issue(state).unwrap();
+
+    assert_ne!(first, second);
+    assert!(matches!(
+        store.claim(
+            &first,
+            "2026-07-19T11:00:00Z",
+            test_time("2026-07-19T11:00:00Z")
+        ),
+        Err(crate::ImError::PermissionDenied)
+    ));
+    let bound = store
+        .claim(
+            &second,
+            "2026-07-19T11:00:00Z",
+            test_time("2026-07-19T11:00:00Z"),
+        )
+        .unwrap();
+    assert_eq!(
+        bound.user_presence_at.as_deref(),
+        Some("2026-07-19T11:00:00Z")
+    );
+    assert!(matches!(
+        store.claim(
+            &second,
+            "2026-07-19T11:01:00Z",
+            test_time("2026-07-19T11:01:00Z"),
+        ),
+        Err(crate::ImError::PermissionDenied)
+    ));
+    assert!(matches!(
+        store.issue(bound.clone()),
+        Err(crate::ImError::PermissionDenied)
+    ));
+    assert!(matches!(
+        store.cancel_ready(&second),
+        Err(crate::ImError::PermissionDenied)
+    ));
+    store.release(&second).unwrap();
+    let retried = store
+        .claim(
+            &second,
+            "2026-07-19T11:02:00Z",
+            test_time("2026-07-19T11:02:00Z"),
+        )
+        .unwrap();
+    assert_eq!(
+        retried.user_presence_at.as_deref(),
+        Some("2026-07-19T11:00:00Z")
+    );
+    store.consume(&second).unwrap();
+    assert!(matches!(
+        store.claim(
+            &second,
+            "2026-07-19T11:03:00Z",
+            test_time("2026-07-19T11:03:00Z"),
+        ),
+        Err(crate::ImError::PermissionDenied)
+    ));
+    let debug = format!("{store:?}");
+    assert!(!debug.contains(&second));
+}
+
+#[test]
+fn approval_handle_claim_is_atomic_across_concurrent_callers() {
+    let store = std::sync::Arc::new(DeviceJoinApprovalHandleStore::default());
+    let handle = store
+        .issue(DeviceJoinApprovalHandleState {
+            admin_identity: crate::identity::IdentitySelector::Default,
+            join_session_id: "join-concurrent-handle".to_owned(),
+            operation_id: "op-concurrent-handle".to_owned(),
+            role: DeviceAuthorizationRole::Member,
+            expires_at: "2030-01-01T00:00:00Z".to_owned(),
+            user_presence_at: None,
+        })
+        .unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let callers: Vec<_> = (0..8)
+        .map(|_| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            let handle = handle.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                store.claim(
+                    &handle,
+                    "2029-01-01T00:00:00Z",
+                    test_time("2029-01-01T00:00:00Z"),
+                )
+            })
+        })
+        .collect();
+    let results: Vec<_> = callers
+        .into_iter()
+        .map(|caller| caller.join().unwrap())
+        .collect();
+
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(crate::ImError::PermissionDenied)))
+            .count(),
+        7
+    );
+}
+
+#[test]
+fn expired_approval_handle_is_consumed_on_claim() {
+    let store = DeviceJoinApprovalHandleStore::default();
+    let handle = store
+        .issue(DeviceJoinApprovalHandleState {
+            admin_identity: crate::identity::IdentitySelector::Default,
+            join_session_id: "join-expired-handle".to_owned(),
+            operation_id: "op-expired-handle".to_owned(),
+            role: DeviceAuthorizationRole::Member,
+            expires_at: "2026-07-19T11:00:00Z".to_owned(),
+            user_presence_at: None,
+        })
+        .unwrap();
+
+    assert!(matches!(
+        store.claim(
+            &handle,
+            "2026-07-19T12:00:00Z",
+            test_time("2026-07-19T12:00:00Z"),
+        ),
+        Err(crate::ImError::SessionExpired)
+    ));
+    assert!(matches!(
+        store.claim(
+            &handle,
+            "2026-07-19T10:00:00Z",
+            test_time("2026-07-19T10:00:00Z"),
+        ),
+        Err(crate::ImError::PermissionDenied)
+    ));
+}
+
+#[test]
+fn new_device_remote_errors_cannot_echo_join_grants_or_tokens() {
+    let secret = "join-token-must-never-appear";
+    let redacted = redact_new_device_remote_error(crate::ImError::Service {
+        status_code: Some(400),
+        code: Some("bad_join".to_owned()),
+        message: format!("bad token {secret}"),
+        data: Some(serde_json::json!({"token": secret})),
+    });
+    let rendered = format!("{redacted:?} {redacted}");
+    assert!(!rendered.contains(secret));
+    assert!(!rendered.contains("\"token\""));
+}
+
+fn test_time(value: &str) -> time::OffsetDateTime {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).unwrap()
+}
+
 fn test_config() -> crate::ImCoreConfig {
     crate::ImCoreConfig {
         service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),

@@ -16,6 +16,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 mod debug_handlers;
+mod device_join_handlers;
 mod error_hints;
 mod group_e2ee_handlers;
 mod group_handlers;
@@ -1532,6 +1533,9 @@ fn finish_help(mut lines: Vec<String>) -> String {
 fn is_sensitive_public_key(key: &str) -> bool {
     let normalized = key.to_ascii_lowercase();
     normalized == "jwt_token"
+        || normalized == "approval_handle"
+        || normalized == "account_verification_grant"
+        || normalized == "root_private_key"
         || normalized == "did_document"
         || normalized == "key1_public_pem"
         || normalized == "root_key_material"
