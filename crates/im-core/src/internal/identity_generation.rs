@@ -52,7 +52,7 @@ pub(crate) struct GeneratedIdentityWithDaemonSubkey {
     pub(crate) daemon_subkey_package: crate::identity::DaemonSubkeyPrivatePackage,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct GeneratedVNextIdentityWithDaemonSubkey {
     pub(crate) did: crate::ids::Did,
     pub(crate) unique_id: String,
@@ -111,7 +111,7 @@ pub(crate) fn generate_vnext_handle_identity_with_default_daemon_subkey(
     }
     generate_vnext_identity_with_path_segments(
         hostname,
-        [local_part.as_str()],
+        ["user", local_part.as_str()],
         service_endpoint,
         service_did,
     )

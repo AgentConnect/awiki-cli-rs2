@@ -97,15 +97,30 @@ persisted: active members do not require a root private key, while an admin beco
 ready only when both the server completion state and the local Root Vault are available.
 Revoked devices and local Vault/auth inconsistencies fail closed as blocked.
 
+When the existing multi-device rollout gate is enabled, Handle registration
+uses the vNext bootstrap path instead of the legacy `register` RPC. This path is
+same-domain and phone-OTP-only: OTP sending uses
+`/user-service/auth/sms-codes`, OTP exchange produces a short-lived
+`awiki.device.genesis.v1` account grant, and `device_genesis` atomically returns
+the first active/ready admin authorization plus a device token pair. Email,
+`AlreadyVerified`, cross-domain, and missing-`VaultRequired` configurations fail
+closed without falling back to legacy registration. With the gate disabled, the
+legacy registration request and endpoints are unchanged.
+
 The vNext bootstrap generator creates the DID root, an independent Ed25519
 device request-signing key, an independent X25519 device E2EE key, and a random
 protocol device ID. It builds the genesis DID Document through the ANP SDK so
 the embedded Manifest and verification relationships are validated together.
 The three private-key roles are sealed as separate Vault records; runtime
 request signing resolves the device key, while DID Document proof/update
-resolves the root key. The generator is not a legacy-registration fallback:
-the identity becomes usable only after the user-service genesis transaction
-returns an active admin authorization projection.
+resolves the root key. Before network activation, Core seals a local-only
+pending Genesis record containing the exact operation, proof, generated key
+material and later the strict server result. An ambiguous retry reuses the same
+request bytes; a remote success followed by local failure resumes from the
+encrypted result without repeating Genesis. Only after the VNext identity,
+internal checkpoint, access token and rotating refresh token are committed to
+Vault is the pending record deleted and the identity exposed as admin-ready.
+The pending record and checkpoint are implementation state, not ANP fields.
 
 Device Join production orchestration is an internal control-plane boundary with
 separate unauthenticated new-device and authenticated ready-admin paths. It advances

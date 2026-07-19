@@ -143,6 +143,15 @@ impl IdentityRegistry<'_> {
 
 `load_runtime` 只能是 `pub(crate)`，供 `ImCore::client` 使用。
 
+当 Core 显式启用 multi-device gate 时，`register_handle` 保持同一公共 DTO，
+但内部只接受同域 Phone OTP：发送验证码走 `/auth/sms-codes`，随后兑换绑定
+Handle/domain/purpose/idempotency scope 的 account-verification grant，并提交
+`device_genesis`。该路径要求 `VaultRequired`，验证完整 DID Document、单设备
+Manifest、bootstrap device proof、active/admin/management-ready/generation=1、
+内部 checkpoint 和设备 token claims 后才保存身份。refresh token 与失败恢复
+记录只保存在 Vault；返回 DTO 不包含 refresh token 或内部 checkpoint。gate 关闭时
+仍执行原 legacy 注册流程，不能由 vNext 失败分支自动降级。
+
 Vault DTO boundary:
 
 - `IdentityVaultStatus` reports the selected backend (`file_compat` or `vault`),

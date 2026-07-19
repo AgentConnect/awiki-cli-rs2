@@ -37,6 +37,8 @@ pub(crate) struct DeviceAuthorizationProjection {
     pub(crate) status: DeviceAuthorizationStatus,
     pub(crate) role: DeviceAuthorizationRole,
     pub(crate) management_ready: bool,
+    #[serde(default = "default_auth_generation")]
+    pub(crate) auth_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +177,12 @@ fn validate_authorization(
     authorization: &DeviceAuthorizationProjection,
     did: &crate::ids::Did,
 ) -> crate::ImResult<()> {
+    if authorization.auth_generation == 0 {
+        return Err(crate::ImError::invalid_input(
+            Some("identity_device_state.authorization.auth_generation".to_owned()),
+            "device auth_generation must be positive",
+        ));
+    }
     crate::ids::ProtocolDeviceId::parse(authorization.protocol_device_id.as_str())?;
     validate_key_id(did, "signing_key_id", &authorization.signing_key_id)?;
     validate_key_id(did, "e2ee_key_id", &authorization.e2ee_key_id)?;
@@ -198,6 +206,10 @@ fn validate_authorization(
         ));
     }
     Ok(())
+}
+
+const fn default_auth_generation() -> u64 {
+    1
 }
 
 fn validate_key_id(did: &crate::ids::Did, field: &str, value: &str) -> crate::ImResult<()> {
@@ -253,6 +265,7 @@ mod tests {
                 status: DeviceAuthorizationStatus::Active,
                 role,
                 management_ready,
+                auth_generation: 1,
             }),
             checkpoint: Some(IdentityInternalCheckpoint {
                 document_version: 1,

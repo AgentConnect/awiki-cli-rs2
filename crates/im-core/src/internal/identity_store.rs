@@ -423,6 +423,110 @@ impl<'a> IdentityStore<'a> {
         })?
     }
 
+    /// Replaces the Vault auth record with the complete rotating device token
+    /// pair. The refresh token is never projected into ordinary identity files.
+    pub(crate) fn persist_vnext_auth_token_pair(
+        &self,
+        local_alias: &str,
+        access_token: &str,
+        refresh_token: &str,
+        token_expires_at: &str,
+        secret_storage: &SaveIdentitySecretStorage,
+    ) -> crate::ImResult<()> {
+        let SaveIdentitySecretStorage::Vault {
+            workspace_id,
+            device_id,
+            vault,
+        } = secret_storage
+        else {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "vNext device refresh tokens require Vault storage".to_owned(),
+            });
+        };
+        let alias = sanitize_identity_name(local_alias);
+        let index = self.load_index()?;
+        let entry =
+            index
+                .credentials
+                .get(&alias)
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: alias.clone(),
+                })?;
+        if entry.device_state.as_ref().is_none_or(|state| {
+            state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
+        }) {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let metadata = entry
+            .vault_migration
+            .as_ref()
+            .filter(|metadata| {
+                metadata.workspace_id == *workspace_id
+                    && metadata.device_id == *device_id
+                    && metadata.status == IdentityVaultMigrationStatus::Verified
+            })
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let auth_ref = metadata
+            .vnext_refs
+            .as_ref()
+            .map(|refs| &refs.auth_jwt)
+            .filter(|secret_ref| {
+                secret_ref.workspace_id == *workspace_id
+                    && secret_ref.device_id == *device_id
+                    && secret_ref.kind == crate::internal::secret_vault::record::SecretKind::AuthJwt
+            })
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let raw = crate::internal::auth::state::auth_state_json_for_token_pair(
+            access_token,
+            Some(refresh_token),
+            Some(token_expires_at),
+        )?;
+        let sealed = vault.seal(crate::internal::secret_vault::SealSecretRequest {
+            metadata: crate::internal::secret_vault::record::SecretMetadata {
+                workspace_id: auth_ref.workspace_id.clone(),
+                device_id: auth_ref.device_id.clone(),
+                identity_id: auth_ref.identity_id.clone(),
+                did: auth_ref.did.clone(),
+                kind: auth_ref.kind.clone(),
+                key_id: auth_ref.key_id.clone(),
+                key_version: auth_ref.key_version,
+                policy: crate::internal::secret_vault::policy::SecretAccessPolicy::no_prompt_local_secret(),
+            },
+            plaintext: crate::internal::platform_secret::SecretBytes::from_vec(raw),
+        })?;
+        let opened = vault.open(&sealed)?;
+        let snapshot = crate::internal::auth::state::parse_auth_state(opened.expose_secret())?;
+        if snapshot.bearer_token.as_deref() != Some(access_token.trim())
+            || snapshot.refresh_token.as_deref() != Some(refresh_token.trim())
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn persist_vnext_auth_token_pair_async(
+        paths: crate::paths::IdentityRegistryPaths,
+        local_alias: String,
+        access_token: String,
+        refresh_token: String,
+        token_expires_at: String,
+        secret_storage: SaveIdentitySecretStorage,
+    ) -> crate::ImResult<()> {
+        crate::internal::runtime::worker::run_blocking(move || {
+            IdentityStore::new(&paths).persist_vnext_auth_token_pair(
+                &local_alias,
+                &access_token,
+                &refresh_token,
+                &token_expires_at,
+                &secret_storage,
+            )
+        })
+        .await
+        .map_err(|err| crate::ImError::Internal {
+            message: err.to_string(),
+        })?
+    }
+
     pub(crate) fn load_daemon_subkey_package(
         &self,
         identity_dir_name: &str,
@@ -2058,6 +2162,7 @@ mod tests {
                 status: DeviceAuthorizationStatus::Active,
                 role: DeviceAuthorizationRole::Member,
                 management_ready: false,
+                auth_generation: 1,
             }),
             checkpoint: Some(IdentityInternalCheckpoint {
                 document_version: 1,
@@ -2408,6 +2513,7 @@ mod tests {
                 status: DeviceAuthorizationStatus::Active,
                 role: DeviceAuthorizationRole::Admin,
                 management_ready: true,
+                auth_generation: 1,
             }),
             checkpoint: Some(IdentityInternalCheckpoint {
                 document_version: 1,
@@ -2538,6 +2644,7 @@ mod tests {
                             status: DeviceAuthorizationStatus::Active,
                             role: DeviceAuthorizationRole::Member,
                             management_ready: false,
+                            auth_generation: 1,
                         }),
                         checkpoint: Some(IdentityInternalCheckpoint {
                             document_version: 2,

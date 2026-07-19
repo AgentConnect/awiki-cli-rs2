@@ -105,6 +105,7 @@ fn open_vnext_identity_core(
                         role,
                         management_ready: role
                             == crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
+                        auth_generation: 1,
                     }),
                     checkpoint: Some(IdentityInternalCheckpoint {
                         document_version: 7,

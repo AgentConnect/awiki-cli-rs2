@@ -2461,6 +2461,7 @@ mod tests {
                             status: DeviceAuthorizationStatus::Active,
                             role: DeviceAuthorizationRole::Admin,
                             management_ready: true,
+                            auth_generation: 1,
                         }),
                         checkpoint: Some(IdentityInternalCheckpoint {
                             document_version: 9,

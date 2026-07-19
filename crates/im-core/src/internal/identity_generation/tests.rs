@@ -59,7 +59,7 @@ fn vnext_genesis_has_one_device_and_separate_root_and_device_keys() {
     assert!(generated
         .did
         .as_str()
-        .starts_with("did:wba:awiki.info:alice:e1_"));
+        .starts_with("did:wba:awiki.info:user:alice:e1_"));
     assert!(anp::authentication::validate_did_document_binding(
         &generated.did_document,
         true

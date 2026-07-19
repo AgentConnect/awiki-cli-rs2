@@ -23,6 +23,7 @@ pub(crate) mod identity_device_join_runtime;
 pub(crate) mod identity_device_state;
 pub(crate) mod identity_document_cache;
 pub(crate) mod identity_generation;
+pub(crate) mod identity_genesis_pending;
 pub(crate) mod identity_recover_local_state;
 pub(crate) mod identity_recovery_local;
 pub(crate) mod identity_recovery_runtime;

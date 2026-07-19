@@ -1,4 +1,5 @@
 pub(crate) mod bind;
+pub(crate) mod device_genesis;
 pub(crate) mod device_join;
 pub(crate) mod directory;
 pub(crate) mod profile;
@@ -19,6 +20,9 @@ pub(crate) const DID_PROFILE_RPC_ENDPOINT: &str = "/user-service/did/profile/rpc
 pub(crate) const DID_RELATIONSHIPS_RPC_ENDPOINT: &str = "/user-service/did/relationships/rpc";
 pub(crate) const EMAIL_SEND_ENDPOINT: &str = "/user-service/auth/email-send";
 pub(crate) const EMAIL_STATUS_ENDPOINT: &str = "/user-service/auth/email-status";
+pub(crate) const SMS_CODES_ENDPOINT: &str = "/user-service/auth/sms-codes";
+pub(crate) const ACCOUNT_VERIFICATION_EXCHANGE_ENDPOINT: &str =
+    "/user-service/auth/account-verification/exchange";
 pub(crate) const PHONE_BIND_SEND_ENDPOINT: &str = "/user-service/auth/phone-bind-send";
 pub(crate) const PHONE_BIND_VERIFY_ENDPOINT: &str = "/user-service/auth/phone-bind-verify";
 

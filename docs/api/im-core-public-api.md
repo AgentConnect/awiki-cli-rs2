@@ -313,6 +313,13 @@ key ID、角色和由本地密钥可用性与服务端授权共同计算出的 r
 Vault 引用、根私钥存在标志或 AWiki 域内的 `document_version`、
 `document_hash`、`registry_version`、`auth_generation` checkpoint。
 
+`register_handle` 的 vNext 行为由同一个默认关闭的 multi-device gate 控制。启用后
+首设备注册只支持同域 Phone OTP，并要求 `VaultRequired`；Core 通过 account
+verification exchange 和 `device_genesis` 创建带 Manifest 的 DID，成功后返回原有
+`HandleRegistrationResult`。Bootstrap proof、account grant、refresh token、Vault
+pending record 和内部 checkpoint 均不进入公共返回值。Email、
+`AlreadyVerified`、跨域或 Vault 不可用时 fail closed；gate 关闭时旧注册语义不变。
+
 ### 5.1 Device Join host facade
 
 Device Join is an AWiki-local control-plane API and is disabled unless the host

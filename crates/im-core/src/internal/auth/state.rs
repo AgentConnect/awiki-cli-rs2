@@ -10,16 +10,39 @@ use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 const EXPIRY_LEEWAY_SECONDS: i64 = 30;
 const REFRESH_WINDOW_SECONDS: i64 = 300;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct AuthStateSnapshot {
     pub(crate) has_token: bool,
     pub(crate) has_valid_token: bool,
     pub(crate) token_expired: bool,
     pub(crate) needs_refresh: bool,
     pub(crate) bearer_token: Option<String>,
+    pub(crate) refresh_token: Option<String>,
     pub(crate) subject: Option<String>,
     pub(crate) issued_at: Option<String>,
     pub(crate) expires_at: Option<String>,
+}
+
+impl std::fmt::Debug for AuthStateSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthStateSnapshot")
+            .field("has_token", &self.has_token)
+            .field("has_valid_token", &self.has_valid_token)
+            .field("token_expired", &self.token_expired)
+            .field("needs_refresh", &self.needs_refresh)
+            .field(
+                "bearer_token",
+                &self.bearer_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("subject", &self.subject)
+            .field("issued_at", &self.issued_at)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]
@@ -30,6 +53,8 @@ struct AuthStateFile {
     token: Option<String>,
     #[serde(default)]
     access_token: Option<String>,
+    #[serde(default)]
+    refresh_token: Option<String>,
     #[serde(default)]
     subject: Option<String>,
     #[serde(default)]
@@ -101,7 +126,21 @@ pub(crate) fn persist_jwt_token(path: &Path, token: &str) -> crate::ImResult<()>
 }
 
 pub(crate) fn auth_state_json_for_token(token: &str) -> crate::ImResult<Vec<u8>> {
-    let trimmed = token.trim();
+    auth_state_json_for_token_pair(token, None, None)
+}
+
+pub(crate) fn auth_state_json_for_token_pair(
+    access_token: &str,
+    refresh_token: Option<&str>,
+    explicit_expires_at: Option<&str>,
+) -> crate::ImResult<Vec<u8>> {
+    let trimmed = access_token.trim();
+    if trimmed.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("access_token".to_owned()),
+            "access_token is required",
+        ));
+    }
     let metadata = jwt_metadata(trimmed);
     let mut body = Map::from_iter([
         ("jwt_token".to_string(), Value::String(trimmed.to_string())),
@@ -110,13 +149,25 @@ pub(crate) fn auth_state_json_for_token(token: &str) -> crate::ImResult<Vec<u8>>
             Value::String("Bearer".to_string()),
         ),
     ]);
+    if let Some(refresh_token) = refresh_token
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        body.insert(
+            "refresh_token".to_owned(),
+            Value::String(refresh_token.to_owned()),
+        );
+    }
     if let Some(subject) = metadata.subject {
         body.insert("subject".to_string(), Value::String(subject));
     }
     if let Some(issued_at) = metadata.issued_at.and_then(format_rfc3339) {
         body.insert("issued_at".to_string(), Value::String(issued_at));
     }
-    if let Some(expires_at) = metadata.expires_at.and_then(format_rfc3339) {
+    let expires_at = explicit_expires_at
+        .and_then(parse_rfc3339)
+        .or(metadata.expires_at);
+    if let Some(expires_at) = expires_at.and_then(format_rfc3339) {
         body.insert("expires_at".to_string(), Value::String(expires_at));
     }
 
@@ -164,6 +215,7 @@ pub(crate) fn parse_auth_state(raw: &[u8]) -> crate::ImResult<AuthStateSnapshot>
         token_expired,
         needs_refresh: token_expired || expires_soon,
         bearer_token: Some(token),
+        refresh_token: first_non_empty_token([parsed.refresh_token.as_deref()]),
         subject: parsed
             .subject
             .filter(|subject| !subject.trim().is_empty())
@@ -225,4 +277,45 @@ fn parse_rfc3339(value: &str) -> Option<OffsetDateTime> {
 
 fn format_rfc3339(value: OffsetDateTime) -> Option<String> {
     value.format(&Rfc3339).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_token_pair_rotation_replaces_refresh_without_debug_leak() {
+        let expires = (OffsetDateTime::now_utc() + Duration::hours(1))
+            .format(&Rfc3339)
+            .unwrap();
+        let first = auth_state_json_for_token_pair(
+            "access-secret-one",
+            Some("refresh-secret-one"),
+            Some(&expires),
+        )
+        .unwrap();
+        let rotated = auth_state_json_for_token_pair(
+            "access-secret-two",
+            Some("refresh-secret-two"),
+            Some(&expires),
+        )
+        .unwrap();
+
+        let first = parse_auth_state(&first).unwrap();
+        let rotated = parse_auth_state(&rotated).unwrap();
+        assert_eq!(first.refresh_token.as_deref(), Some("refresh-secret-one"));
+        assert_eq!(rotated.bearer_token.as_deref(), Some("access-secret-two"));
+        assert_eq!(rotated.refresh_token.as_deref(), Some("refresh-secret-two"));
+        let debug = format!("{rotated:?}");
+        assert!(!debug.contains("access-secret-two"));
+        assert!(!debug.contains("refresh-secret-two"));
+        assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn legacy_access_only_auth_state_remains_compatible() {
+        let state = parse_auth_state(br#"{"jwt_token":"legacy-token"}"#).unwrap();
+        assert_eq!(state.bearer_token.as_deref(), Some("legacy-token"));
+        assert!(state.refresh_token.is_none());
+    }
 }

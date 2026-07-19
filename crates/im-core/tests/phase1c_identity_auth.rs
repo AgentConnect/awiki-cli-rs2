@@ -9,9 +9,14 @@ use std::time::{Duration, Instant};
 use anp::authentication::verification_methods::extract_public_key;
 use anp::authentication::{create_did_wba_document, DidDocumentOptions};
 use anp::proof::{verify_w3c_proof, ProofVerificationOptions};
+use awiki_im_core::identity::{IdentityDeviceMode, IdentityDeviceReadiness, IdentityDeviceRole};
 use awiki_im_core::prelude::*;
-use awiki_im_core::vault::DeviceVaultRootKey;
+use awiki_im_core::vault::{
+    DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SecretKind, SecretVault,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1276,6 +1281,231 @@ async fn register_phone_without_otp_returns_pending_otp_state() {
 }
 
 #[tokio::test]
+async fn vnext_register_phone_without_otp_uses_sms_endpoint_and_requires_vault() {
+    let fixture = Fixture::new();
+    let core_without_vault = fixture
+        .core_async_with_base_url_multi_device("https://example.test")
+        .await;
+    let request = vnext_phone_request("carol", None);
+    assert!(matches!(
+        core_without_vault
+            .identities()
+            .register_handle_async(request.clone())
+            .await,
+        Err(ImError::LocalStateUnavailable { .. })
+    ));
+
+    let server = TestServer::spawn(vec![ExpectedHttp::json(json!({"sent": true}))]);
+    let core = fixture
+        .core_async_with_base_url_vault_required_multi_device(server.base_url(), [51; 32])
+        .await;
+    let result = core
+        .identities()
+        .register_handle_async(request)
+        .await
+        .unwrap();
+    assert_eq!(result.state, HandleRegistrationState::OtpSent);
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/user-service/auth/sms-codes");
+    assert_eq!(requests[0].json_body(), json!({"phone": "+15551234567"}));
+}
+
+#[tokio::test]
+async fn vnext_genesis_persists_admin_identity_and_rotating_tokens_in_vault() {
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::json(json!({
+            "account_verification_token": "account-grant-secret",
+            "purpose": "awiki.device.genesis.v1",
+            "expires_at": future_rfc3339(300),
+        })),
+        ExpectedHttp::dynamic_rpc(genesis_response_from_request),
+    ]);
+    let fixture = Fixture::new();
+    let root_key = [52; 32];
+    let core = fixture
+        .core_async_with_base_url_vault_required_multi_device(server.base_url(), root_key)
+        .await;
+    let result = core
+        .identities()
+        .register_handle_async(vnext_phone_request("carol", Some("123456")))
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, HandleRegistrationState::Registered);
+    let identity = result.identity.as_ref().unwrap();
+    assert!(identity
+        .did
+        .as_str()
+        .starts_with("did:wba:awiki.test:user:carol:e1_"));
+    assert!(identity
+        .device_id
+        .as_deref()
+        .is_some_and(|value| value.starts_with("dev-")));
+    let device = core
+        .identities()
+        .device_summary_async(IdentitySelector::LocalAlias("carol".to_owned()))
+        .await
+        .unwrap();
+    assert_eq!(device.mode, IdentityDeviceMode::VNext);
+    assert_eq!(device.role, Some(IdentityDeviceRole::Admin));
+    assert_eq!(device.readiness, IdentityDeviceReadiness::AdminReady);
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].path,
+        "/user-service/auth/account-verification/exchange"
+    );
+    let exchange = requests[0].json_body();
+    assert_eq!(exchange["provider"], "sms");
+    assert_eq!(exchange["purpose"], "awiki.device.genesis.v1");
+    assert_eq!(exchange["target_handle"], "carol");
+    assert_eq!(exchange["target_handle_domain"], "awiki.test");
+    assert!(exchange["idempotency_scope"].as_str().is_some());
+    assert_eq!(requests[1].path, "/user-service/did-auth/rpc");
+    let genesis = requests[1].json_body();
+    assert_eq!(genesis["method"], "device_genesis");
+    assert_eq!(
+        genesis["params"]["account_verification_token"],
+        "account-grant-secret"
+    );
+    assert_eq!(
+        genesis["params"]["bootstrap_device_proof"]["key_id"],
+        genesis["params"]["did_document"]["deviceManifest"]["devices"][0]["signing_key_id"]
+    );
+    verify_genesis_request_proof(&genesis["params"]);
+
+    assert_secure_identity_dir_has_no_plaintext(
+        &fixture.root.join("identities").join(identity.id.as_str()),
+        "device-access-secret",
+    );
+    assert_secure_identity_dir_has_no_plaintext(
+        &fixture.root.join("identities").join(identity.id.as_str()),
+        "device-refresh-secret",
+    );
+    let vault = FileSecretVault::new(
+        DeviceVaultRootKey::from_bytes(root_key),
+        FileSecretVaultStore::new(fixture.root.join("identity-vault")),
+    );
+    let refs = vault.list().unwrap();
+    assert!(!refs
+        .iter()
+        .any(|secret_ref| secret_ref.kind == SecretKind::IdentityGenesisPending));
+    let auth_ref = refs
+        .iter()
+        .find(|secret_ref| secret_ref.kind == SecretKind::AuthJwt)
+        .unwrap();
+    let auth: Value =
+        serde_json::from_slice(vault.open(auth_ref).unwrap().expose_secret()).unwrap();
+    assert!(auth["jwt_token"]
+        .as_str()
+        .unwrap()
+        .ends_with(".device-access-secret"));
+    assert!(auth["refresh_token"]
+        .as_str()
+        .unwrap()
+        .ends_with(".device-refresh-secret"));
+}
+
+#[tokio::test]
+async fn vnext_genesis_retries_exact_rpc_without_recreating_keys_or_proof() {
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::json(json!({
+            "account_verification_token": "account-grant-secret",
+            "purpose": "awiki.device.genesis.v1",
+            "expires_at": future_rfc3339(300),
+        })),
+        ExpectedHttp::status(503, json!({"error": "temporary"})),
+        ExpectedHttp::dynamic_rpc(genesis_response_from_request),
+    ]);
+    let fixture = Fixture::new();
+    let core = fixture
+        .core_async_with_base_url_vault_required_multi_device(server.base_url(), [53; 32])
+        .await;
+    let request = vnext_phone_request("retry", Some("123456"));
+    assert!(core
+        .identities()
+        .register_handle_async(request.clone())
+        .await
+        .is_err());
+    let result = core
+        .identities()
+        .register_handle_async(request)
+        .await
+        .unwrap();
+    assert_eq!(result.state, HandleRegistrationState::Registered);
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1].body, requests[2].body);
+    assert_eq!(requests[1].json_body()["method"], "device_genesis");
+}
+
+#[tokio::test]
+async fn vnext_remote_success_survives_local_commit_failure_and_resumes_offline() {
+    let fixture = Fixture::new();
+    let identities_dir = fixture.root.join("identities");
+    let blocked_backup = fixture.root.join("identities-blocked-backup");
+    let response_identities_dir = identities_dir.clone();
+    let response_blocked_backup = blocked_backup.clone();
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::json(json!({
+            "account_verification_token": "account-grant-secret",
+            "purpose": "awiki.device.genesis.v1",
+            "expires_at": future_rfc3339(300),
+        })),
+        ExpectedHttp::dynamic_rpc(move |request| {
+            let response = genesis_response_from_request(request);
+            fs::rename(&response_identities_dir, &response_blocked_backup).unwrap();
+            fs::write(&response_identities_dir, b"block identity directory").unwrap();
+            response
+        }),
+    ]);
+    let core = fixture
+        .core_async_with_base_url_vault_required_multi_device(server.base_url(), [54; 32])
+        .await;
+    let request = vnext_phone_request("resume", Some("123456"));
+    let first = core
+        .identities()
+        .register_handle_async(request.clone())
+        .await;
+    fs::remove_file(&identities_dir).unwrap();
+    fs::rename(&blocked_backup, &identities_dir).unwrap();
+    assert!(first.is_err());
+    assert_eq!(server.join().len(), 2);
+
+    // The remote result is in the Vault pending record, so this retry performs
+    // only the local commit even though the test server has already stopped.
+    let resumed = core
+        .identities()
+        .register_handle_async(request)
+        .await
+        .unwrap();
+    assert_eq!(resumed.state, HandleRegistrationState::Registered);
+}
+
+#[tokio::test]
+async fn vnext_genesis_rejects_cross_domain_and_non_phone_verification() {
+    let fixture = Fixture::new();
+    let core = fixture
+        .core_async_with_base_url_vault_required_multi_device("https://example.test", [55; 32])
+        .await;
+    let mut cross_domain = vnext_phone_request("carol", Some("123456"));
+    cross_domain.requested_handle = Handle::parse("carol.other.test", "").unwrap();
+    assert!(matches!(
+        core.identities().register_handle_async(cross_domain).await,
+        Err(ImError::UnsupportedCapability { .. })
+    ));
+    let mut unsupported = vnext_phone_request("carol", Some("123456"));
+    unsupported.verification = VerificationInput::AlreadyVerified;
+    assert!(matches!(
+        core.identities().register_handle_async(unsupported).await,
+        Err(ImError::UnsupportedCapability { .. })
+    ));
+}
+
+#[tokio::test]
 async fn register_email_without_wait_returns_email_sent_state() {
     let server = TestServer::spawn(vec![
         ExpectedHttp::json(json!({ "verified": false })),
@@ -1395,6 +1625,162 @@ async fn async_bootstrap_initializes_and_migrates_local_state() {
     assert_eq!(report.to_version, status.schema_version.unwrap_or_default());
 }
 
+fn vnext_phone_request(handle: &str, otp: Option<&str>) -> RegisterHandleRequest {
+    RegisterHandleRequest {
+        local_alias: Some(handle.to_owned()),
+        requested_handle: Handle::parse(format!("{handle}.awiki.test"), "").unwrap(),
+        verification: VerificationInput::Phone {
+            phone: "+15551234567".to_owned(),
+            otp: otp.map(ToOwned::to_owned),
+        },
+        invite_code: None,
+        profile: InitialProfile {
+            display_name: Some(handle.to_owned()),
+            avatar_url: None,
+        },
+        make_default: true,
+    }
+}
+
+fn future_rfc3339(after_seconds: i64) -> String {
+    (time::OffsetDateTime::now_utc() + time::Duration::seconds(after_seconds))
+        .replace_nanosecond(0)
+        .unwrap()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap()
+}
+
+fn genesis_response_from_request(request: &CapturedHttp) -> Value {
+    let body = request.json_body();
+    assert_eq!(body["method"], "device_genesis");
+    let params = &body["params"];
+    let document = &params["did_document"];
+    let did = document["id"].as_str().unwrap();
+    let device = &document["deviceManifest"]["devices"][0];
+    let device_id = params["bootstrap_device_id"].as_str().unwrap();
+    assert_eq!(device["device_id"], device_id);
+    let signing_key_id = device["signing_key_id"].as_str().unwrap();
+    let e2ee_key_id = device["e2ee_key_id"].as_str().unwrap();
+    let canonical = serde_json_canonicalizer::to_vec(document).unwrap();
+    let document_hash = format!(
+        "sha256:{}",
+        URL_SAFE_NO_PAD.encode(Sha256::digest(canonical))
+    );
+    let access_exp = time::OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .unwrap()
+        + time::Duration::hours(1);
+    let refresh_exp = access_exp + time::Duration::days(7);
+    let access_token = server_device_token(
+        did,
+        device_id,
+        signing_key_id,
+        "access",
+        "awiki.device.access.v1",
+        access_exp,
+        "device-access-secret",
+    );
+    let refresh_token = server_device_token(
+        did,
+        device_id,
+        signing_key_id,
+        "refresh",
+        "awiki.device.refresh.v1",
+        refresh_exp,
+        "device-refresh-secret",
+    );
+    json!({
+        "jsonrpc": "2.0",
+        "id": "req-1",
+        "result": {
+            "did": did,
+            "user_id": "user-genesis",
+            "checkpoint": {
+                "document_version": 1,
+                "document_hash": document_hash,
+                "registry_version": 1,
+            },
+            "device": {
+                "device_id": device_id,
+                "signing_key_id": signing_key_id,
+                "e2ee_key_id": e2ee_key_id,
+                "status": "active",
+                "role": "admin",
+                "management_ready": true,
+                "auth_generation": 1,
+            },
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_expires_at": access_exp
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+        }
+    })
+}
+
+fn server_device_token(
+    did: &str,
+    device_id: &str,
+    signing_key_id: &str,
+    token_type: &str,
+    purpose: &str,
+    expires_at: time::OffsetDateTime,
+    signature: &str,
+) -> String {
+    let issued_at = time::OffsetDateTime::now_utc().unix_timestamp();
+    let payload = json!({
+        "profile": "awiki-device-token-v1",
+        "purpose": purpose,
+        "type": token_type,
+        "sub": did,
+        "did": did,
+        "user_id": "user-genesis",
+        "device_id": device_id,
+        "key_id": signing_key_id,
+        "auth_generation": 1,
+        "jti": format!("jti-{token_type}"),
+        "iat": issued_at,
+        "nbf": issued_at,
+        "scopes": ["device:manage", "device:read", "message:connect"],
+        "exp": expires_at.unix_timestamp(),
+    });
+    format!(
+        "e30.{}.{signature}",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+    )
+}
+
+fn verify_genesis_request_proof(params: &Value) {
+    let proof = &params["bootstrap_device_proof"];
+    let signed_params = json!({
+        "operation_id": params["operation_id"],
+        "did_document": params["did_document"],
+        "bootstrap_device_id": params["bootstrap_device_id"],
+    });
+    let transcript = json!({
+        "type": proof["type"],
+        "purpose": "awiki.device.genesis.v1",
+        "method": "device_genesis",
+        "key_id": proof["key_id"],
+        "created_at": proof["created_at"],
+        "expires_at": proof["expires_at"],
+        "nonce": proof["nonce"],
+        "params": signed_params,
+    });
+    let bytes = serde_json_canonicalizer::to_vec(&transcript).unwrap();
+    let key_id = proof["key_id"].as_str().unwrap();
+    let method = params["did_document"]["verificationMethod"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|method| method["id"].as_str() == Some(key_id))
+        .unwrap();
+    anp::authentication::create_verification_method(method)
+        .unwrap()
+        .verify_signature(&bytes, proof["signature"].as_str().unwrap())
+        .unwrap();
+}
+
 struct Fixture {
     root: PathBuf,
 }
@@ -1495,6 +1881,16 @@ impl Fixture {
             .unwrap()
     }
 
+    async fn core_async_with_base_url_multi_device(&self, base_url: &str) -> ImCore {
+        ImCore::open_with_options(
+            self.config(base_url),
+            self.paths(),
+            ImCoreOpenOptions::default().with_multi_device_join_enabled(true),
+        )
+        .await
+        .unwrap()
+    }
+
     async fn core_async_with_base_url_vault_required(
         &self,
         base_url: &str,
@@ -1512,6 +1908,30 @@ impl Fixture {
                     "phase1c-device",
                 ),
             ),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn core_async_with_base_url_vault_required_multi_device(
+        &self,
+        base_url: &str,
+        root_key: [u8; 32],
+    ) -> ImCore {
+        ImCore::open_with_options(
+            self.config(base_url),
+            self.paths(),
+            ImCoreOpenOptions::default()
+                .with_identity_secret_vault(
+                    IdentitySecretStoragePolicy::VaultRequired,
+                    ImCoreSecretVaultOptions::new(
+                        DeviceVaultRootKey::from_bytes(root_key),
+                        self.root.join("identity-vault"),
+                        "phase1c-workspace",
+                        "phase1c-device",
+                    ),
+                )
+                .with_multi_device_join_enabled(true),
         )
         .await
         .unwrap()
@@ -1862,7 +2282,11 @@ impl TestServer {
             for response in responses {
                 let mut stream = accept_before_deadline(&listener, deadline);
                 let request = read_http_request(&mut stream);
-                write_json_response(&mut stream, response.status_code, &response.body);
+                let body = response
+                    .responder
+                    .as_ref()
+                    .map_or_else(|| response.body.clone(), |responder| responder(&request));
+                write_json_response(&mut stream, response.status_code, &body);
                 captured.push(request);
             }
             captured
@@ -1882,6 +2306,7 @@ impl TestServer {
 struct ExpectedHttp {
     status_code: u16,
     body: Value,
+    responder: Option<Box<dyn Fn(&CapturedHttp) -> Value + Send>>,
 }
 
 impl ExpectedHttp {
@@ -1889,6 +2314,7 @@ impl ExpectedHttp {
         Self {
             status_code: 200,
             body,
+            responder: None,
         }
     }
 
@@ -1898,6 +2324,25 @@ impl ExpectedHttp {
             "id": "req-1",
             "result": result,
         }))
+    }
+
+    fn status(status_code: u16, body: Value) -> Self {
+        Self {
+            status_code,
+            body,
+            responder: None,
+        }
+    }
+
+    fn dynamic_rpc<F>(responder: F) -> Self
+    where
+        F: Fn(&CapturedHttp) -> Value + Send + 'static,
+    {
+        Self {
+            status_code: 200,
+            body: Value::Null,
+            responder: Some(Box::new(responder)),
+        }
     }
 }
 
