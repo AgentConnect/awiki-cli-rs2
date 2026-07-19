@@ -30,6 +30,11 @@ pub enum SecretKind {
     DirectE2eeSignedPrekeyPrivate,
     DirectE2eeOneTimePrekeyPrivate,
     DirectE2eeSessionState,
+    /// P5 v2 state is intentionally not compatible with the legacy P5 store.
+    DirectE2eeV2SignedPrekeyPrivate,
+    DirectE2eeV2OneTimePrekeyPrivate,
+    DirectE2eeV2SessionState,
+    DirectE2eeV2PendingOutbound,
     GroupMlsState,
     RuntimeSecret,
 }
@@ -50,6 +55,10 @@ impl SecretKind {
             Self::DirectE2eeSignedPrekeyPrivate => "direct_e2ee.signed_prekey.private",
             Self::DirectE2eeOneTimePrekeyPrivate => "direct_e2ee.one_time_prekey.private",
             Self::DirectE2eeSessionState => "direct_e2ee.session_state",
+            Self::DirectE2eeV2SignedPrekeyPrivate => "direct_e2ee.v2.signed_prekey.private",
+            Self::DirectE2eeV2OneTimePrekeyPrivate => "direct_e2ee.v2.one_time_prekey.private",
+            Self::DirectE2eeV2SessionState => "direct_e2ee.v2.session_state",
+            Self::DirectE2eeV2PendingOutbound => "direct_e2ee.v2.pending_outbound",
             Self::GroupMlsState => "group_mls.state",
             Self::RuntimeSecret => "runtime.secret",
         }

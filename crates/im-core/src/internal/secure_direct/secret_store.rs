@@ -19,6 +19,9 @@ pub(crate) type DirectSecretVault = Arc<dyn SecretVault + Send + Sync>;
 pub(crate) struct DirectSecretSealInput<'a> {
     pub(crate) owner_identity_id: &'a str,
     pub(crate) owner_did: &'a str,
+    /// P5 v2 passes the real protocol device ID. Legacy callers retain their
+    /// historical fixed Vault context by leaving this unset.
+    pub(crate) device_id: Option<&'a str>,
     pub(crate) kind: SecretKind,
     pub(crate) key_id: String,
     pub(crate) plaintext: &'a [u8],
@@ -72,7 +75,7 @@ pub(crate) fn seal_direct_secret_blob(
     let secret_ref = vault.seal(SealSecretRequest {
         metadata: SecretMetadata {
             workspace_id: "awiki-im-core".to_owned(),
-            device_id: "local-device".to_owned(),
+            device_id: input.device_id.unwrap_or("local-device").to_owned(),
             identity_id: non_empty_owned(input.owner_identity_id),
             did: non_empty_owned(input.owner_did),
             kind: input.kind,
@@ -92,6 +95,49 @@ pub(crate) fn seal_direct_secret_blob(
         schema_version: DIRECT_SECRET_ENVELOPE_SCHEMA_VERSION,
         secret_ref,
     })
+}
+
+pub(crate) struct DirectSecretOpenExpectation<'a> {
+    pub(crate) owner_identity_id: &'a str,
+    pub(crate) owner_did: &'a str,
+    pub(crate) device_id: &'a str,
+    pub(crate) kind: SecretKind,
+    pub(crate) key_id_prefix: String,
+}
+
+/// Opens a newly-created secret only when the DB cell is a Vault envelope and
+/// every authorization-bound metadata field matches the product scope.
+pub(crate) fn open_direct_secret_blob_strict(
+    vault: &DirectSecretVault,
+    blob: Vec<u8>,
+    expected: &DirectSecretOpenExpectation<'_>,
+) -> crate::ImResult<Vec<u8>> {
+    let secret_ref = direct_secret_ref_from_blob(&blob)?;
+    validate_direct_secret_ref(&secret_ref, expected)?;
+    Ok(vault.open(&secret_ref)?.expose_secret().to_vec())
+}
+
+pub(crate) fn direct_secret_ref_from_blob(blob: &[u8]) -> crate::ImResult<SecretRef> {
+    direct_secret_envelope_from_blob(blob)?
+        .map(|envelope| envelope.secret_ref)
+        .ok_or(crate::ImError::PermissionDenied)
+}
+
+pub(crate) fn validate_direct_secret_ref(
+    secret_ref: &SecretRef,
+    expected: &DirectSecretOpenExpectation<'_>,
+) -> crate::ImResult<()> {
+    if secret_ref.workspace_id != "awiki-im-core"
+        || secret_ref.device_id != expected.device_id
+        || secret_ref.identity_id.as_deref() != Some(expected.owner_identity_id)
+        || secret_ref.did.as_deref() != Some(expected.owner_did)
+        || secret_ref.kind != expected.kind
+        || secret_ref.key_version != 1
+        || !secret_ref.key_id.starts_with(&expected.key_id_prefix)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
 }
 
 pub(crate) fn open_direct_secret_blob(
@@ -150,12 +196,24 @@ pub(crate) fn direct_secret_key_id(
     suffix: &str,
 ) -> String {
     format!(
-        "direct-e2ee/{}/{}/{}/{}/{}",
+        "{}{}",
+        direct_secret_key_id_prefix(owner_identity_id, category, id, suffix),
+        vault_secret_nonce_hex()
+    )
+}
+
+pub(crate) fn direct_secret_key_id_prefix(
+    owner_identity_id: &str,
+    category: &str,
+    id: &str,
+    suffix: &str,
+) -> String {
+    format!(
+        "direct-e2ee/{}/{}/{}/{}/",
         sanitize_secret_key_part(owner_identity_id),
         sanitize_secret_key_part(category),
         sanitize_secret_key_part(id),
         sanitize_secret_key_part(suffix),
-        vault_secret_nonce_hex()
     )
 }
 

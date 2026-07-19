@@ -19,4 +19,6 @@ pub(crate) mod send;
 #[cfg(feature = "sqlite")]
 pub(crate) mod sqlite_store;
 pub(crate) mod status;
+#[cfg(feature = "sqlite")]
+pub(crate) mod v2_store;
 pub(crate) mod wire;

@@ -959,6 +959,7 @@ impl FileSessionStore {
             DirectSecretSealInput {
                 owner_identity_id: &self.owner_identity_id,
                 owner_did: &self.owner_did,
+                device_id: None,
                 kind: crate::vault::SecretKind::DirectE2eeSessionState,
                 key_id: direct_secret_key_id(
                     &self.owner_identity_id,
@@ -1099,6 +1100,7 @@ impl FileSignedPrekeyStore {
             DirectSecretSealInput {
                 owner_identity_id: &self.owner_identity_id,
                 owner_did: &self.owner_did,
+                device_id: None,
                 kind: crate::vault::SecretKind::DirectE2eeSignedPrekeyPrivate,
                 key_id: direct_secret_key_id(
                     &self.owner_identity_id,
@@ -1226,6 +1228,7 @@ impl FileOneTimePrekeyStore {
             DirectSecretSealInput {
                 owner_identity_id: &self.owner_identity_id,
                 owner_did: &self.owner_did,
+                device_id: None,
                 kind: crate::vault::SecretKind::DirectE2eeOneTimePrekeyPrivate,
                 key_id: direct_secret_key_id(
                     &self.owner_identity_id,
