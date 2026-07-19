@@ -8,9 +8,10 @@
 use anp::group_e2ee::operations::v2::{
     self, V2AddMemberInput, V2CreateGroupInput, V2DecryptInput, V2DecryptOutput, V2FinalizeInput,
     V2FinalizeOutput, V2GenerateKeyPackageInput, V2PreparedAdd, V2PreparedCreate, V2PreparedRemove,
-    V2ProcessCommitInput, V2ProcessCommitOutput, V2ProcessWelcomeInput, V2RemoveMemberInput,
+    V2ProcessCommitInput, V2ProcessCommitOutput, V2ProcessNoticeInput, V2ProcessNoticeOutput,
+    V2ProcessWelcomeInput, V2ReconcilePendingInput, V2ReconcilePendingOutput, V2RemoveMemberInput,
 };
-use anp::group_e2ee::storage::ImCoreSqliteGroupMlsStore;
+use anp::group_e2ee::storage::{GroupMlsOwnerScope, GroupMlsStore, ImCoreSqliteGroupMlsStore};
 use anp::group_e2ee::{V2GroupCipherObject, V2GroupKeyPackage};
 use anp::PrivateKeyMaterial;
 use serde_json::Value;
@@ -25,6 +26,14 @@ pub(crate) struct GroupE2eeV2Runtime {
 impl GroupE2eeV2Runtime {
     pub(crate) fn new(store: ImCoreSqliteGroupMlsStore) -> Self {
         Self { store }
+    }
+
+    pub(crate) fn owner_scope(&self) -> crate::ImResult<GroupMlsOwnerScope> {
+        self.store
+            .owner_scope()
+            .ok_or_else(|| crate::ImError::Internal {
+                message: "P6 v2 runtime requires a device-scoped OwnerScope".to_owned(),
+            })
     }
 
     pub(crate) fn generate_key_package(
@@ -81,6 +90,20 @@ impl GroupE2eeV2Runtime {
         input: V2ProcessCommitInput,
     ) -> crate::ImResult<V2ProcessCommitOutput> {
         v2::process_commit_v2(&self.store, input).map_err(map_group_mls_error)
+    }
+
+    pub(crate) fn process_notice(
+        &self,
+        input: V2ProcessNoticeInput,
+    ) -> crate::ImResult<V2ProcessNoticeOutput> {
+        v2::process_notice_v2(&self.store, input).map_err(map_group_mls_error)
+    }
+
+    pub(crate) fn reconcile_pending(
+        &self,
+        input: V2ReconcilePendingInput,
+    ) -> crate::ImResult<V2ReconcilePendingOutput> {
+        v2::reconcile_pending_v2(&self.store, input).map_err(map_group_mls_error)
     }
 
     pub(crate) fn encrypt(
