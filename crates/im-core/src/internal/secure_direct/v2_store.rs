@@ -148,6 +148,18 @@ pub(crate) enum V2InboundCommit {
     Replay,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V2SessionExpectation {
+    Absent,
+    Revision(i64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct V2StoredSession {
+    pub(crate) state: V2DirectSessionState,
+    pub(crate) revision: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct V2OwnerScope {
     owner_identity_id: String,
@@ -523,6 +535,7 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND key_id = ?3
         &self,
         state: &V2DirectSessionState,
         pending: &V2PendingOutboundRecord,
+        expected_session: V2SessionExpectation,
         now: &str,
     ) -> crate::ImResult<()> {
         state.validate().map_err(v2_error)?;
@@ -573,8 +586,14 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
         }
         let state_blob = self.seal_state(state)?;
         let pending_blob = self.seal_pending(pending)?;
-        let session_revision =
-            upsert_state_for_owner(&transaction, owner_identity_id, state, &state_blob, &now)?;
+        let session_revision = write_state_for_owner_cas(
+            &transaction,
+            owner_identity_id,
+            state,
+            &state_blob,
+            expected_session,
+            &now,
+        )?;
         let inserted = transaction
             .execute(
                 r#"INSERT INTO direct_e2ee_v2_pending
@@ -714,13 +733,13 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
         &self,
         binding: &V2SessionBinding,
         session_id: &str,
-    ) -> crate::ImResult<Option<V2DirectSessionState>> {
+    ) -> crate::ImResult<Option<V2StoredSession>> {
         self.scope.validate_binding(binding)?;
         let owner_identity_id = self.scope.owner_identity_id.as_str();
-        let blob = self
+        let row = self
             .connection
             .query_row(
-                r#"SELECT state_blob FROM direct_e2ee_v2_sessions
+                r#"SELECT state_blob, revision FROM direct_e2ee_v2_sessions
 WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND peer_did = ?3
   AND peer_device_id = ?4 AND session_id = ?5"#,
                 params![
@@ -730,24 +749,30 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND peer_did = ?3
                     binding.peer_device_id,
                     required("session_id", session_id)?,
                 ],
-                |row| row.get::<_, Vec<u8>>(0),
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?)),
             )
             .optional()
             .map_err(crate::internal::local_state::local_state_unavailable)?;
-        blob.map(|blob| self.open_state(blob, binding, session_id))
-            .transpose()
+        row.map(|(blob, revision)| {
+            validate_storage_revision(revision)?;
+            Ok(V2StoredSession {
+                state: self.open_state(blob, binding, session_id)?,
+                revision,
+            })
+        })
+        .transpose()
     }
 
     pub(crate) fn select_established_session(
         &self,
         binding: &V2SessionBinding,
-    ) -> crate::ImResult<Option<V2DirectSessionState>> {
+    ) -> crate::ImResult<Option<V2StoredSession>> {
         self.scope.validate_binding(binding)?;
         let owner_identity_id = self.scope.owner_identity_id.as_str();
         let mut statement = self
             .connection
             .prepare(
-                r#"SELECT session_id, state_blob FROM direct_e2ee_v2_sessions
+                r#"SELECT session_id, state_blob, revision FROM direct_e2ee_v2_sessions
 WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND peer_did = ?3
   AND peer_device_id = ?4 AND disabled = 0
 ORDER BY updated_at DESC"#,
@@ -761,18 +786,39 @@ ORDER BY updated_at DESC"#,
                     binding.peer_did,
                     binding.peer_device_id,
                 ],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
             )
             .map_err(crate::internal::local_state::local_state_unavailable)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(crate::internal::local_state::local_state_unavailable)?;
-        let states = blobs
+        let stored = blobs
             .into_iter()
-            .map(|(session_id, blob)| self.open_state(blob, binding, &session_id))
+            .map(|(session_id, blob, revision)| {
+                validate_storage_revision(revision)?;
+                Ok(V2StoredSession {
+                    state: self.open_state(blob, binding, &session_id)?,
+                    revision,
+                })
+            })
             .collect::<crate::ImResult<Vec<_>>>()?;
-        anp::direct_e2ee::select_default_outbound_session_v2(binding, &states)
-            .map_err(v2_error)
-            .map(|selected| selected.cloned())
+        let states = stored
+            .iter()
+            .map(|record| record.state.clone())
+            .collect::<Vec<_>>();
+        let selected = anp::direct_e2ee::select_default_outbound_session_v2(binding, &states)
+            .map_err(v2_error)?;
+        let selected_session_id = selected.map(|state| state.session_id.clone());
+        Ok(selected_session_id.and_then(|session_id| {
+            stored
+                .into_iter()
+                .find(|record| record.state.session_id == session_id)
+        }))
     }
 
     /// Checks replay before the SDK attempts an inbound decrypt. Exact replay
@@ -824,6 +870,7 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND sender_did = ?3
         message_id: &str,
         ciphertext_digest: &str,
         consume_opk_id: Option<&str>,
+        expected_session: V2SessionExpectation,
         now: &str,
     ) -> crate::ImResult<V2InboundCommit> {
         state.validate().map_err(v2_error)?;
@@ -877,7 +924,14 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"#,
                 ],
             )
             .map_err(crate::internal::local_state::local_state_unavailable)?;
-        let _ = upsert_state_for_owner(&transaction, owner_identity_id, state, &state_blob, &now)?;
+        let _ = write_state_for_owner_cas(
+            &transaction,
+            owner_identity_id,
+            state,
+            &state_blob,
+            expected_session,
+            &now,
+        )?;
         if let Some(opk_id) = consume_opk_id {
             let changed = transaction
                 .execute(
@@ -893,7 +947,6 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND key_id = ?3
                 .map_err(crate::internal::local_state::local_state_unavailable)?;
             if changed != 1 {
                 drop(transaction);
-                self.gc_orphaned_v2_secrets()?;
                 return Err(crate::ImError::PermissionDenied);
             }
         }
@@ -910,91 +963,71 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND key_id = ?3
     /// ratchet or retry record first.
     pub(crate) fn gc_orphaned_v2_secrets(&self) -> crate::ImResult<usize> {
         let mut live = Vec::<SecretRef>::new();
+        let owner_identity_id = self.scope.owner_identity_id.as_str();
+        let owner_did = self.scope.owner_did.as_str();
+        let device_id = self.scope.local_device_id.as_str();
 
-        let session_rows = query_rows(
+        let session_rows = query_scope_rows(
             self.connection,
-            r#"SELECT owner_identity_id, owner_did, local_device_id, session_id, state_blob
-FROM direct_e2ee_v2_sessions"#,
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Vec<u8>>(4)?,
-                ))
-            },
+            &self.scope,
+            r#"SELECT session_id, state_blob FROM direct_e2ee_v2_sessions
+WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3"#,
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
         )?;
-        for (owner_identity_id, owner_did, device_id, session_id, blob) in session_rows {
-            validate_owner_scope(self.connection, &owner_identity_id, &owner_did, &device_id)?;
+        for (session_id, blob) in session_rows {
             push_live_ref(
                 &mut live,
                 &blob,
                 DirectSecretOpenExpectation {
-                    owner_identity_id: &owner_identity_id,
-                    owner_did: &owner_did,
-                    device_id: &device_id,
+                    owner_identity_id,
+                    owner_did,
+                    device_id,
                     kind: SecretKind::DirectE2eeV2SessionState,
                     key_id_prefix: direct_secret_key_id_prefix(
-                        &owner_identity_id,
+                        owner_identity_id,
                         "v2-session",
                         &session_id,
-                        &device_id,
+                        device_id,
                     ),
                 },
             )?;
         }
 
-        let pending_rows = query_rows(
+        let pending_rows = query_scope_rows(
             self.connection,
-            r#"SELECT owner_identity_id, owner_did, local_device_id, operation_id, pending_blob
-FROM direct_e2ee_v2_pending"#,
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Vec<u8>>(4)?,
-                ))
-            },
+            &self.scope,
+            r#"SELECT operation_id, pending_blob FROM direct_e2ee_v2_pending
+WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3"#,
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
         )?;
-        for (owner_identity_id, owner_did, device_id, operation_id, blob) in pending_rows {
-            validate_owner_scope(self.connection, &owner_identity_id, &owner_did, &device_id)?;
+        for (operation_id, blob) in pending_rows {
             push_live_ref(
                 &mut live,
                 &blob,
                 DirectSecretOpenExpectation {
-                    owner_identity_id: &owner_identity_id,
-                    owner_did: &owner_did,
-                    device_id: &device_id,
+                    owner_identity_id,
+                    owner_did,
+                    device_id,
                     kind: SecretKind::DirectE2eeV2PendingOutbound,
                     key_id_prefix: direct_secret_key_id_prefix(
-                        &owner_identity_id,
+                        owner_identity_id,
                         "v2-pending",
                         &operation_id,
-                        &device_id,
+                        device_id,
                     ),
                 },
             )?;
         }
 
-        let bundle_rows = query_rows(
+        let bundle_rows = query_scope_rows(
             self.connection,
-            r#"SELECT owner_identity_id, owner_did, local_device_id, bundle_json,
- signed_prekey_private_blob FROM direct_e2ee_v2_prekey_bundles"#,
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Vec<u8>>(4)?,
-                ))
-            },
+            &self.scope,
+            r#"SELECT bundle_json, signed_prekey_private_blob
+FROM direct_e2ee_v2_prekey_bundles
+WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3"#,
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
         )?;
-        for (owner_identity_id, owner_did, device_id, bundle_json, blob) in bundle_rows {
-            validate_owner_scope(self.connection, &owner_identity_id, &owner_did, &device_id)?;
+        for (bundle_json, blob) in bundle_rows {
             let bundle: V2PrekeyBundle =
                 serde_json::from_str(&bundle_json).map_err(serialization_error)?;
             bundle.validate_structure().map_err(v2_error)?;
@@ -1002,49 +1035,41 @@ FROM direct_e2ee_v2_pending"#,
                 &mut live,
                 &blob,
                 DirectSecretOpenExpectation {
-                    owner_identity_id: &owner_identity_id,
-                    owner_did: &owner_did,
-                    device_id: &device_id,
+                    owner_identity_id,
+                    owner_did,
+                    device_id,
                     kind: SecretKind::DirectE2eeV2SignedPrekeyPrivate,
                     key_id_prefix: direct_secret_key_id_prefix(
-                        &owner_identity_id,
+                        owner_identity_id,
                         "v2-signed-prekey",
                         &bundle.signed_prekey.key_id,
-                        &device_id,
+                        device_id,
                     ),
                 },
             )?;
         }
 
-        let opk_rows = query_rows(
+        let opk_rows = query_scope_rows(
             self.connection,
-            r#"SELECT owner_identity_id, owner_did, local_device_id, key_id, private_key_blob
-FROM direct_e2ee_v2_one_time_prekeys"#,
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Vec<u8>>(4)?,
-                ))
-            },
+            &self.scope,
+            r#"SELECT key_id, private_key_blob FROM direct_e2ee_v2_one_time_prekeys
+WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3"#,
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
         )?;
-        for (owner_identity_id, owner_did, device_id, key_id, blob) in opk_rows {
-            validate_owner_scope(self.connection, &owner_identity_id, &owner_did, &device_id)?;
+        for (key_id, blob) in opk_rows {
             push_live_ref(
                 &mut live,
                 &blob,
                 DirectSecretOpenExpectation {
-                    owner_identity_id: &owner_identity_id,
-                    owner_did: &owner_did,
-                    device_id: &device_id,
+                    owner_identity_id,
+                    owner_did,
+                    device_id,
                     kind: SecretKind::DirectE2eeV2OneTimePrekeyPrivate,
                     key_id_prefix: direct_secret_key_id_prefix(
-                        &owner_identity_id,
+                        owner_identity_id,
                         "v2-one-time-prekey",
                         &key_id,
-                        &device_id,
+                        device_id,
                     ),
                 },
             )?;
@@ -1052,7 +1077,7 @@ FROM direct_e2ee_v2_one_time_prekeys"#,
 
         let mut deleted = 0;
         for secret_ref in self.secret_vault.list()? {
-            if is_v2_secret_kind(&secret_ref.kind) && !live.contains(&secret_ref) {
+            if is_current_scope_v2_secret(&secret_ref, &self.scope) && !live.contains(&secret_ref) {
                 self.secret_vault.delete(&secret_ref)?;
                 deleted += 1;
             }
@@ -1188,10 +1213,11 @@ FROM direct_e2ee_v2_one_time_prekeys"#,
         let row = connection
             .query_row(
                 r#"SELECT state_blob, revision FROM direct_e2ee_v2_sessions
-WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND peer_did = ?3
-  AND peer_device_id = ?4 AND session_id = ?5"#,
+WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
+  AND peer_did = ?4 AND peer_device_id = ?5 AND session_id = ?6"#,
                 params![
                     self.scope.owner_identity_id,
+                    self.scope.owner_did,
                     binding.local_device_id,
                     binding.peer_did,
                     binding.peer_device_id,
@@ -1230,7 +1256,12 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND peer_did = ?3
     }
 }
 
-fn query_rows<T, F>(connection: &Connection, sql: &str, map: F) -> crate::ImResult<Vec<T>>
+fn query_scope_rows<T, F>(
+    connection: &Connection,
+    scope: &V2OwnerScope,
+    sql: &str,
+    map: F,
+) -> crate::ImResult<Vec<T>>
 where
     F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 {
@@ -1238,7 +1269,14 @@ where
         .prepare(sql)
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     let rows = statement
-        .query_map([], map)
+        .query_map(
+            params![
+                scope.owner_identity_id,
+                scope.owner_did,
+                scope.local_device_id,
+            ],
+            map,
+        )
         .map_err(crate::internal::local_state::local_state_unavailable)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(crate::internal::local_state::local_state_unavailable)?;
@@ -1266,52 +1304,94 @@ fn is_v2_secret_kind(kind: &SecretKind) -> bool {
     )
 }
 
-fn upsert_state_for_owner(
+fn is_current_scope_v2_secret(secret_ref: &SecretRef, scope: &V2OwnerScope) -> bool {
+    secret_ref.workspace_id == "awiki-im-core"
+        && secret_ref.identity_id.as_deref() == Some(scope.owner_identity_id.as_str())
+        && secret_ref.did.as_deref() == Some(scope.owner_did.as_str())
+        && secret_ref.device_id == scope.local_device_id
+        && is_v2_secret_kind(&secret_ref.kind)
+}
+
+fn write_state_for_owner_cas(
     transaction: &Transaction<'_>,
     owner_identity_id: &str,
     state: &V2DirectSessionState,
     state_blob: &[u8],
+    expected: V2SessionExpectation,
     now: &str,
 ) -> crate::ImResult<i64> {
     state.validate().map_err(v2_error)?;
-    transaction
-        .execute(
-            r#"INSERT INTO direct_e2ee_v2_sessions
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let now = required("now", now)?;
+    let revision = match expected {
+        V2SessionExpectation::Absent => {
+            let inserted = transaction
+                .execute(
+                    r#"INSERT INTO direct_e2ee_v2_sessions
  (owner_identity_id, owner_did, local_device_id, peer_did, peer_device_id,
   session_id, state_blob, revision, disabled, created_at, updated_at)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?9)
 ON CONFLICT(owner_identity_id, local_device_id, peer_did, peer_device_id, session_id)
-DO UPDATE SET state_blob = excluded.state_blob,
- revision = direct_e2ee_v2_sessions.revision + 1,
- disabled = excluded.disabled, updated_at = excluded.updated_at"#,
-            params![
-                required("owner_identity_id", owner_identity_id)?,
-                state.binding.local_did,
-                state.binding.local_device_id,
-                state.binding.peer_did,
-                state.binding.peer_device_id,
-                state.session_id,
-                state_blob,
-                i64::from(state.disabled),
-                required("now", now)?,
-            ],
-        )
-        .map_err(crate::internal::local_state::local_state_unavailable)?;
-    transaction
-        .query_row(
-            r#"SELECT revision FROM direct_e2ee_v2_sessions
-WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND peer_did = ?3
-  AND peer_device_id = ?4 AND session_id = ?5"#,
-            params![
-                owner_identity_id,
-                state.binding.local_device_id,
-                state.binding.peer_did,
-                state.binding.peer_device_id,
-                state.session_id,
-            ],
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(crate::internal::local_state::local_state_unavailable)
+DO NOTHING"#,
+                    params![
+                        owner_identity_id,
+                        state.binding.local_did,
+                        state.binding.local_device_id,
+                        state.binding.peer_did,
+                        state.binding.peer_device_id,
+                        state.session_id,
+                        state_blob,
+                        i64::from(state.disabled),
+                        now,
+                    ],
+                )
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+            if inserted != 1 {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            0
+        }
+        V2SessionExpectation::Revision(expected_revision) => {
+            validate_storage_revision(expected_revision)?;
+            let next_revision = expected_revision
+                .checked_add(1)
+                .ok_or(crate::ImError::PermissionDenied)?;
+            let updated = transaction
+                .execute(
+                    r#"UPDATE direct_e2ee_v2_sessions
+SET state_blob = ?1, revision = ?2, disabled = ?3, updated_at = ?4
+WHERE owner_identity_id = ?5 AND owner_did = ?6 AND local_device_id = ?7
+  AND peer_did = ?8 AND peer_device_id = ?9 AND session_id = ?10
+  AND revision = ?11"#,
+                    params![
+                        state_blob,
+                        next_revision,
+                        i64::from(state.disabled),
+                        now,
+                        owner_identity_id,
+                        state.binding.local_did,
+                        state.binding.local_device_id,
+                        state.binding.peer_did,
+                        state.binding.peer_device_id,
+                        state.session_id,
+                        expected_revision,
+                    ],
+                )
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+            if updated != 1 {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            next_revision
+        }
+    };
+    Ok(revision)
+}
+
+fn validate_storage_revision(revision: i64) -> crate::ImResult<()> {
+    if revision < 0 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
 }
 
 fn validate_owner_scope(
@@ -1398,15 +1478,19 @@ mod tests {
     }
 
     fn owner_scope() -> V2OwnerScope {
-        let identity_id = crate::ids::IdentityId::parse("identity-alice").unwrap();
-        let did = crate::ids::Did::parse("did:example:alice").unwrap();
+        owner_scope_for("identity-alice", "did:example:alice", "alice-phone")
+    }
+
+    fn owner_scope_for(identity_id: &str, did: &str, device_id: &str) -> V2OwnerScope {
+        let identity_id = crate::ids::IdentityId::parse(identity_id).unwrap();
+        let did = crate::ids::Did::parse(did).unwrap();
         let state = IdentityDeviceState {
             schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
             mode: IdentityDeviceMode::VNext,
             authorization: Some(DeviceAuthorizationProjection {
-                protocol_device_id: crate::ids::ProtocolDeviceId::parse("alice-phone").unwrap(),
-                signing_key_id: "did:example:alice#phone-sign".to_owned(),
-                e2ee_key_id: "did:example:alice#phone-e2ee".to_owned(),
+                protocol_device_id: crate::ids::ProtocolDeviceId::parse(device_id).unwrap(),
+                signing_key_id: format!("{}#device-sign", did.as_str()),
+                e2ee_key_id: format!("{}#device-e2ee", did.as_str()),
                 status: DeviceAuthorizationStatus::Active,
                 role: DeviceAuthorizationRole::Member,
                 management_ready: false,
@@ -1419,6 +1503,14 @@ mod tests {
             }),
         };
         V2OwnerScope::from_identity_state(&identity_id, &did, &state).unwrap()
+    }
+
+    fn pending_state_for_scope(did: &str, device_id: &str) -> V2DirectSessionState {
+        let mut state = pending_state();
+        state.binding.local_did = did.to_owned();
+        state.binding.local_device_id = device_id.to_owned();
+        state.binding.local_e2ee_key_id = format!("{did}#device-e2ee");
+        state
     }
 
     fn count_kind(vault: &DirectSecretVault, kind: SecretKind) -> usize {
@@ -1522,6 +1614,7 @@ mod tests {
                 "wrong-did",
                 "sha256:wrong-did",
                 None,
+                V2SessionExpectation::Absent,
                 "2026-07-19T00:00:00Z",
             )
             .is_err());
@@ -1534,6 +1627,7 @@ mod tests {
                 "wrong-device",
                 "sha256:wrong-device",
                 None,
+                V2SessionExpectation::Absent,
                 "2026-07-19T00:00:01Z",
             )
             .is_err());
@@ -1559,6 +1653,7 @@ mod tests {
                 "setup-message",
                 "sha256:setup-cipher",
                 None,
+                V2SessionExpectation::Absent,
                 "2026-07-19T00:00:00Z",
             )
             .unwrap();
@@ -1566,7 +1661,8 @@ mod tests {
             .load_session(&state.binding, &state.session_id)
             .unwrap()
             .unwrap();
-        assert_eq!(loaded, state);
+        assert_eq!(loaded.state, state);
+        assert_eq!(loaded.revision, 0);
         let mut wrong_owner_did_state = state.clone();
         wrong_owner_did_state.binding.local_did = "did:example:mallory".to_owned();
         wrong_owner_did_state.binding.local_e2ee_key_id =
@@ -1577,6 +1673,7 @@ mod tests {
                 "wrong-owner-message",
                 "sha256:wrong-owner-cipher",
                 None,
+                V2SessionExpectation::Revision(0),
                 "2026-07-19T00:00:01Z",
             )
             .is_err());
@@ -1623,6 +1720,7 @@ mod tests {
                     "message-1",
                     "sha256:cipher-a",
                     None,
+                    V2SessionExpectation::Absent,
                     "2026-07-19T00:00:00Z",
                 )
                 .unwrap(),
@@ -1651,6 +1749,7 @@ mod tests {
                     "message-1",
                     "sha256:cipher-a",
                     None,
+                    V2SessionExpectation::Absent,
                     "2026-07-19T00:00:01Z",
                 )
                 .unwrap(),
@@ -1662,6 +1761,7 @@ mod tests {
                 "message-1",
                 "sha256:cipher-b",
                 None,
+                V2SessionExpectation::Absent,
                 "2026-07-19T00:00:02Z",
             )
             .is_err());
@@ -1681,15 +1781,26 @@ mod tests {
                 "prior-message",
                 "sha256:prior-cipher",
                 None,
+                V2SessionExpectation::Absent,
                 "2026-07-18T23:59:59Z",
             )
             .unwrap();
 
         store
-            .commit_outbound(&state, &pending, "2026-07-19T00:00:00Z")
+            .commit_outbound(
+                &state,
+                &pending,
+                V2SessionExpectation::Revision(0),
+                "2026-07-19T00:00:00Z",
+            )
             .unwrap();
         store
-            .commit_outbound(&state, &pending, "2026-07-19T00:00:01Z")
+            .commit_outbound(
+                &state,
+                &pending,
+                V2SessionExpectation::Revision(0),
+                "2026-07-19T00:00:01Z",
+            )
             .unwrap();
         assert_eq!(
             store.load_pending(&state.binding, "message-1").unwrap(),
@@ -1707,6 +1818,7 @@ mod tests {
             .commit_outbound(
                 &state,
                 &pending_record(&state, b"cipher-b"),
+                V2SessionExpectation::Revision(0),
                 "2026-07-19T00:00:02Z",
             )
             .is_err());
@@ -1714,13 +1826,23 @@ mod tests {
         db.execute("UPDATE direct_e2ee_v2_sessions SET revision = 0", [])
             .unwrap();
         assert!(store
-            .commit_outbound(&state, &pending, "2026-07-19T00:00:03Z")
+            .commit_outbound(
+                &state,
+                &pending,
+                V2SessionExpectation::Revision(0),
+                "2026-07-19T00:00:03Z",
+            )
             .is_err());
         assert!(store.load_pending(&state.binding, "message-1").is_err());
         db.execute("DELETE FROM direct_e2ee_v2_sessions", [])
             .unwrap();
         assert!(store
-            .commit_outbound(&state, &pending, "2026-07-19T00:00:04Z")
+            .commit_outbound(
+                &state,
+                &pending,
+                V2SessionExpectation::Revision(0),
+                "2026-07-19T00:00:04Z",
+            )
             .is_err());
     }
 
@@ -1737,6 +1859,7 @@ mod tests {
                 "message-missing-opk",
                 "sha256:cipher-a",
                 Some("opk-1"),
+                V2SessionExpectation::Absent,
                 "2026-07-19T00:00:00Z",
             )
             .is_err());
@@ -1772,6 +1895,7 @@ mod tests {
                     "message-1",
                     "sha256:cipher-a",
                     Some("opk-1"),
+                    V2SessionExpectation::Absent,
                     "2026-07-19T00:00:02Z",
                 )
                 .unwrap(),
@@ -1784,6 +1908,7 @@ mod tests {
                     "message-1",
                     "sha256:cipher-a",
                     Some("opk-1"),
+                    V2SessionExpectation::Absent,
                     "2026-07-19T00:00:03Z",
                 )
                 .unwrap(),
@@ -1801,6 +1926,228 @@ mod tests {
     }
 
     #[test]
+    fn inbound_opk_rollback_keeps_old_state_and_restart_cleans_orphan() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        let vault = vault(root.path());
+        let store =
+            SqliteV2DirectStateStore::new_with_secret_vault(&db, vault.clone(), owner_scope())
+                .unwrap();
+        let state = pending_state();
+        store
+            .commit_inbound(
+                &state,
+                "message-1",
+                "sha256:cipher-1",
+                None,
+                V2SessionExpectation::Absent,
+                "2026-07-19T00:00:00Z",
+            )
+            .unwrap();
+        let old_blob = db
+            .query_row(
+                "SELECT state_blob FROM direct_e2ee_v2_sessions",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .unwrap();
+        let old_record = store
+            .load_session(&state.binding, &state.session_id)
+            .unwrap()
+            .unwrap();
+
+        let mut advanced = state.clone();
+        advanced.root_key_b64u = URL_SAFE_NO_PAD.encode([21; 32]);
+        assert!(store
+            .commit_inbound(
+                &advanced,
+                "message-missing-opk",
+                "sha256:cipher-missing-opk",
+                Some("opk-missing"),
+                V2SessionExpectation::Revision(old_record.revision),
+                "2026-07-19T00:00:01Z",
+            )
+            .is_err());
+
+        let current_blob = db
+            .query_row(
+                "SELECT state_blob FROM direct_e2ee_v2_sessions",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .unwrap();
+        assert_eq!(current_blob, old_blob);
+        assert_eq!(
+            store
+                .load_session(&state.binding, &state.session_id)
+                .unwrap(),
+            Some(old_record.clone())
+        );
+        assert_eq!(count_kind(&vault, SecretKind::DirectE2eeV2SessionState), 2);
+
+        drop(store);
+        let restarted =
+            SqliteV2DirectStateStore::new_with_secret_vault(&db, vault.clone(), owner_scope())
+                .unwrap();
+        assert_eq!(count_kind(&vault, SecretKind::DirectE2eeV2SessionState), 1);
+        assert_eq!(
+            restarted
+                .load_session(&state.binding, &state.session_id)
+                .unwrap(),
+            Some(old_record)
+        );
+    }
+
+    #[test]
+    fn stale_session_writer_cannot_overwrite_committed_ratchet() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        let vault = vault(root.path());
+        let store =
+            SqliteV2DirectStateStore::new_with_secret_vault(&db, vault.clone(), owner_scope())
+                .unwrap();
+        let state = pending_state();
+        store
+            .commit_inbound(
+                &state,
+                "message-1",
+                "sha256:cipher-1",
+                None,
+                V2SessionExpectation::Absent,
+                "2026-07-19T00:00:00Z",
+            )
+            .unwrap();
+        let loaded = store
+            .load_session(&state.binding, &state.session_id)
+            .unwrap()
+            .unwrap();
+
+        let mut winner = loaded.state.clone();
+        winner.root_key_b64u = URL_SAFE_NO_PAD.encode([22; 32]);
+        store
+            .commit_inbound(
+                &winner,
+                "message-2",
+                "sha256:cipher-2",
+                None,
+                V2SessionExpectation::Revision(loaded.revision),
+                "2026-07-19T00:00:01Z",
+            )
+            .unwrap();
+
+        let mut stale = loaded.state;
+        stale.root_key_b64u = URL_SAFE_NO_PAD.encode([23; 32]);
+        assert!(store
+            .commit_inbound(
+                &stale,
+                "message-3",
+                "sha256:cipher-3",
+                None,
+                V2SessionExpectation::Revision(loaded.revision),
+                "2026-07-19T00:00:02Z",
+            )
+            .is_err());
+        let committed = store
+            .load_session(&state.binding, &state.session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(committed.state, winner);
+        assert_eq!(committed.revision, 1);
+        assert_eq!(count_kind(&vault, SecretKind::DirectE2eeV2SessionState), 2);
+
+        drop(store);
+        let restarted =
+            SqliteV2DirectStateStore::new_with_secret_vault(&db, vault.clone(), owner_scope())
+                .unwrap();
+        assert_eq!(count_kind(&vault, SecretKind::DirectE2eeV2SessionState), 1);
+        assert_eq!(
+            restarted
+                .load_session(&state.binding, &state.session_id)
+                .unwrap(),
+            Some(committed)
+        );
+    }
+
+    #[test]
+    fn gc_does_not_delete_another_scope_in_shared_vault() {
+        let root = tempfile::tempdir().unwrap();
+        let shared_vault = vault(root.path());
+        let db_alice = Connection::open_in_memory().unwrap();
+        let db_carol = Connection::open_in_memory().unwrap();
+        let alice = SqliteV2DirectStateStore::new_with_secret_vault(
+            &db_alice,
+            shared_vault.clone(),
+            owner_scope(),
+        )
+        .unwrap();
+        let alice_state = pending_state();
+        alice
+            .commit_inbound(
+                &alice_state,
+                "alice-message-1",
+                "sha256:alice-cipher-1",
+                None,
+                V2SessionExpectation::Absent,
+                "2026-07-19T00:00:00Z",
+            )
+            .unwrap();
+
+        let carol_scope = owner_scope_for("identity-carol", "did:example:carol", "carol-phone");
+        let carol = SqliteV2DirectStateStore::new_with_secret_vault(
+            &db_carol,
+            shared_vault.clone(),
+            carol_scope.clone(),
+        )
+        .unwrap();
+        let carol_state = pending_state_for_scope("did:example:carol", "carol-phone");
+        carol
+            .commit_inbound(
+                &carol_state,
+                "carol-message-1",
+                "sha256:carol-cipher-1",
+                None,
+                V2SessionExpectation::Absent,
+                "2026-07-19T00:00:01Z",
+            )
+            .unwrap();
+        let carol_ref = shared_vault
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|secret_ref| {
+                secret_ref.kind == SecretKind::DirectE2eeV2SessionState
+                    && secret_ref.identity_id.as_deref() == Some("identity-carol")
+            })
+            .unwrap();
+        assert_eq!(
+            count_kind(&shared_vault, SecretKind::DirectE2eeV2SessionState),
+            2
+        );
+
+        assert_eq!(alice.gc_orphaned_v2_secrets().unwrap(), 0);
+        assert!(shared_vault.open(&carol_ref).is_ok());
+        assert_eq!(
+            count_kind(&shared_vault, SecretKind::DirectE2eeV2SessionState),
+            2
+        );
+
+        drop(carol);
+        let restarted_carol = SqliteV2DirectStateStore::new_with_secret_vault(
+            &db_carol,
+            shared_vault.clone(),
+            carol_scope,
+        )
+        .unwrap();
+        let loaded = restarted_carol
+            .load_session(&carol_state.binding, &carol_state.session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.state, carol_state);
+        assert_eq!(loaded.revision, 0);
+        assert!(shared_vault.open(&carol_ref).is_ok());
+    }
+
+    #[test]
     fn v2_secret_columns_reject_plaintext_fallback() {
         let root = tempfile::tempdir().unwrap();
         let db = Connection::open_in_memory().unwrap();
@@ -1812,6 +2159,7 @@ mod tests {
                 "setup-message",
                 "sha256:setup-cipher",
                 None,
+                V2SessionExpectation::Absent,
                 "2026-07-19T00:00:00Z",
             )
             .unwrap();
@@ -1840,7 +2188,12 @@ mod tests {
 
         let pending = pending_record(&state, b"cipher-a");
         store
-            .commit_outbound(&state, &pending, "2026-07-19T00:00:01Z")
+            .commit_outbound(
+                &state,
+                &pending,
+                V2SessionExpectation::Revision(0),
+                "2026-07-19T00:00:01Z",
+            )
             .unwrap();
         let sealed_pending = db
             .query_row(
@@ -1931,6 +2284,7 @@ mod tests {
                 "message-1",
                 "sha256:cipher-1",
                 None,
+                V2SessionExpectation::Absent,
                 "2026-07-19T00:00:00Z",
             )
             .unwrap();
@@ -1940,6 +2294,7 @@ mod tests {
                 "message-2",
                 "sha256:cipher-2",
                 None,
+                V2SessionExpectation::Revision(0),
                 "2026-07-19T00:00:01Z",
             )
             .unwrap();
@@ -1947,7 +2302,12 @@ mod tests {
 
         let pending = pending_record(&state, b"cipher-a");
         store
-            .commit_outbound(&state, &pending, "2026-07-19T00:00:02Z")
+            .commit_outbound(
+                &state,
+                &pending,
+                V2SessionExpectation::Revision(1),
+                "2026-07-19T00:00:02Z",
+            )
             .unwrap();
         assert_eq!(
             count_kind(&vault, SecretKind::DirectE2eeV2PendingOutbound),
@@ -1968,11 +2328,11 @@ mod tests {
             SqliteV2DirectStateStore::new_with_secret_vault(&db, vault.clone(), owner_scope())
                 .unwrap();
         assert_eq!(count_kind(&vault, SecretKind::DirectE2eeV2SessionState), 1);
-        assert_eq!(
-            restarted
-                .load_session(&state.binding, &state.session_id)
-                .unwrap(),
-            Some(state)
-        );
+        let loaded = restarted
+            .load_session(&state.binding, &state.session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.state, state);
+        assert_eq!(loaded.revision, 2);
     }
 }
