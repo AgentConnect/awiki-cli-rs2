@@ -343,6 +343,13 @@ keys, root material, challenge/ciphertext details, `document_version`,
 hash fields are AWiki domain-internal concurrency state, not cross-domain ANP
 fields and not host-facing Join DTOs.
 
+Host 观察到服务端 `consumed` 并不代表本地已经可用。Core 会在内部完成最终 DID
+Document/Manifest 校验、候选设备签名的 `device_token_issue`、access/refresh pair
+Vault 落盘以及 rootless vNext 身份提升；全部成功后 session 才变为 `Authorized`。
+重启或网络响应丢失会从加密的 pending activation 继续，不向 host 暴露 token、
+临时授权或内部 checkpoint。普通设备此时为 `MemberReady`；被授予 Admin 的设备在
+根密钥导入前仍为 `AdminAwaitingRoot`。
+
 Identity vault DTOs are redacted status/report surfaces. They report selected
 backend, storage policy, vault availability, metadata verification, workspace /
 device context, warnings, and plaintext compatibility retention, but they must

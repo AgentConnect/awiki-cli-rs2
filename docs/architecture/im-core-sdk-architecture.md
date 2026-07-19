@@ -133,9 +133,16 @@ rollout gate: production constructors default it off and only an explicit rollou
 enable it. The gate fails before local or remote side effects and does not add fields to
 ANP or to public DID Documents. New-device token RPC and authenticated ready-admin RPC
 use disjoint adapters so a pending device cannot inherit an ambient admin credential.
-Device-token issuance and local
-identity promotion remain a separate activation step, and an admin requested during
-Join remains non-ready until the root-import flow completes.
+Remote `consumed` is not yet local authorization: after final Document/Manifest
+verification, the candidate device key signs `device_token_issue`; Core validates and
+Vault-stores the returned access/refresh pair, then promotes the same candidate signing
+and E2EE keys into a rootless vNext identity with the confirmed internal checkpoint.
+Only after identity and token storage both commit is the Join reported `Authorized` and
+its temporary secret state removed. The encrypted activation record preserves the same
+operation ID across ambiguous retries and permits a fresh short-lived device
+authorization when the previous header expires. A member becomes ready immediately;
+an admin requested during Join remains `AdminAwaitingRoot` until the separate root-import
+flow completes.
 
 The host-facing Join facade is deliberately narrower than the internal
 orchestrator. `ImCoreOpenOptions.multi_device_join_enabled` defaults to `false`;

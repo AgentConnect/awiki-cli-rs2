@@ -217,7 +217,8 @@ pub(crate) enum DeviceJoinRemoteState {
     Expired,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DeviceJoinRemoteDeviceSummary {
     pub(crate) device_id: String,
     pub(crate) signing_key_id: String,
@@ -300,7 +301,8 @@ pub(crate) struct DeviceJoinRemoteAdminStatus {
     pub(crate) authorization: Option<DeviceJoinRemoteAuthorization>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DeviceJoinRemoteAuthorization {
     pub(crate) checkpoint: IdentityInternalCheckpoint,
     pub(crate) device: DeviceJoinRemoteDeviceSummary,
@@ -397,6 +399,12 @@ pub(crate) trait DeviceJoinNewDeviceRemote {
         &mut self,
         request: DeviceJoinRemoteResponseRequest<'_>,
     ) -> crate::ImResult<DeviceJoinRemoteTransitionResult>;
+
+    async fn issue_device_token(
+        &mut self,
+        prepared: &crate::internal::identity_wire::device_genesis::PreparedDeviceTokenIssue,
+        expected_auth_generation: u64,
+    ) -> crate::ImResult<crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult>;
 }
 
 /// Ready-admin RPC seam. This intentionally cannot send token-authenticated
@@ -524,6 +532,29 @@ where
         crate::internal::identity_wire::device_join::parse_response_result(raw, &response)
             .map_err(redact_new_device_remote_error)
     }
+
+    async fn issue_device_token(
+        &mut self,
+        prepared: &crate::internal::identity_wire::device_genesis::PreparedDeviceTokenIssue,
+        expected_auth_generation: u64,
+    ) -> crate::ImResult<crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult>
+    {
+        let call =
+            crate::internal::identity_wire::device_genesis::build_device_token_issue_call(prepared)
+                .map_err(redact_new_device_remote_error)?;
+        let raw = self
+            .plain
+            .rpc(call.endpoint, call.method, call.params)
+            .await
+            .map_err(redact_new_device_remote_error)?;
+        crate::internal::identity_wire::device_genesis::parse_device_token_issue_result(
+            raw,
+            prepared,
+            expected_auth_generation,
+            time::OffsetDateTime::now_utc(),
+        )
+        .map_err(redact_new_device_remote_error)
+    }
 }
 
 fn redact_new_device_remote_error(error: crate::ImError) -> crate::ImError {
@@ -547,6 +578,19 @@ fn redact_new_device_remote_error(error: crate::ImError) -> crate::ImError {
         },
         other => other,
     }
+}
+
+fn token_authorization_refreshable(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::AuthRequired | crate::ImError::PermissionDenied
+    ) || matches!(
+        error,
+        crate::ImError::Service {
+            status_code: Some(401),
+            ..
+        }
+    )
 }
 
 pub(crate) struct DeviceJoinAdminHttpAdapter<A> {
@@ -773,19 +817,31 @@ where
         join_session_id: &str,
     ) -> crate::ImResult<DeviceJoinAdvanceResult> {
         self.gate.require_enabled()?;
-        let local = self
+        let mut local = self
             .core
             .device_join()
             .session(join_session_id, crate::identity::DeviceJoinSide::NewDevice)?;
+        if local.phase == crate::identity::DeviceJoinLocalPhase::Authorized {
+            local = crate::internal::identity_device_join::finalize_new_device_activation(
+                self.core,
+                join_session_id,
+            )?;
+            return Ok(DeviceJoinAdvanceResult {
+                session: local,
+                remote_state: DeviceJoinRemoteState::Consumed,
+                authorization: None,
+                sas: None,
+            });
+        }
+        if let Some(pending) =
+            crate::internal::identity_device_join::load_pending_new_device_activation(
+                self.core,
+                join_session_id,
+            )?
+        {
+            return self.complete_new_device_activation(pending).await;
+        }
         match local.phase {
-            crate::identity::DeviceJoinLocalPhase::Authorized => {
-                return Ok(DeviceJoinAdvanceResult {
-                    session: local,
-                    remote_state: DeviceJoinRemoteState::Consumed,
-                    authorization: None,
-                    sas: None,
-                });
-            }
             crate::identity::DeviceJoinLocalPhase::Expired => {
                 return Ok(DeviceJoinAdvanceResult {
                     session: local,
@@ -865,19 +921,13 @@ where
                     .session(join_session_id, crate::identity::DeviceJoinSide::NewDevice)?
                     .did;
                 let document = self.resolver.resolve(&did).await?;
-                let session = crate::internal::identity_device_join::mark_join_authorized(
+                let pending = crate::internal::identity_device_join::prepare_new_device_activation(
                     self.core,
                     join_session_id,
-                    crate::identity::DeviceJoinSide::NewDevice,
                     &authorization,
                     &document,
                 )?;
-                Ok(DeviceJoinAdvanceResult {
-                    session,
-                    remote_state: status.state,
-                    authorization: Some(authorization),
-                    sas: None,
-                })
+                self.complete_new_device_activation(pending).await
             }
             DeviceJoinRemoteState::Pending | DeviceJoinRemoteState::Claimed => {
                 Ok(DeviceJoinAdvanceResult {
@@ -891,6 +941,62 @@ where
                 })
             }
         }
+    }
+
+    async fn complete_new_device_activation(
+        &mut self,
+        mut pending: crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    ) -> crate::ImResult<DeviceJoinAdvanceResult> {
+        if pending.token_result.is_none() {
+            if crate::internal::identity_wire::device_genesis::device_token_authorization_needs_refresh(
+                &pending.prepared_token_issue,
+                time::OffsetDateTime::now_utc(),
+            )? {
+                pending = crate::internal::identity_device_join::refresh_new_device_token_authorization(
+                    self.core,
+                    &pending.join_session_id,
+                )?;
+            }
+            let first = self
+                .remote
+                .issue_device_token(
+                    &pending.prepared_token_issue,
+                    pending.authorization.device.auth_generation,
+                )
+                .await;
+            let result = match first {
+                Ok(result) => result,
+                Err(error) if token_authorization_refreshable(&error) => {
+                    pending = crate::internal::identity_device_join::refresh_new_device_token_authorization(
+                        self.core,
+                        &pending.join_session_id,
+                    )?;
+                    self.remote
+                        .issue_device_token(
+                            &pending.prepared_token_issue,
+                            pending.authorization.device.auth_generation,
+                        )
+                        .await?
+                }
+                Err(error) => return Err(error),
+            };
+            pending = crate::internal::identity_device_join::record_new_device_token_result(
+                self.core,
+                &pending.join_session_id,
+                result,
+            )?;
+        }
+        let authorization = pending.authorization.clone();
+        let session = crate::internal::identity_device_join::finalize_new_device_activation(
+            self.core,
+            &pending.join_session_id,
+        )?;
+        Ok(DeviceJoinAdvanceResult {
+            session,
+            remote_state: DeviceJoinRemoteState::Consumed,
+            authorization: Some(authorization),
+            sas: None,
+        })
     }
 
     pub(crate) fn cancel(

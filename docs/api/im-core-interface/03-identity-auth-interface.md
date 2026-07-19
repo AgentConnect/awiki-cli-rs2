@@ -192,6 +192,14 @@ challenge IDs. Registry/progress DTOs likewise omit AWiki domain-internal
 Those values remain server/local concurrency state and are not cross-domain ANP
 or public host fields.
 
+新设备侧只有在服务端 Join 状态为 `consumed`、重新解析并验证最终 DID
+Document/Manifest 后，才使用候选设备签名密钥调用 `device_token_issue`。Core 严格
+校验 access/refresh token pair，将候选签名与 E2EE 私钥提升为不含根私钥的 vNext
+身份，并保存内部 checkpoint；身份与 token pair 都落盘后才对 host 报告
+`Authorized`，随后清理 Join 临时密钥。响应丢失时复用同一 operation ID，并可用
+同一候选密钥刷新过期的短期授权。Member 进入 `MemberReady`；Admin 在根密钥导入
+完成前保持 `AdminAwaitingRoot`。
+
 ## 4. Register Handle
 
 P1 只做注册，不做 recover/replace DID。

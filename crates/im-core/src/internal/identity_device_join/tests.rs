@@ -1,7 +1,8 @@
 use super::*;
 
+use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 const FIXED_DOCUMENT_HASH: &str = "sha256:UD5TmycQ6gS539AFNjM5cGoQUmeq2fQGPpwD00lMPlg";
 const FIXED_CHALLENGE_HASH: &str = "sha256:CNkA2F600Hf0nbZLaSSALDLOq6wK2OC7fXmxIhYAbzs";
@@ -52,6 +53,83 @@ fn open_vault_core(root: &Path) -> crate::ImCore {
         ),
     )
     .unwrap()
+}
+
+#[derive(Clone)]
+struct ActivationTokenRemote {
+    calls: Arc<Mutex<Vec<(String, String, u64)>>>,
+    results: Arc<
+        Mutex<
+            VecDeque<
+                crate::ImResult<
+                    crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult,
+                >,
+            >,
+        >,
+    >,
+}
+
+impl crate::internal::identity_device_join_runtime::DeviceJoinNewDeviceRemote
+    for ActivationTokenRemote
+{
+    async fn create(
+        &mut self,
+        _request: crate::internal::identity_device_join_runtime::DeviceJoinRemoteCreateRequest<'_>,
+    ) -> crate::ImResult<crate::internal::identity_device_join_runtime::DeviceJoinRemoteCreateResult>
+    {
+        panic!("pending activation must not create another Join session")
+    }
+
+    async fn status(
+        &mut self,
+        _expected_join_session_id: &str,
+        _join_session_token: &SecretBytes,
+    ) -> crate::ImResult<
+        crate::internal::identity_device_join_runtime::DeviceJoinRemoteNewDeviceStatus,
+    > {
+        panic!("pending activation must not poll Join status")
+    }
+
+    async fn submit_response(
+        &mut self,
+        _request: crate::internal::identity_device_join_runtime::DeviceJoinRemoteResponseRequest<
+            '_,
+        >,
+    ) -> crate::ImResult<
+        crate::internal::identity_device_join_runtime::DeviceJoinRemoteTransitionResult,
+    > {
+        panic!("pending activation must not resubmit the Join response")
+    }
+
+    async fn issue_device_token(
+        &mut self,
+        prepared: &crate::internal::identity_wire::device_genesis::PreparedDeviceTokenIssue,
+        expected_auth_generation: u64,
+    ) -> crate::ImResult<crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult>
+    {
+        self.calls.lock().unwrap().push((
+            prepared.operation_id.clone(),
+            prepared.authorization.clone(),
+            expected_auth_generation,
+        ));
+        self.results
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("queued token issue result")
+    }
+}
+
+struct PanicDidResolverTransport;
+
+impl crate::internal::transport::AsyncRawJsonTransport for PanicDidResolverTransport {
+    async fn get_json_url(
+        &mut self,
+        _url: &str,
+        _headers: std::collections::BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        panic!("pending activation must use its persisted DID Document")
+    }
 }
 
 fn open_vnext_identity_core(
@@ -918,4 +996,473 @@ fn pending_join_refuses_to_generate_secrets_without_secret_vault() {
             failure: crate::IdentityVaultFailure::Unavailable,
         }
     ));
+}
+
+#[test]
+fn new_device_activation_survives_local_commit_failure_and_promotes_rootless_member() {
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationRole, DeviceAuthorizationStatus, IdentityInternalCheckpoint,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        "awiki.test", "alice", None, None,
+    ).unwrap();
+    let core = open_vault_core(root.path());
+    let started = core
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "start-activation-member".to_owned(),
+            did: generated.did.clone(),
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    let mut stored = JoinStateStore::new(&core)
+        .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .unwrap();
+    stored.phase = DeviceJoinLocalPhase::ResponsePrepared;
+    JoinStateStore::new(&core).save(&stored).unwrap();
+
+    let device = anp::authentication::DeviceManifestEntry {
+        device_id: started.join_request.device_id.clone(),
+        signing_key_id: method_id(&started.join_request.signing_public_key, "signing")
+            .unwrap()
+            .to_owned(),
+        e2ee_key_id: method_id(&started.join_request.e2ee_public_key, "e2ee")
+            .unwrap()
+            .to_owned(),
+        profiles: started.join_request.profiles.clone(),
+    };
+    let mut final_document = anp::authentication::add_device_to_did_document(
+        &generated.did_document,
+        &generated.root_key_id,
+        &device,
+        &started.join_request.signing_public_key,
+        &started.join_request.e2ee_public_key,
+        &[],
+    )
+    .unwrap();
+    crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+        &mut final_document,
+        &generated.did,
+        &generated.root_private_pem,
+    )
+    .unwrap();
+    let authorization =
+        crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization {
+            checkpoint: IdentityInternalCheckpoint {
+                document_version: 2,
+                document_hash: canonical_hash(&final_document).unwrap(),
+                registry_version: 2,
+            },
+            device: crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                device_id: device.device_id.clone(),
+                signing_key_id: device.signing_key_id.clone(),
+                e2ee_key_id: device.e2ee_key_id.clone(),
+                status: DeviceAuthorizationStatus::Active,
+                role: DeviceAuthorizationRole::Member,
+                management_ready: false,
+                auth_generation: 1,
+            },
+        };
+    let mut mismatched_authorization = authorization.clone();
+    mismatched_authorization.checkpoint.document_hash =
+        "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned();
+    assert_eq!(
+        prepare_new_device_activation(
+            &core,
+            &started.session.join_session_id,
+            &mismatched_authorization,
+            &final_document,
+        ),
+        Err(crate::ImError::PermissionDenied)
+    );
+    assert!(
+        load_pending_new_device_activation(&core, &started.session.join_session_id)
+            .unwrap()
+            .is_none()
+    );
+    let pending = prepare_new_device_activation(
+        &core,
+        &started.session.join_session_id,
+        &authorization,
+        &final_document,
+    )
+    .unwrap();
+    assert_eq!(pending.prepared_token_issue.device_id, device.device_id);
+    let pending = record_new_device_token_result(
+        &core,
+        &started.session.join_session_id,
+        crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult {
+            access_token: "member-access-token".to_owned(),
+            refresh_token: "member-refresh-token".to_owned(),
+            expires_at: format_time(OffsetDateTime::now_utc() + Duration::hours(1)).unwrap(),
+            user_id: "user-member".to_owned(),
+            device_id: device.device_id.clone(),
+            auth_generation: 1,
+            scopes: vec!["device:read".to_owned(), "message:connect".to_owned()],
+        },
+    )
+    .unwrap();
+    assert!(pending.token_result.is_some());
+
+    let identity_dir = root
+        .path()
+        .join("identities")
+        .join(crate::internal::identity_join_activation_pending::identity_suffix(&generated.did));
+    std::fs::write(&identity_dir, b"force identity directory failure").unwrap();
+    assert!(finalize_new_device_activation(&core, &started.session.join_session_id).is_err());
+    assert!(
+        load_pending_new_device_activation(&core, &started.session.join_session_id)
+            .unwrap()
+            .unwrap()
+            .token_result
+            .is_some()
+    );
+    std::fs::remove_file(&identity_dir).unwrap();
+    drop(core);
+
+    let restarted = open_vault_core(root.path());
+    let summary =
+        finalize_new_device_activation(&restarted, &started.session.join_session_id).unwrap();
+    assert_eq!(summary.phase, DeviceJoinLocalPhase::Authorized);
+    let device_summary = restarted
+        .identities()
+        .device_summary(crate::identity::IdentitySelector::Default)
+        .unwrap();
+    assert_eq!(
+        device_summary.role,
+        Some(crate::identity::IdentityDeviceRole::Member)
+    );
+    assert_eq!(
+        device_summary.readiness,
+        crate::identity::IdentityDeviceReadiness::MemberReady
+    );
+    let index = crate::internal::identity_store::IdentityStore::new(
+        &restarted.inner().sdk_paths().identities,
+    )
+    .load_index()
+    .unwrap();
+    let entry = index.credentials.get("alice").unwrap();
+    assert!(entry
+        .vault_migration
+        .as_ref()
+        .unwrap()
+        .vnext_refs
+        .as_ref()
+        .unwrap()
+        .did_document_root_private
+        .is_none());
+    let auth_ref = &entry
+        .vault_migration
+        .as_ref()
+        .unwrap()
+        .vnext_refs
+        .as_ref()
+        .unwrap()
+        .auth_jwt;
+    let auth = restarted
+        .inner()
+        .identity_vault()
+        .unwrap()
+        .vault()
+        .open(auth_ref)
+        .unwrap();
+    let auth = crate::internal::auth::state::parse_auth_state(auth.expose_secret()).unwrap();
+    assert_eq!(auth.bearer_token.as_deref(), Some("member-access-token"));
+    assert_eq!(auth.refresh_token.as_deref(), Some("member-refresh-token"));
+    let vault_refs = restarted
+        .inner()
+        .identity_vault()
+        .unwrap()
+        .vault()
+        .list()
+        .unwrap();
+    assert!(vault_refs.iter().all(|secret_ref| !matches!(
+        secret_ref.kind,
+        SecretKind::IdentityJoinActivationPending
+            | SecretKind::IdentityJoinPairingPrivate
+            | SecretKind::IdentityJoinSessionToken
+    )));
+    assert!(vault_refs
+        .iter()
+        .filter(|secret_ref| {
+            matches!(
+                secret_ref.kind,
+                SecretKind::IdentityDeviceSigningPrivate | SecretKind::IdentityE2eeAgreementPrivate
+            )
+        })
+        .all(|secret_ref| secret_ref.identity_id.is_some()));
+}
+
+#[test]
+fn admin_join_activation_remains_not_ready_without_root_import() {
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationRole, DeviceAuthorizationStatus, IdentityInternalCheckpoint,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        "awiki.test", "alice", None, None,
+    ).unwrap();
+    let core = open_vault_core(root.path());
+    let started = core
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "start-activation-admin".to_owned(),
+            did: generated.did.clone(),
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    let store = JoinStateStore::new(&core);
+    let mut stored = store
+        .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .unwrap();
+    stored.phase = DeviceJoinLocalPhase::ResponsePrepared;
+    store.save(&stored).unwrap();
+    let device = anp::authentication::DeviceManifestEntry {
+        device_id: started.join_request.device_id.clone(),
+        signing_key_id: method_id(&started.join_request.signing_public_key, "signing")
+            .unwrap()
+            .to_owned(),
+        e2ee_key_id: method_id(&started.join_request.e2ee_public_key, "e2ee")
+            .unwrap()
+            .to_owned(),
+        profiles: started.join_request.profiles.clone(),
+    };
+    let mut document = anp::authentication::add_device_to_did_document(
+        &generated.did_document,
+        &generated.root_key_id,
+        &device,
+        &started.join_request.signing_public_key,
+        &started.join_request.e2ee_public_key,
+        &[],
+    )
+    .unwrap();
+    crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+        &mut document,
+        &generated.did,
+        &generated.root_private_pem,
+    )
+    .unwrap();
+    let authorization =
+        crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization {
+            checkpoint: IdentityInternalCheckpoint {
+                document_version: 2,
+                document_hash: canonical_hash(&document).unwrap(),
+                registry_version: 2,
+            },
+            device: crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                device_id: device.device_id.clone(),
+                signing_key_id: device.signing_key_id,
+                e2ee_key_id: device.e2ee_key_id,
+                status: DeviceAuthorizationStatus::Active,
+                role: DeviceAuthorizationRole::Admin,
+                management_ready: false,
+                auth_generation: 1,
+            },
+        };
+    prepare_new_device_activation(
+        &core,
+        &started.session.join_session_id,
+        &authorization,
+        &document,
+    )
+    .unwrap();
+    record_new_device_token_result(
+        &core,
+        &started.session.join_session_id,
+        crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult {
+            access_token: "admin-awaiting-access".to_owned(),
+            refresh_token: "admin-awaiting-refresh".to_owned(),
+            expires_at: format_time(OffsetDateTime::now_utc() + Duration::hours(1)).unwrap(),
+            user_id: "user-admin".to_owned(),
+            device_id: device.device_id,
+            auth_generation: 1,
+            scopes: vec!["device:read".to_owned(), "message:connect".to_owned()],
+        },
+    )
+    .unwrap();
+    finalize_new_device_activation(&core, &started.session.join_session_id).unwrap();
+    let summary = core
+        .identities()
+        .device_summary(crate::identity::IdentitySelector::Default)
+        .unwrap();
+    assert_eq!(
+        summary.role,
+        Some(crate::identity::IdentityDeviceRole::Admin)
+    );
+    assert_eq!(
+        summary.readiness,
+        crate::identity::IdentityDeviceReadiness::AdminAwaitingRoot
+    );
+}
+
+#[tokio::test]
+async fn token_response_loss_retries_same_operation_with_fresh_device_authorization() {
+    use crate::internal::identity_device_join_runtime::{
+        DeviceJoinDidResolver, DeviceJoinNewDeviceRuntime, DeviceJoinRemoteAuthorization,
+        DeviceJoinRemoteDeviceSummary, DeviceJoinRuntimeGate,
+    };
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationRole, DeviceAuthorizationStatus, IdentityInternalCheckpoint,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+        "awiki.test", "alice", None, None,
+    ).unwrap();
+    let core = open_vault_core(root.path());
+    let started = core
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "start-token-response-loss".to_owned(),
+            did: generated.did.clone(),
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    let store = JoinStateStore::new(&core);
+    let mut stored = store
+        .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .unwrap();
+    stored.phase = DeviceJoinLocalPhase::ResponsePrepared;
+    store.save(&stored).unwrap();
+
+    let device = anp::authentication::DeviceManifestEntry {
+        device_id: started.join_request.device_id.clone(),
+        signing_key_id: method_id(&started.join_request.signing_public_key, "signing")
+            .unwrap()
+            .to_owned(),
+        e2ee_key_id: method_id(&started.join_request.e2ee_public_key, "e2ee")
+            .unwrap()
+            .to_owned(),
+        profiles: started.join_request.profiles.clone(),
+    };
+    let mut document = anp::authentication::add_device_to_did_document(
+        &generated.did_document,
+        &generated.root_key_id,
+        &device,
+        &started.join_request.signing_public_key,
+        &started.join_request.e2ee_public_key,
+        &[],
+    )
+    .unwrap();
+    crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+        &mut document,
+        &generated.did,
+        &generated.root_private_pem,
+    )
+    .unwrap();
+    let authorization = DeviceJoinRemoteAuthorization {
+        checkpoint: IdentityInternalCheckpoint {
+            document_version: 2,
+            document_hash: canonical_hash(&document).unwrap(),
+            registry_version: 2,
+        },
+        device: DeviceJoinRemoteDeviceSummary {
+            device_id: device.device_id.clone(),
+            signing_key_id: device.signing_key_id,
+            e2ee_key_id: device.e2ee_key_id,
+            status: DeviceAuthorizationStatus::Active,
+            role: DeviceAuthorizationRole::Member,
+            management_ready: false,
+            auth_generation: 1,
+        },
+    };
+    let pending = prepare_new_device_activation(
+        &core,
+        &started.session.join_session_id,
+        &authorization,
+        &document,
+    )
+    .unwrap();
+    let operation_id = pending.prepared_token_issue.operation_id.clone();
+    let initial_authorization = pending.prepared_token_issue.authorization.clone();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let results = Arc::new(Mutex::new(VecDeque::from([Err(
+        crate::ImError::TransportUnavailable {
+            detail: "token response was lost".to_owned(),
+        },
+    )])));
+    let remote = ActivationTokenRemote {
+        calls: calls.clone(),
+        results: results.clone(),
+    };
+    let mut runtime = DeviceJoinNewDeviceRuntime::new(
+        &core,
+        remote,
+        DeviceJoinDidResolver::new(PanicDidResolverTransport),
+        DeviceJoinRuntimeGate::from_rollout_flag(true),
+    );
+    let error = runtime
+        .advance(&started.session.join_session_id)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, crate::ImError::TransportUnavailable { .. }));
+    assert!(
+        load_pending_new_device_activation(&core, &started.session.join_session_id)
+            .unwrap()
+            .is_some()
+    );
+    drop(runtime);
+    drop(core);
+
+    results.lock().unwrap().extend([
+        Err(crate::ImError::AuthRequired),
+        Ok(
+            crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult {
+                access_token: "response-loss-access".to_owned(),
+                refresh_token: "response-loss-refresh".to_owned(),
+                expires_at: format_time(OffsetDateTime::now_utc() + Duration::hours(1)).unwrap(),
+                user_id: "user-response-loss".to_owned(),
+                device_id: device.device_id,
+                auth_generation: 1,
+                scopes: vec!["device:read".to_owned(), "message:connect".to_owned()],
+            },
+        ),
+    ]);
+    let restarted = open_vault_core(root.path());
+    let remote = ActivationTokenRemote {
+        calls: calls.clone(),
+        results,
+    };
+    let mut runtime = DeviceJoinNewDeviceRuntime::new(
+        &restarted,
+        remote,
+        DeviceJoinDidResolver::new(PanicDidResolverTransport),
+        DeviceJoinRuntimeGate::from_rollout_flag(true),
+    );
+    let completed = runtime
+        .advance(&started.session.join_session_id)
+        .await
+        .unwrap();
+    assert_eq!(completed.session.phase, DeviceJoinLocalPhase::Authorized);
+
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 3);
+    assert!(calls.iter().all(|call| call.0 == operation_id));
+    assert!(calls.iter().all(|call| call.2 == 1));
+    assert_eq!(calls[0].1, initial_authorization);
+    assert_eq!(calls[1].1, initial_authorization);
+    assert_ne!(calls[2].1, initial_authorization);
+    assert!(
+        load_pending_new_device_activation(&restarted, &started.session.join_session_id,)
+            .unwrap()
+            .is_none()
+    );
+    let summary = restarted
+        .identities()
+        .device_summary(crate::identity::IdentitySelector::Default)
+        .unwrap();
+    assert_eq!(
+        summary.role,
+        Some(crate::identity::IdentityDeviceRole::Member)
+    );
+    assert_eq!(
+        summary.readiness,
+        crate::identity::IdentityDeviceReadiness::MemberReady
+    );
 }

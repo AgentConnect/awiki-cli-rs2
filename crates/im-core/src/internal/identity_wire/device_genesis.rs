@@ -19,11 +19,78 @@ use crate::internal::identity_device_state::{
 
 pub(crate) const DEVICE_GENESIS_METHOD: &str = "device_genesis";
 pub(crate) const DEVICE_GENESIS_PURPOSE: &str = "awiki.device.genesis.v1";
+pub(crate) const DEVICE_TOKEN_ISSUE_METHOD: &str = "device_token_issue";
 const DEVICE_PROOF_TYPE: &str = "awiki-device-signature-v1";
 const DEVICE_TOKEN_PROFILE: &str = "awiki-device-token-v1";
 const DEVICE_ACCESS_PURPOSE: &str = "awiki.device.access.v1";
 const DEVICE_REFRESH_PURPOSE: &str = "awiki.device.refresh.v1";
 const PROOF_TTL_SECONDS: i64 = 300;
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PreparedDeviceTokenIssue {
+    pub(crate) operation_id: String,
+    pub(crate) did: String,
+    pub(crate) device_id: String,
+    pub(crate) signing_key_id: String,
+    pub(crate) expected_scopes: Vec<String>,
+    pub(crate) authorization: String,
+}
+
+impl std::fmt::Debug for PreparedDeviceTokenIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedDeviceTokenIssue")
+            .field("operation_id", &self.operation_id)
+            .field("did", &self.did)
+            .field("device_id", &self.device_id)
+            .field("signing_key_id", &self.signing_key_id)
+            .field("expected_scopes", &self.expected_scopes)
+            .field("authorization", &"<redacted-didwba-authorization>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeviceTokenIssueResult {
+    pub(crate) access_token: String,
+    pub(crate) refresh_token: String,
+    pub(crate) expires_at: String,
+    pub(crate) user_id: String,
+    pub(crate) device_id: String,
+    pub(crate) auth_generation: u64,
+    pub(crate) scopes: Vec<String>,
+}
+
+impl std::fmt::Debug for DeviceTokenIssueResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceTokenIssueResult")
+            .field("access_token", &"<redacted-access-token>")
+            .field("refresh_token", &"<redacted-refresh-token>")
+            .field("expires_at", &self.expires_at)
+            .field("user_id", &self.user_id)
+            .field("device_id", &self.device_id)
+            .field("auth_generation", &self.auth_generation)
+            .field("scopes", &self.scopes)
+            .finish()
+    }
+}
+
+pub(crate) struct DeviceTokenIssueWireCall {
+    pub(crate) endpoint: &'static str,
+    pub(crate) method: &'static str,
+    pub(crate) params: Value,
+}
+
+impl std::fmt::Debug for DeviceTokenIssueWireCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceTokenIssueWireCall")
+            .field("endpoint", &self.endpoint)
+            .field("method", &self.method)
+            .field("params", &"<redacted-authorization-bearing-params>")
+            .finish()
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -156,6 +223,18 @@ struct RawDeviceGenesisResult {
     access_token: String,
     refresh_token: String,
     token_expires_at: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDeviceTokenIssueResult {
+    access_token: String,
+    refresh_token: String,
+    token_type: String,
+    expires_at: String,
+    device_id: String,
+    auth_generation: u64,
+    scopes: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -310,6 +389,207 @@ pub(crate) fn build_device_genesis_call(
     })
 }
 
+pub(crate) fn prepare_device_token_issue(
+    operation_id: String,
+    did_document: &Value,
+    device_id: &str,
+    signing_key_id: &str,
+    expected_scopes: Vec<String>,
+    signing_private: &anp::PrivateKeyMaterial,
+    service_domain: &str,
+) -> crate::ImResult<PreparedDeviceTokenIssue> {
+    let operation_id = required(&operation_id, "operation_id")?;
+    let did = did_document
+        .get("id")
+        .and_then(Value::as_str)
+        .map(|value| required(value, "did"))
+        .transpose()?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let device_id = required(device_id, "device_id")?;
+    let signing_key_id = required(signing_key_id, "signing_key_id")?;
+    if !matches!(signing_private, anp::PrivateKeyMaterial::Ed25519(_))
+        || !anp::authentication::validate_did_document_binding(did_document, true)
+        || expected_scopes != expected_token_scopes(false)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let manifest = anp::authentication::validate_device_manifest(did_document)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let entry = manifest
+        .devices
+        .iter()
+        .find(|entry| entry.device_id == device_id)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let signing_method = did_document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .and_then(|methods| {
+            methods.iter().find(|method| {
+                method.get("id").and_then(Value::as_str) == Some(signing_key_id.as_str())
+            })
+        })
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let expected_public = anp::authentication::extract_public_key(signing_method)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let actual_public = signing_private.public_key();
+    if entry.signing_key_id != signing_key_id || actual_public.to_pem() != expected_public.to_pem()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let service_domain = required(service_domain, "service_domain")?;
+    let mut signing_document = did_document.clone();
+    let authentication = signing_document
+        .get_mut("authentication")
+        .and_then(Value::as_array_mut)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let method_reference = Value::String(signing_key_id.clone());
+    authentication.retain(|entry| entry != &method_reference);
+    authentication.insert(0, method_reference);
+    let authorization = anp::authentication::generate_auth_header(
+        &signing_document,
+        &service_domain,
+        signing_private,
+        "1.1",
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?;
+    let prepared = PreparedDeviceTokenIssue {
+        operation_id,
+        did,
+        device_id,
+        signing_key_id,
+        expected_scopes,
+        authorization,
+    };
+    verify_prepared_device_token_issue(&prepared, did_document, &service_domain)?;
+    Ok(prepared)
+}
+
+pub(crate) fn device_token_authorization_needs_refresh(
+    prepared: &PreparedDeviceTokenIssue,
+    now: OffsetDateTime,
+) -> crate::ImResult<bool> {
+    let parsed = anp::authentication::extract_auth_header_parts(&prepared.authorization)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let issued_at = OffsetDateTime::parse(&parsed.timestamp, &Rfc3339)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    if issued_at > now + Duration::seconds(60) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(now - issued_at >= Duration::seconds(180))
+}
+
+pub(crate) fn verify_prepared_device_token_issue(
+    prepared: &PreparedDeviceTokenIssue,
+    did_document: &Value,
+    service_domain: &str,
+) -> crate::ImResult<()> {
+    let parsed = anp::authentication::extract_auth_header_parts(&prepared.authorization)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let expected_fragment = prepared
+        .signing_key_id
+        .strip_prefix(&format!("{}#", prepared.did))
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if prepared.operation_id.trim().is_empty()
+        || prepared.device_id.trim().is_empty()
+        || did_document.get("id").and_then(Value::as_str) != Some(prepared.did.as_str())
+        || parsed.did != prepared.did
+        || parsed.verification_method != expected_fragment
+        || prepared.expected_scopes != expected_token_scopes(false)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    anp::authentication::verify_auth_header_signature(
+        &prepared.authorization,
+        did_document,
+        service_domain,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)
+}
+
+pub(crate) fn build_device_token_issue_call(
+    prepared: &PreparedDeviceTokenIssue,
+) -> crate::ImResult<DeviceTokenIssueWireCall> {
+    if prepared.operation_id.trim().is_empty()
+        || prepared.did.trim().is_empty()
+        || prepared.device_id.trim().is_empty()
+        || prepared.authorization.trim().is_empty()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(DeviceTokenIssueWireCall {
+        endpoint: super::DID_AUTH_RPC_ENDPOINT,
+        method: DEVICE_TOKEN_ISSUE_METHOD,
+        params: json!({
+            "operation_id": prepared.operation_id,
+            "did": prepared.did,
+            "device_id": prepared.device_id,
+            "authorization": prepared.authorization,
+        }),
+    })
+}
+
+pub(crate) fn parse_device_token_issue_result(
+    raw: Value,
+    prepared: &PreparedDeviceTokenIssue,
+    expected_auth_generation: u64,
+    now: OffsetDateTime,
+) -> crate::ImResult<DeviceTokenIssueResult> {
+    let raw: RawDeviceTokenIssueResult = strict_from_value(raw, "device token issue result")?;
+    if raw.token_type != "bearer"
+        || raw.device_id != prepared.device_id
+        || raw.auth_generation != expected_auth_generation
+        || raw.scopes != prepared.expected_scopes
+        || expected_auth_generation == 0
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let access_token = required(&raw.access_token, "access_token")?;
+    let refresh_token = required(&raw.refresh_token, "refresh_token")?;
+    if access_token == refresh_token {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let expires_at = parse_future_time("expires_at", &raw.expires_at, now)?;
+    let access = validate_device_token(
+        &access_token,
+        "access",
+        DEVICE_ACCESS_PURPOSE,
+        &prepared.did,
+        None,
+        &prepared.device_id,
+        &prepared.signing_key_id,
+        expected_auth_generation,
+        &prepared.expected_scopes,
+        now,
+        Some(expires_at),
+    )?;
+    let refresh = validate_device_token(
+        &refresh_token,
+        "refresh",
+        DEVICE_REFRESH_PURPOSE,
+        &prepared.did,
+        Some(&access.user_id),
+        &prepared.device_id,
+        &prepared.signing_key_id,
+        expected_auth_generation,
+        &prepared.expected_scopes,
+        now,
+        None,
+    )?;
+    if refresh.user_id != access.user_id {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(DeviceTokenIssueResult {
+        access_token,
+        refresh_token,
+        expires_at: format_time(expires_at)?,
+        user_id: access.user_id,
+        device_id: raw.device_id,
+        auth_generation: raw.auth_generation,
+        scopes: raw.scopes,
+    })
+}
+
 pub(crate) fn parse_device_genesis_result(
     raw: Value,
     generated: &crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey,
@@ -346,10 +626,11 @@ pub(crate) fn parse_device_genesis_result(
         "access",
         DEVICE_ACCESS_PURPOSE,
         generated.did.as_str(),
-        &raw.user_id,
+        Some(&raw.user_id),
         generated.protocol_device_id.as_str(),
         &generated.device_signing_key_id,
         1,
+        &expected_token_scopes(true),
         now,
         Some(token_expires),
     )?;
@@ -358,10 +639,11 @@ pub(crate) fn parse_device_genesis_result(
         "refresh",
         DEVICE_REFRESH_PURPOSE,
         generated.did.as_str(),
-        &raw.user_id,
+        Some(&raw.user_id),
         generated.protocol_device_id.as_str(),
         &generated.device_signing_key_id,
         1,
+        &expected_token_scopes(true),
         now,
         None,
     )?;
@@ -501,18 +783,23 @@ fn device_proof_bytes(
     })
 }
 
+struct ValidatedDeviceTokenClaims {
+    user_id: String,
+}
+
 fn validate_device_token(
     token: &str,
     token_type: &str,
     purpose: &str,
     did: &str,
-    user_id: &str,
+    expected_user_id: Option<&str>,
     device_id: &str,
     key_id: &str,
     auth_generation: u64,
+    expected_scopes: &[String],
     now: OffsetDateTime,
     expected_expiry: Option<OffsetDateTime>,
-) -> crate::ImResult<()> {
+) -> crate::ImResult<ValidatedDeviceTokenClaims> {
     let payload_segment = token
         .split('.')
         .nth(1)
@@ -531,11 +818,18 @@ fn validate_device_token(
         || object.get("type").and_then(Value::as_str) != Some(token_type)
         || object.get("sub").and_then(Value::as_str) != Some(did)
         || object.get("did").and_then(Value::as_str) != Some(did)
-        || object.get("user_id").and_then(Value::as_str) != Some(user_id)
         || object.get("device_id").and_then(Value::as_str) != Some(device_id)
         || object.get("key_id").and_then(Value::as_str) != Some(key_id)
         || object.get("auth_generation").and_then(Value::as_u64) != Some(auth_generation)
     {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let user_id = object
+        .get("user_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if expected_user_id.is_some_and(|expected| expected != user_id) {
         return Err(crate::ImError::PermissionDenied);
     }
     let scopes = object
@@ -547,11 +841,11 @@ fn validate_device_token(
         .map(|scope| scope.as_str().ok_or(crate::ImError::PermissionDenied))
         .collect::<crate::ImResult<Vec<_>>>()?;
     let unique = scopes.iter().copied().collect::<BTreeSet<_>>();
-    let expected_scopes = BTreeSet::from(["device:manage", "device:read", "message:connect"]);
-    if scopes != ["device:manage", "device:read", "message:connect"]
-        || unique.len() != scopes.len()
-        || unique != expected_scopes
-    {
+    let expected_scope_set = expected_scopes
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if scopes != expected_scopes || unique.len() != scopes.len() || unique != expected_scope_set {
         return Err(crate::ImError::PermissionDenied);
     }
     if object
@@ -582,7 +876,23 @@ fn validate_device_token(
     if expected_expiry.is_some_and(|expected| exp != expected) {
         return Err(crate::ImError::PermissionDenied);
     }
-    Ok(())
+    Ok(ValidatedDeviceTokenClaims {
+        user_id: user_id.to_owned(),
+    })
+}
+
+fn expected_token_scopes(management_ready: bool) -> Vec<String> {
+    if management_ready {
+        ["device:manage", "device:read", "message:connect"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    } else {
+        ["device:read", "message:connect"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
 }
 
 fn strict_from_value<T: for<'de> Deserialize<'de>>(
@@ -754,6 +1064,7 @@ mod tests {
             "access",
             DEVICE_ACCESS_PURPOSE,
             access_exp,
+            &["device:manage", "device:read", "message:connect"],
         );
         let refresh = fake_device_token(
             &generated,
@@ -761,6 +1072,7 @@ mod tests {
             "refresh",
             DEVICE_REFRESH_PURPOSE,
             refresh_exp,
+            &["device:manage", "device:read", "message:connect"],
         );
         let valid = json!({
             "did": generated.did.as_str(),
@@ -814,12 +1126,78 @@ mod tests {
         assert!(debug.contains("redacted-token-bearing-params"));
     }
 
+    #[test]
+    fn token_issue_is_bound_to_device_key_and_rejects_token_claim_mismatch() {
+        let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "awiki.info", "alice", None, None,
+        ).unwrap();
+        let private =
+            anp::PrivateKeyMaterial::from_pem(&generated.device_signing_private_pem).unwrap();
+        let prepared = prepare_device_token_issue(
+            "op-token-fixed".to_owned(),
+            &generated.did_document,
+            generated.protocol_device_id.as_str(),
+            &generated.device_signing_key_id,
+            vec!["device:read".to_owned(), "message:connect".to_owned()],
+            &private,
+            "awiki.info",
+        )
+        .unwrap();
+        verify_prepared_device_token_issue(&prepared, &generated.did_document, "awiki.info")
+            .unwrap();
+        let parsed =
+            anp::authentication::extract_auth_header_parts(&prepared.authorization).unwrap();
+        assert_eq!(
+            parsed.verification_method,
+            generated.device_signing_key_id.split('#').nth(1).unwrap()
+        );
+
+        let now = OffsetDateTime::now_utc().replace_nanosecond(0).unwrap();
+        let access_exp = now + Duration::hours(1);
+        let refresh_exp = now + Duration::days(7);
+        let access = fake_device_token(
+            &generated,
+            "user-fixed",
+            "access",
+            DEVICE_ACCESS_PURPOSE,
+            access_exp,
+            &["device:read", "message:connect"],
+        );
+        let refresh = fake_device_token(
+            &generated,
+            "user-fixed",
+            "refresh",
+            DEVICE_REFRESH_PURPOSE,
+            refresh_exp,
+            &["device:read", "message:connect"],
+        );
+        let valid = json!({
+            "access_token": access,
+            "refresh_token": refresh,
+            "token_type": "bearer",
+            "expires_at": format_time(access_exp).unwrap(),
+            "device_id": generated.protocol_device_id.as_str(),
+            "auth_generation": 1,
+            "scopes": ["device:read", "message:connect"],
+        });
+        let result = parse_device_token_issue_result(valid.clone(), &prepared, 1, now).unwrap();
+        assert_eq!(result.user_id, "user-fixed");
+
+        let mut wrong_device = valid;
+        wrong_device["device_id"] = json!("dev-attacker");
+        assert_eq!(
+            parse_device_token_issue_result(wrong_device, &prepared, 1, now),
+            Err(crate::ImError::PermissionDenied)
+        );
+    }
+
     fn fake_device_token(
         generated: &crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey,
         user_id: &str,
         token_type: &str,
         purpose: &str,
         expires_at: OffsetDateTime,
+        scopes: &[&str],
     ) -> String {
         let issued_at = OffsetDateTime::now_utc().unix_timestamp();
         let payload = json!({
@@ -835,7 +1213,7 @@ mod tests {
             "jti": format!("jti-{token_type}"),
             "iat": issued_at,
             "nbf": issued_at,
-            "scopes": ["device:manage", "device:read", "message:connect"],
+            "scopes": scopes,
             "exp": expires_at.unix_timestamp(),
         });
         format!(

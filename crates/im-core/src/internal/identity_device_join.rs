@@ -150,6 +150,8 @@ struct StoredJoinSession {
     join_session_token_ref: Option<SecretRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     approval: Option<StoredAdminApproval>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    activation_pending: bool,
     signing_private_ref: Option<SecretRef>,
     e2ee_private_ref: Option<SecretRef>,
     pairing_private_ref: SecretRef,
@@ -177,6 +179,7 @@ impl std::fmt::Debug for StoredJoinSession {
                 &self.join_session_token_ref.is_some(),
             )
             .field("has_approval", &self.approval.is_some())
+            .field("activation_pending", &self.activation_pending)
             .field("secret_refs", &"<redacted-secret-refs>")
             .finish()
     }
@@ -330,6 +333,7 @@ pub(crate) fn start(
         response: None,
         join_session_token_ref: None,
         approval: None,
+        activation_pending: false,
         signing_private_ref: Some(signing_ref),
         e2ee_private_ref: Some(e2ee_ref),
         pairing_private_ref: pairing_ref,
@@ -729,6 +733,7 @@ pub(crate) fn prepare_admin_challenge(
         response: None,
         join_session_token_ref: None,
         approval: None,
+        activation_pending: false,
         signing_private_ref: None,
         e2ee_private_ref: None,
         pairing_private_ref: pairing_ref.clone(),
@@ -1321,6 +1326,11 @@ pub(crate) fn mark_join_authorized(
     authorization: &crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization,
     resolved_document: &Value,
 ) -> crate::ImResult<DeviceJoinSessionSummary> {
+    if side == DeviceJoinSide::NewDevice {
+        return Err(invalid_state(
+            "new-device authorization requires token issue and local activation",
+        ));
+    }
     let _guard = lock_join_state(core)?;
     let join_session_id = required("join_session_id", join_session_id)?;
     let store = JoinStateStore::new(core);
@@ -1366,6 +1376,514 @@ pub(crate) fn mark_join_authorized(
     summary(&stored)
 }
 
+pub(crate) fn load_pending_new_device_activation(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<Option<crate::internal::identity_join_activation_pending::PendingJoinActivation>>
+{
+    let _guard = lock_join_state(core)?;
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let store = JoinStateStore::new(core);
+    let stored = store
+        .load(&join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.clone(),
+        })?;
+    if !stored.activation_pending {
+        return Ok(None);
+    }
+    let did = crate::ids::Did::parse(&stored.join_request.did)?;
+    crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(core)?
+        .load(&join_session_id, &did)
+        .map(|pending| pending.map(|(_, record)| record))
+}
+
+pub(crate) fn prepare_new_device_activation(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+    authorization: &crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization,
+    resolved_document: &Value,
+) -> crate::ImResult<crate::internal::identity_join_activation_pending::PendingJoinActivation> {
+    let _guard = lock_join_state(core)?;
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let state_store = JoinStateStore::new(core);
+    let mut stored = state_store
+        .load(&join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.clone(),
+        })?;
+    if stored.phase == DeviceJoinLocalPhase::Authorized && !stored.activation_pending {
+        return Err(invalid_state("new-device Join is already activated"));
+    }
+    if !stored.activation_pending {
+        normalize_expiry(core, &state_store, &mut stored)?;
+        ensure_not_expired(&stored)?;
+        if stored.phase != DeviceJoinLocalPhase::ResponsePrepared {
+            return Err(invalid_state("new-device response is not prepared"));
+        }
+        validate_remote_authorization(&stored, authorization, resolved_document)?;
+        stored.activation_pending = true;
+        state_store.save(&stored)?;
+    }
+
+    let did = crate::ids::Did::parse(&stored.join_request.did)?;
+    let pending_store =
+        crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(
+            core,
+        )?;
+    if let Some((_, pending)) = pending_store.load(&join_session_id, &did)? {
+        if pending.authorization != *authorization
+            || pending.resolved_document != *resolved_document
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        return Ok(pending);
+    }
+    validate_remote_authorization(&stored, authorization, resolved_document)?;
+    let signing_ref = stored
+        .signing_private_ref
+        .as_ref()
+        .ok_or_else(|| invalid_state("new-device signing private key is missing"))?;
+    let signing_private = open_private_key(
+        &*required_vault(core)?,
+        signing_ref,
+        SecretKind::IdentityDeviceSigningPrivate,
+    )?;
+    let domain = crate::internal::identity_join_activation_pending::service_domain_from_did(&did)?;
+    if domain
+        != core
+            .inner()
+            .sdk_config()
+            .did_domain
+            .trim()
+            .to_ascii_lowercase()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let prepared = crate::internal::identity_wire::device_genesis::prepare_device_token_issue(
+        random_id("join-token", JOIN_RANDOM_ID_LEN)?,
+        resolved_document,
+        &authorization.device.device_id,
+        &authorization.device.signing_key_id,
+        vec!["device:read".to_owned(), "message:connect".to_owned()],
+        &signing_private,
+        &domain,
+    )?;
+    let pending = crate::internal::identity_join_activation_pending::PendingJoinActivation::new(
+        join_session_id,
+        did,
+        resolved_document.clone(),
+        authorization.clone(),
+        prepared,
+    )?;
+    pending_store.save(&pending)?;
+    Ok(pending)
+}
+
+pub(crate) fn record_new_device_token_result(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+    result: crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult,
+) -> crate::ImResult<crate::internal::identity_join_activation_pending::PendingJoinActivation> {
+    let _guard = lock_join_state(core)?;
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let state_store = JoinStateStore::new(core);
+    let stored = state_store
+        .load(&join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.clone(),
+        })?;
+    if !stored.activation_pending {
+        return Err(invalid_state("new-device activation is not pending"));
+    }
+    let did = crate::ids::Did::parse(&stored.join_request.did)?;
+    let pending_store =
+        crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(
+            core,
+        )?;
+    let (_, mut pending) = pending_store
+        .load(&join_session_id, &did)?
+        .ok_or_else(|| invalid_state("new-device activation record is missing"))?;
+    if let Some(existing) = pending.token_result.as_ref() {
+        if existing != &result {
+            return Err(idempotency_conflict("record_new_device_token_result"));
+        }
+        return Ok(pending);
+    }
+    if result.device_id != pending.authorization.device.device_id
+        || result.auth_generation != pending.authorization.device.auth_generation
+        || result.scopes != pending.prepared_token_issue.expected_scopes
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    pending.token_result = Some(result);
+    pending_store.save(&pending)?;
+    Ok(pending)
+}
+
+pub(crate) fn refresh_new_device_token_authorization(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<crate::internal::identity_join_activation_pending::PendingJoinActivation> {
+    let _guard = lock_join_state(core)?;
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let state_store = JoinStateStore::new(core);
+    let stored = state_store
+        .load(&join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.clone(),
+        })?;
+    if !stored.activation_pending || stored.phase != DeviceJoinLocalPhase::ResponsePrepared {
+        return Err(invalid_state("new-device activation is not pending"));
+    }
+    let did = crate::ids::Did::parse(&stored.join_request.did)?;
+    let pending_store =
+        crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(
+            core,
+        )?;
+    let (_, mut pending) = pending_store
+        .load(&join_session_id, &did)?
+        .ok_or_else(|| invalid_state("new-device activation record is missing"))?;
+    if pending.token_result.is_some() {
+        return Ok(pending);
+    }
+    let signing_ref = stored
+        .signing_private_ref
+        .as_ref()
+        .ok_or_else(|| invalid_state("new-device signing private key is missing"))?;
+    let signing_private = open_private_key(
+        &*required_vault(core)?,
+        signing_ref,
+        SecretKind::IdentityDeviceSigningPrivate,
+    )?;
+    let domain = crate::internal::identity_join_activation_pending::service_domain_from_did(&did)?;
+    let refreshed = crate::internal::identity_wire::device_genesis::prepare_device_token_issue(
+        pending.prepared_token_issue.operation_id.clone(),
+        &pending.resolved_document,
+        &pending.authorization.device.device_id,
+        &pending.authorization.device.signing_key_id,
+        pending.prepared_token_issue.expected_scopes.clone(),
+        &signing_private,
+        &domain,
+    )?;
+    pending.prepared_token_issue = refreshed;
+    pending_store.save(&pending)?;
+    Ok(pending)
+}
+
+pub(crate) fn finalize_new_device_activation(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<DeviceJoinSessionSummary> {
+    let _guard = lock_join_state(core)?;
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let state_store = JoinStateStore::new(core);
+    let mut stored = state_store
+        .load(&join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.clone(),
+        })?;
+    if stored.phase == DeviceJoinLocalPhase::Authorized {
+        finish_authorized_new_device_cleanup(core, &state_store, &mut stored)?;
+        return summary(&stored);
+    }
+    if !stored.activation_pending || stored.phase != DeviceJoinLocalPhase::ResponsePrepared {
+        return Err(invalid_state("new-device activation is not ready"));
+    }
+    let did = crate::ids::Did::parse(&stored.join_request.did)?;
+    let pending_store =
+        crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(
+            core,
+        )?;
+    let (_, pending) = pending_store
+        .load(&join_session_id, &did)?
+        .ok_or_else(|| invalid_state("new-device activation record is missing"))?;
+    let token = pending
+        .token_result
+        .as_ref()
+        .ok_or_else(|| invalid_state("new-device token result is missing"))?;
+    validate_remote_authorization(&stored, &pending.authorization, &pending.resolved_document)?;
+    promote_join_identity(core, &stored, &pending, token)?;
+
+    stored.phase = DeviceJoinLocalPhase::Authorized;
+    state_store.save(&stored)?;
+    finish_authorized_new_device_cleanup(core, &state_store, &mut stored)?;
+    summary(&stored)
+}
+
+fn finish_authorized_new_device_cleanup(
+    core: &crate::core::ImCore,
+    state_store: &JoinStateStore<'_>,
+    stored: &mut StoredJoinSession,
+) -> crate::ImResult<()> {
+    if stored.side != DeviceJoinSide::NewDevice || stored.phase != DeviceJoinLocalPhase::Authorized
+    {
+        return Err(invalid_state("new-device cleanup phase mismatch"));
+    }
+    if !stored.activation_pending {
+        return Ok(());
+    }
+    let vault = required_vault(core)?;
+    let mut refs = vec![&stored.pairing_private_ref];
+    if let Some(secret_ref) = stored.join_session_token_ref.as_ref() {
+        refs.push(secret_ref);
+    }
+    if let Some(secret_ref) = stored.signing_private_ref.as_ref() {
+        refs.push(secret_ref);
+    }
+    if let Some(secret_ref) = stored.e2ee_private_ref.as_ref() {
+        refs.push(secret_ref);
+    }
+    delete_secret_refs(&*vault, refs)?;
+    let did = crate::ids::Did::parse(&stored.join_request.did)?;
+    let pending_store =
+        crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(
+            core,
+        )?;
+    if let Some((secret_ref, _)) = pending_store.load(&stored.join_request.join_session_id, &did)? {
+        pending_store.delete(&secret_ref)?;
+    }
+    stored.activation_pending = false;
+    stored.signing_private_ref = None;
+    stored.e2ee_private_ref = None;
+    stored.join_session_token_ref = None;
+    state_store.save(stored)
+}
+
+fn promote_join_identity(
+    core: &crate::core::ImCore,
+    stored: &StoredJoinSession,
+    pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    token: &crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult,
+) -> crate::ImResult<()> {
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationProjection, IdentityDeviceMode, IdentityDeviceState,
+        IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+    };
+
+    let did = crate::ids::Did::parse(&stored.join_request.did)?;
+    if pending.did != did
+        || pending.authorization.device.device_id != stored.join_request.device_id
+        || pending.authorization.device.signing_key_id
+            != method_id(
+                &stored.join_request.signing_public_key,
+                "join_request.signing_public_key",
+            )?
+        || pending.authorization.device.e2ee_key_id
+            != method_id(
+                &stored.join_request.e2ee_public_key,
+                "join_request.e2ee_public_key",
+            )?
+        || pending.authorization.device.management_ready
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let vault = required_vault(core)?;
+    let signing_ref = stored
+        .signing_private_ref
+        .as_ref()
+        .ok_or_else(|| invalid_state("new-device signing private key is missing"))?;
+    let e2ee_ref = stored
+        .e2ee_private_ref
+        .as_ref()
+        .ok_or_else(|| invalid_state("new-device E2EE private key is missing"))?;
+    let signing_private = open_private_key(
+        &*vault,
+        signing_ref,
+        SecretKind::IdentityDeviceSigningPrivate,
+    )?;
+    let e2ee_private =
+        open_private_key(&*vault, e2ee_ref, SecretKind::IdentityE2eeAgreementPrivate)?;
+    let expected_signing_public =
+        anp::authentication::extract_public_key(&stored.join_request.signing_public_key)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+    let expected_e2ee_public =
+        anp::authentication::extract_public_key(&stored.join_request.e2ee_public_key)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+    let signing_public = signing_private.public_key();
+    let e2ee_public = e2ee_private.public_key();
+    if signing_public.to_pem() != expected_signing_public.to_pem()
+        || e2ee_public.to_pem() != expected_e2ee_public.to_pem()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    let root_key_id = format!("{}#key-1", did.as_str());
+    let root_method = pending
+        .resolved_document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .and_then(|methods| {
+            methods.iter().find(|method| {
+                method.get("id").and_then(Value::as_str) == Some(root_key_id.as_str())
+            })
+        })
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let root_public = anp::authentication::extract_public_key(root_method)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    if !matches!(root_public, anp::PublicKeyMaterial::Ed25519(_)) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    let identity_store =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
+    let index = identity_store.load_index()?;
+    let (local_alias, handle, full_handle, make_default) =
+        join_local_identity_projection(&did, &stored.join_request.device_id, &index)?;
+    ensure_existing_join_identity_is_rootless(&index, &local_alias, &did, &pending.authorization)?;
+    let unique_id =
+        crate::internal::identity_join_activation_pending::identity_suffix(&pending.did);
+    let secret_storage =
+        crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
+    identity_store.save_identity_with_secret_storage(
+        crate::internal::identity_store::SaveIdentityInput {
+            local_alias: local_alias.clone(),
+            did: did.clone(),
+            unique_id,
+            user_id: token.user_id.clone(),
+            display_name: handle.clone(),
+            handle,
+            full_handle,
+            jwt_token: token.access_token.clone(),
+            did_document: Some(pending.resolved_document.clone()),
+            key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
+                root_key_id,
+                device_signing_key_id: pending.authorization.device.signing_key_id.clone(),
+                device_e2ee_key_id: pending.authorization.device.e2ee_key_id.clone(),
+            },
+            device_state: Some(IdentityDeviceState {
+                schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                mode: IdentityDeviceMode::VNext,
+                authorization: Some(DeviceAuthorizationProjection {
+                    protocol_device_id: crate::ids::ProtocolDeviceId::parse(
+                        &pending.authorization.device.device_id,
+                    )?,
+                    signing_key_id: pending.authorization.device.signing_key_id.clone(),
+                    e2ee_key_id: pending.authorization.device.e2ee_key_id.clone(),
+                    status: pending.authorization.device.status,
+                    role: pending.authorization.device.role,
+                    management_ready: false,
+                    auth_generation: pending.authorization.device.auth_generation,
+                }),
+                checkpoint: Some(pending.authorization.checkpoint.clone()),
+            }),
+            key1_private_pem: String::new(),
+            key1_public_pem: root_public.to_pem(),
+            e2ee_signing_private_pem: signing_private.to_pem(),
+            e2ee_agreement_private_pem: e2ee_private.to_pem(),
+            daemon_subkey_package: None,
+            make_default,
+        },
+        secret_storage.clone(),
+    )?;
+    identity_store.persist_vnext_auth_token_pair(
+        &local_alias,
+        &token.access_token,
+        &token.refresh_token,
+        &token.expires_at,
+        &secret_storage,
+    )?;
+
+    let committed = identity_store.load_index()?;
+    ensure_existing_join_identity_is_rootless(
+        &committed,
+        &local_alias,
+        &did,
+        &pending.authorization,
+    )
+}
+
+fn join_local_identity_projection(
+    did: &crate::ids::Did,
+    device_id: &str,
+    index: &crate::internal::identity_store::IndexPayload,
+) -> crate::ImResult<(String, String, String, bool)> {
+    let existing = index
+        .credentials
+        .iter()
+        .filter(|(_, entry)| entry.did == did.as_str())
+        .collect::<Vec<_>>();
+    if existing.len() > 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let domain = crate::internal::identity_join_activation_pending::service_domain_from_did(did)?;
+    let rest = did
+        .as_str()
+        .strip_prefix(&format!("did:wba:{domain}:"))
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let components = rest.split(':').collect::<Vec<_>>();
+    if components.len() != 3
+        || components[0] != "user"
+        || components[1].trim().is_empty()
+        || !components[2].starts_with("e1_")
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let handle = components[1].to_ascii_lowercase();
+    let full_handle = format!("{handle}.{domain}");
+    if let Some((alias, _)) = existing.first() {
+        return Ok(((*alias).clone(), handle, full_handle, false));
+    }
+    let mut local_alias = handle.clone();
+    if index.credentials.contains_key(&local_alias) {
+        let suffix = device_id
+            .strip_prefix("dev-")
+            .unwrap_or(device_id)
+            .chars()
+            .take(10)
+            .collect::<String>();
+        local_alias = format!("{handle}-{suffix}").to_ascii_lowercase();
+        if index.credentials.contains_key(&local_alias) {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    Ok((
+        local_alias,
+        handle,
+        full_handle,
+        index.credentials.is_empty(),
+    ))
+}
+
+fn ensure_existing_join_identity_is_rootless(
+    index: &crate::internal::identity_store::IndexPayload,
+    local_alias: &str,
+    did: &crate::ids::Did,
+    authorization: &crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization,
+) -> crate::ImResult<()> {
+    let Some(entry) = index.credentials.get(local_alias) else {
+        return Ok(());
+    };
+    let state = entry
+        .device_state
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let projection = state
+        .authorization
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let root_absent = entry
+        .vault_migration
+        .as_ref()
+        .and_then(|metadata| metadata.vnext_refs.as_ref())
+        .is_some_and(|refs| refs.did_document_root_private.is_none());
+    if entry.did != did.as_str()
+        || state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
+        || !root_absent
+        || projection.protocol_device_id.as_str() != authorization.device.device_id
+        || projection.signing_key_id != authorization.device.signing_key_id
+        || projection.e2ee_key_id != authorization.device.e2ee_key_id
+        || projection.status != authorization.device.status
+        || projection.role != authorization.device.role
+        || projection.management_ready
+        || projection.auth_generation != authorization.device.auth_generation
+        || state.checkpoint.as_ref() != Some(&authorization.checkpoint)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
 pub(crate) fn cancel_join(
     core: &crate::core::ImCore,
     join_session_id: &str,
@@ -1380,7 +1898,7 @@ pub(crate) fn cancel_join(
             .ok_or(crate::ImError::IdentityNotFound {
                 selector: join_session_id,
             })?;
-    if stored.phase == DeviceJoinLocalPhase::Authorized {
+    if stored.phase == DeviceJoinLocalPhase::Authorized || stored.activation_pending {
         return Err(invalid_state("authorized Join cannot be cancelled"));
     }
     if stored.phase != DeviceJoinLocalPhase::Cancelled {
@@ -1405,7 +1923,7 @@ pub(crate) fn mark_join_expired(
             .ok_or(crate::ImError::IdentityNotFound {
                 selector: join_session_id,
             })?;
-    if stored.phase == DeviceJoinLocalPhase::Authorized {
+    if stored.phase == DeviceJoinLocalPhase::Authorized || stored.activation_pending {
         return Err(invalid_state("authorized Join cannot expire"));
     }
     if stored.phase != DeviceJoinLocalPhase::Expired {
@@ -2570,7 +3088,8 @@ fn normalize_expiry(
     if matches!(
         stored.phase,
         DeviceJoinLocalPhase::Authorized | DeviceJoinLocalPhase::Cancelled
-    ) {
+    ) || stored.activation_pending
+    {
         return Ok(());
     }
 
@@ -2639,6 +3158,10 @@ fn invalid_state(message: &str) -> crate::ImError {
     crate::ImError::LocalStateUnavailable {
         detail: format!("device Join state invalid: {message}"),
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn idempotency_conflict(operation: &str) -> crate::ImError {
@@ -2801,16 +3324,25 @@ impl<'a> JoinStateStore<'a> {
         }
         match stored.side {
             DeviceJoinSide::NewDevice => {
-                if stored
-                    .signing_private_ref
-                    .as_ref()
-                    .is_none_or(|value| value.kind != SecretKind::IdentityDeviceSigningPrivate)
-                    || stored
-                        .e2ee_private_ref
-                        .as_ref()
-                        .is_none_or(|value| value.kind != SecretKind::IdentityE2eeAgreementPrivate)
+                let long_term_refs_present =
+                    stored.signing_private_ref.as_ref().is_some_and(|value| {
+                        value.kind == SecretKind::IdentityDeviceSigningPrivate
+                    }) && stored.e2ee_private_ref.as_ref().is_some_and(|value| {
+                        value.kind == SecretKind::IdentityE2eeAgreementPrivate
+                    });
+                let long_term_refs_cleaned = stored.phase == DeviceJoinLocalPhase::Authorized
+                    && !stored.activation_pending
+                    && stored.signing_private_ref.is_none()
+                    && stored.e2ee_private_ref.is_none();
+                if (!long_term_refs_present && !long_term_refs_cleaned)
                     || stored.admin_identity.is_some()
                     || stored.approval.is_some()
+                    || (stored.activation_pending
+                        && !matches!(
+                            stored.phase,
+                            DeviceJoinLocalPhase::ResponsePrepared
+                                | DeviceJoinLocalPhase::Authorized
+                        ))
                     || stored
                         .join_session_token_ref
                         .as_ref()
@@ -2822,6 +3354,7 @@ impl<'a> JoinStateStore<'a> {
             DeviceJoinSide::Admin => {
                 if stored.signing_private_ref.is_some()
                     || stored.e2ee_private_ref.is_some()
+                    || stored.activation_pending
                     || stored.admin_identity.is_none()
                     || stored.join_session_token_ref.is_some()
                     || (stored.approval.is_some()

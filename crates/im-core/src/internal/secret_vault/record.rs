@@ -19,6 +19,9 @@ pub enum SecretKind {
     IdentityE2eeAgreementPrivate,
     IdentityJoinPairingPrivate,
     IdentityJoinSessionToken,
+    /// Encrypted, local-only crash recovery state for promotion after Join.
+    /// This label is never serialized into ANP or first-party wire requests.
+    IdentityJoinActivationPending,
     /// Encrypted, local-only crash recovery state for an in-flight Genesis.
     /// This label is never serialized into ANP or first-party wire requests.
     IdentityGenesisPending,
@@ -40,6 +43,7 @@ impl SecretKind {
             Self::IdentityE2eeAgreementPrivate => "identity.e2ee.agreement.private",
             Self::IdentityJoinPairingPrivate => "identity.join.pairing.private",
             Self::IdentityJoinSessionToken => "identity.join.session.token",
+            Self::IdentityJoinActivationPending => "identity.join.activation.pending",
             Self::IdentityGenesisPending => "identity.genesis.pending",
             Self::IdentityDaemonPrivate => "identity.daemon.private",
             Self::AuthJwt => "auth.jwt",
