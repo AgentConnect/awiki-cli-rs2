@@ -1,3 +1,9 @@
+//! Internal transport capabilities shared by the product runtimes.
+//!
+//! Authenticated business RPC, anonymous control RPC and raw DID resolution are
+//! separate traits. In particular, a pending Join device may resolve a public DID
+//! Document without gaining an authenticated device client.
+
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -1070,6 +1076,33 @@ impl RawJsonTransport for CoreHttpTransport<'_> {
 }
 
 impl AsyncRawJsonTransport for CoreHttpTransport<'_> {
+    async fn get_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        let response = self
+            .http
+            .execute_async(crate::internal::http::HttpRequest {
+                method: "GET".to_string(),
+                url: url.to_string(),
+                headers,
+                body: Vec::new(),
+            })
+            .await?;
+        if response.status_code >= 400 {
+            return Err(service_error_from_http(
+                response.status_code,
+                &response.body,
+            ));
+        }
+        serde_json::from_slice(&response.body).map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })
+    }
+}
+
+impl AsyncRawJsonTransport for CorePlainTransport<'_> {
     async fn get_json_url(
         &mut self,
         url: &str,

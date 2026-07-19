@@ -1,8 +1,10 @@
 //! AWiki-local new-device Join orchestration.
 //!
 //! These DTOs are first-party control-plane objects, not ANP wire models. The
-//! service keeps private keys and the pairing secret inside SecretVault and
-//! only returns public requests, proofs, ciphertext and a short-lived SAS.
+//! service keeps private keys, pairing material and remote Join tokens inside
+//! SecretVault and only returns public requests, proofs, ciphertext and a
+//! short-lived SAS. Local approval/cancel phases support restart-safe projection;
+//! they are not ANP wire states.
 
 use serde::{Deserialize, Serialize};
 
@@ -35,7 +37,9 @@ pub enum DeviceJoinLocalPhase {
     ChallengePrepared,
     ResponsePrepared,
     ResponseVerified,
+    ApprovalPrepared,
     Authorized,
+    Cancelled,
     Expired,
 }
 

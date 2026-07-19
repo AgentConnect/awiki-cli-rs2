@@ -1,6 +1,7 @@
 use super::*;
 
 use std::path::Path;
+use std::sync::Arc;
 
 const FIXED_DOCUMENT_HASH: &str = "sha256:UD5TmycQ6gS539AFNjM5cGoQUmeq2fQGPpwD00lMPlg";
 const FIXED_CHALLENGE_HASH: &str = "sha256:CNkA2F600Hf0nbZLaSSALDLOq6wK2OC7fXmxIhYAbzs";
@@ -51,6 +52,89 @@ fn open_vault_core(root: &Path) -> crate::ImCore {
         ),
     )
     .unwrap()
+}
+
+fn open_vnext_identity_core(
+    root: &Path,
+    role: crate::internal::identity_device_state::DeviceAuthorizationRole,
+) -> (crate::ImCore, Value, crate::ids::Did) {
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationProjection, DeviceAuthorizationStatus, IdentityDeviceMode,
+        IdentityDeviceState, IdentityInternalCheckpoint, IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+    };
+
+    let generated =
+        crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "awiki.test",
+            "alice",
+            None,
+            None,
+        )
+        .unwrap();
+    let document_hash = canonical_hash(&generated.did_document).unwrap();
+    let paths = test_paths(root);
+    let vault = Arc::new(crate::vault::FileSecretVault::new(
+        crate::vault::DeviceVaultRootKey::from_bytes([47_u8; 32]),
+        crate::vault::FileSecretVaultStore::new(root.join("vault")),
+    ));
+    crate::internal::identity_store::IdentityStore::new(&paths.identities)
+        .save_identity_with_secret_storage(
+            crate::internal::identity_store::SaveIdentityInput {
+                local_alias: "alice".to_owned(),
+                did: generated.did.clone(),
+                unique_id: generated.unique_id.clone(),
+                user_id: "user-1".to_owned(),
+                display_name: "Alice".to_owned(),
+                handle: "alice".to_owned(),
+                full_handle: "alice.awiki.test".to_owned(),
+                jwt_token: "device-token".to_owned(),
+                did_document: Some(generated.did_document.clone()),
+                key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
+                    root_key_id: generated.root_key_id.clone(),
+                    device_signing_key_id: generated.device_signing_key_id.clone(),
+                    device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                },
+                device_state: Some(IdentityDeviceState {
+                    schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                    mode: IdentityDeviceMode::VNext,
+                    authorization: Some(DeviceAuthorizationProjection {
+                        protocol_device_id: generated.protocol_device_id.clone(),
+                        signing_key_id: generated.device_signing_key_id.clone(),
+                        e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                        status: DeviceAuthorizationStatus::Active,
+                        role,
+                        management_ready: role
+                            == crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
+                    }),
+                    checkpoint: Some(IdentityInternalCheckpoint {
+                        document_version: 7,
+                        document_hash,
+                        registry_version: 3,
+                    }),
+                }),
+                key1_private_pem: if role
+                    == crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
+                {
+                    generated.root_private_pem
+                } else {
+                    String::new()
+                },
+                key1_public_pem: generated.root_public_pem,
+                e2ee_signing_private_pem: generated.device_signing_private_pem,
+                e2ee_agreement_private_pem: generated.device_e2ee_private_pem,
+                daemon_subkey_package: None,
+                make_default: true,
+            },
+            crate::internal::identity_store::SaveIdentitySecretStorage::Vault {
+                workspace_id: "join-test-workspace".to_owned(),
+                device_id: "join-test-vault-device".to_owned(),
+                vault,
+            },
+        )
+        .unwrap();
+    let did = generated.did;
+    let document = generated.did_document;
+    (open_vault_core(root), document, did)
 }
 
 fn sample_proof() -> DeviceProof {
@@ -315,6 +399,187 @@ fn encrypted_challenge_round_trips_and_binds_aad() {
 }
 
 #[test]
+fn two_devices_derive_the_same_sas_and_approval_is_restart_safe() {
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationRole, IdentityInternalCheckpoint,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let (core, document, did) =
+        open_vnext_identity_core(root.path(), DeviceAuthorizationRole::Admin);
+    let document_hash = canonical_hash(&document).unwrap();
+    let started = core
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "start-full-pairing".to_owned(),
+            did,
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    let prepared = core
+        .device_join()
+        .prepare_admin_challenge(DeviceJoinAdminPrepareRequest {
+            admin_identity: crate::identity::IdentitySelector::Default,
+            operation_id: "claim-and-challenge-full-pairing".to_owned(),
+            join_request: started.join_request,
+            challenge_ttl_seconds: 180,
+            document_version: 7,
+            document_hash: document_hash.clone(),
+        })
+        .unwrap();
+    let responded = core
+        .device_join()
+        .respond_as_new_device(DeviceJoinNewDeviceRespondRequest {
+            operation_id: "respond-full-pairing".to_owned(),
+            challenge: prepared.challenge,
+            admin_did_document: document,
+            document_version: 7,
+            document_hash: document_hash.clone(),
+        })
+        .unwrap();
+
+    assert_eq!(prepared.sas, responded.sas);
+    assert_eq!(prepared.sas.len(), 6);
+    assert!(prepared.sas.bytes().all(|value| value.is_ascii_digit()));
+
+    let mut tampered = responded.response.clone();
+    tampered.pairing_transcript_hash =
+        "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned();
+    assert!(matches!(
+        core.device_join()
+            .verify_response_as_admin(DeviceJoinAdminVerifyRequest {
+                operation_id: "verify-tampered-response".to_owned(),
+                join_session_id: started.session.join_session_id.clone(),
+                response: tampered,
+            }),
+        Err(crate::ImError::PermissionDenied)
+    ));
+
+    let verify_request = DeviceJoinAdminVerifyRequest {
+        operation_id: "verify-full-pairing".to_owned(),
+        join_session_id: started.session.join_session_id.clone(),
+        response: responded.response,
+    };
+    let verified = core
+        .device_join()
+        .verify_response_as_admin(verify_request.clone())
+        .unwrap();
+    assert_eq!(verified.sas, responded.sas);
+    assert_eq!(
+        core.device_join()
+            .verify_response_as_admin(verify_request)
+            .unwrap(),
+        verified,
+        "an exact response replay is an idempotent retry"
+    );
+    assert!(matches!(
+        core.device_join()
+            .verify_response_as_admin(DeviceJoinAdminVerifyRequest {
+                operation_id: "verify-conflicting-replay".to_owned(),
+                join_session_id: started.session.join_session_id.clone(),
+                response: verified_response_for_conflict(&core, &started.session.join_session_id),
+            }),
+        Err(crate::ImError::InvalidInput {
+            field: Some(field),
+            ..
+        }) if field == "operation_id"
+    ));
+
+    let checkpoint = IdentityInternalCheckpoint {
+        document_version: 7,
+        document_hash,
+        registry_version: 3,
+    };
+    let now = format_time(OffsetDateTime::now_utc()).unwrap();
+    assert!(matches!(
+        prepare_admin_approval(
+            &core,
+            "approve-full-pairing",
+            &started.session.join_session_id,
+            &checkpoint,
+            DeviceAuthorizationRole::Member,
+            &now,
+            false,
+        ),
+        Err(crate::ImError::PermissionDenied)
+    ));
+    let approval = prepare_admin_approval(
+        &core,
+        "approve-full-pairing",
+        &started.session.join_session_id,
+        &checkpoint,
+        DeviceAuthorizationRole::Member,
+        &now,
+        true,
+    )
+    .unwrap();
+    assert_eq!(approval.role, DeviceAuthorizationRole::Member);
+    assert!(approval.pairing_confirmation.sas_confirmed);
+    assert_eq!(
+        prepare_admin_approval(
+            &core,
+            "approve-full-pairing",
+            &started.session.join_session_id,
+            &checkpoint,
+            DeviceAuthorizationRole::Member,
+            &now,
+            true,
+        )
+        .unwrap(),
+        approval,
+        "a persisted approval intent survives an exact retry"
+    );
+
+    drop(core);
+    let restarted = open_vault_core(root.path());
+    assert_eq!(
+        load_prepared_admin_approval(&restarted, &started.session.join_session_id)
+            .unwrap()
+            .unwrap(),
+        approval
+    );
+}
+
+fn verified_response_for_conflict(
+    core: &crate::ImCore,
+    join_session_id: &str,
+) -> DeviceJoinChallengeResponse {
+    JoinStateStore::new(core)
+        .load(join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap()
+        .response
+        .unwrap()
+}
+
+#[test]
+fn ordinary_member_cannot_prepare_an_admin_claim() {
+    use crate::internal::identity_device_state::DeviceAuthorizationRole;
+
+    let root = tempfile::tempdir().unwrap();
+    let (core, _, _) = open_vnext_identity_core(root.path(), DeviceAuthorizationRole::Member);
+    let session_expires_at =
+        format_time(OffsetDateTime::now_utc() + Duration::seconds(300)).unwrap();
+
+    assert!(matches!(
+        prepare_admin_claim_intent(
+            &core,
+            crate::identity::IdentitySelector::Default,
+            "member-cannot-claim",
+            "join-member-denied",
+            &session_expires_at,
+        ),
+        Err(crate::ImError::PermissionDenied)
+    ));
+    assert!(
+        !JoinStateStore::new(&core)
+            .claim_intent_path("join-member-denied")
+            .exists(),
+        "a member denial must happen before persisting an approval intent"
+    );
+}
+
+#[test]
 fn pending_join_is_restart_safe_idempotent_and_stores_secrets_only_in_vault() {
     let root = tempfile::tempdir().unwrap();
     let did = crate::ids::Did::parse("did:wba:awiki.test:alice").unwrap();
@@ -398,6 +663,79 @@ fn pending_join_is_restart_safe_idempotent_and_stores_secrets_only_in_vault() {
             field: Some(field),
             ..
         } if field == "operation_id"
+    ));
+}
+
+#[test]
+fn remote_session_token_is_sealed_and_cancel_is_restart_safe() {
+    let root = tempfile::tempdir().unwrap();
+    let core = open_vault_core(root.path());
+    let started = core
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "start-remote-session".to_owned(),
+            did: crate::ids::Did::parse("did:wba:awiki.test:alice").unwrap(),
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    let token = SecretBytes::from_vec(b"join-token-must-stay-in-vault".to_vec());
+
+    let bound = bind_new_device_remote_session(
+        &core,
+        &started.session.join_session_id,
+        &token,
+        &started.join_request.expires_at,
+    )
+    .unwrap();
+    assert_eq!(bound, started.session);
+    assert_eq!(
+        open_new_device_remote_session_token(&core, &started.session.join_session_id)
+            .unwrap()
+            .expose_secret(),
+        token.expose_secret()
+    );
+
+    let state_path = JoinStateStore::new(&core)
+        .path(&started.session.join_session_id, DeviceJoinSide::NewDevice);
+    let public_state = fs::read_to_string(&state_path).unwrap();
+    assert!(!public_state.contains("join-token-must-stay-in-vault"));
+    assert!(!public_state.contains("PRIVATE KEY"));
+
+    let cancelled = cancel_join(
+        &core,
+        &started.session.join_session_id,
+        DeviceJoinSide::NewDevice,
+    )
+    .unwrap();
+    assert_eq!(cancelled.phase, DeviceJoinLocalPhase::Cancelled);
+    assert_eq!(
+        cancel_join(
+            &core,
+            &started.session.join_session_id,
+            DeviceJoinSide::NewDevice,
+        )
+        .unwrap(),
+        cancelled
+    );
+
+    let vault = crate::vault::FileSecretVault::new(
+        crate::vault::DeviceVaultRootKey::from_bytes([47_u8; 32]),
+        crate::vault::FileSecretVaultStore::new(root.path().join("vault")),
+    );
+    assert!(crate::vault::SecretVault::list(&vault).unwrap().is_empty());
+    drop(core);
+
+    let restarted = open_vault_core(root.path());
+    assert_eq!(
+        restarted
+            .device_join()
+            .session(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+            .unwrap(),
+        cancelled
+    );
+    assert!(matches!(
+        open_new_device_remote_session_token(&restarted, &started.session.join_session_id),
+        Err(crate::ImError::LocalStateUnavailable { .. })
     ));
 }
 

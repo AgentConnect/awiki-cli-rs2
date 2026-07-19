@@ -107,6 +107,21 @@ resolves the root key. The generator is not a legacy-registration fallback:
 the identity becomes usable only after the user-service genesis transaction
 returns an active admin authorization projection.
 
+Device Join production orchestration is an internal control-plane boundary with
+separate unauthenticated new-device and authenticated ready-admin paths. It advances
+the existing restart-safe local Join state instead of creating a second state machine:
+the Join token is sealed in SecretVault, and exact claim/approval intents are persisted
+before network I/O so retries cannot silently change signed requests. Before accepting
+authorization, the new device resolves the standard DID Document again and verifies its
+exact signing key, E2EE key and embedded Manifest entry. The runtime has an explicit
+rollout gate: production constructors default it off and only an explicit rollout path can
+enable it. The gate fails before local or remote side effects and does not add fields to
+ANP or to public DID Documents. New-device token RPC and authenticated ready-admin RPC
+use disjoint adapters so a pending device cannot inherit an ambient admin credential.
+Device-token issuance and local
+identity promotion remain a separate activation step, and an admin requested during
+Join remains non-ready until the root-import flow completes.
+
 ## 5. Paths and Configuration
 
 Hosts pass explicit `ImCoreConfig` and `ImCorePaths`.

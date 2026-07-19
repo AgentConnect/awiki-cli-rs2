@@ -2,16 +2,61 @@ use super::*;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::path::Path;
 use std::rc::Rc;
 
 use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRpcTransport};
 
+fn test_config() -> crate::ImCoreConfig {
+    crate::ImCoreConfig {
+        service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
+        did_domain: "awiki.test".to_owned(),
+        user_service_endpoint: None,
+        message_service_endpoint: None,
+        mail_service_endpoint: None,
+        anp_service_endpoint: None,
+        anp_service_did: None,
+        ca_bundle: None,
+        transport_policy: crate::MessageTransportPolicy::HttpOnly,
+    }
+}
+
+fn test_paths(root: &Path) -> crate::ImCorePaths {
+    crate::ImCorePaths {
+        identities: crate::IdentityRegistryPaths {
+            identity_root_dir: root.join("identities"),
+            registry_path: root.join("identities").join("registry.json"),
+            default_identity_path: Some(root.join("identities").join("default")),
+        },
+        local_state: crate::LocalStatePaths {
+            sqlite_path: root.join("local").join("im.sqlite"),
+        },
+        runtime: crate::RuntimePaths {
+            cache_dir: root.join("cache"),
+            temp_dir: root.join("tmp"),
+        },
+    }
+}
+
+fn open_vault_core(root: &Path) -> crate::ImCore {
+    crate::ImCore::new_with_options(
+        test_config(),
+        test_paths(root),
+        crate::ImCoreOpenOptions::default().with_identity_secret_vault(
+            crate::IdentitySecretStoragePolicy::VaultRequired,
+            crate::ImCoreSecretVaultOptions::new(
+                crate::vault::DeviceVaultRootKey::from_bytes([53_u8; 32]),
+                root.join("vault"),
+                "join-runtime-test-workspace",
+                "join-runtime-test-vault-device",
+            ),
+        ),
+    )
+    .unwrap()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RecordedCall {
-    Registry {
-        did: String,
-        include_pending_join_requests: bool,
-    },
     Create {
         operation_id: String,
         join_session_id: String,
@@ -20,37 +65,17 @@ enum RecordedCall {
     StatusNew {
         join_session_token: &'static str,
     },
-    StatusAdmin {
-        join_session_id: String,
-    },
-    Claim {
-        operation_id: String,
-        join_session_id: String,
-    },
-    Challenge {
-        operation_id: String,
-        join_session_id: String,
-    },
     Response {
         operation_id: String,
         join_session_id: String,
         join_session_token: &'static str,
     },
-    Approve {
-        operation_id: String,
-        join_session_id: String,
-    },
 }
 
 enum QueuedResult {
-    Registry(DeviceJoinRemoteRegistry),
     Create(DeviceJoinRemoteCreateResult),
     StatusNew(DeviceJoinRemoteNewDeviceStatus),
-    StatusAdmin(DeviceJoinRemoteAdminStatus),
-    Claim(DeviceJoinRemoteClaimResult),
-    Challenge(DeviceJoinRemoteChallengeResult),
     Transition(DeviceJoinRemoteTransitionResult),
-    Approve(DeviceJoinRemoteApproveResult),
 }
 
 #[derive(Default)]
@@ -65,22 +90,7 @@ impl RecordingRemote {
     }
 }
 
-impl DeviceJoinRemote for RecordingRemote {
-    async fn registry(
-        &mut self,
-        did: &crate::ids::Did,
-        include_pending_join_requests: bool,
-    ) -> crate::ImResult<DeviceJoinRemoteRegistry> {
-        self.calls.push(RecordedCall::Registry {
-            did: did.as_str().to_owned(),
-            include_pending_join_requests,
-        });
-        let QueuedResult::Registry(result) = self.next() else {
-            panic!("expected registry result")
-        };
-        Ok(result)
-    }
-
+impl DeviceJoinNewDeviceRemote for RecordingRemote {
     async fn create(
         &mut self,
         request: DeviceJoinRemoteCreateRequest<'_>,
@@ -96,7 +106,7 @@ impl DeviceJoinRemote for RecordingRemote {
         Ok(result)
     }
 
-    async fn status_as_new_device(
+    async fn status(
         &mut self,
         _expected_join_session_id: &str,
         _join_session_token: &SecretBytes,
@@ -106,47 +116,6 @@ impl DeviceJoinRemote for RecordingRemote {
         });
         let QueuedResult::StatusNew(result) = self.next() else {
             panic!("expected new-device status result")
-        };
-        Ok(result)
-    }
-
-    async fn status_as_admin(
-        &mut self,
-        join_session_id: &str,
-    ) -> crate::ImResult<DeviceJoinRemoteAdminStatus> {
-        self.calls.push(RecordedCall::StatusAdmin {
-            join_session_id: join_session_id.to_owned(),
-        });
-        let QueuedResult::StatusAdmin(result) = self.next() else {
-            panic!("expected admin status result")
-        };
-        Ok(result)
-    }
-
-    async fn claim(
-        &mut self,
-        request: DeviceJoinRemoteClaimRequest<'_>,
-    ) -> crate::ImResult<DeviceJoinRemoteClaimResult> {
-        self.calls.push(RecordedCall::Claim {
-            operation_id: request.operation_id.to_owned(),
-            join_session_id: request.join_session_id.to_owned(),
-        });
-        let QueuedResult::Claim(result) = self.next() else {
-            panic!("expected claim result")
-        };
-        Ok(result)
-    }
-
-    async fn submit_challenge(
-        &mut self,
-        challenge: &DeviceJoinChallenge,
-    ) -> crate::ImResult<DeviceJoinRemoteChallengeResult> {
-        self.calls.push(RecordedCall::Challenge {
-            operation_id: challenge.operation_id.clone(),
-            join_session_id: challenge.join_session_id.clone(),
-        });
-        let QueuedResult::Challenge(result) = self.next() else {
-            panic!("expected challenge result")
         };
         Ok(result)
     }
@@ -165,20 +134,54 @@ impl DeviceJoinRemote for RecordingRemote {
         };
         Ok(result)
     }
+}
 
-    async fn approve(
-        &mut self,
-        request: DeviceJoinRemoteApproveRequest<'_>,
-    ) -> crate::ImResult<DeviceJoinRemoteApproveResult> {
-        self.calls.push(RecordedCall::Approve {
-            operation_id: request.operation_id.to_owned(),
-            join_session_id: request.join_session_id.to_owned(),
-        });
-        let QueuedResult::Approve(result) = self.next() else {
-            panic!("expected approve result")
-        };
-        Ok(result)
-    }
+#[tokio::test]
+async fn production_join_gate_defaults_disabled_before_local_or_remote_side_effects() {
+    let root = tempfile::tempdir().unwrap();
+    let core = open_vault_core(root.path());
+    let mut runtime = DeviceJoinNewDeviceRuntime::production(&core);
+    let error = runtime
+        .begin(
+            crate::identity::DeviceJoinStartRequest {
+                operation_id: "disabled-start".to_owned(),
+                did: crate::ids::Did::parse("did:wba:awiki.test:alice").unwrap(),
+                ttl_seconds: 300,
+            },
+            &SecretBytes::from_vec(b"account-token".to_vec()),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::ImError::UnsupportedCapability { capability }
+            if capability == "awiki-multi-device-join-disabled"
+    ));
+    assert!(!root.path().join("identities").join(".device-join").exists());
+}
+
+#[test]
+fn advance_result_debug_redacts_sas() {
+    let result = DeviceJoinAdvanceResult {
+        session: crate::identity::DeviceJoinSessionSummary {
+            join_session_id: "join-1".to_owned(),
+            did: crate::ids::Did::parse("did:wba:awiki.test:alice").unwrap(),
+            protocol_device_id: crate::ids::ProtocolDeviceId::parse("dev-new").unwrap(),
+            side: crate::identity::DeviceJoinSide::NewDevice,
+            phase: crate::identity::DeviceJoinLocalPhase::ResponsePrepared,
+            join_request_hash: "sha256:join".to_owned(),
+            challenge_id: Some("challenge-1".to_owned()),
+            expires_at: "2026-07-19T00:10:00Z".to_owned(),
+        },
+        remote_state: DeviceJoinRemoteState::ResponseVerified,
+        authorization: None,
+        sas: Some("482917".to_owned()),
+    };
+
+    let debug = format!("{result:?}");
+    assert!(debug.contains("<redacted-sas>"));
+    assert!(!debug.contains("482917"));
 }
 
 #[tokio::test]
@@ -202,6 +205,10 @@ async fn recording_remote_never_retains_account_or_join_session_tokens() {
                 challenge: None,
                 authorization: None,
             }),
+            QueuedResult::Transition(DeviceJoinRemoteTransitionResult {
+                join_session_id: "join-1".to_owned(),
+                state: DeviceJoinRemoteState::ResponseVerified,
+            }),
         ]),
     };
 
@@ -215,8 +222,12 @@ async fn recording_remote_never_retains_account_or_join_session_tokens() {
     let created = remote.create(create_request).await.unwrap();
     let result_debug = format!("{created:?}");
     assert!(!result_debug.contains("server-session-secret"));
+    remote.status("join-1", &join_token).await.unwrap();
     remote
-        .status_as_new_device("join-1", &join_token)
+        .submit_response(DeviceJoinRemoteResponseRequest {
+            join_session_token: &join_token,
+            response: &sample_response(),
+        })
         .await
         .unwrap();
 
@@ -233,6 +244,11 @@ async fn recording_remote_never_retains_account_or_join_session_tokens() {
                 account_verification_token: "<redacted>",
             },
             RecordedCall::StatusNew {
+                join_session_token: "<redacted>",
+            },
+            RecordedCall::Response {
+                operation_id: "op-response-1".to_owned(),
+                join_session_id: "join-1".to_owned(),
                 join_session_token: "<redacted>",
             },
         ]
@@ -455,7 +471,8 @@ async fn http_adapter_routes_only_frozen_join_methods_to_the_correct_auth_view()
     ]);
     let plain_calls = plain.calls.clone();
     let authenticated_calls = authenticated.calls.clone();
-    let mut adapter = DeviceJoinHttpAdapter::new(plain, authenticated);
+    let mut new_device_adapter = DeviceJoinNewDeviceHttpAdapter::new(plain);
+    let mut admin_adapter = DeviceJoinAdminHttpAdapter::new(authenticated);
     let did = crate::ids::Did::parse("did:wba:awiki.test:alice").unwrap();
     let account_token = SecretBytes::from_vec(b"account-token".to_vec());
     let join_token = SecretBytes::from_vec(b"join-token-issued".to_vec());
@@ -473,8 +490,8 @@ async fn http_adapter_routes_only_frozen_join_methods_to_the_correct_auth_view()
     };
     let new_document = serde_json::json!({"id": did.as_str()});
 
-    adapter.registry(&did, false).await.unwrap();
-    adapter
+    admin_adapter.registry(&did, false).await.unwrap();
+    new_device_adapter
         .create(DeviceJoinRemoteCreateRequest {
             operation_id: "op-create-1",
             account_verification_token: &account_token,
@@ -482,12 +499,12 @@ async fn http_adapter_routes_only_frozen_join_methods_to_the_correct_auth_view()
         })
         .await
         .unwrap();
-    adapter
-        .status_as_new_device("join-1", &join_token)
+    new_device_adapter
+        .status("join-1", &join_token)
         .await
         .unwrap();
-    adapter.status_as_admin("join-1").await.unwrap();
-    adapter
+    admin_adapter.status("join-1").await.unwrap();
+    admin_adapter
         .claim(DeviceJoinRemoteClaimRequest {
             operation_id: "op-claim-1",
             join_session_id: "join-1",
@@ -496,15 +513,15 @@ async fn http_adapter_routes_only_frozen_join_methods_to_the_correct_auth_view()
         })
         .await
         .unwrap();
-    adapter.submit_challenge(&challenge).await.unwrap();
-    adapter
+    admin_adapter.submit_challenge(&challenge).await.unwrap();
+    new_device_adapter
         .submit_response(DeviceJoinRemoteResponseRequest {
             join_session_token: &join_token,
             response: &response,
         })
         .await
         .unwrap();
-    adapter
+    admin_adapter
         .approve(DeviceJoinRemoteApproveRequest {
             operation_id: "op-approve-1",
             join_session_id: "join-1",

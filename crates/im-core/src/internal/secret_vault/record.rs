@@ -1,3 +1,9 @@
+//! Authenticated metadata and kind separation for SecretVault records.
+//!
+//! Secret kinds are local storage labels. They are never protocol capabilities
+//! or wire fields; Join session tokens use a dedicated kind so cancellation and
+//! expiry can delete them without confusing them with long-term device keys.
+
 use super::policy::SecretAccessPolicy;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -12,6 +18,7 @@ pub enum SecretKind {
     IdentityE2eeSigningPrivate,
     IdentityE2eeAgreementPrivate,
     IdentityJoinPairingPrivate,
+    IdentityJoinSessionToken,
     IdentityDaemonPrivate,
     AuthJwt,
     DirectE2eeSignedPrekeyPrivate,
@@ -29,6 +36,7 @@ impl SecretKind {
             Self::IdentityE2eeSigningPrivate => "identity.e2ee.signing.private",
             Self::IdentityE2eeAgreementPrivate => "identity.e2ee.agreement.private",
             Self::IdentityJoinPairingPrivate => "identity.join.pairing.private",
+            Self::IdentityJoinSessionToken => "identity.join.session.token",
             Self::IdentityDaemonPrivate => "identity.daemon.private",
             Self::AuthJwt => "auth.jwt",
             Self::DirectE2eeSignedPrekeyPrivate => "direct_e2ee.signed_prekey.private",

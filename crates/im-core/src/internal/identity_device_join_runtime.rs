@@ -1,9 +1,11 @@
-//! Typed remote boundary for the AWiki-local device Join runtime.
+//! Production orchestration and typed remote boundary for AWiki device Join.
 //!
-//! The runtime consumes only the six frozen Join RPC operations plus the
-//! authenticated Registry projection. Session/account tokens cross this
-//! boundary as zeroizing secret bytes. Implementations and test doubles must
-//! never retain those bytes in call traces, errors or Debug output.
+//! The two orchestration paths advance the existing restart-safe local Join
+//! state; they do not maintain a second phase machine. They consume only the
+//! six frozen Join RPC operations, the authenticated Registry projection and
+//! standard DID resolution. Tokens cross the boundary as zeroizing bytes and
+//! are sealed before a caller can resume the flow. The explicit rollout gate
+//! defaults to disabled and fails closed before local or remote side effects.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,7 +17,9 @@ use crate::internal::identity_device_state::{
     DeviceAuthorizationRole, DeviceAuthorizationStatus, IdentityInternalCheckpoint,
 };
 use crate::internal::platform_secret::SecretBytes;
-use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRpcTransport};
+use crate::internal::transport::{
+    AsyncAuthenticatedRpcTransport, AsyncRawJsonTransport, AsyncRpcTransport,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -149,7 +153,7 @@ impl std::fmt::Debug for DeviceJoinRemoteResponseRequest<'_> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DeviceJoinRemotePairingConfirmation {
     pub(crate) join_request_hash: String,
     pub(crate) pairing_transcript_hash: String,
@@ -190,30 +194,36 @@ pub(crate) struct DeviceJoinRemoteApproveResult {
     pub(crate) device: DeviceJoinRemoteDeviceSummary,
 }
 
-/// High-level seam between local Join orchestration and the AWiki user-service.
-///
-/// A production adapter maps these methods to the frozen Registry method and
-/// six Join RPC names. A fake can exercise the local state machine without a
-/// live service, but must only record redacted metadata.
-pub(crate) trait DeviceJoinRemote {
+/// New-device RPC seam. This intentionally cannot issue authenticated admin
+/// calls, so a pending device never gains an ambient device credential.
+pub(crate) trait DeviceJoinNewDeviceRemote {
+    async fn create(
+        &mut self,
+        request: DeviceJoinRemoteCreateRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteCreateResult>;
+
+    async fn status(
+        &mut self,
+        expected_join_session_id: &str,
+        join_session_token: &SecretBytes,
+    ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus>;
+
+    async fn submit_response(
+        &mut self,
+        request: DeviceJoinRemoteResponseRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult>;
+}
+
+/// Ready-admin RPC seam. This intentionally cannot send token-authenticated
+/// new-device calls, keeping the two server authorization views disjoint.
+pub(crate) trait DeviceJoinAdminRemote {
     async fn registry(
         &mut self,
         did: &crate::ids::Did,
         include_pending_join_requests: bool,
     ) -> crate::ImResult<DeviceJoinRemoteRegistry>;
 
-    async fn create(
-        &mut self,
-        request: DeviceJoinRemoteCreateRequest<'_>,
-    ) -> crate::ImResult<DeviceJoinRemoteCreateResult>;
-
-    async fn status_as_new_device(
-        &mut self,
-        expected_join_session_id: &str,
-        join_session_token: &SecretBytes,
-    ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus>;
-
-    async fn status_as_admin(
+    async fn status(
         &mut self,
         join_session_id: &str,
     ) -> crate::ImResult<DeviceJoinRemoteAdminStatus>;
@@ -228,51 +238,120 @@ pub(crate) trait DeviceJoinRemote {
         challenge: &DeviceJoinChallenge,
     ) -> crate::ImResult<DeviceJoinRemoteChallengeResult>;
 
-    async fn submit_response(
-        &mut self,
-        request: DeviceJoinRemoteResponseRequest<'_>,
-    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult>;
-
     async fn approve(
         &mut self,
         request: DeviceJoinRemoteApproveRequest<'_>,
     ) -> crate::ImResult<DeviceJoinRemoteApproveResult>;
 }
 
-pub(crate) struct DeviceJoinHttpAdapter<P, A> {
-    plain: P,
-    authenticated: A,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct DeviceJoinRuntimeGate {
+    enabled: bool,
 }
 
-impl<P, A> DeviceJoinHttpAdapter<P, A> {
-    pub(crate) fn new(plain: P, authenticated: A) -> Self {
-        Self {
-            plain,
-            authenticated,
+impl DeviceJoinRuntimeGate {
+    pub(crate) const fn from_rollout_flag(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    fn require_enabled(self) -> crate::ImResult<()> {
+        if self.enabled {
+            Ok(())
+        } else {
+            Err(crate::ImError::unsupported(
+                "awiki-multi-device-join-disabled",
+            ))
         }
     }
 }
 
-impl<'a>
-    DeviceJoinHttpAdapter<
-        crate::internal::transport::CorePlainTransport<'a>,
-        crate::internal::transport::CoreHttpTransport<'a>,
-    >
-{
-    pub(crate) fn production(
-        core: &'a crate::core::ImCore,
-        admin_client: &'a crate::core::ImClient,
-    ) -> Self {
-        Self::new(
-            crate::internal::transport::CorePlainTransport::new(core),
-            crate::internal::transport::CoreHttpTransport::new(admin_client),
-        )
+pub(crate) struct DeviceJoinNewDeviceHttpAdapter<P> {
+    plain: P,
+}
+
+impl<P> DeviceJoinNewDeviceHttpAdapter<P> {
+    pub(crate) fn new(plain: P) -> Self {
+        Self { plain }
     }
 }
 
-impl<P, A> DeviceJoinRemote for DeviceJoinHttpAdapter<P, A>
+impl<'a> DeviceJoinNewDeviceHttpAdapter<crate::internal::transport::CorePlainTransport<'a>> {
+    pub(crate) fn production(core: &'a crate::core::ImCore) -> Self {
+        Self::new(crate::internal::transport::CorePlainTransport::new(core))
+    }
+}
+
+impl<P> DeviceJoinNewDeviceRemote for DeviceJoinNewDeviceHttpAdapter<P>
 where
     P: AsyncRpcTransport,
+{
+    async fn create(
+        &mut self,
+        request: DeviceJoinRemoteCreateRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteCreateResult> {
+        let expected_join_session_id = request.join_request.join_session_id.clone();
+        let call = crate::internal::identity_wire::device_join::build_create_call(request)?;
+        let raw = self
+            .plain
+            .rpc(call.endpoint, call.method, call.params)
+            .await?;
+        crate::internal::identity_wire::device_join::parse_create_result(
+            raw,
+            &expected_join_session_id,
+        )
+    }
+
+    async fn status(
+        &mut self,
+        expected_join_session_id: &str,
+        join_session_token: &SecretBytes,
+    ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus> {
+        let call =
+            crate::internal::identity_wire::device_join::build_new_status_call(join_session_token)?;
+        let raw = self
+            .plain
+            .rpc(call.endpoint, call.method, call.params)
+            .await?;
+        crate::internal::identity_wire::device_join::parse_new_status_result(
+            raw,
+            expected_join_session_id,
+        )
+    }
+
+    async fn submit_response(
+        &mut self,
+        request: DeviceJoinRemoteResponseRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+        let response = request.response.clone();
+        let call = crate::internal::identity_wire::device_join::build_response_call(request)?;
+        let raw = self
+            .plain
+            .rpc(call.endpoint, call.method, call.params)
+            .await?;
+        crate::internal::identity_wire::device_join::parse_response_result(raw, &response)
+    }
+}
+
+pub(crate) struct DeviceJoinAdminHttpAdapter<A> {
+    authenticated: A,
+}
+
+impl<A> DeviceJoinAdminHttpAdapter<A> {
+    pub(crate) fn new(authenticated: A) -> Self {
+        Self { authenticated }
+    }
+}
+
+impl<'a> DeviceJoinAdminHttpAdapter<crate::internal::transport::CoreHttpTransport<'a>> {
+    pub(crate) fn production(admin_client: &'a crate::core::ImClient) -> Self {
+        Self::new(crate::internal::transport::CoreHttpTransport::new(
+            admin_client,
+        ))
+    }
+}
+
+impl<A> DeviceJoinAdminRemote for DeviceJoinAdminHttpAdapter<A>
+where
     A: AsyncAuthenticatedRpcTransport,
 {
     async fn registry(
@@ -295,40 +374,7 @@ where
         )
     }
 
-    async fn create(
-        &mut self,
-        request: DeviceJoinRemoteCreateRequest<'_>,
-    ) -> crate::ImResult<DeviceJoinRemoteCreateResult> {
-        let expected_join_session_id = request.join_request.join_session_id.clone();
-        let call = crate::internal::identity_wire::device_join::build_create_call(request)?;
-        let raw = self
-            .plain
-            .rpc(call.endpoint, call.method, call.params)
-            .await?;
-        crate::internal::identity_wire::device_join::parse_create_result(
-            raw,
-            &expected_join_session_id,
-        )
-    }
-
-    async fn status_as_new_device(
-        &mut self,
-        expected_join_session_id: &str,
-        join_session_token: &SecretBytes,
-    ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus> {
-        let call =
-            crate::internal::identity_wire::device_join::build_new_status_call(join_session_token)?;
-        let raw = self
-            .plain
-            .rpc(call.endpoint, call.method, call.params)
-            .await?;
-        crate::internal::identity_wire::device_join::parse_new_status_result(
-            raw,
-            expected_join_session_id,
-        )
-    }
-
-    async fn status_as_admin(
+    async fn status(
         &mut self,
         join_session_id: &str,
     ) -> crate::ImResult<DeviceJoinRemoteAdminStatus> {
@@ -369,19 +415,6 @@ where
         crate::internal::identity_wire::device_join::parse_challenge_result(raw, challenge)
     }
 
-    async fn submit_response(
-        &mut self,
-        request: DeviceJoinRemoteResponseRequest<'_>,
-    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
-        let response = request.response.clone();
-        let call = crate::internal::identity_wire::device_join::build_response_call(request)?;
-        let raw = self
-            .plain
-            .rpc(call.endpoint, call.method, call.params)
-            .await?;
-        crate::internal::identity_wire::device_join::parse_response_result(raw, &response)
-    }
-
     async fn approve(
         &mut self,
         request: DeviceJoinRemoteApproveRequest<'_>,
@@ -396,6 +429,694 @@ where
             raw,
             &expected_join_session_id,
         )
+    }
+}
+
+pub(crate) struct DeviceJoinDidResolver<T> {
+    transport: T,
+}
+
+impl<T> DeviceJoinDidResolver<T> {
+    pub(crate) fn new(transport: T) -> Self {
+        Self { transport }
+    }
+
+    async fn resolve(&mut self, did: &crate::ids::Did) -> crate::ImResult<Value>
+    where
+        T: AsyncRawJsonTransport,
+    {
+        crate::internal::discovery::did_document::resolve_did_document_async(
+            &mut self.transport,
+            did.as_str(),
+        )
+        .await
+    }
+}
+
+pub(crate) struct DeviceJoinNewDeviceRuntime<'a, R, D> {
+    core: &'a crate::core::ImCore,
+    remote: R,
+    resolver: DeviceJoinDidResolver<D>,
+    gate: DeviceJoinRuntimeGate,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct DeviceJoinAdvanceResult {
+    pub(crate) session: crate::identity::DeviceJoinSessionSummary,
+    pub(crate) remote_state: DeviceJoinRemoteState,
+    pub(crate) authorization: Option<DeviceJoinRemoteAuthorization>,
+    pub(crate) sas: Option<String>,
+}
+
+impl std::fmt::Debug for DeviceJoinAdvanceResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceJoinAdvanceResult")
+            .field("session", &self.session)
+            .field("remote_state", &self.remote_state)
+            .field("authorization", &self.authorization)
+            .field("sas", &self.sas.as_ref().map(|_| "<redacted-sas>"))
+            .finish()
+    }
+}
+
+impl<'a, R, D> DeviceJoinNewDeviceRuntime<'a, R, D> {
+    pub(crate) fn new(
+        core: &'a crate::core::ImCore,
+        remote: R,
+        resolver: DeviceJoinDidResolver<D>,
+        gate: DeviceJoinRuntimeGate,
+    ) -> Self {
+        Self {
+            core,
+            remote,
+            resolver,
+            gate,
+        }
+    }
+}
+
+impl<'a>
+    DeviceJoinNewDeviceRuntime<
+        'a,
+        DeviceJoinNewDeviceHttpAdapter<crate::internal::transport::CorePlainTransport<'a>>,
+        crate::internal::transport::CorePlainTransport<'a>,
+    >
+{
+    pub(crate) fn production(core: &'a crate::core::ImCore) -> Self {
+        Self::production_for_rollout(core, false)
+    }
+
+    pub(crate) fn production_for_rollout(core: &'a crate::core::ImCore, enabled: bool) -> Self {
+        Self::new(
+            core,
+            DeviceJoinNewDeviceHttpAdapter::production(core),
+            DeviceJoinDidResolver::new(crate::internal::transport::CorePlainTransport::new(core)),
+            DeviceJoinRuntimeGate::from_rollout_flag(enabled),
+        )
+    }
+}
+
+impl<R, D> DeviceJoinNewDeviceRuntime<'_, R, D>
+where
+    R: DeviceJoinNewDeviceRemote,
+    D: AsyncRawJsonTransport,
+{
+    pub(crate) async fn begin(
+        &mut self,
+        request: crate::identity::DeviceJoinStartRequest,
+        account_verification_token: &SecretBytes,
+    ) -> crate::ImResult<crate::identity::DeviceJoinSessionSummary> {
+        self.gate.require_enabled()?;
+        let operation_id = request.operation_id.clone();
+        let local = self.core.device_join().start(request)?;
+        if local.session.phase == crate::identity::DeviceJoinLocalPhase::Authorized {
+            return Ok(local.session);
+        }
+        let created = self
+            .remote
+            .create(DeviceJoinRemoteCreateRequest {
+                operation_id: &operation_id,
+                account_verification_token,
+                join_request: &local.join_request,
+            })
+            .await?;
+        if created.state != DeviceJoinRemoteState::Pending {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        crate::internal::identity_device_join::bind_new_device_remote_session(
+            self.core,
+            &local.session.join_session_id,
+            &created.join_session_token,
+            &created.expires_at,
+        )
+    }
+
+    pub(crate) async fn advance(
+        &mut self,
+        join_session_id: &str,
+    ) -> crate::ImResult<DeviceJoinAdvanceResult> {
+        self.gate.require_enabled()?;
+        let local = self
+            .core
+            .device_join()
+            .session(join_session_id, crate::identity::DeviceJoinSide::NewDevice)?;
+        match local.phase {
+            crate::identity::DeviceJoinLocalPhase::Authorized => {
+                return Ok(DeviceJoinAdvanceResult {
+                    session: local,
+                    remote_state: DeviceJoinRemoteState::Consumed,
+                    authorization: None,
+                    sas: None,
+                });
+            }
+            crate::identity::DeviceJoinLocalPhase::Expired => {
+                return Ok(DeviceJoinAdvanceResult {
+                    session: local,
+                    remote_state: DeviceJoinRemoteState::Expired,
+                    authorization: None,
+                    sas: None,
+                });
+            }
+            crate::identity::DeviceJoinLocalPhase::Cancelled => {
+                return Err(invalid_remote_state("new-device Join is cancelled"));
+            }
+            _ => {}
+        }
+        let token = crate::internal::identity_device_join::open_new_device_remote_session_token(
+            self.core,
+            join_session_id,
+        )?;
+        let status = self.remote.status(join_session_id, &token).await?;
+        if status.expires_at != local.expires_at {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        match status.state {
+            DeviceJoinRemoteState::Expired => {
+                let session = crate::internal::identity_device_join::mark_join_expired(
+                    self.core,
+                    join_session_id,
+                    crate::identity::DeviceJoinSide::NewDevice,
+                )?;
+                Ok(DeviceJoinAdvanceResult {
+                    session,
+                    remote_state: status.state,
+                    authorization: None,
+                    sas: None,
+                })
+            }
+            DeviceJoinRemoteState::ChallengeSent | DeviceJoinRemoteState::ResponseVerified => {
+                let challenge = status
+                    .challenge
+                    .ok_or_else(|| invalid_remote_state("new-device challenge missing"))?;
+                let did = self
+                    .core
+                    .device_join()
+                    .session(join_session_id, crate::identity::DeviceJoinSide::NewDevice)?
+                    .did;
+                let document = self.resolver.resolve(&did).await?;
+                let prepared =
+                    crate::internal::identity_device_join::respond_as_new_device_to_resolved_document(
+                        self.core,
+                        format!("join-response:{}", challenge.challenge_id),
+                        challenge,
+                        document,
+                    )?;
+                let transition = self
+                    .remote
+                    .submit_response(DeviceJoinRemoteResponseRequest {
+                        join_session_token: &token,
+                        response: &prepared.response,
+                    })
+                    .await?;
+                if transition.state != DeviceJoinRemoteState::ResponseVerified {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+                Ok(DeviceJoinAdvanceResult {
+                    session: prepared.session,
+                    remote_state: transition.state,
+                    authorization: None,
+                    sas: Some(prepared.sas),
+                })
+            }
+            DeviceJoinRemoteState::Consumed => {
+                let authorization = status
+                    .authorization
+                    .ok_or_else(|| invalid_remote_state("new-device authorization missing"))?;
+                let did = self
+                    .core
+                    .device_join()
+                    .session(join_session_id, crate::identity::DeviceJoinSide::NewDevice)?
+                    .did;
+                let document = self.resolver.resolve(&did).await?;
+                let session = crate::internal::identity_device_join::mark_join_authorized(
+                    self.core,
+                    join_session_id,
+                    crate::identity::DeviceJoinSide::NewDevice,
+                    &authorization,
+                    &document,
+                )?;
+                Ok(DeviceJoinAdvanceResult {
+                    session,
+                    remote_state: status.state,
+                    authorization: Some(authorization),
+                    sas: None,
+                })
+            }
+            DeviceJoinRemoteState::Pending | DeviceJoinRemoteState::Claimed => {
+                Ok(DeviceJoinAdvanceResult {
+                    session: self
+                        .core
+                        .device_join()
+                        .session(join_session_id, crate::identity::DeviceJoinSide::NewDevice)?,
+                    remote_state: status.state,
+                    authorization: None,
+                    sas: None,
+                })
+            }
+        }
+    }
+
+    pub(crate) fn cancel(
+        &self,
+        join_session_id: &str,
+    ) -> crate::ImResult<crate::identity::DeviceJoinSessionSummary> {
+        self.gate.require_enabled()?;
+        crate::internal::identity_device_join::cancel_join(
+            self.core,
+            join_session_id,
+            crate::identity::DeviceJoinSide::NewDevice,
+        )
+    }
+}
+
+pub(crate) struct DeviceJoinAdminRuntime<'a, R> {
+    core: &'a crate::core::ImCore,
+    admin_identity: crate::identity::IdentitySelector,
+    remote: R,
+    gate: DeviceJoinRuntimeGate,
+}
+
+impl<'a, R> DeviceJoinAdminRuntime<'a, R> {
+    pub(crate) fn new(
+        core: &'a crate::core::ImCore,
+        admin_identity: crate::identity::IdentitySelector,
+        remote: R,
+        gate: DeviceJoinRuntimeGate,
+    ) -> Self {
+        Self {
+            core,
+            admin_identity,
+            remote,
+            gate,
+        }
+    }
+}
+
+impl<'a>
+    DeviceJoinAdminRuntime<
+        'a,
+        DeviceJoinAdminHttpAdapter<crate::internal::transport::CoreHttpTransport<'a>>,
+    >
+{
+    pub(crate) fn production(
+        core: &'a crate::core::ImCore,
+        admin_client: &'a crate::core::ImClient,
+    ) -> Self {
+        Self::production_for_rollout(core, admin_client, false)
+    }
+
+    pub(crate) fn production_for_rollout(
+        core: &'a crate::core::ImCore,
+        admin_client: &'a crate::core::ImClient,
+        enabled: bool,
+    ) -> Self {
+        Self::new(
+            core,
+            crate::identity::IdentitySelector::Id(admin_client.current_identity().id.clone()),
+            DeviceJoinAdminHttpAdapter::production(admin_client),
+            DeviceJoinRuntimeGate::from_rollout_flag(enabled),
+        )
+    }
+}
+
+impl<R> DeviceJoinAdminRuntime<'_, R>
+where
+    R: DeviceJoinAdminRemote,
+{
+    pub(crate) async fn pending(&mut self) -> crate::ImResult<Vec<DeviceJoinRemotePendingSummary>> {
+        self.gate.require_enabled()?;
+        let did = self.core.client(self.admin_identity.clone())?.did().clone();
+        self.remote
+            .registry(&did, true)
+            .await
+            .map(|registry| registry.pending_join_requests)
+    }
+
+    pub(crate) async fn claim_and_challenge(
+        &mut self,
+        join_session_id: &str,
+        operation_id: &str,
+        challenge_ttl_seconds: u64,
+    ) -> crate::ImResult<DeviceJoinAdvanceResult> {
+        self.gate.require_enabled()?;
+        if let Some(existing) = local_admin_session(self.core, join_session_id)? {
+            match existing.phase {
+                crate::identity::DeviceJoinLocalPhase::ChallengePrepared => {
+                    let prepared =
+                        crate::internal::identity_device_join::load_prepared_admin_challenge(
+                            self.core,
+                            join_session_id,
+                            operation_id,
+                        )?
+                        .ok_or_else(|| invalid_remote_state("local prepared challenge missing"))?;
+                    let submitted = self.remote.submit_challenge(&prepared.challenge).await?;
+                    if submitted.state != DeviceJoinRemoteState::ChallengeSent {
+                        return Err(crate::ImError::PermissionDenied);
+                    }
+                    crate::internal::identity_device_join::clear_admin_claim_intent(
+                        self.core,
+                        join_session_id,
+                    )?;
+                    return Ok(DeviceJoinAdvanceResult {
+                        session: prepared.session,
+                        remote_state: submitted.state,
+                        authorization: None,
+                        sas: Some(prepared.sas),
+                    });
+                }
+                crate::identity::DeviceJoinLocalPhase::ResponseVerified
+                | crate::identity::DeviceJoinLocalPhase::ApprovalPrepared => {
+                    let prepared =
+                        crate::internal::identity_device_join::load_prepared_admin_challenge(
+                            self.core,
+                            join_session_id,
+                            operation_id,
+                        )?
+                        .ok_or_else(|| invalid_remote_state("local prepared challenge missing"))?;
+                    return Ok(DeviceJoinAdvanceResult {
+                        session: prepared.session,
+                        remote_state: DeviceJoinRemoteState::ResponseVerified,
+                        authorization: None,
+                        sas: Some(prepared.sas),
+                    });
+                }
+                crate::identity::DeviceJoinLocalPhase::Authorized => {
+                    return Ok(DeviceJoinAdvanceResult {
+                        session: existing,
+                        remote_state: DeviceJoinRemoteState::Consumed,
+                        authorization: None,
+                        sas: None,
+                    });
+                }
+                crate::identity::DeviceJoinLocalPhase::Expired => {
+                    return Ok(DeviceJoinAdvanceResult {
+                        session: existing,
+                        remote_state: DeviceJoinRemoteState::Expired,
+                        authorization: None,
+                        sas: None,
+                    });
+                }
+                crate::identity::DeviceJoinLocalPhase::Cancelled => {
+                    return Err(invalid_remote_state("admin Join is cancelled"));
+                }
+                _ => return Err(invalid_remote_state("admin Join phase is invalid")),
+            }
+        }
+        let admin_client = self.core.client(self.admin_identity.clone())?;
+        let did = admin_client.did().clone();
+        let existing_claim = crate::internal::identity_device_join::load_prepared_admin_claim(
+            self.core,
+            join_session_id,
+        )?;
+        let registry = self.remote.registry(&did, existing_claim.is_none()).await?;
+        let claim = match existing_claim {
+            Some((claim, _)) => {
+                if claim.operation_id != operation_id {
+                    return Err(crate::ImError::invalid_input(
+                        Some("operation_id".to_owned()),
+                        "device Join claim idempotency conflict",
+                    ));
+                }
+                claim
+            }
+            None => {
+                let pending = registry
+                    .pending_join_requests
+                    .iter()
+                    .find(|pending| pending.join_session_id == join_session_id)
+                    .ok_or_else(|| crate::ImError::IdentityNotFound {
+                        selector: join_session_id.to_owned(),
+                    })?;
+                crate::internal::identity_device_join::prepare_admin_claim_intent(
+                    self.core,
+                    self.admin_identity.clone(),
+                    operation_id,
+                    join_session_id,
+                    &pending.expires_at,
+                )?
+            }
+        };
+        let claimed = self
+            .remote
+            .claim(DeviceJoinRemoteClaimRequest {
+                operation_id: &claim.operation_id,
+                join_session_id: &claim.join_session_id,
+                authorizing_device_id: &claim.authorizing_device_id,
+                authorizing_device_proof: &claim.authorizing_device_proof,
+            })
+            .await?;
+        if claimed.state != DeviceJoinRemoteState::Claimed
+            || claimed.claimed_by_device_id != claim.authorizing_device_id
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let prepared = self.core.device_join().prepare_admin_challenge(
+            crate::identity::DeviceJoinAdminPrepareRequest {
+                admin_identity: self.admin_identity.clone(),
+                operation_id: operation_id.to_owned(),
+                join_request: claimed.join_request,
+                challenge_ttl_seconds,
+                document_version: registry.checkpoint.document_version,
+                document_hash: registry.checkpoint.document_hash,
+            },
+        )?;
+        let submitted = self.remote.submit_challenge(&prepared.challenge).await?;
+        if submitted.state != DeviceJoinRemoteState::ChallengeSent {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        crate::internal::identity_device_join::clear_admin_claim_intent(
+            self.core,
+            join_session_id,
+        )?;
+        Ok(DeviceJoinAdvanceResult {
+            session: prepared.session,
+            remote_state: submitted.state,
+            authorization: None,
+            sas: Some(prepared.sas),
+        })
+    }
+
+    pub(crate) async fn advance(
+        &mut self,
+        join_session_id: &str,
+    ) -> crate::ImResult<DeviceJoinAdvanceResult> {
+        self.gate.require_enabled()?;
+        let local = local_admin_session(self.core, join_session_id)?;
+        if let Some(existing) = local.as_ref() {
+            if existing.phase == crate::identity::DeviceJoinLocalPhase::Authorized {
+                return Ok(DeviceJoinAdvanceResult {
+                    session: existing.clone(),
+                    remote_state: DeviceJoinRemoteState::Consumed,
+                    authorization: None,
+                    sas: None,
+                });
+            }
+        }
+        let status = self.remote.status(join_session_id).await?;
+        if local
+            .as_ref()
+            .is_some_and(|session| status.expires_at != session.expires_at)
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        match status.state {
+            DeviceJoinRemoteState::Expired => {
+                let session = crate::internal::identity_device_join::mark_join_expired(
+                    self.core,
+                    join_session_id,
+                    crate::identity::DeviceJoinSide::Admin,
+                )?;
+                Ok(DeviceJoinAdvanceResult {
+                    session,
+                    remote_state: status.state,
+                    authorization: None,
+                    sas: None,
+                })
+            }
+            DeviceJoinRemoteState::ResponseVerified => {
+                let response = status
+                    .challenge_response
+                    .ok_or_else(|| invalid_remote_state("admin challenge response missing"))?;
+                let verified = self.core.device_join().verify_response_as_admin(
+                    crate::identity::DeviceJoinAdminVerifyRequest {
+                        operation_id: format!("join-verify:{}", response.operation_id),
+                        join_session_id: join_session_id.to_owned(),
+                        response,
+                    },
+                )?;
+                Ok(DeviceJoinAdvanceResult {
+                    session: verified.session,
+                    remote_state: status.state,
+                    authorization: None,
+                    sas: Some(verified.sas),
+                })
+            }
+            DeviceJoinRemoteState::Claimed | DeviceJoinRemoteState::ChallengeSent => {
+                Ok(DeviceJoinAdvanceResult {
+                    session: self
+                        .core
+                        .device_join()
+                        .session(join_session_id, crate::identity::DeviceJoinSide::Admin)?,
+                    remote_state: status.state,
+                    authorization: None,
+                    sas: None,
+                })
+            }
+            DeviceJoinRemoteState::Consumed => {
+                let authorization = status
+                    .authorization
+                    .ok_or_else(|| invalid_remote_state("admin authorization missing"))?;
+                let prepared = crate::internal::identity_device_join::load_prepared_admin_approval(
+                    self.core,
+                    join_session_id,
+                )?
+                .ok_or_else(|| invalid_remote_state("local prepared approval missing"))?;
+                let session = crate::internal::identity_device_join::mark_join_authorized(
+                    self.core,
+                    join_session_id,
+                    crate::identity::DeviceJoinSide::Admin,
+                    &authorization,
+                    &prepared.new_document,
+                )?;
+                Ok(DeviceJoinAdvanceResult {
+                    session,
+                    remote_state: status.state,
+                    authorization: Some(authorization),
+                    sas: None,
+                })
+            }
+            DeviceJoinRemoteState::Pending => Err(invalid_remote_state(
+                "claimed admin received pending Join state",
+            )),
+        }
+    }
+
+    pub(crate) async fn approve(
+        &mut self,
+        join_session_id: &str,
+        operation_id: &str,
+        role: DeviceAuthorizationRole,
+        user_presence_at: &str,
+        sas_confirmed: bool,
+    ) -> crate::ImResult<DeviceJoinAdvanceResult> {
+        self.gate.require_enabled()?;
+        let prepared = match crate::internal::identity_device_join::load_prepared_admin_approval(
+            self.core,
+            join_session_id,
+        )? {
+            Some(value) => {
+                if value.operation_id != operation_id
+                    || value.role != role
+                    || value.pairing_confirmation.user_presence_at != user_presence_at
+                    || value.pairing_confirmation.sas_confirmed != sas_confirmed
+                {
+                    return Err(crate::ImError::invalid_input(
+                        Some("operation_id".to_owned()),
+                        "device Join approval idempotency conflict",
+                    ));
+                }
+                value
+            }
+            None => {
+                let did = self.core.client(self.admin_identity.clone())?.did().clone();
+                let registry = self.remote.registry(&did, false).await?;
+                crate::internal::identity_device_join::prepare_admin_approval(
+                    self.core,
+                    operation_id,
+                    join_session_id,
+                    &registry.checkpoint,
+                    role,
+                    user_presence_at,
+                    sas_confirmed,
+                )?
+            }
+        };
+        let approved = self
+            .remote
+            .approve(DeviceJoinRemoteApproveRequest {
+                operation_id: &prepared.operation_id,
+                join_session_id: &prepared.join_session_id,
+                expected_checkpoint: &prepared.expected_checkpoint,
+                role: prepared.role,
+                new_document: &prepared.new_document,
+                pairing_confirmation: &prepared.pairing_confirmation,
+                authorizing_device_id: &prepared.authorizing_device_id,
+                authorizing_device_proof: &prepared.authorizing_device_proof,
+            })
+            .await?;
+        if approved.state != DeviceJoinRemoteState::Consumed {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let authorization = DeviceJoinRemoteAuthorization {
+            checkpoint: approved.checkpoint,
+            device: approved.device,
+        };
+        let session = crate::internal::identity_device_join::mark_join_authorized(
+            self.core,
+            join_session_id,
+            crate::identity::DeviceJoinSide::Admin,
+            &authorization,
+            &prepared.new_document,
+        )?;
+        Ok(DeviceJoinAdvanceResult {
+            session,
+            remote_state: approved.state,
+            authorization: Some(authorization),
+            sas: None,
+        })
+    }
+
+    pub(crate) fn cancel(
+        &self,
+        join_session_id: &str,
+    ) -> crate::ImResult<crate::identity::DeviceJoinSessionSummary> {
+        self.gate.require_enabled()?;
+        let cancelled = crate::internal::identity_device_join::cancel_join(
+            self.core,
+            join_session_id,
+            crate::identity::DeviceJoinSide::Admin,
+        );
+        match cancelled {
+            Ok(summary) => {
+                crate::internal::identity_device_join::clear_admin_claim_intent(
+                    self.core,
+                    join_session_id,
+                )?;
+                Ok(summary)
+            }
+            Err(crate::ImError::IdentityNotFound { .. })
+                if crate::internal::identity_device_join::load_prepared_admin_claim(
+                    self.core,
+                    join_session_id,
+                )?
+                .is_some() =>
+            {
+                Err(invalid_remote_state(
+                    "admin claim outcome is unresolved; retry claim before cancelling",
+                ))
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn local_admin_session(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<Option<crate::identity::DeviceJoinSessionSummary>> {
+    match core
+        .device_join()
+        .session(join_session_id, crate::identity::DeviceJoinSide::Admin)
+    {
+        Ok(summary) => Ok(Some(summary)),
+        Err(crate::ImError::IdentityNotFound { .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn invalid_remote_state(detail: &str) -> crate::ImError {
+    crate::ImError::LocalStateUnavailable {
+        detail: format!("device Join remote state invalid: {detail}"),
     }
 }
 
