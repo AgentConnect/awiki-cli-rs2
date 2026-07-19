@@ -319,6 +319,9 @@ verification exchange 和 `device_genesis` 创建带 Manifest 的 DID，成功�
 `HandleRegistrationResult`。Bootstrap proof、account grant、refresh token、Vault
 pending record 和内部 checkpoint 均不进入公共返回值。Email、
 `AlreadyVerified`、跨域或 Vault 不可用时 fail closed；gate 关闭时旧注册语义不变。
+Genesis 响应不确定且短期 grant/proof 已过期时，host 重新提交 Phone OTP 即可继续；
+Core 会保留原 DID、设备密钥、operation ID 与 idempotency scope，仅刷新 grant 和
+设备证明，不生成第二个身份。
 
 ### 5.1 Device Join host facade
 

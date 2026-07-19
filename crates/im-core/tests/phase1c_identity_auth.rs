@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1443,6 +1444,109 @@ async fn vnext_genesis_retries_exact_rpc_without_recreating_keys_or_proof() {
 }
 
 #[tokio::test]
+async fn vnext_genesis_response_loss_after_expiry_reuses_identity_with_fresh_proof() {
+    let first_grant_expires_at = future_rfc3339(2);
+    let committed_result = Arc::new(Mutex::new(None));
+    let first_committed_result = committed_result.clone();
+    let replayed_result = committed_result.clone();
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::json(json!({
+            "account_verification_token": "expired-account-grant",
+            "purpose": "awiki.device.genesis.v1",
+            "expires_at": first_grant_expires_at,
+        })),
+        ExpectedHttp::dynamic_status(503, move |request| {
+            let result = genesis_response_from_request(request);
+            *first_committed_result.lock().unwrap() = Some(result.clone());
+            result
+        }),
+        ExpectedHttp::json(json!({"sent": true})),
+        ExpectedHttp::json(json!({
+            "account_verification_token": "fresh-account-grant",
+            "purpose": "awiki.device.genesis.v1",
+            "expires_at": future_rfc3339(300),
+        })),
+        ExpectedHttp::dynamic_rpc(move |_| {
+            replayed_result
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("the first Genesis result was committed")
+        }),
+    ]);
+    let fixture = Fixture::new();
+    let core = fixture
+        .core_async_with_base_url_vault_required_multi_device(server.base_url(), [56; 32])
+        .await;
+    let first_request = vnext_phone_request("response-loss", Some("123456"));
+    assert!(core
+        .identities()
+        .register_handle_async(first_request)
+        .await
+        .is_err());
+
+    let expires_at = time::OffsetDateTime::parse(
+        &first_grant_expires_at,
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap();
+    while time::OffsetDateTime::now_utc() <= expires_at {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let otp_sent = core
+        .identities()
+        .register_handle_async(vnext_phone_request("response-loss", None))
+        .await
+        .unwrap();
+    assert_eq!(otp_sent.state, HandleRegistrationState::OtpSent);
+    let completed = core
+        .identities()
+        .register_handle_async(vnext_phone_request("response-loss", Some("654321")))
+        .await
+        .unwrap();
+    assert_eq!(completed.state, HandleRegistrationState::Registered);
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 5);
+    let first_exchange = requests[0].json_body();
+    let refreshed_exchange = requests[3].json_body();
+    assert_eq!(first_exchange["code"], "123456");
+    assert_eq!(refreshed_exchange["code"], "654321");
+    assert_eq!(
+        first_exchange["idempotency_scope"],
+        refreshed_exchange["idempotency_scope"]
+    );
+    let first_genesis = requests[1].json_body();
+    let retried_genesis = requests[4].json_body();
+    for field in ["operation_id", "did_document", "bootstrap_device_id"] {
+        assert_eq!(
+            first_genesis["params"][field], retried_genesis["params"][field],
+            "stable Genesis identity field changed: {field}"
+        );
+    }
+    assert_eq!(
+        first_genesis["params"]["account_verification_token"],
+        "expired-account-grant"
+    );
+    assert_eq!(
+        retried_genesis["params"]["account_verification_token"],
+        "fresh-account-grant"
+    );
+    assert_ne!(
+        first_genesis["params"]["bootstrap_device_proof"],
+        retried_genesis["params"]["bootstrap_device_proof"]
+    );
+    verify_genesis_request_proof(&first_genesis["params"]);
+    verify_genesis_request_proof(&retried_genesis["params"]);
+    assert_eq!(
+        completed.identity.unwrap().did.as_str(),
+        first_genesis["params"]["did_document"]["id"]
+            .as_str()
+            .unwrap()
+    );
+}
+
+#[tokio::test]
 async fn vnext_remote_success_survives_local_commit_failure_and_resumes_offline() {
     let fixture = Fixture::new();
     let identities_dir = fixture.root.join("identities");
@@ -2340,6 +2444,17 @@ impl ExpectedHttp {
     {
         Self {
             status_code: 200,
+            body: Value::Null,
+            responder: Some(Box::new(responder)),
+        }
+    }
+
+    fn dynamic_status<F>(status_code: u16, responder: F) -> Self
+    where
+        F: Fn(&CapturedHttp) -> Value + Send + 'static,
+    {
+        Self {
+            status_code,
             body: Value::Null,
             responder: Some(Box::new(responder)),
         }

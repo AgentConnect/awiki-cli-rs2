@@ -116,7 +116,10 @@ request signing resolves the device key, while DID Document proof/update
 resolves the root key. Before network activation, Core seals a local-only
 pending Genesis record containing the exact operation, proof, generated key
 material and later the strict server result. An ambiguous retry reuses the same
-request bytes; a remote success followed by local failure resumes from the
+request bytes while its grant and proof remain valid. If they expire before the
+result is recovered, a fresh OTP exchange keeps the same generated identity,
+operation ID and idempotency scope while the same device key signs a fresh
+short-lived proof. A remote success followed by local failure resumes from the
 encrypted result without repeating Genesis. Only after the VNext identity,
 internal checkpoint, access token and rotating refresh token are committed to
 Vault is the pending record deleted and the identity exposed as admin-ready.

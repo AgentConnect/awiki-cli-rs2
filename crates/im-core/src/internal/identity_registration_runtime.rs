@@ -194,6 +194,7 @@ where
         if pending.normalized_phone != normalized_phone {
             return Err(crate::ImError::PermissionDenied);
         }
+        refresh_stale_pending_genesis_credentials(&pending_store, &mut pending)?;
         if pending.remote_result.is_none() && pending.account_grant.is_none() {
             let call = crate::internal::identity_wire::device_genesis::build_account_verification_exchange_call(
                 &normalized_phone,
@@ -513,6 +514,7 @@ where
         if pending.normalized_phone != normalized_phone {
             return Err(crate::ImError::PermissionDenied);
         }
+        refresh_stale_pending_genesis_credentials(&pending_store, &mut pending)?;
         if pending.remote_result.is_none() && pending.account_grant.is_none() {
             let call = crate::internal::identity_wire::device_genesis::build_account_verification_exchange_call(
                 &normalized_phone,
@@ -765,6 +767,35 @@ fn load_or_create_pending_genesis(
     Ok((secret_ref, pending))
 }
 
+fn refresh_stale_pending_genesis_credentials(
+    store: &crate::internal::identity_genesis_pending::PendingGenesisStore,
+    pending: &mut crate::internal::identity_genesis_pending::PendingGenesisRecord,
+) -> crate::ImResult<()> {
+    if pending.remote_result.is_some() {
+        return Ok(());
+    }
+    let now = OffsetDateTime::now_utc();
+    let proof_expired = is_expired_at(&pending.prepared.bootstrap_device_proof.expires_at, now)?;
+    let grant_expired = pending
+        .account_grant
+        .as_ref()
+        .map(|grant| is_expired_at(&grant.expires_at, now))
+        .transpose()?
+        .unwrap_or(false);
+    if !proof_expired && !grant_expired {
+        return Ok(());
+    }
+
+    pending.prepared = crate::internal::identity_wire::device_genesis::prepare_device_genesis(
+        &pending.generated,
+        pending.prepared.operation_id.clone(),
+        now,
+    )?;
+    pending.account_grant = None;
+    store.save(pending)?;
+    Ok(())
+}
+
 fn finalize_pending_genesis(
     core: &crate::core::ImCore,
     pending: &crate::internal::identity_genesis_pending::PendingGenesisRecord,
@@ -892,13 +923,17 @@ fn vnext_registration_result(
 }
 
 fn ensure_unexpired(value: &str) -> crate::ImResult<()> {
-    let expires =
-        time::OffsetDateTime::parse(value.trim(), &time::format_description::well_known::Rfc3339)
-            .map_err(|_| crate::ImError::PermissionDenied)?;
-    if expires <= OffsetDateTime::now_utc() {
+    if is_expired_at(value, OffsetDateTime::now_utc())? {
         return Err(crate::ImError::SessionExpired);
     }
     Ok(())
+}
+
+fn is_expired_at(value: &str, now: OffsetDateTime) -> crate::ImResult<bool> {
+    let expires =
+        time::OffsetDateTime::parse(value.trim(), &time::format_description::well_known::Rfc3339)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+    Ok(expires <= now)
 }
 
 fn secure_local_id(prefix: &str) -> crate::ImResult<String> {

@@ -151,6 +151,9 @@ Manifest、bootstrap device proof、active/admin/management-ready/generation=1�
 内部 checkpoint 和设备 token claims 后才保存身份。refresh token 与失败恢复
 记录只保存在 Vault；返回 DTO 不包含 refresh token 或内部 checkpoint。gate 关闭时
 仍执行原 legacy 注册流程，不能由 vNext 失败分支自动降级。
+若 Genesis 响应不确定且 account grant/proof 已过期，新的 Phone OTP 只刷新 grant
+和短期设备证明；Pending Genesis 中已经生成的 DID、设备密钥、operation ID 与
+idempotency scope 必须保持不变，避免为同一 Handle 生成冲突身份。
 
 Vault DTO boundary:
 
