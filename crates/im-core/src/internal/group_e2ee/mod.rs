@@ -12,6 +12,7 @@ pub(crate) mod state_ref;
 pub(crate) mod status;
 pub(crate) mod storage;
 pub(crate) mod summary;
+pub(crate) mod v2_runtime;
 pub(crate) mod wire;
 
 pub(crate) const DEFAULT_GROUP_MLS_DEVICE_ID: &str = "default";
