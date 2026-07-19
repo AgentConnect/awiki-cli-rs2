@@ -143,6 +143,7 @@ dependencies = [
  "tiny_http",
  "tokio",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]
