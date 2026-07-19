@@ -1214,6 +1214,106 @@ pub(crate) fn load_prepared_admin_approval(
         .transpose()
 }
 
+/// Clears an expired approval proof only after the caller has observed a
+/// non-consumed remote status. This preserves exact retry bytes while a proof
+/// is valid and prevents an already accepted approval from being regenerated
+/// before remote reconciliation.
+pub(crate) fn reset_expired_admin_approval_after_remote_poll(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+    remote_expires_at: &str,
+    now: OffsetDateTime,
+) -> crate::ImResult<bool> {
+    let _guard = lock_join_state(core)?;
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let store = JoinStateStore::new(core);
+    let mut stored = store
+        .load(&join_session_id, DeviceJoinSide::Admin)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.clone(),
+        })?;
+    if stored.join_request.expires_at != remote_expires_at {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    normalize_expiry(core, &store, &mut stored)?;
+    ensure_not_expired(&stored)?;
+    if stored.phase != DeviceJoinLocalPhase::ApprovalPrepared {
+        return Ok(false);
+    }
+    let proof_expires_at = stored
+        .approval
+        .as_ref()
+        .ok_or_else(|| invalid_state("prepared approval missing"))?
+        .authorizing_device_proof
+        .expires_at
+        .clone();
+    if parse_time(
+        "approval.authorizing_device_proof.expires_at",
+        &proof_expires_at,
+    )? > now
+    {
+        return Ok(false);
+    }
+    stored.approval = None;
+    stored.phase = DeviceJoinLocalPhase::ResponseVerified;
+    store.save(&stored)?;
+    Ok(true)
+}
+
+/// Finalizes an approval that the authenticated remote status reports as
+/// consumed. This deliberately reads the persisted approval before local
+/// expiry normalization, allowing a response accepted just before expiry to
+/// converge without generating a replacement proof.
+pub(crate) fn mark_admin_approval_consumed_after_remote_poll(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+    remote_expires_at: &str,
+    authorization: &crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization,
+) -> crate::ImResult<DeviceJoinSessionSummary> {
+    let _guard = lock_join_state(core)?;
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let store = JoinStateStore::new(core);
+    let mut stored = store
+        .load(&join_session_id, DeviceJoinSide::Admin)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.clone(),
+        })?;
+    if stored.join_request.expires_at != remote_expires_at
+        || !matches!(
+            stored.phase,
+            DeviceJoinLocalPhase::ApprovalPrepared
+                | DeviceJoinLocalPhase::Expired
+                | DeviceJoinLocalPhase::Authorized
+        )
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let new_document = stored
+        .approval
+        .as_ref()
+        .ok_or_else(|| invalid_state("prepared approval missing"))?
+        .new_document
+        .clone();
+    validate_remote_authorization(&stored, authorization, &new_document)?;
+    if stored.phase != DeviceJoinLocalPhase::Authorized {
+        let admin_identity = stored
+            .admin_identity
+            .as_ref()
+            .ok_or_else(|| invalid_state("admin identity missing"))?;
+        let client = core.client(admin_identity.clone())?;
+        let raw = serde_json::to_vec_pretty(&new_document).map_err(|error| {
+            crate::ImError::Serialization {
+                detail: error.to_string(),
+            }
+        })?;
+        write_private_atomic(&client.runtime().did_document_path, &raw)?;
+        stored.phase = DeviceJoinLocalPhase::Authorized;
+        store.save(&stored)?;
+    }
+    cleanup_consumed_join_secrets(core, &stored)?;
+    summary(&stored)
+}
+
 pub(crate) fn mark_join_authorized(
     core: &crate::core::ImCore,
     join_session_id: &str,

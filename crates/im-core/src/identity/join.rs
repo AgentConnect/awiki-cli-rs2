@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 
 pub const DEVICE_JOIN_REQUEST_TYPE: &str = "awiki.device.join.v1";
 pub const DEVICE_PROOF_TYPE: &str = "awiki-device-signature-v1";
@@ -393,32 +393,35 @@ impl<'a> DeviceJoinService<'a> {
         Self { core }
     }
 
-    pub fn start(&self, request: DeviceJoinStartRequest) -> crate::ImResult<DeviceJoinStartResult> {
+    pub(crate) fn start(
+        &self,
+        request: DeviceJoinStartRequest,
+    ) -> crate::ImResult<DeviceJoinStartResult> {
         crate::internal::identity_device_join::start(self.core, request)
     }
 
-    pub fn prepare_admin_challenge(
+    pub(crate) fn prepare_admin_challenge(
         &self,
         request: DeviceJoinAdminPrepareRequest,
     ) -> crate::ImResult<DeviceJoinAdminPrepareResult> {
         crate::internal::identity_device_join::prepare_admin_challenge(self.core, request)
     }
 
-    pub fn respond_as_new_device(
+    pub(crate) fn respond_as_new_device(
         &self,
         request: DeviceJoinNewDeviceRespondRequest,
     ) -> crate::ImResult<DeviceJoinNewDeviceRespondResult> {
         crate::internal::identity_device_join::respond_as_new_device(self.core, request)
     }
 
-    pub fn verify_response_as_admin(
+    pub(crate) fn verify_response_as_admin(
         &self,
         request: DeviceJoinAdminVerifyRequest,
     ) -> crate::ImResult<DeviceJoinAdminVerifyResult> {
         crate::internal::identity_device_join::verify_response_as_admin(self.core, request)
     }
 
-    pub fn session(
+    pub(crate) fn session(
         &self,
         join_session_id: &str,
         side: DeviceJoinSide,
@@ -577,21 +580,45 @@ impl<'a> DeviceJoinService<'a> {
                 "device Join approval role is already bound",
             ));
         }
-        let (operation_id, user_presence_at) = existing
-            .map(|approval| {
+        let now = OffsetDateTime::now_utc();
+        let session_expires_at = parse_approval_expiry(&session.expires_at)?;
+        let (operation_id, user_presence_at, approval_expires_at) = match existing {
+            Some(approval) => {
+                let proof_expires_at =
+                    parse_approval_expiry(&approval.authorizing_device_proof.expires_at)?;
+                if proof_expires_at <= now {
+                    return Err(crate::ImError::SessionExpired);
+                }
                 (
                     approval.operation_id,
                     Some(approval.pairing_confirmation.user_presence_at),
+                    std::cmp::min(session_expires_at, proof_expires_at),
                 )
-            })
-            .unwrap_or_else(|| (random_public_operation_id("join-approve"), None));
+            }
+            None => (
+                random_public_operation_id("join-approve"),
+                None,
+                std::cmp::min(
+                    session_expires_at,
+                    now + Duration::seconds(DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS as i64),
+                ),
+            ),
+        };
+        if approval_expires_at <= now {
+            return Err(crate::ImError::SessionExpired);
+        }
+        let approval_expires_at = approval_expires_at.format(&Rfc3339).map_err(|error| {
+            crate::ImError::Serialization {
+                detail: error.to_string(),
+            }
+        })?;
         let handle = self.core.inner().device_join_approvals.issue(
             crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleState {
                 admin_identity,
                 join_session_id: session.join_session_id.clone(),
                 operation_id,
                 role: internal_role,
-                expires_at: session.expires_at.clone(),
+                expires_at: approval_expires_at.clone(),
                 user_presence_at,
             },
         )?;
@@ -600,7 +627,7 @@ impl<'a> DeviceJoinService<'a> {
             join_session_id: session.join_session_id,
             role,
             sas,
-            expires_at: session.expires_at,
+            expires_at: approval_expires_at,
         })
     }
 
@@ -622,11 +649,31 @@ impl<'a> DeviceJoinService<'a> {
             .map_err(|error| crate::ImError::Serialization {
                 detail: error.to_string(),
             })?;
-        let state = self.core.inner().device_join_approvals.claim(
+        let claim = self.core.inner().device_join_approvals.claim(
             &request.approval_handle,
             &confirmed_at,
             now,
         )?;
+        let state = match claim {
+            crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleClaim::Claimed(
+                state,
+            ) => state,
+            crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleClaim::Expired(
+                state,
+            ) => {
+                let admin_client = self.core.client_async(state.admin_identity).await?;
+                let mut runtime = crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production_for_rollout(
+                    self.core,
+                    &admin_client,
+                    true,
+                );
+                return public_progress(
+                    runtime
+                        .reconcile_expired_approval(&state.join_session_id)
+                        .await?,
+                );
+            }
+        };
         let confirmed_at = state
             .user_presence_at
             .clone()
@@ -656,11 +703,21 @@ impl<'a> DeviceJoinService<'a> {
                 .inner()
                 .device_join_approvals
                 .consume(&request.approval_handle)?,
-            Err(error) if approval_error_is_retryable(error) => self
-                .core
-                .inner()
-                .device_join_approvals
-                .release(&request.approval_handle)?,
+            Err(error) if approval_error_is_retryable(error) => {
+                let proof_expires_at =
+                    crate::internal::identity_device_join::load_prepared_admin_approval(
+                        self.core,
+                        &state.join_session_id,
+                    )
+                    .ok()
+                    .flatten()
+                    .filter(|approval| approval.operation_id == state.operation_id)
+                    .map(|approval| approval.authorizing_device_proof.expires_at);
+                self.core
+                    .inner()
+                    .device_join_approvals
+                    .release_with_expiry(&request.approval_handle, proof_expires_at.as_deref())?;
+            }
             Err(_) => self
                 .core
                 .inner()
@@ -695,6 +752,12 @@ impl<'a> DeviceJoinService<'a> {
             ))
         }
     }
+}
+
+fn parse_approval_expiry(value: &str) -> crate::ImResult<OffsetDateTime> {
+    OffsetDateTime::parse(value, &Rfc3339).map_err(|_| crate::ImError::LocalStateUnavailable {
+        detail: "device Join approval expiry is invalid".to_owned(),
+    })
 }
 
 fn public_progress(

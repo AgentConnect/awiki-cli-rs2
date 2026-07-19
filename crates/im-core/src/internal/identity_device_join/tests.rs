@@ -401,7 +401,7 @@ fn encrypted_challenge_round_trips_and_binds_aad() {
 #[test]
 fn two_devices_derive_the_same_sas_and_approval_is_restart_safe() {
     use crate::internal::identity_device_state::{
-        DeviceAuthorizationRole, IdentityInternalCheckpoint,
+        DeviceAuthorizationRole, DeviceAuthorizationStatus, IdentityInternalCheckpoint,
     };
 
     let root = tempfile::tempdir().unwrap();
@@ -537,6 +537,105 @@ fn two_devices_derive_the_same_sas_and_approval_is_restart_safe() {
             .unwrap()
             .unwrap(),
         approval
+    );
+
+    let store = JoinStateStore::new(&restarted);
+    let mut persisted = store
+        .load(&started.session.join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap();
+    persisted
+        .approval
+        .as_mut()
+        .unwrap()
+        .authorizing_device_proof
+        .expires_at = "2020-01-01T00:00:00Z".to_owned();
+    store.save(&persisted).unwrap();
+    drop(restarted);
+
+    let restarted = open_vault_core(root.path());
+    assert!(reset_expired_admin_approval_after_remote_poll(
+        &restarted,
+        &started.session.join_session_id,
+        &started.session.expires_at,
+        OffsetDateTime::now_utc(),
+    )
+    .unwrap());
+    assert!(
+        load_prepared_admin_approval(&restarted, &started.session.join_session_id)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        restarted
+            .device_join()
+            .session(&started.session.join_session_id, DeviceJoinSide::Admin)
+            .unwrap()
+            .phase,
+        DeviceJoinLocalPhase::ResponseVerified
+    );
+    let renewed_at = format_time(OffsetDateTime::now_utc()).unwrap();
+    let renewed = prepare_admin_approval(
+        &restarted,
+        "approve-full-pairing-renewed",
+        &started.session.join_session_id,
+        &checkpoint,
+        DeviceAuthorizationRole::Member,
+        &renewed_at,
+        true,
+    )
+    .unwrap();
+    assert_eq!(renewed.operation_id, "approve-full-pairing-renewed");
+    assert_eq!(renewed.pairing_confirmation.user_presence_at, renewed_at);
+
+    let manifest = anp::authentication::validate_device_manifest(&renewed.new_document)
+        .unwrap()
+        .unwrap();
+    let added = manifest
+        .devices
+        .iter()
+        .find(|device| device.device_id == started.session.protocol_device_id.as_str())
+        .unwrap();
+    let authorization =
+        crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization {
+            checkpoint: IdentityInternalCheckpoint {
+                document_version: 8,
+                document_hash: canonical_hash(&renewed.new_document).unwrap(),
+                registry_version: 4,
+            },
+            device: crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                device_id: added.device_id.clone(),
+                signing_key_id: added.signing_key_id.clone(),
+                e2ee_key_id: added.e2ee_key_id.clone(),
+                status: DeviceAuthorizationStatus::Active,
+                role: DeviceAuthorizationRole::Member,
+                management_ready: false,
+                auth_generation: 1,
+            },
+        };
+    let store = JoinStateStore::new(&restarted);
+    let mut expired = store
+        .load(&started.session.join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap();
+    expired.phase = DeviceJoinLocalPhase::Expired;
+    store.save(&expired).unwrap();
+
+    let authorized = mark_admin_approval_consumed_after_remote_poll(
+        &restarted,
+        &started.session.join_session_id,
+        &started.session.expires_at,
+        &authorization,
+    )
+    .unwrap();
+    assert_eq!(authorized.phase, DeviceJoinLocalPhase::Authorized);
+    assert_eq!(
+        load_prepared_admin_approval(&restarted, &started.session.join_session_id)
+            .unwrap()
+            .unwrap()
+            .authorizing_device_proof,
+        renewed.authorizing_device_proof,
+        "remote consumed reconciliation must not regenerate an approval proof"
     );
 }
 

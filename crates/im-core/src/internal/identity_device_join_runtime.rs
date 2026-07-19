@@ -44,6 +44,12 @@ struct DeviceJoinApprovalHandleEntry {
     lease: DeviceJoinApprovalHandleLease,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum DeviceJoinApprovalHandleClaim {
+    Claimed(DeviceJoinApprovalHandleState),
+    Expired(DeviceJoinApprovalHandleState),
+}
+
 #[derive(Default)]
 pub(crate) struct DeviceJoinApprovalHandleStore {
     entries: std::sync::Mutex<HashMap<String, DeviceJoinApprovalHandleEntry>>,
@@ -98,7 +104,7 @@ impl DeviceJoinApprovalHandleStore {
         handle: &str,
         confirmed_at: &str,
         now: time::OffsetDateTime,
-    ) -> crate::ImResult<DeviceJoinApprovalHandleState> {
+    ) -> crate::ImResult<DeviceJoinApprovalHandleClaim> {
         let mut entries =
             self.entries
                 .lock()
@@ -120,8 +126,10 @@ impl DeviceJoinApprovalHandleStore {
             return Err(crate::ImError::PermissionDenied);
         };
         if expires_at <= now {
-            entries.remove(handle);
-            return Err(crate::ImError::SessionExpired);
+            let expired = entries
+                .remove(handle)
+                .ok_or(crate::ImError::PermissionDenied)?;
+            return Ok(DeviceJoinApprovalHandleClaim::Expired(expired.state));
         }
 
         let entry = entries
@@ -134,10 +142,18 @@ impl DeviceJoinApprovalHandleStore {
             entry.state.user_presence_at = Some(confirmed_at.to_owned());
         }
         entry.lease = DeviceJoinApprovalHandleLease::InFlight;
-        Ok(entry.state.clone())
+        Ok(DeviceJoinApprovalHandleClaim::Claimed(entry.state.clone()))
     }
 
     pub(crate) fn release(&self, handle: &str) -> crate::ImResult<()> {
+        self.release_with_expiry(handle, None)
+    }
+
+    pub(crate) fn release_with_expiry(
+        &self,
+        handle: &str,
+        proof_expires_at: Option<&str>,
+    ) -> crate::ImResult<()> {
         let mut entries =
             self.entries
                 .lock()
@@ -149,6 +165,14 @@ impl DeviceJoinApprovalHandleStore {
             .ok_or(crate::ImError::PermissionDenied)?;
         if entry.lease != DeviceJoinApprovalHandleLease::InFlight {
             return Err(crate::ImError::PermissionDenied);
+        }
+        if let Some(proof_expires_at) = proof_expires_at {
+            time::OffsetDateTime::parse(
+                proof_expires_at,
+                &time::format_description::well_known::Rfc3339,
+            )
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+            entry.state.expires_at = proof_expires_at.to_owned();
         }
         entry.lease = DeviceJoinApprovalHandleLease::Ready;
         Ok(())
@@ -1136,6 +1160,12 @@ where
                 let response = status
                     .challenge_response
                     .ok_or_else(|| invalid_remote_state("admin challenge response missing"))?;
+                crate::internal::identity_device_join::reset_expired_admin_approval_after_remote_poll(
+                    self.core,
+                    join_session_id,
+                    &status.expires_at,
+                    time::OffsetDateTime::now_utc(),
+                )?;
                 let verified = self.core.device_join().verify_response_as_admin(
                     crate::identity::DeviceJoinAdminVerifyRequest {
                         operation_id: format!("join-verify:{}", response.operation_id),
@@ -1165,17 +1195,11 @@ where
                 let authorization = status
                     .authorization
                     .ok_or_else(|| invalid_remote_state("admin authorization missing"))?;
-                let prepared = crate::internal::identity_device_join::load_prepared_admin_approval(
+                let session = crate::internal::identity_device_join::mark_admin_approval_consumed_after_remote_poll(
                     self.core,
                     join_session_id,
-                )?
-                .ok_or_else(|| invalid_remote_state("local prepared approval missing"))?;
-                let session = crate::internal::identity_device_join::mark_join_authorized(
-                    self.core,
-                    join_session_id,
-                    crate::identity::DeviceJoinSide::Admin,
+                    &status.expires_at,
                     &authorization,
-                    &prepared.new_document,
                 )?;
                 Ok(DeviceJoinAdvanceResult {
                     session,
@@ -1188,6 +1212,44 @@ where
                 "claimed admin received pending Join state",
             )),
         }
+    }
+
+    /// Reconciles an expired local approval lease without advancing the Join
+    /// state machine. The only remote operation is status: an already consumed
+    /// approval may be finalized locally, while every other state discards the
+    /// expired proof and requires a fresh user-presence operation.
+    pub(crate) async fn reconcile_expired_approval(
+        &mut self,
+        join_session_id: &str,
+    ) -> crate::ImResult<DeviceJoinAdvanceResult> {
+        self.gate.require_enabled()?;
+        let status = self.remote.status(join_session_id).await?;
+        if status.state != DeviceJoinRemoteState::Consumed {
+            crate::internal::identity_device_join::reset_expired_admin_approval_after_remote_poll(
+                self.core,
+                join_session_id,
+                &status.expires_at,
+                time::OffsetDateTime::now_utc(),
+            )?;
+            return Err(crate::ImError::SessionExpired);
+        }
+
+        let authorization = status
+            .authorization
+            .ok_or_else(|| invalid_remote_state("admin authorization missing"))?;
+        let session =
+            crate::internal::identity_device_join::mark_admin_approval_consumed_after_remote_poll(
+                self.core,
+                join_session_id,
+                &status.expires_at,
+                &authorization,
+            )?;
+        Ok(DeviceJoinAdvanceResult {
+            session,
+            remote_state: status.state,
+            authorization: Some(authorization),
+            sas: None,
+        })
     }
 
     pub(crate) async fn approve(

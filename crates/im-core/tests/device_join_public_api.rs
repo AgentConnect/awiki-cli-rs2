@@ -124,3 +124,25 @@ fn host_session_projection_excludes_internal_join_checkpoints() {
         );
     }
 }
+
+#[test]
+fn low_level_join_state_machine_is_not_a_public_rollout_bypass() {
+    let identity_module = include_str!("../src/identity/mod.rs");
+    let prelude = include_str!("../src/prelude.rs");
+    let service = include_str!("../src/identity/join.rs");
+
+    assert!(identity_module.contains("pub(crate) use self::join"));
+    assert!(!prelude.contains("DeviceJoinSessionSummary"));
+    for method in [
+        "start",
+        "prepare_admin_challenge",
+        "respond_as_new_device",
+        "verify_response_as_admin",
+        "session",
+    ] {
+        assert!(
+            service.contains(&format!("pub(crate) fn {method}")),
+            "low-level method {method} must remain crate-internal"
+        );
+    }
+}

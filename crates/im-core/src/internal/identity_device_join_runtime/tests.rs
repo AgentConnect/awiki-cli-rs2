@@ -30,13 +30,16 @@ fn approval_handle_is_single_active_intent_and_redacts_handle_state() {
         ),
         Err(crate::ImError::PermissionDenied)
     ));
-    let bound = store
+    let DeviceJoinApprovalHandleClaim::Claimed(bound) = store
         .claim(
             &second,
             "2026-07-19T11:00:00Z",
             test_time("2026-07-19T11:00:00Z"),
         )
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("fresh approval handle must be claimable")
+    };
     assert_eq!(
         bound.user_presence_at.as_deref(),
         Some("2026-07-19T11:00:00Z")
@@ -58,13 +61,16 @@ fn approval_handle_is_single_active_intent_and_redacts_handle_state() {
         Err(crate::ImError::PermissionDenied)
     ));
     store.release(&second).unwrap();
-    let retried = store
+    let DeviceJoinApprovalHandleClaim::Claimed(retried) = store
         .claim(
             &second,
             "2026-07-19T11:02:00Z",
             test_time("2026-07-19T11:02:00Z"),
         )
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("released approval handle must remain claimable before expiry")
+    };
     assert_eq!(
         retried.user_presence_at.as_deref(),
         Some("2026-07-19T11:00:00Z")
@@ -129,24 +135,39 @@ fn approval_handle_claim_is_atomic_across_concurrent_callers() {
 #[test]
 fn expired_approval_handle_is_consumed_on_claim() {
     let store = DeviceJoinApprovalHandleStore::default();
-    let handle = store
-        .issue(DeviceJoinApprovalHandleState {
-            admin_identity: crate::identity::IdentitySelector::Default,
-            join_session_id: "join-expired-handle".to_owned(),
-            operation_id: "op-expired-handle".to_owned(),
-            role: DeviceAuthorizationRole::Member,
-            expires_at: "2026-07-19T11:00:00Z".to_owned(),
-            user_presence_at: None,
-        })
-        .unwrap();
+    let state = DeviceJoinApprovalHandleState {
+        admin_identity: crate::identity::IdentitySelector::Default,
+        join_session_id: "join-expired-handle".to_owned(),
+        operation_id: "op-expired-handle".to_owned(),
+        role: DeviceAuthorizationRole::Member,
+        expires_at: "2026-07-19T11:00:00Z".to_owned(),
+        user_presence_at: None,
+    };
+    let before_boundary = store.issue(state.clone()).unwrap();
+    assert!(matches!(
+        store
+            .claim(
+                &before_boundary,
+                "2026-07-19T10:59:59Z",
+                test_time("2026-07-19T10:59:59Z"),
+            )
+            .unwrap(),
+        DeviceJoinApprovalHandleClaim::Claimed(_)
+    ));
+    store.consume(&before_boundary).unwrap();
+
+    let handle = store.issue(state).unwrap();
 
     assert!(matches!(
-        store.claim(
-            &handle,
-            "2026-07-19T12:00:00Z",
-            test_time("2026-07-19T12:00:00Z"),
-        ),
-        Err(crate::ImError::SessionExpired)
+        store
+            .claim(
+                &handle,
+                "2026-07-19T11:00:00Z",
+                test_time("2026-07-19T11:00:00Z"),
+            )
+            .unwrap(),
+        DeviceJoinApprovalHandleClaim::Expired(state)
+            if state.operation_id == "op-expired-handle"
     ));
     assert!(matches!(
         store.claim(
@@ -156,6 +177,50 @@ fn expired_approval_handle_is_consumed_on_claim() {
         ),
         Err(crate::ImError::PermissionDenied)
     ));
+}
+
+#[test]
+fn retryable_approval_lease_is_extended_to_the_exact_proof_expiry() {
+    let store = DeviceJoinApprovalHandleStore::default();
+    let handle = store
+        .issue(DeviceJoinApprovalHandleState {
+            admin_identity: crate::identity::IdentitySelector::Default,
+            join_session_id: "join-proof-lease".to_owned(),
+            operation_id: "op-proof-lease".to_owned(),
+            role: DeviceAuthorizationRole::Member,
+            expires_at: "2026-07-19T11:05:00Z".to_owned(),
+            user_presence_at: None,
+        })
+        .unwrap();
+    assert!(matches!(
+        store
+            .claim(
+                &handle,
+                "2026-07-19T11:04:59Z",
+                test_time("2026-07-19T11:04:59Z"),
+            )
+            .unwrap(),
+        DeviceJoinApprovalHandleClaim::Claimed(_)
+    ));
+    store
+        .release_with_expiry(&handle, Some("2026-07-19T11:09:59Z"))
+        .unwrap();
+
+    let DeviceJoinApprovalHandleClaim::Claimed(retried) = store
+        .claim(
+            &handle,
+            "2026-07-19T11:06:00Z",
+            test_time("2026-07-19T11:06:00Z"),
+        )
+        .unwrap()
+    else {
+        panic!("the retry lease must follow the persisted proof expiry")
+    };
+    assert_eq!(retried.expires_at, "2026-07-19T11:09:59Z");
+    assert_eq!(
+        retried.user_presence_at.as_deref(),
+        Some("2026-07-19T11:04:59Z")
+    );
 }
 
 #[test]
@@ -303,6 +368,84 @@ impl DeviceJoinNewDeviceRemote for RecordingRemote {
         };
         Ok(result)
     }
+}
+
+struct StatusOnlyAdminRemote {
+    calls: Rc<RefCell<Vec<&'static str>>>,
+}
+
+impl DeviceJoinAdminRemote for StatusOnlyAdminRemote {
+    async fn registry(
+        &mut self,
+        _did: &crate::ids::Did,
+        _include_pending_join_requests: bool,
+    ) -> crate::ImResult<DeviceJoinRemoteRegistry> {
+        self.calls.borrow_mut().push("registry");
+        panic!("expired approval reconciliation must not read the Registry")
+    }
+
+    async fn status(
+        &mut self,
+        join_session_id: &str,
+    ) -> crate::ImResult<DeviceJoinRemoteAdminStatus> {
+        self.calls.borrow_mut().push("status");
+        Ok(DeviceJoinRemoteAdminStatus {
+            join_session_id: join_session_id.to_owned(),
+            state: DeviceJoinRemoteState::ResponseVerified,
+            expires_at: "2030-01-01T00:00:00Z".to_owned(),
+            challenge: None,
+            challenge_response: None,
+            authorization: None,
+        })
+    }
+
+    async fn claim(
+        &mut self,
+        _request: DeviceJoinRemoteClaimRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteClaimResult> {
+        self.calls.borrow_mut().push("claim");
+        panic!("expired approval reconciliation must not claim")
+    }
+
+    async fn submit_challenge(
+        &mut self,
+        _challenge: &DeviceJoinChallenge,
+    ) -> crate::ImResult<DeviceJoinRemoteChallengeResult> {
+        self.calls.borrow_mut().push("challenge");
+        panic!("expired approval reconciliation must not submit a challenge")
+    }
+
+    async fn approve(
+        &mut self,
+        _request: DeviceJoinRemoteApproveRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteApproveResult> {
+        self.calls.borrow_mut().push("approve");
+        panic!("expired approval reconciliation must not approve")
+    }
+}
+
+#[tokio::test]
+async fn expired_approval_reconciliation_only_reads_remote_status() {
+    let root = tempfile::tempdir().unwrap();
+    let core = open_vault_core(root.path());
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let remote = StatusOnlyAdminRemote {
+        calls: calls.clone(),
+    };
+    let mut runtime = DeviceJoinAdminRuntime::new(
+        &core,
+        crate::identity::IdentitySelector::Default,
+        remote,
+        DeviceJoinRuntimeGate::from_rollout_flag(true),
+    );
+
+    let error = runtime
+        .reconcile_expired_approval("join-expired-reconcile")
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, crate::ImError::IdentityNotFound { .. }));
+    assert_eq!(*calls.borrow(), vec!["status"]);
 }
 
 #[tokio::test]
