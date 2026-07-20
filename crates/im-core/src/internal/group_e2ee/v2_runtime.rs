@@ -6,11 +6,12 @@
 //! im-core error model.
 
 use anp::group_e2ee::operations::v2::{
-    self, V2AddMemberInput, V2CreateGroupInput, V2DecryptInput, V2DecryptOutput, V2FinalizeInput,
-    V2FinalizeOutput, V2GenerateKeyPackageInput, V2InspectLocalGroupInput,
-    V2InspectLocalGroupOutput, V2ListLocalGroupMemberEndpointsOutput, V2PreparedAdd,
-    V2PreparedCreate, V2PreparedRemove, V2ProcessCommitInput, V2ProcessCommitOutput,
-    V2ProcessNoticeInput, V2ProcessNoticeOutput, V2ProcessWelcomeInput, V2ReconcilePendingInput,
+    self, V2AcceptKeyPackagePublishInput, V2AddMemberInput, V2CreateGroupInput, V2DecryptInput,
+    V2DecryptOutput, V2FinalizeInput, V2FinalizeOutput, V2GenerateKeyPackageInput,
+    V2InspectLocalGroupInput, V2InspectLocalGroupOutput, V2ListLocalGroupMemberEndpointsOutput,
+    V2PrepareKeyPackagePublishInput, V2PreparedAdd, V2PreparedCreate, V2PreparedKeyPackagePublish,
+    V2PreparedRemove, V2ProcessCommitInput, V2ProcessCommitOutput, V2ProcessNoticeInput,
+    V2ProcessNoticeOutput, V2ProcessWelcomeInput, V2ReconcilePendingInput,
     V2ReconcilePendingOutput, V2RemoveMemberInput,
 };
 use anp::group_e2ee::storage::{GroupMlsOwnerScope, GroupMlsStore, ImCoreSqliteGroupMlsStore};
@@ -46,6 +47,28 @@ impl GroupE2eeV2Runtime {
     ) -> crate::ImResult<V2GroupKeyPackage> {
         v2::generate_key_package_v2(&self.store, input, did_document, device_signing_private_key)
             .map_err(map_group_mls_error)
+    }
+
+    pub(crate) fn prepare_or_resume_key_package_publish(
+        &self,
+        input: V2PrepareKeyPackagePublishInput,
+        did_document: &Value,
+        device_signing_private_key: &PrivateKeyMaterial,
+    ) -> crate::ImResult<V2PreparedKeyPackagePublish> {
+        v2::prepare_or_resume_key_package_publish_v2(
+            &self.store,
+            input,
+            did_document,
+            device_signing_private_key,
+        )
+        .map_err(map_group_mls_error)
+    }
+
+    pub(crate) fn accept_key_package_publish(
+        &self,
+        input: V2AcceptKeyPackagePublishInput,
+    ) -> crate::ImResult<V2PreparedKeyPackagePublish> {
+        v2::accept_key_package_publish_v2(&self.store, input).map_err(map_group_mls_error)
     }
 
     pub(crate) fn create_group_prepare(

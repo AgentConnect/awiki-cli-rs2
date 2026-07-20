@@ -11,8 +11,10 @@
 //! Group E2EE v2 is enabled. A publication failure is returned after local
 //! authorization so the same Join poll can retry the missing public material.
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest as _, Sha256};
 use std::collections::HashMap;
 
 use crate::identity::{
@@ -70,7 +72,6 @@ impl std::fmt::Debug for DeviceJoinApprovalHandleStore {
 
 impl DeviceJoinApprovalHandleStore {
     pub(crate) fn issue(&self, state: DeviceJoinApprovalHandleState) -> crate::ImResult<String> {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         use rand::RngCore as _;
 
         let mut random = [0_u8; 24];
@@ -1080,23 +1081,50 @@ where
 }
 
 pub(crate) trait DeviceJoinGroupKeyPackagePublisher {
-    async fn publish(&mut self, client: &crate::core::ImClient) -> crate::ImResult<()>;
+    async fn publish(
+        &mut self,
+        client: &crate::core::ImClient,
+        publish: &DeviceJoinGroupKeyPackagePublish,
+    ) -> crate::ImResult<()>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeviceJoinGroupKeyPackagePublish {
+    pub(crate) expected_device_id: String,
+    pub(crate) operation_id: String,
+    pub(crate) key_package_id: String,
 }
 
 struct ProductionDeviceJoinGroupKeyPackagePublisher;
 
+#[cfg(feature = "group-e2ee")]
 impl DeviceJoinGroupKeyPackagePublisher for ProductionDeviceJoinGroupKeyPackagePublisher {
-    async fn publish(&mut self, client: &crate::core::ImClient) -> crate::ImResult<()> {
-        client
-            .groups()
-            .publish_key_package_async(crate::groups::GroupKeyPackagePublishRequest {
-                purpose: crate::groups::GroupKeyPackagePurpose::Normal,
-                group: None,
-                device_id: None,
-                key_package_id: None,
-            })
-            .await?;
-        Ok(())
+    async fn publish(
+        &mut self,
+        client: &crate::core::ImClient,
+        publish: &DeviceJoinGroupKeyPackagePublish,
+    ) -> crate::ImResult<()> {
+        crate::internal::group_e2ee::v2_lifecycle::publish_join_key_package(
+            client,
+            &publish.expected_device_id,
+            &publish.operation_id,
+            &publish.key_package_id,
+        )
+        .await
+    }
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+impl DeviceJoinGroupKeyPackagePublisher for ProductionDeviceJoinGroupKeyPackagePublisher {
+    async fn publish(
+        &mut self,
+        _client: &crate::core::ImClient,
+        _publish: &DeviceJoinGroupKeyPackagePublish,
+    ) -> crate::ImResult<()> {
+        Err(crate::ImError::invalid_input(
+            Some("multi_device_group_e2ee_enabled".to_owned()),
+            "Group E2EE v2 requires the group-e2ee build feature",
+        ))
     }
 }
 
@@ -1114,7 +1142,56 @@ where
     let client = core
         .client_async(crate::identity::IdentitySelector::Did(session.did.clone()))
         .await?;
-    publisher.publish(&client).await
+    if client.did() != &session.did {
+        return Err(crate::ImError::invalid_input(
+            Some("join_session.did".to_owned()),
+            "authorized Join DID does not match the selected local identity",
+        ));
+    }
+    let device = core
+        .identities()
+        .device_summary(crate::identity::IdentitySelector::Did(session.did.clone()))?;
+    if device.protocol_device_id.as_ref() != Some(&session.protocol_device_id) {
+        return Err(crate::ImError::invalid_input(
+            Some("join_session.protocol_device_id".to_owned()),
+            "authorized Join device does not match the current local protocol device",
+        ));
+    }
+    let publish = join_group_key_package_publish(session);
+    publisher.publish(&client, &publish).await
+}
+
+fn join_group_key_package_publish(
+    session: &crate::identity::DeviceJoinSessionSummary,
+) -> DeviceJoinGroupKeyPackagePublish {
+    let expected_device_id = session.protocol_device_id.as_str().to_owned();
+    DeviceJoinGroupKeyPackagePublish {
+        operation_id: deterministic_join_publish_id("operation", session),
+        key_package_id: deterministic_join_publish_id("key-package", session),
+        expected_device_id,
+    }
+}
+
+fn deterministic_join_publish_id(
+    kind: &str,
+    session: &crate::identity::DeviceJoinSessionSummary,
+) -> String {
+    let mut digest = Sha256::new();
+    for value in [
+        "awiki.device.join.p6-key-package.v1",
+        kind,
+        session.did.as_str(),
+        session.join_session_id.as_str(),
+        session.protocol_device_id.as_str(),
+    ] {
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    let encoded = URL_SAFE_NO_PAD.encode(digest.finalize());
+    match kind {
+        "operation" => format!("join-p6-publish-{encoded}"),
+        _ => format!("join-kp-{encoded}"),
+    }
 }
 
 fn v2_prekey_publication_required(

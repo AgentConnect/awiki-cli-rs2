@@ -227,14 +227,18 @@ impl crate::internal::identity_device_join_runtime::DeviceJoinPrekeyPublisher
 #[derive(Default)]
 struct RecordingJoinGroupKeyPackagePublisher {
     fail_next: bool,
-    calls: usize,
+    calls: Vec<crate::internal::identity_device_join_runtime::DeviceJoinGroupKeyPackagePublish>,
 }
 
 impl crate::internal::identity_device_join_runtime::DeviceJoinGroupKeyPackagePublisher
     for RecordingJoinGroupKeyPackagePublisher
 {
-    async fn publish(&mut self, _client: &crate::core::ImClient) -> crate::ImResult<()> {
-        self.calls += 1;
+    async fn publish(
+        &mut self,
+        _client: &crate::core::ImClient,
+        publish: &crate::internal::identity_device_join_runtime::DeviceJoinGroupKeyPackagePublish,
+    ) -> crate::ImResult<()> {
+        self.calls.push(publish.clone());
         if self.fail_next {
             self.fail_next = false;
             return Err(crate::ImError::TransportUnavailable {
@@ -250,7 +254,11 @@ struct PanicJoinGroupKeyPackagePublisher;
 impl crate::internal::identity_device_join_runtime::DeviceJoinGroupKeyPackagePublisher
     for PanicJoinGroupKeyPackagePublisher
 {
-    async fn publish(&mut self, _client: &crate::core::ImClient) -> crate::ImResult<()> {
+    async fn publish(
+        &mut self,
+        _client: &crate::core::ImClient,
+        _publish: &crate::internal::identity_device_join_runtime::DeviceJoinGroupKeyPackagePublish,
+    ) -> crate::ImResult<()> {
         panic!("disabled Join Group KeyPackage publication must not invoke the publisher")
     }
 }
@@ -461,23 +469,23 @@ async fn group_v2_join_activation_publishes_key_package_and_retries_safely() {
     use crate::internal::identity_device_state::DeviceAuthorizationRole;
 
     let root = tempfile::tempdir().unwrap();
-    let (core, document, did) = open_vnext_identity_core_with_messaging_flags(
+    let (core, _document, did) = open_vnext_identity_core_with_messaging_flags(
         root.path(),
         DeviceAuthorizationRole::Member,
         false,
         false,
         true,
     );
-    let manifest = anp::authentication::validate_device_manifest(&document)
+    let current_device_id = core
+        .identities()
+        .device_summary(crate::identity::IdentitySelector::Default)
         .unwrap()
+        .protocol_device_id
         .unwrap();
     let session = crate::identity::DeviceJoinSessionSummary {
         join_session_id: "join-group-key-package".to_owned(),
         did,
-        protocol_device_id: crate::ids::ProtocolDeviceId::parse(
-            manifest.devices[0].device_id.clone(),
-        )
-        .unwrap(),
+        protocol_device_id: current_device_id,
         side: DeviceJoinSide::NewDevice,
         phase: DeviceJoinLocalPhase::Authorized,
         join_request_hash: "sha256:authorized-group-join".to_owned(),
@@ -486,7 +494,7 @@ async fn group_v2_join_activation_publishes_key_package_and_retries_safely() {
     };
     let mut publisher = RecordingJoinGroupKeyPackagePublisher {
         fail_next: true,
-        calls: 0,
+        calls: Vec::new(),
     };
 
     let error = publish_v2_group_key_package_after_activation_with_publisher(
@@ -496,7 +504,10 @@ async fn group_v2_join_activation_publishes_key_package_and_retries_safely() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(error, crate::ImError::TransportUnavailable { .. }));
+    assert!(
+        matches!(error, crate::ImError::TransportUnavailable { .. }),
+        "unexpected P6 Join publication error: {error:?}"
+    );
     let after_failure = core
         .identities()
         .device_summary(crate::identity::IdentitySelector::Default)
@@ -509,7 +520,31 @@ async fn group_v2_join_activation_publishes_key_package_and_retries_safely() {
     publish_v2_group_key_package_after_activation_with_publisher(&core, &session, &mut publisher)
         .await
         .unwrap();
-    assert_eq!(publisher.calls, 2);
+    assert_eq!(publisher.calls.len(), 2);
+    assert_eq!(publisher.calls[0], publisher.calls[1]);
+    assert_eq!(
+        publisher.calls[0].expected_device_id,
+        session.protocol_device_id.as_str()
+    );
+    assert!(publisher.calls[0]
+        .operation_id
+        .starts_with("join-p6-publish-"));
+    assert!(publisher.calls[0].key_package_id.starts_with("join-kp-"));
+
+    let mut mismatched_session = session.clone();
+    mismatched_session.protocol_device_id =
+        crate::ids::ProtocolDeviceId::parse("dev-not-the-current-device").unwrap();
+    let mut mismatch_publisher = RecordingJoinGroupKeyPackagePublisher::default();
+    assert!(matches!(
+        publish_v2_group_key_package_after_activation_with_publisher(
+            &core,
+            &mismatched_session,
+            &mut mismatch_publisher,
+        )
+        .await,
+        Err(crate::ImError::InvalidInput { .. })
+    ));
+    assert!(mismatch_publisher.calls.is_empty());
 
     let off_root = tempfile::tempdir().unwrap();
     let (off_core, off_document, off_did) =
@@ -1512,8 +1547,8 @@ fn new_device_activation_survives_local_commit_failure_and_promotes_rootless_mem
         .all(|secret_ref| secret_ref.identity_id.is_some()));
 }
 
-#[test]
-fn admin_join_activation_remains_not_ready_without_root_import() {
+#[tokio::test]
+async fn admin_join_activation_remains_not_ready_without_root_import() {
     use crate::internal::identity_device_state::{
         DeviceAuthorizationRole, DeviceAuthorizationStatus, IdentityInternalCheckpoint,
     };
@@ -1522,7 +1557,7 @@ fn admin_join_activation_remains_not_ready_without_root_import() {
     let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
         "awiki.test", "alice", None, None,
     ).unwrap();
-    let core = open_vault_core(root.path());
+    let core = open_vault_core_with_messaging_flags(root.path(), false, false, true);
     let started = core
         .device_join()
         .start(DeviceJoinStartRequest {
@@ -1601,7 +1636,7 @@ fn admin_join_activation_remains_not_ready_without_root_import() {
         },
     )
     .unwrap();
-    finalize_new_device_activation(&core, &started.session.join_session_id).unwrap();
+    let session = finalize_new_device_activation(&core, &started.session.join_session_id).unwrap();
     let summary = core
         .identities()
         .device_summary(crate::identity::IdentitySelector::Default)
@@ -1613,6 +1648,29 @@ fn admin_join_activation_remains_not_ready_without_root_import() {
     assert_eq!(
         summary.readiness,
         crate::identity::IdentityDeviceReadiness::AdminAwaitingRoot
+    );
+
+    let mut publisher = RecordingJoinGroupKeyPackagePublisher {
+        fail_next: true,
+        calls: Vec::new(),
+    };
+    assert!(matches!(
+        crate::internal::identity_device_join_runtime::publish_v2_group_key_package_after_activation_with_publisher(
+            &core,
+            &session,
+            &mut publisher,
+        )
+        .await,
+        Err(crate::ImError::TransportUnavailable { .. })
+    ));
+    assert_eq!(publisher.calls.len(), 1);
+    assert_eq!(
+        core.identities()
+            .device_summary(crate::identity::IdentitySelector::Default)
+            .unwrap()
+            .readiness,
+        crate::identity::IdentityDeviceReadiness::AdminAwaitingRoot,
+        "P6 publication failure must not roll authorized admin readiness back"
     );
 }
 

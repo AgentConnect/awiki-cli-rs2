@@ -175,6 +175,17 @@ impl AuthenticatedRpcTransport for LoopbackTransport {
     }
 }
 
+impl crate::internal::transport::AsyncAuthenticatedRpcTransport for LoopbackTransport {
+    async fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> crate::ImResult<Value> {
+        AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+    }
+}
+
 #[test]
 fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
     let directory = TestDirectory::new("im-core-p6-v2-product");
@@ -594,6 +605,83 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
     assert_ne!(
         store(&directory, &fixture, a1).state_db_path(),
         store(&directory, &fixture, a2).state_db_path()
+    );
+}
+
+#[tokio::test]
+async fn key_package_publish_restarts_with_exact_bytes_and_skips_host_after_acceptance() {
+    let directory = TestDirectory::new("im-core-p6-v2-key-package-wal");
+    let fixture = make_did_fixture("alice-key-package-wal", &["alice-kp1"]);
+    let device = &fixture.devices[0];
+    let transport = LoopbackTransport::default();
+    let key = signing_key(device);
+    let mut meta = key_service_meta(&fixture.did, &device.device_id, "op-join-kp");
+    meta.created_at = None;
+    let first_input = key_package_input(&fixture, device, "kp-join", "req-join-kp-first");
+    let initial = product(&directory, &fixture, device, transport.clone());
+    let first = initial
+        .prepare_current_key_package(meta.clone(), first_input.clone(), &fixture.document, &key)
+        .expect("prepare durable public KeyPackage before Host call");
+    transport.set_next(NextResponse::TransportFailure);
+    let mut async_transport = transport.clone();
+    assert!(matches!(
+        initial
+            .publish_current_key_package_async(&mut async_transport, &first)
+            .await,
+        Err(crate::ImError::TransportUnavailable { .. })
+    ));
+    drop(initial);
+
+    let mut retry_input = first_input.clone();
+    retry_input.issued_at = "2026-07-19T01:00:00Z".to_owned();
+    retry_input.expires_at = "2026-08-20T00:00:00Z".to_owned();
+    retry_input.now = "2026-07-20T00:01:00Z".to_owned();
+    retry_input.request_id = "req-join-kp-restart".to_owned();
+    let restarted = product(&directory, &fixture, device, transport.clone());
+    let resumed = restarted
+        .prepare_current_key_package(meta.clone(), retry_input.clone(), &fixture.document, &key)
+        .expect("restart resumes exact public KeyPackage");
+    assert_eq!(resumed, first);
+    let accepted = restarted
+        .publish_current_key_package_async(&mut async_transport, &resumed)
+        .await
+        .expect("typed Host result is persisted as accepted");
+    drop(restarted);
+
+    let calls = transport.calls();
+    let publish_calls = calls
+        .iter()
+        .filter(|call| call.method == "group.e2ee.publish_key_package")
+        .collect::<Vec<_>>();
+    assert_eq!(publish_calls.len(), 2);
+    assert_eq!(publish_calls[0].params, publish_calls[1].params);
+
+    let successful_replay = product(&directory, &fixture, device, transport.clone());
+    let cached = successful_replay
+        .prepare_current_key_package(meta, retry_input, &fixture.document, &key)
+        .expect("accepted publish remains resumable");
+    assert_eq!(
+        cached.status,
+        anp::group_e2ee::operations::v2::V2KeyPackagePublishStatus::Accepted
+    );
+    assert_eq!(cached.meta, first.meta);
+    assert_eq!(cached.body, first.body);
+    assert_eq!(cached.accepted_result.as_ref(), Some(&accepted));
+    assert_eq!(
+        successful_replay
+            .publish_current_key_package_async(&mut async_transport, &cached)
+            .await
+            .expect("accepted replay returns cached typed result"),
+        accepted
+    );
+    assert_eq!(
+        transport
+            .calls()
+            .iter()
+            .filter(|call| call.method == "group.e2ee.publish_key_package")
+            .count(),
+        2,
+        "repeated successful Join polling must not call the Host again"
     );
 }
 

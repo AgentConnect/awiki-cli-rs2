@@ -5,11 +5,12 @@
 //! SDK remains the only owner of OpenMLS private state.
 
 use anp::group_e2ee::operations::v2::{
-    V2AddMemberInput, V2DecryptInput, V2DecryptOutput, V2EncryptInput, V2FinalizeInput,
-    V2FinalizeOutput, V2GenerateKeyPackageInput, V2InspectLocalGroupInput,
-    V2InspectLocalGroupOutput, V2ListLocalGroupMemberEndpointsOutput, V2PreparedAdd,
-    V2PreparedCreate, V2PreparedRemove, V2ProcessNoticeInput, V2ProcessNoticeOutput,
-    V2ReconcilePendingInput, V2ReconciledPendingCommit, V2RemoveMemberInput,
+    V2AcceptKeyPackagePublishInput, V2AddMemberInput, V2DecryptInput, V2DecryptOutput,
+    V2EncryptInput, V2FinalizeInput, V2FinalizeOutput, V2GenerateKeyPackageInput,
+    V2InspectLocalGroupInput, V2InspectLocalGroupOutput, V2KeyPackagePublishStatus,
+    V2ListLocalGroupMemberEndpointsOutput, V2PrepareKeyPackagePublishInput, V2PreparedAdd,
+    V2PreparedCreate, V2PreparedKeyPackagePublish, V2PreparedRemove, V2ProcessNoticeInput,
+    V2ProcessNoticeOutput, V2ReconcilePendingInput, V2ReconciledPendingCommit, V2RemoveMemberInput,
 };
 use anp::group_e2ee::{
     get_key_package_request_v2, group_add_request_v2, group_create_request_v2,
@@ -29,7 +30,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::internal::proof::origin::OriginProofIdentity;
-use crate::internal::transport::AuthenticatedRpcTransport;
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
 use crate::internal::wire::direct::DirectPayload;
 
 use super::v2_application::{V2ApplicationProjection, V2ProductApplication};
@@ -205,12 +206,6 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct V2PreparedKeyPackagePublish {
-    pub(crate) meta: V2ServiceMetadata,
-    pub(crate) body: V2PublishKeyPackageBody,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct V2PreparedCreateSubmission {
     pub(crate) meta: V2ServiceMetadata,
     pub(crate) prepared: V2PreparedCreate,
@@ -300,14 +295,25 @@ where
     ) -> crate::ImResult<V2PreparedKeyPackagePublish> {
         self.ensure_current_device(&input.owner_did, &input.owner_device_id)?;
         self.ensure_current_device(&meta.sender_did, &meta.sender_device_id)?;
-        let package =
-            self.runtime
-                .generate_key_package(input, did_document, device_signing_private_key)?;
-        let body = V2PublishKeyPackageBody {
-            group_key_package: package,
-        };
-        publish_key_package_request_v2(meta.clone(), body.clone()).map_err(map_v2_wire_error)?;
-        Ok(V2PreparedKeyPackagePublish { meta, body })
+        let prepared = self.runtime.prepare_or_resume_key_package_publish(
+            V2PrepareKeyPackagePublishInput {
+                meta,
+                owner_did: input.owner_did,
+                owner_device_id: input.owner_device_id,
+                verification_method: input.verification_method,
+                key_package_id: input.key_package_id,
+                issued_at: input.issued_at,
+                expires_at: input.expires_at,
+                now: input.now,
+                draft_extension_negotiated: input.draft_extension_negotiated,
+                request_id: input.request_id,
+            },
+            did_document,
+            device_signing_private_key,
+        )?;
+        publish_key_package_request_v2(prepared.meta.clone(), prepared.body.clone())
+            .map_err(map_v2_wire_error)?;
+        Ok(prepared)
     }
 
     pub(crate) fn publish_current_key_package(
@@ -318,6 +324,14 @@ where
             &prepared.body.group_key_package.owner_did,
             &prepared.body.group_key_package.owner_device_id,
         )?;
+        if prepared.status == V2KeyPackagePublishStatus::Accepted {
+            return prepared.accepted_result.clone().ok_or_else(|| {
+                crate::ImError::LocalStateUnavailable {
+                    detail: "accepted P6 v2 KeyPackage publish omitted its typed Host result"
+                        .to_owned(),
+                }
+            });
+        }
         let result = self
             .host
             .publish_key_package(prepared.meta.clone(), prepared.body.clone())?;
@@ -328,7 +342,82 @@ where
         {
             return Err(host_typed_result_mismatch("KeyPackage publish result"));
         }
-        Ok(result)
+        let accepted = self
+            .runtime
+            .accept_key_package_publish(V2AcceptKeyPackagePublishInput {
+                owner_did: prepared.body.group_key_package.owner_did.clone(),
+                owner_device_id: prepared.body.group_key_package.owner_device_id.clone(),
+                operation_id: prepared.meta.operation_id.clone(),
+                result,
+                request_id: format!("{}-accept", prepared.meta.operation_id),
+            })?;
+        accepted
+            .accepted_result
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "accepted P6 v2 KeyPackage publish was not persisted".to_owned(),
+            })
+    }
+
+    /// Async production seam for Join-triggered P6 publication. Local
+    /// prepare/resume and acceptance remain synchronous SQLite operations, but
+    /// the authenticated Host call never blocks the async executor.
+    pub(crate) async fn publish_current_key_package_async<T>(
+        &self,
+        transport: &mut T,
+        prepared: &V2PreparedKeyPackagePublish,
+    ) -> crate::ImResult<V2PublishKeyPackageResult>
+    where
+        T: AsyncAuthenticatedRpcTransport,
+    {
+        self.ensure_current_device(
+            &prepared.body.group_key_package.owner_did,
+            &prepared.body.group_key_package.owner_device_id,
+        )?;
+        if prepared.status == V2KeyPackagePublishStatus::Accepted {
+            return prepared.accepted_result.clone().ok_or_else(|| {
+                crate::ImError::LocalStateUnavailable {
+                    detail: "accepted P6 v2 KeyPackage publish omitted its typed Host result"
+                        .to_owned(),
+                }
+            });
+        }
+        let request = publish_key_package_request_v2(prepared.meta.clone(), prepared.body.clone())
+            .map_err(map_v2_wire_error)?;
+        let method = request
+            .get("method")
+            .and_then(Value::as_str)
+            .ok_or_else(|| serialization_error("P6 v2 SDK request is missing method"))?
+            .to_owned();
+        let params = request
+            .get("params")
+            .cloned()
+            .filter(Value::is_object)
+            .ok_or_else(|| serialization_error("P6 v2 SDK request is missing params"))?;
+        let raw = transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, &method, params)
+            .await?;
+        let result = parse_publish_key_package_result_v2(&raw).map_err(map_v2_wire_error)?;
+        result.validate().map_err(map_v2_wire_error)?;
+        if result.owner_did != prepared.body.group_key_package.owner_did
+            || result.owner_device_id != prepared.body.group_key_package.owner_device_id
+            || result.key_package_id != prepared.body.group_key_package.key_package_id
+        {
+            return Err(host_typed_result_mismatch("KeyPackage publish result"));
+        }
+        let accepted = self
+            .runtime
+            .accept_key_package_publish(V2AcceptKeyPackagePublishInput {
+                owner_did: prepared.body.group_key_package.owner_did.clone(),
+                owner_device_id: prepared.body.group_key_package.owner_device_id.clone(),
+                operation_id: prepared.meta.operation_id.clone(),
+                result,
+                request_id: format!("{}-accept", prepared.meta.operation_id),
+            })?;
+        accepted
+            .accepted_result
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "accepted P6 v2 KeyPackage publish was not persisted".to_owned(),
+            })
     }
 
     pub(crate) fn get_target_key_package(

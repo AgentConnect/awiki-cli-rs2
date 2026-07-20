@@ -154,6 +154,57 @@ pub(crate) fn publish_current_key_package(
     })
 }
 
+/// Publishes the one deterministic P6 KeyPackage associated with an
+/// authorized device-Join session. The SDK WAL owns retry identity and the
+/// accepted Host result, so a repeated successful Join poll has no network
+/// side effect.
+pub(crate) async fn publish_join_key_package(
+    client: &crate::core::ImClient,
+    expected_device_id: &str,
+    operation_id: &str,
+    key_package_id: &str,
+) -> crate::ImResult<()> {
+    let context = production_context(client)?;
+    require_current_device_selection(Some(expected_device_id), &context.device.device_id)?;
+    let service_did = service_did(client)?;
+    let now = OffsetDateTime::now_utc();
+    let now_text = format_time(now)?;
+    let expires_at = format_time(now + KEY_PACKAGE_TTL)?;
+    let mut meta = service_meta(
+        client,
+        &context.device,
+        service_did.as_str(),
+        operation_id,
+        GROUP_E2EE_TRANSPORT_PROFILE_V2,
+        &now_text,
+    );
+    // A volatile wire timestamp would change the stable WAL digest after a
+    // restart. P6 permits this field to be omitted.
+    meta.created_at = None;
+    let prepared = context.product.prepare_current_key_package(
+        meta,
+        V2GenerateKeyPackageInput {
+            owner_did: client.did().as_str().to_owned(),
+            owner_device_id: context.device.device_id.clone(),
+            verification_method: context.device.signing_key_id.clone(),
+            key_package_id: key_package_id.to_owned(),
+            issued_at: now_text.clone(),
+            expires_at,
+            now: now_text,
+            draft_extension_negotiated: true,
+            request_id: format!("{operation_id}-local"),
+        },
+        &context.did_document,
+        &context.device_signing_private_key,
+    )?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    context
+        .product
+        .publish_current_key_package_async(&mut transport, &prepared)
+        .await?;
+    Ok(())
+}
+
 /// Creates the P6 v2 MLS state after P4 has created the business group.
 ///
 /// The creator KeyPackage is published first, then the exact typed P6 create
