@@ -1271,7 +1271,17 @@ SELECT msg_id,
        credential_name
 FROM messages
 WHERE owner_identity_id = ?
-  AND msg_id IN ({placeholders})
+  AND (
+        msg_id IN ({placeholders})
+        OR CASE
+             WHEN json_valid(COALESCE(NULLIF(metadata, ''), '{{}}')) = 1
+             THEN json_extract(
+                    COALESCE(NULLIF(metadata, ''), '{{}}'),
+                    '$.raw_message_id'
+                  ) IN ({placeholders})
+             ELSE 0
+           END
+      )
   AND is_e2ee = 1
   AND CASE
         WHEN json_valid(COALESCE(NULLIF(metadata, ''), '{{}}')) = 1
@@ -1279,8 +1289,12 @@ WHERE owner_identity_id = ?
         ELSE NULL
       END = 'decrypted'"#
     );
-    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(message_ids.len() + 1);
+    let mut params: Vec<&dyn rusqlite::ToSql> =
+        Vec::with_capacity(message_ids.len().saturating_mul(2) + 1);
     params.push(&owner_identity_id);
+    for message_id in &message_ids {
+        params.push(message_id);
+    }
     for message_id in &message_ids {
         params.push(message_id);
     }
@@ -1305,11 +1319,16 @@ FROM inbound_resolution_backlog
 WHERE owner_identity_id = ?
   AND message_id IN ({placeholders})"#
     );
+    let mut backlog_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(message_ids.len() + 1);
+    backlog_params.push(&owner_identity_id);
+    for message_id in &message_ids {
+        backlog_params.push(message_id);
+    }
     let mut statement = connection
         .prepare(&backlog_statement)
         .map_err(super::local_state_unavailable)?;
     let rows = statement
-        .query_map(params.as_slice(), |row| row.get::<_, String>(0))
+        .query_map(backlog_params.as_slice(), |row| row.get::<_, String>(0))
         .map_err(super::local_state_unavailable)?;
     for row in rows {
         let payload = row.map_err(super::local_state_unavailable)?;

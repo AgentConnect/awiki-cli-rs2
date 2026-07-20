@@ -2867,6 +2867,330 @@ async fn messages_read_async_replays_pending_direct_cipher_after_init() {
     assert_eq!(session_after_repeat.recv_n, saved_session.recv_n);
 }
 
+#[tokio::test]
+async fn direct_inbox_projects_verified_handle_before_persisting_message() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadySessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [{
+                    "id": "msg-authoritative-peer",
+                    "sender_did": "did:example:bob-new",
+                    "receiver_did": "did:example:alice",
+                    "content": "verified peer message",
+                    "content_type": "text/plain",
+                    "sent_at": "2026-07-21T00:00:00Z",
+                    "server_seq": 21
+                }],
+                "has_more": false
+            }),
+        },
+        StaticHandleDirectoryTransport,
+    );
+
+    let result = runtime
+        .inbox_async(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::DirectOnly,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: None,
+            },
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.page.items.len(), 1);
+    let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-bob",
+        "bob.anpclaw.com",
+    )
+    .unwrap();
+    let records = client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .list_direct_messages(
+            "alice-id",
+            vec![
+                crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                    &scope,
+                ),
+            ],
+            20,
+        )
+        .await
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].msg_id, "msg-authoritative-peer");
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    assert_eq!(
+        crate::internal::local_state::inbound_resolution_backlog::pending_count(
+            &connection,
+            "alice-id"
+        )
+        .unwrap(),
+        0
+    );
+    assert!(crate::internal::local_state::peer_personas::resolve_by_did(
+        &connection,
+        "alice-id",
+        "did:example:bob-new"
+    )
+    .unwrap()
+    .is_some());
+}
+
+#[tokio::test]
+async fn cached_p5_projection_restores_logical_id_without_redecrypting_replay() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![
+            crate::internal::local_state::messages::MessageRecord {
+                msg_id: "msg-logical-p5".to_owned(),
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                conversation_id: "dm:did:example:bob-new".to_owned(),
+                thread_id: "dm:did:example:bob-new".to_owned(),
+                direction: 0,
+                sender_did: "did:example:bob-new".to_owned(),
+                receiver_did: "did:example:alice".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "cached p5 plaintext".to_owned(),
+                sent_at: "2026-07-21T00:00:00Z".to_owned(),
+                stored_at: "2026-07-21T00:00:00Z".to_owned(),
+                is_e2ee: true,
+                metadata: json!({
+                    "decryption_state": "decrypted",
+                    "raw_message_id": "wire-p5-device-delivery"
+                })
+                .to_string(),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            },
+            crate::internal::local_state::messages::MessageRecord {
+                msg_id: "msg-logical-own-sync".to_owned(),
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                conversation_id: "dm:did:example:bob-new".to_owned(),
+                thread_id: "dm:did:example:bob-new".to_owned(),
+                direction: 1,
+                sender_did: "did:example:alice".to_owned(),
+                receiver_did: "did:example:bob-new".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "cached own-sync plaintext".to_owned(),
+                sent_at: "2026-07-21T00:00:01Z".to_owned(),
+                stored_at: "2026-07-21T00:00:01Z".to_owned(),
+                is_e2ee: true,
+                metadata: json!({
+                    "decryption_state": "decrypted",
+                    "raw_message_id": "wire-p5-own-sync-delivery"
+                })
+                .to_string(),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            },
+        ])
+        .await
+        .unwrap();
+    let mut raw = json!({
+        "messages": [
+            {
+                "id": "wire-p5-device-delivery",
+                "sender_did": "did:example:bob-new",
+                "receiver_did": "did:example:alice",
+                "content_type": anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2,
+                "method": "direct.incoming",
+                "params": {
+                    "meta": {
+                        "profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2
+                    },
+                    "body": {"invalid_if_reprocessed": true}
+                }
+            },
+            {
+                "id": "wire-p5-own-sync-delivery",
+                "sender_did": "did:example:alice",
+                "receiver_did": "did:example:alice",
+                "content_type": anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2,
+                "method": "direct.incoming",
+                "params": {
+                    "meta": {
+                        "profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2
+                    },
+                    "body": {"invalid_if_reprocessed": true}
+                }
+            }
+        ],
+        "has_more": false
+    });
+
+    project_secure_direct_messages_async(&client, &mut raw, &mut NoopDirectoryTransport).await;
+
+    let messages = raw["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["id"], "msg-logical-p5");
+    assert_eq!(messages[0]["raw_message_id"], "wire-p5-device-delivery");
+    assert_eq!(messages[0]["content"], "cached p5 plaintext");
+    assert_eq!(messages[0]["decryption_state"], "decrypted");
+    assert_eq!(messages[0]["direction"], 0);
+    assert!(metadata_attributes_from_object(
+        messages[0].as_object().unwrap(),
+        "msg-logical-p5",
+        Some("text/plain")
+    )
+    .iter()
+    .any(|attribute| {
+        attribute.key == "raw_message_id" && attribute.value == "wire-p5-device-delivery"
+    }));
+    assert_eq!(messages[1]["id"], "msg-logical-own-sync");
+    assert_eq!(messages[1]["raw_message_id"], "wire-p5-own-sync-delivery");
+    assert_eq!(messages[1]["sender_did"], "did:example:alice");
+    assert_eq!(messages[1]["receiver_did"], "did:example:bob-new");
+    assert_eq!(messages[1]["content"], "cached own-sync plaintext");
+    assert_eq!(messages[1]["decryption_state"], "decrypted");
+    assert_eq!(messages[1]["direction"], 1);
+}
+
+#[tokio::test]
+async fn verified_handle_projection_rejects_missing_and_conflicting_authority() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let mut first = FixedLookupDirectoryTransport(json!({
+        "handle": "bob",
+        "full_handle": "bob.anpclaw.com",
+        "did": "did:example:bob-new",
+        "domain": "anpclaw.com",
+        "status": "active",
+        "user_id": "user-bob"
+    }));
+    assert!(matches!(
+        lookup_direct_peer_scope_async(&client, &mut first, "did:example:bob-new").await,
+        VerifiedHandleScopeLookup::Verified(_)
+    ));
+
+    let mut missing = FixedLookupDirectoryTransport(json!({
+        "handle": "bob",
+        "full_handle": "bob.anpclaw.com",
+        "did": "did:example:bob-missing-authority",
+        "domain": "anpclaw.com",
+        "status": "active"
+    }));
+    assert!(matches!(
+        lookup_direct_peer_scope_async(&client, &mut missing, "did:example:bob-missing-authority")
+            .await,
+        VerifiedHandleScopeLookup::Rejected
+    ));
+
+    let mismatched_response = json!({
+        "handle": "mallory",
+        "full_handle": "mallory.anpclaw.com",
+        "did": "did:example:mallory-response",
+        "domain": "anpclaw.com",
+        "status": "active",
+        "user_id": "user-mallory-response"
+    });
+    let mut mismatched_async = FixedLookupDirectoryTransport(mismatched_response.clone());
+    assert!(matches!(
+        lookup_direct_peer_scope_async(&client, &mut mismatched_async, "did:example:bob-requested")
+            .await,
+        VerifiedHandleScopeLookup::Rejected
+    ));
+    let mut mismatched_sync = FixedLookupDirectoryTransport(mismatched_response);
+    assert!(matches!(
+        lookup_direct_peer_scope(&client, &mut mismatched_sync, "did:example:bob-requested"),
+        VerifiedHandleScopeLookup::Rejected
+    ));
+
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    assert!(crate::internal::local_state::peer_personas::resolve_by_did(
+        &connection,
+        "alice-id",
+        "did:example:bob-requested"
+    )
+    .unwrap()
+    .is_none());
+    assert!(crate::internal::local_state::peer_personas::resolve_by_did(
+        &connection,
+        "alice-id",
+        "did:example:mallory-response"
+    )
+    .unwrap()
+    .is_none());
+    let before = crate::internal::local_state::peer_personas::resolve_by_did(
+        &connection,
+        "alice-id",
+        "did:example:bob-new",
+    )
+    .unwrap()
+    .unwrap();
+    drop(connection);
+    let mut conflicting = FixedLookupDirectoryTransport(json!({
+        "handle": "mallory",
+        "full_handle": "mallory.anpclaw.com",
+        "did": "did:example:bob-new",
+        "domain": "anpclaw.com",
+        "status": "active",
+        "user_id": "user-mallory"
+    }));
+    assert!(matches!(
+        lookup_direct_peer_scope_async(&client, &mut conflicting, "did:example:bob-new").await,
+        VerifiedHandleScopeLookup::Rejected
+    ));
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let after = crate::internal::local_state::peer_personas::resolve_by_did(
+        &connection,
+        "alice-id",
+        "did:example:bob-new",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(after, before);
+
+    assert!(matches!(
+        lookup_direct_peer_scope_async(
+            &client,
+            &mut NoopDirectoryTransport,
+            "did:example:no-authority"
+        )
+        .await,
+        VerifiedHandleScopeLookup::Unavailable
+    ));
+
+    let mut fallback = ProfileFallbackDirectoryTransport {
+        malformed_authority_response: false,
+    };
+    let fallback_scope =
+        resolve_direct_peer_scope_async(&client, &mut fallback, "did:example:legacy-profile")
+            .await
+            .unwrap();
+    assert_eq!(fallback_scope.user_id, "legacy-user");
+    assert_eq!(fallback_scope.full_handle, "legacy.anpclaw.com");
+
+    let mut rejected_fallback = ProfileFallbackDirectoryTransport {
+        malformed_authority_response: true,
+    };
+    assert!(
+        resolve_direct_peer_scope_async(
+            &client,
+            &mut rejected_fallback,
+            "did:example:malformed-authority"
+        )
+        .await
+        .is_none(),
+        "a malformed authority response must not downgrade to Profile fallback"
+    );
+}
+
 #[derive(Clone)]
 struct ReadySessionProvider;
 
@@ -3082,6 +3406,56 @@ impl RpcTransport for StaticHandleDirectoryTransport {
 }
 
 impl AsyncRpcTransport for StaticHandleDirectoryTransport {
+    async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+        RpcTransport::rpc(self, endpoint, method, params)
+    }
+}
+
+struct FixedLookupDirectoryTransport(Value);
+
+impl RpcTransport for FixedLookupDirectoryTransport {
+    fn rpc(&mut self, _endpoint: &str, method: &str, _params: Value) -> crate::ImResult<Value> {
+        if method == "lookup" {
+            Ok(self.0.clone())
+        } else {
+            Err(crate::ImError::PeerNotFound {
+                peer: "fixed-lookup-directory".to_owned(),
+            })
+        }
+    }
+}
+
+impl AsyncRpcTransport for FixedLookupDirectoryTransport {
+    async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+        RpcTransport::rpc(self, endpoint, method, params)
+    }
+}
+
+struct ProfileFallbackDirectoryTransport {
+    malformed_authority_response: bool,
+}
+
+impl RpcTransport for ProfileFallbackDirectoryTransport {
+    fn rpc(&mut self, _endpoint: &str, method: &str, _params: Value) -> crate::ImResult<Value> {
+        if method == "lookup" {
+            if self.malformed_authority_response {
+                return Ok(json!({
+                    "did": "did:example:malformed-authority",
+                    "full_handle": "malformed.anpclaw.com"
+                }));
+            }
+            return Err(crate::ImError::PeerNotFound {
+                peer: "profile-fallback".to_owned(),
+            });
+        }
+        Ok(json!({
+            "user_id": "legacy-user",
+            "full_handle": "legacy.anpclaw.com"
+        }))
+    }
+}
+
+impl AsyncRpcTransport for ProfileFallbackDirectoryTransport {
     async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
         RpcTransport::rpc(self, endpoint, method, params)
     }

@@ -1428,7 +1428,7 @@ fn annotate_direct_peer_scope(
         annotate_object_with_peer_scope(object, scope, Some(peer_did));
         return;
     }
-    if let Some(scope) = resolve_direct_peer_scope(directory_transport, peer_did) {
+    if let Some(scope) = resolve_direct_peer_scope(client, directory_transport, peer_did) {
         annotate_object_with_peer_scope(object, &scope, Some(peer_did));
     }
 }
@@ -1478,78 +1478,126 @@ async fn annotate_direct_peer_scope_async(
         annotate_object_with_peer_scope(object, scope, Some(peer_did));
         return;
     }
-    if let Some(scope) = resolve_direct_peer_scope_async(directory_transport, peer_did).await {
+    if let Some(scope) =
+        resolve_direct_peer_scope_async(client, directory_transport, peer_did).await
+    {
         annotate_object_with_peer_scope(object, &scope, Some(peer_did));
     }
 }
 
+enum VerifiedHandleScopeLookup {
+    Verified(crate::internal::local_state::owner_scope::DirectPeerScope),
+    Unavailable,
+    Rejected,
+}
+
 fn resolve_direct_peer_scope(
+    client: &crate::core::ImClient,
     directory_transport: &mut impl RpcTransport,
     peer_did: &str,
 ) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
-    lookup_direct_peer_scope(directory_transport, peer_did).or_else(|| {
-        let call =
-            crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(peer_did)
+    match lookup_direct_peer_scope(client, directory_transport, peer_did) {
+        VerifiedHandleScopeLookup::Verified(scope) => Some(scope),
+        VerifiedHandleScopeLookup::Rejected => None,
+        VerifiedHandleScopeLookup::Unavailable => {
+            let call =
+                crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(peer_did)
+                    .ok()?;
+            let raw = directory_transport
+                .rpc(call.endpoint, call.method, call.params)
                 .ok()?;
-        let raw = directory_transport
-            .rpc(call.endpoint, call.method, call.params)
-            .ok()?;
-        direct_peer_scope_from_profile(raw)
-    })
+            direct_peer_scope_from_profile(raw)
+        }
+    }
 }
 
 fn lookup_direct_peer_scope(
+    client: &crate::core::ImClient,
     directory_transport: &mut impl RpcTransport,
     peer_did: &str,
-) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
-    let call =
+) -> VerifiedHandleScopeLookup {
+    let Ok(call) =
         crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(peer_did)
-            .ok()?;
-    let raw = directory_transport
-        .rpc(call.endpoint, call.method, call.params)
-        .ok()?;
-    direct_peer_scope_from_handle_lookup(raw)
+    else {
+        return VerifiedHandleScopeLookup::Unavailable;
+    };
+    let Ok(raw) = directory_transport.rpc(call.endpoint, call.method, call.params) else {
+        return VerifiedHandleScopeLookup::Unavailable;
+    };
+    let Ok(lookup) = crate::internal::directory_runtime::handle_lookup_from_value(&raw) else {
+        return VerifiedHandleScopeLookup::Rejected;
+    };
+    if lookup.did.as_str() != peer_did {
+        return VerifiedHandleScopeLookup::Rejected;
+    }
+    if crate::directory::project_handle_lookup(client, &lookup).is_err() {
+        return VerifiedHandleScopeLookup::Rejected;
+    }
+    match crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        lookup.user_id,
+        lookup.handle.as_str(),
+    ) {
+        Ok(scope) => VerifiedHandleScopeLookup::Verified(scope),
+        Err(_) => VerifiedHandleScopeLookup::Rejected,
+    }
 }
 
 async fn resolve_direct_peer_scope_async(
+    client: &crate::core::ImClient,
     directory_transport: &mut impl AsyncRpcTransport,
     peer_did: &str,
 ) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
-    if let Some(scope) = lookup_direct_peer_scope_async(directory_transport, peer_did).await {
-        return Some(scope);
+    match lookup_direct_peer_scope_async(client, directory_transport, peer_did).await {
+        VerifiedHandleScopeLookup::Verified(scope) => Some(scope),
+        VerifiedHandleScopeLookup::Rejected => None,
+        VerifiedHandleScopeLookup::Unavailable => {
+            let call =
+                crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(peer_did)
+                    .ok()?;
+            let raw = directory_transport
+                .rpc(call.endpoint, call.method, call.params)
+                .await
+                .ok()?;
+            direct_peer_scope_from_profile(raw)
+        }
     }
-    let call =
-        crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(peer_did).ok()?;
-    let raw = directory_transport
-        .rpc(call.endpoint, call.method, call.params)
-        .await
-        .ok()?;
-    direct_peer_scope_from_profile(raw)
 }
 
 async fn lookup_direct_peer_scope_async(
+    client: &crate::core::ImClient,
     directory_transport: &mut impl AsyncRpcTransport,
     peer_did: &str,
-) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
-    let call =
+) -> VerifiedHandleScopeLookup {
+    let Ok(call) =
         crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(peer_did)
-            .ok()?;
-    let raw = directory_transport
+    else {
+        return VerifiedHandleScopeLookup::Unavailable;
+    };
+    let Ok(raw) = directory_transport
         .rpc(call.endpoint, call.method, call.params)
         .await
-        .ok()?;
-    direct_peer_scope_from_handle_lookup(raw)
-}
-
-fn direct_peer_scope_from_handle_lookup(
-    raw: Value,
-) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
-    let lookup = crate::internal::directory_runtime::handle_lookup_from_value(&raw).ok()?;
-    crate::internal::local_state::owner_scope::DirectPeerScope::new(
+    else {
+        return VerifiedHandleScopeLookup::Unavailable;
+    };
+    let Ok(lookup) = crate::internal::directory_runtime::handle_lookup_from_value(&raw) else {
+        return VerifiedHandleScopeLookup::Rejected;
+    };
+    if lookup.did.as_str() != peer_did {
+        return VerifiedHandleScopeLookup::Rejected;
+    }
+    if crate::directory::project_handle_lookup_async(client, &lookup)
+        .await
+        .is_err()
+    {
+        return VerifiedHandleScopeLookup::Rejected;
+    }
+    match crate::internal::local_state::owner_scope::DirectPeerScope::new(
         lookup.user_id,
-        lookup.handle.as_str().to_owned(),
-    )
-    .ok()
+        lookup.handle.as_str(),
+    ) {
+        Ok(scope) => VerifiedHandleScopeLookup::Verified(scope),
+        Err(_) => VerifiedHandleScopeLookup::Rejected,
+    }
 }
 
 fn direct_peer_scope_from_profile(
@@ -1706,7 +1754,7 @@ fn project_secure_direct_messages_impl(
                 && !is_v2_session_control_projection(message)
                 && !is_p5_v2_projection_candidate(message)
         });
-        apply_cached_secure_direct_messages(client, &mut message_values);
+        let _ = apply_cached_secure_direct_messages(client, &mut message_values);
         let warnings =
             crate::internal::secure_direct::incoming::maybe_decrypt_direct_e2ee_messages_for_client(
                 client,
@@ -1761,7 +1809,8 @@ async fn project_secure_direct_messages_async_impl(
             return;
         };
         let mut message_values = std::mem::take(messages);
-        apply_cached_secure_direct_messages_async(client, &mut message_values).await;
+        let cached_secure_indices =
+            apply_cached_secure_direct_messages_async(client, &mut message_values).await;
         let mut processed_async = vec![false; message_values.len()];
         let mut async_warnings = Vec::new();
         let mut pending_cipher_indices: HashMap<String, Vec<usize>> = HashMap::new();
@@ -1831,6 +1880,9 @@ async fn project_secure_direct_messages_async_impl(
             }
             if is_p5_v2_projection_candidate(&message_values[index]) {
                 processed_async[index] = true;
+                if cached_secure_indices.contains(&index) {
+                    continue;
+                }
                 if !client.core_inner().direct_e2ee_v2_enabled() {
                     mark_private_root_control(&mut message_values[index]);
                     continue;
@@ -2481,15 +2533,18 @@ fn secure_direct_wire_message_ids(messages: &[Value]) -> Vec<String> {
 }
 
 #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
-fn apply_cached_secure_direct_messages(client: &crate::core::ImClient, messages: &mut [Value]) {
+fn apply_cached_secure_direct_messages(
+    client: &crate::core::ImClient,
+    messages: &mut [Value],
+) -> HashSet<usize> {
     let message_ids = secure_direct_wire_message_ids(messages);
     if message_ids.is_empty() {
-        return;
+        return HashSet::new();
     }
     let Ok(connection) = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     ) else {
-        return;
+        return HashSet::new();
     };
     let Ok(records) =
         crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
@@ -2498,25 +2553,30 @@ fn apply_cached_secure_direct_messages(client: &crate::core::ImClient, messages:
             &message_ids,
         )
     else {
-        return;
+        return HashSet::new();
     };
-    apply_cached_secure_direct_records(messages, records);
+    apply_cached_secure_direct_records(messages, records)
 }
 
 #[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
-fn apply_cached_secure_direct_messages(_client: &crate::core::ImClient, _messages: &mut [Value]) {}
+fn apply_cached_secure_direct_messages(
+    _client: &crate::core::ImClient,
+    _messages: &mut [Value],
+) -> HashSet<usize> {
+    HashSet::new()
+}
 
 #[cfg(feature = "sqlite")]
 async fn apply_cached_secure_direct_messages_async(
     client: &crate::core::ImClient,
     messages: &mut [Value],
-) {
+) -> HashSet<usize> {
     let message_ids = secure_direct_wire_message_ids(messages);
     if message_ids.is_empty() {
-        return;
+        return HashSet::new();
     }
     let Ok(db) = client.core_inner().local_state_db().await else {
-        return;
+        return HashSet::new();
     };
     let Ok(records) = db
         .list_decrypted_secure_messages(
@@ -2525,45 +2585,51 @@ async fn apply_cached_secure_direct_messages_async(
         )
         .await
     else {
-        return;
+        return HashSet::new();
     };
-    apply_cached_secure_direct_records(messages, records);
+    apply_cached_secure_direct_records(messages, records)
 }
 
 #[cfg(feature = "sqlite")]
 fn apply_cached_secure_direct_records(
     messages: &mut [Value],
     records: Vec<crate::internal::local_state::messages::MessageRecord>,
-) {
-    let records = records
-        .into_iter()
-        .map(|record| {
-            (
-                (
-                    record.msg_id.clone(),
-                    record.sender_did.clone(),
-                    record.receiver_did.clone(),
-                ),
-                record,
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    for message in messages {
-        let key = (
-            secure_direct_message_id(message),
-            message
-                .get("sender_did")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            message
-                .get("receiver_did")
-                .or_else(|| message.get("recipient_did"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-        );
-        let Some(record) = records.get(&key) else {
+) -> HashSet<usize> {
+    let mut records_by_wire_id = HashMap::<String, Vec<_>>::new();
+    for record in records {
+        records_by_wire_id
+            .entry(cached_secure_direct_wire_message_id(&record))
+            .or_default()
+            .push(record);
+    }
+    let mut applied = HashSet::new();
+    for (index, message) in messages.iter_mut().enumerate() {
+        let wire_message_id = secure_direct_message_id(message);
+        let sender_did = message
+            .get("sender_did")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let receiver_did = message
+            .get("receiver_did")
+            .or_else(|| message.get("recipient_did"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let Some(candidates) = records_by_wire_id.get(&wire_message_id) else {
+            continue;
+        };
+        let record = candidates
+            .iter()
+            .find(|record| record.sender_did == sender_did && record.receiver_did == receiver_did)
+            .or_else(|| {
+                let record = (candidates.len() == 1).then(|| &candidates[0])?;
+                (is_p5_v2_projection_candidate(message)
+                    && record.direction == 1
+                    && record.sender_did == record.owner_did
+                    && sender_did == record.owner_did
+                    && receiver_did == record.owner_did)
+                    .then_some(record)
+            });
+        let Some(record) = record else {
             continue;
         };
         let plaintext = cached_secure_direct_plaintext(record);
@@ -2574,7 +2640,39 @@ fn apply_cached_secure_direct_records(
                 ("plaintext", plaintext),
             ]),
         );
+        if let Some(object) = message.as_object_mut() {
+            object.insert("id".to_owned(), Value::String(record.msg_id.clone()));
+            object.insert("raw_message_id".to_owned(), Value::String(wire_message_id));
+            object.insert(
+                "sender_did".to_owned(),
+                Value::String(record.sender_did.clone()),
+            );
+            object.insert(
+                "receiver_did".to_owned(),
+                Value::String(record.receiver_did.clone()),
+            );
+            object.insert("direction".to_owned(), Value::from(record.direction));
+        }
+        applied.insert(index);
     }
+    applied
+}
+
+#[cfg(feature = "sqlite")]
+fn cached_secure_direct_wire_message_id(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> String {
+    serde_json::from_str::<Value>(&record.metadata)
+        .ok()
+        .and_then(|metadata| {
+            metadata
+                .get("raw_message_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| record.msg_id.clone())
 }
 
 #[cfg(feature = "sqlite")]
@@ -3495,7 +3593,23 @@ fn metadata_attributes_from_object(
             value: is_read.to_string(),
         });
     }
-    let raw_message_id = raw_message_identity(object);
+    let raw_message_id = if object
+        .get("meta")
+        .or_else(|| object.get("params").and_then(|params| params.get("meta")))
+        .and_then(Value::as_object)
+        .and_then(|meta| meta.get("profile"))
+        .and_then(Value::as_str)
+        == Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
+    {
+        string_or_number_value(object.get("raw_message_id"))
+    } else {
+        String::new()
+    };
+    let raw_message_id = if raw_message_id.trim().is_empty() {
+        raw_message_identity(object)
+    } else {
+        raw_message_id
+    };
     if !raw_message_id.trim().is_empty() && raw_message_id != message_id {
         attributes.push(crate::messages::MessageMetadataAttribute {
             key: "raw_message_id".to_string(),
