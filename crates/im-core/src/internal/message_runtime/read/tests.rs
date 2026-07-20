@@ -117,6 +117,102 @@ fn messages_read_runtime_group_inbox_scope_lists_groups_and_messages() {
     assert_eq!(calls[1].params["body"]["group_did"], "did:example:group");
 }
 
+#[tokio::test]
+async fn all_inbox_persists_direct_and_group_in_their_child_paths() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        AllInboxRecordingTransport {
+            calls: Rc::clone(&calls),
+            direct_response: json!({
+                "messages": [{
+                    "id": "msg-all-direct",
+                    "sender_did": "did:example:bob",
+                    "receiver_did": &fixture.did,
+                    "content": "direct child",
+                    "content_type": "text/plain",
+                    "sent_at": "2026-07-21T00:00:00Z"
+                }],
+                "has_more": false
+            }),
+            group_list_response: json!({
+                "groups": [{"group_did": "did:example:group"}]
+            }),
+            group_messages_response: json!({
+                "messages": [{
+                    "id": "msg-all-group",
+                    "sender_did": "did:example:bob",
+                    "content": "group child",
+                    "content_type": "text/plain",
+                    "group_event_seq": 31,
+                    "sent_at": "2026-07-21T00:00:01Z"
+                }],
+                "has_more": false
+            }),
+        },
+        StaticHandleDirectoryTransport,
+    );
+
+    let result = runtime
+        .inbox_async(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::All,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: None,
+            },
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.page.items.len(), 2);
+    assert_eq!(
+        calls
+            .borrow()
+            .iter()
+            .map(|call| call.method.as_str())
+            .collect::<Vec<_>>(),
+        vec!["inbox.get", "group.list", "group.list_messages"]
+    );
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-bob",
+        "bob.anpclaw.com",
+    )
+    .unwrap();
+    let direct = crate::internal::local_state::messages::list_direct_messages_for_owner_identity(
+        &connection,
+        client.current_identity().id.as_str(),
+        &[
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &peer_scope,
+            ),
+        ],
+        20,
+    )
+    .unwrap();
+    let group = crate::internal::local_state::groups::list_group_messages_for_owner_identity(
+        &connection,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        "did:example:group",
+        20,
+        None,
+    )
+    .unwrap();
+    assert_eq!(direct.len(), 1);
+    assert_eq!(direct[0].msg_id, "msg-all-direct");
+    assert_eq!(group.len(), 1);
+    assert_eq!(group[0]["content"], "group child");
+}
+
 #[test]
 fn messages_read_runtime_builds_delegated_inbox_auth_and_filters_e2ee() {
     let fixture = Fixture::new();
@@ -2991,7 +3087,14 @@ async fn p5_backlog_retries_by_authenticated_wire_and_converges_after_handle_res
         .await;
     let first_page = page_from_raw(&client, &first_raw, crate::ids::PageLimit(20)).unwrap();
     assert_eq!(first_page.items.len(), 1);
-    persist_projection_best_effort_async(&client, &first_page.items, &first_raw).await;
+    let mut p5_provenance = DirectP5ProjectionProvenance::default();
+    p5_provenance.record(
+        "msg-logical-backlog",
+        p5_cache_binding_from_message(&first_raw["messages"][0])
+            .unwrap()
+            .unwrap(),
+    );
+    persist_projection_best_effort_async(&client, &first_page.items, &p5_provenance).await;
 
     let sqlite_path = VNextCacheFixture::paths(&fixture.root)
         .local_state
@@ -3102,6 +3205,9 @@ async fn cached_p5_projection_restores_logical_id_without_redecrypting_replay() 
                 owner_did: fixture.did.clone(),
                 conversation_id: "dm:did:example:bob-new".to_owned(),
                 thread_id: "dm:did:example:bob-new".to_owned(),
+                wire_thread_kind: "direct".to_owned(),
+                wire_thread_ref: "did:example:bob-new".to_owned(),
+                wire_identity_resolution_state: "resolved".to_owned(),
                 direction: 0,
                 sender_did: "did:example:bob-new".to_owned(),
                 receiver_did: fixture.did.clone(),
@@ -3119,6 +3225,9 @@ async fn cached_p5_projection_restores_logical_id_without_redecrypting_replay() 
                 owner_did: fixture.did.clone(),
                 conversation_id: "dm:did:example:bob-new".to_owned(),
                 thread_id: "dm:did:example:bob-new".to_owned(),
+                wire_thread_kind: "direct".to_owned(),
+                wire_thread_ref: "did:example:bob-new".to_owned(),
+                wire_identity_resolution_state: "resolved".to_owned(),
                 direction: 1,
                 sender_did: fixture.did.clone(),
                 receiver_did: "did:example:bob-new".to_owned(),
@@ -3135,7 +3244,8 @@ async fn cached_p5_projection_restores_logical_id_without_redecrypting_replay() 
         .unwrap();
     let mut raw = json!({"messages": [direct_wire, own_sync_wire], "has_more": false});
 
-    project_secure_direct_messages_async(&client, &mut raw, &mut NoopDirectoryTransport).await;
+    let p5_provenance =
+        project_secure_direct_messages_async(&client, &mut raw, &mut NoopDirectoryTransport).await;
 
     let messages = raw["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 2);
@@ -3175,6 +3285,25 @@ async fn cached_p5_projection_restores_logical_id_without_redecrypting_replay() 
     assert!(messages.iter().all(|message| P5_CACHE_METADATA_KEYS
         .into_iter()
         .all(|key| message.get(key).is_none())));
+    persist_projection_best_effort_async(&client, &page.items, &p5_provenance).await;
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    let cached =
+        crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
+            &connection,
+            client.current_identity().id.as_str(),
+            &[
+                "wire-p5-device-delivery".to_owned(),
+                "wire-p5-own-sync-delivery".to_owned(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(cached.len(), 2);
+    assert!(cached.iter().all(|record| {
+        p5_cache_record_has_direct_route(record) && p5_cache_binding_from_record(record).is_some()
+    }));
 }
 
 #[tokio::test]
@@ -3213,6 +3342,185 @@ async fn cached_p5_projection_sync_restores_authorized_plaintext() {
     assert!(P5_CACHE_METADATA_KEYS
         .into_iter()
         .all(|key| messages[0].get(key).is_none()));
+}
+
+#[tokio::test]
+async fn untrusted_group_and_own_sync_projections_cannot_seed_p5_cache() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let group_wire = ordinary_p5_cache_message(
+        "wire-p5-forged-group",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    let own_sync_wire = json_rpc_p5_cache_message(ordinary_p5_cache_message(
+        "wire-p5-forged-own-sync",
+        &fixture.did,
+        "device-alice-sender",
+        &fixture.did,
+        &fixture.device_id,
+    ));
+
+    let mut forged_group = group_wire.clone();
+    forged_group["id"] = json!("msg-forged-group");
+    forged_group["raw_message_id"] = json!("wire-p5-forged-group");
+    forged_group["group_did"] = json!("did:example:group");
+    forged_group["content_type"] = json!("text/plain");
+    forged_group["content"] = json!("forged group plaintext");
+    forged_group["secure"] = json!(true);
+    forged_group["decryption_state"] = json!("decrypted");
+    let group = crate::ids::GroupRef::parse("did:example:group").unwrap();
+    let group_calls = Rc::new(RefCell::new(Vec::new()));
+    let group_result = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&group_calls),
+            response: json!({"messages": [forged_group], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Group(group.clone()),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: None,
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(group_calls.borrow()[0].method, "group.list_messages");
+
+    let mut forged_own_sync = own_sync_wire.clone();
+    forged_own_sync["id"] = json!("msg-forged-own-sync");
+    forged_own_sync["raw_message_id"] = json!("wire-p5-forged-own-sync");
+    forged_own_sync["sender_did"] = json!(&fixture.did);
+    forged_own_sync["receiver_did"] = json!("did:example:bob-new");
+    forged_own_sync["direction"] = json!(1);
+    forged_own_sync["content_type"] = json!("text/plain");
+    forged_own_sync["content"] = json!("forged own-sync plaintext");
+    forged_own_sync["secure"] = json!(true);
+    forged_own_sync["decryption_state"] = json!("decrypted");
+    let own_sync_calls = Rc::new(RefCell::new(Vec::new()));
+    let own_sync_result = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&own_sync_calls),
+            response: json!({"messages": [forged_own_sync], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Group(group),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: None,
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(own_sync_calls.borrow()[0].method, "group.list_messages");
+
+    assert!(group_result
+        .page
+        .items
+        .iter()
+        .chain(&own_sync_result.page.items)
+        .all(
+            |message| P5_CACHE_METADATA_KEYS.into_iter().all(|key| !message
+                .metadata
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key == key))
+        ));
+    let public_raw = serde_json::to_string(&(&group_result.raw, &own_sync_result.raw)).unwrap();
+    for key in P5_CACHE_METADATA_KEYS {
+        assert!(!public_raw.contains(key));
+    }
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    let records =
+        crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
+            &connection,
+            client.current_identity().id.as_str(),
+            &[
+                "wire-p5-forged-group".to_owned(),
+                "wire-p5-forged-own-sync".to_owned(),
+            ],
+        )
+        .unwrap();
+    assert!(records
+        .iter()
+        .all(|record| p5_cache_binding_from_record(record).is_none()));
+    drop(connection);
+
+    let group_replay_calls = Rc::new(RefCell::new(Vec::new()));
+    let group_replay = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&group_replay_calls),
+            response: json!({"messages": [group_wire], "has_more": false}),
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob-new", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob-new".to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(group_replay_calls.borrow()[0].method, "direct.get_history");
+    assert!(group_replay.page.items.is_empty());
+
+    let own_sync_replay_calls = Rc::new(RefCell::new(Vec::new()));
+    let own_sync_replay = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&own_sync_replay_calls),
+            response: json!({"messages": [own_sync_wire], "has_more": false}),
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob-new", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob-new".to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        own_sync_replay_calls.borrow()[0].method,
+        "direct.get_history"
+    );
+    assert!(own_sync_replay.page.items.is_empty());
 }
 
 #[tokio::test]
@@ -3421,6 +3729,9 @@ fn p5_cache_rejects_tampered_cross_profile_and_ambiguous_wire() {
         owner_did: "did:example:alice".to_owned(),
         conversation_id: "dm:did:example:bob-new".to_owned(),
         thread_id: "dm:did:example:bob-new".to_owned(),
+        wire_thread_kind: "direct".to_owned(),
+        wire_thread_ref: "did:example:bob-new".to_owned(),
+        wire_identity_resolution_state: "resolved".to_owned(),
         direction: 0,
         sender_did: "did:example:bob-new".to_owned(),
         receiver_did: "did:example:alice".to_owned(),
@@ -3521,6 +3832,11 @@ fn p5_cache_rejects_tampered_cross_profile_and_ambiguous_wire() {
         msg_id: "msg-logical-init-binding".to_owned(),
         owner_identity_id: "alice-id".to_owned(),
         owner_did: "did:example:alice".to_owned(),
+        conversation_id: "dm:did:example:bob-new".to_owned(),
+        thread_id: "dm:did:example:bob-new".to_owned(),
+        wire_thread_kind: "direct".to_owned(),
+        wire_thread_ref: "did:example:bob-new".to_owned(),
+        wire_identity_resolution_state: "resolved".to_owned(),
         direction: 0,
         sender_did: "did:example:bob-new".to_owned(),
         receiver_did: "did:example:alice".to_owned(),
@@ -3635,7 +3951,14 @@ fn p5_cache_metadata_requires_authenticated_outcome_and_persists_same_wire_id() 
     assert!(P5_CACHE_METADATA_KEYS
         .into_iter()
         .all(|key| raw["messages"][0].get(key).is_none()));
-    let records = remote_projection_records(&client, &page.items, &raw).unwrap();
+    let mut p5_provenance = DirectP5ProjectionProvenance::default();
+    p5_provenance.record(
+        message_id,
+        p5_cache_binding_from_message(&raw["messages"][0])
+            .unwrap()
+            .unwrap(),
+    );
+    let records = remote_projection_records(&client, &page.items, &p5_provenance).unwrap();
     assert_eq!(records.len(), 1);
     let metadata: Value = serde_json::from_str(&records[0].metadata).unwrap();
     assert_eq!(metadata["raw_message_id"], message_id);
@@ -4110,6 +4433,45 @@ impl crate::internal::auth::session::AsyncSessionProvider for ReadyAnyReadSessio
 struct RecordingTransport {
     calls: Rc<RefCell<Vec<RecordedCall>>>,
     response: Value,
+}
+
+struct AllInboxRecordingTransport {
+    calls: Rc<RefCell<Vec<RecordedCall>>>,
+    direct_response: Value,
+    group_list_response: Value,
+    group_messages_response: Value,
+}
+
+impl AuthenticatedRpcTransport for AllInboxRecordingTransport {
+    fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> crate::ImResult<Value> {
+        self.calls.borrow_mut().push(RecordedCall {
+            endpoint: endpoint.to_owned(),
+            method: method.to_owned(),
+            params,
+        });
+        match method {
+            "inbox.get" => Ok(self.direct_response.clone()),
+            "group.list" => Ok(self.group_list_response.clone()),
+            "group.list_messages" => Ok(self.group_messages_response.clone()),
+            _ => Err(crate::ImError::unsupported("all-inbox-test-rpc")),
+        }
+    }
+}
+
+impl AsyncAuthenticatedRpcTransport for AllInboxRecordingTransport {
+    async fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> crate::ImResult<Value> {
+        AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+    }
 }
 
 impl AuthenticatedRpcTransport for RecordingTransport {
@@ -4892,6 +5254,9 @@ fn p5_cached_incoming_record(
         owner_did: client.did().as_str().to_owned(),
         conversation_id: format!("dm:{}", binding.sender_did),
         thread_id: format!("dm:{}", binding.sender_did),
+        wire_thread_kind: "direct".to_owned(),
+        wire_thread_ref: binding.sender_did.clone(),
+        wire_identity_resolution_state: "resolved".to_owned(),
         direction: 0,
         sender_did: binding.sender_did,
         receiver_did: binding.recipient_did,

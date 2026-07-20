@@ -91,7 +91,6 @@ where
         direct.page.has_more |=
             dedupe_and_truncate_messages(&mut direct.page.items, requested_limit);
         merge_raw_metadata(&mut direct.raw, &group.raw, "all");
-        persist_projection_best_effort(self.client, &direct.page.items, &direct.raw);
         Ok(direct)
     }
 
@@ -130,17 +129,18 @@ where
         let mut raw =
             self.transport
                 .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)?;
-        if delegated.is_some() {
+        let p5_provenance = if delegated.is_some() {
             filter_delegated_e2ee_messages(&mut raw);
+            DirectP5ProjectionProvenance::default()
         } else {
             consume_group_e2ee_control_messages(self.client, &mut raw);
-            project_secure_direct_messages(self.client, &mut raw, &mut self.directory_transport);
-        }
+            project_secure_direct_messages(self.client, &mut raw, &mut self.directory_transport)
+        };
         annotate_direct_peer_scopes(self.client, &mut raw, &mut self.directory_transport, None);
         let mut page = page_from_raw(self.client, &raw, query.limit)?;
         page.items.retain(|message| message.group.is_none());
         page.has_more |= dedupe_and_truncate_messages(&mut page.items, query.limit);
-        persist_projection_best_effort(self.client, &page.items, &raw);
+        persist_projection_best_effort(self.client, &page.items, &p5_provenance);
         Ok(ReadPageResult { page, raw })
     }
 
@@ -194,7 +194,11 @@ where
             next_cursor: None,
             has_more,
         };
-        persist_projection_best_effort(self.client, &page.items, &raw);
+        persist_projection_best_effort(
+            self.client,
+            &page.items,
+            &DirectP5ProjectionProvenance::default(),
+        );
         Ok(ReadPageResult { page, raw })
     }
 
@@ -240,16 +244,17 @@ where
                     "direct.get_history",
                     params,
                 )?;
-                if delegated.is_some() {
+                let p5_provenance = if delegated.is_some() {
                     filter_delegated_e2ee_messages(&mut raw);
+                    DirectP5ProjectionProvenance::default()
                 } else {
                     consume_group_e2ee_control_messages(self.client, &mut raw);
                     project_secure_direct_messages(
                         self.client,
                         &mut raw,
                         &mut self.directory_transport,
-                    );
-                }
+                    )
+                };
                 annotate_direct_peer_scopes(
                     self.client,
                     &mut raw,
@@ -257,7 +262,7 @@ where
                     input.peer_scope.as_ref(),
                 );
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
-                persist_projection_best_effort(self.client, &page.items, &raw);
+                persist_projection_best_effort(self.client, &page.items, &p5_provenance);
                 let page = merge_direct_local_projection_best_effort(
                     self.client,
                     page,
@@ -288,7 +293,11 @@ where
                 project_group_e2ee_messages(self.client, &mut raw);
                 let mut page =
                     page_from_raw_with_group(self.client, &raw, input.query.limit, Some(&group))?;
-                persist_projection_best_effort(self.client, &page.items, &raw);
+                persist_projection_best_effort(
+                    self.client,
+                    &page.items,
+                    &DirectP5ProjectionProvenance::default(),
+                );
                 page = merge_group_local_projection_best_effort(
                     self.client,
                     page,
@@ -347,7 +356,6 @@ where
         direct.page.has_more |=
             dedupe_and_truncate_messages(&mut direct.page.items, requested_limit);
         merge_raw_metadata(&mut direct.raw, &group.raw, "all");
-        persist_projection_best_effort_async(self.client, &direct.page.items, &direct.raw).await;
         Ok(direct)
     }
 
@@ -389,8 +397,9 @@ where
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)
             .await?;
-        if delegated.is_some() {
+        let p5_provenance = if delegated.is_some() {
             filter_delegated_e2ee_messages(&mut raw);
+            DirectP5ProjectionProvenance::default()
         } else {
             consume_group_e2ee_control_messages_async(self.client, &mut raw).await;
             project_secure_direct_messages_async(
@@ -398,8 +407,8 @@ where
                 &mut raw,
                 &mut self.directory_transport,
             )
-            .await;
-        }
+            .await
+        };
         annotate_direct_peer_scopes_async(
             self.client,
             &mut raw,
@@ -410,7 +419,7 @@ where
         let mut page = page_from_raw(self.client, &raw, query.limit)?;
         page.items.retain(|message| message.group.is_none());
         page.has_more |= dedupe_and_truncate_messages(&mut page.items, query.limit);
-        persist_projection_best_effort_async(self.client, &page.items, &raw).await;
+        persist_projection_best_effort_async(self.client, &page.items, &p5_provenance).await;
         Ok(ReadPageResult { page, raw })
     }
 
@@ -463,7 +472,12 @@ where
             next_cursor: None,
             has_more,
         };
-        persist_projection_best_effort_async(self.client, &page.items, &raw).await;
+        persist_projection_best_effort_async(
+            self.client,
+            &page.items,
+            &DirectP5ProjectionProvenance::default(),
+        )
+        .await;
         Ok(ReadPageResult { page, raw })
     }
 
@@ -513,8 +527,9 @@ where
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
                     .await?;
-                if delegated.is_some() {
+                let p5_provenance = if delegated.is_some() {
                     filter_delegated_e2ee_messages(&mut raw);
+                    DirectP5ProjectionProvenance::default()
                 } else {
                     consume_group_e2ee_control_messages_async(self.client, &mut raw).await;
                     project_secure_direct_messages_async(
@@ -522,8 +537,8 @@ where
                         &mut raw,
                         &mut self.directory_transport,
                     )
-                    .await;
-                }
+                    .await
+                };
                 annotate_direct_peer_scopes_async(
                     self.client,
                     &mut raw,
@@ -532,7 +547,8 @@ where
                 )
                 .await;
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
-                persist_projection_best_effort_async(self.client, &page.items, &raw).await;
+                persist_projection_best_effort_async(self.client, &page.items, &p5_provenance)
+                    .await;
                 let page = merge_direct_local_projection_best_effort_async(
                     self.client,
                     page,
@@ -564,7 +580,12 @@ where
                 project_group_e2ee_messages_async(self.client, &mut raw).await;
                 let mut page =
                     page_from_raw_with_group(self.client, &raw, input.query.limit, Some(&group))?;
-                persist_projection_best_effort_async(self.client, &page.items, &raw).await;
+                persist_projection_best_effort_async(
+                    self.client,
+                    &page.items,
+                    &DirectP5ProjectionProvenance::default(),
+                )
+                .await;
                 page = merge_group_local_projection_best_effort_async(
                     self.client,
                     page,
@@ -595,66 +616,87 @@ where
 pub(crate) fn persist_projection_best_effort(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
-    raw: &Value,
+    p5_provenance: &DirectP5ProjectionProvenance,
 ) {
     if messages.is_empty() {
         return;
     }
+    if matches!(
+        persist_projection(client, messages, p5_provenance),
+        Ok(stored_messages) if stored_messages > 0
+    ) {
+        client.emit_committed_local_message_projection("remote_history");
+    }
+}
+
+pub(crate) fn persist_projection(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+    p5_provenance: &DirectP5ProjectionProvenance,
+) -> crate::ImResult<usize> {
     #[cfg(feature = "sqlite")]
     {
-        let outcome = (|| {
-            let records = remote_projection_records(client, messages, raw)?;
-            let mut connection = crate::internal::local_state::open_writable(
-                &client.core_inner().sdk_paths().local_state.sqlite_path,
+        let records = remote_projection_records(client, messages, p5_provenance)?;
+        let mut connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )?;
+        let transaction = connection
+            .transaction()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let outcome =
+            crate::internal::local_state::inbound_resolution_backlog::ingest_remote_messages(
+                &transaction,
+                &records,
+                "remote_history",
             )?;
-            let transaction = connection
-                .transaction()
-                .map_err(crate::internal::local_state::local_state_unavailable)?;
-            let outcome =
-                crate::internal::local_state::inbound_resolution_backlog::ingest_remote_messages(
-                    &transaction,
-                    &records,
-                    "remote_history",
-                )?;
-            transaction
-                .commit()
-                .map_err(crate::internal::local_state::local_state_unavailable)?;
-            Ok::<_, crate::ImError>(outcome)
-        })();
-        if matches!(outcome, Ok(outcome) if outcome.stored_messages > 0) {
-            client.emit_committed_local_message_projection("remote_history");
-        }
+        transaction
+            .commit()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        Ok(outcome.stored_messages)
     }
     #[cfg(not(feature = "sqlite"))]
     {
-        let _ = (client, messages, raw);
+        let _ = (client, messages, p5_provenance);
+        Ok(0)
     }
 }
 
 pub(crate) async fn persist_projection_best_effort_async(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
-    raw: &Value,
+    p5_provenance: &DirectP5ProjectionProvenance,
 ) {
     if messages.is_empty() {
         return;
     }
+    if matches!(
+        persist_projection_async(client, messages, p5_provenance).await,
+        Ok(stored_messages) if stored_messages > 0
+    ) {
+        client.emit_committed_local_message_projection("remote_history");
+    }
+}
+
+pub(crate) async fn persist_projection_async(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+    p5_provenance: &DirectP5ProjectionProvenance,
+) -> crate::ImResult<usize> {
     #[cfg(feature = "sqlite")]
     {
-        let outcome = match remote_projection_records(client, messages, raw) {
-            Ok(records) => match client.core_inner().local_state_db().await {
-                Ok(db) => db.store_remote_messages(records, "remote_history").await,
-                Err(error) => Err(error),
-            },
-            Err(error) => Err(error),
-        };
-        if matches!(outcome, Ok(outcome) if outcome.stored_messages > 0) {
-            client.emit_committed_local_message_projection("remote_history");
-        }
+        let records = remote_projection_records(client, messages, p5_provenance)?;
+        let outcome = client
+            .core_inner()
+            .local_state_db()
+            .await?
+            .store_remote_messages(records, "remote_history")
+            .await?;
+        Ok(outcome.stored_messages)
     }
     #[cfg(not(feature = "sqlite"))]
     {
-        let _ = (client, messages, raw);
+        let _ = (client, messages, p5_provenance);
+        Ok(0)
     }
 }
 
@@ -662,9 +704,8 @@ pub(crate) async fn persist_projection_best_effort_async(
 fn remote_projection_records(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
-    raw: &Value,
+    p5_provenance: &DirectP5ProjectionProvenance,
 ) -> crate::ImResult<Vec<crate::internal::local_state::messages::MessageRecord>> {
-    let bindings = authenticated_p5_cache_bindings(raw);
     messages
         .iter()
         .map(|message| {
@@ -672,14 +713,13 @@ fn remote_projection_records(
                 crate::internal::message_runtime::local_projection::message_record_from_message(
                     client, message,
                 )?;
-            let raw_message_id = metadata_attribute(&message.metadata, "raw_message_id");
-            let binding = bindings
-                .get(message.id.as_str())
-                .filter(|bindings| bindings.len() == 1)
-                .and_then(|bindings| bindings.first())
-                .filter(|binding| raw_message_id == Some(binding.message_id.as_str()));
+            let binding = p5_provenance.binding_for_message(message);
             if let Some(binding) = binding {
-                persist_p5_cache_binding_metadata(&mut record, binding)?;
+                if p5_cache_record_has_direct_route(&record)
+                    && p5_cache_record_endpoint_matches(&record, binding)
+                {
+                    persist_p5_cache_binding_metadata(&mut record, binding)?;
+                }
             }
             Ok(record)
         })
@@ -1942,8 +1982,8 @@ pub(crate) fn project_secure_direct_messages(
     client: &crate::core::ImClient,
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
-) {
-    project_secure_direct_messages_impl(client, raw, directory_transport, true);
+) -> DirectP5ProjectionProvenance {
+    project_secure_direct_messages_impl(client, raw, directory_transport, true)
 }
 
 fn filter_delegated_e2ee_messages(raw: &mut Value) {
@@ -1981,15 +2021,16 @@ fn project_secure_direct_messages_impl(
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
     redact_attachment_secrets: bool,
-) {
+) -> DirectP5ProjectionProvenance {
     #[cfg(not(feature = "sqlite"))]
     {
         let _ = (client, raw, directory_transport, redact_attachment_secrets);
+        DirectP5ProjectionProvenance::default()
     }
     #[cfg(feature = "sqlite")]
     {
         let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
-            return;
+            return DirectP5ProjectionProvenance::default();
         };
         let mut message_values = std::mem::take(messages);
         // Root-control delivery and the P5 v2 session handshake are async-only
@@ -2003,6 +2044,8 @@ fn project_secure_direct_messages_impl(
         clear_untrusted_p5_projection_state(&mut message_values);
         let cached_secure_indices =
             apply_cached_secure_direct_messages(client, &mut message_values);
+        let p5_provenance =
+            p5_projection_provenance_for_applied_indices(&message_values, &cached_secure_indices);
         message_values = message_values
             .into_iter()
             .enumerate()
@@ -2029,6 +2072,7 @@ fn project_secure_direct_messages_impl(
         }
         *messages = filtered;
         append_secure_direct_warnings(raw, warnings);
+        p5_provenance
     }
 }
 
@@ -2045,8 +2089,8 @@ pub(crate) async fn project_secure_direct_messages_async(
     client: &crate::core::ImClient,
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
-) {
-    project_secure_direct_messages_async_impl(client, raw, directory_transport, true).await;
+) -> DirectP5ProjectionProvenance {
+    project_secure_direct_messages_async_impl(client, raw, directory_transport, true).await
 }
 
 async fn project_secure_direct_messages_async_impl(
@@ -2054,20 +2098,23 @@ async fn project_secure_direct_messages_async_impl(
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
     redact_attachment_secrets: bool,
-) {
+) -> DirectP5ProjectionProvenance {
     #[cfg(not(feature = "sqlite"))]
     {
         let _ = (client, raw, directory_transport, redact_attachment_secrets);
+        DirectP5ProjectionProvenance::default()
     }
     #[cfg(feature = "sqlite")]
     {
         let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
-            return;
+            return DirectP5ProjectionProvenance::default();
         };
         let mut message_values = std::mem::take(messages);
         clear_untrusted_p5_projection_state(&mut message_values);
         let cached_secure_indices =
             apply_cached_secure_direct_messages_async(client, &mut message_values).await;
+        let mut p5_provenance =
+            p5_projection_provenance_for_applied_indices(&message_values, &cached_secure_indices);
         let mut processed_async = vec![false; message_values.len()];
         let mut async_warnings = Vec::new();
         let mut pending_cipher_indices: HashMap<String, Vec<usize>> = HashMap::new();
@@ -2155,13 +2202,34 @@ async fn project_secure_direct_messages_async_impl(
                             continue;
                         }
                     };
+                let cache_binding = match p5_cache_binding(&metadata, &body) {
+                    Ok(binding) => binding,
+                    Err(_) => {
+                        mark_private_root_control(&mut message_values[index]);
+                        continue;
+                    }
+                };
                 let core = client.core_handle();
                 match crate::internal::secure_direct::v2_product::receive_for_client(
                     &core, client, true, metadata, body,
                 )
                 .await
                 {
-                    Ok(outcome) => apply_p5_v2_product_outcome(&mut message_values[index], outcome),
+                    Ok(outcome) => {
+                        let logical_message_id = match &outcome {
+                            crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Business(projection) => {
+                                Some(projection.logical_message_id.clone())
+                            }
+                            crate::internal::secure_direct::v2_product::V2InboundProductOutcome::OwnSync(projection) => {
+                                Some(projection.logical_message_id.clone())
+                            }
+                            _ => None,
+                        };
+                        apply_p5_v2_product_outcome(&mut message_values[index], outcome);
+                        if let Some(logical_message_id) = logical_message_id {
+                            p5_provenance.record(&logical_message_id, cache_binding);
+                        }
+                    }
                     Err(_) => mark_private_root_control(&mut message_values[index]),
                 }
                 continue;
@@ -2316,6 +2384,7 @@ async fn project_secure_direct_messages_async_impl(
         }
         *messages = filtered;
         append_secure_direct_warnings(raw, compact_secure_direct_warnings(async_warnings));
+        p5_provenance
     }
 }
 
@@ -2570,6 +2639,76 @@ struct P5CacheBinding {
     digest: String,
 }
 
+/// Ephemeral proof that a P5 projection in this exact Direct read call came
+/// from either a successful product receive or a validated local cache hit.
+///
+/// It is deliberately kept outside the service response and public message
+/// model so service-supplied projection flags cannot mint cache metadata.
+#[derive(Debug, Default)]
+pub(crate) struct DirectP5ProjectionProvenance {
+    bindings: HashMap<String, Vec<P5CacheBinding>>,
+}
+
+impl DirectP5ProjectionProvenance {
+    fn record(&mut self, logical_message_id: &str, binding: P5CacheBinding) {
+        let logical_message_id = logical_message_id.trim();
+        if logical_message_id.is_empty() {
+            return;
+        }
+        self.bindings
+            .entry(logical_message_id.to_owned())
+            .or_default()
+            .push(binding);
+    }
+
+    fn binding_for_message(&self, message: &crate::messages::Message) -> Option<&P5CacheBinding> {
+        if message.group.is_some()
+            || !matches!(message.thread, crate::messages::ThreadRef::Direct(_))
+        {
+            return None;
+        }
+        let bindings = self.bindings.get(message.id.as_str())?;
+        if bindings.len() != 1 {
+            return None;
+        }
+        let binding = bindings.first()?;
+        let raw_message_id =
+            metadata_attribute(&message.metadata, "raw_message_id").unwrap_or(message.id.as_str());
+        (raw_message_id == binding.message_id).then_some(binding)
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn p5_projection_provenance_for_applied_indices(
+    messages: &[Value],
+    applied: &HashSet<usize>,
+) -> DirectP5ProjectionProvenance {
+    let mut provenance = DirectP5ProjectionProvenance::default();
+    for index in applied {
+        let Some(message) = messages.get(*index) else {
+            continue;
+        };
+        let logical_message_id = message
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let binding = p5_cache_binding_from_message(message).ok().flatten();
+        let raw_message_id = message
+            .get("raw_message_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some((logical_message_id, binding)) = logical_message_id.zip(binding) else {
+            continue;
+        };
+        if raw_message_id == Some(binding.message_id.as_str()) {
+            provenance.record(logical_message_id, binding);
+        }
+    }
+    provenance
+}
+
 fn p5_cache_binding_from_message(message: &Value) -> crate::ImResult<Option<P5CacheBinding>> {
     if !is_p5_v2_projection_candidate(message) {
         return Ok(None);
@@ -2637,49 +2776,6 @@ fn p5_cache_binding(
 fn update_digest_part(digest: &mut Sha256, value: &[u8]) {
     digest.update((value.len() as u64).to_be_bytes());
     digest.update(value);
-}
-
-#[cfg(feature = "sqlite")]
-fn authenticated_p5_cache_binding(message: &Value) -> Option<P5CacheBinding> {
-    let object = message.as_object()?;
-    if object.get("secure").and_then(Value::as_bool) != Some(true)
-        || object.get("decryption_state").and_then(Value::as_str) != Some("decrypted")
-        || string_or_number_value(object.get("raw_message_id"))
-            .trim()
-            .is_empty()
-        || anp::direct_e2ee::is_direct_e2ee_wire_content_type(&direct_message_content_type(message))
-    {
-        return None;
-    }
-    let binding = p5_cache_binding_from_message(message).ok().flatten()?;
-    (string_or_number_value(object.get("raw_message_id")) == binding.message_id).then_some(binding)
-}
-
-#[cfg(feature = "sqlite")]
-fn authenticated_p5_cache_bindings(raw: &Value) -> HashMap<String, Vec<P5CacheBinding>> {
-    let mut bindings = HashMap::<String, Vec<P5CacheBinding>>::new();
-    for message in raw
-        .get("messages")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let logical_message_id = message
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let Some((logical_message_id, binding)) =
-            logical_message_id.zip(authenticated_p5_cache_binding(message))
-        else {
-            continue;
-        };
-        bindings
-            .entry(logical_message_id.to_owned())
-            .or_default()
-            .push(binding);
-    }
-    bindings
 }
 
 #[cfg(feature = "sqlite")]
@@ -3071,17 +3167,9 @@ fn apply_cached_secure_direct_records(
         let endpoint_matches = if let (Some(incoming), Some(stored)) =
             (incoming_p5_binding.as_ref(), stored_p5_binding.as_ref())
         {
-            if incoming != stored {
-                false
-            } else {
-                let direct_endpoint = record.sender_did == incoming.sender_did
-                    && record.receiver_did == incoming.recipient_did;
-                let own_sync_endpoint = record.direction == 1
-                    && record.sender_did == record.owner_did
-                    && incoming.sender_did == record.owner_did
-                    && incoming.recipient_did == record.owner_did;
-                direct_endpoint || own_sync_endpoint
-            }
+            incoming == stored
+                && p5_cache_record_has_direct_route(record)
+                && p5_cache_record_endpoint_matches(record, incoming)
         } else if !is_p5 && stored_p5_binding.is_none() {
             let sender_did = message
                 .get("sender_did")
@@ -3123,6 +3211,38 @@ fn apply_cached_secure_direct_records(
         applied.insert(index);
     }
     applied
+}
+
+#[cfg(feature = "sqlite")]
+fn p5_cache_record_has_direct_route(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> bool {
+    record.group_id.trim().is_empty()
+        && record.group_did.trim().is_empty()
+        && record.wire_thread_kind.trim() == "direct"
+        && !record.wire_thread_ref.trim().is_empty()
+        && record.conversation_id.trim().starts_with("dm:")
+        && record.thread_id.trim().starts_with("dm:")
+}
+
+#[cfg(feature = "sqlite")]
+fn p5_cache_record_endpoint_matches(
+    record: &crate::internal::local_state::messages::MessageRecord,
+    binding: &P5CacheBinding,
+) -> bool {
+    if record.owner_did != binding.recipient_did {
+        return false;
+    }
+    if binding.sender_did != binding.recipient_did {
+        return record.direction == 0
+            && record.sender_did == binding.sender_did
+            && record.receiver_did == binding.recipient_did;
+    }
+    record.direction == 1
+        && record.sender_did == record.owner_did
+        && binding.sender_did == record.owner_did
+        && !record.receiver_did.trim().is_empty()
+        && record.receiver_did != record.owner_did
 }
 
 #[cfg(feature = "sqlite")]
@@ -4111,10 +4231,7 @@ fn metadata_attributes_from_object(
     } else {
         raw_message_id
     };
-    let authenticated_p5_binding = authenticated_p5_cache_binding(&Value::Object(object.clone()));
-    if !raw_message_id.trim().is_empty()
-        && (raw_message_id != message_id || authenticated_p5_binding.is_some())
-    {
+    if !raw_message_id.trim().is_empty() && raw_message_id != message_id {
         attributes.push(crate::messages::MessageMetadataAttribute {
             key: "raw_message_id".to_string(),
             value: raw_message_id.clone(),

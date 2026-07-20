@@ -137,11 +137,12 @@ where
                     "direct.get_history",
                     params,
                 )?;
-                crate::internal::message_runtime::read::project_secure_direct_messages(
-                    self.client,
-                    &mut raw,
-                    &mut self.directory_transport,
-                );
+                let p5_provenance =
+                    crate::internal::message_runtime::read::project_secure_direct_messages(
+                        self.client,
+                        &mut raw,
+                        &mut self.directory_transport,
+                    );
                 crate::internal::message_runtime::read::annotate_direct_peer_scopes(
                     self.client,
                     &mut raw,
@@ -154,12 +155,12 @@ where
                     crate::ids::PageLimit(limit),
                 )?;
                 let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                let outcome =
-                    crate::internal::message_runtime::local_projection::persist_remote_messages(
-                        self.client,
-                        &result.messages,
-                    )?;
-                if outcome.stored_messages > 0 {
+                let stored_messages = crate::internal::message_runtime::read::persist_projection(
+                    self.client,
+                    &result.messages,
+                    &p5_provenance,
+                )?;
+                if stored_messages > 0 {
                     self.client
                         .emit_committed_message_projection("sync_thread_after");
                 }
@@ -309,12 +310,13 @@ where
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
                     .await?;
-                crate::internal::message_runtime::read::project_secure_direct_messages_async(
-                    self.client,
-                    &mut raw,
-                    &mut self.directory_transport,
-                )
-                .await;
+                let p5_provenance =
+                    crate::internal::message_runtime::read::project_secure_direct_messages_async(
+                        self.client,
+                        &mut raw,
+                        &mut self.directory_transport,
+                    )
+                    .await;
                 crate::internal::message_runtime::read::annotate_direct_peer_scopes_async(
                     self.client,
                     &mut raw,
@@ -328,12 +330,14 @@ where
                     crate::ids::PageLimit(limit),
                 )?;
                 let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                let outcome = crate::internal::message_runtime::local_projection::persist_remote_messages_async(
-                    self.client,
-                    &result.messages,
-                )
-                .await?;
-                if outcome.stored_messages > 0 {
+                let stored_messages =
+                    crate::internal::message_runtime::read::persist_projection_async(
+                        self.client,
+                        &result.messages,
+                        &p5_provenance,
+                    )
+                    .await?;
+                if stored_messages > 0 {
                     self.client
                         .emit_committed_message_projection("sync_thread_after");
                 }
