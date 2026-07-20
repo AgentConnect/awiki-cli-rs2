@@ -201,15 +201,39 @@ pub(crate) async fn ensure_local_prekey_published(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
 ) -> crate::ImResult<V2LocalPrekeyPublication> {
-    let (scope, authorization) = local_scope_and_authorization(core, client)?;
     let mut resolver = crate::internal::transport::CoreHttpTransport::new(client);
     let did_document = crate::internal::discovery::did_document::resolve_did_document_async(
         &mut resolver,
         client.did().as_str(),
     )
     .await?;
+    ensure_local_prekey_published_with_document(core, client, &did_document).await
+}
+
+/// Publishes the bootstrap device's PreKey from the locally persisted vNext
+/// document that the Genesis response already bound by document hash.
+pub(crate) async fn ensure_local_prekey_published_from_genesis_document(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+) -> crate::ImResult<V2LocalPrekeyPublication> {
+    let did_document = client.runtime().key_provider.did_document()?;
+    if did_document.get("id").and_then(serde_json::Value::as_str) != Some(client.did().as_str())
+        || (client.did().as_str().starts_with("did:wba:")
+            && !anp::authentication::validate_did_document_binding(&did_document, true))
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    ensure_local_prekey_published_with_document(core, client, &did_document).await
+}
+
+async fn ensure_local_prekey_published_with_document(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    did_document: &serde_json::Value,
+) -> crate::ImResult<V2LocalPrekeyPublication> {
+    let (scope, authorization) = local_scope_and_authorization(core, client)?;
     let eligible = anp::authentication::find_eligible_device(
-        &did_document,
+        did_document,
         authorization.protocol_device_id.as_str(),
         anp::authentication::PROFILE_DIRECT_E2EE_V2,
     )
@@ -252,7 +276,7 @@ pub(crate) async fn ensure_local_prekey_published(
         )?
     };
 
-    let service_did = anp::direct_e2ee::message_service_did_from_document(&did_document)
+    let service_did = anp::direct_e2ee::message_service_did_from_document(did_document)
         .map_err(|_| crate::ImError::PermissionDenied)?;
     let operation_id = format!(
         "p5-v2-prekey-publish:{}:{}",

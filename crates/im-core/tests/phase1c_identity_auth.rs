@@ -1410,6 +1410,106 @@ async fn vnext_genesis_persists_admin_identity_and_rotating_tokens_in_vault() {
 }
 
 #[tokio::test]
+async fn vnext_genesis_direct_only_retries_prekey_publish_without_replaying_genesis() {
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::json(json!({
+            "account_verification_token": "account-grant-secret",
+            "purpose": "awiki.device.genesis.v1",
+            "expires_at": future_rfc3339(300),
+        })),
+        ExpectedHttp::dynamic_rpc(genesis_response_from_request),
+        ExpectedHttp::status(503, json!({"error": "temporary"})),
+        ExpectedHttp::dynamic_rpc(prekey_publish_response_from_request),
+    ]);
+    let fixture = Fixture::new();
+    let root_key = [57; 32];
+    let core = fixture
+        .core_async_with_base_url_vault_required_multi_device_and_prekey_flags(
+            server.base_url(),
+            root_key,
+            true,
+            false,
+        )
+        .await;
+    let request = vnext_phone_request("direct-bootstrap", Some("123456"));
+
+    assert!(core
+        .identities()
+        .register_handle_async(request.clone())
+        .await
+        .is_err());
+    let vault = FileSecretVault::new(
+        DeviceVaultRootKey::from_bytes(root_key),
+        FileSecretVaultStore::new(fixture.root.join("identity-vault")),
+    );
+    assert!(vault
+        .list()
+        .unwrap()
+        .iter()
+        .any(|secret_ref| secret_ref.kind == SecretKind::IdentityGenesisPending));
+
+    let result = core
+        .identities()
+        .register_handle_async(request)
+        .await
+        .unwrap();
+    assert_eq!(result.state, HandleRegistrationState::Registered);
+    assert!(!vault
+        .list()
+        .unwrap()
+        .iter()
+        .any(|secret_ref| secret_ref.kind == SecretKind::IdentityGenesisPending));
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests[0].path,
+        "/user-service/auth/account-verification/exchange"
+    );
+    assert_eq!(requests[1].json_body()["method"], "device_genesis");
+    assert_prekey_publish_request(&requests[2]);
+    assert_prekey_publish_request(&requests[3]);
+    assert_eq!(
+        requests[2].json_body()["params"],
+        requests[3].json_body()["params"],
+        "PreKey retry must reuse the persisted bundle and operation"
+    );
+}
+
+#[tokio::test]
+async fn vnext_genesis_root_transfer_only_publishes_bootstrap_prekey() {
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::json(json!({
+            "account_verification_token": "account-grant-secret",
+            "purpose": "awiki.device.genesis.v1",
+            "expires_at": future_rfc3339(300),
+        })),
+        ExpectedHttp::dynamic_rpc(genesis_response_from_request),
+        ExpectedHttp::dynamic_rpc(prekey_publish_response_from_request),
+    ]);
+    let fixture = Fixture::new();
+    let core = fixture
+        .core_async_with_base_url_vault_required_multi_device_and_prekey_flags(
+            server.base_url(),
+            [58; 32],
+            false,
+            true,
+        )
+        .await;
+
+    let result = core
+        .identities()
+        .register_handle_async(vnext_phone_request("root-bootstrap", Some("123456")))
+        .await
+        .unwrap();
+    assert_eq!(result.state, HandleRegistrationState::Registered);
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 3);
+    assert_prekey_publish_request(&requests[2]);
+}
+
+#[tokio::test]
 async fn vnext_genesis_retries_exact_rpc_without_recreating_keys_or_proof() {
     let server = TestServer::spawn(vec![
         ExpectedHttp::json(json!({
@@ -1822,6 +1922,43 @@ fn genesis_response_from_request(request: &CapturedHttp) -> Value {
     })
 }
 
+fn prekey_publish_response_from_request(request: &CapturedHttp) -> Value {
+    let rpc = request.json_body();
+    let protocol_request = json!({
+        "method": rpc["method"],
+        "params": rpc["params"],
+    });
+    let (_, body) = anp::direct_e2ee::parse_publish_prekey_bundle_request_v2(&protocol_request)
+        .expect("valid P5 v2 PreKey publish request");
+    json!({
+        "jsonrpc": "2.0",
+        "id": rpc["id"],
+        "result": {
+            "published": true,
+            "owner_did": body.prekey_bundle.owner_did,
+            "owner_device_id": body.prekey_bundle.owner_device_id,
+            "bundle_id": body.prekey_bundle.bundle_id,
+            "published_at": "2026-07-20T00:00:01Z",
+            "published_opk_count": body.one_time_prekeys.len(),
+        }
+    })
+}
+
+fn assert_prekey_publish_request(request: &CapturedHttp) {
+    assert_eq!(request.path, "/im/rpc");
+    let rpc = request.json_body();
+    assert_eq!(rpc["method"], "direct.e2ee.publish_prekey_bundle");
+    let protocol_request = json!({
+        "method": rpc["method"],
+        "params": rpc["params"],
+    });
+    let (meta, body) = anp::direct_e2ee::parse_publish_prekey_bundle_request_v2(&protocol_request)
+        .expect("valid P5 v2 PreKey publish request");
+    assert_eq!(meta.sender_did, body.prekey_bundle.owner_did);
+    assert_eq!(meta.sender_device_id, body.prekey_bundle.owner_device_id);
+    assert!(!body.one_time_prekeys.is_empty());
+}
+
 fn server_device_token(
     did: &str,
     device_id: &str,
@@ -2022,6 +2159,19 @@ impl Fixture {
         base_url: &str,
         root_key: [u8; 32],
     ) -> ImCore {
+        self.core_async_with_base_url_vault_required_multi_device_and_prekey_flags(
+            base_url, root_key, false, false,
+        )
+        .await
+    }
+
+    async fn core_async_with_base_url_vault_required_multi_device_and_prekey_flags(
+        &self,
+        base_url: &str,
+        root_key: [u8; 32],
+        direct_e2ee_enabled: bool,
+        root_transfer_enabled: bool,
+    ) -> ImCore {
         ImCore::open_with_options(
             self.config(base_url),
             self.paths(),
@@ -2035,7 +2185,9 @@ impl Fixture {
                         "phase1c-device",
                     ),
                 )
-                .with_multi_device_join_enabled(true),
+                .with_multi_device_join_enabled(true)
+                .with_multi_device_direct_e2ee_enabled(direct_e2ee_enabled)
+                .with_multi_device_root_transfer_enabled(root_transfer_enabled),
         )
         .await
         .unwrap()

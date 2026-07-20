@@ -1,3 +1,10 @@
+//! Identity registration orchestration for legacy and vNext identities.
+//!
+//! A successful vNext genesis persists the accepted identity and device token
+//! before publishing the bootstrap device's P5 PreKey whenever Direct v2 or
+//! root-key transfer is enabled. Failed publication remains restart-safe via
+//! the existing pending-genesis record.
+
 use serde_json::Value;
 use std::time::{Duration, Instant};
 use time::OffsetDateTime;
@@ -238,6 +245,7 @@ where
             pending_store.save(&pending)?;
         }
         let result = finalize_pending_genesis(self.core, &pending)?;
+        publish_v2_prekeys_after_genesis(self.core, &pending.generated.did)?;
         pending_store.delete(&pending_ref)?;
         Ok(result)
     }
@@ -560,6 +568,7 @@ where
             pending_store.save(&pending)?;
         }
         let result = finalize_pending_genesis_async(self.core, &pending).await?;
+        publish_v2_prekeys_after_genesis_async(self.core, &pending.generated.did).await?;
         pending_store.delete(&pending_ref)?;
         Ok(result)
     }
@@ -860,6 +869,58 @@ async fn finalize_pending_genesis_async(
     vnext_registration_result(pending, stored, previous_default)
 }
 
+fn publish_v2_prekeys_after_genesis(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+) -> crate::ImResult<()> {
+    if !v2_prekey_publication_required_after_genesis(
+        core.inner().direct_e2ee_v2_enabled(),
+        core.inner().root_key_transfer_enabled(),
+    ) {
+        return Ok(());
+    }
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err(crate::ImError::unsupported(
+            "sync-vnext-genesis-prekey-publish-inside-async-runtime",
+        ));
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| crate::ImError::Internal {
+            message: format!("create vNext genesis PreKey runtime: {error}"),
+        })?;
+    runtime.block_on(publish_v2_prekeys_after_genesis_async(core, did))
+}
+
+async fn publish_v2_prekeys_after_genesis_async(
+    core: &crate::core::ImCore,
+    did: &crate::ids::Did,
+) -> crate::ImResult<()> {
+    if !v2_prekey_publication_required_after_genesis(
+        core.inner().direct_e2ee_v2_enabled(),
+        core.inner().root_key_transfer_enabled(),
+    ) {
+        return Ok(());
+    }
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Did(did.clone()))
+        .await?;
+    crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_published_from_genesis_document(
+        core,
+        &client,
+    )
+    .await?;
+    Ok(())
+}
+
+fn v2_prekey_publication_required_after_genesis(
+    direct_e2ee_v2_enabled: bool,
+    root_key_transfer_enabled: bool,
+) -> bool {
+    direct_e2ee_v2_enabled || root_key_transfer_enabled
+}
+
 fn vnext_save_input(
     pending: &crate::internal::identity_genesis_pending::PendingGenesisRecord,
     remote: &crate::internal::identity_wire::device_genesis::DeviceGenesisResult,
@@ -1097,4 +1158,16 @@ pub(crate) fn email_verified(value: &Value) -> bool {
         .get("verified")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::v2_prekey_publication_required_after_genesis;
+
+    #[test]
+    fn bootstrap_device_publishes_v2_prekeys_for_direct_or_root_transfer() {
+        assert!(v2_prekey_publication_required_after_genesis(true, false));
+        assert!(v2_prekey_publication_required_after_genesis(false, true));
+        assert!(!v2_prekey_publication_required_after_genesis(false, false));
+    }
 }
