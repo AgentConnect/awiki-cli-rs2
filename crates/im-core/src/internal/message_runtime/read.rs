@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Map, Value};
+use sha2::{Digest as _, Sha256};
+use zeroize::Zeroizing;
 
 use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
 use crate::internal::transport::{
@@ -596,13 +599,34 @@ pub(crate) fn persist_projection_best_effort(
     if messages.is_empty() {
         return;
     }
-    if matches!(
-        crate::internal::message_runtime::local_projection::persist_remote_messages(
-            client, messages,
-        ),
-        Ok(outcome) if outcome.stored_messages > 0
-    ) {
-        client.emit_committed_local_message_projection("remote_history");
+    #[cfg(feature = "sqlite")]
+    {
+        let outcome = (|| {
+            let records = remote_projection_records(client, messages)?;
+            let mut connection = crate::internal::local_state::open_writable(
+                &client.core_inner().sdk_paths().local_state.sqlite_path,
+            )?;
+            let transaction = connection
+                .transaction()
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+            let outcome =
+                crate::internal::local_state::inbound_resolution_backlog::ingest_remote_messages(
+                    &transaction,
+                    &records,
+                    "remote_history",
+                )?;
+            transaction
+                .commit()
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+            Ok::<_, crate::ImError>(outcome)
+        })();
+        if matches!(outcome, Ok(outcome) if outcome.stored_messages > 0) {
+            client.emit_committed_local_message_projection("remote_history");
+        }
+    }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (client, messages);
     }
 }
 
@@ -613,15 +637,87 @@ pub(crate) async fn persist_projection_best_effort_async(
     if messages.is_empty() {
         return;
     }
-    if matches!(
-        crate::internal::message_runtime::local_projection::persist_remote_messages_async(
-            client, messages,
-        )
-        .await,
-        Ok(outcome) if outcome.stored_messages > 0
-    ) {
-        client.emit_committed_local_message_projection("remote_history");
+    #[cfg(feature = "sqlite")]
+    {
+        let outcome = match remote_projection_records(client, messages) {
+            Ok(records) => match client.core_inner().local_state_db().await {
+                Ok(db) => db.store_remote_messages(records, "remote_history").await,
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
+        if matches!(outcome, Ok(outcome) if outcome.stored_messages > 0) {
+            client.emit_committed_local_message_projection("remote_history");
+        }
     }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (client, messages);
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn remote_projection_records(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+) -> crate::ImResult<Vec<crate::internal::local_state::messages::MessageRecord>> {
+    messages
+        .iter()
+        .map(|message| {
+            let mut record =
+                crate::internal::message_runtime::local_projection::message_record_from_message(
+                    client, message,
+                )?;
+            persist_p5_cache_binding_metadata(&mut record, &message.metadata)?;
+            Ok(record)
+        })
+        .collect()
+}
+
+#[cfg(feature = "sqlite")]
+fn persist_p5_cache_binding_metadata(
+    record: &mut crate::internal::local_state::messages::MessageRecord,
+    metadata: &crate::messages::MessageMetadata,
+) -> crate::ImResult<()> {
+    let Some(raw_message_id) = metadata_attribute(metadata, "raw_message_id") else {
+        return Ok(());
+    };
+    let values = P5_CACHE_METADATA_KEYS
+        .into_iter()
+        .map(|key| metadata_attribute(metadata, key).map(|value| (key, value)))
+        .collect::<Option<Vec<_>>>();
+    let Some(values) = values else {
+        return Ok(());
+    };
+    let digest = values
+        .iter()
+        .find(|(key, _)| *key == P5_CACHE_BINDING_DIGEST_KEY)
+        .map(|(_, value)| *value)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let Some(encoded) = digest.strip_prefix("sha256:") else {
+        return Err(crate::ImError::PermissionDenied);
+    };
+    if URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .len()
+        != 32
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let mut object = serde_json::from_str::<Value>(&record.metadata)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    object.insert(
+        "raw_message_id".to_owned(),
+        Value::String(raw_message_id.to_owned()),
+    );
+    for (key, value) in values {
+        object.insert(key.to_owned(), Value::String(value.to_owned()));
+    }
+    record.metadata = Value::Object(object).to_string();
+    Ok(())
 }
 
 fn delegated_message_service_did(client: &crate::core::ImClient) -> String {
@@ -875,12 +971,38 @@ fn merge_committed_projection_into_page(
         .map(|message| (message.id.as_str().to_owned(), message))
         .collect::<std::collections::HashMap<_, _>>();
     for message in &mut page.items {
-        if let Some(committed) = committed_by_id.remove(message.id.as_str()) {
+        if let Some(mut committed) = committed_by_id.remove(message.id.as_str()) {
+            preserve_remote_position_attributes(&mut committed, message);
             *message = committed;
         }
     }
     page.items.extend(committed_by_id.into_values());
     page.has_more |= sort_dedupe_and_truncate_messages(&mut page.items, requested_limit);
+}
+
+#[cfg(feature = "sqlite")]
+fn preserve_remote_position_attributes(
+    committed: &mut crate::messages::Message,
+    remote: &crate::messages::Message,
+) {
+    for key in ["raw_message_id", "group_event_seq"] {
+        if committed
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == key)
+        {
+            continue;
+        }
+        if let Some(attribute) = remote
+            .metadata
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key == key)
+        {
+            committed.metadata.attributes.push(attribute.clone());
+        }
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -1506,7 +1628,7 @@ fn resolve_direct_peer_scope(
             let raw = directory_transport
                 .rpc(call.endpoint, call.method, call.params)
                 .ok()?;
-            direct_peer_scope_from_profile(raw)
+            direct_peer_scope_from_profile(raw, peer_did)
         }
     }
 }
@@ -1519,10 +1641,14 @@ fn lookup_direct_peer_scope(
     let Ok(call) =
         crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(peer_did)
     else {
-        return VerifiedHandleScopeLookup::Unavailable;
+        return VerifiedHandleScopeLookup::Rejected;
     };
-    let Ok(raw) = directory_transport.rpc(call.endpoint, call.method, call.params) else {
-        return VerifiedHandleScopeLookup::Unavailable;
+    let raw = match directory_transport.rpc(call.endpoint, call.method, call.params) {
+        Ok(raw) => raw,
+        Err(error) if is_legacy_handle_lookup_error(&error) => {
+            return VerifiedHandleScopeLookup::Unavailable;
+        }
+        Err(_) => return VerifiedHandleScopeLookup::Rejected,
     };
     let Ok(lookup) = crate::internal::directory_runtime::handle_lookup_from_value(&raw) else {
         return VerifiedHandleScopeLookup::Rejected;
@@ -1558,7 +1684,7 @@ async fn resolve_direct_peer_scope_async(
                 .rpc(call.endpoint, call.method, call.params)
                 .await
                 .ok()?;
-            direct_peer_scope_from_profile(raw)
+            direct_peer_scope_from_profile(raw, peer_did)
         }
     }
 }
@@ -1571,13 +1697,17 @@ async fn lookup_direct_peer_scope_async(
     let Ok(call) =
         crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(peer_did)
     else {
-        return VerifiedHandleScopeLookup::Unavailable;
+        return VerifiedHandleScopeLookup::Rejected;
     };
-    let Ok(raw) = directory_transport
+    let raw = match directory_transport
         .rpc(call.endpoint, call.method, call.params)
         .await
-    else {
-        return VerifiedHandleScopeLookup::Unavailable;
+    {
+        Ok(raw) => raw,
+        Err(error) if is_legacy_handle_lookup_error(&error) => {
+            return VerifiedHandleScopeLookup::Unavailable;
+        }
+        Err(_) => return VerifiedHandleScopeLookup::Rejected,
     };
     let Ok(lookup) = crate::internal::directory_runtime::handle_lookup_from_value(&raw) else {
         return VerifiedHandleScopeLookup::Rejected;
@@ -1600,9 +1730,46 @@ async fn lookup_direct_peer_scope_async(
     }
 }
 
+fn is_legacy_handle_lookup_error(error: &crate::ImError) -> bool {
+    match error {
+        crate::ImError::PeerNotFound { .. } => true,
+        crate::ImError::UnsupportedCapability { capability } => matches!(
+            capability.trim().to_ascii_lowercase().as_str(),
+            "handle.lookup" | "handle-lookup" | "directory.handle.lookup" | "directory-lookup"
+        ),
+        crate::ImError::Service {
+            status_code, code, ..
+        } => {
+            if *status_code == Some(404) {
+                return true;
+            }
+            matches!(
+                code.as_deref()
+                    .map(str::trim)
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some(
+                    "-32601"
+                        | "method_not_found"
+                        | "rpc.method_not_found"
+                        | "handle_not_found"
+                        | "handle.not_found"
+                        | "peer_not_found"
+                        | "not_found"
+                )
+            )
+        }
+        _ => false,
+    }
+}
+
 fn direct_peer_scope_from_profile(
     raw: Value,
+    peer_did: &str,
 ) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    if !profile_did_claims_match(&raw, peer_did) {
+        return None;
+    }
     let user_id = first_string_at(
         &raw,
         &[
@@ -1653,6 +1820,68 @@ fn direct_peer_scope_from_profile(
         ))
     })?;
     crate::internal::local_state::owner_scope::DirectPeerScope::new(user_id, full_handle).ok()
+}
+
+fn profile_did_claims_match(raw: &Value, peer_did: &str) -> bool {
+    for pointer in [
+        "/did",
+        "/subject_did",
+        "/subjectDid",
+        "/profile/did",
+        "/profile/subject_did",
+        "/profile/subjectDid",
+        "/result/did",
+        "/result/subject_did",
+        "/result/subjectDid",
+        "/subject/did",
+        "/subject/subject_did",
+        "/subject/subjectDid",
+        "/profile/subject/did",
+        "/profile/subject/subject_did",
+        "/profile/subject/subjectDid",
+        "/result/subject/did",
+        "/result/subject/subject_did",
+        "/result/subject/subjectDid",
+        "/result/profile/did",
+        "/result/profile/subject_did",
+        "/result/profile/subjectDid",
+        "/result/profile/subject/did",
+        "/result/profile/subject/subject_did",
+        "/result/profile/subject/subjectDid",
+    ] {
+        let Some(value) = raw.pointer(pointer) else {
+            continue;
+        };
+        let Some(claimed_did) = value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return false;
+        };
+        if claimed_did != peer_did {
+            return false;
+        }
+    }
+    for pointer in [
+        "/subject",
+        "/profile/subject",
+        "/result/subject",
+        "/result/profile/subject",
+    ] {
+        let Some(claimed_did) = raw
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| value.starts_with("did:"))
+        else {
+            continue;
+        };
+        if claimed_did != peer_did {
+            return false;
+        }
+    }
+    true
 }
 
 fn first_string_at(raw: &Value, pointers: &[&str]) -> Option<String> {
@@ -1809,6 +2038,7 @@ async fn project_secure_direct_messages_async_impl(
             return;
         };
         let mut message_values = std::mem::take(messages);
+        clear_untrusted_p5_projection_state(&mut message_values);
         let cached_secure_indices =
             apply_cached_secure_direct_messages_async(client, &mut message_values).await;
         let mut processed_async = vec![false; message_values.len()];
@@ -2286,6 +2516,107 @@ fn p5_v2_wire_projection(message: &Value) -> Value {
     })
 }
 
+const P5_CACHE_PROFILE_KEY: &str = "p5_cache_profile";
+const P5_CACHE_SENDER_DID_KEY: &str = "p5_cache_sender_did";
+const P5_CACHE_SENDER_DEVICE_ID_KEY: &str = "p5_cache_sender_device_id";
+const P5_CACHE_RECIPIENT_DID_KEY: &str = "p5_cache_recipient_did";
+const P5_CACHE_RECIPIENT_DEVICE_ID_KEY: &str = "p5_cache_recipient_device_id";
+const P5_CACHE_BINDING_DIGEST_KEY: &str = "p5_cache_binding_digest";
+
+const P5_CACHE_METADATA_KEYS: [&str; 6] = [
+    P5_CACHE_PROFILE_KEY,
+    P5_CACHE_SENDER_DID_KEY,
+    P5_CACHE_SENDER_DEVICE_ID_KEY,
+    P5_CACHE_RECIPIENT_DID_KEY,
+    P5_CACHE_RECIPIENT_DEVICE_ID_KEY,
+    P5_CACHE_BINDING_DIGEST_KEY,
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct P5CacheBinding {
+    message_id: String,
+    profile: String,
+    sender_did: String,
+    sender_device_id: String,
+    recipient_did: String,
+    recipient_device_id: String,
+    digest: String,
+}
+
+fn p5_cache_binding_from_message(message: &Value) -> crate::ImResult<Option<P5CacheBinding>> {
+    if !is_p5_v2_projection_candidate(message) {
+        return Ok(None);
+    }
+    let wire = p5_v2_wire_projection(message);
+    let (metadata, body) =
+        crate::internal::secure_direct::v2_product::parse_v2_wire_message(&wire)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+    Ok(Some(p5_cache_binding(&metadata, &body)?))
+}
+
+fn p5_cache_binding(
+    metadata: &anp::direct_e2ee::V2DirectMetadata,
+    body: &anp::direct_e2ee::V2DirectBody,
+) -> crate::ImResult<P5CacheBinding> {
+    let aad = match body {
+        anp::direct_e2ee::V2DirectBody::Init(body) => {
+            anp::direct_e2ee::build_init_aad_v2(metadata, body)
+        }
+        anp::direct_e2ee::V2DirectBody::Cipher(body) => {
+            anp::direct_e2ee::build_message_aad_v2(metadata, body)
+        }
+    }
+    .map_err(|_| crate::ImError::PermissionDenied)?;
+    let body_value = match body {
+        anp::direct_e2ee::V2DirectBody::Init(body) => serde_json::to_value(body),
+        anp::direct_e2ee::V2DirectBody::Cipher(body) => serde_json::to_value(body),
+    }
+    .map_err(|error| crate::ImError::Serialization {
+        detail: format!("serialize P5 cache body: {error}"),
+    })?;
+    let canonical_body = Zeroizing::new(serde_json_canonicalizer::to_vec(&body_value).map_err(
+        |error| crate::ImError::Serialization {
+            detail: format!("canonicalize P5 cache body: {error}"),
+        },
+    )?);
+    let aad = Zeroizing::new(aad);
+    let mut digest = Sha256::new();
+    digest.update(b"AWIKI-P5-V2-CACHE-BINDING-V1\0");
+    update_digest_part(&mut digest, &aad);
+    update_digest_part(&mut digest, &canonical_body);
+    Ok(P5CacheBinding {
+        message_id: metadata.message_id.clone(),
+        profile: metadata.profile.clone(),
+        sender_did: metadata.sender_did.clone(),
+        sender_device_id: metadata.sender_device_id.clone(),
+        recipient_did: metadata.target.did.clone(),
+        recipient_device_id: metadata.recipient_device_id.clone(),
+        digest: format!("sha256:{}", URL_SAFE_NO_PAD.encode(digest.finalize())),
+    })
+}
+
+fn update_digest_part(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_be_bytes());
+    digest.update(value);
+}
+
+#[cfg(feature = "sqlite")]
+fn clear_untrusted_p5_projection_state(messages: &mut [Value]) {
+    for message in messages {
+        if !is_p5_v2_projection_candidate(message) {
+            continue;
+        }
+        if let Some(object) = message.as_object_mut() {
+            // These fields are local projection output. A service-provided
+            // value must not be mistaken for a completed authenticated
+            // receive or an accepted local cache hit.
+            for key in ["secure", "decryption_state", "raw_message_id"] {
+                object.remove(key);
+            }
+        }
+    }
+}
+
 #[cfg(feature = "sqlite")]
 fn apply_p5_v2_product_outcome(
     message: &mut Value,
@@ -2527,7 +2858,15 @@ fn secure_direct_wire_message_ids(messages: &[Value]) -> Vec<String> {
     messages
         .iter()
         .filter(|message| is_direct_e2ee_wire_message(message))
-        .map(secure_direct_message_id)
+        .filter_map(|message| {
+            if is_p5_v2_projection_candidate(message) {
+                return p5_cache_binding_from_message(message)
+                    .ok()
+                    .flatten()
+                    .map(|binding| binding.message_id);
+            }
+            Some(secure_direct_message_id(message))
+        })
         .filter(|message_id| !message_id.trim().is_empty())
         .collect()
 }
@@ -2604,34 +2943,50 @@ fn apply_cached_secure_direct_records(
     }
     let mut applied = HashSet::new();
     for (index, message) in messages.iter_mut().enumerate() {
-        let wire_message_id = secure_direct_message_id(message);
-        let sender_did = message
-            .get("sender_did")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let receiver_did = message
-            .get("receiver_did")
-            .or_else(|| message.get("recipient_did"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let is_p5 = is_p5_v2_projection_candidate(message);
+        let incoming_p5_binding = p5_cache_binding_from_message(message).ok().flatten();
+        let wire_message_id = incoming_p5_binding
+            .as_ref()
+            .map(|binding| binding.message_id.clone())
+            .unwrap_or_else(|| secure_direct_message_id(message));
         let Some(candidates) = records_by_wire_id.get(&wire_message_id) else {
             continue;
         };
-        let record = candidates
-            .iter()
-            .find(|record| record.sender_did == sender_did && record.receiver_did == receiver_did)
-            .or_else(|| {
-                let record = (candidates.len() == 1).then(|| &candidates[0])?;
-                (is_p5_v2_projection_candidate(message)
-                    && record.direction == 1
-                    && record.sender_did == record.owner_did
-                    && sender_did == record.owner_did
-                    && receiver_did == record.owner_did)
-                    .then_some(record)
-            });
-        let Some(record) = record else {
+        let Some(record) = (candidates.len() == 1).then(|| &candidates[0]) else {
             continue;
         };
+        let stored_p5_binding = p5_cache_binding_from_record(record);
+        let endpoint_matches = if let (Some(incoming), Some(stored)) =
+            (incoming_p5_binding.as_ref(), stored_p5_binding.as_ref())
+        {
+            if incoming != stored {
+                false
+            } else {
+                let direct_endpoint = record.sender_did == incoming.sender_did
+                    && record.receiver_did == incoming.recipient_did;
+                let own_sync_endpoint = record.direction == 1
+                    && record.sender_did == record.owner_did
+                    && incoming.sender_did == record.owner_did
+                    && incoming.recipient_did == record.owner_did;
+                direct_endpoint || own_sync_endpoint
+            }
+        } else if !is_p5 && stored_p5_binding.is_none() {
+            let sender_did = message
+                .get("sender_did")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let receiver_did = message
+                .get("receiver_did")
+                .or_else(|| message.get("recipient_did"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            record.sender_did == sender_did && record.receiver_did == receiver_did
+        } else {
+            false
+        };
+        if !endpoint_matches {
+            continue;
+        }
         let plaintext = cached_secure_direct_plaintext(record);
         crate::internal::secure_direct::incoming::apply_direct_e2ee_processing_result(
             message,
@@ -2673,6 +3028,40 @@ fn cached_secure_direct_wire_message_id(
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| record.msg_id.clone())
+}
+
+#[cfg(feature = "sqlite")]
+fn p5_cache_binding_from_record(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> Option<P5CacheBinding> {
+    let metadata = serde_json::from_str::<Value>(&record.metadata).ok()?;
+    let string = |key: &str| {
+        metadata
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let digest = string(P5_CACHE_BINDING_DIGEST_KEY)?;
+    let encoded = digest.strip_prefix("sha256:")?;
+    if URL_SAFE_NO_PAD
+        .decode(encoded)
+        .ok()
+        .is_none_or(|decoded| decoded.len() != 32)
+    {
+        return None;
+    }
+    let binding = P5CacheBinding {
+        message_id: string("raw_message_id")?,
+        profile: string(P5_CACHE_PROFILE_KEY)?,
+        sender_did: string(P5_CACHE_SENDER_DID_KEY)?,
+        sender_device_id: string(P5_CACHE_SENDER_DEVICE_ID_KEY)?,
+        recipient_did: string(P5_CACHE_RECIPIENT_DID_KEY)?,
+        recipient_device_id: string(P5_CACHE_RECIPIENT_DEVICE_ID_KEY)?,
+        digest,
+    };
+    (binding.profile == anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2).then_some(binding)
 }
 
 #[cfg(feature = "sqlite")]
@@ -3610,11 +3999,32 @@ fn metadata_attributes_from_object(
     } else {
         raw_message_id
     };
-    if !raw_message_id.trim().is_empty() && raw_message_id != message_id {
+    let projected_message = Value::Object(object.clone());
+    let authenticated_p5_binding = (object.get("secure").and_then(Value::as_bool) == Some(true)
+        && object.get("decryption_state").and_then(Value::as_str) == Some("decrypted")
+        && !string_or_number_value(object.get("raw_message_id"))
+            .trim()
+            .is_empty()
+        && !anp::direct_e2ee::is_direct_e2ee_wire_content_type(&direct_message_content_type(
+            &projected_message,
+        )))
+    .then(|| p5_cache_binding_from_message(&projected_message))
+    .transpose()
+    .ok()
+    .flatten()
+    .flatten();
+    if !raw_message_id.trim().is_empty()
+        && (raw_message_id != message_id || authenticated_p5_binding.is_some())
+    {
         attributes.push(crate::messages::MessageMetadataAttribute {
             key: "raw_message_id".to_string(),
-            value: raw_message_id,
+            value: raw_message_id.clone(),
         });
+    }
+    if let Some(binding) = authenticated_p5_binding {
+        if raw_message_id == binding.message_id {
+            attributes.extend(p5_cache_binding_attributes(&binding));
+        }
     }
     let group_event_seq = string_or_number_value(object.get("group_event_seq"));
     if !group_event_seq.trim().is_empty() {
@@ -3639,6 +4049,31 @@ fn metadata_attributes_from_object(
         }
     }
     attributes
+}
+
+fn p5_cache_binding_attributes(
+    binding: &P5CacheBinding,
+) -> Vec<crate::messages::MessageMetadataAttribute> {
+    [
+        (P5_CACHE_PROFILE_KEY, binding.profile.as_str()),
+        (P5_CACHE_SENDER_DID_KEY, binding.sender_did.as_str()),
+        (
+            P5_CACHE_SENDER_DEVICE_ID_KEY,
+            binding.sender_device_id.as_str(),
+        ),
+        (P5_CACHE_RECIPIENT_DID_KEY, binding.recipient_did.as_str()),
+        (
+            P5_CACHE_RECIPIENT_DEVICE_ID_KEY,
+            binding.recipient_device_id.as_str(),
+        ),
+        (P5_CACHE_BINDING_DIGEST_KEY, binding.digest.as_str()),
+    ]
+    .into_iter()
+    .map(|(key, value)| crate::messages::MessageMetadataAttribute {
+        key: key.to_owned(),
+        value: value.to_owned(),
+    })
+    .collect()
 }
 
 fn metadata_attribute<'a>(

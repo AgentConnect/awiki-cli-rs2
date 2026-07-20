@@ -1317,10 +1317,36 @@ WHERE owner_identity_id = ?
 SELECT message_record_json
 FROM inbound_resolution_backlog
 WHERE owner_identity_id = ?
-  AND message_id IN ({placeholders})"#
+  AND (
+        message_id IN ({placeholders})
+        OR CASE
+             WHEN json_valid(COALESCE(NULLIF(message_record_json, ''), '{{}}')) = 1
+             THEN CASE
+                    WHEN json_valid(
+                           COALESCE(
+                             NULLIF(
+                               json_extract(message_record_json, '$.metadata'),
+                               ''
+                             ),
+                             '{{}}'
+                           )
+                         ) = 1
+                    THEN json_extract(
+                           json_extract(message_record_json, '$.metadata'),
+                           '$.raw_message_id'
+                         ) IN ({placeholders})
+                    ELSE 0
+                  END
+             ELSE 0
+           END
+      )"#
     );
-    let mut backlog_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(message_ids.len() + 1);
+    let mut backlog_params: Vec<&dyn rusqlite::ToSql> =
+        Vec::with_capacity(message_ids.len().saturating_mul(2) + 1);
     backlog_params.push(&owner_identity_id);
+    for message_id in &message_ids {
+        backlog_params.push(message_id);
+    }
     for message_id in &message_ids {
         backlog_params.push(message_id);
     }
