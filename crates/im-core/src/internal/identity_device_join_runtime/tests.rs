@@ -237,6 +237,13 @@ fn new_device_remote_errors_cannot_echo_join_grants_or_tokens() {
     assert!(!rendered.contains("\"token\""));
 }
 
+#[test]
+fn joined_device_publishes_v2_prekeys_for_direct_or_root_transfer() {
+    assert!(v2_prekey_publication_required(true, false));
+    assert!(v2_prekey_publication_required(false, true));
+    assert!(!v2_prekey_publication_required(false, false));
+}
+
 fn test_time(value: &str) -> time::OffsetDateTime {
     time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).unwrap()
 }

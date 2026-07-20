@@ -6,6 +6,8 @@
 //! standard DID resolution. Tokens cross the boundary as zeroizing bytes and
 //! are sealed before a caller can resume the flow. The explicit rollout gate
 //! defaults to disabled and fails closed before local or remote side effects.
+//! Once authorized, a device publishes its P5 PreKey whenever Direct v2 or
+//! root-key transfer is enabled because both capabilities use that channel.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1018,7 +1020,10 @@ async fn publish_v2_prekeys_after_activation(
     core: &crate::core::ImCore,
     session: &crate::identity::DeviceJoinSessionSummary,
 ) -> crate::ImResult<()> {
-    if !core.inner().root_key_transfer_enabled() {
+    if !v2_prekey_publication_required(
+        core.inner().direct_e2ee_v2_enabled(),
+        core.inner().root_key_transfer_enabled(),
+    ) {
         return Ok(());
     }
     let client = core
@@ -1027,6 +1032,13 @@ async fn publish_v2_prekeys_after_activation(
     crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_published(core, &client)
         .await?;
     Ok(())
+}
+
+fn v2_prekey_publication_required(
+    direct_e2ee_v2_enabled: bool,
+    root_key_transfer_enabled: bool,
+) -> bool {
+    direct_e2ee_v2_enabled || root_key_transfer_enabled
 }
 
 pub(crate) struct DeviceJoinAdminRuntime<'a, R> {
