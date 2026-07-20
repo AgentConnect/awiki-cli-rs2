@@ -8,9 +8,10 @@
 use anp::group_e2ee::operations::v2::{
     self, V2AddMemberInput, V2CreateGroupInput, V2DecryptInput, V2DecryptOutput, V2FinalizeInput,
     V2FinalizeOutput, V2GenerateKeyPackageInput, V2InspectLocalGroupInput,
-    V2InspectLocalGroupOutput, V2PreparedAdd, V2PreparedCreate, V2PreparedRemove,
-    V2ProcessCommitInput, V2ProcessCommitOutput, V2ProcessNoticeInput, V2ProcessNoticeOutput,
-    V2ProcessWelcomeInput, V2ReconcilePendingInput, V2ReconcilePendingOutput, V2RemoveMemberInput,
+    V2InspectLocalGroupOutput, V2ListLocalGroupMemberEndpointsOutput, V2PreparedAdd,
+    V2PreparedCreate, V2PreparedRemove, V2ProcessCommitInput, V2ProcessCommitOutput,
+    V2ProcessNoticeInput, V2ProcessNoticeOutput, V2ProcessWelcomeInput, V2ReconcilePendingInput,
+    V2ReconcilePendingOutput, V2RemoveMemberInput,
 };
 use anp::group_e2ee::storage::{GroupMlsOwnerScope, GroupMlsStore, ImCoreSqliteGroupMlsStore};
 use anp::group_e2ee::{V2GroupCipherObject, V2GroupKeyPackage};
@@ -114,6 +115,17 @@ impl GroupE2eeV2Runtime {
         v2::inspect_local_group_v2(&self.store, input).map_err(map_group_mls_error)
     }
 
+    /// Returns the secret-free endpoint projection of the accepted local MLS tree.
+    ///
+    /// This is local inspection only. Callers must independently resolve the
+    /// current P2 Manifest and P4 business membership before planning changes.
+    pub(crate) fn list_local_group_member_endpoints(
+        &self,
+        input: V2InspectLocalGroupInput,
+    ) -> crate::ImResult<V2ListLocalGroupMemberEndpointsOutput> {
+        v2::list_local_group_member_endpoints_v2(&self.store, input).map_err(map_group_mls_error)
+    }
+
     pub(crate) fn encrypt(
         &self,
         input: v2::V2EncryptInput,
@@ -192,6 +204,38 @@ mod tests {
             )
             .expect_err("another DID cannot use this device-scoped store");
         assert!(matches!(error, crate::ImError::InvalidInput { .. }));
+
+        if let Some(parent) = state_path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn endpoint_inventory_wrapper_fails_closed_without_local_group_state() {
+        let bundle = create_did_wba_document("example.test", DidDocumentOptions::default())
+            .expect("test DID");
+        let did = bundle.did().expect("test DID id").to_owned();
+        let device_id = "device-a";
+        let state_path = unique_temp_path("p6-v2-inventory-wrapper").join("mls.sqlite");
+        let store = ImCoreSqliteGroupMlsStore::new_scoped_state_db(
+            &state_path,
+            GroupMlsOwnerScope::new("identity-a", did.clone(), device_id).expect("owner scope"),
+        );
+        let runtime = GroupE2eeV2Runtime::new(store);
+
+        let error = runtime
+            .list_local_group_member_endpoints(V2InspectLocalGroupInput {
+                owner_did: did,
+                owner_device_id: device_id.to_owned(),
+                group_did: "did:wba:example.test:groups:missing".to_owned(),
+                request_id: "req-inventory-missing".to_owned(),
+            })
+            .expect_err("missing local MLS state must not synthesize an endpoint inventory");
+        assert!(matches!(
+            error,
+            crate::ImError::Internal { ref message }
+                if message.contains("group.e2ee.state_not_ready")
+        ));
 
         if let Some(parent) = state_path.parent() {
             let _ = std::fs::remove_dir_all(parent);

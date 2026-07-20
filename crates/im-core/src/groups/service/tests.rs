@@ -306,7 +306,11 @@ impl Fixture {
     }
 
     fn client(&self) -> crate::core::ImClient {
-        crate::core::ImCore::new(
+        self.client_with_group_v2(false)
+    }
+
+    fn client_with_group_v2(&self, enabled: bool) -> crate::core::ImClient {
+        crate::core::ImCore::new_with_options(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
                 did_domain: "example.test".to_owned(),
@@ -332,6 +336,7 @@ impl Fixture {
                     temp_dir: self.root.join("tmp"),
                 },
             },
+            crate::ImCoreOpenOptions::default().with_multi_device_group_e2ee_enabled(enabled),
         )
         .unwrap()
         .client(crate::identity::IdentitySelector::Did(
@@ -348,6 +353,16 @@ impl Fixture {
             key1_private_pem,
         }
     }
+}
+
+#[test]
+fn public_group_lifecycle_gate_keeps_legacy_off_and_selects_v2_on() {
+    let fixture = Fixture::new();
+    let legacy = fixture.client_with_group_v2(false);
+    let v2 = fixture.client_with_group_v2(true);
+
+    assert!(!super::use_group_e2ee_v2_lifecycle(&legacy));
+    assert!(super::use_group_e2ee_v2_lifecycle(&v2));
 }
 
 fn test_did_bundle() -> anp::authentication::DidDocumentBundle {

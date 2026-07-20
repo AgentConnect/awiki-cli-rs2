@@ -12,14 +12,36 @@
 The device-scoped P6 v2 product path also has a host-local, default-off
 `ImCoreOpenOptions.multi_device_group_e2ee_enabled` rollout gate. This setting
 is not an ANP capability and is never serialized into DID or cross-domain wire
-objects. Enabling it selects the v2 implementation for the existing redacted
-group status/repair facade; it does not expose low-level MLS commands.
+objects. Enabling it selects the v2 implementation for supported public group
+lifecycle operations and the existing redacted group status/repair facade; it
+does not expose low-level MLS commands.
 
 The CLI maps the deployment-local environment variable
 `AWIKI_MULTI_DEVICE_GROUP_E2EE_ENABLED` to that Core option. It is unset/`0`
 by default, accepts only `0` or `1`, and fails closed on every other value.
 This gate is independent from Join, Direct, root transfer, revoke and Handle
 Recovery and is never serialized into ANP discovery or message payloads.
+
+### P6 v2 lifecycle routing
+
+When the host-local rollout gate is enabled:
+
+- `groups().publish_key_package()` binds the operation to the current
+  authenticated protocol device and its P2 `deviceManifest` entry. Omitting
+  `device_id` means the current device; selecting a sibling device or the
+  legacy `default` device fails closed.
+- Secure `groups().create()` first creates the P4 business group. Core then
+  requires the exact P4 `group_state_ref`, publishes a current-device P6 v2
+  creator KeyPackage, and submits the typed P6 create operation. The typed Host
+  result must match before the SDK finalizes local MLS state.
+- An uncertain P6 Host result is returned as an error while the SDK keeps its
+  durable operation in `prepared` for an exact later recheck. A missing local
+  group remains `MissingLocalState`; status or repair must not synthesize MLS
+  state or claim success.
+
+When the rollout gate is disabled, the existing legacy lifecycle and provider
+path remains unchanged. Core must not reinterpret a legacy result as P6 v2 or
+mix legacy and v2 local state in one operation.
 
 ## CLI responsibility
 
