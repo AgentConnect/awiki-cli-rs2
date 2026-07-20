@@ -9456,11 +9456,13 @@ impl SseDecode for crate::dto::config::DartImCoreOpenOptions {
             <Option<crate::dto::config::DartImCoreSecretVaultOptions>>::sse_decode(deserializer);
         let mut var_multiDeviceJoinEnabled = <bool>::sse_decode(deserializer);
         let mut var_multiDeviceRootTransferEnabled = <bool>::sse_decode(deserializer);
+        let mut var_multiDeviceGroupE2EeEnabled = <bool>::sse_decode(deserializer);
         return crate::dto::config::DartImCoreOpenOptions {
             identity_secret_storage_policy: var_identitySecretStoragePolicy,
             identity_secret_vault: var_identitySecretVault,
             multi_device_join_enabled: var_multiDeviceJoinEnabled,
             multi_device_root_transfer_enabled: var_multiDeviceRootTransferEnabled,
+            multi_device_group_e2ee_enabled: var_multiDeviceGroupE2EeEnabled,
         };
     }
 }
@@ -14227,6 +14229,9 @@ impl flutter_rust_bridge::IntoDart for crate::dto::config::DartImCoreOpenOptions
             self.multi_device_root_transfer_enabled
                 .into_into_dart()
                 .into_dart(),
+            self.multi_device_group_e2ee_enabled
+                .into_into_dart()
+                .into_dart(),
         ]
         .into_dart()
     }
@@ -17476,6 +17481,7 @@ impl SseEncode for crate::dto::config::DartImCoreOpenOptions {
         );
         <bool>::sse_encode(self.multi_device_join_enabled, serializer);
         <bool>::sse_encode(self.multi_device_root_transfer_enabled, serializer);
+        <bool>::sse_encode(self.multi_device_group_e2ee_enabled, serializer);
     }
 }
 

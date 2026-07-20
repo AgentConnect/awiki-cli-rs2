@@ -197,6 +197,17 @@ management-ready source of truth.
 After signed completion, native Core scrubs the retained retry ciphertext and
 pending Vault state; Dart can observe only the resulting non-retryable status.
 
+## Multi-device group encryption rollout
+
+Native hosts opt in with
+`AwikiImCoreOpenOptions(multiDeviceGroupE2eeEnabled: true)`; the option defaults
+to false and is independent from the Join and root-transfer gates. It is local
+configuration and is not sent as an ANP, DID Document, or cross-domain field.
+When enabled, `client.secure.group(groupDid).status()` and `repair()` read the
+device-scoped P6 v2 state and return only redacted readiness and repair facts.
+They never return raw KeyPackages, Welcome/Commit data, Leaf identifiers, MLS
+secrets, provider paths, or SQLite rows.
+
 ## Directory profile metadata
 
 `client.directory.resolvePeer(handle)` and `client.directory.lookupHandle(handle)` return a

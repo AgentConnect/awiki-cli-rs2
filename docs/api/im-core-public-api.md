@@ -69,6 +69,7 @@ pub struct ImCoreOpenOptions {
     pub identity_secret_vault: Option<ImCoreSecretVaultOptions>,
     pub multi_device_join_enabled: bool, // default false
     pub multi_device_root_transfer_enabled: bool, // default false
+    pub multi_device_group_e2ee_enabled: bool, // default false
 }
 
 pub enum IdentitySecretStoragePolicy {
@@ -398,6 +399,15 @@ the preceding Session Reply, so Core removes that reply's pending ciphertext
 and Vault record. Expiry performs the same private-record cleanup and retains
 only a non-retryable, secret-free `Failed` tombstone. Completed and expired
 operation IDs are terminal and cannot be used to derive another ciphertext.
+
+### 5.3 Multi-device Group E2EE rollout gate
+
+`ImCoreOpenOptions.multi_device_group_e2ee_enabled` is host-local configuration,
+defaults to `false`, and is never serialized into ANP, DID Documents, or
+cross-domain requests. When enabled, the redacted `secure().group()` status and
+repair facade uses the device-scoped P6 v2 local state. The facade exposes only
+readiness, repair state, and counts; it does not expose KeyPackages, Welcome or
+Commit payloads, Leaf identifiers, MLS secrets, state paths, or raw SQLite rows.
 
 Identity vault DTOs are redacted status/report surfaces. They report selected
 backend, storage policy, vault availability, metadata verification, workspace /

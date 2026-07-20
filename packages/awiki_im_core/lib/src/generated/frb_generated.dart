@@ -7579,8 +7579,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartImCoreOpenOptions dco_decode_dart_im_core_open_options(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return DartImCoreOpenOptions(
       identitySecretStoragePolicy:
           dco_decode_dart_identity_secret_storage_policy(arr[0]),
@@ -7588,6 +7588,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           dco_decode_opt_box_autoadd_dart_im_core_secret_vault_options(arr[1]),
       multiDeviceJoinEnabled: dco_decode_bool(arr[2]),
       multiDeviceRootTransferEnabled: dco_decode_bool(arr[3]),
+      multiDeviceGroupE2EeEnabled: dco_decode_bool(arr[4]),
     );
   }
 
@@ -11418,11 +11419,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         );
     var var_multiDeviceJoinEnabled = sse_decode_bool(deserializer);
     var var_multiDeviceRootTransferEnabled = sse_decode_bool(deserializer);
+    var var_multiDeviceGroupE2EeEnabled = sse_decode_bool(deserializer);
     return DartImCoreOpenOptions(
       identitySecretStoragePolicy: var_identitySecretStoragePolicy,
       identitySecretVault: var_identitySecretVault,
       multiDeviceJoinEnabled: var_multiDeviceJoinEnabled,
       multiDeviceRootTransferEnabled: var_multiDeviceRootTransferEnabled,
+      multiDeviceGroupE2EeEnabled: var_multiDeviceGroupE2EeEnabled,
     );
   }
 
@@ -15448,6 +15451,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     );
     sse_encode_bool(self.multiDeviceJoinEnabled, serializer);
     sse_encode_bool(self.multiDeviceRootTransferEnabled, serializer);
+    sse_encode_bool(self.multiDeviceGroupE2EeEnabled, serializer);
   }
 
   @protected

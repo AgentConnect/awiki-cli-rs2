@@ -18,7 +18,7 @@ use anp::group_e2ee::{
     parse_publish_key_package_result_v2, publish_key_package_request_v2, V2GetKeyPackageBody,
     V2GetKeyPackageResult, V2GroupAddBody, V2GroupCipherObject, V2GroupCreateBody,
     V2GroupCreateResult, V2GroupIncomingBody, V2GroupIncomingMetadata, V2GroupMembershipResult,
-    V2GroupRemoveBody, V2GroupSendMetadata, V2GroupSendResult, V2OriginAuth,
+    V2GroupRemoveBody, V2GroupSendMetadata, V2GroupSendResult, V2GroupStateRef, V2OriginAuth,
     V2PublishKeyPackageBody, V2PublishKeyPackageResult, V2ServiceMetadata, V2Target,
     GROUP_E2EE_SECURITY_PROFILE_V2, METHOD_GROUP_ADD_V2, METHOD_GROUP_CREATE_V2,
     METHOD_GROUP_REMOVE_V2, METHOD_GROUP_SEND_V2,
@@ -31,6 +31,7 @@ use crate::internal::proof::origin::OriginProofIdentity;
 use crate::internal::transport::AuthenticatedRpcTransport;
 use crate::internal::wire::direct::DirectPayload;
 
+use super::v2_application::{V2ApplicationProjection, V2ProductApplication};
 use super::v2_runtime::GroupE2eeV2Runtime;
 
 const MESSAGE_RPC_ENDPOINT: &str = "/im/rpc";
@@ -236,6 +237,13 @@ pub(crate) struct V2Committed<R> {
 pub(crate) struct V2PreparedApplicationSend {
     pub(crate) meta: V2GroupSendMetadata,
     pub(crate) cipher: V2GroupCipherObject,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct V2PreparedProductApplicationSend {
+    pub(crate) encrypted: V2PreparedApplicationSend,
+    /// Secret-free text/JSON/attachment projection for local history and UI.
+    pub(crate) projection: V2ApplicationProjection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -483,6 +491,45 @@ where
         let meta = input.meta.clone();
         let cipher = self.runtime.encrypt(input)?;
         Ok(V2PreparedApplicationSend { meta, cipher })
+    }
+
+    /// Encrypts one logical application body into exactly one MLS ciphertext.
+    ///
+    /// For attachments, `application` contains the full manifest only until
+    /// this call returns. The returned projection has the object key/nonce
+    /// removed and is safe for ordinary local message projection.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_product_application_send(
+        &self,
+        meta: V2GroupSendMetadata,
+        group_state_ref: V2GroupStateRef,
+        application: V2ProductApplication,
+        sender_did_document: Value,
+        now: String,
+        draft_extension_negotiated: bool,
+        request_id: String,
+    ) -> crate::ImResult<V2PreparedProductApplicationSend> {
+        let projection = application.projection().clone();
+        let encrypted = self.prepare_application_send(V2EncryptInput {
+            meta,
+            group_state_ref,
+            application_plaintext: application.into_plaintext(),
+            sender_did_document,
+            now,
+            draft_extension_negotiated,
+            request_id,
+        })?;
+        Ok(V2PreparedProductApplicationSend {
+            encrypted,
+            projection,
+        })
+    }
+
+    pub(crate) fn submit_product_application_send(
+        &mut self,
+        prepared: &V2PreparedProductApplicationSend,
+    ) -> crate::ImResult<V2GroupSendResult> {
+        self.submit_application_send(&prepared.encrypted)
     }
 
     pub(crate) fn submit_application_send(

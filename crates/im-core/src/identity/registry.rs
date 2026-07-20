@@ -2799,6 +2799,7 @@ mod tests {
                 multi_device_join_enabled: false,
                 multi_device_root_transfer_enabled: false,
                 multi_device_handle_recovery_enabled: false,
+                multi_device_group_e2ee_enabled: false,
             },
         )
         .unwrap();
@@ -2940,6 +2941,7 @@ mod tests {
                 multi_device_join_enabled: false,
                 multi_device_root_transfer_enabled: false,
                 multi_device_handle_recovery_enabled: false,
+                multi_device_group_e2ee_enabled: false,
             },
         ) {
             Ok(_) => panic!("VaultRequired without vault options should fail"),

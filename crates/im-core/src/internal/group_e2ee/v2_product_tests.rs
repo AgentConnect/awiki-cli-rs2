@@ -228,6 +228,59 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         .expect("submit and finalize create");
     assert_eq!(created.finalized.status, "finalized");
     assert_eq!(created.finalized.epoch, "0");
+    let a1_ready = status_runtime(&directory, &fixture, a1)
+        .status(crate::ids::GroupRef::parse(GROUP_DID).unwrap())
+        .expect("A1 local P6 status");
+    assert_eq!(a1_ready.state, crate::secure::GroupSecureState::Ready);
+    assert!(a1_ready.can_send_secure);
+    let a2_before_welcome = status_runtime(&directory, &fixture, a2)
+        .status(crate::ids::GroupRef::parse(GROUP_DID).unwrap())
+        .expect("A2 pre-Welcome status");
+    assert_eq!(
+        a2_before_welcome.state,
+        crate::secure::GroupSecureState::MissingLocalState
+    );
+    assert!(!a2_before_welcome.can_send_secure);
+
+    let before_welcome = a1_product
+        .prepare_product_application_send(
+            send_meta(&fixture.did, &a1.device_id, "before-welcome"),
+            state_ref(1),
+            V2ProductApplication::text(GROUP_DID, "text/plain", "history before A2")
+                .expect("prepare text body"),
+            fixture.document.clone(),
+            NOW.to_owned(),
+            true,
+            "req-encrypt-before-welcome".to_owned(),
+        )
+        .expect("A1 encrypts before A2 joins");
+    a1_product
+        .submit_product_application_send(&before_welcome)
+        .expect("Host accepts pre-Welcome ciphertext");
+    assert!(a2_product
+        .decrypt_incoming_application(incoming_input(
+            &fixture,
+            a1,
+            a2,
+            &before_welcome.encrypted,
+            "req-a2-cannot-decrypt-history",
+        ))
+        .is_err());
+
+    let mut wrong_device_package = a2_publish.body.group_key_package.clone();
+    wrong_device_package.owner_device_id = "alice-not-a2".to_owned();
+    assert!(a1_product
+        .prepare_add(V2AddMemberInput {
+            meta: control_meta(&fixture.did, &a1.device_id, "op-add-wrong-device"),
+            group_state_ref: state_ref(2),
+            group_key_package: wrong_device_package,
+            member_did_document: fixture.document.clone(),
+            now: NOW.to_owned(),
+            draft_extension_negotiated: true,
+            pending_commit_id: "pending-add-wrong-device".to_owned(),
+            request_id: "req-add-wrong-device".to_owned(),
+        })
+        .is_err());
 
     let add = a1_product
         .prepare_add(V2AddMemberInput {
@@ -253,6 +306,11 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
     let V2ControlDisposition::ConsumedControl(output) = disposition;
     assert_eq!(output.notice_type, "welcome-delivery");
     assert_eq!(output.epoch, "1");
+    let a2_ready = status_runtime(&directory, &fixture, a2)
+        .status(crate::ids::GroupRef::parse(GROUP_DID).unwrap())
+        .expect("A2 status after durable Welcome processing");
+    assert_eq!(a2_ready.state, crate::secure::GroupSecureState::Ready);
+    assert!(a2_ready.can_send_secure);
     let replay = product(&directory, &fixture, a2, transport.clone())
         .consume_notice(V2ProcessNoticeInput {
             request_id: "req-welcome-replay-after-restart".to_owned(),
@@ -322,6 +380,80 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         Some("hello A2")
     );
 
+    let committed_attachment = committed_group_attachment();
+    let object_key = committed_attachment.full_manifest["attachments"][0]["encryption_info"]
+        ["object_key_b64u"]
+        .as_str()
+        .expect("full manifest object key")
+        .to_owned();
+    let attachment_application =
+        V2ProductApplication::committed_attachment(GROUP_DID, &committed_attachment)
+            .expect("one committed group object becomes one MLS application body");
+    let projected = attachment_application
+        .projection()
+        .payload
+        .as_ref()
+        .expect("redacted attachment projection");
+    assert!(!projected.to_string().contains(&object_key));
+    let send_calls_before = transport
+        .calls()
+        .iter()
+        .filter(|call| call.method == "group.e2ee.send")
+        .count();
+    let attachment_send = a1_product
+        .prepare_product_application_send(
+            send_meta(&fixture.did, &a1.device_id, "attachment"),
+            state_ref(2),
+            attachment_application,
+            fixture.document.clone(),
+            NOW.to_owned(),
+            true,
+            "req-encrypt-attachment".to_owned(),
+        )
+        .expect("encrypt one attachment manifest");
+    assert!(!format!("{attachment_send:?}").contains(&object_key));
+    a1_product
+        .submit_product_application_send(&attachment_send)
+        .expect("submit one attachment MLS ciphertext");
+    let send_calls_after = transport
+        .calls()
+        .iter()
+        .filter(|call| call.method == "group.e2ee.send")
+        .count();
+    assert_eq!(send_calls_after, send_calls_before + 1);
+    assert!(!transport
+        .calls()
+        .last()
+        .expect("attachment Host call")
+        .params
+        .to_string()
+        .contains(&object_key));
+    let attachment_decrypted = a2_product
+        .decrypt_incoming_application(incoming_input(
+            &fixture,
+            a1,
+            a2,
+            &attachment_send.encrypted,
+            "req-decrypt-attachment-a2",
+        ))
+        .expect("A2 decrypts the single MLS attachment manifest");
+    let attachment_payload = attachment_decrypted
+        .application_plaintext
+        .payload
+        .expect("full attachment manifest remains inside MLS");
+    assert_eq!(
+        attachment_payload["attachments"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        attachment_payload["attachments"][0]["object_uri"],
+        committed_attachment.full_manifest["attachments"][0]["object_uri"]
+    );
+    assert_eq!(
+        attachment_payload["attachments"][0]["encryption_info"]["object_key_b64u"],
+        object_key
+    );
+
     let remove = a1_product
         .prepare_remove(V2RemoveMemberInput {
             meta: control_meta(&fixture.did, &a1.device_id, "op-remove-a2"),
@@ -345,6 +477,11 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         .consume_notice(remove_notice)
         .expect("A2 consumes its exact Remove Commit notice");
     assert!(remove_output.self_removed);
+    let a2_removed = status_runtime(&directory, &fixture, a2)
+        .status(crate::ids::GroupRef::parse(GROUP_DID).unwrap())
+        .expect("A2 status after exact Remove Commit");
+    assert!(!a2_removed.can_send_secure);
+    assert!(!a2_removed.local_readiness.has_active_membership);
 
     let after_remove = a1_product
         .prepare_application_send(V2EncryptInput {
@@ -385,6 +522,18 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
     assert!(calls.iter().any(|call| {
         call.method == "group.e2ee.send" && call.params["auth"]["origin_proof"].is_object()
     }));
+    // Adding A2 is a P6 Leaf mutation only. The product seam never invokes a
+    // P4 business-member mutation, so Alice remains one business DID member.
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.method == "group.e2ee.add")
+            .count(),
+        1
+    );
+    assert!(calls
+        .iter()
+        .all(|call| call.method.starts_with("group.e2ee.")));
     assert_ne!(
         store(&directory, &fixture, a1).state_db_path(),
         store(&directory, &fixture, a2).state_db_path()
@@ -425,6 +574,26 @@ fn uncertain_submit_survives_restart_and_requires_host_recheck() {
         .is_err());
     drop(initial);
 
+    let needs_repair = status_runtime(&directory, &fixture, device)
+        .status(crate::ids::GroupRef::parse(GROUP_DID).unwrap())
+        .expect("read durable prepared WAL status");
+    assert_eq!(
+        needs_repair.state,
+        crate::secure::GroupSecureState::NeedsRepair
+    );
+    assert_eq!(needs_repair.pending_work.pending_commits, 1);
+    let local_repair = status_runtime(&directory, &fixture, device)
+        .repair(
+            crate::ids::GroupRef::parse(GROUP_DID).unwrap(),
+            "req-local-wal-repair",
+        )
+        .expect("local WAL reconciliation");
+    assert!(!local_repair.repaired);
+    assert_eq!(
+        local_repair.state,
+        crate::secure::GroupSecureState::NeedsRepair
+    );
+
     let mut restarted = product(&directory, &fixture, device, transport.clone());
     let reconciled = restarted
         .reconcile_pending("req-reconcile-network-uncertain")
@@ -452,6 +621,11 @@ fn uncertain_submit_survives_restart_and_requires_host_recheck() {
         .expect("final reconciliation")
         .entries
         .is_empty());
+    let ready = status_runtime(&directory, &fixture, device)
+        .status(crate::ids::GroupRef::parse(GROUP_DID).unwrap())
+        .expect("status after exact Host result finalizes WAL");
+    assert_eq!(ready.state, crate::secure::GroupSecureState::Ready);
+    assert!(ready.can_send_secure);
 }
 
 #[test]
@@ -498,6 +672,79 @@ fn explicit_abort_is_idempotent() {
     );
 }
 
+#[test]
+fn status_repair_finishes_accepted_wal_without_copying_another_device_state() {
+    let directory = TestDirectory::new("im-core-p6-v2-accepted-repair");
+    let fixture = make_did_fixture("alice-accepted", &["alice-w1", "alice-w2"]);
+    let a1 = &fixture.devices[0];
+    let a2 = &fixture.devices[1];
+    let transport = LoopbackTransport::default();
+    let product = product(&directory, &fixture, a1, transport);
+    let key = signing_key(a1);
+    let publish = product
+        .prepare_current_key_package(
+            key_service_meta(&fixture.did, &a1.device_id, "op-publish-w1"),
+            key_package_input(&fixture, a1, "kp-w1", "req-kp-w1"),
+            &fixture.document,
+            &key,
+        )
+        .expect("prepare package");
+    product
+        .prepare_create(V2CreateGroupInput {
+            meta: control_service_meta(&fixture.did, &a1.device_id, "op-create-w1"),
+            group_state_ref: state_ref(1),
+            creator_key_package: publish.body.group_key_package,
+            creator_did_document: fixture.document.clone(),
+            now: NOW.to_owned(),
+            draft_extension_negotiated: true,
+            pending_commit_id: "pending-create-w1".to_owned(),
+            request_id: "req-create-w1".to_owned(),
+        })
+        .expect("prepare durable create WAL");
+    let a1_store = store(&directory, &fixture, a1);
+    let connection = rusqlite::Connection::open(a1_store.state_db_path()).expect("open A1 state");
+    connection
+        .execute(
+            "UPDATE group_mls_pending_commits
+             SET status = 'accepted'
+             WHERE owner_identity_id = ?1
+               AND device_id = ?2
+               AND pending_commit_id = ?3",
+            rusqlite::params![
+                format!("identity-{}", a1.device_id),
+                a1.device_id,
+                "pending-create-w1"
+            ],
+        )
+        .expect("simulate crash after Host acceptance was durably recorded");
+    drop(connection);
+
+    let syncing = status_runtime(&directory, &fixture, a1)
+        .status(crate::ids::GroupRef::parse(GROUP_DID).unwrap())
+        .expect("accepted WAL status");
+    assert_eq!(syncing.state, crate::secure::GroupSecureState::Syncing);
+    let repaired = status_runtime(&directory, &fixture, a1)
+        .repair(
+            crate::ids::GroupRef::parse(GROUP_DID).unwrap(),
+            "req-repair-accepted-wal",
+        )
+        .expect("finish accepted WAL from persisted local state");
+    assert!(repaired.repaired);
+    assert_eq!(repaired.state, crate::secure::GroupSecureState::Ready);
+
+    let a2_status = status_runtime(&directory, &fixture, a2)
+        .status(crate::ids::GroupRef::parse(GROUP_DID).unwrap())
+        .expect("A2 remains independent");
+    assert_eq!(
+        a2_status.state,
+        crate::secure::GroupSecureState::MissingLocalState
+    );
+    assert_ne!(
+        a1_store.state_db_path(),
+        store(&directory, &fixture, a2).state_db_path()
+    );
+}
+
 fn product(
     directory: &TestDirectory,
     fixture: &DidFixture,
@@ -515,6 +762,16 @@ fn product(
         },
     );
     GroupE2eeV2Product::new(runtime, host)
+}
+
+fn status_runtime(
+    directory: &TestDirectory,
+    fixture: &DidFixture,
+    device: &DeviceFixture,
+) -> crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime {
+    crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(GroupE2eeV2Runtime::new(
+        store(directory, fixture, device),
+    ))
 }
 
 fn store(
@@ -537,6 +794,53 @@ fn store(
 
 fn signing_key(device: &DeviceFixture) -> PrivateKeyMaterial {
     PrivateKeyMaterial::from_pem(&device.signing_private_pem).expect("device signing key")
+}
+
+fn committed_group_attachment(
+) -> crate::internal::attachment_runtime::upload::PreparedCommittedAttachment {
+    let e2ee = crate::attachments::manifest::prepare_object_e2ee_attachment_payload(
+        "p6-v2.pdf",
+        "application/pdf",
+        b"one uploaded encrypted group object".to_vec(),
+    )
+    .expect("prepare encrypted attachment object");
+    let slot = crate::internal::wire::attachment::AttachmentCreateSlotResult {
+        attachment_id: "att-p6-v2".to_owned(),
+        slot_id: "slot-p6-v2".to_owned(),
+        upload_uri: "https://upload.example/slot-p6-v2".to_owned(),
+        upload_headers: serde_json::Map::new(),
+        object_uri: "https://objects.example/att-p6-v2".to_owned(),
+        commit_token: "commit-p6-v2".to_owned(),
+        expires_at: EXPIRES_AT.to_owned(),
+        request_service_did: SERVICE_DID.to_owned(),
+    };
+    let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
+        &e2ee.prepared,
+        slot.attachment_id.clone(),
+        slot.object_uri.clone(),
+    );
+    let full_manifest =
+        crate::attachments::manifest::build_attachment_manifest_with_object_e2ee_secrets(
+            &descriptor,
+            "P6 v2 attachment",
+            &e2ee.secrets,
+        )
+        .expect("full attachment manifest");
+    let redacted_manifest =
+        crate::attachments::manifest::build_attachment_manifest(&descriptor, "P6 v2 attachment")
+            .expect("redacted attachment manifest");
+    let grant_ref = crate::attachments::manifest::build_attachment_grant_ref(&descriptor)
+        .expect("attachment grant ref");
+    crate::internal::attachment_runtime::upload::PreparedCommittedAttachment {
+        target_kind: "group",
+        target_did: GROUP_DID.to_owned(),
+        prepared: e2ee.prepared,
+        slot,
+        descriptor,
+        redacted_manifest,
+        full_manifest,
+        grant_ref,
+    }
 }
 
 fn key_package_input(

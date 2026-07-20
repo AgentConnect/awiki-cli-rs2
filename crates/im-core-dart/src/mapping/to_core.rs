@@ -170,6 +170,7 @@ impl TryFrom<crate::dto::config::DartImCoreOpenOptions> for im_core::ImCoreOpenO
             // Dart exposure is added with the dedicated Recovery facade. Until
             // then the Core-only rollout gate remains fail-closed.
             multi_device_handle_recovery_enabled: false,
+            multi_device_group_e2ee_enabled: value.multi_device_group_e2ee_enabled,
         };
         if let Some(vault) = value.identity_secret_vault {
             options.identity_secret_vault = Some(vault.try_into()?);

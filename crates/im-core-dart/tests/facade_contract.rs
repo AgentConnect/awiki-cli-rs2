@@ -818,6 +818,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
         }),
         multi_device_join_enabled: true,
         multi_device_root_transfer_enabled: true,
+        multi_device_group_e2ee_enabled: true,
     };
 
     let mapped: im_core::ImCoreOpenOptions = options.try_into().expect("open options map");
@@ -827,6 +828,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
     ));
     assert!(mapped.multi_device_join_enabled);
     assert!(mapped.multi_device_root_transfer_enabled);
+    assert!(mapped.multi_device_group_e2ee_enabled);
     let vault = mapped.identity_secret_vault.expect("vault options");
     assert_eq!(
         vault.vault_dir,
@@ -854,6 +856,7 @@ fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
         }),
         multi_device_join_enabled: false,
         multi_device_root_transfer_enabled: false,
+        multi_device_group_e2ee_enabled: false,
     };
 
     let error = im_core::ImCoreOpenOptions::try_from(options).unwrap_err();

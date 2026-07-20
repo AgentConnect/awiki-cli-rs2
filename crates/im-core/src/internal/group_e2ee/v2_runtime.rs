@@ -7,7 +7,8 @@
 
 use anp::group_e2ee::operations::v2::{
     self, V2AddMemberInput, V2CreateGroupInput, V2DecryptInput, V2DecryptOutput, V2FinalizeInput,
-    V2FinalizeOutput, V2GenerateKeyPackageInput, V2PreparedAdd, V2PreparedCreate, V2PreparedRemove,
+    V2FinalizeOutput, V2GenerateKeyPackageInput, V2InspectLocalGroupInput,
+    V2InspectLocalGroupOutput, V2PreparedAdd, V2PreparedCreate, V2PreparedRemove,
     V2ProcessCommitInput, V2ProcessCommitOutput, V2ProcessNoticeInput, V2ProcessNoticeOutput,
     V2ProcessWelcomeInput, V2ReconcilePendingInput, V2ReconcilePendingOutput, V2RemoveMemberInput,
 };
@@ -104,6 +105,13 @@ impl GroupE2eeV2Runtime {
         input: V2ReconcilePendingInput,
     ) -> crate::ImResult<V2ReconcilePendingOutput> {
         v2::reconcile_pending_v2(&self.store, input).map_err(map_group_mls_error)
+    }
+
+    pub(crate) fn inspect_local_group(
+        &self,
+        input: V2InspectLocalGroupInput,
+    ) -> crate::ImResult<V2InspectLocalGroupOutput> {
+        v2::inspect_local_group_v2(&self.store, input).map_err(map_group_mls_error)
     }
 
     pub(crate) fn encrypt(

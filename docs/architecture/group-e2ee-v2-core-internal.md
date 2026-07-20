@@ -1,6 +1,6 @@
 # im-core P6 v2 内部产品编排
 
-状态：内部集成切片，尚未切换公共 Core、Dart 或 AWiki Me 产品入口。
+状态：内部产品编排仍在集成；默认关闭的 Core/Dart/AWiki Me 状态与修复入口已接入。
 
 ## 1. 边界
 
@@ -54,9 +54,14 @@ MLS 解密后，才返回 Application plaintext 供后续业务投影。
 Commit bytes/digest 全部精确且唯一匹配时记录幂等 receipt，不会再次 merge Commit。重启后的
 精确 replay 返回同一控制结果；任何不匹配继续 fail closed。
 
-## 4. 尚未完成
+## 4. 公开状态边界与尚未完成项
 
-- 公共 Core/Dart API 与 AWiki Me 状态展示；
+- lifecycle/send 产品管线完整切换到 v2；
 - 普通消息读取/realtime 管线切换到 v2 control/application 分流；
 - durable message outbox 与远端 `awiki.info` 多设备 MLS E2E；
 - P6 草案 extension code point 的正式发布门禁。
+
+公共 `secure.group().status()/repair()` 通过本地
+`multi_device_group_e2ee_enabled` gate 选择 P6 v2。该 gate 默认关闭，不进入 ANP、DID
+Document 或跨域请求。状态路径只调用 SDK typed inspection/reconcile API，不直接读取 SDK
+SQLite schema；返回值只包含 readiness、修复状态和计数。

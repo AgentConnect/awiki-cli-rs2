@@ -9,6 +9,12 @@
 - Service API: [message-service Group API](../../../message-service/docs/api/ANP-client-server-api-group.md).
 - Public discovery and service capability gates still decide whether secure operations are available for a concrete identity/workspace/service.
 
+The device-scoped P6 v2 product path also has a host-local, default-off
+`ImCoreOpenOptions.multi_device_group_e2ee_enabled` rollout gate. This setting
+is not an ANP capability and is never serialized into DID or cross-domain wire
+objects. Enabling it selects the v2 implementation for the existing redacted
+group status/repair facade; it does not expose low-level MLS commands.
+
 ## CLI responsibility
 
 `awiki-cli` owns argument parsing, workspace/config selection, dry-run rendering, errors, schema/help/completion, and user-facing output. Supported E2EE behavior must execute through `im-core` public services; the CLI must not orchestrate MLS or expose raw crypto artifacts.

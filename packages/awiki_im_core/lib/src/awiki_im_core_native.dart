@@ -1800,6 +1800,7 @@ extension on AwikiImCoreOpenOptions {
     identitySecretVault: identitySecretVault?._toGen(),
     multiDeviceJoinEnabled: multiDeviceJoinEnabled,
     multiDeviceRootTransferEnabled: multiDeviceRootTransferEnabled,
+    multiDeviceGroupE2EeEnabled: multiDeviceGroupE2eeEnabled,
   );
 }
 

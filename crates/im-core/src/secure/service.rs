@@ -230,6 +230,24 @@ impl GroupSecureConversation<'_> {
     pub fn status(&self) -> crate::ImResult<super::GroupSecureStatus> {
         #[cfg(all(feature = "group-e2ee", feature = "blocking"))]
         {
+            if self.client.core_inner().group_e2ee_v2_enabled() {
+                let runtime = match crate::internal::group_e2ee::v2_runtime::runtime_for_client(
+                    self.client,
+                ) {
+                    Ok(runtime) => runtime,
+                    Err(err) => return Ok(group_status_unavailable(self.group.clone(), err)),
+                };
+                let status =
+                    crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
+                        .status(self.group.clone());
+                return match status {
+                    Ok(status) => Ok(status),
+                    Err(err) if group_status_can_downgrade_error(&err) => {
+                        Ok(group_status_unavailable(self.group.clone(), err))
+                    }
+                    Err(err) => Err(err),
+                };
+            }
             let provider =
                 match crate::internal::group_e2ee::storage::native_provider_for_client(self.client)
                 {
@@ -295,6 +313,30 @@ impl GroupSecureConversation<'_> {
     pub async fn status_async(&self) -> crate::ImResult<super::GroupSecureStatus> {
         #[cfg(feature = "group-e2ee")]
         {
+            if self.client.core_inner().group_e2ee_v2_enabled() {
+                let runtime = match crate::internal::group_e2ee::v2_runtime::runtime_for_client(
+                    self.client,
+                ) {
+                    Ok(runtime) => runtime,
+                    Err(err) => return Ok(group_status_unavailable(self.group.clone(), err)),
+                };
+                let group = self.group.clone();
+                let status = crate::internal::runtime::worker::run_blocking(move || {
+                    crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
+                        .status(group)
+                })
+                .await
+                .map_err(|err| crate::ImError::Internal {
+                    message: format!("P6 v2 status worker failed: {err}"),
+                })?;
+                return match status {
+                    Ok(status) => Ok(status),
+                    Err(err) if group_status_can_downgrade_error(&err) => {
+                        Ok(group_status_unavailable(self.group.clone(), err))
+                    }
+                    Err(err) => Err(err),
+                };
+            }
             let provider =
                 match crate::internal::group_e2ee::storage::native_provider_for_client(self.client)
                 {
@@ -356,6 +398,20 @@ impl GroupSecureConversation<'_> {
     pub fn repair(&self) -> crate::ImResult<super::GroupSecureRepairResult> {
         #[cfg(all(feature = "group-e2ee", feature = "blocking"))]
         {
+            if self.client.core_inner().group_e2ee_v2_enabled() {
+                let runtime =
+                    crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client)?;
+                return crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(
+                    runtime,
+                )
+                .repair(
+                    self.group.clone(),
+                    format!(
+                        "im-core-p6-v2-repair-{}",
+                        crate::internal::wire::common::generate_operation_id()
+                    ),
+                );
+            }
             let provider =
                 crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
             group_repair_to_dto(
@@ -388,6 +444,23 @@ impl GroupSecureConversation<'_> {
     pub async fn repair_async(&self) -> crate::ImResult<super::GroupSecureRepairResult> {
         #[cfg(feature = "group-e2ee")]
         {
+            if self.client.core_inner().group_e2ee_v2_enabled() {
+                let runtime =
+                    crate::internal::group_e2ee::v2_runtime::runtime_for_client(self.client)?;
+                let group = self.group.clone();
+                let request_id = format!(
+                    "im-core-p6-v2-repair-{}",
+                    crate::internal::wire::common::generate_operation_id()
+                );
+                return crate::internal::runtime::worker::run_blocking(move || {
+                    crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
+                        .repair(group, request_id)
+                })
+                .await
+                .map_err(|err| crate::ImError::Internal {
+                    message: format!("P6 v2 repair worker failed: {err}"),
+                })?;
+            }
             let provider =
                 crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
             group_repair_to_dto(

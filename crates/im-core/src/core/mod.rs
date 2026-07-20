@@ -23,6 +23,7 @@ pub(crate) struct ImCoreInner {
     pub(crate) root_key_transfer_enabled: bool,
     pub(crate) handle_recovery_enabled: bool,
     pub(crate) handle_recovery_lock: tokio::sync::Mutex<()>,
+    pub(crate) group_e2ee_v2_enabled: bool,
     pub(crate) device_join_approvals:
         crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleStore,
     #[cfg(feature = "sqlite")]
@@ -93,6 +94,7 @@ impl ImCore {
                 root_key_transfer_enabled: options.multi_device_root_transfer_enabled,
                 handle_recovery_enabled: options.multi_device_handle_recovery_enabled,
                 handle_recovery_lock: tokio::sync::Mutex::new(()),
+                group_e2ee_v2_enabled: options.multi_device_group_e2ee_enabled,
                 device_join_approvals: Default::default(),
                 #[cfg(feature = "sqlite")]
                 local_state_db: OnceCell::new(),
@@ -207,6 +209,10 @@ impl ImCoreInner {
 
     pub(crate) fn handle_recovery_enabled(&self) -> bool {
         self.handle_recovery_enabled
+    }
+
+    pub(crate) fn group_e2ee_v2_enabled(&self) -> bool {
+        self.group_e2ee_v2_enabled
     }
 
     #[cfg(feature = "sqlite")]

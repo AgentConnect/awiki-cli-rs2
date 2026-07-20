@@ -74,6 +74,11 @@ pub struct ImCoreOpenOptions {
     /// This rollout gate defaults to `false`. It is local configuration and is
     /// never serialized into ANP, a DID Document or a cross-domain request.
     pub multi_device_handle_recovery_enabled: bool,
+    /// Enables the device-scoped P6 v2 group E2EE product path.
+    ///
+    /// This rollout gate defaults to `false`, is independent from Join and is
+    /// never serialized into ANP, a DID Document, or a cross-domain request.
+    pub multi_device_group_e2ee_enabled: bool,
 }
 
 impl ImCoreOpenOptions {
@@ -103,6 +108,11 @@ impl ImCoreOpenOptions {
 
     pub fn with_multi_device_handle_recovery_enabled(mut self, enabled: bool) -> Self {
         self.multi_device_handle_recovery_enabled = enabled;
+        self
+    }
+
+    pub fn with_multi_device_group_e2ee_enabled(mut self, enabled: bool) -> Self {
+        self.multi_device_group_e2ee_enabled = enabled;
         self
     }
 }
@@ -175,4 +185,18 @@ fn required_non_empty(field: &str, value: String) -> crate::ImResult<String> {
         ));
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_e2ee_v2_rollout_gate_is_local_and_default_off() {
+        let default_options = ImCoreOpenOptions::default();
+        assert!(!default_options.multi_device_group_e2ee_enabled);
+
+        let enabled = ImCoreOpenOptions::default().with_multi_device_group_e2ee_enabled(true);
+        assert!(enabled.multi_device_group_e2ee_enabled);
+    }
 }
