@@ -1,7 +1,8 @@
 # Handle Recovery Core 接口（第一阶段）
 
-**状态**：请求方 Recovery Core 与 Dart/Flutter facade implemented；旧管理设备通知消费已在 Core
-implemented，Dart/Flutter/CLI 产品桥接和远端 E2E 后续完成；rollout default-off。
+**状态**：请求方 Recovery Core、Dart/Flutter facade 与 CLI 生命周期 implemented；旧管理设备
+通知消费已在 Core implemented，Dart/Flutter/App 通知桥接和远端 E2E 后续完成；rollout
+default-off。
 
 ## 1. 定位与边界
 
@@ -30,8 +31,8 @@ core.handle_recovery()
 
 `ImCoreOpenOptions::multi_device_handle_recovery_enabled` 默认 `false`。启用后仍必须使用
 `IdentitySecretStoragePolicy::VaultRequired` 和可用的 `SecretVault`；否则在网络或身份变更前
-fail closed。Dart/Flutter 使用 `multiDeviceHandleRecoveryEnabled` 显式透传该开关；CLI 尚未开放，
-产品编译期开关默认仍为关闭。
+fail closed。Dart/Flutter 使用 `multiDeviceHandleRecoveryEnabled` 显式透传该开关；CLI 使用
+`AWIKI_MULTI_DEVICE_HANDLE_RECOVERY_ENABLED=1`，未设置时同样保持关闭，且只接受 `0`/`1`。
 
 ## 3. 生命周期
 
@@ -127,3 +128,27 @@ checkpoint；Recovery 控制通知无论有效或无效都不会投影成普通�
 实际 `cancel` 入口保持不变，仍重新验证旧 DID 当前 `AdminReady`、user presence、最新 Registry/
 DID Document 和服务端权威状态。通知只提供“可以尝试取消”的发现信息，不授予取消权限。
 `cancel` 的权威返回仍刻意保持为 `recovery_session_id + phase`。
+
+## 7. CLI 生命周期
+
+CLI 只提供 Core 生命周期的薄入口：
+
+```text
+id recovery sessions
+id recovery begin --handle <handle>
+id recovery status --session <session_id>
+id recovery cancel --session <session_id>
+id recovery finalize --session <session_id>
+id recovery activate --session <session_id>
+```
+
+begin grant 只从进程环境变量
+`AWIKI_HANDLE_RECOVERY_BEGIN_VERIFICATION_TOKEN` 读取，finalize grant 只从
+`AWIKI_HANDLE_RECOVERY_FINALIZE_VERIFICATION_TOKEN` 读取；两者都不能作为 argv、flag 或输出
+字段。cancel/finalize 只允许前台交互式 TTY，要求用户重新输入 Session ID，并分别输入
+`CANCEL`/`RESET`。`activate` 先幂等恢复已完成 cutover 的本地新身份，成功后才清除 pending
+marker；它不会生成第二套身份或复制旧 Direct/MLS 状态。
+
+所有 CLI 输出仍只包含本接口已有的 secret-free progress、cancel result 和
+`IdentitySummary`。OTP、grant、session/access/refresh token、Document、proof、私钥以及
+`document_version`、`document_hash`、Registry/generation/checkpoint 均不能进入 schema 或结果。

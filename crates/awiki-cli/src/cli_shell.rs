@@ -22,6 +22,7 @@ mod error_hints;
 mod group_e2ee_handlers;
 mod group_handlers;
 mod handle_helpers;
+mod handle_recovery_handlers;
 mod id_recover_handlers;
 mod id_replace_did_handlers;
 mod legacy_identity {
