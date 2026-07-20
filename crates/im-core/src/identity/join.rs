@@ -502,19 +502,24 @@ impl<'a> DeviceJoinService<'a> {
     ) -> crate::ImResult<DeviceJoinRegistrySnapshot> {
         self.require_enabled()?;
         let admin_client = self.core.client_async(admin_identity.clone()).await?;
-        let current = self
+        let current_device = self
             .core
             .identities()
             .device_summary_async(admin_identity)
-            .await?
-            .protocol_device_id;
+            .await?;
+        let include_pending_join_requests =
+            may_read_pending_join_requests(&current_device.readiness);
+        let current = current_device.protocol_device_id;
         let mut runtime =
             crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production_for_rollout(
                 self.core,
                 &admin_client,
                 true,
             );
-        public_registry(runtime.registry().await?, current.as_ref())
+        public_registry(
+            runtime.registry(include_pending_join_requests).await?,
+            current.as_ref(),
+        )
     }
 
     pub async fn claim_device_join(
@@ -754,6 +759,10 @@ impl<'a> DeviceJoinService<'a> {
     }
 }
 
+fn may_read_pending_join_requests(readiness: &super::IdentityDeviceReadiness) -> bool {
+    matches!(readiness, super::IdentityDeviceReadiness::AdminReady)
+}
+
 fn parse_approval_expiry(value: &str) -> crate::ImResult<OffsetDateTime> {
     OffsetDateTime::parse(value, &Rfc3339).map_err(|_| crate::ImError::LocalStateUnavailable {
         detail: "device Join approval expiry is invalid".to_owned(),
@@ -918,6 +927,22 @@ fn approval_error_is_retryable(error: &crate::ImError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_join_requests_are_visible_only_to_ready_admins() {
+        for (readiness, expected) in [
+            (crate::identity::IdentityDeviceReadiness::Legacy, false),
+            (crate::identity::IdentityDeviceReadiness::MemberReady, false),
+            (
+                crate::identity::IdentityDeviceReadiness::AdminAwaitingRoot,
+                false,
+            ),
+            (crate::identity::IdentityDeviceReadiness::AdminReady, true),
+            (crate::identity::IdentityDeviceReadiness::Blocked, false),
+        ] {
+            assert_eq!(may_read_pending_join_requests(&readiness), expected);
+        }
+    }
 
     #[test]
     fn authorized_device_is_current_only_in_new_device_progress() {

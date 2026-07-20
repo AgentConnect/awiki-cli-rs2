@@ -1130,10 +1130,15 @@ impl<R> DeviceJoinAdminRuntime<'_, R>
 where
     R: DeviceJoinAdminRemote,
 {
-    pub(crate) async fn registry(&mut self) -> crate::ImResult<DeviceJoinRemoteRegistry> {
+    pub(crate) async fn registry(
+        &mut self,
+        include_pending_join_requests: bool,
+    ) -> crate::ImResult<DeviceJoinRemoteRegistry> {
         self.gate.require_enabled()?;
         let did = self.core.client(self.admin_identity.clone())?.did().clone();
-        self.remote.registry(&did, true).await
+        self.remote
+            .registry(&did, include_pending_join_requests)
+            .await
     }
 
     pub(crate) async fn pending(&mut self) -> crate::ImResult<Vec<DeviceJoinRemotePendingSummary>> {
