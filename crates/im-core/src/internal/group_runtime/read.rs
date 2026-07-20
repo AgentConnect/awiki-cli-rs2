@@ -200,28 +200,7 @@ where
 
 #[cfg(feature = "group-e2ee")]
 fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value) {
-    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
-    };
-    let mut message_values = std::mem::take(messages);
-    crate::internal::message_runtime::read::apply_cached_group_e2ee_messages(
-        client,
-        &mut message_values,
-    );
-    let warnings =
-        crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client(
-            client,
-            &mut message_values,
-        );
-    crate::internal::message_runtime::read::cache_attachment_manifests_for_internal_download(
-        client,
-        &message_values,
-    );
-    crate::internal::message_runtime::read::redact_attachment_manifests_for_public_projection(
-        &mut message_values,
-    );
-    *messages = message_values;
-    append_warnings(raw, warnings);
+    crate::internal::message_runtime::read::project_group_e2ee_messages(client, raw);
 }
 
 #[cfg(not(feature = "group-e2ee"))]
@@ -229,50 +208,11 @@ fn project_group_e2ee_messages(_client: &crate::core::ImClient, _raw: &mut Value
 
 #[cfg(feature = "group-e2ee")]
 async fn project_group_e2ee_messages_async(client: &crate::core::ImClient, raw: &mut Value) {
-    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
-    };
-    let mut message_values = std::mem::take(messages);
-    crate::internal::message_runtime::read::apply_cached_group_e2ee_messages_async(
-        client,
-        &mut message_values,
-    )
-    .await;
-    let warnings =
-        crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client_async(
-            client,
-            &mut message_values,
-        )
-        .await;
-    crate::internal::message_runtime::read::cache_attachment_manifests_for_internal_download_async(
-        client,
-        &message_values,
-    )
-    .await;
-    crate::internal::message_runtime::read::redact_attachment_manifests_for_public_projection(
-        &mut message_values,
-    );
-    *messages = message_values;
-    append_warnings(raw, warnings);
+    crate::internal::message_runtime::read::project_group_e2ee_messages_async(client, raw).await;
 }
 
 #[cfg(not(feature = "group-e2ee"))]
 async fn project_group_e2ee_messages_async(_client: &crate::core::ImClient, _raw: &mut Value) {}
-
-fn append_warnings(raw: &mut Value, warnings: Vec<String>) {
-    if warnings.is_empty() {
-        return;
-    }
-    let Some(object) = raw.as_object_mut() else {
-        return;
-    };
-    let entry = object
-        .entry("warnings")
-        .or_insert_with(|| Value::Array(Vec::new()));
-    if let Value::Array(items) = entry {
-        items.extend(warnings.into_iter().map(Value::String));
-    }
-}
 
 fn page_limit(limit: crate::ids::PageLimit, fallback: i64) -> i64 {
     if limit.0 == 0 {

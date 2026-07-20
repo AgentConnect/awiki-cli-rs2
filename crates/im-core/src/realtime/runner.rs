@@ -1538,14 +1538,45 @@ fn normalize_group_e2ee_realtime_notification_async_first(
     notification: Value,
     warnings: &mut Vec<String>,
 ) -> Option<Value> {
+    if is_explicit_group_e2ee_notice_control(&notification)
+        && notification
+            .pointer("/params/meta/profile")
+            .and_then(Value::as_str)
+            != Some(anp::group_e2ee::GROUP_E2EE_PROFILE_V2)
+        && notification
+            .pointer("/params/meta/profile")
+            .and_then(Value::as_str)
+            != Some(anp::group_e2ee::PROFILE)
+    {
+        warnings.push("unknown group E2EE control notice was rejected".to_owned());
+        return None;
+    }
     if is_p6_v2_realtime_candidate(&notification) {
-        if !client.core_inner().group_e2ee_v2_enabled()
-            || notification.get("method").and_then(Value::as_str)
-                == Some(anp::group_e2ee::METHOD_GROUP_NOTICE_V2)
-        {
+        if !client.core_inner().group_e2ee_v2_enabled() {
             return None;
         }
-        let runtime = runtime?;
+        let is_notice = notification.get("method").and_then(Value::as_str)
+            == Some(anp::group_e2ee::METHOD_GROUP_NOTICE_V2);
+        let Some(runtime) = runtime else {
+            if is_notice {
+                warnings.push("P6 v2 group control notice runtime was unavailable".to_owned());
+            }
+            return None;
+        };
+        if is_notice {
+            if runtime
+                .block_on(
+                    crate::internal::group_e2ee::v2_notice::consume_for_client_async(
+                        client,
+                        &notification,
+                    ),
+                )
+                .is_err()
+            {
+                warnings.push("P6 v2 group control notice was rejected".to_owned());
+            }
+            return None;
+        }
         return runtime
             .block_on(
                 crate::internal::message_runtime::read::normalize_p6_v2_realtime_incoming(
@@ -1593,11 +1624,35 @@ async fn normalize_group_e2ee_realtime_notification_async(
     notification: Value,
     warnings: &mut Vec<String>,
 ) -> Option<Value> {
+    if is_explicit_group_e2ee_notice_control(&notification)
+        && notification
+            .pointer("/params/meta/profile")
+            .and_then(Value::as_str)
+            != Some(anp::group_e2ee::GROUP_E2EE_PROFILE_V2)
+        && notification
+            .pointer("/params/meta/profile")
+            .and_then(Value::as_str)
+            != Some(anp::group_e2ee::PROFILE)
+    {
+        warnings.push("unknown group E2EE control notice was rejected".to_owned());
+        return None;
+    }
     if is_p6_v2_realtime_candidate(&notification) {
-        if !client.core_inner().group_e2ee_v2_enabled()
-            || notification.get("method").and_then(Value::as_str)
-                == Some(anp::group_e2ee::METHOD_GROUP_NOTICE_V2)
+        if !client.core_inner().group_e2ee_v2_enabled() {
+            return None;
+        }
+        if notification.get("method").and_then(Value::as_str)
+            == Some(anp::group_e2ee::METHOD_GROUP_NOTICE_V2)
         {
+            if crate::internal::group_e2ee::v2_notice::consume_for_client_async(
+                client,
+                &notification,
+            )
+            .await
+            .is_err()
+            {
+                warnings.push("P6 v2 group control notice was rejected".to_owned());
+            }
             return None;
         }
         return crate::internal::message_runtime::read::normalize_p6_v2_realtime_incoming(
@@ -1625,6 +1680,11 @@ async fn normalize_group_e2ee_realtime_notification_async(
     projection.notification
 }
 
+fn is_explicit_group_e2ee_notice_control(notification: &Value) -> bool {
+    notification.get("method").and_then(Value::as_str)
+        == Some(anp::group_e2ee::METHOD_GROUP_NOTICE_V2)
+}
+
 fn is_p6_v2_realtime_candidate(notification: &Value) -> bool {
     matches!(
         notification.get("method").and_then(Value::as_str),
@@ -1641,7 +1701,9 @@ fn normalize_group_e2ee_realtime_notification(
     notification: Value,
     _warnings: &mut Vec<String>,
 ) -> Option<Value> {
-    (!is_p6_v2_realtime_candidate(&notification)).then_some(notification)
+    (!is_p6_v2_realtime_candidate(&notification)
+        && !is_explicit_group_e2ee_notice_control(&notification))
+    .then_some(notification)
 }
 
 #[cfg(not(feature = "group-e2ee"))]
@@ -1650,7 +1712,9 @@ async fn normalize_group_e2ee_realtime_notification_async(
     notification: Value,
     _warnings: &mut Vec<String>,
 ) -> Option<Value> {
-    (!is_p6_v2_realtime_candidate(&notification)).then_some(notification)
+    (!is_p6_v2_realtime_candidate(&notification)
+        && !is_explicit_group_e2ee_notice_control(&notification))
+    .then_some(notification)
 }
 
 #[cfg(all(feature = "blocking", not(feature = "group-e2ee")))]
@@ -1660,7 +1724,9 @@ fn normalize_group_e2ee_realtime_notification_async_first(
     notification: Value,
     _warnings: &mut Vec<String>,
 ) -> Option<Value> {
-    (!is_p6_v2_realtime_candidate(&notification)).then_some(notification)
+    (!is_p6_v2_realtime_candidate(&notification)
+        && !is_explicit_group_e2ee_notice_control(&notification))
+    .then_some(notification)
 }
 
 #[cfg(feature = "blocking")]

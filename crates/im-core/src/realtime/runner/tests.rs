@@ -42,6 +42,35 @@ fn realtime_v2_product_recognition_is_profile_and_method_scoped() {
 }
 
 #[test]
+#[cfg(all(feature = "blocking", feature = "group-e2ee"))]
+fn realtime_unknown_group_notice_is_hidden_without_leaking_control_material() {
+    let fixture = TestClientFixture::new("unknown-p6-control");
+    let client = fixture.client();
+    let notification = json!({
+        "method": anp::group_e2ee::METHOD_GROUP_NOTICE_V2,
+        "params": {
+            "meta": {"profile": "anp.group.e2ee.unknown"},
+            "body": {"welcome_b64u": "SECRET-UNKNOWN-WELCOME"}
+        }
+    });
+    let mut warnings = Vec::new();
+
+    let projected = normalize_group_e2ee_realtime_notification_async_first(
+        &client,
+        None,
+        notification,
+        &mut warnings,
+    );
+
+    assert!(projected.is_none());
+    assert_eq!(
+        warnings,
+        vec!["unknown group E2EE control notice was rejected"]
+    );
+    assert!(!format!("{warnings:?}").contains("SECRET-UNKNOWN-WELCOME"));
+}
+
+#[test]
 #[cfg(feature = "blocking")]
 fn realtime_local_state_projector_stores_direct_message_and_contact() {
     let fixture = TestClientFixture::new("direct");

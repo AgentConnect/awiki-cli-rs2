@@ -130,6 +130,7 @@ where
         if delegated.is_some() {
             filter_delegated_e2ee_messages(&mut raw);
         } else {
+            consume_group_e2ee_control_messages(self.client, &mut raw);
             project_secure_direct_messages(self.client, &mut raw, &mut self.directory_transport);
         }
         annotate_direct_peer_scopes(self.client, &mut raw, &mut self.directory_transport, None);
@@ -239,6 +240,7 @@ where
                 if delegated.is_some() {
                     filter_delegated_e2ee_messages(&mut raw);
                 } else {
+                    consume_group_e2ee_control_messages(self.client, &mut raw);
                     project_secure_direct_messages(
                         self.client,
                         &mut raw,
@@ -387,6 +389,7 @@ where
         if delegated.is_some() {
             filter_delegated_e2ee_messages(&mut raw);
         } else {
+            consume_group_e2ee_control_messages_async(self.client, &mut raw).await;
             project_secure_direct_messages_async(
                 self.client,
                 &mut raw,
@@ -510,6 +513,7 @@ where
                 if delegated.is_some() {
                     filter_delegated_e2ee_messages(&mut raw);
                 } else {
+                    consume_group_e2ee_control_messages_async(self.client, &mut raw).await;
                     project_secure_direct_messages_async(
                         self.client,
                         &mut raw,
@@ -2604,19 +2608,107 @@ pub(crate) fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &
 }
 
 #[cfg(feature = "group-e2ee")]
+fn consume_group_e2ee_control_messages(client: &crate::core::ImClient, raw: &mut Value) {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let message_values = std::mem::take(messages);
+    let mut retained = Vec::with_capacity(message_values.len());
+    let mut warnings = Vec::new();
+    for message in message_values {
+        if crate::internal::group_e2ee::v2_notice::is_v2_notice_candidate(&message) {
+            if client.core_inner().group_e2ee_v2_enabled()
+                && crate::internal::group_e2ee::v2_notice::consume_for_client(client, &message)
+                    .is_err()
+            {
+                warnings.push("P6 v2 group control notice was rejected".to_owned());
+            }
+            continue;
+        }
+        if crate::internal::group_e2ee::v2_notice::is_explicit_notice_control(&message) {
+            continue;
+        }
+        retained.push(message);
+    }
+    *messages = retained;
+    append_secure_direct_warnings(raw, warnings);
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+fn consume_group_e2ee_control_messages(_client: &crate::core::ImClient, raw: &mut Value) {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    messages.retain(|message| {
+        !is_p6_v2_projection_candidate(message)
+            && message.get("method").and_then(Value::as_str)
+                != Some(anp::group_e2ee::METHOD_GROUP_NOTICE_V2)
+    });
+}
+
+#[cfg(feature = "group-e2ee")]
+async fn consume_group_e2ee_control_messages_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+) {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let message_values = std::mem::take(messages);
+    let mut retained = Vec::with_capacity(message_values.len());
+    let mut warnings = Vec::new();
+    for message in message_values {
+        if crate::internal::group_e2ee::v2_notice::is_v2_notice_candidate(&message) {
+            if client.core_inner().group_e2ee_v2_enabled()
+                && crate::internal::group_e2ee::v2_notice::consume_for_client_async(
+                    client, &message,
+                )
+                .await
+                .is_err()
+            {
+                warnings.push("P6 v2 group control notice was rejected".to_owned());
+            }
+            continue;
+        }
+        if crate::internal::group_e2ee::v2_notice::is_explicit_notice_control(&message) {
+            continue;
+        }
+        retained.push(message);
+    }
+    *messages = retained;
+    append_secure_direct_warnings(raw, warnings);
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+async fn consume_group_e2ee_control_messages_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+) {
+    consume_group_e2ee_control_messages(client, raw);
+}
+
+#[cfg(feature = "group-e2ee")]
 fn project_group_e2ee_messages_impl(
     client: &crate::core::ImClient,
     raw: &mut Value,
     redact_attachment_secrets: bool,
 ) {
+    consume_group_e2ee_control_messages(client, raw);
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
-    let mut message_values = std::mem::take(messages);
-    // P6 v2 decryption and notice processing use the async device-scoped
-    // runtime. Blocking reads must never hand a v2 ciphertext to the legacy
-    // P6 decoder or to the ordinary message projection.
-    message_values.retain(|message| !is_p6_v2_projection_candidate(message));
+    let message_values = std::mem::take(messages);
+    let mut retained = Vec::with_capacity(message_values.len());
+    for message in message_values {
+        if is_p6_v2_projection_candidate(&message) {
+            continue;
+        }
+        retained.push(message);
+    }
+    let mut message_values = retained;
+    // P6 v2 notices were consumed above. Application decryption remains on the
+    // async device-scoped path, so blocking reads must never hand a v2
+    // ciphertext to the legacy decoder or ordinary message projection.
     apply_cached_group_e2ee_messages(client, &mut message_values);
     let warnings =
         crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client(
@@ -2658,6 +2750,7 @@ async fn project_group_e2ee_messages_async_impl(
     raw: &mut Value,
     redact_attachment_secrets: bool,
 ) {
+    consume_group_e2ee_control_messages_async(client, raw).await;
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };

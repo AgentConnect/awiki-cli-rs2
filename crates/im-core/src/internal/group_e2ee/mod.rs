@@ -13,6 +13,7 @@ pub(crate) mod status;
 pub(crate) mod storage;
 pub(crate) mod summary;
 pub(crate) mod v2_application;
+pub(crate) mod v2_notice;
 pub(crate) mod v2_product;
 pub(crate) mod v2_runtime;
 pub(crate) mod v2_status;

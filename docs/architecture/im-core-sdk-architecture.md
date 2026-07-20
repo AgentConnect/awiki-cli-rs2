@@ -227,6 +227,13 @@ consumed or dropped. Raw v2 wire bodies, ciphertext, and control JSON never
 cross the Rust/Dart/CLI/App public boundary and never fall back to a legacy
 plaintext renderer.
 
+For P6, blocking/async read and realtime share the same internal notice
+consumer. A standard `group.e2ee.notice` is bound to the current owner
+DID/device, resolved against the current P4 group-member DID documents, and
+passed to the SDK's durable, idempotent MLS notice state machine. Controls are
+never projected as messages or events; malformed, unknown-profile, wrong-device,
+or wrong-group inputs fail closed.
+
 ## 5. Paths and Configuration
 
 Hosts pass explicit `ImCoreConfig` and `ImCorePaths`.

@@ -1,10 +1,11 @@
 # im-core P6 v2 内部产品编排
 
-状态：内部产品编排仍在集成；默认关闭的 Core 状态/修复入口与 public message 路径已接入。
+状态：默认关闭的 Core 状态/修复、public message 以及 notice 收件路径已接入。
 
 ## 1. 边界
 
-`internal/group_e2ee/v2_product.rs` 在现有 P6 v2 SDK runtime 之上提供内部编排：
+`internal/group_e2ee/v2_product.rs` 在现有 P6 v2 SDK runtime 之上提供内部编排；
+`internal/group_e2ee/v2_notice.rs` 负责标准 public notice 的解析、上下文解析和消费：
 
 - 当前设备生成并发布设备绑定的 KeyPackage；
 - create、add、remove 的本地 prepare、Host 提交、精确回包校验和 finalize；
@@ -46,18 +47,22 @@ SDK 的可恢复 WAL：`preparing -> prepared -> accepted -> finalized/aborted`�
 
 ## 3. 收件与 timeline
 
-`group.e2ee.notice` 只能进入 `consume_notice`，成功结果固定为 `ConsumedControl`，不生成普通
-timeline message。`group.incoming` 只有通过标准结构校验、精确 recipient DID/device 校验和
-MLS 解密后，才返回 Application plaintext 供后续业务投影。
+`group.e2ee.notice` 只能进入 SDK 的 `process_notice_v2` 状态机，不生成普通 timeline
+message。Core 先绑定当前 owner DID/device，从 P4 当前群成员集合解析所需 DID Document，再由
+SDK 校验 profile、operation、group/state、subject、epoch、Commit/Welcome 与 MLS Leaf。receipt
+与 MLS 状态持久化由 SDK 保证幂等；重启后的相同 notice 返回相同结果，不重复推进 epoch。
+`group.incoming` 只有通过标准结构校验、精确 recipient DID/device 校验和 MLS 解密后，才返回
+Application plaintext 供后续业务投影。
 
 public `messages.send` 在 P6 gate 开启时读取标准 P4 group state，并把每条 Text、JSON 或附件
 Manifest 恰好加密成一个 MLS Application Ciphertext、提交一次。返回值仍是一条逻辑
 `SendMessageResult`，不会按 MLS Leaf 或设备生成多份完整消息密文。
 
-Inbox/History、可靠 sync、realtime 和 delegated 入口必须在 legacy 分支前识别 P6 v2
-candidate。只有认证、校验并解密成功的 Application plaintext 可以进入普通 timeline；notice、
-其他 control、replay、畸形、处理失败或 gate-disabled candidate 必须消费或丢弃，不能暴露原始
-P6 wire/cipher/control JSON，也不能回退到 legacy renderer。
+blocking/async Inbox/History、可靠 sync、realtime 和 delegated 入口必须在 legacy 分支前识别
+P6 v2 candidate。gate 开启时标准 notice 在这些收件入口进入同一 SDK 状态机；gate 关闭、未知
+profile、错误设备/群、畸形或处理失败的 control 一律 fail closed。只有认证、校验并解密成功的
+Application plaintext 可以进入普通 timeline；任何 notice/control 都不能暴露原始 P6
+wire/cipher/control JSON，也不能回退到 legacy renderer。
 
 发起设备在 Host accepted 后已本地 finalize，再收到 Host 广播的自身 Commit echo 时，SDK
 只在 finalized pending journal 与 actor DID/device、operation、group/state、subject、epoch 和

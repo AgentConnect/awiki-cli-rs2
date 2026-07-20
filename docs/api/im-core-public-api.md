@@ -723,6 +723,9 @@ Reliable sync 补充：
   v2 candidate。只有成功认证并解密的业务 plaintext 可以转成普通 `Message`/`ImEvent`；
   own-sync 只投影为 outgoing 业务消息，握手、notice、其他 control、replay、畸形或 gate-disabled
   candidate 均不得原样暴露 wire/cipher/control JSON，也不得回退到 legacy 明文渲染。
+- gate 开启时，blocking/async read 与 realtime 收到的标准 P6 `group.e2ee.notice` 会在 Core 内部
+  进入 device-scoped SDK MLS 状态机；成功、幂等 replay 或拒绝都不会产生 public `Message` /
+  `ImEvent`，也不新增 public DTO 或跨域字段。
 
 `msg send --to`、`--group`、`--text-file`、`--file`、`--secure` 是 CLI 输入形态，不是 SDK 字段。CLI adapter 负责转换成 `MessageTarget`、`MessageBody`、`MessageSecurityPolicy`。
 

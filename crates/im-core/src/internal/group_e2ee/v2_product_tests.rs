@@ -300,10 +300,8 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
     assert_eq!(added.finalized.epoch, "1");
 
     let welcome = welcome_notice(&fixture, a2, &add.prepared.body, "notice-welcome-a2");
-    let disposition = a2_product
-        .consume_notice(welcome.clone())
+    let output = consume_public_notice(&directory, &fixture, a2, welcome.clone())
         .expect("A2 consumes standard Welcome notice");
-    let V2ControlDisposition::ConsumedControl(output) = disposition;
     assert_eq!(output.notice_type, "welcome-delivery");
     assert_eq!(output.epoch, "1");
     let a2_ready = status_runtime(&directory, &fixture, a2)
@@ -311,18 +309,45 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         .expect("A2 status after durable Welcome processing");
     assert_eq!(a2_ready.state, crate::secure::GroupSecureState::Ready);
     assert!(a2_ready.can_send_secure);
-    let replay = product(&directory, &fixture, a2, transport.clone())
-        .consume_notice(V2ProcessNoticeInput {
+    let replay = consume_public_notice(
+        &directory,
+        &fixture,
+        a2,
+        V2ProcessNoticeInput {
             request_id: "req-welcome-replay-after-restart".to_owned(),
             ..welcome
-        })
-        .expect("Welcome replay remains control-only and idempotent");
-    assert!(matches!(replay, V2ControlDisposition::ConsumedControl(_)));
+        },
+    )
+    .expect("Welcome replay remains control-only and idempotent");
+    assert_eq!(replay, output);
+    let mut conflicting_replay =
+        welcome_notice(&fixture, a2, &add.prepared.body, "notice-welcome-a2");
+    conflicting_replay.notice.epoch = "2".to_owned();
+    assert!(consume_public_notice(&directory, &fixture, a2, conflicting_replay).is_err());
+    assert_eq!(
+        status_runtime(&directory, &fixture, a2)
+            .status(crate::ids::GroupRef::parse(GROUP_DID).unwrap())
+            .expect("conflicting operation replay preserves the accepted epoch")
+            .state,
+        crate::secure::GroupSecureState::Ready
+    );
 
     let wrong_target = welcome_notice(&fixture, a2, &add.prepared.body, "notice-wrong-target");
     let mut wrong_target = wrong_target;
     wrong_target.meta.recipient_device_id = a1.device_id.clone();
-    assert!(a2_product.consume_notice(wrong_target).is_err());
+    assert!(consume_public_notice(&directory, &fixture, a2, wrong_target).is_err());
+
+    let malformed = welcome_notice(&fixture, a2, &add.prepared.body, "notice-malformed-secret");
+    let mut malformed_wire =
+        anp::group_e2ee::group_notice_notification_v2(malformed.meta, malformed.notice)
+            .expect("build malformed notice base");
+    malformed_wire["params"]["body"]["unexpected_private_material"] =
+        json!("SECRET-WELCOME-CONTROL");
+    let malformed_error = crate::internal::group_e2ee::v2_notice::parse_notice(&malformed_wire)
+        .expect_err("unknown notice fields fail closed before MLS state");
+    assert!(!malformed_error
+        .to_string()
+        .contains("SECRET-WELCOME-CONTROL"));
 
     let self_echo = commit_notice(
         &fixture,
@@ -331,22 +356,41 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         "notice-add-a2-self-echo",
         "active",
     );
-    let V2ControlDisposition::ConsumedControl(self_echo_output) = a1_product
-        .consume_notice(self_echo.clone())
+    let self_echo_output = consume_public_notice(&directory, &fixture, a1, self_echo.clone())
         .expect("A1 records its exact finalized Commit echo without merging twice");
     assert_eq!(
         self_echo_output.source_operation_id.as_deref(),
         Some("op-add-a2")
     );
-    let replayed_self_echo = product(&directory, &fixture, a1, transport.clone())
-        .consume_notice(V2ProcessNoticeInput {
+    let replayed_self_echo = consume_public_notice(
+        &directory,
+        &fixture,
+        a1,
+        V2ProcessNoticeInput {
             request_id: "req-add-a2-self-echo-replay-after-restart".to_owned(),
             ..self_echo
-        })
-        .expect("A1 self-echo receipt replays after restart");
+        },
+    )
+    .expect("A1 self-echo receipt replays after restart");
+    assert_eq!(replayed_self_echo, self_echo_output);
+
+    let mut wrong_group = commit_notice(
+        &fixture,
+        a1,
+        &add.prepared.body,
+        "notice-add-a2-wrong-group",
+        "active",
+    );
+    wrong_group.meta.sender_did = "did:wba:p6-core.example:groups:other".to_owned();
+    wrong_group.notice.group_did = wrong_group.meta.sender_did.clone();
+    wrong_group.notice.group_state_ref.group_did = wrong_group.meta.sender_did.clone();
+    assert!(consume_public_notice(&directory, &fixture, a1, wrong_group).is_err());
     assert_eq!(
-        replayed_self_echo,
-        V2ControlDisposition::ConsumedControl(self_echo_output)
+        status_runtime(&directory, &fixture, a1)
+            .status(crate::ids::GroupRef::parse(GROUP_DID).unwrap())
+            .expect("wrong-group notice preserves the real group")
+            .state,
+        crate::secure::GroupSecureState::Ready
     );
 
     let send = a1_product
@@ -473,8 +517,7 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
     assert_eq!(removed.finalized.epoch, "2");
     let remove_notice =
         remove_commit_notice(&fixture, a2, &remove.prepared.body, "notice-remove-a2");
-    let V2ControlDisposition::ConsumedControl(remove_output) = a2_product
-        .consume_notice(remove_notice)
+    let remove_output = consume_public_notice(&directory, &fixture, a2, remove_notice)
         .expect("A2 consumes its exact Remove Commit notice");
     assert!(remove_output.self_removed);
     let a2_removed = status_runtime(&directory, &fixture, a2)
@@ -762,6 +805,25 @@ fn product(
         },
     );
     GroupE2eeV2Product::new(runtime, host)
+}
+
+fn consume_public_notice(
+    directory: &TestDirectory,
+    fixture: &DidFixture,
+    recipient: &DeviceFixture,
+    input: V2ProcessNoticeInput,
+) -> crate::ImResult<anp::group_e2ee::operations::v2::V2ProcessNoticeOutput> {
+    let wire = anp::group_e2ee::group_notice_notification_v2(input.meta, input.notice)
+        .map_err(map_v2_wire_error)?;
+    let (meta, notice) = crate::internal::group_e2ee::v2_notice::parse_notice(&wire)?;
+    crate::internal::group_e2ee::v2_notice::consume_with_runtime(
+        &GroupE2eeV2Runtime::new(store(directory, fixture, recipient)),
+        meta,
+        notice,
+        input.member_documents,
+        NOW.to_owned(),
+        input.request_id,
+    )
 }
 
 fn status_runtime(
