@@ -231,13 +231,18 @@ where
         .ok_or_else(|| crate::ImError::Internal {
             message: "generated vNext DID base is not an object".to_owned(),
         })?;
+    let root_proof = base_object
+        .remove("proof")
+        .filter(|proof| proof.get("domain").and_then(Value::as_str) == Some(hostname))
+        .ok_or_else(|| crate::ImError::Internal {
+            message: "generated vNext DID root proof is missing its authority domain".to_owned(),
+        })?;
     for field in [
         "verificationMethod",
         "authentication",
         "assertionMethod",
         "keyAgreement",
         "deviceManifest",
-        "proof",
     ] {
         base_object.remove(field);
     }
@@ -259,6 +264,12 @@ where
         &did,
         &daemon_subkey,
     )?;
+    did_document
+        .as_object_mut()
+        .ok_or_else(|| crate::ImError::Internal {
+            message: "generated vNext DID document is not an object".to_owned(),
+        })?
+        .insert("proof".to_owned(), root_proof);
     crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
         &mut did_document,
         &did,

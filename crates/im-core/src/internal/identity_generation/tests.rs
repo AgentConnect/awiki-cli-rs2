@@ -1,4 +1,5 @@
 use super::build_agent_anp_message_service;
+use anp::proof::{verify_w3c_proof, ProofVerificationOptions};
 
 #[test]
 fn agent_message_service_advertises_group_profile() {
@@ -63,6 +64,35 @@ fn vnext_genesis_has_one_device_and_separate_root_and_device_keys() {
     assert!(anp::authentication::validate_did_document_binding(
         &generated.did_document,
         true
+    ));
+
+    let proof = generated.did_document["proof"]
+        .as_object()
+        .expect("root proof should exist");
+    let authority = generated
+        .did
+        .as_str()
+        .strip_prefix("did:wba:")
+        .and_then(|value| value.split(':').next())
+        .expect("generated DID should have an authority");
+    let challenge = proof["challenge"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .expect("root proof challenge should be non-empty");
+    assert_eq!(proof["domain"].as_str(), Some(authority));
+    assert_eq!(proof["type"], "DataIntegrityProof");
+    assert_eq!(proof["cryptosuite"], "eddsa-jcs-2022");
+    assert_eq!(proof["proofPurpose"], "assertionMethod");
+
+    let root_private_key = anp::PrivateKeyMaterial::from_pem(&generated.root_private_pem).unwrap();
+    assert!(verify_w3c_proof(
+        &generated.did_document,
+        &root_private_key.public_key(),
+        ProofVerificationOptions {
+            expected_purpose: Some("assertionMethod".to_owned()),
+            expected_domain: Some(authority.to_owned()),
+            expected_challenge: Some(challenge.to_owned()),
+        },
     ));
 
     let service = generated.did_document["service"]
