@@ -480,7 +480,22 @@ impl<'a> DeviceJoinService<'a> {
                 self.core,
                 true,
             );
-        public_progress(runtime.advance(join_session_id).await?)
+        let mut progress = public_progress(runtime.advance(join_session_id).await?)?;
+        if progress.remote_state == DeviceJoinRemoteState::Consumed
+            && progress.authorized_device.is_none()
+            && progress.session.phase == DeviceJoinLocalPhase::Authorized
+        {
+            let summary = self
+                .core
+                .identities()
+                .device_summary_async(super::IdentitySelector::Did(progress.session.did.clone()))
+                .await?;
+            progress.authorized_device = Some(public_current_authorized_device(
+                summary,
+                &progress.session.protocol_device_id,
+            )?);
+        }
+        Ok(progress)
     }
 
     pub fn cancel_new_device_join(
@@ -763,6 +778,54 @@ fn may_read_pending_join_requests(readiness: &super::IdentityDeviceReadiness) ->
     matches!(readiness, super::IdentityDeviceReadiness::AdminReady)
 }
 
+fn public_current_authorized_device(
+    summary: super::IdentityDeviceSummary,
+    expected_device_id: &crate::ids::ProtocolDeviceId,
+) -> crate::ImResult<DeviceJoinAuthorizedDeviceSummary> {
+    let protocol_device_id =
+        summary
+            .protocol_device_id
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "authorized identity has no protocol device ID".to_owned(),
+            })?;
+    let signing_key_id =
+        summary
+            .signing_key_id
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "authorized identity has no device signing key".to_owned(),
+            })?;
+    let e2ee_key_id = summary
+        .e2ee_key_id
+        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+            detail: "authorized identity has no device E2EE key".to_owned(),
+        })?;
+    if &protocol_device_id != expected_device_id {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let (role, management_ready) = match (summary.role, summary.readiness) {
+        (Some(super::IdentityDeviceRole::Member), super::IdentityDeviceReadiness::MemberReady) => {
+            (DeviceJoinRole::Member, false)
+        }
+        (
+            Some(super::IdentityDeviceRole::Admin),
+            super::IdentityDeviceReadiness::AdminAwaitingRoot,
+        ) => (DeviceJoinRole::Admin, false),
+        (Some(super::IdentityDeviceRole::Admin), super::IdentityDeviceReadiness::AdminReady) => {
+            (DeviceJoinRole::Admin, true)
+        }
+        _ => return Err(crate::ImError::PermissionDenied),
+    };
+    Ok(DeviceJoinAuthorizedDeviceSummary {
+        protocol_device_id,
+        signing_key_id,
+        e2ee_key_id,
+        status: DeviceJoinAuthorizationStatus::Active,
+        role,
+        management_ready,
+        is_current: true,
+    })
+}
+
 fn parse_approval_expiry(value: &str) -> crate::ImResult<OffsetDateTime> {
     OffsetDateTime::parse(value, &Rfc3339).map_err(|_| crate::ImError::LocalStateUnavailable {
         detail: "device Join approval expiry is invalid".to_owned(),
@@ -942,6 +1005,44 @@ mod tests {
         ] {
             assert_eq!(may_read_pending_join_requests(&readiness), expected);
         }
+    }
+
+    #[test]
+    fn consumed_join_replay_projects_current_member_from_local_identity() {
+        let did = crate::ids::Did::parse("did:wba:awiki.test:alice").unwrap();
+        let protocol_device_id = crate::ids::ProtocolDeviceId::parse("dev-new").unwrap();
+        let device = public_current_authorized_device(
+            crate::identity::IdentityDeviceSummary {
+                identity: crate::identity::IdentitySummary {
+                    id: crate::ids::IdentityId::parse("identity-new").unwrap(),
+                    did,
+                    handle: None,
+                    display_name: None,
+                    local_alias: None,
+                    device_id: None,
+                    is_default: true,
+                    readiness: crate::identity::IdentityReadiness {
+                        ready_for_auth: true,
+                        ready_for_messaging: true,
+                        missing: Vec::new(),
+                    },
+                },
+                mode: crate::identity::IdentityDeviceMode::VNext,
+                protocol_device_id: Some(protocol_device_id.clone()),
+                role: Some(crate::identity::IdentityDeviceRole::Member),
+                signing_key_id: Some("did:wba:awiki.test:alice#sign".to_owned()),
+                e2ee_key_id: Some("did:wba:awiki.test:alice#e2ee".to_owned()),
+                readiness: crate::identity::IdentityDeviceReadiness::MemberReady,
+                blocked_reason: None,
+            },
+            &protocol_device_id,
+        )
+        .unwrap();
+
+        assert_eq!(device.protocol_device_id, protocol_device_id);
+        assert_eq!(device.role, DeviceJoinRole::Member);
+        assert!(!device.management_ready);
+        assert!(device.is_current);
     }
 
     #[test]
