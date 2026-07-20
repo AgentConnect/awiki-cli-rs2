@@ -2178,6 +2178,9 @@ impl<'a> MessageService<'a> {
         &self,
         resolved: ResolvedSendRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        if super::v2_product::direct_enabled_for_client(self.client)? {
+            return super::v2_product::send_direct(self.client, resolved);
+        }
         #[cfg(all(feature = "sqlite", feature = "blocking"))]
         {
             send_direct_e2ee_with_client(self.client, resolved)
@@ -2199,6 +2202,9 @@ impl<'a> MessageService<'a> {
         &self,
         resolved: ResolvedSendRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        if super::v2_product::direct_enabled_for_client(self.client)? {
+            return super::v2_product::send_direct_async(self.client, resolved).await;
+        }
         let target_handle = resolved.direct_handle().map(str::to_owned);
         let peer_scope = resolved.peer_scope.clone();
         if matches!(resolved.request.body, super::MessageBody::Attachment { .. }) {
@@ -2354,6 +2360,9 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        if self.client.core_inner().group_e2ee_v2_enabled() {
+            return super::v2_product::send_group(self.client, request);
+        }
         #[cfg(feature = "blocking")]
         {
             let session_provider =
@@ -2435,6 +2444,9 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        if self.client.core_inner().group_e2ee_v2_enabled() {
+            return super::v2_product::send_group_async(self.client, request).await;
+        }
         let provider =
             crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
         if matches!(request.body, super::MessageBody::Attachment { .. }) {
@@ -3436,10 +3448,10 @@ fn apply_peer_scope_to_direct_secure_attachment_result(
 }
 
 #[derive(Clone)]
-struct ResolvedSendRequest {
-    request: super::SendMessageRequest,
-    target_did: Option<String>,
-    peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
+pub(super) struct ResolvedSendRequest {
+    pub(super) request: super::SendMessageRequest,
+    pub(super) target_did: Option<String>,
+    pub(super) peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
 }
 
 #[derive(Clone)]
@@ -3452,7 +3464,7 @@ struct ResolvedConversationSendRequest {
 }
 
 impl ResolvedSendRequest {
-    fn direct_handle(&self) -> Option<&str> {
+    pub(super) fn direct_handle(&self) -> Option<&str> {
         self.peer_scope
             .as_ref()
             .map(|scope| scope.full_handle.as_str())
@@ -3839,7 +3851,7 @@ fn validate_secure_attachment_request(
     }
 }
 
-fn attachment_request_from_message_request(
+pub(super) fn attachment_request_from_message_request(
     request: super::SendMessageRequest,
 ) -> crate::ImResult<crate::attachments::AttachmentSendRequest> {
     match request.body {

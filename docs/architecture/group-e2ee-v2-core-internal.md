@@ -1,6 +1,6 @@
 # im-core P6 v2 内部产品编排
 
-状态：内部产品编排仍在集成；默认关闭的 Core/Dart/AWiki Me 状态与修复入口已接入。
+状态：内部产品编排仍在集成；默认关闭的 Core 状态/修复入口与 public message 路径已接入。
 
 ## 1. 边界
 
@@ -10,7 +10,8 @@
 - create、add、remove 的本地 prepare、Host 提交、精确回包校验和 finalize；
 - 显式 abort，以及进程重启后的 `reconcile_pending_v2`；
 - 标准 `V2GroupNoticeMetadata + V2E2eeNotice` 控制通知消费；
-- MLS Application Message 的一次加密、原密文提交和设备本地解密。
+- MLS Application Message 的一次加密、单份原密文提交和设备本地解密；
+- 附件对象只加密并上传一次，附件 Manifest 放入同一份 MLS Application Message。
 
 本层不改变 P4 业务成员语义，不决定群 owner 策略，也不提供 legacy 降级路径。
 生产网络必须通过 `GroupE2eeV2Host` 的认证 RPC Adapter；测试 double 只存在于测试模块。
@@ -49,15 +50,25 @@ SDK 的可恢复 WAL：`preparing -> prepared -> accepted -> finalized/aborted`�
 timeline message。`group.incoming` 只有通过标准结构校验、精确 recipient DID/device 校验和
 MLS 解密后，才返回 Application plaintext 供后续业务投影。
 
+public `messages.send` 在 P6 gate 开启时读取标准 P4 group state，并把每条 Text、JSON 或附件
+Manifest 恰好加密成一个 MLS Application Ciphertext、提交一次。返回值仍是一条逻辑
+`SendMessageResult`，不会按 MLS Leaf 或设备生成多份完整消息密文。
+
+Inbox/History、可靠 sync、realtime 和 delegated 入口必须在 legacy 分支前识别 P6 v2
+candidate。只有认证、校验并解密成功的 Application plaintext 可以进入普通 timeline；notice、
+其他 control、replay、畸形、处理失败或 gate-disabled candidate 必须消费或丢弃，不能暴露原始
+P6 wire/cipher/control JSON，也不能回退到 legacy renderer。
+
 发起设备在 Host accepted 后已本地 finalize，再收到 Host 广播的自身 Commit echo 时，SDK
 只在 finalized pending journal 与 actor DID/device、operation、group/state、subject、epoch 和
 Commit bytes/digest 全部精确且唯一匹配时记录幂等 receipt，不会再次 merge Commit。重启后的
 精确 replay 返回同一控制结果；任何不匹配继续 fail closed。
 
-## 4. 公开状态边界与尚未完成项
+## 4. 公开状态边界与后续门禁
 
-- lifecycle/send 产品管线完整切换到 v2；
-- 普通消息读取/realtime 管线切换到 v2 control/application 分流；
+- public send/read/realtime/sync/delegated 边界已具备 v2 candidate 隔离，raw wire/control
+  不进入公共投影；
+- gate 开启时 public Group send 使用单份 MLS ciphertext，gate 关闭时保持旧路径；
 - durable message outbox 与远端 `awiki.info` 多设备 MLS E2E；
 - P6 草案 extension code point 的正式发布门禁。
 

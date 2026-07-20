@@ -191,6 +191,42 @@ Signed completion atomically replaces the retained ciphertext/private sidecar
 with a secret-free status tombstone and garbage-collects the Vault pending
 ratchet record; an interrupted cleanup remains exact-retryable.
 
+### 4.2 P5/P6 public message product paths
+
+Ordinary multi-device messaging uses two independent, host-local rollout gates:
+`multi_device_direct_e2ee_enabled` selects exact-device P5 v2 Direct only for a
+local vNext identity, while `multi_device_group_e2ee_enabled` selects the
+device-scoped P6 v2 Group path. Both default to `false`; neither is an ANP
+capability, DID Document member, nor cross-domain request field. Turning either
+gate off preserves its existing message route and does not disable the other.
+
+P5 keeps one public logical message while the product runtime resolves the
+target DID Document's embedded `deviceManifest`. It sends one standard
+`direct.send` per exact recipient device and per eligible sibling device of the
+sender; it never invents a cross-domain `deliveries[]` request. Sibling copies
+use the encrypted own-sync application form and project as outgoing logical
+messages. A local, secret-free delivery ledger aggregates accepted/failed
+devices, preserves partial success, and makes a retry with the same logical
+message/idempotency identity skip already accepted devices. Attachment bytes
+are encrypted and uploaded once; only their Manifest is wrapped independently
+for each exact-device Direct session.
+
+P6 reads current business group state through the standard P4 boundary, then
+encrypts one application into exactly one MLS ciphertext and submits that
+ciphertext once, independent of the number of group Leaves. A group attachment
+is likewise encrypted and uploaded once, with its Manifest carried inside the
+single MLS Application message. Every device still owns independent MLS local
+state; the one-ciphertext rule does not imply shared Leaf secrets.
+
+Inbound confidentiality filtering is gate-independent. Inbox/History, reliable
+sync, realtime, and delegated projections recognize P5/P6 v2 candidates before
+legacy rendering. Enabled paths may expose only an authenticated, decrypted
+business projection (including an outgoing projection for own-sync); handshake,
+notice/control, replay, malformed, failed, or gate-disabled candidates are
+consumed or dropped. Raw v2 wire bodies, ciphertext, and control JSON never
+cross the Rust/Dart/CLI/App public boundary and never fall back to a legacy
+plaintext renderer.
+
 ## 5. Paths and Configuration
 
 Hosts pass explicit `ImCoreConfig` and `ImCorePaths`.

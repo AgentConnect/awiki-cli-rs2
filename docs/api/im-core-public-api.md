@@ -69,6 +69,7 @@ pub struct ImCoreOpenOptions {
     pub identity_secret_vault: Option<ImCoreSecretVaultOptions>,
     pub multi_device_join_enabled: bool, // default false
     pub multi_device_root_transfer_enabled: bool, // default false
+    pub multi_device_direct_e2ee_enabled: bool, // default false
     pub multi_device_group_e2ee_enabled: bool, // default false
 }
 
@@ -400,7 +401,13 @@ and Vault record. Expiry performs the same private-record cleanup and retains
 only a non-retryable, secret-free `Failed` tombstone. Completed and expired
 operation IDs are terminal and cannot be used to derive another ciphertext.
 
-### 5.3 Multi-device Group E2EE rollout gate
+### 5.3 Multi-device P5/P6 message rollout gates
+
+`ImCoreOpenOptions.multi_device_direct_e2ee_enabled` 与
+`multi_device_group_e2ee_enabled` 是彼此独立的 host-local rollout gate，均默认
+`false`，不会序列化到 ANP、DID Document 或跨域请求。gate 关闭时保持原有消息路径；
+开启 P5 gate 只会为本地 vNext 身份选择 exact-device P5 v2 Direct 产品路径，开启
+P6 gate 只会选择 device-scoped P6 v2 Group 产品路径。
 
 `ImCoreOpenOptions.multi_device_group_e2ee_enabled` is host-local configuration,
 defaults to `false`, and is never serialized into ANP, DID Documents, or
@@ -701,6 +708,21 @@ Reliable sync 补充：
   projection 的时间排序键使用接收侧时间，不使用发送方 `sent_at`；可靠同步补齐 sequence 后，
   App timeline consumer 在两条消息都具备 sequence 时以 sequence 为权威顺序，时间只作为缺失
   sequence 时的兼容排序键。
+- P5 v2 Direct 发送仍返回一个逻辑 `SendMessageResult`。Core 从目标 DID Document 内嵌的
+  `deviceManifest` 解析 exact device，为每个目标设备以及发送者自己的其他有效设备分别发送
+  一次标准 `direct.send`；跨域 wire 不新增 `deliveries[]` 批量封装。自有设备副本解密后按
+  outgoing/own-sync 逻辑消息投影，而不是显示为一条控制消息。
+- P5 的设备级 accepted 状态由 Core 的本地 ledger 聚合：全部接受映射为 `Accepted`，至少一台
+  接受映射为带 warning 的部分成功 `DeliveryState::Sent`，零接受映射为 `Failed`。使用相同逻辑
+  message ID 和 idempotency scope 重试时，只继续 pending/failed 设备投递，不重复发送已
+  accepted 的设备。
+- P6 v2 Group 发送先读取标准 P4 group state，再把一条业务消息恰好加密为一个 MLS
+  Application Ciphertext，并只提交该密文一次；不会按群内设备拆成多份完整消息密文。群附件
+  对象只加密、上传一次，附件 Manifest 随这一份 MLS Application 消息交付。
+- Inbox/History、可靠 sync、realtime 与 delegated 投影必须在 legacy renderer 之前识别 P5/P6
+  v2 candidate。只有成功认证并解密的业务 plaintext 可以转成普通 `Message`/`ImEvent`；
+  own-sync 只投影为 outgoing 业务消息，握手、notice、其他 control、replay、畸形或 gate-disabled
+  candidate 均不得原样暴露 wire/cipher/control JSON，也不得回退到 legacy 明文渲染。
 
 `msg send --to`、`--group`、`--text-file`、`--file`、`--secure` 是 CLI 输入形态，不是 SDK 字段。CLI adapter 负责转换成 `MessageTarget`、`MessageBody`、`MessageSecurityPolicy`。
 

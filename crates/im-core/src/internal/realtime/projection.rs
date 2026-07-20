@@ -92,10 +92,17 @@ fn project_direct_incoming(notification: &Value) -> NotificationProjection {
             );
         }
     }
+    let own_device_sync = value_from_object(Some(params), "own_device_sync")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let message = Message {
         id: message_id,
         thread,
-        direction: MessageDirection::Incoming,
+        direction: if own_device_sync {
+            MessageDirection::Outgoing
+        } else {
+            MessageDirection::Incoming
+        },
         sender: parse_peer(&sender),
         receiver: Some(parse_peer(&receiver)),
         group: None,

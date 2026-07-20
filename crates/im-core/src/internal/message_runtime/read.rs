@@ -1655,6 +1655,9 @@ fn filter_delegated_e2ee_messages(raw: &mut Value) {
 }
 
 fn is_delegated_e2ee_message(message: &Value) -> bool {
+    if is_p5_v2_projection_candidate(message) || is_p6_v2_projection_candidate(message) {
+        return true;
+    }
     let content_type = direct_message_content_type(message);
     if anp::direct_e2ee::is_direct_e2ee_wire_content_type(&content_type) {
         return true;
@@ -1697,6 +1700,7 @@ fn project_secure_direct_messages_impl(
         message_values.retain(|message| {
             message.get("private_transport_context").is_none()
                 && !is_v2_session_control_projection(message)
+                && !is_p5_v2_projection_candidate(message)
         });
         apply_cached_secure_direct_messages(client, &mut message_values);
         let warnings =
@@ -1820,6 +1824,34 @@ async fn project_secure_direct_messages_async_impl(
                     processed_async[index] = true;
                     continue;
                 }
+            }
+            if is_p5_v2_projection_candidate(&message_values[index]) {
+                processed_async[index] = true;
+                if !client.core_inner().direct_e2ee_v2_enabled() {
+                    mark_private_root_control(&mut message_values[index]);
+                    continue;
+                }
+                let wire_message = p5_v2_wire_projection(&message_values[index]);
+                let (metadata, body) =
+                    match crate::internal::secure_direct::v2_product::parse_v2_wire_message(
+                        &wire_message,
+                    ) {
+                        Ok(Some(value)) => value,
+                        Ok(None) | Err(_) => {
+                            mark_private_root_control(&mut message_values[index]);
+                            continue;
+                        }
+                    };
+                let core = client.core_handle();
+                match crate::internal::secure_direct::v2_product::receive_for_client(
+                    &core, client, true, metadata, body,
+                )
+                .await
+                {
+                    Ok(outcome) => apply_p5_v2_product_outcome(&mut message_values[index], outcome),
+                    Err(_) => mark_private_root_control(&mut message_values[index]),
+                }
+                continue;
             }
             let content_type = direct_message_content_type(&message_values[index]);
             let notification = match crate::internal::secure_direct::incoming::direct_e2ee_notification_from_message_view(&message_values[index]) {
@@ -2170,6 +2202,141 @@ pub(crate) fn is_v2_session_control_projection(message: &Value) -> bool {
     !matches!(parse_v2_session_control(message), Ok(None))
 }
 
+fn is_p5_v2_projection_candidate(message: &Value) -> bool {
+    message
+        .get("meta")
+        .or_else(|| message.pointer("/params/meta"))
+        .and_then(|meta| meta.get("profile"))
+        .and_then(Value::as_str)
+        == Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
+}
+
+fn is_p6_v2_projection_candidate(message: &Value) -> bool {
+    message
+        .get("meta")
+        .or_else(|| message.pointer("/params/meta"))
+        .and_then(|meta| meta.get("profile"))
+        .and_then(Value::as_str)
+        == Some(anp::group_e2ee::GROUP_E2EE_PROFILE_V2)
+}
+
+fn p5_v2_wire_projection(message: &Value) -> Value {
+    let Some(params) = message.get("params").and_then(Value::as_object) else {
+        return message.clone();
+    };
+    serde_json::json!({
+        "meta": params.get("meta").cloned().unwrap_or(Value::Null),
+        "body": params.get("body").cloned().unwrap_or(Value::Null),
+    })
+}
+
+#[cfg(feature = "sqlite")]
+fn apply_p5_v2_product_outcome(
+    message: &mut Value,
+    outcome: crate::internal::secure_direct::v2_product::V2InboundProductOutcome,
+) {
+    use crate::internal::secure_direct::v2_product::V2InboundProductOutcome;
+
+    match outcome {
+        V2InboundProductOutcome::Business(projection) => {
+            apply_p5_v2_business_body(message, &projection.body);
+            if let Some(object) = message.as_object_mut() {
+                object.insert(
+                    "id".to_owned(),
+                    Value::String(projection.logical_message_id),
+                );
+                object.insert(
+                    "raw_message_id".to_owned(),
+                    Value::String(projection.wire_message_id),
+                );
+                object.insert(
+                    "sender_did".to_owned(),
+                    Value::String(projection.sender_did),
+                );
+                object.insert(
+                    "sender_device_id".to_owned(),
+                    Value::String(projection.sender_device_id),
+                );
+                object.insert("direction".to_owned(), Value::from(0));
+            }
+        }
+        V2InboundProductOutcome::OwnSync(projection) => {
+            apply_p5_v2_business_body(message, &projection.body);
+            if let Some(object) = message.as_object_mut() {
+                object.insert(
+                    "id".to_owned(),
+                    Value::String(projection.logical_message_id),
+                );
+                object.insert(
+                    "raw_message_id".to_owned(),
+                    Value::String(projection.wire_message_id),
+                );
+                object.insert(
+                    "sender_did".to_owned(),
+                    Value::String(projection.original_sender_did),
+                );
+                object.insert(
+                    "sender_device_id".to_owned(),
+                    Value::String(projection.original_sender_device_id),
+                );
+                object.insert(
+                    "receiver_did".to_owned(),
+                    Value::String(projection.target_did),
+                );
+                object.insert("direction".to_owned(), Value::from(1));
+                object.insert("own_device_sync".to_owned(), Value::Bool(true));
+            }
+        }
+        V2InboundProductOutcome::Replay
+        | V2InboundProductOutcome::ConsumedControl
+        | V2InboundProductOutcome::SuppressedControl => mark_private_root_control(message),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn apply_p5_v2_business_body(
+    message: &mut Value,
+    body: &crate::internal::secure_direct::v2_product::V2InboundBusinessBody,
+) {
+    use crate::internal::secure_direct::v2_product::V2InboundBusinessBody;
+
+    let plaintext = match body {
+        V2InboundBusinessBody::Text { text, markdown } => json_object([
+            ("state", Value::String("decrypted".to_owned())),
+            (
+                "plaintext",
+                serde_json::json!({
+                    "application_content_type": if *markdown { "text/markdown" } else { "text/plain" },
+                    "text": text,
+                }),
+            ),
+        ]),
+        V2InboundBusinessBody::Json { payload } => json_object([
+            ("state", Value::String("decrypted".to_owned())),
+            (
+                "plaintext",
+                serde_json::json!({
+                    "application_content_type": "application/json",
+                    "payload": payload,
+                }),
+            ),
+        ]),
+        V2InboundBusinessBody::Attachment { full_manifest } => json_object([
+            ("state", Value::String("decrypted".to_owned())),
+            (
+                "plaintext",
+                serde_json::json!({
+                    "application_content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+                    "payload": full_manifest,
+                }),
+            ),
+        ]),
+    };
+    crate::internal::secure_direct::incoming::apply_direct_e2ee_processing_result(
+        message, &plaintext,
+    );
+}
+
 #[cfg(feature = "sqlite")]
 fn mark_private_root_control(message: &mut Value) {
     let Some(object) = message.as_object_mut() else {
@@ -2446,6 +2613,10 @@ fn project_group_e2ee_messages_impl(
         return;
     };
     let mut message_values = std::mem::take(messages);
+    // P6 v2 decryption and notice processing use the async device-scoped
+    // runtime. Blocking reads must never hand a v2 ciphertext to the legacy
+    // P6 decoder or to the ordinary message projection.
+    message_values.retain(|message| !is_p6_v2_projection_candidate(message));
     apply_cached_group_e2ee_messages(client, &mut message_values);
     let warnings =
         crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client(
@@ -2491,6 +2662,23 @@ async fn project_group_e2ee_messages_async_impl(
         return;
     };
     let mut message_values = std::mem::take(messages);
+    let mut p6_projected = Vec::with_capacity(message_values.len());
+    for mut message in message_values.drain(..) {
+        if !is_p6_v2_projection_candidate(&message) {
+            p6_projected.push(message);
+            continue;
+        }
+        if !client.core_inner().group_e2ee_v2_enabled() {
+            continue;
+        }
+        if project_p6_v2_incoming_message(client, &mut message)
+            .await
+            .is_ok()
+        {
+            p6_projected.push(message);
+        }
+    }
+    message_values = p6_projected;
     apply_cached_group_e2ee_messages_async(client, &mut message_values).await;
     let warnings =
         crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client_async(
@@ -2504,6 +2692,205 @@ async fn project_group_e2ee_messages_async_impl(
     }
     *messages = message_values;
     append_secure_direct_warnings(raw, warnings);
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) async fn project_p6_v2_incoming_message(
+    client: &crate::core::ImClient,
+    message: &mut Value,
+) -> crate::ImResult<()> {
+    let wrapper_shape = message.get("params").is_some();
+    let notification = if wrapper_shape {
+        message.clone()
+    } else {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": anp::group_e2ee::METHOD_GROUP_INCOMING_V2,
+            "params": {
+                "meta": message.get("meta").cloned().ok_or(crate::ImError::PermissionDenied)?,
+                "body": message.get("body").cloned().ok_or(crate::ImError::PermissionDenied)?,
+                "auth": message.get("auth").cloned().ok_or(crate::ImError::PermissionDenied)?,
+            }
+        })
+    };
+    let (meta, body, auth) = anp::group_e2ee::parse_group_incoming_notification_v2(&notification)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let sender_document = resolve_direct_sender_document_async(
+        client,
+        &mut crate::internal::transport::CoreHttpTransport::new(client),
+        &meta.sender_did,
+    )
+    .await?;
+    let recipient_device_id = client
+        .current_identity()
+        .device_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(crate::ImError::PermissionDenied)?
+        .to_owned();
+    let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(client)?;
+    // The Host is not consulted by decrypt_incoming_application; using the
+    // production adapter here keeps one product type without adding a second
+    // wire implementation.
+    let host = crate::internal::group_e2ee::v2_product::RpcGroupE2eeV2Host::new(
+        crate::internal::transport::CoreHttpTransport::new(client),
+        crate::internal::proof::origin::OriginProofIdentity {
+            identity_name: client.current_identity().id.as_str().to_owned(),
+            did_document: None,
+            key1_private_pem: String::new(),
+            verification_method: None,
+        },
+    );
+    let product = crate::internal::group_e2ee::v2_product::GroupE2eeV2Product::new(runtime, host);
+    let group_did = body.group_did.clone();
+    let group_state_version = body.group_state_version.clone();
+    let group_event_seq = body.group_event_seq.clone();
+    let accepted_at = body.accepted_at.clone();
+    let message_id = meta.message_id.clone();
+    let sender_did = meta.sender_did.clone();
+    let sender_device_id = meta.sender_device_id.clone();
+    let output = product.decrypt_incoming_application(
+        crate::internal::group_e2ee::v2_product::V2IncomingApplicationInput {
+            recipient_did: client.did().as_str().to_owned(),
+            recipient_device_id,
+            meta,
+            body,
+            auth,
+            sender_did_document: sender_document,
+            now: crate::internal::wire::common::now_rfc3339(),
+            draft_extension_negotiated: true,
+            request_id: format!(
+                "p6-v2-decrypt-{}",
+                crate::internal::wire::common::generate_operation_id()
+            ),
+        },
+    )?;
+    let plaintext = output.application_plaintext;
+    if wrapper_shape {
+        *message = Value::Object(Map::new());
+    }
+    let object = message
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    object.remove("meta");
+    object.remove("body");
+    object.remove("auth");
+    object.insert("id".to_owned(), Value::String(message_id.clone()));
+    object.insert("message_id".to_owned(), Value::String(message_id));
+    object.insert("sender_did".to_owned(), Value::String(sender_did));
+    object.insert(
+        "sender_device_id".to_owned(),
+        Value::String(sender_device_id),
+    );
+    object.insert("group_did".to_owned(), Value::String(group_did));
+    object.insert(
+        "group_state_version".to_owned(),
+        Value::String(group_state_version),
+    );
+    object.insert("group_event_seq".to_owned(), Value::String(group_event_seq));
+    object.insert("accepted_at".to_owned(), Value::String(accepted_at));
+    object.insert("direction".to_owned(), Value::from(0));
+    object.insert("secure".to_owned(), Value::Bool(true));
+    object.insert(
+        "decryption_state".to_owned(),
+        Value::String("decrypted".to_owned()),
+    );
+    object.insert(
+        "content_type".to_owned(),
+        Value::String(plaintext.application_content_type.clone()),
+    );
+    if let Some(text) = plaintext.text {
+        object.insert("content".to_owned(), Value::String(text));
+        object.insert("type".to_owned(), Value::String("text".to_owned()));
+    } else if let Some(payload) = plaintext.payload {
+        let message_type = if plaintext.application_content_type
+            == crate::attachments::manifest::attachment_manifest_content_type()
+        {
+            "attachment_manifest"
+        } else {
+            "json"
+        };
+        object.insert("content".to_owned(), payload);
+        object.insert("type".to_owned(), Value::String(message_type.to_owned()));
+    } else if let Some(payload_b64u) = plaintext.payload_b64u {
+        object.insert("content".to_owned(), Value::String(payload_b64u));
+        object.insert("type".to_owned(), Value::String("binary".to_owned()));
+    } else {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) async fn normalize_p6_v2_realtime_incoming(
+    client: &crate::core::ImClient,
+    notification: &Value,
+) -> crate::ImResult<Value> {
+    let params = notification
+        .get("params")
+        .and_then(Value::as_object)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let mut message = serde_json::json!({
+        "meta": params.get("meta").cloned().ok_or(crate::ImError::PermissionDenied)?,
+        "body": params.get("body").cloned().ok_or(crate::ImError::PermissionDenied)?,
+        "auth": params.get("auth").cloned().ok_or(crate::ImError::PermissionDenied)?,
+    });
+    project_p6_v2_incoming_message(client, &mut message).await?;
+    let object = message
+        .as_object()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let content_type = object
+        .get("content_type")
+        .and_then(Value::as_str)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let content = object
+        .get("content")
+        .cloned()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let body_content = if content_type == "text/plain" || content_type == "text/markdown" {
+        serde_json::json!({"text": content})
+    } else {
+        let payload =
+            if content_type == crate::attachments::manifest::attachment_manifest_content_type() {
+                crate::attachments::manifest::redact_attachment_manifest(&content)
+            } else {
+                content
+            };
+        serde_json::json!({"payload": payload})
+    };
+    let mut body = body_content
+        .as_object()
+        .cloned()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    for key in [
+        "group_did",
+        "group_state_version",
+        "group_event_seq",
+        "accepted_at",
+    ] {
+        if let Some(value) = object.get(key).cloned() {
+            body.insert(key.to_owned(), value);
+        }
+    }
+    Ok(serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "group.incoming",
+        "params": {
+            "meta": {
+                "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2,
+                "security_profile": anp::group_e2ee::GROUP_E2EE_SECURITY_PROFILE_V2,
+                "sender_did": object.get("sender_did").cloned().unwrap_or(Value::Null),
+                "sender_device_id": object.get("sender_device_id").cloned().unwrap_or(Value::Null),
+                "target": {"kind": "agent", "did": client.did().as_str()},
+                "message_id": object.get("message_id").cloned().unwrap_or(Value::Null),
+                "content_type": content_type,
+            },
+            "body": body,
+            "secure": true,
+            "secure_state": "decrypted"
+        }
+    }))
 }
 
 #[cfg(not(feature = "group-e2ee"))]

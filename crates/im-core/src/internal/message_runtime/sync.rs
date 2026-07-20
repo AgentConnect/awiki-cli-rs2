@@ -593,6 +593,18 @@ fn sync_delta_apply_event(
         ..crate::internal::local_state::sync_state::SyncDeltaApplyEvent::default()
     };
 
+    // Reliable Sync must advance its durable checkpoint even when the event
+    // carries a device-scoped ciphertext that this blocking transaction cannot
+    // decrypt. Never persist that wire/control object as an ordinary message;
+    // async Inbox/History or realtime performs the device-scoped projection.
+    if matches!(
+        event.event_type.as_str(),
+        "message.created" | "conversation.updated"
+    ) && sync_delta_contains_v2_e2ee_message(event)
+    {
+        return Ok(apply);
+    }
+
     match event.event_type.as_str() {
         "message.created" => {
             let message = sync_delta_message_from_payload(client, event, true)?;
@@ -631,6 +643,30 @@ fn sync_delta_apply_event(
     }
 
     Ok(apply)
+}
+
+#[cfg(feature = "sqlite")]
+fn sync_delta_contains_v2_e2ee_message(
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> bool {
+    let Some(payload) = event.payload.as_object() else {
+        return false;
+    };
+    let message = ["message", "latest_message", "last_message", "body"]
+        .into_iter()
+        .find_map(|key| payload.get(key).filter(|value| value.is_object()));
+    let Some(message) = message else {
+        return false;
+    };
+    let profile = message
+        .pointer("/meta/profile")
+        .or_else(|| message.pointer("/params/meta/profile"))
+        .and_then(Value::as_str);
+    matches!(
+        profile,
+        Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
+            | Some(anp::group_e2ee::GROUP_E2EE_PROFILE_V2)
+    )
 }
 
 #[cfg(feature = "sqlite")]

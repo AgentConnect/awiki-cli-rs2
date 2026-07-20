@@ -22,6 +22,7 @@ pub(crate) struct ImCoreInner {
     pub(crate) device_join_enabled: bool,
     pub(crate) root_key_transfer_enabled: bool,
     pub(crate) device_revoke_enabled: bool,
+    pub(crate) direct_e2ee_v2_enabled: bool,
     pub(crate) device_revoke_lock: tokio::sync::Mutex<()>,
     pub(crate) handle_recovery_enabled: bool,
     pub(crate) handle_recovery_lock: tokio::sync::Mutex<()>,
@@ -95,6 +96,7 @@ impl ImCore {
                 device_join_enabled: options.multi_device_join_enabled,
                 root_key_transfer_enabled: options.multi_device_root_transfer_enabled,
                 device_revoke_enabled: options.multi_device_device_revoke_enabled,
+                direct_e2ee_v2_enabled: options.multi_device_direct_e2ee_enabled,
                 device_revoke_lock: tokio::sync::Mutex::new(()),
                 handle_recovery_enabled: options.multi_device_handle_recovery_enabled,
                 handle_recovery_lock: tokio::sync::Mutex::new(()),
@@ -217,6 +219,10 @@ impl ImCoreInner {
 
     pub(crate) fn device_revoke_enabled(&self) -> bool {
         self.device_revoke_enabled
+    }
+
+    pub(crate) fn direct_e2ee_v2_enabled(&self) -> bool {
+        self.direct_e2ee_v2_enabled
     }
 
     pub(crate) fn handle_recovery_enabled(&self) -> bool {

@@ -2489,6 +2489,63 @@ fn v2_session_control_parser_requires_strict_operation_id_and_standard_p5_shape(
 }
 
 #[test]
+#[cfg(feature = "group-e2ee")]
+fn v2_product_profiles_are_hidden_gate_independently_from_blocking_and_delegated_reads() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let p5 = json!({
+        "id": "wire-p5-business",
+        "sender_did": "did:example:bob",
+        "receiver_did": "did:example:alice",
+        "meta": {
+            "profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2,
+            "content_type": anp::direct_e2ee::CONTENT_TYPE_DIRECT_CIPHER_V2,
+            "operation_id": "ordinary-product-operation"
+        },
+        "body": {"ciphertext_b64u": "SECRET-P5-CIPHERTEXT"}
+    });
+    let p6 = json!({
+        "id": "wire-p6-business",
+        "meta": {
+            "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2,
+            "content_type": anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE_V2
+        },
+        "body": {"group_cipher_object": {"private_message_b64u": "SECRET-P6-CIPHERTEXT"}}
+    });
+
+    let mut direct = json!({"messages": [p5.clone()]});
+    project_secure_direct_messages(&client, &mut direct, &mut NoopDirectoryTransport);
+    assert_eq!(direct["messages"], json!([]));
+
+    let mut group = json!({"messages": [p6.clone()]});
+    project_group_e2ee_messages(&client, &mut group);
+    assert_eq!(group["messages"], json!([]));
+
+    let mut delegated = json!({"messages": [p5, p6]});
+    filter_delegated_e2ee_messages(&mut delegated);
+    assert_eq!(delegated["messages"], json!([]));
+    let public = serde_json::to_string(&(direct, group, delegated)).unwrap();
+    assert!(!public.contains("SECRET-P5-CIPHERTEXT"));
+    assert!(!public.contains("SECRET-P6-CIPHERTEXT"));
+}
+
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn v2_profile_recognition_accepts_json_rpc_notification_shape() {
+    let p5 = json!({
+        "method": "direct.incoming",
+        "params": {"meta": {"profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2}}
+    });
+    let p6 = json!({
+        "method": "group.incoming",
+        "params": {"meta": {"profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2}}
+    });
+
+    assert!(is_p5_v2_projection_candidate(&p5));
+    assert!(is_p6_v2_projection_candidate(&p6));
+}
+
+#[test]
 fn private_root_control_parser_requires_exact_standard_wire_and_private_sidecar() {
     let message = json!({
         "meta": {

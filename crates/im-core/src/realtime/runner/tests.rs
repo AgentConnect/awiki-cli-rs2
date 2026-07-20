@@ -14,6 +14,34 @@ use std::collections::VecDeque;
 use super::*;
 
 #[test]
+fn realtime_v2_product_recognition_is_profile_and_method_scoped() {
+    let p5 = json!({
+        "method": "direct.incoming",
+        "params": {"meta": {"profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2}}
+    });
+    let p6_message = json!({
+        "method": "group.incoming",
+        "params": {"meta": {"profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2}}
+    });
+    let p6_notice = json!({
+        "method": anp::group_e2ee::METHOD_GROUP_NOTICE_V2,
+        "params": {"meta": {"profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2}}
+    });
+
+    assert!(is_p5_v2_realtime_candidate(&p5));
+    assert!(is_p6_v2_realtime_candidate(&p6_message));
+    assert!(is_p6_v2_realtime_candidate(&p6_notice));
+
+    let mut wrong_method = p5.clone();
+    wrong_method["method"] = json!("direct.other");
+    assert!(!is_p5_v2_realtime_candidate(&wrong_method));
+
+    let mut wrong_profile = p6_message;
+    wrong_profile["params"]["meta"]["profile"] = json!("anp.group.e2ee.v1");
+    assert!(!is_p6_v2_realtime_candidate(&wrong_profile));
+}
+
+#[test]
 #[cfg(feature = "blocking")]
 fn realtime_local_state_projector_stores_direct_message_and_contact() {
     let fixture = TestClientFixture::new("direct");

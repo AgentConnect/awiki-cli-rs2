@@ -1133,6 +1133,17 @@ fn normalize_direct_e2ee_realtime_notification_async_first(
         Err(_) => return dropped_v2_session_control_projection(),
         Ok(None) => {}
     }
+    if is_p5_v2_realtime_candidate(&notification) {
+        if !client.core_inner().direct_e2ee_v2_enabled() {
+            return dropped_v2_session_control_projection();
+        }
+        let Some(runtime) = runtime else {
+            return dropped_v2_session_control_projection();
+        };
+        return runtime
+            .block_on(project_p5_v2_realtime_notification(client, notification))
+            .unwrap_or_else(|_| dropped_v2_session_control_projection());
+    }
     if !crate::internal::realtime::projection::is_direct_secure_wire_notification(&notification) {
         return DirectRealtimeProjectionResult::Projected {
             notification: Some(notification),
@@ -1182,6 +1193,14 @@ async fn normalize_direct_e2ee_realtime_notification_async(
         }
         Err(_) => return dropped_v2_session_control_projection(),
         Ok(None) => {}
+    }
+    if is_p5_v2_realtime_candidate(&notification) {
+        if !client.core_inner().direct_e2ee_v2_enabled() {
+            return dropped_v2_session_control_projection();
+        }
+        return project_p5_v2_realtime_notification(client, notification)
+            .await
+            .unwrap_or_else(|_| dropped_v2_session_control_projection());
     }
     if !crate::internal::realtime::projection::is_direct_secure_wire_notification(&notification) {
         return DirectRealtimeProjectionResult::Projected {
@@ -1250,6 +1269,125 @@ fn dropped_v2_session_control_projection() -> DirectRealtimeProjectionResult {
     }
 }
 
+fn is_p5_v2_realtime_candidate(notification: &Value) -> bool {
+    notification.get("method").and_then(Value::as_str) == Some("direct.incoming")
+        && notification
+            .pointer("/params/meta/profile")
+            .and_then(Value::as_str)
+            == Some("anp.direct.e2ee.v2")
+}
+
+#[cfg(feature = "sqlite")]
+async fn project_p5_v2_realtime_notification(
+    client: &crate::core::ImClient,
+    notification: Value,
+) -> crate::ImResult<DirectRealtimeProjectionResult> {
+    let params = notification
+        .get("params")
+        .cloned()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let (metadata, body) =
+        crate::internal::secure_direct::v2_product::parse_v2_wire_message(&params)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+    let core = client.core_handle();
+    let outcome = crate::internal::secure_direct::v2_product::receive_for_client(
+        &core, client, true, metadata, body,
+    )
+    .await?;
+    let mut projected = notification;
+    let params = projected
+        .get_mut("params")
+        .and_then(Value::as_object_mut)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    params.remove("auth");
+    let (logical_message_id, sender_did, sender_device_id, target_did, body, own_sync) =
+        match outcome {
+            crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Business(
+                projection,
+            ) => (
+                projection.logical_message_id,
+                projection.sender_did,
+                projection.sender_device_id,
+                None,
+                projection.body,
+                false,
+            ),
+            crate::internal::secure_direct::v2_product::V2InboundProductOutcome::OwnSync(
+                projection,
+            ) => (
+                projection.logical_message_id,
+                projection.original_sender_did,
+                projection.original_sender_device_id,
+                Some(projection.target_did),
+                projection.body,
+                true,
+            ),
+            crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Replay
+            | crate::internal::secure_direct::v2_product::V2InboundProductOutcome::ConsumedControl
+            | crate::internal::secure_direct::v2_product::V2InboundProductOutcome::SuppressedControl => {
+                return Ok(dropped_v2_session_control_projection())
+            }
+        };
+    let meta = params
+        .get_mut("meta")
+        .and_then(Value::as_object_mut)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    meta.insert("message_id".to_owned(), Value::String(logical_message_id));
+    meta.insert("sender_did".to_owned(), Value::String(sender_did));
+    meta.insert(
+        "sender_device_id".to_owned(),
+        Value::String(sender_device_id),
+    );
+    if let Some(target_did) = target_did {
+        meta.insert(
+            "target".to_owned(),
+            serde_json::json!({"kind": "agent", "did": target_did}),
+        );
+    }
+    let (content_type, safe_body) = match body {
+        crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
+            text,
+            markdown,
+        } => (
+            if markdown {
+                "text/markdown"
+            } else {
+                "text/plain"
+            },
+            serde_json::json!({"text": text}),
+        ),
+        crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Json { payload } => {
+            ("application/json", serde_json::json!({"payload": payload}))
+        }
+        crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Attachment {
+            full_manifest,
+        } => (
+            crate::attachments::manifest::attachment_manifest_content_type(),
+            serde_json::json!({
+                "payload": crate::attachments::manifest::redact_attachment_manifest(&full_manifest)
+            }),
+        ),
+    };
+    meta.insert(
+        "content_type".to_owned(),
+        Value::String(content_type.to_owned()),
+    );
+    params.insert("body".to_owned(), safe_body);
+    params.insert("secure".to_owned(), Value::Bool(true));
+    params.insert(
+        "secure_state".to_owned(),
+        Value::String("decrypted".to_owned()),
+    );
+    if own_sync {
+        params.insert("own_device_sync".to_owned(), Value::Bool(true));
+    }
+    Ok(DirectRealtimeProjectionResult::Projected {
+        notification: Some(projected),
+        additional_notifications: Vec::new(),
+        warnings: Vec::new(),
+    })
+}
+
 #[cfg(all(feature = "blocking", feature = "sqlite"))]
 fn run_realtime_async_projection(
     client: &crate::core::ImClient,
@@ -1280,7 +1418,11 @@ fn normalize_direct_e2ee_realtime_notification<R>(
 where
     R: RpcTransport,
 {
-    (Some(notification), Vec::new())
+    if is_p5_v2_realtime_candidate(&notification) {
+        (None, Vec::new())
+    } else {
+        (Some(notification), Vec::new())
+    }
 }
 
 #[cfg(all(feature = "blocking", feature = "group-e2ee"))]
@@ -1299,6 +1441,23 @@ fn normalize_group_e2ee_realtime_notification_async_first(
     notification: Value,
     warnings: &mut Vec<String>,
 ) -> Option<Value> {
+    if is_p6_v2_realtime_candidate(&notification) {
+        if !client.core_inner().group_e2ee_v2_enabled()
+            || notification.get("method").and_then(Value::as_str)
+                == Some(anp::group_e2ee::METHOD_GROUP_NOTICE_V2)
+        {
+            return None;
+        }
+        let runtime = runtime?;
+        return runtime
+            .block_on(
+                crate::internal::message_runtime::read::normalize_p6_v2_realtime_incoming(
+                    client,
+                    &notification,
+                ),
+            )
+            .ok();
+    }
     let notice_projection = runtime
         .map(|runtime| {
             runtime.block_on(
@@ -1337,6 +1496,20 @@ async fn normalize_group_e2ee_realtime_notification_async(
     notification: Value,
     warnings: &mut Vec<String>,
 ) -> Option<Value> {
+    if is_p6_v2_realtime_candidate(&notification) {
+        if !client.core_inner().group_e2ee_v2_enabled()
+            || notification.get("method").and_then(Value::as_str)
+                == Some(anp::group_e2ee::METHOD_GROUP_NOTICE_V2)
+        {
+            return None;
+        }
+        return crate::internal::message_runtime::read::normalize_p6_v2_realtime_incoming(
+            client,
+            &notification,
+        )
+        .await
+        .ok();
+    }
     let notice_projection =
         crate::internal::group_e2ee::notices::
             maybe_process_group_e2ee_notice_notification_for_client_async(
@@ -1355,13 +1528,23 @@ async fn normalize_group_e2ee_realtime_notification_async(
     projection.notification
 }
 
+fn is_p6_v2_realtime_candidate(notification: &Value) -> bool {
+    matches!(
+        notification.get("method").and_then(Value::as_str),
+        Some("group.incoming") | Some("group.e2ee.notice")
+    ) && notification
+        .pointer("/params/meta/profile")
+        .and_then(Value::as_str)
+        == Some("anp.group.e2ee.v2")
+}
+
 #[cfg(all(feature = "blocking", not(feature = "group-e2ee")))]
 fn normalize_group_e2ee_realtime_notification(
     _client: &crate::core::ImClient,
     notification: Value,
     _warnings: &mut Vec<String>,
 ) -> Option<Value> {
-    Some(notification)
+    (!is_p6_v2_realtime_candidate(&notification)).then_some(notification)
 }
 
 #[cfg(not(feature = "group-e2ee"))]
@@ -1370,7 +1553,7 @@ async fn normalize_group_e2ee_realtime_notification_async(
     notification: Value,
     _warnings: &mut Vec<String>,
 ) -> Option<Value> {
-    Some(notification)
+    (!is_p6_v2_realtime_candidate(&notification)).then_some(notification)
 }
 
 #[cfg(all(feature = "blocking", not(feature = "group-e2ee")))]
@@ -1380,7 +1563,7 @@ fn normalize_group_e2ee_realtime_notification_async_first(
     notification: Value,
     _warnings: &mut Vec<String>,
 ) -> Option<Value> {
-    Some(notification)
+    (!is_p6_v2_realtime_candidate(&notification)).then_some(notification)
 }
 
 #[cfg(feature = "blocking")]

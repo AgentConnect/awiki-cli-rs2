@@ -57,6 +57,59 @@ async fn sync_delta_reads_checkpoint_calls_wire_and_advances_checkpoint() {
 }
 
 #[tokio::test]
+async fn sync_delta_advances_past_v2_wire_without_persisting_private_objects() {
+    let fixture = Fixture::new("sync-delta-v2-private-wire");
+    let client = fixture.client();
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![delta_page(
+                vec![
+                    v2_message_event(
+                        "sev-p5",
+                        "1",
+                        "message.created",
+                        "wire-p5-secret",
+                        json!({
+                            "profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2
+                        }),
+                        false,
+                    ),
+                    v2_message_event(
+                        "sev-p6",
+                        "2",
+                        "conversation.updated",
+                        "wire-p6-secret",
+                        json!({
+                            "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2
+                        }),
+                        true,
+                    ),
+                ],
+                "2",
+                false,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 2);
+    assert_eq!(result.last_applied_event_seq.as_deref(), Some("2"));
+    assert_eq!(fixture.checkpoint().as_deref(), Some("2"));
+    assert_eq!(fixture.message_server_seq("wire-p5-secret"), None);
+    assert_eq!(fixture.message_server_seq("wire-p6-secret"), None);
+}
+
+#[tokio::test]
 async fn sync_delta_backlogs_unresolved_direct_before_advancing_checkpoint() {
     let fixture = Fixture::new("sync-delta-unresolved-backlog");
     let client = fixture.client();
@@ -1209,6 +1262,53 @@ fn message_created_event(
                 "content": "hello from sync.delta",
                 "sent_at": "2026-06-27T00:00:00Z"
             }
+        }
+    })
+}
+
+fn v2_message_event(
+    event_id: &str,
+    event_seq: &str,
+    event_type: &str,
+    message_id: &str,
+    meta: Value,
+    json_rpc_shape: bool,
+) -> Value {
+    let private_message = if json_rpc_shape {
+        json!({
+            "id": message_id,
+            "params": {
+                "meta": meta,
+                "body": {"ciphertext_b64u": "PRIVATE-CIPHERTEXT"}
+            }
+        })
+    } else {
+        json!({
+            "id": message_id,
+            "meta": meta,
+            "body": {"ciphertext_b64u": "PRIVATE-CIPHERTEXT"}
+        })
+    };
+    let message_key = if event_type == "conversation.updated" {
+        "latest_message"
+    } else {
+        "message"
+    };
+    json!({
+        "event_id": event_id,
+        "event_seq": event_seq,
+        "event_type": event_type,
+        "aggregate_kind": "direct_message",
+        "aggregate_id": message_id,
+        "owner_subject_id": "did:example:alice",
+        "created_at": "2026-07-20T00:00:00Z",
+        "payload": {
+            "thread_kind": "direct",
+            "thread": {
+                "kind": "direct",
+                "peer_did": "did:example:bob"
+            },
+            (message_key): private_message
         }
     })
 }
