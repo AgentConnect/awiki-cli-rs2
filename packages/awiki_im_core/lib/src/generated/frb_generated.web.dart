@@ -653,6 +653,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartGroupSummary dco_decode_dart_group_summary(dynamic raw);
 
   @protected
+  DartHandleRecoveryCancelResult dco_decode_dart_handle_recovery_cancel_result(
+    dynamic raw,
+  );
+
+  @protected
+  DartHandleRecoveryFinalizeResult
+  dco_decode_dart_handle_recovery_finalize_result(dynamic raw);
+
+  @protected
+  DartHandleRecoveryPhase dco_decode_dart_handle_recovery_phase(dynamic raw);
+
+  @protected
+  DartHandleRecoveryProgress dco_decode_dart_handle_recovery_progress(
+    dynamic raw,
+  );
+
+  @protected
+  DartHandleRecoverySide dco_decode_dart_handle_recovery_side(dynamic raw);
+
+  @protected
   DartHandleRegistrationResult dco_decode_dart_handle_registration_result(
     dynamic raw,
   );
@@ -996,6 +1016,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartGroupSummary> dco_decode_list_dart_group_summary(dynamic raw);
+
+  @protected
+  List<DartHandleRecoveryProgress>
+  dco_decode_list_dart_handle_recovery_progress(dynamic raw);
 
   @protected
   List<DartIdentitySummary> dco_decode_list_dart_identity_summary(dynamic raw);
@@ -1860,6 +1884,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartGroupSummary sse_decode_dart_group_summary(SseDeserializer deserializer);
 
   @protected
+  DartHandleRecoveryCancelResult sse_decode_dart_handle_recovery_cancel_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryFinalizeResult
+  sse_decode_dart_handle_recovery_finalize_result(SseDeserializer deserializer);
+
+  @protected
+  DartHandleRecoveryPhase sse_decode_dart_handle_recovery_phase(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryProgress sse_decode_dart_handle_recovery_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoverySide sse_decode_dart_handle_recovery_side(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartHandleRegistrationResult sse_decode_dart_handle_registration_result(
     SseDeserializer deserializer,
   );
@@ -2315,6 +2363,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<DartGroupSummary> sse_decode_list_dart_group_summary(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<DartHandleRecoveryProgress>
+  sse_decode_list_dart_handle_recovery_progress(SseDeserializer deserializer);
 
   @protected
   List<DartIdentitySummary> sse_decode_list_dart_identity_summary(
@@ -3337,6 +3389,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_handle_recovery_cancel_result(
+    DartHandleRecoveryCancelResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_finalize_result(
+    DartHandleRecoveryFinalizeResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_phase(
+    DartHandleRecoveryPhase self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_progress(
+    DartHandleRecoveryProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_side(
+    DartHandleRecoverySide self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_handle_registration_result(
     DartHandleRegistrationResult self,
     SseSerializer serializer,
@@ -3894,6 +3976,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_group_summary(
     List<DartGroupSummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_handle_recovery_progress(
+    List<DartHandleRecoveryProgress> self,
     SseSerializer serializer,
   );
 

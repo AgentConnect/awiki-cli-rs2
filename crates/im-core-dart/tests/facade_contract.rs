@@ -56,6 +56,59 @@ fn root_key_transfer_summary_mapping_exposes_restart_safe_status_only() {
 }
 
 #[test]
+fn handle_recovery_progress_mapping_exposes_safe_local_status_only() {
+    let mapped = awiki_im_core::dto::identity::DartHandleRecoveryProgress::from(
+        im_core::identity::HandleRecoveryProgress {
+            recovery_session_id: "recovery-safe-id".to_owned(),
+            handle: im_core::ids::Handle::parse("alice.awiki.info", "").unwrap(),
+            old_did: im_core::ids::Did::parse("did:wba:awiki.info:user:alice:e1_old").unwrap(),
+            side: im_core::identity::HandleRecoverySide::Requester,
+            phase: im_core::identity::HandleRecoveryPhase::Cooling,
+            cooling_until: "2026-07-21T00:00:00Z".to_owned(),
+            expires_at: "2026-07-22T00:00:00Z".to_owned(),
+            can_cancel_from_this_device: false,
+            new_did: None,
+            local_activation_pending: false,
+        },
+    );
+
+    assert_eq!(mapped.recovery_session_id, "recovery-safe-id");
+    assert_eq!(mapped.handle, "alice.awiki.info");
+    assert_eq!(
+        mapped.phase,
+        awiki_im_core::dto::identity::DartHandleRecoveryPhase::Cooling
+    );
+    let debug = format!("{mapped:?}");
+    for forbidden in [
+        "account_verification_token",
+        "reconfirmation_token",
+        "recovery_session_token",
+        "root_private_key",
+        "new_did_document",
+        "document_hash",
+        "registry_version",
+    ] {
+        assert!(!debug.contains(forbidden), "unexpected field {forbidden}");
+    }
+}
+
+#[test]
+fn handle_recovery_cancel_mapping_preserves_only_session_and_phase() {
+    let mapped = awiki_im_core::dto::identity::DartHandleRecoveryCancelResult::from(
+        im_core::identity::HandleRecoveryCancelResult {
+            recovery_session_id: "recovery-safe-id".to_owned(),
+            phase: im_core::identity::HandleRecoveryPhase::Cancelled,
+        },
+    );
+
+    assert_eq!(mapped.recovery_session_id, "recovery-safe-id");
+    assert_eq!(
+        mapped.phase,
+        awiki_im_core::dto::identity::DartHandleRecoveryPhase::Cancelled
+    );
+}
+
+#[test]
 fn local_state_upgrade_inspection_is_available_before_core_open() {
     let directory = tempfile::tempdir().unwrap();
     let inspection = awiki_im_core::api::local_state_upgrade::inspect_local_state_upgrade(
@@ -818,6 +871,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
         }),
         multi_device_join_enabled: true,
         multi_device_root_transfer_enabled: true,
+        multi_device_handle_recovery_enabled: true,
         multi_device_group_e2ee_enabled: true,
     };
 
@@ -828,6 +882,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
     ));
     assert!(mapped.multi_device_join_enabled);
     assert!(mapped.multi_device_root_transfer_enabled);
+    assert!(mapped.multi_device_handle_recovery_enabled);
     assert!(mapped.multi_device_group_e2ee_enabled);
     let vault = mapped.identity_secret_vault.expect("vault options");
     assert_eq!(
@@ -856,6 +911,7 @@ fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
         }),
         multi_device_join_enabled: false,
         multi_device_root_transfer_enabled: false,
+        multi_device_handle_recovery_enabled: false,
         multi_device_group_e2ee_enabled: false,
     };
 

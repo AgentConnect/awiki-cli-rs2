@@ -13,6 +13,70 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 // These functions are ignored because they are not marked as `pub`: `recover_handle_request`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
 
+Future<List<DartHandleRecoveryProgress>> localHandleRecoverySessions({
+  required ArcDartImCore core,
+}) => RustLib.instance.api.crateApiIdentityLocalHandleRecoverySessions(
+  core: core,
+);
+
+Future<DartHandleRecoveryProgress> beginHandleRecovery({
+  required ArcDartImCore core,
+  required String handle,
+  required List<int> beginVerificationGrant,
+}) => RustLib.instance.api.crateApiIdentityBeginHandleRecovery(
+  core: core,
+  handle: handle,
+  beginVerificationGrant: beginVerificationGrant,
+);
+
+Future<DartHandleRecoveryProgress> pollHandleRecovery({
+  required ArcDartImCore core,
+  required String recoverySessionId,
+}) => RustLib.instance.api.crateApiIdentityPollHandleRecovery(
+  core: core,
+  recoverySessionId: recoverySessionId,
+);
+
+Future<DartHandleRecoveryCancelResult> cancelHandleRecovery({
+  required ArcDartImCore core,
+  required DartIdentitySelector oldIdentity,
+  required String recoverySessionId,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityCancelHandleRecovery(
+  core: core,
+  oldIdentity: oldIdentity,
+  recoverySessionId: recoverySessionId,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
+Future<DartHandleRecoveryFinalizeResult> finalizeHandleRecovery({
+  required ArcDartImCore core,
+  required String recoverySessionId,
+  required List<int> finalizeVerificationGrant,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityFinalizeHandleRecovery(
+  core: core,
+  recoverySessionId: recoverySessionId,
+  finalizeVerificationGrant: finalizeVerificationGrant,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
+Future<DartIdentitySummary> resumeHandleRecoveryActivation({
+  required ArcDartImCore core,
+  required String recoverySessionId,
+}) => RustLib.instance.api.crateApiIdentityResumeHandleRecoveryActivation(
+  core: core,
+  recoverySessionId: recoverySessionId,
+);
+
+Future<void> markHandleRecoveryActivationComplete({
+  required ArcDartImCore core,
+  required String recoverySessionId,
+}) => RustLib.instance.api.crateApiIdentityMarkHandleRecoveryActivationComplete(
+  core: core,
+  recoverySessionId: recoverySessionId,
+);
+
 Future<DartRootKeyTransferSendResult> sendRootKeyTransfer({
   required ArcDartImCore core,
   required DartIdentitySelector selector,

@@ -32,6 +32,7 @@ class AwikiImCoreOpenOptions {
     this.identitySecretVault,
     this.multiDeviceJoinEnabled = false,
     this.multiDeviceRootTransferEnabled = false,
+    this.multiDeviceHandleRecoveryEnabled = false,
     this.multiDeviceGroupE2eeEnabled = false,
   });
 
@@ -40,12 +41,14 @@ class AwikiImCoreOpenOptions {
       identitySecretVault = null,
       multiDeviceJoinEnabled = false,
       multiDeviceRootTransferEnabled = false,
+      multiDeviceHandleRecoveryEnabled = false,
       multiDeviceGroupE2eeEnabled = false;
 
   const AwikiImCoreOpenOptions.vaultPreferred({
     required ImCoreSecretVaultOptions this.identitySecretVault,
     this.multiDeviceJoinEnabled = false,
     this.multiDeviceRootTransferEnabled = false,
+    this.multiDeviceHandleRecoveryEnabled = false,
     this.multiDeviceGroupE2eeEnabled = false,
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultPreferred;
 
@@ -53,6 +56,7 @@ class AwikiImCoreOpenOptions {
     required ImCoreSecretVaultOptions this.identitySecretVault,
     this.multiDeviceJoinEnabled = false,
     this.multiDeviceRootTransferEnabled = false,
+    this.multiDeviceHandleRecoveryEnabled = false,
     this.multiDeviceGroupE2eeEnabled = false,
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultRequired;
 
@@ -60,6 +64,7 @@ class AwikiImCoreOpenOptions {
   final ImCoreSecretVaultOptions? identitySecretVault;
   final bool multiDeviceJoinEnabled;
   final bool multiDeviceRootTransferEnabled;
+  final bool multiDeviceHandleRecoveryEnabled;
   final bool multiDeviceGroupE2eeEnabled;
 }
 

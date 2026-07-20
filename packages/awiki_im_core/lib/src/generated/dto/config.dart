@@ -80,6 +80,7 @@ class DartImCoreOpenOptions {
   final DartImCoreSecretVaultOptions? identitySecretVault;
   final bool multiDeviceJoinEnabled;
   final bool multiDeviceRootTransferEnabled;
+  final bool multiDeviceHandleRecoveryEnabled;
   final bool multiDeviceGroupE2EeEnabled;
 
   const DartImCoreOpenOptions({
@@ -87,6 +88,7 @@ class DartImCoreOpenOptions {
     this.identitySecretVault,
     required this.multiDeviceJoinEnabled,
     required this.multiDeviceRootTransferEnabled,
+    required this.multiDeviceHandleRecoveryEnabled,
     required this.multiDeviceGroupE2EeEnabled,
   });
 
@@ -96,6 +98,7 @@ class DartImCoreOpenOptions {
       identitySecretVault.hashCode ^
       multiDeviceJoinEnabled.hashCode ^
       multiDeviceRootTransferEnabled.hashCode ^
+      multiDeviceHandleRecoveryEnabled.hashCode ^
       multiDeviceGroupE2EeEnabled.hashCode;
 
   @override
@@ -108,6 +111,8 @@ class DartImCoreOpenOptions {
           multiDeviceJoinEnabled == other.multiDeviceJoinEnabled &&
           multiDeviceRootTransferEnabled ==
               other.multiDeviceRootTransferEnabled &&
+          multiDeviceHandleRecoveryEnabled ==
+              other.multiDeviceHandleRecoveryEnabled &&
           multiDeviceGroupE2EeEnabled == other.multiDeviceGroupE2EeEnabled;
 }
 

@@ -167,6 +167,49 @@ pub struct DartRootKeyTransferSummary {
     pub retryable: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartHandleRecoverySide {
+    Requester,
+    OldAdmin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartHandleRecoveryPhase {
+    Cooling,
+    Ready,
+    Cancelled,
+    Expired,
+    Consumed,
+}
+
+/// Safe local Recovery projection. Credentials, documents, key material, and
+/// AWiki-internal checkpoints never cross the Dart facade.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartHandleRecoveryProgress {
+    pub recovery_session_id: String,
+    pub handle: String,
+    pub old_did: String,
+    pub side: DartHandleRecoverySide,
+    pub phase: DartHandleRecoveryPhase,
+    pub cooling_until: String,
+    pub expires_at: String,
+    pub can_cancel_from_this_device: bool,
+    pub new_did: Option<String>,
+    pub local_activation_pending: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartHandleRecoveryCancelResult {
+    pub recovery_session_id: String,
+    pub phase: DartHandleRecoveryPhase,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartHandleRecoveryFinalizeResult {
+    pub progress: DartHandleRecoveryProgress,
+    pub identity: DartIdentitySummary,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinProgress {
     pub session: DartDeviceJoinSessionSummary,

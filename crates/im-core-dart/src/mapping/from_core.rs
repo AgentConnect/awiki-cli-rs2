@@ -21,11 +21,12 @@ use crate::dto::{
         DartDeviceJoinAuthorizationStatus, DartDeviceJoinAuthorizedDeviceSummary,
         DartDeviceJoinPendingSummary, DartDeviceJoinPhase, DartDeviceJoinProgress,
         DartDeviceJoinRegistrySnapshot, DartDeviceJoinRemoteState, DartDeviceJoinRole,
-        DartDeviceJoinSessionSummary, DartDeviceJoinSide, DartHandleRegistrationResult,
-        DartIdentityDeviceMode, DartIdentityDeviceReadiness, DartIdentityDeviceRole,
-        DartIdentityDeviceSummary, DartIdentitySecretStorageBackend, DartIdentitySummary,
-        DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
-        DartIdentityVaultVerificationReport, DartRecoverHandleResult,
+        DartDeviceJoinSessionSummary, DartDeviceJoinSide, DartHandleRecoveryCancelResult,
+        DartHandleRecoveryFinalizeResult, DartHandleRecoveryPhase, DartHandleRecoveryProgress,
+        DartHandleRecoverySide, DartHandleRegistrationResult, DartIdentityDeviceMode,
+        DartIdentityDeviceReadiness, DartIdentityDeviceRole, DartIdentityDeviceSummary,
+        DartIdentitySecretStorageBackend, DartIdentitySummary, DartIdentityVaultMigrationReport,
+        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartRecoverHandleResult,
         DartRootKeyTransferSendResult, DartRootKeyTransferStatus, DartRootKeyTransferSummary,
     },
     message::{
@@ -49,6 +50,58 @@ use crate::dto::{
         DartSecureOutboxStatus, DartSecureProblem, DartSecureProblemCode,
     },
 };
+
+impl From<im_core::identity::HandleRecoveryProgress> for DartHandleRecoveryProgress {
+    fn from(value: im_core::identity::HandleRecoveryProgress) -> Self {
+        Self {
+            recovery_session_id: value.recovery_session_id,
+            handle: value.handle.as_str().to_owned(),
+            old_did: value.old_did.as_str().to_owned(),
+            side: match value.side {
+                im_core::identity::HandleRecoverySide::Requester => {
+                    DartHandleRecoverySide::Requester
+                }
+                im_core::identity::HandleRecoverySide::OldAdmin => DartHandleRecoverySide::OldAdmin,
+            },
+            phase: dart_handle_recovery_phase(value.phase),
+            cooling_until: value.cooling_until,
+            expires_at: value.expires_at,
+            can_cancel_from_this_device: value.can_cancel_from_this_device,
+            new_did: value.new_did.map(|did| did.as_str().to_owned()),
+            local_activation_pending: value.local_activation_pending,
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryCancelResult> for DartHandleRecoveryCancelResult {
+    fn from(value: im_core::identity::HandleRecoveryCancelResult) -> Self {
+        Self {
+            recovery_session_id: value.recovery_session_id,
+            phase: dart_handle_recovery_phase(value.phase),
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryFinalizeResult> for DartHandleRecoveryFinalizeResult {
+    fn from(value: im_core::identity::HandleRecoveryFinalizeResult) -> Self {
+        Self {
+            progress: value.progress.into(),
+            identity: value.identity.into(),
+        }
+    }
+}
+
+fn dart_handle_recovery_phase(
+    value: im_core::identity::HandleRecoveryPhase,
+) -> DartHandleRecoveryPhase {
+    match value {
+        im_core::identity::HandleRecoveryPhase::Cooling => DartHandleRecoveryPhase::Cooling,
+        im_core::identity::HandleRecoveryPhase::Ready => DartHandleRecoveryPhase::Ready,
+        im_core::identity::HandleRecoveryPhase::Cancelled => DartHandleRecoveryPhase::Cancelled,
+        im_core::identity::HandleRecoveryPhase::Expired => DartHandleRecoveryPhase::Expired,
+        im_core::identity::HandleRecoveryPhase::Consumed => DartHandleRecoveryPhase::Consumed,
+    }
+}
 
 impl From<im_core::identity::RootKeyTransferSendResult> for DartRootKeyTransferSendResult {
     fn from(value: im_core::identity::RootKeyTransferSendResult) -> Self {

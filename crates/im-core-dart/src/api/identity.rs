@@ -6,12 +6,122 @@ use crate::dto::{
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
         DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt, DartDeviceJoinProgress,
         DartDeviceJoinRegistrySnapshot, DartDeviceJoinRole, DartDeviceJoinSessionSummary,
-        DartHandleRegistrationResult, DartIdentityDeviceSummary, DartIdentitySelector,
-        DartIdentitySummary, DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
-        DartIdentityVaultVerificationReport, DartInitialProfile, DartRecoverHandleResult,
-        DartRootKeyTransferSendResult, DartRootKeyTransferSummary,
+        DartHandleRecoveryCancelResult, DartHandleRecoveryFinalizeResult,
+        DartHandleRecoveryProgress, DartHandleRegistrationResult, DartIdentityDeviceSummary,
+        DartIdentitySelector, DartIdentitySummary, DartIdentityVaultMigrationReport,
+        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartInitialProfile,
+        DartRecoverHandleResult, DartRootKeyTransferSendResult, DartRootKeyTransferSummary,
     },
 };
+
+pub async fn local_handle_recovery_sessions(
+    core: &Arc<crate::api::core::DartImCore>,
+) -> Result<Vec<DartHandleRecoveryProgress>, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .handle_recovery()
+        .local_sessions()
+        .map(|items| items.into_iter().map(Into::into).collect())
+        .map_err(DartImError::from)
+}
+
+pub async fn begin_handle_recovery(
+    core: &Arc<crate::api::core::DartImCore>,
+    handle: String,
+    begin_verification_grant: Vec<u8>,
+) -> Result<DartHandleRecoveryProgress, DartImError> {
+    let inner = core.clone_inner()?;
+    let grant = im_core::identity::HandleRecoveryBeginGrant::from_bytes(begin_verification_grant)
+        .map_err(DartImError::from)?;
+    inner
+        .handle_recovery()
+        .begin(im_core::identity::HandleRecoveryBeginRequest {
+            handle: im_core::ids::Handle::parse(handle, "").map_err(DartImError::from)?,
+            account_verification_grant: grant,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn poll_handle_recovery(
+    core: &Arc<crate::api::core::DartImCore>,
+    recovery_session_id: String,
+) -> Result<DartHandleRecoveryProgress, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .handle_recovery()
+        .status(&recovery_session_id)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn cancel_handle_recovery(
+    core: &Arc<crate::api::core::DartImCore>,
+    old_identity: DartIdentitySelector,
+    recovery_session_id: String,
+    user_presence_confirmed: bool,
+) -> Result<DartHandleRecoveryCancelResult, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .handle_recovery()
+        .cancel(im_core::identity::HandleRecoveryCancelRequest {
+            old_identity: old_identity.try_into()?,
+            recovery_session_id,
+            user_presence_confirmed,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn finalize_handle_recovery(
+    core: &Arc<crate::api::core::DartImCore>,
+    recovery_session_id: String,
+    finalize_verification_grant: Vec<u8>,
+    user_presence_confirmed: bool,
+) -> Result<DartHandleRecoveryFinalizeResult, DartImError> {
+    let inner = core.clone_inner()?;
+    let grant = im_core::identity::HandleRecoveryReconfirmationGrant::from_bytes(
+        finalize_verification_grant,
+    )
+    .map_err(DartImError::from)?;
+    inner
+        .handle_recovery()
+        .finalize(im_core::identity::HandleRecoveryFinalizeRequest {
+            recovery_session_id,
+            reconfirmation_grant: grant,
+            user_presence_confirmed,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn resume_handle_recovery_activation(
+    core: &Arc<crate::api::core::DartImCore>,
+    recovery_session_id: String,
+) -> Result<DartIdentitySummary, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .handle_recovery()
+        .resume_activation_async(&recovery_session_id)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn mark_handle_recovery_activation_complete(
+    core: &Arc<crate::api::core::DartImCore>,
+    recovery_session_id: String,
+) -> Result<(), DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .handle_recovery()
+        .mark_activation_complete(&recovery_session_id)
+        .map_err(DartImError::from)
+}
 
 pub async fn send_root_key_transfer(
     core: &Arc<crate::api::core::DartImCore>,

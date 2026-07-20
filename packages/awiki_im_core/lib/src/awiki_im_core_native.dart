@@ -80,6 +80,70 @@ class DeviceJoinAccountVerificationGrant {
   String toString() => 'DeviceJoinAccountVerificationGrant(<redacted>)';
 }
 
+/// Single-use, write-only grant for `awiki.device.recovery.begin.v1`.
+class HandleRecoveryBeginVerificationGrant {
+  factory HandleRecoveryBeginVerificationGrant.fromToken(String token) {
+    if (token.trim().isEmpty) {
+      throw ArgumentError(
+        'recovery begin verification grant must not be empty',
+      );
+    }
+    return HandleRecoveryBeginVerificationGrant._(
+      Uint8List.fromList(utf8.encode(token)),
+    );
+  }
+
+  HandleRecoveryBeginVerificationGrant._(this._bytes);
+
+  Uint8List? _bytes;
+
+  Uint8List _takeBytes() {
+    final bytes = _bytes;
+    if (bytes == null) {
+      throw StateError(
+        'HandleRecoveryBeginVerificationGrant was already consumed',
+      );
+    }
+    _bytes = null;
+    return bytes;
+  }
+
+  @override
+  String toString() => 'HandleRecoveryBeginVerificationGrant(<redacted>)';
+}
+
+/// Single-use, write-only grant for `awiki.device.recovery.finalize.v1`.
+class HandleRecoveryFinalizeVerificationGrant {
+  factory HandleRecoveryFinalizeVerificationGrant.fromToken(String token) {
+    if (token.trim().isEmpty) {
+      throw ArgumentError(
+        'recovery finalize verification grant must not be empty',
+      );
+    }
+    return HandleRecoveryFinalizeVerificationGrant._(
+      Uint8List.fromList(utf8.encode(token)),
+    );
+  }
+
+  HandleRecoveryFinalizeVerificationGrant._(this._bytes);
+
+  Uint8List? _bytes;
+
+  Uint8List _takeBytes() {
+    final bytes = _bytes;
+    if (bytes == null) {
+      throw StateError(
+        'HandleRecoveryFinalizeVerificationGrant was already consumed',
+      );
+    }
+    _bytes = null;
+    return bytes;
+  }
+
+  @override
+  String toString() => 'HandleRecoveryFinalizeVerificationGrant(<redacted>)';
+}
+
 Future<void> _ensureRustLibInitialized() async {
   if (_rustLibInitialized) return;
   await gen.RustLib.init(externalLibrary: loadAwikiImCoreExternalLibrary());
@@ -260,6 +324,111 @@ class AwikiImCore {
       ),
     );
     return summary._toModel();
+  }
+
+  Future<List<HandleRecoveryProgress>> localHandleRecoverySessions() async {
+    _ensureNotDisposed();
+    final sessions = await _mapNativeErrors(
+      () => gen_identity_api.localHandleRecoverySessions(core: _inner),
+    );
+    return sessions.map((session) => session._toModel()).toList();
+  }
+
+  Future<HandleRecoveryProgress> beginHandleRecovery({
+    required String handle,
+    required HandleRecoveryBeginVerificationGrant verificationGrant,
+  }) async {
+    _ensureNotDisposed();
+    final grantBytes = verificationGrant._takeBytes();
+    try {
+      final progress = await _mapNativeErrors(
+        () => gen_identity_api.beginHandleRecovery(
+          core: _inner,
+          handle: handle,
+          beginVerificationGrant: grantBytes,
+        ),
+      );
+      return progress._toModel();
+    } finally {
+      grantBytes.fillRange(0, grantBytes.length, 0);
+    }
+  }
+
+  Future<HandleRecoveryProgress> pollHandleRecovery(
+    String recoverySessionId,
+  ) async {
+    _ensureNotDisposed();
+    final progress = await _mapNativeErrors(
+      () => gen_identity_api.pollHandleRecovery(
+        core: _inner,
+        recoverySessionId: recoverySessionId,
+      ),
+    );
+    return progress._toModel();
+  }
+
+  Future<HandleRecoveryCancelResult> cancelHandleRecovery({
+    required IdentitySelector oldIdentity,
+    required String recoverySessionId,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.cancelHandleRecovery(
+        core: _inner,
+        oldIdentity: oldIdentity._toGen(),
+        recoverySessionId: recoverySessionId,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<HandleRecoveryFinalizeResult> finalizeHandleRecovery({
+    required String recoverySessionId,
+    required HandleRecoveryFinalizeVerificationGrant verificationGrant,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final grantBytes = verificationGrant._takeBytes();
+    try {
+      final result = await _mapNativeErrors(
+        () => gen_identity_api.finalizeHandleRecovery(
+          core: _inner,
+          recoverySessionId: recoverySessionId,
+          finalizeVerificationGrant: grantBytes,
+          userPresenceConfirmed: userPresenceConfirmed,
+        ),
+      );
+      return result._toModel();
+    } finally {
+      grantBytes.fillRange(0, grantBytes.length, 0);
+    }
+  }
+
+  Future<IdentitySummary> resumeHandleRecoveryActivation(
+    String recoverySessionId,
+  ) async {
+    _ensureNotDisposed();
+    final identity = await _mapNativeErrors(
+      () => gen_identity_api.resumeHandleRecoveryActivation(
+        core: _inner,
+        recoverySessionId: recoverySessionId,
+      ),
+    );
+    return identity._toModel();
+  }
+
+  Future<void> markHandleRecoveryActivationComplete(
+    String recoverySessionId,
+  ) async {
+    _ensureNotDisposed();
+    await _mapNativeErrors(
+      () => gen_identity_api.markHandleRecoveryActivationComplete(
+        core: _inner,
+        recoverySessionId: recoverySessionId,
+      ),
+    );
   }
 
   Future<List<DeviceJoinSessionSummary>> localDeviceJoinSessions() async {
@@ -1800,6 +1969,7 @@ extension on AwikiImCoreOpenOptions {
     identitySecretVault: identitySecretVault?._toGen(),
     multiDeviceJoinEnabled: multiDeviceJoinEnabled,
     multiDeviceRootTransferEnabled: multiDeviceRootTransferEnabled,
+    multiDeviceHandleRecoveryEnabled: multiDeviceHandleRecoveryEnabled,
     multiDeviceGroupE2EeEnabled: multiDeviceGroupE2eeEnabled,
   );
 }
@@ -1930,6 +2100,52 @@ extension on gen_identity.DartIdentitySummary {
     readyForAuth: readyForAuth,
     readyForMessaging: readyForMessaging,
     missing: missing,
+  );
+}
+
+extension on gen_identity.DartHandleRecoveryProgress {
+  HandleRecoveryProgress _toModel() => HandleRecoveryProgress(
+    recoverySessionId: recoverySessionId,
+    handle: handle,
+    oldDid: oldDid,
+    side: switch (side) {
+      gen_identity.DartHandleRecoverySide.requester =>
+        HandleRecoverySide.requester,
+      gen_identity.DartHandleRecoverySide.oldAdmin =>
+        HandleRecoverySide.oldAdmin,
+    },
+    phase: phase._toModel(),
+    coolingUntil: coolingUntil,
+    expiresAt: expiresAt,
+    canCancelFromThisDevice: canCancelFromThisDevice,
+    newDid: newDid,
+    localActivationPending: localActivationPending,
+  );
+}
+
+extension on gen_identity.DartHandleRecoveryPhase {
+  HandleRecoveryPhase _toModel() => switch (this) {
+    gen_identity.DartHandleRecoveryPhase.cooling => HandleRecoveryPhase.cooling,
+    gen_identity.DartHandleRecoveryPhase.ready => HandleRecoveryPhase.ready,
+    gen_identity.DartHandleRecoveryPhase.cancelled =>
+      HandleRecoveryPhase.cancelled,
+    gen_identity.DartHandleRecoveryPhase.expired => HandleRecoveryPhase.expired,
+    gen_identity.DartHandleRecoveryPhase.consumed =>
+      HandleRecoveryPhase.consumed,
+  };
+}
+
+extension on gen_identity.DartHandleRecoveryCancelResult {
+  HandleRecoveryCancelResult _toModel() => HandleRecoveryCancelResult(
+    recoverySessionId: recoverySessionId,
+    phase: phase._toModel(),
+  );
+}
+
+extension on gen_identity.DartHandleRecoveryFinalizeResult {
+  HandleRecoveryFinalizeResult _toModel() => HandleRecoveryFinalizeResult(
+    progress: progress._toModel(),
+    identity: identity._toModel(),
   );
 }
 

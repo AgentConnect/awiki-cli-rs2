@@ -169,9 +169,7 @@ impl TryFrom<crate::dto::config::DartImCoreOpenOptions> for im_core::ImCoreOpenO
             multi_device_root_transfer_enabled: value.multi_device_root_transfer_enabled,
             // Device revoke is not part of the Dart rollout surface yet.
             multi_device_device_revoke_enabled: false,
-            // Dart exposure is added with the dedicated Recovery facade. Until
-            // then the Core-only rollout gate remains fail-closed.
-            multi_device_handle_recovery_enabled: false,
+            multi_device_handle_recovery_enabled: value.multi_device_handle_recovery_enabled,
             multi_device_group_e2ee_enabled: value.multi_device_group_e2ee_enabled,
         };
         if let Some(vault) = value.identity_secret_vault {

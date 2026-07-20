@@ -1,6 +1,6 @@
 # Handle Recovery Core 接口（第一阶段）
 
-**状态**：Core implemented，rollout default-off；Dart/CLI 接线后续完成。
+**状态**：Core 与 Dart/Flutter facade implemented，rollout default-off；CLI、旧管理设备通知消费和远端 E2E 后续完成。
 
 ## 1. 定位与边界
 
@@ -29,7 +29,8 @@ core.handle_recovery()
 
 `ImCoreOpenOptions::multi_device_handle_recovery_enabled` 默认 `false`。启用后仍必须使用
 `IdentitySecretStoragePolicy::VaultRequired` 和可用的 `SecretVault`；否则在网络或身份变更前
-fail closed。Dart facade 和 CLI 尚未开放该开关，因此当前产品路径仍保持关闭。
+fail closed。Dart/Flutter 使用 `multiDeviceHandleRecoveryEnabled` 显式透传该开关；CLI 尚未开放，
+产品编译期开关默认仍为关闭。
 
 ## 3. 生命周期
 
@@ -48,6 +49,12 @@ Core 暴露以下高层操作：
 begin grant 和 reconfirmation grant 是 write-only 类型，`Debug` 始终脱敏；session token、
 DeviceProof、新 DID Document、私钥、内部 checkpoint 和返回 token pair 仅存在于 E2EE/HTTPS
 传输或加密 Vault pending record，不向 Host DTO 返回。
+
+Dart/Flutter 将 begin 与 finalize 分别建模为
+`HandleRecoveryBeginVerificationGrant` 和
+`HandleRecoveryFinalizeVerificationGrant`。两者均为一次消费、无 getter/JSON/copy 的 write-only
+类型；native 调用返回后立即清零临时字节。公开 lifecycle 只返回本节定义的安全进度、最小取消
+结果和新身份摘要。
 
 pending JSON 的序列化缓冲区使用 `Zeroizing<Vec<u8>>`，交给 Vault 的副本由
 `SecretBytes` 接管并在 Drop 时清零；pending record、Recovery session/result 也在 Drop 时清零
@@ -82,3 +89,13 @@ token pair。Core 会保留已验证的 cutover 结果，并使用新 DID 的设
   `active + admin + management-ready`，并与 Manifest 公钥绑定一致。这里的 admin 状态是
   AWiki 域内授权，不扩展 ANP Manifest；普通设备、已撤销设备和本地状态过期的旧设备不能取消；
 - 公开进度只包含 session ID、Handle、旧/新 DID、阶段和时间，不包含秘密或内部版本链。
+
+## 6. 当前旧管理设备取消阻断
+
+当前 `local_sessions()` 只恢复请求方本机的 durable pending。Core 尚未消费并持久化
+`awiki.identity.recovery-started.v1` 的旧管理设备通知，因此虽然公开 DTO 已包含
+`oldAdmin/can_cancel_from_this_device`，生产端目前不能据此发现一条新的可取消 Session。
+
+此外 `cancel` 的权威返回刻意保持为 `recovery_session_id + phase`；Host 只能结合调用前已经验证
+的当前进度更新本地显示，不能伪造 Handle、旧 DID 或 deadline。旧管理设备通知 consumer 完成前，
+不得把“旧设备收到通知并可取消”标记为已落地能力。

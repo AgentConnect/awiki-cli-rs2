@@ -73,7 +73,7 @@ versions/availability only, never filesystem backup paths.
 
 Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitives at the boundary. Time values remain ISO-8601 strings. The Dart wrapper may add convenience getters such as `AuthStatus.authenticated`, but it must not rename Rust DTO semantics such as `has_session` into a different facade meaning.
 
-## Identity registration and recovery
+## Identity registration and legacy recovery
 
 The SDK exposes `registerHandleWithPhone`, `registerHandleWithEmail`, and `recoverHandle` on `AwikiImCore`. These calls are core-level identity registry operations that map to `im-core` public identity DTOs; they do not depend on any `awiki-me` account gateway or UI model.
 
@@ -82,6 +82,9 @@ successful recovery of an existing full Handle rotates its DID without changing 
 identity ID, records old/current DID history, refreshes owner-DID snapshots, and enqueues any
 Handle-backed group member rebind work. Dart hosts must not persist the returned DID as a new local
 identity owner or supply a separate generated identity.
+
+This legacy API is not the multi-device Handle Recovery flow below and must
+never be used as its fallback.
 
 ## Identity secret storage
 
@@ -162,6 +165,37 @@ short-lived SAS facts. They do not expose OTP/Join tokens, pairing or private
 key material, root material, challenge ciphertext, or AWiki-internal
 Document/Registry/auth versions and hashes. Flutter Web keeps this native flow
 unsupported.
+
+## Multi-device Handle Recovery
+
+Native hosts opt in with
+`AwikiImCoreOpenOptions(multiDeviceHandleRecoveryEnabled: true)`; the default
+is false and the gate is independent from Join, root transfer, and group E2EE.
+V1 restores the same AWiki Handle by creating a completely new DID and new
+root/device keys locally. It does not recover the old root private key or copy
+old Direct/MLS state.
+
+Begin and finalize accept different one-shot write-only types:
+`HandleRecoveryBeginVerificationGrant` and
+`HandleRecoveryFinalizeVerificationGrant`. Neither type has a token getter,
+copy/JSON API, or revealing `toString`; the native call consumes its bytes once
+and the Dart wrapper overwrites the temporary buffer. A begin grant cannot be
+passed to finalize.
+
+The lifecycle facade is `localHandleRecoverySessions`,
+`beginHandleRecovery`, `pollHandleRecovery`, `cancelHandleRecovery`,
+`finalizeHandleRecovery`, `resumeHandleRecoveryActivation`, and
+`markHandleRecoveryActivationComplete`. Its DTOs contain only the Recovery
+session ID, Handle, old/new DID, phase, times, side, cancellability, and local
+activation-pending state. Tokens, proofs, generated documents, private keys,
+and AWiki-internal versions/hashes remain below Core. Flutter Web exposes the
+same typed surface but keeps the native operation unsupported.
+
+The current facade faithfully exposes Core's minimal cancel result
+(`recoverySessionId + phase`). Discovering a cancellable session on an old
+management device still depends on the separate durable
+`awiki.identity.recovery-started.v1` consumer; until that consumer is wired,
+hosts must not claim that the old-admin cancellation surface is complete.
 
 ## Management-device root-key transfer
 

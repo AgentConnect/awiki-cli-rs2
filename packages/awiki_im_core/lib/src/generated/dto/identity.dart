@@ -389,6 +389,109 @@ class DartDeviceJoinSessionSummary {
 
 enum DartDeviceJoinSide { newDevice, admin }
 
+class DartHandleRecoveryCancelResult {
+  final String recoverySessionId;
+  final DartHandleRecoveryPhase phase;
+
+  const DartHandleRecoveryCancelResult({
+    required this.recoverySessionId,
+    required this.phase,
+  });
+
+  @override
+  int get hashCode => recoverySessionId.hashCode ^ phase.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartHandleRecoveryCancelResult &&
+          runtimeType == other.runtimeType &&
+          recoverySessionId == other.recoverySessionId &&
+          phase == other.phase;
+}
+
+class DartHandleRecoveryFinalizeResult {
+  final DartHandleRecoveryProgress progress;
+  final DartIdentitySummary identity;
+
+  const DartHandleRecoveryFinalizeResult({
+    required this.progress,
+    required this.identity,
+  });
+
+  @override
+  int get hashCode => progress.hashCode ^ identity.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartHandleRecoveryFinalizeResult &&
+          runtimeType == other.runtimeType &&
+          progress == other.progress &&
+          identity == other.identity;
+}
+
+enum DartHandleRecoveryPhase { cooling, ready, cancelled, expired, consumed }
+
+/// Safe local Recovery projection. Credentials, documents, key material, and
+/// AWiki-internal checkpoints never cross the Dart facade.
+class DartHandleRecoveryProgress {
+  final String recoverySessionId;
+  final String handle;
+  final String oldDid;
+  final DartHandleRecoverySide side;
+  final DartHandleRecoveryPhase phase;
+  final String coolingUntil;
+  final String expiresAt;
+  final bool canCancelFromThisDevice;
+  final String? newDid;
+  final bool localActivationPending;
+
+  const DartHandleRecoveryProgress({
+    required this.recoverySessionId,
+    required this.handle,
+    required this.oldDid,
+    required this.side,
+    required this.phase,
+    required this.coolingUntil,
+    required this.expiresAt,
+    required this.canCancelFromThisDevice,
+    this.newDid,
+    required this.localActivationPending,
+  });
+
+  @override
+  int get hashCode =>
+      recoverySessionId.hashCode ^
+      handle.hashCode ^
+      oldDid.hashCode ^
+      side.hashCode ^
+      phase.hashCode ^
+      coolingUntil.hashCode ^
+      expiresAt.hashCode ^
+      canCancelFromThisDevice.hashCode ^
+      newDid.hashCode ^
+      localActivationPending.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartHandleRecoveryProgress &&
+          runtimeType == other.runtimeType &&
+          recoverySessionId == other.recoverySessionId &&
+          handle == other.handle &&
+          oldDid == other.oldDid &&
+          side == other.side &&
+          phase == other.phase &&
+          coolingUntil == other.coolingUntil &&
+          expiresAt == other.expiresAt &&
+          canCancelFromThisDevice == other.canCancelFromThisDevice &&
+          newDid == other.newDid &&
+          localActivationPending == other.localActivationPending;
+}
+
+enum DartHandleRecoverySide { requester, oldAdmin }
+
 class DartHandleRegistrationResult {
   final DartIdentitySummary? identity;
   final String handle;

@@ -268,6 +268,57 @@ class RecoverHandleResult {
   final List<String> warnings;
 }
 
+enum HandleRecoverySide { requester, oldAdmin }
+
+enum HandleRecoveryPhase { cooling, ready, cancelled, expired, consumed }
+
+/// Secret-free local projection of one Handle Recovery session.
+class HandleRecoveryProgress {
+  const HandleRecoveryProgress({
+    required this.recoverySessionId,
+    required this.handle,
+    required this.oldDid,
+    required this.side,
+    required this.phase,
+    required this.coolingUntil,
+    required this.expiresAt,
+    required this.canCancelFromThisDevice,
+    this.newDid,
+    required this.localActivationPending,
+  });
+
+  final String recoverySessionId;
+  final String handle;
+  final String oldDid;
+  final HandleRecoverySide side;
+  final HandleRecoveryPhase phase;
+  final String coolingUntil;
+  final String expiresAt;
+  final bool canCancelFromThisDevice;
+  final String? newDid;
+  final bool localActivationPending;
+}
+
+class HandleRecoveryCancelResult {
+  const HandleRecoveryCancelResult({
+    required this.recoverySessionId,
+    required this.phase,
+  });
+
+  final String recoverySessionId;
+  final HandleRecoveryPhase phase;
+}
+
+class HandleRecoveryFinalizeResult {
+  const HandleRecoveryFinalizeResult({
+    required this.progress,
+    required this.identity,
+  });
+
+  final HandleRecoveryProgress progress;
+  final IdentitySummary identity;
+}
+
 enum DeviceJoinSide { newDevice, admin }
 
 enum DeviceJoinPhase {
