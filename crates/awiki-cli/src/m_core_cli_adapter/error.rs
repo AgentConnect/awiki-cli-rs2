@@ -1,5 +1,20 @@
 use crate::cli_output::ExitError;
 
+const PUBLIC_SERVICE_CODE_MAX_LEN: usize = 96;
+const PUBLIC_SERVICE_CODE_NAMESPACES: &[&str] = &[
+    "anp",
+    "attachment",
+    "awiki",
+    "client",
+    "device",
+    "direct",
+    "group",
+    "identity",
+    "inbox",
+    "read_state",
+    "sync",
+];
+
 pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
     match err {
         im_core::ImError::InvalidInput { message, .. } => ExitError::new(
@@ -183,12 +198,19 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: permission denied."),
             "Check identity permissions and service access.",
         ),
-        im_core::ImError::Service { message, .. } => ExitError::new(
-            "service_error",
-            5,
-            format!("{context}: service error: {message}"),
-            "Check the remote service response and retry if appropriate.",
-        ),
+        im_core::ImError::Service { code, .. } => {
+            let mut mapped = ExitError::new(
+                "service_error",
+                5,
+                format!("{context}: remote service request failed."),
+                "Retry if appropriate or inspect the stable service code.",
+            );
+            if let Some(service_code) = code.as_deref().filter(|code| is_public_service_code(code))
+            {
+                mapped.detail.details = serde_json::json!({"service_code": service_code});
+            }
+            mapped
+        }
         im_core::ImError::Serialization { detail }
             if detail.contains(im_core::vault::IM_CORE_VAULT_ROOT_KEY_ENV) =>
         {
@@ -218,6 +240,25 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             "Report this issue with the command output.",
         ),
     }
+}
+
+fn is_public_service_code(code: &str) -> bool {
+    if code.is_empty() || code.len() > PUBLIC_SERVICE_CODE_MAX_LEN || !code.is_ascii() {
+        return false;
+    }
+    if !code
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte))
+    {
+        return false;
+    }
+
+    let Some((namespace, suffix)) = code.split_once('.') else {
+        return false;
+    };
+    PUBLIC_SERVICE_CODE_NAMESPACES.contains(&namespace)
+        && !suffix.is_empty()
+        && code.split('.').all(|segment| !segment.is_empty())
 }
 
 pub fn map_identity_boundary_error(err: ExitError) -> ExitError {

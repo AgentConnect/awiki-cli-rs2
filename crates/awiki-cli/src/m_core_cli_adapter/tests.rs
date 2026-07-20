@@ -428,6 +428,63 @@ fn service_auth_statuses_map_to_safe_authorization_codes() {
 }
 
 #[test]
+fn service_error_exposes_only_a_valid_stable_public_code() {
+    let private_marker = "remote-private-error-detail";
+    let mapped = error::map_im_error(
+        ImError::Service {
+            status_code: None,
+            code: Some("anp.device_state_changed".to_owned()),
+            message: private_marker.to_owned(),
+            data: Some(serde_json::json!({"private": private_marker})),
+        },
+        "adapter test",
+    );
+
+    assert_eq!(mapped.detail.code, "service_error");
+    assert_eq!(mapped.exit_code, 5);
+    assert_eq!(
+        mapped.detail.details,
+        serde_json::json!({"service_code": "anp.device_state_changed"})
+    );
+    let rendered = format!("{mapped:?}");
+    assert!(!rendered.contains(private_marker));
+}
+
+#[test]
+fn service_error_omits_malformed_overlong_and_secret_like_codes() {
+    let private_marker = "remote-private-error-detail";
+    let invalid_codes = [
+        "anp.DeviceStateChanged".to_owned(),
+        " anp.device_state_changed".to_owned(),
+        "anp..device_state_changed".to_owned(),
+        format!("anp.{}", "x".repeat(96)),
+        "token.private_secret".to_owned(),
+        "-32001".to_owned(),
+    ];
+
+    for code in invalid_codes {
+        let mapped = error::map_im_error(
+            ImError::Service {
+                status_code: None,
+                code: Some(code.clone()),
+                message: private_marker.to_owned(),
+                data: Some(serde_json::json!({
+                    "private": private_marker,
+                    "remote_code": code
+                })),
+            },
+            "adapter test",
+        );
+
+        assert_eq!(mapped.detail.code, "service_error");
+        assert!(mapped.detail.details.is_null());
+        let rendered = format!("{mapped:?}");
+        assert!(!rendered.contains(private_marker));
+        assert!(!rendered.contains(&code));
+    }
+}
+
+#[test]
 fn canonical_identity_and_upgrade_errors_map_to_stable_redacted_codes() {
     let private_marker = "did:wba:private.example:alice:e1_private";
     let cases = [
