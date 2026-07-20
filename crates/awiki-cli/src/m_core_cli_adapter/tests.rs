@@ -405,6 +405,29 @@ fn common_im_errors_map_to_exit_errors() {
 }
 
 #[test]
+fn service_auth_statuses_map_to_safe_authorization_codes() {
+    let private_marker = "remote-private-error-detail";
+    let cases = [(401, "auth_required", 3), (403, "permission_denied", 4)];
+
+    for (status_code, expected_code, expected_exit) in cases {
+        let mapped = error::map_im_error(
+            ImError::Service {
+                status_code: Some(status_code),
+                code: Some("private.remote.code".to_owned()),
+                message: private_marker.to_owned(),
+                data: Some(serde_json::json!({"private": private_marker})),
+            },
+            "adapter test",
+        );
+        assert_eq!(mapped.detail.code, expected_code);
+        assert_eq!(mapped.exit_code, expected_exit);
+        let rendered = format!("{mapped:?}");
+        assert!(!rendered.contains(private_marker));
+        assert!(!rendered.contains("private.remote.code"));
+    }
+}
+
+#[test]
 fn canonical_identity_and_upgrade_errors_map_to_stable_redacted_codes() {
     let private_marker = "did:wba:private.example:alice:e1_private";
     let cases = [

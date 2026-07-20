@@ -165,6 +165,24 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: {path_kind} credential file unreadable: {detail}"),
             "Check identity file permissions.",
         ),
+        im_core::ImError::Service {
+            status_code: Some(401),
+            ..
+        } => ExitError::new(
+            "auth_required",
+            3,
+            format!("{context}: authentication is required."),
+            "Refresh the selected identity credentials and try again.",
+        ),
+        im_core::ImError::Service {
+            status_code: Some(403),
+            ..
+        } => ExitError::new(
+            "permission_denied",
+            4,
+            format!("{context}: permission denied."),
+            "Check identity permissions and service access.",
+        ),
         im_core::ImError::Service { message, .. } => ExitError::new(
             "service_error",
             5,
