@@ -1680,6 +1680,60 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
         .transpose()
     }
 
+    /// Returns the unique retained outbound Init for one selected session.
+    /// Root-control uses this to resume the original Init instead of mistaking
+    /// its already-persisted session row for readiness. Pending rows belonging
+    /// to disabled or otherwise unselected sessions are never revived.
+    pub(crate) fn select_pending_init_operation(
+        &self,
+        binding: &V2SessionBinding,
+        selected_session_id: &str,
+    ) -> crate::ImResult<Option<String>> {
+        self.scope.validate_binding(binding)?;
+        let selected_session_id = required("session_id", selected_session_id)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT operation_id FROM direct_e2ee_v2_pending
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND peer_did = ?3
+  AND peer_device_id = ?4 AND session_id = ?5
+ORDER BY created_at, operation_id"#,
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let operation_ids = statement
+            .query_map(
+                params![
+                    self.scope.owner_identity_id,
+                    binding.local_device_id,
+                    binding.peer_did,
+                    binding.peer_device_id,
+                    selected_session_id,
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        drop(statement);
+
+        let mut matches = Vec::new();
+        for operation_id in operation_ids {
+            let pending = self
+                .load_pending(binding, &operation_id)?
+                .ok_or(crate::ImError::PermissionDenied)?;
+            if pending.wire_content_type == anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2
+                && pending.session_id == selected_session_id
+            {
+                matches.push(operation_id);
+            }
+        }
+        match matches.as_slice() {
+            [] => Ok(None),
+            [operation_id] => Ok(Some(operation_id.clone())),
+            _ => Err(crate::ImError::PermissionDenied),
+        }
+    }
+
     pub(crate) fn mark_pending_accepted(
         &self,
         binding: &V2SessionBinding,
@@ -2076,6 +2130,36 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND peer_did = ?3
         .transpose()
     }
 
+    pub(crate) fn session_is_enabled(
+        &self,
+        binding: &V2SessionBinding,
+        session_id: &str,
+    ) -> crate::ImResult<bool> {
+        self.scope.validate_binding(binding)?;
+        let disabled = self
+            .connection
+            .query_row(
+                r#"SELECT disabled FROM direct_e2ee_v2_sessions
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND peer_did = ?3
+  AND peer_device_id = ?4 AND session_id = ?5"#,
+                params![
+                    self.scope.owner_identity_id,
+                    binding.local_device_id,
+                    binding.peer_did,
+                    binding.peer_device_id,
+                    required("session_id", session_id)?,
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        match disabled {
+            Some(0) => Ok(true),
+            Some(1) | None => Ok(false),
+            Some(_) => Err(crate::ImError::PermissionDenied),
+        }
+    }
+
     pub(crate) fn select_established_session(
         &self,
         binding: &V2SessionBinding,
@@ -2132,6 +2216,66 @@ ORDER BY updated_at DESC"#,
                 .into_iter()
                 .find(|record| record.state.session_id == session_id)
         }))
+    }
+
+    /// Selects the sole active initiator session that is still waiting for
+    /// its authenticated first reply. This is intentionally separate from
+    /// ordinary established-session selection and never revives disabled
+    /// state.
+    pub(crate) fn select_pending_confirmation_session(
+        &self,
+        binding: &V2SessionBinding,
+    ) -> crate::ImResult<Option<V2StoredSession>> {
+        self.scope.validate_binding(binding)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT session_id, state_blob, revision FROM direct_e2ee_v2_sessions
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND peer_did = ?3
+  AND peer_device_id = ?4 AND disabled = 0
+ORDER BY updated_at DESC"#,
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let rows = statement
+            .query_map(
+                params![
+                    self.scope.owner_identity_id,
+                    binding.local_device_id,
+                    binding.peer_did,
+                    binding.peer_device_id,
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        drop(statement);
+
+        let mut pending = rows
+            .into_iter()
+            .map(|(session_id, blob, revision)| {
+                validate_storage_revision(revision)?;
+                Ok(V2StoredSession {
+                    state: self.open_state(blob, binding, &session_id)?,
+                    revision,
+                })
+            })
+            .collect::<crate::ImResult<Vec<_>>>()?
+            .into_iter()
+            .filter(|stored| {
+                stored.state.status == anp::direct_e2ee::V2_SESSION_STATUS_PENDING_CONFIRMATION
+            });
+        let selected = pending.next();
+        if pending.next().is_some() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(selected)
     }
 
     /// Checks replay before the SDK attempts an inbound decrypt. Exact replay

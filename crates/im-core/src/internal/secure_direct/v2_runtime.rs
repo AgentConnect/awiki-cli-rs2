@@ -24,6 +24,7 @@ pub(crate) const SESSION_ESTABLISH_SYSTEM_TYPE: &str = "awiki.device.session-est
 pub(crate) const SESSION_ESTABLISHED_SYSTEM_TYPE: &str = "awiki.device.session-established.v1";
 pub(crate) const SESSION_INIT_OPERATION_PREFIX: &str = "p5-v2-session-init:";
 pub(crate) const SESSION_REPLY_OPERATION_PREFIX: &str = "p5-v2-session-reply:";
+pub(crate) const SESSION_ESTABLISHMENT_PENDING: &str = "p5-v2-session-establishment-pending";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum V2SessionControlKind {
@@ -137,6 +138,12 @@ pub(crate) struct V2EstablishedDirectRuntime<'a, 'connection> {
     store: &'a SqliteV2DirectStateStore<'connection>,
 }
 
+pub(crate) enum V2RootControlSessionReadiness {
+    Ready,
+    Pending(PreparedV2Outbound),
+    Absent,
+}
+
 impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
     pub(crate) fn new(store: &'a SqliteV2DirectStateStore<'connection>) -> Self {
         Self { store }
@@ -147,6 +154,42 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         binding: &V2SessionBinding,
     ) -> crate::ImResult<bool> {
         Ok(self.store.select_established_session(binding)?.is_some())
+    }
+
+    /// Root-control may use only the same selected session that a subsequent
+    /// private Cipher will advance. A retained outbound Init for that session
+    /// must be replayed byte-for-byte until its authenticated reply retires it.
+    /// Ordinary Direct callers intentionally keep using
+    /// `has_established_session` and are unaffected by this stricter gate.
+    pub(crate) fn root_control_session_readiness(
+        &self,
+        binding: &V2SessionBinding,
+    ) -> crate::ImResult<V2RootControlSessionReadiness> {
+        let selected = match self.store.select_established_session(binding)? {
+            Some(selected) => selected,
+            None => match self.store.select_pending_confirmation_session(binding)? {
+                Some(selected) => selected,
+                None => return Ok(V2RootControlSessionReadiness::Absent),
+            },
+        };
+        if selected.state.disabled {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if let Some(operation_id) = self
+            .store
+            .select_pending_init_operation(binding, &selected.state.session_id)?
+        {
+            let prepared = self
+                .resume_outbound(binding, &operation_id)?
+                .ok_or(crate::ImError::PermissionDenied)?;
+            prepared.init_body()?;
+            return Ok(V2RootControlSessionReadiness::Pending(prepared));
+        }
+        if selected.state.status == anp::direct_e2ee::V2_SESSION_STATUS_ESTABLISHED {
+            Ok(V2RootControlSessionReadiness::Ready)
+        } else {
+            Err(crate::ImError::PermissionDenied)
+        }
     }
 
     pub(crate) fn complete_session_init(
@@ -209,6 +252,18 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
                 .store
                 .load_private_outbound_sidecar(binding, operation_id)?
                 .is_some()
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            let session = self
+                .store
+                .load_session(binding, &existing.session_id)?
+                .ok_or(crate::ImError::PermissionDenied)?;
+            if !self
+                .store
+                .session_is_enabled(binding, &existing.session_id)?
+                || session.state.disabled
+                || session.state.status != anp::direct_e2ee::V2_SESSION_STATUS_PENDING_CONFIRMATION
             {
                 return Err(crate::ImError::PermissionDenied);
             }
@@ -276,12 +331,50 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
             if existing_sidecar.as_ref() != Some(&sidecar) {
                 return Err(crate::ImError::PermissionDenied);
             }
+            let session = self
+                .store
+                .load_session(binding, &existing.session_id)?
+                .ok_or(crate::ImError::PermissionDenied)?;
+            if !self
+                .store
+                .session_is_enabled(binding, &existing.session_id)?
+                || session.state.disabled
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            if session.state.status != anp::direct_e2ee::V2_SESSION_STATUS_ESTABLISHED
+                || self
+                    .store
+                    .select_pending_init_operation(binding, &existing.session_id)?
+                    .is_some()
+            {
+                return Err(crate::ImError::unsupported(SESSION_ESTABLISHMENT_PENDING));
+            }
             return prepared_from_pending(existing, existing_sidecar);
         }
-        let stored = self
+        let stored = match self.store.select_established_session(binding)? {
+            Some(stored) => stored,
+            None => match self.root_control_session_readiness(binding)? {
+                V2RootControlSessionReadiness::Pending(_) => {
+                    return Err(crate::ImError::unsupported(SESSION_ESTABLISHMENT_PENDING));
+                }
+                V2RootControlSessionReadiness::Absent => {
+                    return Err(crate::ImError::unsupported(
+                        "p5-v2-established-session-required",
+                    ));
+                }
+                V2RootControlSessionReadiness::Ready => {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+            },
+        };
+        if self
             .store
-            .select_established_session(binding)?
-            .ok_or_else(|| crate::ImError::unsupported("p5-v2-established-session-required"))?;
+            .select_pending_init_operation(binding, &stored.state.session_id)?
+            .is_some()
+        {
+            return Err(crate::ImError::unsupported(SESSION_ESTABLISHMENT_PENDING));
+        }
         let metadata = outbound_metadata(binding, operation_id);
         let mut next_state = stored.state;
         let (pending, body) = V2DirectE2eeSession::encrypt_follow_up_secret_json(
@@ -1032,6 +1125,32 @@ mod tests {
         ))
     }
 
+    fn root_private_sidecar(
+        operation_id: &str,
+        sender_device_id: &str,
+        recipient_device_id: &str,
+    ) -> V2PrivateOutboundSidecar {
+        V2PrivateOutboundSidecar::root_control(
+            operation_id,
+            crate::internal::identity_root_transfer::RootImportTransportContext {
+                message_id: operation_id.to_owned(),
+                delivery_class: "awiki-root-key-control".to_owned(),
+                sender_device_id: sender_device_id.to_owned(),
+                recipient_device_id: recipient_device_id.to_owned(),
+                expires_at: "2030-07-20T00:05:00Z".to_owned(),
+            },
+            None,
+        )
+        .unwrap()
+    }
+
+    fn root_secret_plaintext() -> V2SecretJsonPayload {
+        V2SecretJsonPayload::from_canonical_json_object(
+            br#"{"opaque_test_value":"secret","system_type":"awiki.device.root-key.v1"}"#.to_vec(),
+        )
+        .unwrap()
+    }
+
     fn established_pair() -> (V2DirectSessionState, V2DirectSessionState) {
         let alice_ratchet = x25519_dalek::StaticSecret::from([7; 32]);
         let bob_ratchet = x25519_dalek::StaticSecret::from([8; 32]);
@@ -1171,6 +1290,12 @@ mod tests {
             payload_b64u: None,
         };
         let runtime = V2EstablishedDirectRuntime::new(&alice_store);
+        assert!(matches!(
+            runtime
+                .root_control_session_readiness(&alice_state.binding)
+                .unwrap(),
+            V2RootControlSessionReadiness::Ready
+        ));
         let first = runtime
             .prepare_private_outbound(
                 &alice_state.binding,
@@ -1735,6 +1860,12 @@ mod tests {
         };
         let init_plaintext = session_establish_plaintext();
         let alice_runtime = V2EstablishedDirectRuntime::new(&alice_store);
+        assert!(matches!(
+            alice_runtime
+                .root_control_session_readiness(&alice_binding)
+                .unwrap(),
+            V2RootControlSessionReadiness::Absent
+        ));
         let init = alice_runtime
             .prepare_session_init(
                 &alice_binding,
@@ -1747,6 +1878,80 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(init.body, V2DirectBody::Init(_)));
+        assert!(matches!(
+            alice_runtime
+                .root_control_session_readiness(&alice_binding)
+                .unwrap(),
+            V2RootControlSessionReadiness::Pending(ref pending) if pending == &init
+        ));
+        let pending_error = alice_runtime
+            .prepare_private_outbound_secret_json(
+                &alice_binding,
+                "root-before-confirmation",
+                &root_secret_plaintext(),
+                "2026-07-20T00:00:01Z",
+                root_private_sidecar("root-before-confirmation", "alice-phone", "alice-laptop"),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            pending_error,
+            crate::ImError::UnsupportedCapability { capability }
+                if capability == SESSION_ESTABLISHMENT_PENDING
+        ));
+        assert_eq!(
+            alice_db
+                .query_row(
+                    "SELECT COUNT(*) FROM direct_e2ee_v2_private_outbound",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+
+        let init_session_id = init.init_body().unwrap().session_id.clone();
+        assert_eq!(
+            alice_db
+                .execute(
+                    "UPDATE direct_e2ee_v2_sessions SET disabled = 1 WHERE session_id = ?1",
+                    [&init_session_id],
+                )
+                .unwrap(),
+            1
+        );
+        assert!(matches!(
+            alice_runtime
+                .root_control_session_readiness(&alice_binding)
+                .unwrap(),
+            V2RootControlSessionReadiness::Absent
+        ));
+        assert!(matches!(
+            alice_runtime.prepare_session_init(
+                &alice_binding,
+                "session-init-1",
+                &init_plaintext,
+                &alice_static,
+                &fetched,
+                &x25519_dalek::PublicKey::from(&bob_static).to_bytes(),
+                "2026-07-20T00:00:01Z",
+            ),
+            Err(crate::ImError::PermissionDenied)
+        ));
+        assert_eq!(
+            alice_db
+                .execute(
+                    "UPDATE direct_e2ee_v2_sessions SET disabled = 0 WHERE session_id = ?1",
+                    [&init_session_id],
+                )
+                .unwrap(),
+            1
+        );
+        assert!(matches!(
+            alice_runtime
+                .root_control_session_readiness(&alice_binding)
+                .unwrap(),
+            V2RootControlSessionReadiness::Pending(ref pending) if pending == &init
+        ));
         drop(alice_runtime);
         drop(alice_store);
 
@@ -1820,6 +2025,12 @@ mod tests {
             plaintext.payload.unwrap()["system_type"],
             "awiki.device.session-establish.v1"
         );
+        assert!(matches!(
+            bob_runtime
+                .root_control_session_readiness(&bob_binding)
+                .unwrap(),
+            V2RootControlSessionReadiness::Ready
+        ));
         assert!(bob_store
             .load_available_opk(&bundle.bundle_id, &opk.key_id)
             .unwrap()
@@ -1864,13 +2075,62 @@ mod tests {
             Some(V2SessionControlKind::Established)
         );
         assert_eq!(session.status, V2_SESSION_STATUS_ESTABLISHED);
+        assert!(matches!(
+            restarted_alice
+                .root_control_session_readiness(&alice_binding)
+                .unwrap(),
+            V2RootControlSessionReadiness::Pending(ref pending) if pending == &init
+        ));
+        let still_pending_error = restarted_alice
+            .prepare_private_outbound_secret_json(
+                &alice_binding,
+                "root-before-init-cleanup",
+                &root_secret_plaintext(),
+                "2026-07-20T00:00:06Z",
+                root_private_sidecar("root-before-init-cleanup", "alice-phone", "alice-laptop"),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            still_pending_error,
+            crate::ImError::UnsupportedCapability { capability }
+                if capability == SESSION_ESTABLISHMENT_PENDING
+        ));
+        assert_eq!(
+            alice_db
+                .query_row(
+                    "SELECT COUNT(*) FROM direct_e2ee_v2_private_outbound",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert!(restarted_alice
+            .complete_session_init_for_session(&alice_binding, &session.session_id)
+            .unwrap());
+        assert!(matches!(
+            restarted_alice
+                .root_control_session_readiness(&alice_binding)
+                .unwrap(),
+            V2RootControlSessionReadiness::Ready
+        ));
+        let root = restarted_alice
+            .prepare_private_outbound_secret_json(
+                &alice_binding,
+                "root-after-confirmation",
+                &root_secret_plaintext(),
+                "2026-07-20T00:00:07Z",
+                root_private_sidecar("root-after-confirmation", "alice-phone", "alice-laptop"),
+            )
+            .unwrap();
+        assert!(matches!(root.body, V2DirectBody::Cipher(_)));
 
         let next = restarted_alice
             .prepare_outbound(
                 &alice_binding,
                 "post-establish-control",
                 &init_plaintext,
-                "2026-07-20T00:00:07Z",
+                "2026-07-20T00:00:08Z",
             )
             .unwrap();
         assert!(matches!(next.body, V2DirectBody::Cipher(_)));

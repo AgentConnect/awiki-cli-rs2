@@ -25,8 +25,8 @@ use crate::internal::secure_direct::v2_runtime::{
     classify_session_control, is_session_init_operation_id, is_session_reply_operation_id,
     parse_send_result, session_establish_plaintext, session_established_plaintext,
     session_init_operation_id, session_reply_operation_id, PreparedV2Outbound,
-    V2EstablishedDirectRuntime, V2SessionControlKind, V2ValidatedInboundOutcome,
-    V2ValidatedSecretInboundOutcome,
+    V2EstablishedDirectRuntime, V2RootControlSessionReadiness, V2SessionControlKind,
+    V2ValidatedInboundOutcome, V2ValidatedSecretInboundOutcome, SESSION_ESTABLISHMENT_PENDING,
 };
 use crate::internal::secure_direct::v2_store::{
     SqliteV2DirectStateStore, V2OwnerScope, V2PrivateOutboundSidecar, V2PrivateOutboundStatus,
@@ -394,6 +394,16 @@ pub(crate) async fn send_root_key(
         // record. Their operation id can never derive a second ciphertext.
         return Err(crate::ImError::PermissionDenied);
     }
+    ensure_root_control_session(
+        core,
+        client,
+        &scope,
+        &binding,
+        recipient,
+        &did_document,
+        message_id,
+    )
+    .await?;
     let retry = with_v2_runtime(core, &scope, |direct| {
         direct.resume_private_outbound(&binding, message_id)
     })?;
@@ -406,16 +416,6 @@ pub(crate) async fn send_root_key(
         if existing_status.is_some() {
             return Err(crate::ImError::PermissionDenied);
         }
-        ensure_root_control_session(
-            core,
-            client,
-            &scope,
-            &binding,
-            recipient,
-            &did_document,
-            message_id,
-        )
-        .await?;
         let now = OffsetDateTime::now_utc();
         let envelope = RootKeyTransferCore::from_core_for_rollout(core, true)?.prepare_envelope(
             RootKeyEnvelopePrepareInput {
@@ -489,21 +489,18 @@ async fn ensure_root_control_session(
     recipient_did_document: &Value,
     root_message_id: &str,
 ) -> crate::ImResult<()> {
-    if with_v2_runtime(core, scope, |direct| {
-        direct.has_established_session(binding)
-    })? {
-        return Ok(());
-    }
-
-    crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_published(core, client)
-        .await?;
-    let operation_id = session_init_operation_id(root_message_id)?;
-    let resumed = with_v2_runtime(core, scope, |direct| {
-        direct.resume_outbound(binding, &operation_id)
+    let readiness = with_v2_runtime(core, scope, |direct| {
+        direct.root_control_session_readiness(binding)
     })?;
-    let prepared = match resumed {
-        Some(prepared) => prepared,
-        None => {
+    let prepared = match readiness {
+        V2RootControlSessionReadiness::Ready => return Ok(()),
+        V2RootControlSessionReadiness::Pending(prepared) => prepared,
+        V2RootControlSessionReadiness::Absent => {
+            crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_published(
+                core, client,
+            )
+            .await?;
+            let operation_id = session_init_operation_id(root_message_id)?;
             let fetched = crate::internal::secure_direct::v2_prekey_runtime::fetch_verified_prekey(
                 client,
                 client.did().as_str(),
@@ -535,6 +532,7 @@ async fn ensure_root_control_session(
             })?
         }
     };
+    prepared.init_body()?;
     crate::internal::secure_direct::v2_prekey_runtime::post_standard_direct(client, &prepared)
         .await?;
     if !with_v2_runtime(core, scope, |direct| {
@@ -542,9 +540,7 @@ async fn ensure_root_control_session(
     })? {
         return Err(crate::ImError::PermissionDenied);
     }
-    Err(crate::ImError::unsupported(
-        "p5-v2-session-establishment-pending",
-    ))
+    Err(crate::ImError::unsupported(SESSION_ESTABLISHMENT_PENDING))
 }
 
 /// Consumes one message returned by the AWiki-private root-control inbox
