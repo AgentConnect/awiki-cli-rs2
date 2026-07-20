@@ -175,12 +175,18 @@ user presence. Ciphertext and its private sidecar commit atomically before
 network I/O and restart retry is byte-identical. The recipient decrypts through
 the same ratchet/replay store, verifies current admin authorization and DID root
 binding, imports directly into Vault, then returns one encrypted signed ACK.
-Inbox projection consumes and removes these controls before any normal message
-renderer; neither root plaintext nor control JSON reaches Core/Dart/CLI output.
-When no P5 v2 session exists, the first send persists only a standard fixed
-session Init and returns a stable pending capability without opening the root
-Vault record. Root-control status begins only after the session reply is
-consumed and a repeated, freshly confirmed send creates the encrypted Envelope.
+Blocking and async Inbox/History plus realtime ingress recognize the fixed P5
+v2 session Init/reply by an exact operation-ID form and a strictly validated
+standard P5 object before ordinary Direct processing. They always suppress the
+handshake and private root controls from normal message/notification projection,
+even while rollout is disabled or control processing fails. The gate controls
+only side effects: enabled async/realtime ingress consumes the handshake through
+the same root-transfer session receiver so both devices converge. Neither root
+plaintext nor control JSON reaches Core/Dart/CLI output. When no P5 v2 session
+exists, the first send persists only a standard fixed session Init and returns a
+stable pending capability without opening the root Vault record. Root-control
+status begins only after the session reply is consumed and a repeated, freshly
+confirmed send creates the encrypted Envelope.
 Signed completion atomically replaces the retained ciphertext/private sidecar
 with a secret-free status tombstone and garbage-collects the Vault pending
 ratchet record; an interrupted cleanup remains exact-retryable.

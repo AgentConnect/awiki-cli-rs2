@@ -457,6 +457,17 @@ pending rows 替代。
 
 ## 5. Inbox / History Query
 
+Inbox/History and realtime share a fail-closed control projection boundary.
+AWiki's fixed P5 v2 device-session Init/reply is recognized only from the exact
+session operation-ID form plus a strictly valid standard P5 `meta`/`body`.
+Recognized controls (including replays) and malformed strict-ID candidates are
+never returned as ordinary messages, timeline rows, events, or notifications.
+This filtering remains active when root-transfer rollout is off; enablement only
+permits async Inbox/History and realtime to execute the session-control side
+effect before dropping the wire object. A non-reserved operation ID remains
+ordinary P5 traffic. An ID that claims a reserved session prefix but fails the
+exact form is dropped fail-closed and cannot invoke the control side effect.
+
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThreadRef {

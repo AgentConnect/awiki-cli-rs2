@@ -2360,6 +2360,135 @@ async fn messages_read_async_never_projects_private_root_control_when_gate_is_of
 }
 
 #[test]
+fn messages_read_sync_inbox_and_history_hide_v2_session_controls_with_gate_off() {
+    let fixture = Fixture::new();
+    let response = session_control_page();
+
+    let inbox_client = fixture.client();
+    let inbox = MessageReadRuntime::new(
+        &inbox_client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: response.clone(),
+        },
+        NoopDirectoryTransport,
+    )
+    .inbox(InboxRead {
+        query: crate::messages::InboxQuery {
+            scope: crate::messages::InboxScope::DirectOnly,
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            unread_only: false,
+            inbox_history_options: None,
+        },
+    })
+    .unwrap();
+    assert!(inbox.page.items.is_empty());
+    assert_eq!(inbox.raw["messages"], json!([]));
+
+    let history_client = fixture.client();
+    let history = MessageReadRuntime::new(
+        &history_client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response,
+        },
+        NoopDirectoryTransport,
+    )
+    .history(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:alice", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: None,
+        peer_scope: None,
+    })
+    .unwrap();
+    assert!(history.page.items.is_empty());
+    assert_eq!(history.raw["messages"], json!([]));
+}
+
+#[tokio::test]
+async fn messages_read_async_hides_v2_session_controls_gate_off_and_on_failure() {
+    for enabled in [false, true] {
+        let fixture = Fixture::new();
+        let client = fixture.client_with_root_transfer_enabled(enabled);
+        let mut response = session_control_page();
+        // Replay is still control traffic and must remain idempotently hidden.
+        let replay = response["messages"][0].clone();
+        response["messages"].as_array_mut().unwrap().push(replay);
+        let result = MessageReadRuntime::new(
+            &client,
+            ReadyAnyReadSessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response,
+            },
+            NoopDirectoryTransport,
+        )
+        .inbox_async(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::DirectOnly,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: None,
+            },
+        })
+        .await
+        .unwrap();
+
+        assert!(result.page.items.is_empty(), "gate enabled={enabled}");
+        assert_eq!(result.raw["messages"], json!([]));
+        let public_raw = serde_json::to_string(&result.raw).unwrap();
+        assert!(!public_raw.contains("U0VTU0lPTi1DT05UUk9MLUNJUEhFUlRFWFQ"));
+        assert!(!public_raw.contains("p5-v2-session-"));
+    }
+}
+
+#[test]
+fn v2_session_control_parser_requires_strict_operation_id_and_standard_p5_shape() {
+    let init = session_control_message(true);
+    let reply = session_control_message(false);
+    assert!(matches!(
+        parse_v2_session_control(&init).unwrap(),
+        Some((_, anp::direct_e2ee::V2DirectBody::Init(_)))
+    ));
+    assert!(matches!(
+        parse_v2_session_control(&reply).unwrap(),
+        Some((_, anp::direct_e2ee::V2DirectBody::Cipher(_)))
+    ));
+
+    let mut forged = init.clone();
+    forged["meta"]["operation_id"] = json!("p5-v2-session-init:AAAAAAAAAAAAAAAAAAAAA!");
+    forged["meta"]["message_id"] = forged["meta"]["operation_id"].clone();
+    assert!(parse_v2_session_control(&forged).is_err());
+    assert!(is_v2_session_control_projection(&forged));
+
+    let mut ordinary = init.clone();
+    ordinary["meta"]["operation_id"] = json!("ordinary-p5-v2-operation");
+    ordinary["meta"]["message_id"] = ordinary["meta"]["operation_id"].clone();
+    assert!(parse_v2_session_control(&ordinary).unwrap().is_none());
+    assert!(!is_v2_session_control_projection(&ordinary));
+
+    let mut wrong_shape = init;
+    wrong_shape["meta"]["content_type"] = json!(anp::direct_e2ee::CONTENT_TYPE_DIRECT_CIPHER_V2);
+    assert!(parse_v2_session_control(&wrong_shape).is_err());
+    assert!(is_v2_session_control_projection(&wrong_shape));
+
+    let mut wrong_profile = reply;
+    wrong_profile["meta"]["profile"] = json!("anp.direct.e2ee.v1");
+    assert!(parse_v2_session_control(&wrong_profile).is_err());
+    assert!(is_v2_session_control_projection(&wrong_profile));
+}
+
+#[test]
 fn private_root_control_parser_requires_exact_standard_wire_and_private_sidecar() {
     let message = json!({
         "meta": {
@@ -2866,7 +2995,11 @@ impl Fixture {
     }
 
     fn client(&self) -> crate::core::ImClient {
-        crate::core::ImCore::new(
+        self.client_with_root_transfer_enabled(false)
+    }
+
+    fn client_with_root_transfer_enabled(&self, enabled: bool) -> crate::core::ImClient {
+        crate::core::ImCore::new_with_options(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
                 did_domain: "awiki.test".to_string(),
@@ -2892,6 +3025,7 @@ impl Fixture {
                     temp_dir: self.root.join("tmp"),
                 },
             },
+            crate::ImCoreOpenOptions::default().with_multi_device_root_transfer_enabled(enabled),
         )
         .unwrap()
         .client(crate::identity::IdentitySelector::LocalAlias(
@@ -3085,6 +3219,74 @@ impl Fixture {
             private_key_pem: delegated_private_key,
         }
     }
+}
+
+fn session_control_page() -> Value {
+    json!({
+        "messages": [
+            session_control_message(true),
+            session_control_message(false),
+        ],
+        "has_more": false,
+    })
+}
+
+fn session_control_message(init: bool) -> Value {
+    let init_id =
+        crate::internal::secure_direct::v2_runtime::session_init_operation_id("read-session")
+            .unwrap();
+    let operation_id = if init {
+        init_id
+    } else {
+        crate::internal::secure_direct::v2_runtime::session_reply_operation_id(&init_id).unwrap()
+    };
+    let content_type = if init {
+        anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2
+    } else {
+        anp::direct_e2ee::CONTENT_TYPE_DIRECT_CIPHER_V2
+    };
+    let body = if init {
+        json!({
+            "session_id": "AAAAAAAAAAAAAAAAAAAAAA",
+            "suite": anp::direct_e2ee::MTI_DIRECT_E2EE_SUITE_V2,
+            "sender_static_key_agreement_id": "did:example:alice#ka-admin",
+            "recipient_bundle_id": "bundle-member",
+            "recipient_signed_prekey_id": "signed-member",
+            "sender_ephemeral_pub_b64u": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "ciphertext_b64u": "U0VTU0lPTi1DT05UUk9MLUNJUEhFUlRFWFQ"
+        })
+    } else {
+        json!({
+            "session_id": "AAAAAAAAAAAAAAAAAAAAAA",
+            "suite": anp::direct_e2ee::MTI_DIRECT_E2EE_SUITE_V2,
+            "ratchet_header": {
+                "dh_pub_b64u": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "pn": "0",
+                "n": "0"
+            },
+            "ciphertext_b64u": "U0VTU0lPTi1DT05UUk9MLUNJUEhFUlRFWFQ"
+        })
+    };
+    json!({
+        "id": operation_id,
+        "sender_did": "did:example:alice",
+        "receiver_did": "did:example:alice",
+        "content_type": content_type,
+        "server_seq": if init { 1 } else { 2 },
+        "meta": {
+            "profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2,
+            "security_profile": "direct-e2ee",
+            "sender_did": "did:example:alice",
+            "sender_device_id": "device-admin",
+            "target": {"kind": "agent", "did": "did:example:alice"},
+            "recipient_device_id": "device-member",
+            "operation_id": operation_id,
+            "message_id": operation_id,
+            "content_type": content_type
+        },
+        "body": body,
+        "content": body
+    })
 }
 
 fn install_test_im_core_vault_root_key() {

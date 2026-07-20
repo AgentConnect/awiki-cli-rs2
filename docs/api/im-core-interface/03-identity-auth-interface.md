@@ -214,9 +214,13 @@ Vault record. The safe result reports delivery acceptance metadata only.
 RootKeyEnvelope and imported ACK are JSON plaintexts only inside an established
 exact-device P5 v2 cipher. Standard P5 metadata/body are unchanged; the
 same-domain routing/completion sidecar is internal and does not enter ANP or
-AAD. Async inbox processing imports into Vault and filters the control before
-public projection. No root key, inner JSON, sidecar, completion proof, or
-ratchet state is exposed by this interface.
+AAD. Blocking/async Inbox and History plus realtime filter both the fixed P5 v2
+session handshake and private root controls before public projection. This
+confidentiality filter is independent of the rollout gate; the gate controls
+only whether async/realtime executes the session/root side effect. Failed or
+disabled processing never falls back to a normal message or notification. No
+root key, inner JSON, sidecar, completion proof, or ratchet state is exposed by
+this interface.
 
 If the exact device pair has no established P5 v2 session, the first `send`
 persists and sends only the fixed session Init, does not open or persist the

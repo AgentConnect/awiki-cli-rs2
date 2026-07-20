@@ -1113,6 +1113,26 @@ fn normalize_direct_e2ee_realtime_notification_async_first(
     >,
     notification: Value,
 ) -> DirectRealtimeProjectionResult {
+    match parse_realtime_v2_session_control(&notification) {
+        Ok(Some((metadata, body))) => {
+            if client.core_inner().root_key_transfer_enabled() {
+                if let Some(runtime) = runtime {
+                    let core = client.core_handle();
+                    let _ = runtime.block_on(
+                        crate::internal::identity_root_transfer_runtime::receive_session_control(
+                            &core, client, metadata, body,
+                        ),
+                    );
+                }
+            }
+            return dropped_v2_session_control_projection();
+        }
+        // A strict session-control operation ID with a malformed P5 object is
+        // still confidential control traffic. Fail closed instead of falling
+        // back to a normal message or notification projection.
+        Err(_) => return dropped_v2_session_control_projection(),
+        Ok(None) => {}
+    }
     if !crate::internal::realtime::projection::is_direct_secure_wire_notification(&notification) {
         return DirectRealtimeProjectionResult::Projected {
             notification: Some(notification),
@@ -1149,6 +1169,20 @@ async fn normalize_direct_e2ee_realtime_notification_async(
     >,
     notification: Value,
 ) -> DirectRealtimeProjectionResult {
+    match parse_realtime_v2_session_control(&notification) {
+        Ok(Some((metadata, body))) => {
+            if client.core_inner().root_key_transfer_enabled() {
+                let core = client.core_handle();
+                let _ = crate::internal::identity_root_transfer_runtime::receive_session_control(
+                    &core, client, metadata, body,
+                )
+                .await;
+            }
+            return dropped_v2_session_control_projection();
+        }
+        Err(_) => return dropped_v2_session_control_projection(),
+        Ok(None) => {}
+    }
     if !crate::internal::realtime::projection::is_direct_secure_wire_notification(&notification) {
         return DirectRealtimeProjectionResult::Projected {
             notification: Some(notification),
@@ -1186,6 +1220,33 @@ async fn normalize_direct_e2ee_realtime_notification_async(
                 DirectRealtimeProjectionResult::Fallback(notification)
             }
         }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn parse_realtime_v2_session_control(
+    notification: &Value,
+) -> crate::ImResult<
+    Option<(
+        anp::direct_e2ee::V2DirectMetadata,
+        anp::direct_e2ee::V2DirectBody,
+    )>,
+> {
+    if notification.get("method").and_then(Value::as_str) != Some("direct.incoming") {
+        return Ok(None);
+    }
+    let Some(params) = notification.get("params") else {
+        return Ok(None);
+    };
+    crate::internal::message_runtime::read::parse_v2_session_control(params)
+}
+
+#[cfg(feature = "sqlite")]
+fn dropped_v2_session_control_projection() -> DirectRealtimeProjectionResult {
+    DirectRealtimeProjectionResult::Projected {
+        notification: None,
+        additional_notifications: Vec::new(),
+        warnings: Vec::new(),
     }
 }
 

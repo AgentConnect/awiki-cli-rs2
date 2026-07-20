@@ -1690,10 +1690,14 @@ fn project_secure_direct_messages_impl(
             return;
         };
         let mut message_values = std::mem::take(messages);
-        // Root-control delivery is async-only because import and its signed
-        // ACK require authenticated network calls. A synchronous read must
-        // still fail closed by removing the private control from projection.
-        message_values.retain(|message| message.get("private_transport_context").is_none());
+        // Root-control delivery and the P5 v2 session handshake are async-only
+        // because they require authenticated network calls. A synchronous read
+        // must still fail closed by removing both control classes from every
+        // ordinary Inbox/History projection, independently of the rollout gate.
+        message_values.retain(|message| {
+            message.get("private_transport_context").is_none()
+                && !is_v2_session_control_projection(message)
+        });
         apply_cached_secure_direct_messages(client, &mut message_values);
         let warnings =
             crate::internal::secure_direct::incoming::maybe_decrypt_direct_e2ee_messages_for_client(
@@ -1790,43 +1794,34 @@ async fn project_secure_direct_messages_async_impl(
                 .await;
                 continue;
             }
-            let content_type = direct_message_content_type(&message_values[index]);
-            if client.core_inner().root_key_transfer_enabled() {
-                match parse_v2_session_control(&message_values[index]) {
-                    Ok(Some((metadata, body))) => {
-                        mark_private_root_control(&mut message_values[index]);
-                        processed_async[index] = true;
+            // Recognition is gate-independent: disabling rollout suppresses
+            // side effects, never the confidentiality filter. A recognized or
+            // malformed control candidate cannot fall through to ordinary
+            // Direct decryption/rendering.
+            match parse_v2_session_control(&message_values[index]) {
+                Ok(Some((metadata, body))) => {
+                    mark_private_root_control(&mut message_values[index]);
+                    processed_async[index] = true;
+                    if client.core_inner().root_key_transfer_enabled() {
                         let core = client.core_handle();
-                        if let Err(error) = crate::internal::identity_root_transfer_runtime::receive_session_control(
+                        let _ = crate::internal::identity_root_transfer_runtime::receive_session_control(
                             &core,
                             client,
                             metadata,
                             body,
                         )
-                        .await
-                        {
-                            mark_async_direct_failure(
-                                &mut message_values[index],
-                                &mut async_warnings,
-                                error,
-                            );
-                            mark_private_root_control(&mut message_values[index]);
-                        }
-                        continue;
+                        .await;
                     }
-                    Ok(None) => {}
-                    Err(error) => {
-                        mark_async_direct_failure(
-                            &mut message_values[index],
-                            &mut async_warnings,
-                            error,
-                        );
-                        mark_private_root_control(&mut message_values[index]);
-                        processed_async[index] = true;
-                        continue;
-                    }
+                    continue;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    mark_private_root_control(&mut message_values[index]);
+                    processed_async[index] = true;
+                    continue;
                 }
             }
+            let content_type = direct_message_content_type(&message_values[index]);
             let notification = match crate::internal::secure_direct::incoming::direct_e2ee_notification_from_message_view(&message_values[index]) {
                 Ok(notification) => notification,
                 Err(_) => continue,
@@ -2096,7 +2091,7 @@ fn parse_private_root_control(
 }
 
 #[cfg(feature = "sqlite")]
-fn parse_v2_session_control(
+pub(crate) fn parse_v2_session_control(
     message: &Value,
 ) -> crate::ImResult<
     Option<(
@@ -2110,35 +2105,69 @@ fn parse_v2_session_control(
     let Some(meta_value) = object.get("meta") else {
         return Ok(None);
     };
+    let operation_id = meta_value
+        .get("operation_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let reserved_init = operation_id
+        .starts_with(crate::internal::secure_direct::v2_runtime::SESSION_INIT_OPERATION_PREFIX);
+    let reserved_reply = operation_id
+        .starts_with(crate::internal::secure_direct::v2_runtime::SESSION_REPLY_OPERATION_PREFIX);
+    if !reserved_init && !reserved_reply {
+        return Ok(None);
+    }
+    let is_init =
+        crate::internal::secure_direct::v2_runtime::is_session_init_operation_id(operation_id);
+    let is_reply =
+        crate::internal::secure_direct::v2_runtime::is_session_reply_operation_id(operation_id);
+    if !is_init && !is_reply {
+        return Err(crate::ImError::PermissionDenied);
+    }
     if meta_value.get("profile").and_then(Value::as_str)
         != Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
     {
-        return Ok(None);
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let expected_content_type = if is_init {
+        anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2
+    } else {
+        anp::direct_e2ee::CONTENT_TYPE_DIRECT_CIPHER_V2
+    };
+    if meta_value.get("content_type").and_then(Value::as_str) != Some(expected_content_type) {
+        return Err(crate::ImError::PermissionDenied);
     }
     let metadata: anp::direct_e2ee::V2DirectMetadata =
         serde_json::from_value(meta_value.clone()).map_err(|_| crate::ImError::PermissionDenied)?;
-    let recognized = crate::internal::secure_direct::v2_runtime::is_session_init_operation_id(
-        &metadata.operation_id,
-    ) || crate::internal::secure_direct::v2_runtime::is_session_reply_operation_id(
-        &metadata.operation_id,
-    );
-    if !recognized {
-        return Ok(None);
-    }
+    metadata
+        .validate()
+        .map_err(|_| crate::ImError::PermissionDenied)?;
     let body_value = object
         .get("body")
         .cloned()
         .ok_or(crate::ImError::PermissionDenied)?;
     let body = match metadata.content_type.as_str() {
-        anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2 => anp::direct_e2ee::V2DirectBody::Init(
-            serde_json::from_value(body_value).map_err(|_| crate::ImError::PermissionDenied)?,
-        ),
-        anp::direct_e2ee::CONTENT_TYPE_DIRECT_CIPHER_V2 => anp::direct_e2ee::V2DirectBody::Cipher(
-            serde_json::from_value(body_value).map_err(|_| crate::ImError::PermissionDenied)?,
-        ),
+        anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2 => {
+            let body: anp::direct_e2ee::V2DirectInitBody =
+                serde_json::from_value(body_value).map_err(|_| crate::ImError::PermissionDenied)?;
+            body.validate()
+                .map_err(|_| crate::ImError::PermissionDenied)?;
+            anp::direct_e2ee::V2DirectBody::Init(body)
+        }
+        anp::direct_e2ee::CONTENT_TYPE_DIRECT_CIPHER_V2 => {
+            let body: anp::direct_e2ee::V2DirectCipherBody =
+                serde_json::from_value(body_value).map_err(|_| crate::ImError::PermissionDenied)?;
+            body.validate()
+                .map_err(|_| crate::ImError::PermissionDenied)?;
+            anp::direct_e2ee::V2DirectBody::Cipher(body)
+        }
         _ => return Err(crate::ImError::PermissionDenied),
     };
     Ok(Some((metadata, body)))
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn is_v2_session_control_projection(message: &Value) -> bool {
+    !matches!(parse_v2_session_control(message), Ok(None))
 }
 
 #[cfg(feature = "sqlite")]
