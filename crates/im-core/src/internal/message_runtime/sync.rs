@@ -143,12 +143,17 @@ where
                         &mut raw,
                         &mut self.directory_transport,
                     );
-                crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+                let rejected_entire_page =
+                    crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
                     self.client,
                     &mut raw,
                     &peer.resolved_did,
                     &mut p5_provenance,
                 );
+                crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+                    &raw,
+                    rejected_entire_page,
+                )?;
                 crate::internal::message_runtime::read::annotate_direct_peer_scopes(
                     self.client,
                     &mut raw,
@@ -319,18 +324,24 @@ where
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
                     .await?;
                 let mut p5_provenance =
-                    crate::internal::message_runtime::read::project_secure_direct_messages_async(
+                    crate::internal::message_runtime::read::project_secure_direct_messages_async_for_peer(
                         self.client,
                         &mut raw,
                         &mut self.directory_transport,
+                        &peer.resolved_did,
                     )
-                    .await;
-                crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+                    .await?;
+                let rejected_entire_page =
+                    crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
                     self.client,
                     &mut raw,
                     &peer.resolved_did,
                     &mut p5_provenance,
                 );
+                crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+                    &raw,
+                    rejected_entire_page,
+                )?;
                 crate::internal::message_runtime::read::annotate_direct_peer_scopes_async(
                     self.client,
                     &mut raw,

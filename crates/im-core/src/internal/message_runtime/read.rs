@@ -262,12 +262,13 @@ where
                         &mut self.directory_transport,
                     )
                 };
-                retain_direct_messages_for_expected_peer(
+                let rejected_entire_page = retain_direct_messages_for_expected_peer(
                     self.client,
                     &mut raw,
                     &peer.resolved_did,
                     &mut p5_provenance,
                 );
+                reject_stalled_scoped_direct_page(&raw, rejected_entire_page)?;
                 annotate_direct_peer_scopes(
                     self.client,
                     &mut raw,
@@ -549,19 +550,21 @@ where
                     DirectP5ProjectionProvenance::default()
                 } else {
                     consume_group_e2ee_control_messages_async(self.client, &mut raw).await;
-                    project_secure_direct_messages_async(
+                    project_secure_direct_messages_async_for_peer(
                         self.client,
                         &mut raw,
                         &mut self.directory_transport,
+                        &peer.resolved_did,
                     )
-                    .await
+                    .await?
                 };
-                retain_direct_messages_for_expected_peer(
+                let rejected_entire_page = retain_direct_messages_for_expected_peer(
                     self.client,
                     &mut raw,
                     &peer.resolved_did,
                     &mut p5_provenance,
                 );
+                reject_stalled_scoped_direct_page(&raw, rejected_entire_page)?;
                 annotate_direct_peer_scopes_async(
                     self.client,
                     &mut raw,
@@ -2210,7 +2213,27 @@ pub(crate) async fn project_secure_direct_messages_async(
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
 ) -> DirectP5ProjectionProvenance {
-    project_secure_direct_messages_async_impl(client, raw, directory_transport, true).await
+    project_secure_direct_messages_async_impl(client, raw, directory_transport, true, None).await
+}
+
+pub(crate) async fn project_secure_direct_messages_async_for_peer(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut impl AsyncRpcTransport,
+    expected_peer_did: &str,
+) -> crate::ImResult<DirectP5ProjectionProvenance> {
+    let provenance = project_secure_direct_messages_async_impl(
+        client,
+        raw,
+        directory_transport,
+        true,
+        Some(expected_peer_did),
+    )
+    .await;
+    if provenance.scoped_peer_mismatch {
+        return Err(scoped_direct_page_mismatch());
+    }
+    Ok(provenance)
 }
 
 async fn project_secure_direct_messages_async_impl(
@@ -2218,10 +2241,17 @@ async fn project_secure_direct_messages_async_impl(
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
     redact_attachment_secrets: bool,
+    expected_peer_did: Option<&str>,
 ) -> DirectP5ProjectionProvenance {
     #[cfg(not(feature = "sqlite"))]
     {
-        let _ = (client, raw, directory_transport, redact_attachment_secrets);
+        let _ = (
+            client,
+            raw,
+            directory_transport,
+            redact_attachment_secrets,
+            expected_peer_did,
+        );
         DirectP5ProjectionProvenance::default()
     }
     #[cfg(feature = "sqlite")]
@@ -2330,8 +2360,13 @@ async fn project_secure_direct_messages_async_impl(
                     }
                 };
                 let core = client.core_handle();
-                match crate::internal::secure_direct::v2_product::receive_for_client(
-                    &core, client, true, metadata, body,
+                match crate::internal::secure_direct::v2_product::receive_for_client_scoped(
+                    &core,
+                    client,
+                    true,
+                    metadata,
+                    body,
+                    expected_peer_did,
                 )
                 .await
                 {
@@ -2350,7 +2385,14 @@ async fn project_secure_direct_messages_async_impl(
                             p5_provenance.record(&logical_message_id, cache_binding);
                         }
                     }
-                    Err(_) => mark_private_root_control(&mut message_values[index]),
+                    Err(error) => {
+                        if crate::internal::secure_direct::v2_product::is_scoped_peer_mismatch(
+                            &error,
+                        ) {
+                            p5_provenance.scoped_peer_mismatch = true;
+                        }
+                        mark_private_root_control(&mut message_values[index]);
+                    }
                 }
                 continue;
             }
@@ -2515,7 +2557,7 @@ pub(crate) async fn project_secure_direct_messages_for_attachment_download_async
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
 ) {
-    project_secure_direct_messages_async_impl(client, raw, directory_transport, false).await;
+    project_secure_direct_messages_async_impl(client, raw, directory_transport, false, None).await;
 }
 
 async fn resolve_direct_sender_document_async(
@@ -2820,6 +2862,7 @@ pub(crate) struct DirectP5ProjectionProvenance {
     bindings: HashMap<P5ProjectionInstanceKey, Vec<P5CacheBinding>>,
     verified_scoped_routes: HashMap<P5ProjectionInstanceKey, P5VerifiedScopedRoute>,
     expected_peer_did: Option<String>,
+    scoped_peer_mismatch: bool,
 }
 
 impl DirectP5ProjectionProvenance {
@@ -3100,6 +3143,10 @@ fn apply_p5_v2_product_outcome(
                 object.insert(
                     "sender_device_id".to_owned(),
                     Value::String(projection.sender_device_id),
+                );
+                object.insert(
+                    "receiver_did".to_owned(),
+                    Value::String(projection.recipient_did),
                 );
                 object.insert("direction".to_owned(), Value::from(0));
             }
@@ -4473,12 +4520,13 @@ pub(crate) fn retain_direct_messages_for_expected_peer(
     raw: &mut Value,
     expected_peer_did: &str,
     p5_provenance: &mut DirectP5ProjectionProvenance,
-) {
+) -> bool {
     let expected_peer_did = expected_peer_did.trim();
     p5_provenance.expected_peer_did = Some(expected_peer_did.to_owned());
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
+        return false;
     };
+    let original_len = messages.len();
     messages.retain(|message| {
         let Some(object) = message.as_object() else {
             return false;
@@ -4491,6 +4539,23 @@ pub(crate) fn retain_direct_messages_for_expected_peer(
         direct_peer_did_for_message(client.did().as_str(), &sender_did, &receiver_did).trim()
             == expected_peer_did
     });
+    original_len > 0 && messages.is_empty()
+}
+
+pub(crate) fn reject_stalled_scoped_direct_page(
+    raw: &Value,
+    rejected_entire_page: bool,
+) -> crate::ImResult<()> {
+    if rejected_entire_page && raw.get("has_more").and_then(Value::as_bool) == Some(true) {
+        return Err(scoped_direct_page_mismatch());
+    }
+    Ok(())
+}
+
+fn scoped_direct_page_mismatch() -> crate::ImError {
+    crate::ImError::IdentityBindingConflict {
+        detail: "Direct page does not match the requested peer scope".to_owned(),
+    }
 }
 
 fn message_metadata_from_object(

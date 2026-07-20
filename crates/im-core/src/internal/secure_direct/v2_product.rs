@@ -2141,6 +2141,7 @@ pub(crate) struct V2InboundBusinessProjection {
     pub(crate) conversation_id: Option<String>,
     pub(crate) sender_did: String,
     pub(crate) sender_device_id: String,
+    pub(crate) recipient_did: String,
     pub(crate) wire_message_id: String,
     pub(crate) body: V2InboundBusinessBody,
     pub(crate) session_reply_pending: bool,
@@ -2191,6 +2192,17 @@ pub(crate) async fn receive_for_client(
     metadata: V2DirectMetadata,
     body: V2DirectBody,
 ) -> crate::ImResult<V2InboundProductOutcome> {
+    receive_for_client_scoped(core, client, enabled, metadata, body, None).await
+}
+
+pub(crate) async fn receive_for_client_scoped(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    enabled: bool,
+    metadata: V2DirectMetadata,
+    body: V2DirectBody,
+    expected_peer_did: Option<&str>,
+) -> crate::ImResult<V2InboundProductOutcome> {
     if !enabled {
         return Err(crate::ImError::unsupported(
             "awiki-multi-device-direct-disabled",
@@ -2198,7 +2210,7 @@ pub(crate) async fn receive_for_client(
     }
     let context = V2DirectProductContext::from_client(core, client)?;
     let mut host = CoreV2DirectProductHost { core, client };
-    receive_with_host(&context, &mut host, metadata, body).await
+    receive_with_host_scoped(&context, &mut host, metadata, body, expected_peer_did).await
 }
 
 pub(crate) async fn receive_with_host<H>(
@@ -2210,6 +2222,22 @@ pub(crate) async fn receive_with_host<H>(
 where
     H: V2DirectProductHost,
 {
+    receive_with_host_scoped(context, host, metadata, body, None).await
+}
+
+pub(crate) async fn receive_with_host_scoped<H>(
+    context: &V2DirectProductContext,
+    host: &mut H,
+    metadata: V2DirectMetadata,
+    body: V2DirectBody,
+    expected_peer_did: Option<&str>,
+) -> crate::ImResult<V2InboundProductOutcome>
+where
+    H: V2DirectProductHost,
+{
+    let expected_peer_did = expected_peer_did
+        .map(|value| required("expected_peer_did", value))
+        .transpose()?;
     metadata
         .validate()
         .map_err(|_| crate::ImError::PermissionDenied)?;
@@ -2257,7 +2285,9 @@ where
                     &context.local_static_private,
                     &sender_static,
                     &now,
-                    |plaintext, _| validate_inbound_plaintext(plaintext, &metadata),
+                    |plaintext, _| {
+                        validate_inbound_plaintext(plaintext, &metadata, expected_peer_did)
+                    },
                 )
             })?;
             let session_id = match &decrypted {
@@ -2328,7 +2358,9 @@ where
                     &metadata,
                     &cipher,
                     &now,
-                    |plaintext, _| validate_inbound_plaintext(plaintext, &metadata),
+                    |plaintext, _| {
+                        validate_inbound_plaintext(plaintext, &metadata, expected_peer_did)
+                    },
                 )
             })?;
             let session_id = match &decrypted {
@@ -2485,6 +2517,7 @@ where
 fn validate_inbound_plaintext(
     plaintext: &V2ApplicationPlaintext,
     metadata: &V2DirectMetadata,
+    expected_peer_did: Option<&str>,
 ) -> crate::ImResult<ValidatedInboundPlaintext> {
     plaintext
         .validate()
@@ -2493,14 +2526,18 @@ fn validate_inbound_plaintext(
         if payload.get("system_type").is_some() {
             return match payload.get("system_type").and_then(Value::as_str) {
                 Some(DEVICE_SYNC_SYSTEM_TYPE) => {
-                    validate_own_sync_plaintext(plaintext, payload, metadata)
+                    validate_own_sync_plaintext(plaintext, payload, metadata, expected_peer_did)
                 }
                 // Every other top-level system_type, including malformed and
                 // future AWiki controls, is hidden from the ordinary UI path.
-                _ => Ok(ValidatedInboundPlaintext::SuppressedControl),
+                _ => {
+                    validate_business_peer_scope(metadata, expected_peer_did)?;
+                    Ok(ValidatedInboundPlaintext::SuppressedControl)
+                }
             };
         }
     }
+    validate_business_peer_scope(metadata, expected_peer_did)?;
     let logical_message_id = plaintext
         .logical_message_id
         .clone()
@@ -2512,6 +2549,7 @@ fn validate_inbound_plaintext(
             conversation_id: plaintext.conversation_id.clone(),
             sender_did: metadata.sender_did.clone(),
             sender_device_id: metadata.sender_device_id.clone(),
+            recipient_did: metadata.target.did.clone(),
             wire_message_id: metadata.message_id.clone(),
             body: ordinary_business_body(plaintext)?,
             session_reply_pending: false,
@@ -2523,6 +2561,7 @@ fn validate_own_sync_plaintext(
     outer: &V2ApplicationPlaintext,
     payload: &Value,
     metadata: &V2DirectMetadata,
+    expected_peer_did: Option<&str>,
 ) -> crate::ImResult<ValidatedInboundPlaintext> {
     if outer.application_content_type != "application/json"
         || metadata.sender_did != metadata.target.did
@@ -2538,6 +2577,9 @@ fn validate_own_sync_plaintext(
         || required("target_did", &sync.target_did).is_err()
     {
         return Err(crate::ImError::PermissionDenied);
+    }
+    if expected_peer_did.is_some_and(|expected| expected != sync.target_did) {
+        return Err(scoped_peer_mismatch());
     }
     sync.message
         .validate()
@@ -2573,6 +2615,33 @@ fn validate_own_sync_plaintext(
             session_reply_pending: false,
         },
     ))
+}
+
+fn validate_business_peer_scope(
+    metadata: &V2DirectMetadata,
+    expected_peer_did: Option<&str>,
+) -> crate::ImResult<()> {
+    if expected_peer_did.is_some_and(|expected| expected != metadata.sender_did) {
+        return Err(scoped_peer_mismatch());
+    }
+    Ok(())
+}
+
+const SCOPED_PEER_MISMATCH_DETAIL: &str =
+    "authenticated P5 peer does not match the requested Direct scope";
+
+fn scoped_peer_mismatch() -> crate::ImError {
+    crate::ImError::IdentityBindingConflict {
+        detail: SCOPED_PEER_MISMATCH_DETAIL.to_owned(),
+    }
+}
+
+pub(crate) fn is_scoped_peer_mismatch(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::IdentityBindingConflict { detail }
+            if detail == SCOPED_PEER_MISMATCH_DETAIL
+    )
 }
 
 fn ordinary_business_body(
@@ -2736,4 +2805,4 @@ fn required<'a>(field: &str, value: &'a str) -> crate::ImResult<&'a str> {
 
 #[cfg(test)]
 #[path = "v2_product_tests.rs"]
-mod v2_product_tests;
+pub(crate) mod v2_product_tests;

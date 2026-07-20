@@ -3073,6 +3073,7 @@ async fn p5_backlog_retries_by_authenticated_wire_and_converges_after_handle_res
                 conversation_id: None,
                 sender_did: "did:example:bob-new".to_owned(),
                 sender_device_id: "device-bob".to_owned(),
+                recipient_did: fixture.did.clone(),
                 wire_message_id: "wire-p5-backlog".to_owned(),
                 body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
                     text: "backlog plaintext".to_owned(),
@@ -3349,6 +3350,7 @@ async fn verified_scoped_thread_p5_projection_persists_wire_route_and_replays() 
                 conversation_id: None,
                 sender_did: "did:example:bob-new".to_owned(),
                 sender_device_id: "device-bob".to_owned(),
+                recipient_did: fixture.did.clone(),
                 wire_message_id: "wire-p5-scoped-thread".to_owned(),
                 body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
                     text: "scoped thread plaintext".to_owned(),
@@ -3552,6 +3554,7 @@ fn self_reported_scoped_thread_without_verified_route_cannot_mint_p5_cache() {
                 conversation_id: None,
                 sender_did: "did:example:bob-new".to_owned(),
                 sender_device_id: "device-bob".to_owned(),
+                recipient_did: "did:example:alice".to_owned(),
                 wire_message_id: "wire-p5-unverified-thread".to_owned(),
                 body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
                     text: "unverified scoped plaintext".to_owned(),
@@ -3586,6 +3589,179 @@ fn self_reported_scoped_thread_without_verified_route_cannot_mint_p5_cache() {
     assert_eq!(records.len(), 1);
     assert!(p5_cache_binding_from_record(&records[0]).is_none());
     assert!(!p5_cache_record_has_direct_route(&records[0]));
+}
+
+#[test]
+fn authenticated_p5_business_receiver_overrides_service_projection() {
+    let mut message = ordinary_p5_cache_message(
+        "wire-p5-authenticated-receiver",
+        "did:example:bob-new",
+        "device-bob",
+        "did:example:alice",
+        "device-alice",
+    );
+    message["receiver_did"] = json!("did:example:service-forged");
+
+    apply_p5_v2_product_outcome(
+        &mut message,
+        crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Business(
+            crate::internal::secure_direct::v2_product::V2InboundBusinessProjection {
+                logical_message_id: "msg-p5-authenticated-receiver".to_owned(),
+                conversation_id: None,
+                sender_did: "did:example:bob-new".to_owned(),
+                sender_device_id: "device-bob".to_owned(),
+                recipient_did: "did:example:alice".to_owned(),
+                wire_message_id: "wire-p5-authenticated-receiver".to_owned(),
+                body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
+                    text: "authenticated endpoints".to_owned(),
+                    markdown: false,
+                },
+                session_reply_pending: false,
+            },
+        ),
+    );
+
+    assert_eq!(message["sender_did"], "did:example:bob-new");
+    assert_eq!(message["receiver_did"], "did:example:alice");
+}
+
+#[tokio::test]
+async fn fresh_scoped_p5_rejection_then_correct_receive_projects_and_persists() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let (mut wire, outcome) = crate::internal::secure_direct::v2_product::v2_product_tests::fresh_scoped_business_receive_for_projection_test().await;
+    let binding = p5_cache_binding_from_message(&wire).unwrap().unwrap();
+    apply_p5_v2_product_outcome(&mut wire, outcome);
+    assert_eq!(wire["receiver_did"], "did:example:alice");
+
+    let mut raw = json!({"messages": [wire], "has_more": false});
+    let mut provenance = DirectP5ProjectionProvenance::default();
+    provenance.record("logical-scoped-business", binding);
+    assert!(!retain_direct_messages_for_expected_peer(
+        &client,
+        &mut raw,
+        "did:example:mallory",
+        &mut provenance,
+    ));
+    annotate_direct_peer_scopes_async(
+        &client,
+        &mut raw,
+        &mut StaticHandleDirectoryTransport,
+        None,
+        Some("did:example:mallory"),
+        Some(&mut provenance),
+    )
+    .await;
+    let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-bob",
+        "bob.anpclaw.com",
+    )
+    .unwrap();
+    let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert!(matches!(
+        &page.items[0].body,
+        crate::messages::MessageBodyView::Text { text, .. } if text == "scoped business"
+    ));
+    assert_eq!(
+        persist_projection_async(&client, &page.items, &provenance)
+            .await
+            .unwrap(),
+        1
+    );
+    let records = client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .list_direct_messages(
+            "alice-id",
+            vec![
+                crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                    &scope,
+                ),
+            ],
+            20,
+        )
+        .await
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].msg_id, "logical-scoped-business");
+    assert_eq!(records[0].content, "scoped business");
+}
+
+#[tokio::test]
+async fn scoped_history_and_sync_fail_closed_on_nonadvancing_wrong_peer_page() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let response = json!({
+        "messages": [{
+            "id": "wrong-peer-page",
+            "sender_did": "did:example:mallory",
+            "receiver_did": "did:example:alice",
+            "content": "wrong peer",
+            "content_type": "text/plain",
+            "server_seq": 7
+        }],
+        "has_more": true
+    });
+    let input = HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob".to_owned()),
+        peer_scope: None,
+    };
+    let history_error = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: response.clone(),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(input)
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        history_error,
+        crate::ImError::IdentityBindingConflict { .. }
+    ));
+
+    let sync_error = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response,
+        },
+        NoopDirectoryTransport,
+    )
+    .sync_thread_after_async(
+        crate::internal::message_runtime::sync::SyncThreadAfterInput {
+            request: crate::messages::SyncThreadAfterRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                after_server_seq: Some("0".to_owned()),
+                limit: Some(20),
+            },
+            resolved_peer_did: Some("did:example:bob".to_owned()),
+            peer_scope: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        sync_error,
+        crate::ImError::IdentityBindingConflict { .. }
+    ));
 }
 
 #[tokio::test]
@@ -4563,6 +4739,7 @@ fn p5_cache_metadata_requires_authenticated_outcome_and_persists_same_wire_id() 
                 conversation_id: None,
                 sender_did: "did:example:bob-new".to_owned(),
                 sender_device_id: "device-bob".to_owned(),
+                recipient_did: "did:example:alice".to_owned(),
                 wire_message_id: message_id.to_owned(),
                 body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
                     text: "same id plaintext".to_owned(),

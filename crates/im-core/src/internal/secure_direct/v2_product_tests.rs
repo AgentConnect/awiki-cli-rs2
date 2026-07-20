@@ -502,6 +502,206 @@ async fn one_send_fans_out_exact_init_to_every_peer_and_sibling_device() {
     assert_eq!(distinct_business_intents, 1);
 }
 
+pub(crate) async fn fresh_scoped_business_receive_for_projection_test(
+) -> (Value, V2InboundProductOutcome) {
+    let root = tempfile::tempdir().unwrap();
+    let alice_did = "did:example:alice";
+    let bob_did = "did:example:bob";
+    let mallory_did = "did:example:mallory";
+    let alice = DeviceSpec {
+        id: "alice-scoped",
+        signing_seed: 81,
+        static_seed: 82,
+        signed_prekey_seed: 83,
+        one_time_prekey_seed: 84,
+    };
+    let mallory = DeviceSpec {
+        id: "mallory-scoped",
+        signing_seed: 85,
+        static_seed: 86,
+        signed_prekey_seed: 87,
+        one_time_prekey_seed: 88,
+    };
+    let alice_document = did_document(alice_did, &[alice]);
+    let mallory_document = did_document(mallory_did, &[mallory]);
+    let sender = context(
+        root.path(),
+        "identity-mallory-scoped",
+        mallory_did,
+        mallory,
+        89,
+    );
+    let recipient = context(root.path(), "identity-alice-scoped", alice_did, alice, 90);
+    install_bundle(&recipient, alice_did, alice);
+    let mut sender_host = FakeHost::default();
+    sender_host.add_document(alice_did, alice_document.clone());
+    sender_host.add_document(mallory_did, mallory_document.clone());
+    sender_host.add_bundle(alice_did, alice);
+    send_with_host(
+        &sender,
+        &mut sender_host,
+        text_input("logical-scoped-business", alice_did, "scoped business"),
+    )
+    .await
+    .unwrap();
+    let prepared = sender_host.post_attempts.pop().unwrap();
+    let mut recipient_host = FakeHost::default();
+    recipient_host.add_document(alice_did, alice_document);
+    recipient_host.add_document(mallory_did, mallory_document);
+
+    let rejected = receive_with_host_scoped(
+        &recipient,
+        &mut recipient_host,
+        prepared.metadata.clone(),
+        prepared.body.clone(),
+        Some(bob_did),
+    )
+    .await
+    .unwrap_err();
+    assert!(is_scoped_peer_mismatch(&rejected));
+    assert!(recipient_host.post_attempts.is_empty());
+
+    let accepted = receive_with_host_scoped(
+        &recipient,
+        &mut recipient_host,
+        prepared.metadata.clone(),
+        prepared.body.clone(),
+        Some(mallory_did),
+    )
+    .await
+    .unwrap();
+    let V2InboundProductOutcome::Business(projection) = &accepted else {
+        panic!("expected business projection");
+    };
+    assert_eq!(projection.sender_did, mallory_did);
+    assert_eq!(projection.recipient_did, alice_did);
+    assert_eq!(recipient_host.post_attempts.len(), 1);
+
+    let replay = receive_with_host_scoped(
+        &recipient,
+        &mut recipient_host,
+        prepared.metadata.clone(),
+        prepared.body.clone(),
+        Some(mallory_did),
+    )
+    .await
+    .unwrap();
+    assert_eq!(replay, V2InboundProductOutcome::Replay);
+    let direct_request = prepared.direct_request().unwrap();
+    let wire = json!({
+        "id": prepared.metadata.message_id,
+        "sender_did": prepared.metadata.sender_did,
+        "receiver_did": "did:example:service-forged",
+        "content_type": prepared.metadata.content_type,
+        "server_seq": 9,
+        "meta": direct_request["params"]["meta"].clone(),
+        "body": direct_request["params"]["body"].clone(),
+    });
+    (wire, accepted)
+}
+
+#[tokio::test]
+async fn scoped_business_receive_rejects_wrong_peer_before_replay_commit() {
+    let (wire, outcome) = fresh_scoped_business_receive_for_projection_test().await;
+    assert_eq!(wire["receiver_did"], "did:example:service-forged");
+    assert!(matches!(outcome, V2InboundProductOutcome::Business(_)));
+}
+
+#[tokio::test]
+async fn scoped_own_sync_receive_binds_decrypted_target_before_replay_commit() {
+    let root = tempfile::tempdir().unwrap();
+    let alice_did = "did:example:alice";
+    let bob_did = "did:example:bob";
+    let mallory_did = "did:example:mallory";
+    let alice_sender = DeviceSpec {
+        id: "alice-own-sync-sender",
+        signing_seed: 91,
+        static_seed: 92,
+        signed_prekey_seed: 93,
+        one_time_prekey_seed: 94,
+    };
+    let alice_recipient = DeviceSpec {
+        id: "alice-own-sync-recipient",
+        signing_seed: 95,
+        static_seed: 96,
+        signed_prekey_seed: 97,
+        one_time_prekey_seed: 98,
+    };
+    let mallory = DeviceSpec {
+        id: "mallory-own-sync",
+        signing_seed: 99,
+        static_seed: 100,
+        signed_prekey_seed: 101,
+        one_time_prekey_seed: 102,
+    };
+    let alice_document = did_document(alice_did, &[alice_sender, alice_recipient]);
+    let mallory_document = did_document(mallory_did, &[mallory]);
+    let sender = context(
+        root.path(),
+        "identity-alice-own-sync-sender",
+        alice_did,
+        alice_sender,
+        103,
+    );
+    let recipient = context(
+        root.path(),
+        "identity-alice-own-sync-recipient",
+        alice_did,
+        alice_recipient,
+        104,
+    );
+    install_bundle(&recipient, alice_did, alice_recipient);
+    let mut sender_host = FakeHost::default();
+    sender_host.add_document(alice_did, alice_document.clone());
+    sender_host.add_document(mallory_did, mallory_document.clone());
+    sender_host.add_bundle(alice_did, alice_recipient);
+    sender_host.add_bundle(mallory_did, mallory);
+    send_with_host(
+        &sender,
+        &mut sender_host,
+        text_input("logical-scoped-own-sync", mallory_did, "scoped own sync"),
+    )
+    .await
+    .unwrap();
+    let prepared = sender_host
+        .post_attempts
+        .iter()
+        .find(|prepared| {
+            prepared.metadata.target.did == alice_did
+                && prepared.metadata.recipient_device_id == alice_recipient.id
+        })
+        .unwrap()
+        .clone();
+    let mut recipient_host = FakeHost::default();
+    recipient_host.add_document(alice_did, alice_document);
+    recipient_host.add_document(mallory_did, mallory_document);
+
+    let rejected = receive_with_host_scoped(
+        &recipient,
+        &mut recipient_host,
+        prepared.metadata.clone(),
+        prepared.body.clone(),
+        Some(bob_did),
+    )
+    .await
+    .unwrap_err();
+    assert!(is_scoped_peer_mismatch(&rejected));
+
+    let accepted = receive_with_host_scoped(
+        &recipient,
+        &mut recipient_host,
+        prepared.metadata,
+        prepared.body,
+        Some(mallory_did),
+    )
+    .await
+    .unwrap();
+    let V2InboundProductOutcome::OwnSync(projection) = accepted else {
+        panic!("expected own-sync projection");
+    };
+    assert_eq!(projection.target_did, mallory_did);
+}
+
 #[tokio::test]
 async fn prekey_failure_keeps_wire_unprepared_and_retries_same_operation() {
     let root = tempfile::tempdir().unwrap();
@@ -889,7 +1089,7 @@ async fn established_pair_uses_cipher_after_reply_and_controls_never_project_as_
         payload_b64u: None,
     };
     assert!(matches!(
-        validate_inbound_plaintext(&unknown, &metadata).unwrap(),
+        validate_inbound_plaintext(&unknown, &metadata, None).unwrap(),
         ValidatedInboundPlaintext::SuppressedControl
     ));
     let malformed = V2ApplicationPlaintext {
@@ -897,7 +1097,7 @@ async fn established_pair_uses_cipher_after_reply_and_controls_never_project_as_
         ..unknown
     };
     assert!(matches!(
-        validate_inbound_plaintext(&malformed, &metadata).unwrap(),
+        validate_inbound_plaintext(&malformed, &metadata, None).unwrap(),
         ValidatedInboundPlaintext::SuppressedControl
     ));
     assert!(V2OrdinaryBody::Json {
