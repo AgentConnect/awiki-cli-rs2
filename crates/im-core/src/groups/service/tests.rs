@@ -365,6 +365,197 @@ fn public_group_lifecycle_gate_keeps_legacy_off_and_selects_v2_on() {
     assert!(super::use_group_e2ee_v2_lifecycle(&v2));
 }
 
+#[test]
+fn v2_member_mutation_keeps_p4_base_separate_without_changing_legacy() {
+    let request = crate::groups::GroupMemberMutationRequest {
+        group: crate::ids::GroupRef::parse("did:example:group").unwrap(),
+        member: crate::groups::GroupMemberRef::parse("did:example:bob", "").unwrap(),
+        role: None,
+        reason_text: None,
+        leave_request_id: None,
+        security: crate::groups::GroupSecurityRequirement::Required,
+    };
+
+    let v2 = super::p4_member_mutation_request(request.clone(), true);
+    assert_eq!(
+        v2.security,
+        crate::groups::GroupSecurityRequirement::Default
+    );
+    let legacy = super::p4_member_mutation_request(request, false);
+    assert_eq!(
+        legacy.security,
+        crate::groups::GroupSecurityRequirement::Required
+    );
+}
+
+#[test]
+fn v2_cold_cache_route_uses_authoritative_policy_even_for_default_call() {
+    let group = "did:example:group";
+    let owner = authoritative_group(group, "group-e2ee", "owner", "active");
+    assert_eq!(
+        super::v2_member_mutation_route(group, &owner, false).unwrap(),
+        super::V2MemberMutationRoute::OwnerP6,
+        "an E2EE group must not become P4-only merely because the caller used the default hint"
+    );
+
+    let transport = authoritative_group(group, "transport-protected", "admin", "active");
+    assert_eq!(
+        super::v2_member_mutation_route(group, &transport, false).unwrap(),
+        super::V2MemberMutationRoute::BaseOnly
+    );
+    assert!(super::v2_member_mutation_route(group, &transport, true).is_err());
+
+    let unknown = crate::groups::GroupReadResult::from_raw_response(
+        json!({
+            "group": {
+                "group_did": group,
+                "my_role": "owner",
+                "membership_status": "active"
+            }
+        }),
+        Vec::new(),
+    );
+    assert!(matches!(
+        super::v2_member_mutation_route(group, &unknown, false),
+        Err(crate::ImError::LocalStateUnavailable { .. })
+    ));
+
+    let conflicting = crate::groups::GroupReadResult::from_raw_response(
+        json!({
+            "group": {
+                "group_did": group,
+                "my_role": "owner",
+                "membership_status": "active",
+                "required_security_profile": "group-e2ee",
+                "group_policy": {
+                    "message_security_profile": "transport-protected"
+                }
+            }
+        }),
+        Vec::new(),
+    );
+    assert!(matches!(
+        super::v2_member_mutation_route(group, &conflicting, false),
+        Err(crate::ImError::LocalStateUnavailable { .. })
+    ));
+
+    let malformed = crate::groups::GroupReadResult::from_raw_response(
+        json!({
+            "group": {
+                "group_did": group,
+                "my_role": "owner",
+                "membership_status": "active",
+                "required_security_profile": 42,
+                "group_policy": {
+                    "message_security_profile": "transport-protected"
+                }
+            }
+        }),
+        Vec::new(),
+    );
+    assert!(matches!(
+        super::v2_member_mutation_route(group, &malformed, false),
+        Err(crate::ImError::LocalStateUnavailable { .. })
+    ));
+}
+
+#[test]
+fn v2_admin_is_not_misclassified_as_an_illegal_p4_actor_or_p6_owner() {
+    let group = "did:example:group";
+    let admin = authoritative_group(group, "group-e2ee", "admin", "active");
+    let error = super::v2_member_mutation_route(group, &admin, false)
+        .expect_err("without a durable owner job the combined operation must fail before P4");
+    assert!(matches!(
+        error,
+        crate::ImError::LocalStateUnavailable { .. }
+    ));
+}
+
+#[test]
+fn v2_leave_fails_before_p4_or_legacy_for_e2ee_group() {
+    let group = "did:example:group";
+    let member = authoritative_group(group, "group-e2ee", "member", "active");
+    assert!(matches!(
+        super::require_v2_leave_safe(group, &member, false),
+        Err(crate::ImError::LocalStateUnavailable { .. })
+    ));
+    assert!(matches!(
+        super::require_v2_leave_safe(group, &member, true),
+        Err(crate::ImError::LocalStateUnavailable { .. })
+    ));
+
+    let transport = authoritative_group(group, "transport-protected", "member", "active");
+    assert!(super::require_v2_leave_safe(group, &transport, false).is_ok());
+}
+
+#[test]
+fn v2_idempotent_membership_retries_match_only_structured_service_codes() {
+    let already = crate::ImError::Service {
+        status_code: Some(409),
+        code: Some("group.already_member".to_owned()),
+        message: "localized".to_owned(),
+        data: None,
+    };
+    let not_member = crate::ImError::Service {
+        status_code: Some(404),
+        code: Some("group.not_member".to_owned()),
+        message: "localized".to_owned(),
+        data: None,
+    };
+    assert!(super::group_error_is_already_member(&already));
+    assert!(super::group_error_is_not_member(&not_member));
+    assert!(!super::group_error_is_not_member(&already));
+    assert!(!super::group_error_is_already_member(
+        &crate::ImError::TransportUnavailable {
+            detail: "server said already member in an untrusted message".to_owned(),
+        }
+    ));
+}
+
+#[test]
+fn v2_authoritative_roster_matches_a_resolved_handle_by_did() {
+    let did = crate::ids::Did::parse("did:example:bob").unwrap();
+    let requested = crate::groups::GroupMemberResolution {
+        did: did.clone(),
+        handle: Some(crate::ids::Handle::parse("bob", "example.test").unwrap()),
+    };
+    let member = crate::groups::GroupMember {
+        membership_id: None,
+        peer_persona_id: None,
+        did: Some(did),
+        credential_did: None,
+        handle: None,
+        handle_binding_generation: None,
+        role: Some("member".to_owned()),
+        status: Some("active".to_owned()),
+        joined_at: None,
+        subject_type: Some("human".to_owned()),
+    };
+
+    assert!(super::active_member_matches_resolution(&member, &requested));
+}
+
+fn authoritative_group(
+    group_did: &str,
+    security_profile: &str,
+    role: &str,
+    status: &str,
+) -> crate::groups::GroupReadResult {
+    crate::groups::GroupReadResult::from_raw_response(
+        json!({
+            "group": {
+                "group_did": group_did,
+                "my_role": role,
+                "membership_status": status,
+                "group_policy": {
+                    "message_security_profile": security_profile
+                }
+            }
+        }),
+        Vec::new(),
+    )
+}
+
 fn test_did_bundle() -> anp::authentication::DidDocumentBundle {
     anp::authentication::create_did_wba_document(
         "example.test",

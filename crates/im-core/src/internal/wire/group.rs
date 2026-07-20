@@ -316,12 +316,31 @@ pub(crate) fn build_group_get_rpc_params(
     sender_did: &str,
     group_did: &str,
 ) -> crate::ImResult<Value> {
+    build_group_get_rpc_params_with_policy(sender_did, group_did, false)
+}
+
+pub(crate) fn build_group_get_with_policy_rpc_params(
+    sender_did: &str,
+    group_did: &str,
+) -> crate::ImResult<Value> {
+    build_group_get_rpc_params_with_policy(sender_did, group_did, true)
+}
+
+fn build_group_get_rpc_params_with_policy(
+    sender_did: &str,
+    group_did: &str,
+    include_policy: bool,
+) -> crate::ImResult<Value> {
     let group_did = require_group(group_did)?;
+    let mut body = json!({
+        "group_did": group_did,
+    });
+    if include_policy {
+        body["include_policy"] = Value::Bool(true);
+    }
     Ok(json!({
         "meta": group_local_meta(sender_did, Some(group_did)),
-        "body": {
-            "group_did": group_did,
-        },
+        "body": body,
     }))
 }
 
@@ -626,6 +645,21 @@ fn group_local_meta(sender_did: &str, group_did: Option<&str>) -> Value {
 #[cfg(test)]
 mod handle_identity_tests {
     use super::*;
+
+    #[test]
+    fn authoritative_group_get_explicitly_requests_policy_without_changing_legacy_get() {
+        let legacy = build_group_get_rpc_params("did:example:alice", "did:example:group").unwrap();
+        assert!(legacy["body"].get("include_policy").is_none());
+
+        let authoritative =
+            build_group_get_with_policy_rpc_params("did:example:alice", "did:example:group")
+                .unwrap();
+        assert_eq!(authoritative["body"]["include_policy"], true);
+        assert_eq!(
+            authoritative["meta"]["target"],
+            json!({"kind": "group", "did": "did:example:group"})
+        );
+    }
 
     #[test]
     fn p4_wire_preserves_explicit_handle_mode_without_internal_ids() {

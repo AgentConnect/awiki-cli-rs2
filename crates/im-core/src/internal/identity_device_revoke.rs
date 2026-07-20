@@ -255,12 +255,44 @@ where
         .as_ref()
         .ok_or(crate::ImError::PermissionDenied)?;
     converge_local_state(core, client, &pending, remote_result)?;
+    converge_revoked_group_leaves(client, &pending.target_device_id).await?;
     store.delete(&secret_ref)?;
     Ok(crate::identity::DeviceRevokeResult {
         did,
         target_device_id: crate::ids::ProtocolDeviceId::parse(&pending.target_device_id)?,
         status: crate::identity::DeviceRevokeStatus::Revoked,
     })
+}
+
+#[cfg(feature = "group-e2ee")]
+async fn converge_revoked_group_leaves(
+    client: &crate::core::ImClient,
+    target_device_id: &str,
+) -> crate::ImResult<()> {
+    if !client.core_inner().group_e2ee_v2_enabled() {
+        return Ok(());
+    }
+    let client = client.clone();
+    let target_device_id = target_device_id.to_owned();
+    crate::internal::runtime::worker::run_blocking(move || {
+        crate::internal::group_e2ee::v2_lifecycle::remove_revoked_device_from_owned_groups(
+            &client,
+            &target_device_id,
+        )
+    })
+    .await
+    .map_err(|error| crate::ImError::Internal {
+        message: format!("revoked-device P6 convergence worker failed: {error}"),
+    })??;
+    Ok(())
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+async fn converge_revoked_group_leaves(
+    _client: &crate::core::ImClient,
+    _target_device_id: &str,
+) -> crate::ImResult<()> {
+    Ok(())
 }
 
 fn prepare_initial_intent(

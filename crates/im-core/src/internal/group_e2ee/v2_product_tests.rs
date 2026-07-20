@@ -584,6 +584,163 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
 }
 
 #[test]
+fn sequential_device_membership_reloads_finalized_epoch_for_each_leaf() {
+    let directory = TestDirectory::new("im-core-p6-v2-membership-epochs");
+    let alice = make_did_fixture("alice-membership-epochs", &["alice-e1"]);
+    let bob = make_did_fixture("bob-membership-epochs", &["bob-e1", "bob-e2"]);
+    let controller = &alice.devices[0];
+    let bob_one = &bob.devices[0];
+    let bob_two = &bob.devices[1];
+    let transport = LoopbackTransport::default();
+    let mut controller_product = product(&directory, &alice, controller, transport.clone());
+    let bob_one_product = product(&directory, &bob, bob_one, transport.clone());
+    let bob_two_product = product(&directory, &bob, bob_two, transport.clone());
+
+    let controller_package = controller_product
+        .prepare_current_key_package(
+            key_service_meta(&alice.did, &controller.device_id, "op-epoch-kp-a1"),
+            key_package_input(&alice, controller, "kp-epoch-a1", "req-epoch-kp-a1"),
+            &alice.document,
+            &signing_key(controller),
+        )
+        .unwrap();
+    let bob_one_package = bob_one_product
+        .prepare_current_key_package(
+            key_service_meta(&bob.did, &bob_one.device_id, "op-epoch-kp-b1"),
+            key_package_input(&bob, bob_one, "kp-epoch-b1", "req-epoch-kp-b1"),
+            &bob.document,
+            &signing_key(bob_one),
+        )
+        .unwrap();
+    let bob_two_package = bob_two_product
+        .prepare_current_key_package(
+            key_service_meta(&bob.did, &bob_two.device_id, "op-epoch-kp-b2"),
+            key_package_input(&bob, bob_two, "kp-epoch-b2", "req-epoch-kp-b2"),
+            &bob.document,
+            &signing_key(bob_two),
+        )
+        .unwrap();
+    let create = controller_product
+        .prepare_create(V2CreateGroupInput {
+            meta: control_service_meta(&alice.did, &controller.device_id, "op-epoch-create"),
+            group_state_ref: state_ref(1),
+            creator_key_package: controller_package.body.group_key_package,
+            creator_did_document: alice.document.clone(),
+            now: NOW.to_owned(),
+            draft_extension_negotiated: true,
+            pending_commit_id: "pending-epoch-create".to_owned(),
+            request_id: "req-epoch-create".to_owned(),
+        })
+        .unwrap();
+    controller_product
+        .submit_create(&create, "req-epoch-create-finalize")
+        .unwrap();
+
+    let add_one = controller_product
+        .prepare_add(V2AddMemberInput {
+            meta: control_meta(&alice.did, &controller.device_id, "op-epoch-add-b1"),
+            group_state_ref: state_ref(2),
+            group_key_package: bob_one_package.body.group_key_package,
+            member_did_document: bob.document.clone(),
+            now: NOW.to_owned(),
+            draft_extension_negotiated: true,
+            pending_commit_id: "pending-epoch-add-b1".to_owned(),
+            request_id: "req-epoch-add-b1".to_owned(),
+        })
+        .unwrap();
+    assert_eq!(add_one.prepared.from_epoch, "0");
+    assert_eq!(add_one.prepared.body.epoch, "1");
+    controller_product
+        .submit_add(&add_one, "req-epoch-add-b1-finalize")
+        .unwrap();
+
+    let add_two = controller_product
+        .prepare_add(V2AddMemberInput {
+            meta: control_meta(&alice.did, &controller.device_id, "op-epoch-add-b2"),
+            // One P4 member-add state reference is stable across both device
+            // leaves; the local MLS epoch must nevertheless advance.
+            group_state_ref: state_ref(2),
+            group_key_package: bob_two_package.body.group_key_package,
+            member_did_document: bob.document.clone(),
+            now: NOW.to_owned(),
+            draft_extension_negotiated: true,
+            pending_commit_id: "pending-epoch-add-b2".to_owned(),
+            request_id: "req-epoch-add-b2".to_owned(),
+        })
+        .unwrap();
+    assert_eq!(add_two.prepared.from_epoch, "1");
+    assert_eq!(add_two.prepared.body.epoch, "2");
+    controller_product
+        .submit_add(&add_two, "req-epoch-add-b2-finalize")
+        .unwrap();
+
+    let remove_one = controller_product
+        .prepare_remove(V2RemoveMemberInput {
+            meta: control_meta(&alice.did, &controller.device_id, "op-epoch-remove-b1"),
+            group_state_ref: state_ref(3),
+            member_did: bob.did.clone(),
+            member_device_id: bob_one.device_id.clone(),
+            member_did_document: bob.document.clone(),
+            now: NOW.to_owned(),
+            draft_extension_negotiated: true,
+            pending_commit_id: "pending-epoch-remove-b1".to_owned(),
+            request_id: "req-epoch-remove-b1".to_owned(),
+        })
+        .unwrap();
+    assert_eq!(remove_one.prepared.from_epoch, "2");
+    assert_eq!(remove_one.prepared.body.epoch, "3");
+    controller_product
+        .submit_remove(&remove_one, "req-epoch-remove-b1-finalize")
+        .unwrap();
+
+    let remove_two = controller_product
+        .prepare_remove(V2RemoveMemberInput {
+            meta: control_meta(&alice.did, &controller.device_id, "op-epoch-remove-b2"),
+            group_state_ref: state_ref(3),
+            member_did: bob.did.clone(),
+            member_device_id: bob_two.device_id.clone(),
+            member_did_document: bob.document.clone(),
+            now: NOW.to_owned(),
+            draft_extension_negotiated: true,
+            pending_commit_id: "pending-epoch-remove-b2".to_owned(),
+            request_id: "req-epoch-remove-b2".to_owned(),
+        })
+        .unwrap();
+    assert_eq!(remove_two.prepared.from_epoch, "3");
+    assert_eq!(remove_two.prepared.body.epoch, "4");
+    controller_product
+        .submit_remove(&remove_two, "req-epoch-remove-b2-finalize")
+        .unwrap();
+
+    let membership_calls = transport
+        .calls()
+        .into_iter()
+        .filter(|call| matches!(call.method.as_str(), "group.e2ee.add" | "group.e2ee.remove"))
+        .collect::<Vec<_>>();
+    assert_eq!(membership_calls.len(), 4);
+    assert_eq!(
+        membership_calls[0].params["body"]["group_state_ref"]["group_state_version"],
+        "2"
+    );
+    assert_eq!(
+        membership_calls[1].params["body"]["group_state_ref"]["group_state_version"],
+        "2"
+    );
+    assert_eq!(
+        membership_calls[2].params["body"]["group_state_ref"]["group_state_version"],
+        "3"
+    );
+    assert_eq!(
+        membership_calls[3].params["body"]["group_state_ref"]["group_state_version"],
+        "3"
+    );
+    assert_eq!(membership_calls[0].params["body"]["epoch"], "1");
+    assert_eq!(membership_calls[1].params["body"]["epoch"], "2");
+    assert_eq!(membership_calls[2].params["body"]["epoch"], "3");
+    assert_eq!(membership_calls[3].params["body"]["epoch"], "4");
+}
+
+#[test]
 fn uncertain_submit_survives_restart_and_requires_host_recheck() {
     let directory = TestDirectory::new("im-core-p6-v2-reconcile");
     let fixture = make_did_fixture("alice-reconcile", &["alice-r1"]);

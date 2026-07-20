@@ -6,9 +6,10 @@
 
 use anp::group_e2ee::operations::v2::{
     V2AddMemberInput, V2DecryptInput, V2DecryptOutput, V2EncryptInput, V2FinalizeInput,
-    V2FinalizeOutput, V2GenerateKeyPackageInput, V2PreparedAdd, V2PreparedCreate, V2PreparedRemove,
-    V2ProcessNoticeInput, V2ProcessNoticeOutput, V2ReconcilePendingInput,
-    V2ReconciledPendingCommit, V2RemoveMemberInput,
+    V2FinalizeOutput, V2GenerateKeyPackageInput, V2InspectLocalGroupInput,
+    V2InspectLocalGroupOutput, V2ListLocalGroupMemberEndpointsOutput, V2PreparedAdd,
+    V2PreparedCreate, V2PreparedRemove, V2ProcessNoticeInput, V2ProcessNoticeOutput,
+    V2ReconcilePendingInput, V2ReconciledPendingCommit, V2RemoveMemberInput,
 };
 use anp::group_e2ee::{
     get_key_package_request_v2, group_add_request_v2, group_create_request_v2,
@@ -344,6 +345,22 @@ where
             return Err(host_typed_result_mismatch("KeyPackage lookup result"));
         }
         Ok(result)
+    }
+
+    pub(crate) fn list_local_group_member_endpoints(
+        &self,
+        input: V2InspectLocalGroupInput,
+    ) -> crate::ImResult<V2ListLocalGroupMemberEndpointsOutput> {
+        self.ensure_current_device(&input.owner_did, &input.owner_device_id)?;
+        self.runtime.list_local_group_member_endpoints(input)
+    }
+
+    pub(crate) fn inspect_local_group(
+        &self,
+        input: V2InspectLocalGroupInput,
+    ) -> crate::ImResult<V2InspectLocalGroupOutput> {
+        self.ensure_current_device(&input.owner_did, &input.owner_device_id)?;
+        self.runtime.inspect_local_group(input)
     }
 
     pub(crate) fn prepare_create(

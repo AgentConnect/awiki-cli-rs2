@@ -129,6 +129,9 @@ impl GroupE2eeV2StatusRuntime {
             group,
             state: status.state,
             repaired,
+            added_devices: 0,
+            removed_devices: 0,
+            remaining_devices: 0,
             problem: status.problem,
             warnings,
         })

@@ -42,6 +42,18 @@ where
         self.group_rpc("group.get", params)
     }
 
+    pub(crate) fn get_with_policy(
+        mut self,
+        group: crate::ids::GroupRef,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session()?;
+        let params = crate::internal::wire::group::build_group_get_with_policy_rpc_params(
+            self.client.did().as_str(),
+            group.as_str(),
+        )?;
+        self.group_rpc("group.get", params)
+    }
+
     pub(crate) fn list(
         mut self,
         request: crate::groups::GroupListRequest,
@@ -122,6 +134,18 @@ where
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session_async().await?;
         let params = crate::internal::wire::group::build_group_get_rpc_params(
+            self.client.did().as_str(),
+            group.as_str(),
+        )?;
+        self.group_rpc_async("group.get", params).await
+    }
+
+    pub(crate) async fn get_with_policy_async(
+        mut self,
+        group: crate::ids::GroupRef,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session_async().await?;
+        let params = crate::internal::wire::group::build_group_get_with_policy_rpc_params(
             self.client.did().as_str(),
             group.as_str(),
         )?;

@@ -238,25 +238,13 @@ fn collect_member_dids(
     Ok(dids)
 }
 
-fn resolve_did_document(
+pub(super) fn resolve_did_document(
     client: &crate::core::ImClient,
     transport: &mut impl RpcTransport,
     did: &str,
 ) -> crate::ImResult<Value> {
-    if did == client.did().as_str() {
-        return client.runtime().key_provider.did_document();
-    }
-    let call = crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(did)?;
-    match transport
-        .rpc(call.endpoint, call.method, call.params)
-        .and_then(|raw| {
-            crate::internal::secure_direct::send::did_document_from_resolve(raw).ok_or_else(|| {
-                crate::ImError::PeerNotFound {
-                    peer: did.to_owned(),
-                }
-            })
-        }) {
-        Ok(document) => validate_document_id(did, document),
+    match resolve_did_document_fresh(client, transport, did) {
+        Ok(document) => Ok(document),
         Err(error) => match crate::internal::identity_document_cache::load_local_did_document(
             &client.core_inner().sdk_paths().identities,
             did,
@@ -267,7 +255,29 @@ fn resolve_did_document(
     }
 }
 
-async fn resolve_did_document_async(
+/// Resolves the current DID Document without consulting the local document
+/// cache. P6 authorization and Add eligibility must be based on the currently
+/// published P2 Manifest, including when the requested DID is our own.
+pub(super) fn resolve_did_document_fresh(
+    client: &crate::core::ImClient,
+    transport: &mut impl RpcTransport,
+    did: &str,
+) -> crate::ImResult<Value> {
+    let _ = client;
+    let call = crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(did)?;
+    let document = transport
+        .rpc(call.endpoint, call.method, call.params)
+        .and_then(|raw| {
+            crate::internal::secure_direct::send::did_document_from_resolve(raw).ok_or_else(|| {
+                crate::ImError::PeerNotFound {
+                    peer: did.to_owned(),
+                }
+            })
+        })?;
+    validate_document_id(did, document)
+}
+
+pub(super) async fn resolve_did_document_async(
     client: &crate::core::ImClient,
     transport: &mut impl AsyncRpcTransport,
     did: &str,
@@ -338,7 +348,27 @@ fn notice_body_value(value: &Value) -> Option<&Value> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
+
+    struct FailingResolveTransport {
+        calls: Cell<usize>,
+    }
+
+    impl crate::internal::transport::RpcTransport for FailingResolveTransport {
+        fn rpc(
+            &mut self,
+            _endpoint: &str,
+            _method: &str,
+            _params: Value,
+        ) -> crate::ImResult<Value> {
+            self.calls.set(self.calls.get() + 1);
+            Err(crate::ImError::PeerNotFound {
+                peer: "did:example:bob".to_owned(),
+            })
+        }
+    }
 
     #[test]
     fn notice_classification_is_method_profile_and_transport_scoped() {
@@ -422,6 +452,107 @@ mod tests {
             &json!({"group_did": "did:example:group", "members": [{}]})
         )
         .is_err());
+    }
+
+    #[test]
+    fn fresh_resolution_never_falls_back_to_a_cached_did_document() {
+        let (client, root) = resolver_test_client();
+        let target_did = "did:example:bob";
+        let identity_paths = &client.core_inner().sdk_paths().identities;
+        let target_dir = identity_paths.identity_root_dir.join("bob-cache");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::write(
+            &identity_paths.registry_path,
+            serde_json::to_vec(&json!({
+                "identities": [{
+                    "id": "bob-cache",
+                    "did": target_did,
+                    "local_alias": "bob-cache"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            target_dir.join("did.json"),
+            serde_json::to_vec(&json!({
+                "id": target_did,
+                "verificationMethod": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut cached_transport = FailingResolveTransport {
+            calls: Cell::new(0),
+        };
+        assert!(resolve_did_document(&client, &mut cached_transport, target_did).is_ok());
+        assert_eq!(cached_transport.calls.get(), 1);
+
+        let mut fresh_transport = FailingResolveTransport {
+            calls: Cell::new(0),
+        };
+        assert!(
+            resolve_did_document_fresh(&client, &mut fresh_transport, target_did).is_err(),
+            "P6 Add must not authorize a stale cached Manifest"
+        );
+        assert_eq!(fresh_transport.calls.get(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn resolver_test_client() -> (crate::core::ImClient, std::path::PathBuf) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "im-core-p6-fresh-resolve-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("identities")).unwrap();
+        let bundle = anp::authentication::create_did_wba_document(
+            "example.test",
+            anp::authentication::DidDocumentOptions {
+                path_segments: vec!["alice".to_owned()],
+                domain: Some("example.test".to_owned()),
+                challenge: Some("p6-fresh-resolve-test".to_owned()),
+                ..anp::authentication::DidDocumentOptions::default()
+            },
+        )
+        .unwrap();
+        let did = crate::ids::Did::parse(bundle.did().unwrap()).unwrap();
+        let client = crate::core::ImCore::new_with_options(
+            crate::ImCoreConfig {
+                service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
+                did_domain: "example.test".to_owned(),
+                user_service_endpoint: None,
+                message_service_endpoint: None,
+                mail_service_endpoint: None,
+                anp_service_endpoint: None,
+                anp_service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+                ca_bundle: None,
+                transport_policy: crate::MessageTransportPolicy::HttpOnly,
+            },
+            crate::ImCorePaths {
+                identities: crate::paths::IdentityRegistryPaths {
+                    identity_root_dir: root.join("identities"),
+                    registry_path: root.join("identities").join("registry.json"),
+                    default_identity_path: Some(root.join("identities").join("default")),
+                },
+                local_state: crate::paths::LocalStatePaths {
+                    sqlite_path: root.join("local").join("im.sqlite"),
+                },
+                runtime: crate::paths::RuntimePaths {
+                    cache_dir: root.join("cache"),
+                    temp_dir: root.join("tmp"),
+                },
+            },
+            crate::ImCoreOpenOptions::default(),
+        )
+        .unwrap()
+        .client(crate::identity::IdentitySelector::Did(did))
+        .unwrap();
+        (client, root)
     }
 
     fn test_notice() -> V2E2eeNotice {

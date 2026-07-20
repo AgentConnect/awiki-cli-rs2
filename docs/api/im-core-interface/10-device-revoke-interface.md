@@ -58,11 +58,17 @@ hash、proof、generation 或任何密钥参数。
     -> 调用同域 device_revoke RPC（root proof + current-admin proof + CAS）
     -> 严格验证 target/status/auth_generation/checkpoint
     -> 服务端成功后才更新本地 DID Document 和内部 checkpoint
+    -> 若 P6 v2 已启用，枚举当前 DID 的 active-owner 群并对目标
+       (DID, device_id) Leaf 执行精确 Remove/Commit
     -> 删除 pending record
 ```
 
 服务端事务负责 DID Document、Device Registry、目标 `auth_generation + 1`、token/session
-失效及内部 outbox。Message/Mailbox/PreKey/MLS 的后续收敛不改变 Identity 已生效的撤销结果。
+失效及内部 outbox。Message Service 会持久化每个相关群的 MLS removal pending；当前设备只
+立即处理自己作为 active P4 owner、且本机持有 active MLS controller Leaf 的群，并保留同
+DID sibling Leaf 和 P4 业务成员。当前设备尚未加入的历史群，以及其他 owner 的群，由持有
+对应本地 MLS 状态的 owner 设备执行 `group secure repair` 收敛。Message/Mailbox/PreKey/MLS
+的后续收敛不改变 Identity 已生效的撤销结果。
 
 ## 4. 崩溃恢复与幂等
 
@@ -73,6 +79,10 @@ root-signed Document，但重新生成短期 admin proof。客户端不会重新
 版本/hash/Registry CAS 冲突、目标已失效或最后 ready admin 冲突会删除过期 intent，要求
 重新拉取权威状态后再发起；普通传输失败保留 intent。服务器成功响应未被严格验证时，本地
 Document 和 checkpoint 不前移。
+
+Identity RPC 已成功但当前设备可执行的 P6 Remove 尚未完成时，pending record 同样保留；
+重复公开撤销调用不会重做 Identity 事务，只会继续 SDK WAL/精确 Leaf 收敛。P6 rollout 未
+启用时不运行该本地步骤，服务端 durable removal pending 仍保留。
 
 ## 5. 公开 DTO 与秘密隔离
 
@@ -104,6 +114,8 @@ Core、SDK、CLI 和 App focused tests 覆盖：
 - 版本冲突清理旧 intent，服务端错误数据脱敏；
 - 非法成功响应不推进本地状态；
 - wire/result/Debug 不泄漏 proof、Document 内容或私钥形态。
+- P6 撤销只选择 active-owner 群和精确 `(DID, device_id)` Leaf，保留 sibling，并可从 SDK
+  prepared WAL 重放；
 - CLI 默认关闭、拒绝脚本/`--dry-run`，且只输出安全撤销结果；
 - App 在显式破坏性确认后才请求一次系统 user-presence，拒绝时不调用 Core；
 - 撤销开关不隐式启用 Join，当前设备不显示撤销动作，成功后重新读取权威 Registry。
