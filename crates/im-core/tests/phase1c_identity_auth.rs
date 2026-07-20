@@ -1354,6 +1354,7 @@ async fn vnext_genesis_persists_admin_identity_and_rotating_tokens_in_vault() {
 
     let requests = server.join();
     assert_eq!(requests.len(), 2);
+    assert_no_legacy_registration_request(&requests);
     assert_eq!(
         requests[0].path,
         "/user-service/auth/account-verification/exchange"
@@ -1462,6 +1463,7 @@ async fn vnext_genesis_direct_only_retries_prekey_publish_without_replaying_gene
 
     let requests = server.join();
     assert_eq!(requests.len(), 4);
+    assert_no_legacy_registration_request(&requests);
     assert_eq!(
         requests[0].path,
         "/user-service/auth/account-verification/exchange"
@@ -1474,6 +1476,54 @@ async fn vnext_genesis_direct_only_retries_prekey_publish_without_replaying_gene
         requests[3].json_body()["params"],
         "PreKey retry must reuse the persisted bundle and operation"
     );
+}
+
+#[tokio::test]
+async fn vnext_genesis_existing_legacy_identity_conflict_fails_closed_without_legacy_fallback() {
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::json(json!({
+            "account_verification_token": "account-grant-secret",
+            "purpose": "awiki.device.genesis.v1",
+            "expires_at": future_rfc3339(300),
+        })),
+        ExpectedHttp::status(
+            409,
+            json!({"error": "DID or bootstrap device already exists"}),
+        ),
+    ]);
+    let fixture = Fixture::new();
+    let core = fixture
+        .core_async_with_base_url_vault_required_multi_device(server.base_url(), [59; 32])
+        .await;
+
+    let error = core
+        .identities()
+        .register_handle_async(vnext_phone_request("legacy-existing", Some("123456")))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ImError::Service {
+            status_code: Some(409),
+            ..
+        }
+    ));
+    assert!(core
+        .identities()
+        .list_async()
+        .await
+        .unwrap()
+        .iter()
+        .all(|identity| identity.local_alias.as_deref() != Some("legacy-existing")));
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].path,
+        "/user-service/auth/account-verification/exchange"
+    );
+    assert_eq!(requests[1].json_body()["method"], "device_genesis");
+    assert_no_legacy_registration_request(&requests);
 }
 
 #[tokio::test]
@@ -1957,6 +2007,12 @@ fn assert_prekey_publish_request(request: &CapturedHttp) {
     assert_eq!(meta.sender_did, body.prekey_bundle.owner_did);
     assert_eq!(meta.sender_device_id, body.prekey_bundle.owner_device_id);
     assert!(!body.one_time_prekeys.is_empty());
+}
+
+fn assert_no_legacy_registration_request(requests: &[CapturedHttp]) {
+    assert!(requests.iter().all(|request| {
+        request.path != "/user-service/did-auth/rpc" || request.json_body()["method"] != "register"
+    }));
 }
 
 fn server_device_token(
