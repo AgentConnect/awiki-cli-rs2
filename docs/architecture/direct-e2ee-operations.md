@@ -47,6 +47,12 @@ backup contents, or JWTs.
 
 Direct E2EE state is identity-scoped. Private session/prekey material and pending secure delivery state are owned by `im-core` internals and must not be printed, logged, or serialized into CLI output.
 
+Signed prekeys use a seven-day lifecycle and rotate one day before expiry. A
+bundle ID is stable for the lifetime of one signed-prekey version, and its proof
+timestamp is stable across repeated preparation. Publishing the same bundle and
+OPK set therefore produces the same request and operation ID; replenishing the
+OPK sidecar produces a new operation ID without redefining the bundle.
+
 The CLI business SQLite may store high-level message indexes, local plaintext views, delivery summaries and outbox summaries. It must not expose or log:
 
 - root keys, chain keys, skipped message keys.

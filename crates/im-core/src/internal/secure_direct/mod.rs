@@ -12,6 +12,7 @@ pub(crate) mod identity_material;
 pub(crate) mod incoming;
 #[cfg(feature = "sqlite")]
 pub(crate) mod outbox;
+pub(crate) mod prekey_lifecycle;
 pub(crate) mod prepare;
 pub(crate) mod secret_store;
 #[cfg(feature = "sqlite")]

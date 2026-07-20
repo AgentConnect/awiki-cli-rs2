@@ -16,8 +16,6 @@ use super::sqlite_store::{
 
 const DIRECT_E2EE_PROFILE: &str = "anp.direct.e2ee.v1";
 const DIRECT_E2EE_SECURITY_PROFILE: &str = "direct-e2ee";
-const DEFAULT_SIGNED_PREKEY_ID: &str = "spk-initial";
-const DEFAULT_SIGNED_PREKEY_EXPIRY: &str = "2030-01-01T00:00:00Z";
 const DEFAULT_ONE_TIME_PREKEY_BATCH_SIZE: usize = 16;
 
 pub(crate) type DirectSecureRpcResult = crate::ImResult<Map<String, Value>>;
@@ -133,14 +131,14 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
     fn build_fresh_prekey_bundle(&mut self) -> crate::ImResult<PrekeyBundle> {
         self.ensure_fresh_one_time_prekeys(DEFAULT_ONE_TIME_PREKEY_BATCH_SIZE)?;
         let signed_prekey = match self.signed_prekey_store()?.load_latest_signed_prekey()? {
-            Some((_private_key, metadata)) => metadata,
-            None => {
+            Some((_private_key, metadata))
+                if !super::prekey_lifecycle::signed_prekey_needs_rotation(&metadata) =>
+            {
+                metadata
+            }
+            Some(_) | None => {
                 let private_key = generated_x25519_private_key()?;
-                let metadata = signed_prekey_from_private_key(
-                    DEFAULT_SIGNED_PREKEY_ID,
-                    &private_key,
-                    DEFAULT_SIGNED_PREKEY_EXPIRY,
-                )?;
+                let metadata = super::prekey_lifecycle::create_signed_prekey(&private_key)?;
                 self.signed_prekey_store()?
                     .save_signed_prekey(&metadata.key_id, &private_key, &metadata)
                     .map_err(map_direct_error)?;
@@ -546,11 +544,14 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
         bundle: &PrekeyBundle,
     ) -> crate::ImResult<DirectSecurePrekeyPublishRequest> {
         let one_time_prekeys = self.one_time_prekey_store()?.list_one_time_prekeys()?;
+        let operation_id =
+            super::prekey_lifecycle::publish_operation_id(bundle, &one_time_prekeys)?;
         let request = anp::direct_e2ee::prekey_bundle_publish_request(
             &self.prepared.owner_did,
             &self.prepared.local_service_did,
             bundle,
             &one_time_prekeys,
+            &operation_id,
         );
         direct_secure_request_method_params(request)
     }
@@ -559,14 +560,16 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
         &self,
         signed_prekey: anp::direct_e2ee::SignedPrekey,
     ) -> crate::ImResult<PrekeyBundle> {
+        let bundle_id = super::prekey_lifecycle::bundle_id(&signed_prekey);
+        let proof_created = super::prekey_lifecycle::bundle_proof_created(&signed_prekey)?;
         anp::direct_e2ee::build_prekey_bundle(
-            &format!("spk-{}-{}", unix_seconds(), signed_prekey.key_id),
+            &bundle_id,
             &self.prepared.owner_did,
             &self.prepared.agreement_key_id,
             signed_prekey,
             &self.prepared.signing_private,
             &self.prepared.signing_key_id,
-            None,
+            Some(&proof_created),
         )
         .map_err(map_direct_error)
     }
@@ -883,11 +886,14 @@ mod tests {
         );
 
         let response = client.publish_prekey_bundle().unwrap();
+        let repeated_response = client.publish_prekey_bundle().unwrap();
 
         assert!(response.is_empty());
+        assert!(repeated_response.is_empty());
         let calls = calls.borrow();
-        assert_eq!(calls.len(), 1);
+        assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].0, "direct.e2ee.publish_prekey_bundle");
+        assert_eq!(calls[0], calls[1]);
         let body = calls[0].1.get("body").and_then(Value::as_object).unwrap();
         assert!(body.get("prekey_bundle").is_some());
         assert_eq!(
@@ -905,6 +911,14 @@ mod tests {
                 .len(),
             DEFAULT_ONE_TIME_PREKEY_BATCH_SIZE
         );
+        let signed_prekey_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM direct_e2ee_signed_prekeys WHERE owner_identity_id = 'alice-id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(signed_prekey_count, 1);
     }
 
     #[test]
