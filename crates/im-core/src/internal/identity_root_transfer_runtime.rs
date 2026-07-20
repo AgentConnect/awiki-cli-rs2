@@ -328,6 +328,12 @@ enum ValidatedRootControl {
     Ack,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalManagementReadyTransition {
+    Fresh,
+    AlreadyConverged,
+}
+
 pub(crate) async fn send_root_key(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
@@ -752,7 +758,9 @@ async fn send_imported_ack(
         mark_private_failure(core, scope, &prepared)?;
         return Err(error);
     }
-    if let Err(error) = complete_local_management_ready(core, client, &ready).await {
+    if let Err(error) =
+        complete_local_management_ready(core, client, ack.completion(), &ready).await
+    {
         mark_private_failure(core, scope, &prepared)?;
         return Err(error);
     }
@@ -787,6 +795,7 @@ fn validate_management_ready_response(
 async fn complete_local_management_ready(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
+    completion: &RootKeyImportedCompletion,
     ready: &RootManagementReadyResult,
 ) -> crate::ImResult<()> {
     let local_alias = client
@@ -794,22 +803,41 @@ async fn complete_local_management_ready(
         .local_alias
         .as_deref()
         .ok_or(crate::ImError::PermissionDenied)?;
-    let mut registry_remote = DeviceJoinAdminHttpAdapter::new(
-        crate::internal::transport::CoreHttpTransport::new_signature_only(client),
-    );
-    let registry = registry_remote.registry(client.did(), false).await?;
-    if registry.checkpoint.registry_version < ready.registry_version {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let local = registry_device(&registry.devices, &ready.device_id)?;
-    if local.status != crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
-        || local.role != crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
-        || !local.management_ready
-        || local.auth_generation != ready.auth_generation
+    let local_entry = local_device_entry(core, client)?;
+    let local_state = local_entry
+        .device_state
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let authorization = local_state
+        .authorization
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let persisted_import = local_entry
+        .root_key_import
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if persisted_import.message_id() != completion.ack_for_message_id
+        || persisted_import.completion != *completion
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let mut resolver = crate::internal::transport::CoreHttpTransport::new_signature_only(client);
+    let transition = validate_local_management_ready_transition(
+        client.did().as_str(),
+        authorization,
+        local_state.checkpoint.as_ref(),
+        completion,
+        ready,
+    )?;
+    if transition == LocalManagementReadyTransition::AlreadyConverged {
+        return Ok(());
+    }
+
+    // Root-import completion advances auth_generation before this process can
+    // persist its replacement token. Therefore neither the old bearer nor a
+    // signature-only Registry read is valid here. Resolve the public document,
+    // issue the generation-bound token, then use that uncommitted access token
+    // for the one Registry checkpoint read needed before local convergence.
+    let mut resolver = crate::internal::transport::CorePlainTransport::new(core);
     let did_document = crate::internal::discovery::did_document::resolve_did_document_async(
         &mut resolver,
         client.did().as_str(),
@@ -822,7 +850,8 @@ async fn complete_local_management_ready(
     )
     .map_err(|_| crate::ImError::PermissionDenied)?
     .ok_or(crate::ImError::PermissionDenied)?;
-    if manifest.signing_key_id != local.signing_key_id || manifest.e2ee_key_id != local.e2ee_key_id
+    if manifest.signing_key_id != authorization.signing_key_id
+        || manifest.e2ee_key_id != authorization.e2ee_key_id
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -839,7 +868,7 @@ async fn complete_local_management_ready(
             operation_id,
             &did_document,
             &ready.device_id,
-            &local.signing_key_id,
+            &authorization.signing_key_id,
             &signing_private,
             &crate::internal::identity_join_activation_pending::service_domain_from_did(
                 client.did(),
@@ -856,6 +885,29 @@ async fn complete_local_management_ready(
         ready.auth_generation,
         OffsetDateTime::now_utc(),
     )?;
+    let mut registry_remote = DeviceJoinAdminHttpAdapter::new(
+        crate::internal::transport::CoreHttpTransport::new_with_ephemeral_bearer(
+            client,
+            &token.access_token,
+        )?,
+    );
+    let registry = registry_remote.registry(client.did(), false).await?;
+    if registry.checkpoint.registry_version < ready.registry_version
+        || registry.checkpoint.document_hash
+            != crate::internal::identity_wire::device_genesis::document_hash(&did_document)?
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let local = registry_device(&registry.devices, &ready.device_id)?;
+    if local.status != crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
+        || local.role != crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
+        || !local.management_ready
+        || local.auth_generation != ready.auth_generation
+        || local.signing_key_id != authorization.signing_key_id
+        || local.e2ee_key_id != authorization.e2ee_key_id
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
     let secret_storage =
         crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
     crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
@@ -869,6 +921,46 @@ async fn complete_local_management_ready(
             &token.expires_at,
             &secret_storage,
         )
+}
+
+fn validate_local_management_ready_transition(
+    expected_did: &str,
+    authorization: &crate::internal::identity_device_state::DeviceAuthorizationProjection,
+    checkpoint: Option<&crate::internal::identity_device_state::IdentityInternalCheckpoint>,
+    completion: &RootKeyImportedCompletion,
+    ready: &RootManagementReadyResult,
+) -> crate::ImResult<LocalManagementReadyTransition> {
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationRole, DeviceAuthorizationStatus,
+    };
+    let checkpoint = checkpoint.ok_or(crate::ImError::PermissionDenied)?;
+    if completion.did != expected_did
+        || completion.importing_device_id != authorization.protocol_device_id.as_str()
+        || completion.importing_device_id != ready.device_id
+        || completion.ack_for_message_id != ready.completed_message_id
+        || authorization.status != DeviceAuthorizationStatus::Active
+        || authorization.role != DeviceAuthorizationRole::Admin
+        || (checkpoint.document_version == completion.document_version
+            && checkpoint.document_hash != completion.document_hash)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    if authorization.management_ready {
+        if authorization.auth_generation != ready.auth_generation
+            || checkpoint.document_version < completion.document_version
+            || checkpoint.registry_version < ready.registry_version
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        return Ok(LocalManagementReadyTransition::AlreadyConverged);
+    }
+    if authorization.auth_generation >= ready.auth_generation
+        || checkpoint.document_version > completion.document_version
+        || checkpoint.registry_version >= ready.registry_version
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(LocalManagementReadyTransition::Fresh)
 }
 
 /// Opens the SQLite-backed runtime only for a synchronous state transition.
@@ -1344,5 +1436,105 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn local_management_ready_transition_accepts_fresh_and_idempotent_crash_retry() {
+        use crate::internal::identity_device_state::{
+            DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
+            IdentityInternalCheckpoint,
+        };
+
+        let authorization = DeviceAuthorizationProjection {
+            protocol_device_id: crate::ids::ProtocolDeviceId::parse("device-member").unwrap(),
+            signing_key_id: "did:example:alice#device-member-sign".to_owned(),
+            e2ee_key_id: "did:example:alice#device-member-e2ee".to_owned(),
+            status: DeviceAuthorizationStatus::Active,
+            role: DeviceAuthorizationRole::Admin,
+            management_ready: false,
+            auth_generation: 1,
+        };
+        let checkpoint = IdentityInternalCheckpoint {
+            document_version: 18,
+            document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+            registry_version: 7,
+        };
+        let mut completion = completion();
+        completion.document_version = 19;
+        completion.document_hash = "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_owned();
+        let ready: RootManagementReadyResult = serde_json::from_value(serde_json::json!({
+            "did": "did:example:alice",
+            "device_id": "device-member",
+            "management_ready": true,
+            "auth_generation": 2,
+            "registry_version": 8,
+            "completed_message_id": "root-control-message-1"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            validate_local_management_ready_transition(
+                "did:example:alice",
+                &authorization,
+                Some(&checkpoint),
+                &completion,
+                &ready,
+            )
+            .unwrap(),
+            LocalManagementReadyTransition::Fresh
+        );
+
+        let mut already_ready = authorization.clone();
+        already_ready.management_ready = true;
+        already_ready.auth_generation = ready.auth_generation;
+        let converged_checkpoint = IdentityInternalCheckpoint {
+            document_version: completion.document_version,
+            document_hash: completion.document_hash.clone(),
+            registry_version: ready.registry_version,
+        };
+        assert_eq!(
+            validate_local_management_ready_transition(
+                "did:example:alice",
+                &already_ready,
+                Some(&converged_checkpoint),
+                &completion,
+                &ready,
+            )
+            .unwrap(),
+            LocalManagementReadyTransition::AlreadyConverged
+        );
+        let mut forked_checkpoint = converged_checkpoint.clone();
+        forked_checkpoint.document_hash =
+            "sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC".to_owned();
+        assert!(validate_local_management_ready_transition(
+            "did:example:alice",
+            &already_ready,
+            Some(&forked_checkpoint),
+            &completion,
+            &ready,
+        )
+        .is_err());
+
+        let mut stale_generation = authorization.clone();
+        stale_generation.auth_generation = ready.auth_generation;
+        assert!(validate_local_management_ready_transition(
+            "did:example:alice",
+            &stale_generation,
+            Some(&checkpoint),
+            &completion,
+            &ready,
+        )
+        .is_err());
+
+        let mut non_advancing_checkpoint = checkpoint;
+        non_advancing_checkpoint.registry_version = ready.registry_version;
+        assert!(validate_local_management_ready_transition(
+            "did:example:alice",
+            &authorization,
+            Some(&non_advancing_checkpoint),
+            &completion,
+            &ready,
+        )
+        .is_err());
     }
 }

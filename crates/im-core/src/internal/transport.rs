@@ -253,6 +253,7 @@ pub(crate) struct CoreHttpTransport<'a> {
     http: crate::internal::http::HttpClient,
     auth: crate::internal::key_provider::ProviderBackedDidAuth,
     jwt_token: Option<String>,
+    ephemeral_bearer: bool,
 }
 
 pub(crate) struct CorePlainTransport<'a> {
@@ -280,6 +281,7 @@ impl<'a> CoreHttpTransport<'a> {
             http: crate::internal::http::HttpClient::from_config(client.core_inner().sdk_config()),
             auth,
             jwt_token,
+            ephemeral_bearer: false,
         }
     }
 
@@ -295,7 +297,27 @@ impl<'a> CoreHttpTransport<'a> {
                 anp::authentication::AuthMode::HttpSignatures,
             ),
             jwt_token: None,
+            ephemeral_bearer: false,
         }
+    }
+
+    /// Uses one already-validated bearer without persisting it through the
+    /// client's current key provider. This is reserved for generation changes:
+    /// the old token is invalid as soon as the control plane advances the
+    /// device generation, while the replacement must first validate the new
+    /// Registry checkpoint before it can be committed locally.
+    pub(crate) fn new_with_ephemeral_bearer(
+        client: &'a crate::core::ImClient,
+        bearer_token: &str,
+    ) -> crate::ImResult<Self> {
+        let bearer_token = bearer_token.trim();
+        if bearer_token.is_empty() {
+            return Err(crate::ImError::AuthRequired);
+        }
+        let mut transport = Self::new_signature_only(client);
+        transport.jwt_token = Some(bearer_token.to_owned());
+        transport.ephemeral_bearer = true;
+        Ok(transport)
     }
 
     fn rpc_url(&self, endpoint: &str) -> String {
@@ -533,7 +555,7 @@ impl<'a> CoreHttpTransport<'a> {
             body: body.clone(),
         };
         let mut response = self.http.execute(request)?;
-        if response.status_code == 401 {
+        if response.status_code == 401 && !self.ephemeral_bearer {
             let headers = if self.auth.should_retry_after_401(&response.headers) {
                 self.challenge_headers(url, method, &response.headers, body.as_slice())?
             } else {
@@ -584,7 +606,7 @@ impl<'a> CoreHttpTransport<'a> {
             body: body.clone(),
         };
         let mut response = self.http.execute_async(request).await?;
-        if response.status_code == 401 {
+        if response.status_code == 401 && !self.ephemeral_bearer {
             let headers = if self.auth.should_retry_after_401(&response.headers) {
                 self.challenge_headers(url, method, &response.headers, body.as_slice())?
             } else {
@@ -732,11 +754,13 @@ impl<'a> CoreHttpTransport<'a> {
         if let Some(token) = self.auth.update_token(url, headers) {
             if !token.trim().is_empty() {
                 self.jwt_token = Some(token.clone());
-                let _ = self
-                    .client
-                    .runtime()
-                    .key_provider
-                    .persist_auth_token(&token);
+                if !self.ephemeral_bearer {
+                    let _ = self
+                        .client
+                        .runtime()
+                        .key_provider
+                        .persist_auth_token(&token);
+                }
             }
         }
     }
@@ -852,7 +876,7 @@ impl AuthenticatedRpcTransport for CoreHttpTransport<'_> {
         match self.authenticated_rpc_inner(endpoint, method, params.clone()) {
             Err(crate::ImError::Service {
                 code: Some(code), ..
-            }) if code == "1401" => {
+            }) if code == "1401" && !self.ephemeral_bearer => {
                 self.refresh_jwt()?;
                 self.authenticated_rpc_inner(endpoint, method, params)
             }
@@ -874,7 +898,7 @@ impl AsyncAuthenticatedRpcTransport for CoreHttpTransport<'_> {
         {
             Err(crate::ImError::Service {
                 code: Some(code), ..
-            }) if code == "1401" => {
+            }) if code == "1401" && !self.ephemeral_bearer => {
                 self.refresh_jwt_async().await?;
                 self.authenticated_rpc_inner_async(endpoint, method, params)
                     .await
