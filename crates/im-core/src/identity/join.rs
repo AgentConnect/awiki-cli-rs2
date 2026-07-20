@@ -837,10 +837,24 @@ fn public_progress(
 ) -> crate::ImResult<DeviceJoinProgress> {
     let current_device = (value.session.side == DeviceJoinSide::NewDevice)
         .then(|| value.session.protocol_device_id.clone());
+    let remote_state = public_remote_state(value.remote_state);
+    let sas = if matches!(
+        remote_state,
+        DeviceJoinRemoteState::Consumed | DeviceJoinRemoteState::Expired
+    ) || matches!(
+        value.session.phase,
+        DeviceJoinLocalPhase::Authorized
+            | DeviceJoinLocalPhase::Cancelled
+            | DeviceJoinLocalPhase::Expired
+    ) {
+        None
+    } else {
+        value.sas
+    };
     Ok(DeviceJoinProgress {
         session: value.session.into(),
-        remote_state: public_remote_state(value.remote_state),
-        sas: value.sas,
+        remote_state,
+        sas,
         authorized_device: value
             .authorization
             .map(|authorization| public_device(authorization.device, current_device.as_ref()))
@@ -1085,11 +1099,12 @@ mod tests {
                             },
                         },
                     ),
-                    sas: None,
+                    sas: Some("482917".to_owned()),
                 },
             )
             .unwrap();
 
+            assert!(progress.sas.is_none());
             assert_eq!(
                 progress.authorized_device.unwrap().is_current,
                 expected_current
