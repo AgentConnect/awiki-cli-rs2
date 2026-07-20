@@ -3763,6 +3763,178 @@ async fn scoped_history_and_sync_fail_closed_on_nonadvancing_wrong_peer_page() {
         sync_error,
         crate::ImError::IdentityBindingConflict { .. }
     ));
+
+    let empty_history_error = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [], "has_more": true}),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob".to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        empty_history_error,
+        crate::ImError::IdentityBindingConflict { .. }
+    ));
+
+    let empty_terminal = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob".to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert!(empty_terminal.page.items.is_empty());
+}
+
+#[tokio::test]
+async fn scoped_history_mixed_page_keeps_and_persists_requested_peer_once() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let requested_peer_did = "did:example:bob-new";
+    let requested_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-bob",
+        "bob.anpclaw.com",
+    )
+    .unwrap();
+    let requested_wire = json!({
+        "id": "logical-mixed-requested",
+        "sender_did": requested_peer_did,
+        "receiver_did": &fixture.did,
+        "content": "requested fresh plaintext",
+        "content_type": "text/plain",
+        "server_seq": 11
+    });
+    let mut wrong_wire = ordinary_p5_cache_message(
+        "wire-p5-mixed-wrong",
+        "did:example:mallory",
+        "device-mallory",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    wrong_wire["server_seq"] = json!(12);
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![p5_cached_incoming_record(
+            &client,
+            &wrong_wire,
+            "logical-p5-mixed-wrong",
+            "wrong cached plaintext",
+        )])
+        .await
+        .unwrap();
+
+    let first = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [requested_wire.clone(), wrong_wire.clone()],
+                "has_more": true
+            }),
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse(requested_peer_did, "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some(requested_peer_did.to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(first.page.items.len(), 1);
+    assert_eq!(first.page.items[0].id.as_str(), "logical-mixed-requested");
+
+    let scoped_records = client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .list_direct_messages(
+            client.current_identity().id.as_str(),
+            vec![
+                crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                    &requested_scope,
+                ),
+            ],
+            20,
+        )
+        .await
+        .unwrap();
+    assert_eq!(scoped_records.len(), 1);
+    assert_eq!(scoped_records[0].msg_id, "logical-mixed-requested");
+
+    let reopened = fixture.client(true);
+    let replay = MessageReadRuntime::new(
+        &reopened,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [requested_wire, wrong_wire],
+                "has_more": false
+            }),
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse(requested_peer_did, "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some(requested_peer_did.to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(replay.page.items.len(), 1);
+    assert_eq!(replay.page.items[0].id.as_str(), "logical-mixed-requested");
 }
 
 #[tokio::test]

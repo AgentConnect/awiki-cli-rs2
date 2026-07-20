@@ -138,22 +138,18 @@ where
                     params,
                 )?;
                 let mut p5_provenance =
-                    crate::internal::message_runtime::read::project_secure_direct_messages(
+                    crate::internal::message_runtime::read::project_secure_direct_messages_for_peer(
                         self.client,
                         &mut raw,
                         &mut self.directory_transport,
+                        &peer.resolved_did,
                     );
-                let rejected_entire_page =
-                    crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+                crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
                     self.client,
                     &mut raw,
                     &peer.resolved_did,
                     &mut p5_provenance,
                 );
-                crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
-                    &raw,
-                    rejected_entire_page,
-                )?;
                 crate::internal::message_runtime::read::annotate_direct_peer_scopes(
                     self.client,
                     &mut raw,
@@ -166,6 +162,20 @@ where
                     self.client,
                     &raw,
                     crate::ids::PageLimit(limit),
+                )?;
+                let final_projectable_count = page
+                    .items
+                    .iter()
+                    .filter(|message| {
+                        message
+                            .metadata
+                            .server_sequence
+                            .is_some_and(|sequence| sequence > after_server_seq)
+                    })
+                    .count();
+                crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+                    &raw,
+                    final_projectable_count,
                 )?;
                 let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
                 let stored_messages = crate::internal::message_runtime::read::persist_projection(
@@ -330,18 +340,13 @@ where
                         &mut self.directory_transport,
                         &peer.resolved_did,
                     )
-                    .await?;
-                let rejected_entire_page =
-                    crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+                    .await;
+                crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
                     self.client,
                     &mut raw,
                     &peer.resolved_did,
                     &mut p5_provenance,
                 );
-                crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
-                    &raw,
-                    rejected_entire_page,
-                )?;
                 crate::internal::message_runtime::read::annotate_direct_peer_scopes_async(
                     self.client,
                     &mut raw,
@@ -355,6 +360,20 @@ where
                     self.client,
                     &raw,
                     crate::ids::PageLimit(limit),
+                )?;
+                let final_projectable_count = page
+                    .items
+                    .iter()
+                    .filter(|message| {
+                        message
+                            .metadata
+                            .server_sequence
+                            .is_some_and(|sequence| sequence > after_server_seq)
+                    })
+                    .count();
+                crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+                    &raw,
+                    final_projectable_count,
                 )?;
                 let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
                 let stored_messages =

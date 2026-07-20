@@ -29,7 +29,7 @@ fn attachments_download_runtime_memory_fetches_ticket_and_bytes() {
     .download(AttachmentDownloadInput {
         request: crate::attachments::DownloadAttachmentRequest {
             thread: crate::messages::ThreadRef::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
             ),
             message_id: crate::ids::MessageId::parse("msg-attachment-1").unwrap(),
             attachment_id: Some("att-1".to_string()),
@@ -60,7 +60,10 @@ fn attachments_download_runtime_memory_fetches_ticket_and_bytes() {
     assert_eq!(calls.len(), 4);
     let history = calls[0].rpc("direct.get_history");
     assert_eq!(history.endpoint, MESSAGE_RPC_ENDPOINT);
-    assert_eq!(history.params["body"]["peer_did"], "did:example:bob");
+    assert_eq!(
+        history.params["body"]["peer_did"],
+        "did:web:example.com:bob"
+    );
     assert_eq!(
         history.params["body"]["limit"],
         ATTACHMENT_DOWNLOAD_LOOKUP_PAGE_SIZE
@@ -112,7 +115,7 @@ fn attachments_download_runtime_pages_until_selection_matches() {
     .download(AttachmentDownloadInput {
         request: crate::attachments::DownloadAttachmentRequest {
             thread: crate::messages::ThreadRef::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
             ),
             message_id: crate::ids::MessageId::parse("msg-second-page").unwrap(),
             attachment_id: Some("att-2".to_string()),
@@ -128,7 +131,7 @@ fn attachments_download_runtime_pages_until_selection_matches() {
     let first = calls[0].rpc("direct.get_history");
     assert_eq!(first.params["body"].get("skip"), None);
     let second = calls[1].rpc("direct.get_history");
-    assert_eq!(second.params["body"]["skip"], 1);
+    assert_eq!(second.params["body"]["skip"], 2);
 }
 
 #[test]
@@ -194,7 +197,7 @@ fn attachments_download_runtime_local_file_destination_writes_file() {
     .download(AttachmentDownloadInput {
         request: crate::attachments::DownloadAttachmentRequest {
             thread: crate::messages::ThreadRef::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
             ),
             message_id: crate::ids::MessageId::parse("msg-attachment-1").unwrap(),
             attachment_id: Some("att-1".to_string()),
@@ -235,7 +238,7 @@ async fn attachments_download_runtime_local_file_async_streams_to_file() {
     .download_async(AttachmentDownloadInput {
         request: crate::attachments::DownloadAttachmentRequest {
             thread: crate::messages::ThreadRef::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
             ),
             message_id: crate::ids::MessageId::parse("msg-attachment-1").unwrap(),
             attachment_id: Some("att-1".to_string()),
@@ -326,7 +329,7 @@ fn attachments_download_runtime_falls_back_to_local_identity_document_for_sender
     .download(AttachmentDownloadInput {
         request: crate::attachments::DownloadAttachmentRequest {
             thread: crate::messages::ThreadRef::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                crate::ids::PeerRef::parse("did:web:example:alice", "").unwrap(),
             ),
             message_id: crate::ids::MessageId::parse("msg-local-sender").unwrap(),
             attachment_id: Some("att-local".to_string()),
@@ -348,7 +351,7 @@ fn attachments_download_runtime_falls_back_to_local_identity_document_for_sender
     let calls = calls.borrow();
     assert_eq!(calls.len(), 4);
     let history = calls[0].rpc("direct.get_history");
-    assert_eq!(history.params["body"]["peer_did"], "did:example:bob");
+    assert_eq!(history.params["body"]["peer_did"], "did:web:example:alice");
     calls[1].get_json("https://example/alice/did.json");
     let ticket = calls[2].rpc("attachment.get_download_ticket");
     assert_eq!(ticket.endpoint, "https://local-attachment.example/rpc");
@@ -385,7 +388,7 @@ fn attachments_download_runtime_object_e2ee_memory_returns_plaintext_and_redacts
     .download(AttachmentDownloadInput {
         request: crate::attachments::DownloadAttachmentRequest {
             thread: crate::messages::ThreadRef::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
             ),
             message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
             attachment_id: Some("att-e2ee-1".to_string()),
@@ -461,6 +464,48 @@ fn attachments_download_runtime_object_e2ee_memory_returns_plaintext_and_redacts
         "download ticket body must not expose nonce"
     );
     calls[3].object_get("https://objects.example/att-e2ee-1");
+}
+
+#[tokio::test]
+async fn direct_attachment_lookup_rejects_manifest_from_unrequested_peer_before_selection() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let object = object_e2ee_case(b"wrong peer attachment".to_vec());
+    let mut history = e2ee_history_response(object.full_manifest, "transport-protected");
+    history["messages"][0]["sender_did"] = json!("did:web:example.com:mallory");
+    history["messages"][0]["receiver_did"] = json!("did:example:alice");
+
+    let error = AttachmentDownloadRuntime::new(
+        &client,
+        ReadySessionProvider {
+            scopes: Rc::new(RefCell::new(Vec::new())),
+        },
+        E2eeTransport {
+            calls: Rc::clone(&calls),
+            history,
+            object_body: object.ciphertext,
+            object_content_type: Some("application/octet-stream".to_owned()),
+        },
+    )
+    .download_async(AttachmentDownloadInput {
+        request: crate::attachments::DownloadAttachmentRequest {
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
+            ),
+            message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
+            attachment_id: Some("att-e2ee-1".to_owned()),
+            destination: crate::attachments::AttachmentDestination::Memory,
+            overwrite: false,
+        },
+        resolved_peer_did: Some("did:web:example.com:bob".to_owned()),
+    })
+    .await
+    .unwrap_err();
+
+    assert!(matches!(error, crate::ImError::MessageNotFound { .. }));
+    assert_eq!(calls.borrow().len(), 1);
+    calls.borrow()[0].rpc("direct.get_history");
 }
 
 #[test]
@@ -655,7 +700,7 @@ fn attachments_download_runtime_object_e2ee_local_file_writes_plaintext() {
     .download(AttachmentDownloadInput {
         request: crate::attachments::DownloadAttachmentRequest {
             thread: crate::messages::ThreadRef::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
             ),
             message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
             attachment_id: Some("att-e2ee-1".to_string()),
@@ -700,7 +745,7 @@ async fn attachments_download_runtime_object_e2ee_local_file_async_writes_plaint
     .download_async(AttachmentDownloadInput {
         request: crate::attachments::DownloadAttachmentRequest {
             thread: crate::messages::ThreadRef::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
             ),
             message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
             attachment_id: Some("att-e2ee-1".to_string()),
@@ -750,7 +795,7 @@ fn attachments_download_runtime_rejects_digest_mismatch_without_writing() {
     .download(AttachmentDownloadInput {
         request: crate::attachments::DownloadAttachmentRequest {
             thread: crate::messages::ThreadRef::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
             ),
             message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
             attachment_id: Some("att-e2ee-1".to_string()),
@@ -794,7 +839,7 @@ fn attachments_download_runtime_rejects_wrong_object_key_without_writing() {
     .download(AttachmentDownloadInput {
         request: crate::attachments::DownloadAttachmentRequest {
             thread: crate::messages::ThreadRef::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
             ),
             message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
             attachment_id: Some("att-e2ee-1".to_string()),
@@ -837,7 +882,7 @@ fn attachments_download_runtime_rejects_plaintext_size_mismatch_without_writing(
     .download(AttachmentDownloadInput {
         request: crate::attachments::DownloadAttachmentRequest {
             thread: crate::messages::ThreadRef::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
             ),
             message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
             attachment_id: Some("att-e2ee-1".to_string()),
@@ -1399,6 +1444,21 @@ fn direct_history_response(skip: Option<i64>) -> crate::ImResult<Value> {
     if skip.unwrap_or_default() == 0 {
         Ok(json!({
             "messages": [{
+                "id": "msg-attachment-1",
+                "message_id": "msg-attachment-1",
+                "sender_did": "did:web:example.com:mallory",
+                "content": {
+                    "attachments": [{
+                        "attachment_id": "att-1",
+                        "filename": "wrong-peer.txt",
+                        "mime_type": "text/plain",
+                        "size": "16",
+                        "digest": { "alg": "sha-256", "value_b64u": "exNCHlmX3QP0Pkz7u3ndQu3b5zESko9lysH2TsoflvQ" },
+                        "access_info": { "object_uri": "https://objects.example/wrong-peer" }
+                    }],
+                    "primary_attachment_id": "att-1"
+                }
+            }, {
                 "id": "msg-attachment-1",
                 "message_id": "msg-attachment-1",
                 "sender_did": "did:web:example.com:bob",

@@ -1215,6 +1215,97 @@ fn attachment_intent_process_lock_serializes_exact_owner_device_and_logical_targ
 }
 
 #[tokio::test]
+async fn scoped_attachment_rejection_does_not_commit_replay_before_correct_peer_receive() {
+    let root = tempfile::tempdir().unwrap();
+    let alice_did = "did:example:alice";
+    let bob_did = "did:example:bob";
+    let mallory_did = "did:example:mallory";
+    let alice = DeviceSpec {
+        id: "alice-attachment-scope",
+        signing_seed: 181,
+        static_seed: 182,
+        signed_prekey_seed: 183,
+        one_time_prekey_seed: 184,
+    };
+    let mallory = DeviceSpec {
+        id: "mallory-attachment-scope",
+        signing_seed: 185,
+        static_seed: 186,
+        signed_prekey_seed: 187,
+        one_time_prekey_seed: 188,
+    };
+    let alice_document = did_document(alice_did, &[alice]);
+    let mallory_document = did_document(mallory_did, &[mallory]);
+    let sender = context(
+        root.path(),
+        "identity-mallory-attachment-scope",
+        mallory_did,
+        mallory,
+        189,
+    );
+    let recipient = context(
+        root.path(),
+        "identity-alice-attachment-scope",
+        alice_did,
+        alice,
+        190,
+    );
+    install_bundle(&recipient, alice_did, alice);
+    let attachment = FakeAttachmentObjectHost::new(b"scoped attachment plaintext");
+    let mut sender_host = FakeHost::default();
+    sender_host.add_document(alice_did, alice_document.clone());
+    sender_host.add_document(mallory_did, mallory_document.clone());
+    sender_host.add_bundle(alice_did, alice);
+    send_with_host(
+        &sender,
+        &mut sender_host,
+        V2DirectProductSendInput {
+            logical_message_id: "logical-scoped-attachment".to_owned(),
+            target_did: alice_did.to_owned(),
+            conversation_id: Some("conversation-scoped-attachment".to_owned()),
+            body: V2OrdinaryBody::AttachmentManifest {
+                full_manifest: attachment.prepared.full_manifest,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let prepared = sender_host.post_attempts.pop().unwrap();
+    let mut recipient_host = FakeHost::default();
+    recipient_host.add_document(alice_did, alice_document);
+    recipient_host.add_document(mallory_did, mallory_document);
+
+    let rejected = receive_with_host_scoped(
+        &recipient,
+        &mut recipient_host,
+        prepared.metadata.clone(),
+        prepared.body.clone(),
+        Some(bob_did),
+    )
+    .await
+    .unwrap_err();
+    assert!(is_scoped_peer_mismatch(&rejected));
+    assert!(recipient_host.post_attempts.is_empty());
+
+    let accepted = receive_with_host_scoped(
+        &recipient,
+        &mut recipient_host,
+        prepared.metadata,
+        prepared.body,
+        Some(mallory_did),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        accepted,
+        V2InboundProductOutcome::Business(V2InboundBusinessProjection {
+            body: V2InboundBusinessBody::Attachment { .. },
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
 async fn attachment_object_is_committed_once_and_one_manifest_is_wrapped_per_device() {
     let root = tempfile::tempdir().unwrap();
     let alice_did = "did:example:alice";

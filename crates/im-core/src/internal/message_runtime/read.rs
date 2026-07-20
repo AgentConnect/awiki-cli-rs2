@@ -256,19 +256,19 @@ where
                     DirectP5ProjectionProvenance::default()
                 } else {
                     consume_group_e2ee_control_messages(self.client, &mut raw);
-                    project_secure_direct_messages(
+                    project_secure_direct_messages_for_peer(
                         self.client,
                         &mut raw,
                         &mut self.directory_transport,
+                        &peer.resolved_did,
                     )
                 };
-                let rejected_entire_page = retain_direct_messages_for_expected_peer(
+                retain_direct_messages_for_expected_peer(
                     self.client,
                     &mut raw,
                     &peer.resolved_did,
                     &mut p5_provenance,
                 );
-                reject_stalled_scoped_direct_page(&raw, rejected_entire_page)?;
                 annotate_direct_peer_scopes(
                     self.client,
                     &mut raw,
@@ -278,6 +278,7 @@ where
                     Some(&mut p5_provenance),
                 );
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
+                reject_stalled_scoped_direct_page(&raw, page.items.len())?;
                 persist_projection_best_effort(self.client, &page.items, &p5_provenance);
                 let page = merge_direct_local_projection_best_effort(
                     self.client,
@@ -556,15 +557,14 @@ where
                         &mut self.directory_transport,
                         &peer.resolved_did,
                     )
-                    .await?
+                    .await
                 };
-                let rejected_entire_page = retain_direct_messages_for_expected_peer(
+                retain_direct_messages_for_expected_peer(
                     self.client,
                     &mut raw,
                     &peer.resolved_did,
                     &mut p5_provenance,
                 );
-                reject_stalled_scoped_direct_page(&raw, rejected_entire_page)?;
                 annotate_direct_peer_scopes_async(
                     self.client,
                     &mut raw,
@@ -575,6 +575,7 @@ where
                 )
                 .await;
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
+                reject_stalled_scoped_direct_page(&raw, page.items.len())?;
                 persist_projection_best_effort_async(self.client, &page.items, &p5_provenance)
                     .await;
                 let page = merge_direct_local_projection_best_effort_async(
@@ -2105,7 +2106,22 @@ pub(crate) fn project_secure_direct_messages(
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
 ) -> DirectP5ProjectionProvenance {
-    project_secure_direct_messages_impl(client, raw, directory_transport, true)
+    project_secure_direct_messages_impl(client, raw, directory_transport, true, None)
+}
+
+pub(crate) fn project_secure_direct_messages_for_peer(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut impl RpcTransport,
+    expected_peer_did: &str,
+) -> DirectP5ProjectionProvenance {
+    project_secure_direct_messages_impl(
+        client,
+        raw,
+        directory_transport,
+        true,
+        Some(expected_peer_did),
+    )
 }
 
 fn filter_delegated_e2ee_messages(raw: &mut Value) {
@@ -2143,10 +2159,17 @@ fn project_secure_direct_messages_impl(
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
     redact_attachment_secrets: bool,
+    expected_peer_did: Option<&str>,
 ) -> DirectP5ProjectionProvenance {
     #[cfg(not(feature = "sqlite"))]
     {
-        let _ = (client, raw, directory_transport, redact_attachment_secrets);
+        let _ = (
+            client,
+            raw,
+            directory_transport,
+            redact_attachment_secrets,
+            expected_peer_did,
+        );
         DirectP5ProjectionProvenance::default()
     }
     #[cfg(feature = "sqlite")]
@@ -2188,6 +2211,13 @@ fn project_secure_direct_messages_impl(
                 message_values,
             );
         let mut filtered = filtered;
+        if let Some(expected_peer_did) = expected_peer_did {
+            retain_direct_message_values_for_expected_peer(
+                client,
+                &mut filtered,
+                expected_peer_did,
+            );
+        }
         cache_attachment_manifests_for_internal_download(client, &filtered);
         if redact_attachment_secrets {
             redact_attachment_manifests_for_public_projection(&mut filtered);
@@ -2204,8 +2234,15 @@ pub(crate) fn project_secure_direct_messages_for_attachment_download(
     client: &crate::core::ImClient,
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
-) {
-    project_secure_direct_messages_impl(client, raw, directory_transport, false);
+    expected_peer_did: &str,
+) -> DirectP5ProjectionProvenance {
+    project_secure_direct_messages_impl(
+        client,
+        raw,
+        directory_transport,
+        false,
+        Some(expected_peer_did),
+    )
 }
 
 pub(crate) async fn project_secure_direct_messages_async(
@@ -2221,19 +2258,15 @@ pub(crate) async fn project_secure_direct_messages_async_for_peer(
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
     expected_peer_did: &str,
-) -> crate::ImResult<DirectP5ProjectionProvenance> {
-    let provenance = project_secure_direct_messages_async_impl(
+) -> DirectP5ProjectionProvenance {
+    project_secure_direct_messages_async_impl(
         client,
         raw,
         directory_transport,
         true,
         Some(expected_peer_did),
     )
-    .await;
-    if provenance.scoped_peer_mismatch {
-        return Err(scoped_direct_page_mismatch());
-    }
-    Ok(provenance)
+    .await
 }
 
 async fn project_secure_direct_messages_async_impl(
@@ -2385,12 +2418,11 @@ async fn project_secure_direct_messages_async_impl(
                             p5_provenance.record(&logical_message_id, cache_binding);
                         }
                     }
-                    Err(error) => {
-                        if crate::internal::secure_direct::v2_product::is_scoped_peer_mismatch(
-                            &error,
-                        ) {
-                            p5_provenance.scoped_peer_mismatch = true;
-                        }
+                    Err(_) => {
+                        // Scoped P5 validation runs inside the ratchet transaction,
+                        // before replay state commits. A rejected delivery is
+                        // item-local so another valid delivery on this page can
+                        // still be projected and persisted.
                         mark_private_root_control(&mut message_values[index]);
                     }
                 }
@@ -2540,6 +2572,13 @@ async fn project_secure_direct_messages_async_impl(
                 message_values,
             );
         let mut filtered = filtered;
+        if let Some(expected_peer_did) = expected_peer_did {
+            retain_direct_message_values_for_expected_peer(
+                client,
+                &mut filtered,
+                expected_peer_did,
+            );
+        }
         cache_attachment_manifests_for_internal_download_async(client, &filtered).await;
         if redact_attachment_secrets {
             redact_attachment_manifests_for_public_projection(&mut filtered);
@@ -2556,8 +2595,16 @@ pub(crate) async fn project_secure_direct_messages_for_attachment_download_async
     client: &crate::core::ImClient,
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
-) {
-    project_secure_direct_messages_async_impl(client, raw, directory_transport, false, None).await;
+    expected_peer_did: &str,
+) -> DirectP5ProjectionProvenance {
+    project_secure_direct_messages_async_impl(
+        client,
+        raw,
+        directory_transport,
+        false,
+        Some(expected_peer_did),
+    )
+    .await
 }
 
 async fn resolve_direct_sender_document_async(
@@ -2862,7 +2909,6 @@ pub(crate) struct DirectP5ProjectionProvenance {
     bindings: HashMap<P5ProjectionInstanceKey, Vec<P5CacheBinding>>,
     verified_scoped_routes: HashMap<P5ProjectionInstanceKey, P5VerifiedScopedRoute>,
     expected_peer_did: Option<String>,
-    scoped_peer_mismatch: bool,
 }
 
 impl DirectP5ProjectionProvenance {
@@ -4526,6 +4572,15 @@ pub(crate) fn retain_direct_messages_for_expected_peer(
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
         return false;
     };
+    retain_direct_message_values_for_expected_peer(client, messages, expected_peer_did)
+}
+
+fn retain_direct_message_values_for_expected_peer(
+    client: &crate::core::ImClient,
+    messages: &mut Vec<Value>,
+    expected_peer_did: &str,
+) -> bool {
+    let expected_peer_did = expected_peer_did.trim();
     let original_len = messages.len();
     messages.retain(|message| {
         let Some(object) = message.as_object() else {
@@ -4544,9 +4599,9 @@ pub(crate) fn retain_direct_messages_for_expected_peer(
 
 pub(crate) fn reject_stalled_scoped_direct_page(
     raw: &Value,
-    rejected_entire_page: bool,
+    final_projectable_count: usize,
 ) -> crate::ImResult<()> {
-    if rejected_entire_page && raw.get("has_more").and_then(Value::as_bool) == Some(true) {
+    if final_projectable_count == 0 && raw.get("has_more").and_then(Value::as_bool) == Some(true) {
         return Err(scoped_direct_page_mismatch());
     }
     Ok(())

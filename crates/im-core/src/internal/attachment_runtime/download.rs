@@ -132,18 +132,31 @@ where
                 return Ok(selection);
             }
         }
-        crate::attachments::selection::find_internal_attachment_selection_with_paging(
-            |skip| self.fetch_page(target, skip),
-            requested_message_id,
-            requested_attachment_id,
-        )
+        let mut skip = 0_i64;
+        loop {
+            let (messages, has_more, consumed_count) = self.fetch_page(target, skip)?;
+            match crate::attachments::selection::find_internal_attachment_selection(
+                &messages,
+                requested_message_id,
+                requested_attachment_id,
+            ) {
+                Ok(selection) => return Ok(selection),
+                Err(crate::ImError::MessageNotFound { .. }) if has_more && consumed_count > 0 => {
+                    skip += consumed_count;
+                }
+                Err(crate::ImError::MessageNotFound { message_id }) => {
+                    return Err(crate::ImError::MessageNotFound { message_id });
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     fn fetch_page(
         &mut self,
         target: &DownloadTarget,
         skip: i64,
-    ) -> crate::ImResult<(Vec<Value>, bool)> {
+    ) -> crate::ImResult<(Vec<Value>, bool, i64)> {
         match target {
             DownloadTarget::Direct { peer_did } => {
                 let params = crate::internal::wire::history::build_history_rpc_params(
@@ -163,10 +176,12 @@ where
                     "direct.get_history",
                     params,
                 )?;
-                project_secure_direct_messages_for_download(self.client, &mut raw);
+                let consumed_count = values_from_array(raw.get("messages")).len() as i64;
+                project_secure_direct_messages_for_download(self.client, &mut raw, peer_did)?;
                 Ok((
                     values_from_array(raw.get("messages")),
                     bool_from_value(raw.get("has_more")),
+                    consumed_count,
                 ))
             }
             DownloadTarget::Group { group } => {
@@ -182,10 +197,12 @@ where
                     "group.list_messages",
                     params,
                 )?;
+                let consumed_count = values_from_array(raw.get("messages")).len() as i64;
                 project_group_e2ee_messages_for_download(self.client, &mut raw);
                 Ok((
                     values_from_array(raw.get("messages")),
                     bool_from_value(raw.get("has_more")),
+                    consumed_count,
                 ))
             }
         }
@@ -350,15 +367,15 @@ where
         }
         let mut skip = 0_i64;
         loop {
-            let (messages, has_more) = self.fetch_page_async(target, skip).await?;
+            let (messages, has_more, consumed_count) = self.fetch_page_async(target, skip).await?;
             match crate::attachments::selection::find_internal_attachment_selection(
                 &messages,
                 requested_message_id,
                 requested_attachment_id,
             ) {
                 Ok(selection) => return Ok(selection),
-                Err(crate::ImError::MessageNotFound { .. }) if has_more && !messages.is_empty() => {
-                    skip += messages.len() as i64;
+                Err(crate::ImError::MessageNotFound { .. }) if has_more && consumed_count > 0 => {
+                    skip += consumed_count;
                 }
                 Err(crate::ImError::MessageNotFound { message_id }) => {
                     return Err(crate::ImError::MessageNotFound { message_id });
@@ -372,7 +389,7 @@ where
         &mut self,
         target: &DownloadTarget,
         skip: i64,
-    ) -> crate::ImResult<(Vec<Value>, bool)> {
+    ) -> crate::ImResult<(Vec<Value>, bool, i64)> {
         match target {
             DownloadTarget::Direct { peer_did } => {
                 let params = crate::internal::wire::history::build_history_rpc_params(
@@ -391,10 +408,13 @@ where
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
                     .await?;
-                project_secure_direct_messages_for_download_async(self.client, &mut raw).await;
+                let consumed_count = values_from_array(raw.get("messages")).len() as i64;
+                project_secure_direct_messages_for_download_async(self.client, &mut raw, peer_did)
+                    .await?;
                 Ok((
                     values_from_array(raw.get("messages")),
                     bool_from_value(raw.get("has_more")),
+                    consumed_count,
                 ))
             }
             DownloadTarget::Group { group } => {
@@ -409,10 +429,12 @@ where
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)
                     .await?;
+                let consumed_count = values_from_array(raw.get("messages")).len() as i64;
                 project_group_e2ee_messages_for_download_async(self.client, &mut raw).await;
                 Ok((
                     values_from_array(raw.get("messages")),
                     bool_from_value(raw.get("has_more")),
+                    consumed_count,
                 ))
             }
         }
@@ -679,40 +701,69 @@ fn attachment_service_error(code: &str, message: impl Into<String>) -> crate::Im
     }
 }
 
-fn project_secure_direct_messages_for_download(client: &crate::core::ImClient, raw: &mut Value) {
+fn project_secure_direct_messages_for_download(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    expected_peer_did: &str,
+) -> crate::ImResult<()> {
     #[cfg(all(feature = "sqlite", feature = "blocking"))]
-    {
+    let mut provenance = {
         let mut directory_transport = crate::internal::transport::CoreHttpTransport::new(client);
         crate::internal::message_runtime::read::project_secure_direct_messages_for_attachment_download(
-            client,
-            raw,
-            &mut directory_transport,
-        );
-    }
+                client,
+                raw,
+                &mut directory_transport,
+                expected_peer_did,
+            )
+    };
     #[cfg(not(all(feature = "sqlite", feature = "blocking")))]
-    {
-        let _ = (client, raw);
-    }
+    let mut provenance =
+        crate::internal::message_runtime::read::DirectP5ProjectionProvenance::default();
+    crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+        client,
+        raw,
+        expected_peer_did,
+        &mut provenance,
+    );
+    let projectable_count = values_from_array(raw.get("messages")).len();
+    crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+        raw,
+        projectable_count,
+    )?;
+    Ok(())
 }
 
 async fn project_secure_direct_messages_for_download_async(
     client: &crate::core::ImClient,
     raw: &mut Value,
-) {
+    expected_peer_did: &str,
+) -> crate::ImResult<()> {
     #[cfg(feature = "sqlite")]
-    {
+    let mut provenance = {
         let mut directory_transport = crate::internal::transport::CoreHttpTransport::new(client);
         crate::internal::message_runtime::read::project_secure_direct_messages_for_attachment_download_async(
-            client,
-            raw,
-            &mut directory_transport,
-        )
-        .await;
-    }
+                client,
+                raw,
+                &mut directory_transport,
+                expected_peer_did,
+            )
+            .await
+    };
     #[cfg(not(feature = "sqlite"))]
-    {
-        let _ = (client, raw);
-    }
+    let mut provenance =
+        crate::internal::message_runtime::read::DirectP5ProjectionProvenance::default();
+    crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+        client,
+        raw,
+        expected_peer_did,
+        &mut provenance,
+    );
+    let projectable_count = values_from_array(raw.get("messages")).len();
+    crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+        raw,
+        projectable_count,
+    )?;
+    Ok(())
 }
 
 fn project_group_e2ee_messages_for_download(client: &crate::core::ImClient, raw: &mut Value) {
