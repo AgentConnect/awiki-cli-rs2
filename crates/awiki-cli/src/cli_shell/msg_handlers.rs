@@ -167,7 +167,7 @@ impl App {
         file_path: &str,
         mime_type: &str,
     ) -> Result<(), ExitError> {
-        let (target, request, request_warnings) =
+        let (target, request, client_message_id, request_warnings) =
             crate::m_core_cli_adapter::messages::send_attachment_request(
                 command,
                 &resolved.did_domain,
@@ -203,7 +203,11 @@ impl App {
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )?;
         let mut result = crate::m_core_cli_adapter::messages::send_attachment_via_im_core(
-            resolved, &client, target, request,
+            resolved,
+            &client,
+            target,
+            request,
+            client_message_id,
         )
         .map_err(|err| {
             message_exit(
@@ -222,7 +226,7 @@ impl App {
         file_path: &str,
         mime_type: &str,
     ) -> Result<(), ExitError> {
-        let (target, request, request_warnings) =
+        let (target, request, client_message_id, request_warnings) =
             crate::m_core_cli_adapter::messages::send_attachment_request(
                 command,
                 &resolved.did_domain,
@@ -259,7 +263,11 @@ impl App {
         )
         .await?;
         let mut result = crate::m_core_cli_adapter::messages::send_attachment_via_im_core_async(
-            resolved, &client, target, request,
+            resolved,
+            &client,
+            target,
+            request,
+            client_message_id,
         )
         .await
         .map_err(|err| {

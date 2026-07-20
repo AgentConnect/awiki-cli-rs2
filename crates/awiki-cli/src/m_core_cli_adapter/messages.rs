@@ -50,9 +50,19 @@ pub fn send_message_request(
 pub fn send_attachment_request(
     command: &ParsedCommand,
     default_domain: &str,
-) -> Result<(MessageTarget, AttachmentSendRequest, Vec<String>), ExitError> {
+) -> Result<
+    (
+        MessageTarget,
+        AttachmentSendRequest,
+        Option<MessageId>,
+        Vec<String>,
+    ),
+    ExitError,
+> {
     let target = message_target(command, default_domain)?;
     let (security, warnings) = message_security(command, &target)?;
+    let client_message_id = optional_message_id_flag(command, "client-message-id")?;
+    let idempotency_key = optional_string_flag(command, "idempotency-key");
     let file_path = string_flag(command, "file");
     if file_path.trim().is_empty() {
         return Err(ExitError::new(
@@ -76,9 +86,13 @@ pub fn send_attachment_request(
             mime_type: Some(string_flag(command, "mime-type"))
                 .filter(|value| !value.trim().is_empty()),
             filename: None,
-            delivery: MessageDeliveryOptions::default(),
+            delivery: MessageDeliveryOptions {
+                idempotency_key,
+                wait_for_final_acceptance: false,
+            },
             security,
         },
+        client_message_id,
         warnings,
     ))
 }
@@ -242,12 +256,18 @@ pub fn send_attachment_via_im_core(
     client: &im_core::ImClient,
     target: MessageTarget,
     request: AttachmentSendRequest,
+    client_message_id: Option<MessageId>,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    let result = client
-        .attachments()
-        .send(target, request)
-        .map_err(im_error_to_message_error)?;
+    let result = match client_message_id {
+        Some(client_message_id) => {
+            client
+                .attachments()
+                .send_with_client_message_id(target, request, client_message_id)
+        }
+        None => client.attachments().send(target, request),
+    }
+    .map_err(im_error_to_message_error)?;
     match &result.message.message.thread {
         ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
             let target = direct_target_from_attachment_result(&result);
@@ -264,13 +284,19 @@ pub async fn send_attachment_via_im_core_async(
     client: &im_core::ImClient,
     target: MessageTarget,
     request: AttachmentSendRequest,
+    client_message_id: Option<MessageId>,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    let result = client
-        .attachments()
-        .send_async(target, request)
-        .await
-        .map_err(im_error_to_message_error)?;
+    let result = match client_message_id {
+        Some(client_message_id) => {
+            client
+                .attachments()
+                .send_with_client_message_id_async(target, request, client_message_id)
+                .await
+        }
+        None => client.attachments().send_async(target, request).await,
+    }
+    .map_err(im_error_to_message_error)?;
     match &result.message.message.thread {
         ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
             let target = direct_target_from_attachment_result(&result);

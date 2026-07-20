@@ -710,6 +710,34 @@ fn send_message_request_accepts_client_message_id_and_idempotency_key() {
 }
 
 #[test]
+fn send_attachment_request_accepts_client_message_id_and_idempotency_key() {
+    let mut command = command_with_flags([
+        ("to", "did:example:bob"),
+        ("file", "attachment.txt"),
+        ("client-message-id", "msg_attachment_001"),
+        ("idempotency-key", "op-msg_attachment_001"),
+    ]);
+    command.globals.dry_run = true;
+
+    let (target, request, client_message_id, warnings) =
+        messages::send_attachment_request(&command, "awiki.test").unwrap();
+
+    assert!(warnings.is_empty());
+    assert!(matches!(
+        target,
+        MessageTarget::Direct(ref peer) if peer.as_str() == "did:example:bob"
+    ));
+    assert_eq!(
+        client_message_id.as_ref().map(MessageId::as_str),
+        Some("msg_attachment_001")
+    );
+    assert_eq!(
+        request.delivery.idempotency_key.as_deref(),
+        Some("op-msg_attachment_001")
+    );
+}
+
+#[test]
 fn send_message_request_builds_markdown_plain_direct_sdk_dto() {
     let command = command_with_flags([
         ("to", "bob"),

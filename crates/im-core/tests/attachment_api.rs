@@ -410,6 +410,88 @@ fn attachments_service_send_and_memory_download_are_public_runtime_paths() {
 }
 
 #[tokio::test]
+async fn attachments_service_target_send_preserves_explicit_identity_without_conversation() {
+    let server = AttachmentServiceTestServer::spawn(vec![
+        ExpectedHttp::rpc_result(json!({
+            "attachment_id": "att-explicit-id",
+            "slot_id": "slot-explicit-id",
+            "upload_uri": "__BASE__/objects/slot-explicit-id",
+            "upload_headers": {},
+            "object_uri": "__BASE__/objects/att-explicit-id",
+            "commit_token": "commit-token-explicit-id",
+            "expires_at": "2026-05-23T01:00:00Z"
+        })),
+        ExpectedHttp::json(json!({})),
+        ExpectedHttp::rpc_result(json!({
+            "committed": true,
+            "attachment_id": "att-explicit-id",
+            "object_uri": "__BASE__/objects/att-explicit-id",
+            "committed_at": "2026-05-23T00:00:01Z"
+        })),
+        ExpectedHttp::rpc_result(json!({
+            "accepted": true,
+            "message_id": "msg-explicit-attachment",
+            "operation_id": "op-msg-explicit-attachment",
+            "target_did": "did:example:bob",
+            "accepted_at": "2026-05-23T00:00:02Z",
+            "delivery_state": "accepted"
+        })),
+    ]);
+    let (core, _) = test_core_with_base_url_ready_identity_and_service_did(
+        server.base_url(),
+        "did:example:message-service",
+    );
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+
+    let result = client
+        .attachments()
+        .send_with_client_message_id_async(
+            MessageTarget::Direct(PeerRef::parse("did:example:bob", "").unwrap()),
+            AttachmentSendRequest {
+                input: AttachmentInput::Bytes {
+                    filename: Some("explicit.txt".to_string()),
+                    mime_type: Some("text/plain".to_string()),
+                    bytes: b"explicit identity".to_vec(),
+                },
+                caption: None,
+                mention_payload: None,
+                mime_type: None,
+                filename: None,
+                delivery: MessageDeliveryOptions {
+                    idempotency_key: Some("op-msg-explicit-attachment".to_string()),
+                    wait_for_final_acceptance: false,
+                },
+                security: MessageSecurityMode::DefaultPlain,
+            },
+            MessageId::parse("msg-explicit-attachment").unwrap(),
+        )
+        .await
+        .expect("target-based attachment send should not require a conversation registry row");
+
+    assert_eq!(
+        result.message.message.id.as_str(),
+        "msg-explicit-attachment"
+    );
+    let requests = server.join();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests[0].rpc_method().as_deref(),
+        Some("attachment.create_slot")
+    );
+    assert_eq!(requests[3].rpc_method().as_deref(), Some("direct.send"));
+    assert_eq!(
+        requests[3].params()["meta"]["message_id"],
+        "msg-explicit-attachment"
+    );
+    assert_eq!(
+        requests[3].params()["meta"]["operation_id"],
+        "op-msg-explicit-attachment"
+    );
+}
+
+#[tokio::test]
 async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
     let server = AttachmentServiceTestServer::spawn(vec![
         ExpectedHttp::rpc_result(handle_lookup_result()),

@@ -2164,11 +2164,17 @@ impl<'a> MessageService<'a> {
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
         let target = request.target.clone();
+        let client_message_id = request.client_message_id.clone();
         let attachment = attachment_request_from_message_request(request)?;
-        self.client
-            .attachments()
-            .send(target, attachment)
-            .map(|result| result.message)
+        match client_message_id {
+            Some(client_message_id) => self.client.attachments().send_with_client_message_id(
+                target,
+                attachment,
+                client_message_id,
+            ),
+            None => self.client.attachments().send(target, attachment),
+        }
+        .map(|result| result.message)
     }
 
     async fn send_plain_attachment_async(
@@ -2176,12 +2182,23 @@ impl<'a> MessageService<'a> {
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
         let target = request.target.clone();
+        let client_message_id = request.client_message_id.clone();
         let attachment = attachment_request_from_message_request(request)?;
-        self.client
-            .attachments()
-            .send_async(target, attachment)
-            .await
-            .map(|result| result.message)
+        match client_message_id {
+            Some(client_message_id) => {
+                self.client
+                    .attachments()
+                    .send_with_client_message_id_async(target, attachment, client_message_id)
+                    .await
+            }
+            None => {
+                self.client
+                    .attachments()
+                    .send_async(target, attachment)
+                    .await
+            }
+        }
+        .map(|result| result.message)
     }
 
     fn send_direct_e2ee(

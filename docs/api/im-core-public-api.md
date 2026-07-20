@@ -946,6 +946,18 @@ pub struct AttachmentService<'a> {
 
 impl AttachmentService<'_> {
     pub fn send(&self, target: MessageTarget, request: AttachmentSendRequest) -> ImResult<AttachmentSendResult>;
+    pub fn send_with_client_message_id(
+        &self,
+        target: MessageTarget,
+        request: AttachmentSendRequest,
+        client_message_id: MessageId,
+    ) -> ImResult<AttachmentSendResult>;
+    pub async fn send_with_client_message_id_async(
+        &self,
+        target: MessageTarget,
+        request: AttachmentSendRequest,
+        client_message_id: MessageId,
+    ) -> ImResult<AttachmentSendResult>;
     pub fn send_conversation(
         &self,
         request: SendConversationAttachmentRequest,
@@ -1014,6 +1026,11 @@ pub enum AttachmentDestination {
 SDK resolver 先把 canonical `conversation_id` 映射到 direct / group storage route，再写入
 durable projection 并 emit committed patch。plain/default 附件路径在 projection 失败时返回错误；
 App 不再需要 presentation fallback 来补 conversation list/detail correctness。
+
+target-first 调用方在首次消息尚未建立 canonical conversation 时，可以使用
+`send_with_client_message_id(_async)` 显式传入逻辑消息 ID，并通过
+`AttachmentSendRequest.delivery.idempotency_key` 传入幂等键。该入口与普通 `send`
+使用相同上传和发送 runtime，不要求预先存在 conversation registry 记录。
 
 默认 public API 不暴露 `object_key_b64u`、`nonce_b64u`、download ticket、raw ciphertext、secure session state 或 MLS provider path。
 
