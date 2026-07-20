@@ -40,6 +40,9 @@ pub enum SecretKind {
     DirectE2eeV2OneTimePrekeyPrivate,
     DirectE2eeV2SessionState,
     DirectE2eeV2PendingOutbound,
+    /// Vault-only full attachment Manifest retained for exact P5 fan-out retry.
+    /// The SQLite delivery ledger stores only this record's opaque reference.
+    DirectE2eeV2AttachmentManifest,
     GroupMlsState,
     RuntimeSecret,
 }
@@ -66,6 +69,7 @@ impl SecretKind {
             Self::DirectE2eeV2OneTimePrekeyPrivate => "direct_e2ee.v2.one_time_prekey.private",
             Self::DirectE2eeV2SessionState => "direct_e2ee.v2.session_state",
             Self::DirectE2eeV2PendingOutbound => "direct_e2ee.v2.pending_outbound",
+            Self::DirectE2eeV2AttachmentManifest => "direct_e2ee.v2.attachment_manifest",
             Self::GroupMlsState => "group_mls.state",
             Self::RuntimeSecret => "runtime.secret",
         }

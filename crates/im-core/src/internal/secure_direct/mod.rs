@@ -22,6 +22,8 @@ pub(crate) mod status;
 #[cfg(feature = "sqlite")]
 pub(crate) mod v2_prekey_runtime;
 #[cfg(feature = "sqlite")]
+pub(crate) mod v2_product;
+#[cfg(feature = "sqlite")]
 pub(crate) mod v2_runtime;
 #[cfg(feature = "sqlite")]
 pub(crate) mod v2_store;
