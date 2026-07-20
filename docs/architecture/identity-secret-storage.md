@@ -111,6 +111,9 @@ root 导入的本地非秘密状态包括：
 - management-ready 响应丢失时，旧 generation bearer 只通过不刷新、不签名降级、不持久化
   响应 token 的临时 transport 探测。仅精确 JSON-RPC 码 `device.auth_generation_stale` 可证明
   generation 已推进；`device.unauthenticated`、HTTP 401 和其他错误都 fail closed。
+- V1 不猜测“服务端已 ready、端内尚未 commit”这一不确定状态。如果此时旧 generation bearer
+  已过期且服务端不能返回上述精确 stale code，流程保持 fail closed，用户必须先重新认证或进入
+  显式恢复流程；扩大服务端幂等查询/恢复时间窗留待后续版本。
 
 一致性顺序为：在共享 IdentityIndex mutation lock 内验证当前 Document/Registry 和设备资格，
 写入非秘密 pending reservation，以 seal-if-absent 发布 root Vault record，再原子写入同一份 index image（root
@@ -128,6 +131,10 @@ Document projection；投影失败返回固定的 exact-retry 本地错误。重
 也不得改变已提交的 auth ref、operation id 或 authorization generation；同版本不同 hash 拒绝。
 该投影重试本身不刷新 access token；若持久化 token 已过期，先由正常会话刷新路径更新 auth
 state，再以新的当前 bearer 重试投影，避免把 token refresh 隐式混入 root-import 幂等状态机。
+正常刷新在同一个权威 auth `SecretRef`/`key_version` 上原位更新 access token，必须先打开并解析
+既有 token pair、保留 refresh token，并从新 access JWT 重新派生 expiry 元数据；写后重新打开
+核验。该步骤不得改变 root-import operation id、authorization generation 或 Identity index 中的
+auth ref；既有状态包含 expiry 而替换 token 无法派生新 expiry 时 fail closed。
 同一进程中长期存活的 vNext `KeyMaterialProvider` 还维护可推进的 root/auth `SecretRef`
 指针；推进前严格核对 Vault context、identity、DID、secret kind、key id/version 并成功
 解封目标记录。导入 root ref 只接受 `key_version=1`，并从私钥重算公钥指纹核对已签名的

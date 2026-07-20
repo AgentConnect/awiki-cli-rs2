@@ -8,6 +8,7 @@ use crate::internal::key_provider::KeyMaterialProvider;
 use crate::internal::platform_secret::DeviceVaultRootKey;
 use crate::internal::secret_vault::{FileSecretVault, FileSecretVaultStore};
 use serde_json::json;
+use std::io::Read as _;
 use x25519_dalek::StaticSecret as X25519StaticSecret;
 
 const LOCAL_ALIAS: &str = "alice";
@@ -2461,6 +2462,183 @@ fn management_ready_projection_exact_retry_and_restart_preserve_auth_commit() {
     assert_eq!(scenario.receiver.vault.list().unwrap(), vault_refs_before);
 }
 
+#[tokio::test]
+async fn management_ready_projection_normal_refresh_preserves_exact_retry_authority() {
+    let scenario = scenario();
+    let (service_base_url, refresh_server) = normal_refresh_server();
+    let live_core = receiver_live_core_with_endpoint(&scenario, &service_base_url);
+    let live_client = live_core
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            LOCAL_ALIAS.to_owned(),
+        ))
+        .unwrap();
+    let imported = import_receiver_root(&scenario);
+    let store = IdentityStore::new(&scenario.receiver.paths);
+    let operation_id = store
+        .reserve_root_import_management_token_operation(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            || Ok("root-ready-refresh-retry".to_owned()),
+        )
+        .unwrap();
+    let (ack_document, ack_registry) =
+        management_ready_document(&scenario, "dev-ack-refresh-retry");
+    let auth_ref = store
+        .converge_root_import_management_ready(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &ack_registry.checkpoint,
+            "expired-management-access",
+            "management-refresh-token",
+            "2000-01-01T00:00:00Z",
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+    live_client
+        .runtime()
+        .key_provider
+        .advance_vault_auth_ref(&auth_ref)
+        .unwrap();
+
+    let document_path = scenario
+        .receiver
+        .paths
+        .identity_root_dir
+        .join("receiver-identity")
+        .join("did_document.json");
+    let backup_path = document_path.with_extension("refresh-retry-backup");
+    std::fs::rename(&document_path, &backup_path).unwrap();
+    std::fs::create_dir(&document_path).unwrap();
+    assert!(matches!(
+        store.commit_root_import_management_document(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &ack_registry.checkpoint,
+            &ack_document,
+        ),
+        Err(crate::ImError::LocalStateUnavailable { detail })
+            if detail == "verified DID document projection requires exact retry"
+    ));
+    std::fs::remove_dir(&document_path).unwrap();
+    std::fs::rename(&backup_path, &document_path).unwrap();
+
+    let committed_before_refresh = store.load_index().unwrap();
+    let entry_before_refresh = &committed_before_refresh.credentials[LOCAL_ALIAS];
+    let authorization_before_refresh = entry_before_refresh
+        .device_state
+        .as_ref()
+        .and_then(|state| state.authorization.as_ref())
+        .unwrap();
+    assert_eq!(authorization_before_refresh.auth_generation, 2);
+    assert!(
+        !live_client
+            .runtime()
+            .key_provider
+            .auth_state()
+            .unwrap()
+            .has_valid_token
+    );
+    let vault_refs_before_refresh = scenario.receiver.vault.list().unwrap();
+
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(&live_client);
+    let refreshed = crate::internal::transport::AsyncAuthenticatedRpcTransport::authenticated_rpc(
+        &mut transport,
+        "/user-service/did/device/rpc",
+        "device_registry_get",
+        json!({"did": scenario.generated.did.as_str()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(refreshed, json!({"refreshed": true}));
+    let requests = refresh_server.join().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0]
+        .to_ascii_lowercase()
+        .contains("signature-input:"));
+    assert!(requests[2]
+        .to_ascii_lowercase()
+        .contains("authorization: bearer "));
+
+    let refreshed_auth = live_client.runtime().key_provider.auth_state().unwrap();
+    assert!(refreshed_auth.has_valid_token);
+    assert_eq!(
+        refreshed_auth.refresh_token.as_deref(),
+        Some("management-refresh-token")
+    );
+    let retry_ref = store
+        .committed_root_import_management_auth_ref(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+    assert_eq!(retry_ref, auth_ref);
+    live_client
+        .runtime()
+        .key_provider
+        .advance_vault_auth_ref(&retry_ref)
+        .unwrap();
+    store
+        .commit_root_import_management_document(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &ack_registry.checkpoint,
+            &ack_document,
+        )
+        .unwrap();
+    assert_eq!(
+        live_client.runtime().key_provider.did_document().unwrap(),
+        ack_document
+    );
+
+    let repaired = store.load_index().unwrap();
+    let repaired_entry = &repaired.credentials[LOCAL_ALIAS];
+    let repaired_authorization = repaired_entry
+        .device_state
+        .as_ref()
+        .and_then(|state| state.authorization.as_ref())
+        .unwrap();
+    assert_eq!(repaired_authorization.auth_generation, 2);
+    assert_eq!(
+        repaired_entry
+            .vault_migration
+            .as_ref()
+            .unwrap()
+            .vnext_refs
+            .as_ref()
+            .unwrap()
+            .auth_jwt,
+        auth_ref
+    );
+    assert_eq!(
+        repaired_entry
+            .root_key_import
+            .as_ref()
+            .unwrap()
+            .management_token_operation_id
+            .as_deref(),
+        Some(operation_id.as_str())
+    );
+    assert_eq!(
+        scenario.receiver.vault.list().unwrap(),
+        vault_refs_before_refresh
+    );
+    assert_eq!(
+        live_client
+            .runtime()
+            .key_provider
+            .auth_state()
+            .unwrap()
+            .refresh_token
+            .as_deref(),
+        Some("management-refresh-token")
+    );
+}
+
 #[test]
 fn management_ready_projection_rejects_same_version_document_fork() {
     let scenario = scenario();
@@ -3180,10 +3358,14 @@ fn scenario() -> Scenario {
 }
 
 fn receiver_live_core(scenario: &Scenario) -> crate::ImCore {
+    receiver_live_core_with_endpoint(scenario, "https://example.test")
+}
+
+fn receiver_live_core_with_endpoint(scenario: &Scenario, service_base_url: &str) -> crate::ImCore {
     let root = scenario.receiver._root.path();
     crate::ImCore::new_with_options(
         crate::ImCoreConfig {
-            service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
+            service_base_url: crate::ServiceEndpoint::parse(service_base_url).unwrap(),
             did_domain: "awiki.test".to_owned(),
             user_service_endpoint: None,
             message_service_endpoint: None,
@@ -3216,6 +3398,94 @@ fn receiver_live_core(scenario: &Scenario) -> crate::ImCore {
             .with_multi_device_root_transfer_enabled(true),
     )
     .unwrap()
+}
+
+fn normal_refresh_server() -> (String, std::thread::JoinHandle<Vec<String>>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let refreshed_access = test_access_jwt(4_102_444_800);
+    let handle = std::thread::spawn(move || {
+        let responses = [
+            json!({
+                "jsonrpc": "2.0",
+                "id": "req-1",
+                "error": {"code": 1401, "message": "expired"},
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": "req-1",
+                "result": {"access_token": refreshed_access},
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": "req-1",
+                "result": {"refreshed": true},
+            }),
+        ];
+        responses
+            .into_iter()
+            .map(|response| {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_http_request(&mut stream);
+                let body = serde_json::to_vec(&response).unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+                stream.flush().unwrap();
+                request
+            })
+            .collect()
+    });
+    (format!("http://{address}"), handle)
+}
+
+fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .unwrap();
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 2048];
+    let header_end = loop {
+        let read = stream.read(&mut buffer).unwrap();
+        assert!(read > 0, "request closed before headers");
+        request.extend_from_slice(&buffer[..read]);
+        if let Some(offset) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            break offset + 4;
+        }
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    while request.len() < header_end + content_length {
+        let read = stream.read(&mut buffer).unwrap();
+        assert!(read > 0, "request closed before body");
+        request.extend_from_slice(&buffer[..read]);
+    }
+    String::from_utf8_lossy(&request).into_owned()
+}
+
+fn test_access_jwt(expires_at: i64) -> String {
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+    let payload = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&json!({
+            "sub": "did:example:alice",
+            "iat": 1_767_225_600_i64,
+            "exp": expires_at,
+        }))
+        .unwrap(),
+    );
+    format!("{header}.{payload}.test-signature")
 }
 
 fn add_ready_admin(

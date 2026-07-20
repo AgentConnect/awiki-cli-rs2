@@ -248,12 +248,49 @@ impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
     }
 
     fn persist_auth_token(&self, token: &str) -> crate::ImResult<()> {
-        let raw = crate::internal::auth::state::auth_state_json_for_token(token)?;
-        let auth_ref = self.auth_jwt_ref()?;
-        self.vault.seal(SealSecretRequest {
+        // A normal access-token refresh updates the authoritative record in
+        // place. Keep the read guard until the replacement is verified so a
+        // concurrent root-import ref advance cannot redirect this write to a
+        // superseded SecretRef.
+        let auth_ref =
+            self.auth_jwt_ref
+                .read()
+                .map_err(|_| crate::ImError::LocalStateUnavailable {
+                    detail: "vault auth ref lock poisoned".to_owned(),
+                })?;
+        if auth_ref.kind != SecretKind::AuthJwt {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let current = self.vault.open(&auth_ref)?;
+        let current = crate::internal::auth::state::parse_auth_state(current.expose_secret())?;
+        let refresh_token = current.refresh_token.clone();
+        let raw = crate::internal::auth::state::auth_state_json_for_token_pair(
+            token,
+            refresh_token.as_deref(),
+            None,
+        )?;
+        let candidate = crate::internal::auth::state::parse_auth_state(&raw)?;
+        if current.expires_at.is_some() && candidate.expires_at.is_none() {
+            // Never silently drop explicit access-token expiry metadata. A
+            // normal refresh for versioned vNext auth must return a JWT whose
+            // replacement expiry can be derived locally.
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let sealed = self.vault.seal(SealSecretRequest {
             metadata: Self::metadata_from_ref(&auth_ref),
             plaintext: SecretBytes::from_vec(raw),
         })?;
+        if sealed != *auth_ref {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let opened = self.vault.open(&sealed)?;
+        let persisted = crate::internal::auth::state::parse_auth_state(opened.expose_secret())?;
+        if persisted.bearer_token.as_deref() != Some(token.trim())
+            || persisted.refresh_token != refresh_token
+            || persisted.expires_at != candidate.expires_at
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
         Ok(())
     }
 
@@ -352,6 +389,7 @@ mod tests {
     use crate::internal::platform_secret::DeviceVaultRootKey;
     use crate::internal::secret_vault::record::SecretKind;
     use crate::internal::secret_vault::{FileSecretVault, FileSecretVaultStore};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use serde_json::json;
 
     #[test]
@@ -588,6 +626,80 @@ mod tests {
     }
 
     #[test]
+    fn vnext_access_refresh_preserves_committed_token_pair_in_place() {
+        let root = tempfile::tempdir().unwrap();
+        let identity_dir = root.path().join("identity");
+        std::fs::create_dir_all(&identity_dir).unwrap();
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([9_u8; 32]),
+            FileSecretVaultStore::new(root.path().join("vault")),
+        ));
+        let device_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityDeviceSigningPrivate,
+            "device-sign",
+            b"device-secret",
+        );
+        let agreement_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityE2eeAgreementPrivate,
+            "device-e2ee",
+            b"agreement-secret",
+        );
+        let auth_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::AuthJwt,
+            "auth.json",
+            &crate::internal::auth::state::auth_state_json_for_token_pair(
+                "expired-access-token",
+                Some("committed-refresh-token"),
+                Some("2000-01-01T00:00:00Z"),
+            )
+            .unwrap(),
+        );
+        let provider = VaultBackedKeyMaterialProvider::new_vnext(
+            identity_dir,
+            vault.clone(),
+            VNextVaultKeyMaterialRefs {
+                device_request_signing_private: device_ref,
+                did_document_root_private: None,
+                e2ee_agreement_private: agreement_ref,
+                auth_jwt: auth_ref.clone(),
+            },
+        );
+        let refreshed_access = test_jwt(4_102_444_800);
+
+        provider.persist_auth_token(&refreshed_access).unwrap();
+
+        assert_eq!(provider.auth_jwt_ref().unwrap(), auth_ref);
+        assert_eq!(
+            vault
+                .list()
+                .unwrap()
+                .into_iter()
+                .filter(|secret_ref| secret_ref.kind == SecretKind::AuthJwt)
+                .collect::<Vec<_>>(),
+            vec![auth_ref.clone()]
+        );
+        let opened = vault.open(&auth_ref).unwrap();
+        let refreshed =
+            crate::internal::auth::state::parse_auth_state(opened.expose_secret()).unwrap();
+        assert_eq!(
+            refreshed.bearer_token.as_deref(),
+            Some(refreshed_access.as_str())
+        );
+        assert_eq!(
+            refreshed.refresh_token.as_deref(),
+            Some("committed-refresh-token")
+        );
+        assert_eq!(
+            refreshed.expires_at.as_deref(),
+            Some("2100-01-01T00:00:00Z")
+        );
+        assert!(refreshed.has_valid_token);
+    }
+
+    #[test]
     fn live_vnext_provider_advances_to_committed_root_ref() {
         let root = tempfile::tempdir().unwrap();
         let identity_dir = root.path().join("identity");
@@ -720,6 +832,19 @@ mod tests {
                 plaintext: SecretBytes::from_vec(plaintext.to_vec()),
             })
             .unwrap()
+    }
+
+    fn test_jwt(expires_at: i64) -> String {
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&json!({
+                "sub": "did:example:alice",
+                "iat": 1_767_225_600_i64,
+                "exp": expires_at,
+            }))
+            .unwrap(),
+        );
+        format!("{header}.{payload}.test-signature")
     }
 
     fn test_metadata(kind: SecretKind, key_id: &str) -> SecretMetadata {
