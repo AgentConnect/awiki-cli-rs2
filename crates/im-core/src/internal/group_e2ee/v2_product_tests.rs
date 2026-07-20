@@ -241,6 +241,20 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         crate::secure::GroupSecureState::MissingLocalState
     );
     assert!(!a2_before_welcome.can_send_secure);
+    let a2_repair_before_welcome = status_runtime(&directory, &fixture, a2)
+        .repair(
+            crate::ids::GroupRef::parse(GROUP_DID).unwrap(),
+            "req-repair-a2-before-welcome",
+        )
+        .expect("A2 pre-Welcome repair is a secret-free no-op");
+    assert_eq!(
+        a2_repair_before_welcome.state,
+        crate::secure::GroupSecureState::MissingLocalState
+    );
+    assert!(!a2_repair_before_welcome.repaired);
+    assert_eq!(a2_repair_before_welcome.added_devices, 0);
+    assert_eq!(a2_repair_before_welcome.removed_devices, 0);
+    assert_eq!(a2_repair_before_welcome.remaining_devices, 0);
 
     let before_welcome = a1_product
         .prepare_product_application_send(

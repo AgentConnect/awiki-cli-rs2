@@ -569,6 +569,21 @@ pub(crate) fn reconcile_group_device_roster(
                     &mut context,
                     &group_did,
                 )?);
+        let inspected = context
+            .product
+            .inspect_local_group(endpoint_inventory_input(
+                client,
+                &context.device,
+                &group_did,
+                "group-roster-reconcile-readiness",
+            ))?;
+        // A same-DID sibling inherits the P4 business role but does not own
+        // this historical group's MLS state until it processes a Welcome.
+        // Repair must remain a secret-free no-op instead of synthesizing or
+        // copying a controller Leaf from another device.
+        if !local_group_can_reconcile_roster(&inspected.readiness) {
+            return Ok(summary);
+        }
         // The fresh P4 reference and desired member/device set are read after
         // WAL repair, so each subsequent P6 step starts from the latest
         // authoritative business state.
@@ -1260,6 +1275,10 @@ fn has_exact_endpoint(
 }
 
 fn local_group_can_remove_exact_device(readiness: &V2LocalGroupReadiness) -> bool {
+    *readiness == V2LocalGroupReadiness::Active
+}
+
+fn local_group_can_reconcile_roster(readiness: &V2LocalGroupReadiness) -> bool {
     *readiness == V2LocalGroupReadiness::Active
 }
 

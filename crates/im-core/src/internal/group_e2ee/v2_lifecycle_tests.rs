@@ -150,6 +150,19 @@ fn exact_device_remove_skips_groups_without_active_local_mls_state() {
 }
 
 #[test]
+fn p4_owner_without_local_mls_state_skips_roster_repair() {
+    assert!(local_group_can_reconcile_roster(
+        &V2LocalGroupReadiness::Active
+    ));
+    assert!(!local_group_can_reconcile_roster(
+        &V2LocalGroupReadiness::Missing
+    ));
+    assert!(!local_group_can_reconcile_roster(
+        &V2LocalGroupReadiness::Inactive
+    ));
+}
+
+#[test]
 fn revoke_inventory_calls_exact_remove_only_for_active_owned_groups() {
     let listed = crate::groups::GroupReadResult::from_raw_response(
         serde_json::json!({
