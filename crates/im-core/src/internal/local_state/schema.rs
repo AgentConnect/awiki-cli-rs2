@@ -990,6 +990,7 @@ pub(super) fn create_schema(
     super::peer_profiles::create_schema(connection)?;
     super::conversation_aliases::create_schema(connection)?;
     super::inbound_resolution_backlog::create_schema(connection)?;
+    super::old_admin_recovery_notices::create_schema(connection)?;
     for view in ["threads", "inbox", "outbox"] {
         connection
             .execute(&format!("DROP VIEW IF EXISTS {view}"), [])

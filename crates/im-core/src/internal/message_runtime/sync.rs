@@ -635,6 +635,15 @@ fn sync_delta_apply_event(
                 apply.messages.push(record);
             }
         }
+        "identity.recovery_started" => {
+            apply.old_admin_recovery_notices.push(
+                crate::internal::identity_recovery_notice::parse_sync_event(
+                    client,
+                    event,
+                    time::OffsetDateTime::now_utc(),
+                )?,
+            );
+        }
         unsupported => {
             return Err(sync_invalid_page(format!(
                 "unsupported sync.delta event_type {unsupported:?}"

@@ -1,6 +1,7 @@
 # Handle Recovery Core 接口（第一阶段）
 
-**状态**：Core 与 Dart/Flutter facade implemented，rollout default-off；CLI、旧管理设备通知消费和远端 E2E 后续完成。
+**状态**：请求方 Recovery Core 与 Dart/Flutter facade implemented；旧管理设备通知消费已在 Core
+implemented，Dart/Flutter/CLI 产品桥接和远端 E2E 后续完成；rollout default-off。
 
 ## 1. 定位与边界
 
@@ -90,12 +91,39 @@ token pair。Core 会保留已验证的 cutover 结果，并使用新 DID 的设
   AWiki 域内授权，不扩展 ANP Manifest；普通设备、已撤销设备和本地状态过期的旧设备不能取消；
 - 公开进度只包含 session ID、Handle、旧/新 DID、阶段和时间，不包含秘密或内部版本链。
 
-## 6. 当前旧管理设备取消阻断
+## 6. 旧管理设备通知与取消发现
 
-当前 `local_sessions()` 只恢复请求方本机的 durable pending。Core 尚未消费并持久化
-`awiki.identity.recovery-started.v1` 的旧管理设备通知，因此虽然公开 DTO 已包含
-`oldAdmin/can_cancel_from_this_device`，生产端目前不能据此发现一条新的可取消 Session。
+旧设备发现使用独立的 secret-free `OldAdminRecoveryNotice`，不得伪造成请求方的
+`HandleRecoveryProgress`。公开字段仅为 durable 事件可以验证和重建的：
 
-此外 `cancel` 的权威返回刻意保持为 `recovery_session_id + phase`；Host 只能结合调用前已经验证
-的当前进度更新本地显示，不能伪造 Handle、旧 DID 或 deadline。旧管理设备通知 consumer 完成前，
-不得把“旧设备收到通知并可取消”标记为已落地能力。
+```text
+event_id
+recovery_session_id
+handle
+old_did
+requested_at
+cancellable_until
+```
+
+Core 接口为：
+
+```rust
+list_old_admin_notices(old_identity)
+get_old_admin_notice(old_identity, event_id)
+dismiss_old_admin_notice(request)
+```
+
+记录按本地 `owner_identity_id + old_did + protocol_device_id` 隔离，并按 durable `event_id`
+语义幂等保存。相同 event 的不同投影、同一 session 对应不同 event、未知字段、错误 event/aggregate、
+非当前 DID、异常时间或超出服务端范围的冷静期均 fail closed。SQLite 不保存原始 payload，也没有
+OTP、token、proof、邮箱、位置或私钥字段。
+
+`sync.delta` 是权威来源：通知记录与 global checkpoint 在同一 SQLite transaction 中提交；记录
+持久化失败时 checkpoint 不前进。Realtime 只提前写入同一张表，复用同一套校验与去重，不写
+checkpoint；Recovery 控制通知无论有效或无效都不会投影成普通消息或 UnknownNotification。
+进程重启后记录仍可发现；已过 `cancellable_until` 或本地 dismissed 的记录从 list/get 隐藏。
+`dismiss` 只影响本设备 UI，不代表服务端取消，也不改变 Recovery Session。
+
+实际 `cancel` 入口保持不变，仍重新验证旧 DID 当前 `AdminReady`、user presence、最新 Registry/
+DID Document 和服务端权威状态。通知只提供“可以尝试取消”的发现信息，不授予取消权限。
+`cancel` 的权威返回仍刻意保持为 `recovery_session_id + phase`。

@@ -191,6 +191,76 @@ fn realtime_gap_hint_projection_does_not_write_sync_checkpoint() {
 
 #[test]
 #[cfg(feature = "blocking")]
+fn realtime_recovery_notice_is_persisted_once_and_never_emitted_as_message() {
+    let fixture = TestClientFixture::new("recovery-notice");
+    fixture.write_identity_with_device(
+        "did:example:alice",
+        "test-key",
+        "test-key",
+        "dev-old-admin",
+    );
+    let client = fixture.client();
+    let requested_at = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    let notification = json!({
+        "jsonrpc": "2.0",
+        "method": "identity.recovery_started",
+        "params": {
+            "event_id": "event-recovery-1",
+            "recovery_session_id": "session-recovery-1",
+            "handle": "alice.awiki.info",
+            "requested_at": requested_at,
+            "cooling_period_seconds": 86400
+        },
+        "sync": {
+            "event_id": "identity-recovery-started:event-recovery-1",
+            "event_seq": "9",
+            "event_type": "identity.recovery_started"
+        }
+    });
+    let mut projector = LocalStateRealtimeNotificationProjector {
+        client: &client,
+        inner: FixedProjector {
+            event: Some(super::super::ImEvent::MessageReceived(
+                direct_message_event(client.did().as_str()),
+            )),
+        },
+    };
+
+    for _ in 0..2 {
+        let outcome = projector.project(notification.clone());
+        assert!(outcome.event.is_none());
+        assert!(outcome.additional_events.is_empty());
+        assert!(outcome.warnings.is_empty());
+    }
+
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM old_admin_recovery_notices",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    assert!(
+        crate::internal::local_state::sync_state::load_global_checkpoint(&connection, "alice")
+            .unwrap()
+            .is_none(),
+        "realtime acceleration must not own the durable sync checkpoint"
+    );
+
+    let mut malformed = notification;
+    malformed["params"]["otp"] = json!("super-secret-otp");
+    let outcome = projector.project(malformed);
+    assert!(outcome.event.is_none());
+    assert_eq!(outcome.warnings.len(), 1);
+    assert!(!outcome.warnings[0].contains("super-secret-otp"));
+}
+
+#[test]
+#[cfg(feature = "blocking")]
 fn realtime_local_state_projector_stores_group_update() {
     let fixture = TestClientFixture::new("group");
     let client = fixture.client();
@@ -319,6 +389,61 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND did = ?3 AND messaged = 1"#,
         )
         .unwrap();
     assert_eq!(contact_count, 1);
+}
+
+#[tokio::test]
+async fn realtime_async_recovery_notice_uses_same_secret_free_projection() {
+    let fixture = TestClientFixture::new("async-recovery-notice");
+    fixture.write_identity_with_device(
+        "did:example:alice",
+        "test-key",
+        "test-key",
+        "dev-old-admin",
+    );
+    let client = fixture.client();
+    let requested_at = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    let mut projector = AsyncLocalStateRealtimeNotificationProjector {
+        client: client.clone(),
+        inner: FixedProjector {
+            event: Some(super::super::ImEvent::MessageReceived(
+                direct_message_event(client.did().as_str()),
+            )),
+        },
+    };
+    let outcome = projector
+        .project_async(json!({
+            "jsonrpc": "2.0",
+            "method": "identity.recovery_started",
+            "params": {
+                "event_id": "event-async-recovery-1",
+                "recovery_session_id": "session-async-recovery-1",
+                "handle": "alice.awiki.info",
+                "requested_at": requested_at,
+                "cooling_period_seconds": 86400
+            },
+            "sync": {
+                "event_id": "identity-recovery-started:event-async-recovery-1",
+                "event_seq": "10",
+                "event_type": "identity.recovery_started"
+            }
+        }))
+        .await;
+
+    assert!(outcome.event.is_none());
+    assert!(outcome.warnings.is_empty());
+    let db = client.core_inner().local_state_db().await.unwrap();
+    db.shutdown().await.unwrap();
+    let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM old_admin_recovery_notices",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
 }
 
 #[tokio::test]

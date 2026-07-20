@@ -29,6 +29,11 @@ impl ImClient {
         &self.identity
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_protocol_device_id_for_test(&mut self, device_id: &str) {
+        self.identity.device_id = Some(device_id.to_owned());
+    }
+
     pub fn did(&self) -> &crate::ids::Did {
         &self.identity.did
     }

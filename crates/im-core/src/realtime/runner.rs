@@ -535,6 +535,17 @@ where
     P: RealtimeNotificationProjector,
 {
     fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        if let Some(warnings) = project_old_admin_recovery_notice_realtime(
+            self.client,
+            &notification,
+            time::OffsetDateTime::now_utc(),
+        ) {
+            return RealtimeProjectionOutcome {
+                event: None,
+                additional_events: Vec::new(),
+                warnings,
+            };
+        }
         let outcome = self.inner.project(notification);
         for event in &outcome.additional_events {
             if let Err(error) = project_realtime_event_to_local_state(self.client, event) {
@@ -574,6 +585,19 @@ where
     P: AsyncRealtimeNotificationProjector + Send,
 {
     async fn project_async(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        if let Some(warnings) = project_old_admin_recovery_notice_realtime_async(
+            &self.client,
+            &notification,
+            time::OffsetDateTime::now_utc(),
+        )
+        .await
+        {
+            return RealtimeProjectionOutcome {
+                event: None,
+                additional_events: Vec::new(),
+                warnings,
+            };
+        }
         let outcome = self.inner.project_async(notification).await;
         let mut warnings = outcome.warnings;
         for event in &outcome.additional_events {
@@ -594,6 +618,79 @@ where
             event: outcome.event,
             additional_events: outcome.additional_events,
             warnings,
+        }
+    }
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
+fn project_old_admin_recovery_notice_realtime(
+    client: &crate::core::ImClient,
+    notification: &Value,
+    now: time::OffsetDateTime,
+) -> Option<Vec<String>> {
+    use crate::internal::identity_recovery_notice::RealtimeRecoveryNoticeProjection;
+
+    match crate::internal::identity_recovery_notice::classify_realtime_notification(
+        client,
+        notification,
+        now,
+    ) {
+        RealtimeRecoveryNoticeProjection::NotRecoveryControl => None,
+        RealtimeRecoveryNoticeProjection::UnknownRecoveryControl => Some(vec![
+            "unknown identity recovery realtime control was rejected".to_owned(),
+        ]),
+        RealtimeRecoveryNoticeProjection::RecoveryNotice(Err(_)) => Some(vec![
+            "identity.recovery_started realtime control was rejected".to_owned(),
+        ]),
+        RealtimeRecoveryNoticeProjection::RecoveryNotice(Ok(record)) => {
+            let result = (|| {
+                let mut connection = crate::internal::local_state::open_writable(
+                    &client.core_inner().sdk_paths().local_state.sqlite_path,
+                )?;
+                crate::internal::local_state::old_admin_recovery_notices::upsert(
+                    &mut connection,
+                    &record,
+                )
+            })();
+            Some(if result.is_ok() {
+                Vec::new()
+            } else {
+                vec!["identity.recovery_started realtime projection failed".to_owned()]
+            })
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+async fn project_old_admin_recovery_notice_realtime_async(
+    client: &crate::core::ImClient,
+    notification: &Value,
+    now: time::OffsetDateTime,
+) -> Option<Vec<String>> {
+    use crate::internal::identity_recovery_notice::RealtimeRecoveryNoticeProjection;
+
+    match crate::internal::identity_recovery_notice::classify_realtime_notification(
+        client,
+        notification,
+        now,
+    ) {
+        RealtimeRecoveryNoticeProjection::NotRecoveryControl => None,
+        RealtimeRecoveryNoticeProjection::UnknownRecoveryControl => Some(vec![
+            "unknown identity recovery realtime control was rejected".to_owned(),
+        ]),
+        RealtimeRecoveryNoticeProjection::RecoveryNotice(Err(_)) => Some(vec![
+            "identity.recovery_started realtime control was rejected".to_owned(),
+        ]),
+        RealtimeRecoveryNoticeProjection::RecoveryNotice(Ok(record)) => {
+            let result = match client.core_inner().local_state_db().await {
+                Ok(db) => db.upsert_old_admin_recovery_notice(record).await,
+                Err(error) => Err(error),
+            };
+            Some(if result.is_ok() {
+                Vec::new()
+            } else {
+                vec!["identity.recovery_started realtime projection failed".to_owned()]
+            })
         }
     }
 }

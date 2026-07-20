@@ -38,6 +38,10 @@ enum LocalStateCommand {
         input: super::sync_state::SyncDeltaApplyInput,
         reply: oneshot::Sender<crate::ImResult<super::sync_state::SyncDeltaApplyOutcome>>,
     },
+    UpsertOldAdminRecoveryNotice {
+        record: super::old_admin_recovery_notices::OldAdminRecoveryNoticeRecord,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
     UpsertContact {
         record: crate::internal::contact_store::records::ContactRecord,
         reply: oneshot::Sender<crate::ImResult<()>>,
@@ -446,6 +450,16 @@ impl LocalStateDb {
     ) -> crate::ImResult<super::sync_state::SyncDeltaApplyOutcome> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::ApplySyncDelta { input, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn upsert_old_admin_recovery_notice(
+        &self,
+        record: super::old_admin_recovery_notices::OldAdminRecoveryNoticeRecord,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::UpsertOldAdminRecoveryNotice { record, reply })
             .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
@@ -1295,6 +1309,10 @@ fn run_actor(
             }
             LocalStateCommand::ApplySyncDelta { input, reply } => {
                 let result = apply_sync_delta(&mut connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::UpsertOldAdminRecoveryNotice { record, reply } => {
+                let result = super::old_admin_recovery_notices::upsert(&mut connection, &record);
                 let _ = reply.send(result);
             }
             LocalStateCommand::UpsertContact { record, reply } => {

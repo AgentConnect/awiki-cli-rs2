@@ -20,6 +20,8 @@ pub(crate) mod email;
 pub(crate) mod groups;
 pub(crate) mod inbound_resolution_backlog;
 pub(crate) mod messages;
+#[cfg(feature = "sqlite")]
+pub(crate) mod old_admin_recovery_notices;
 pub(crate) mod owner_scope;
 #[cfg(feature = "sqlite")]
 pub(crate) mod peer_identifiers;

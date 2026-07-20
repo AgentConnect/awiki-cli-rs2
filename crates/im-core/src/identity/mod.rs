@@ -48,7 +48,8 @@ pub use self::recovery::{
     HandleRecoveryBeginGrant, HandleRecoveryBeginRequest, HandleRecoveryCancelRequest,
     HandleRecoveryCancelResult, HandleRecoveryFinalizeRequest, HandleRecoveryFinalizeResult,
     HandleRecoveryPhase, HandleRecoveryProgress, HandleRecoveryReconfirmationGrant,
-    HandleRecoveryService, HandleRecoverySide,
+    HandleRecoveryService, HandleRecoverySide, OldAdminRecoveryNotice,
+    OldAdminRecoveryNoticeDismissRequest, OldAdminRecoveryNoticeDismissResult,
 };
 pub use self::registry::IdentityRegistry;
 pub use self::root_key_transfer::{

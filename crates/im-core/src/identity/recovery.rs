@@ -113,6 +113,33 @@ pub struct HandleRecoveryCancelRequest {
     pub user_presence_confirmed: bool,
 }
 
+/// Secret-free, durable warning projected for one exact old-admin device.
+///
+/// This is intentionally independent from [`HandleRecoveryProgress`]: it is
+/// discovery evidence for a possible cancel attempt, not requester lifecycle
+/// state and not proof that this device is currently authorized to cancel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OldAdminRecoveryNotice {
+    pub event_id: String,
+    pub recovery_session_id: String,
+    pub handle: crate::ids::Handle,
+    pub old_did: crate::ids::Did,
+    pub requested_at: String,
+    pub cancellable_until: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OldAdminRecoveryNoticeDismissRequest {
+    pub old_identity: super::IdentitySelector,
+    pub event_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OldAdminRecoveryNoticeDismissResult {
+    pub event_id: String,
+    pub dismissed: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandleRecoverySide {
@@ -170,6 +197,68 @@ impl<'a> HandleRecoveryService<'a> {
     pub fn local_sessions(&self) -> crate::ImResult<Vec<HandleRecoveryProgress>> {
         self.require_enabled()?;
         crate::internal::identity_recovery_vnext::local_sessions(self.core)
+    }
+
+    pub fn list_old_admin_notices(
+        &self,
+        old_identity: super::IdentitySelector,
+    ) -> crate::ImResult<Vec<OldAdminRecoveryNotice>> {
+        self.require_enabled()?;
+        #[cfg(feature = "sqlite")]
+        {
+            crate::internal::identity_recovery_notice::list_old_admin_notices(
+                self.core,
+                old_identity,
+            )
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = old_identity;
+            Err(crate::ImError::unsupported(
+                "old-admin-recovery-notice-local-state",
+            ))
+        }
+    }
+
+    pub fn get_old_admin_notice(
+        &self,
+        old_identity: super::IdentitySelector,
+        event_id: &str,
+    ) -> crate::ImResult<Option<OldAdminRecoveryNotice>> {
+        self.require_enabled()?;
+        #[cfg(feature = "sqlite")]
+        {
+            crate::internal::identity_recovery_notice::get_old_admin_notice(
+                self.core,
+                old_identity,
+                event_id,
+            )
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = (old_identity, event_id);
+            Err(crate::ImError::unsupported(
+                "old-admin-recovery-notice-local-state",
+            ))
+        }
+    }
+
+    pub fn dismiss_old_admin_notice(
+        &self,
+        request: OldAdminRecoveryNoticeDismissRequest,
+    ) -> crate::ImResult<OldAdminRecoveryNoticeDismissResult> {
+        self.require_enabled()?;
+        #[cfg(feature = "sqlite")]
+        {
+            crate::internal::identity_recovery_notice::dismiss_old_admin_notice(self.core, request)
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported(
+                "old-admin-recovery-notice-local-state",
+            ))
+        }
     }
 
     pub async fn begin(

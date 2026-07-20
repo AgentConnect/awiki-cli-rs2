@@ -30,6 +30,8 @@ pub(crate) mod identity_genesis_pending;
 pub(crate) mod identity_join_activation_pending;
 pub(crate) mod identity_recover_local_state;
 pub(crate) mod identity_recovery_local;
+#[cfg(feature = "sqlite")]
+pub(crate) mod identity_recovery_notice;
 pub(crate) mod identity_recovery_pending;
 pub(crate) mod identity_recovery_runtime;
 pub(crate) mod identity_recovery_vnext;
