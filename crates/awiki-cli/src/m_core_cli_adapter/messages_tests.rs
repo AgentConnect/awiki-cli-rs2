@@ -80,6 +80,28 @@ fn direct_delivery_preserves_final_acceptance_from_core_metadata() {
 }
 
 #[test]
+fn direct_delivery_projects_internal_partial_retry_counts() {
+    let result = thread_scoped_send_result(&[
+        ("resolved_target_did", "did:wba:awiki.ai:bob:e1"),
+        ("attempted_device_count", "1"),
+        ("previously_accepted_device_count", "1"),
+        ("newly_accepted_device_count", "1"),
+        ("accepted_device_count", "2"),
+        ("failed_device_count", "0"),
+    ]);
+    let target = direct_target_from_result(&result);
+
+    let rendered = render_send_result(&target, &result, true).expect("render");
+    let delivery = &rendered.data["delivery"];
+
+    assert_eq!(delivery["attempted_device_count"], 1);
+    assert_eq!(delivery["previously_accepted_device_count"], 1);
+    assert_eq!(delivery["newly_accepted_device_count"], 1);
+    assert_eq!(delivery["accepted_device_count"], 2);
+    assert_eq!(delivery["failed_device_count"], 0);
+}
+
+#[test]
 fn group_delivery_preserves_final_acceptance_from_core_metadata() {
     let result = thread_scoped_send_result(&[
         ("raw_message_id", "msg-group"),

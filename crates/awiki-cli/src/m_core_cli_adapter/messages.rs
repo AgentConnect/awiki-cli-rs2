@@ -1608,6 +1608,10 @@ fn message_bool_attribute(attributes: &[MessageMetadataAttribute], key: &str) ->
     })
 }
 
+fn message_u64_attribute(attributes: &[MessageMetadataAttribute], key: &str) -> Option<u64> {
+    message_attribute(attributes, key).and_then(|value| value.trim().parse().ok())
+}
+
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 struct DirectSendResult {
     #[serde(default)]
@@ -1624,6 +1628,16 @@ struct DirectSendResult {
     final_acceptance: bool,
     #[serde(default)]
     delivery_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attempted_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previously_accepted_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    newly_accepted_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accepted_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failed_device_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -1667,6 +1681,26 @@ impl DirectSendResult {
             )
             .unwrap_or(matches!(result.delivery, DeliveryState::Sent)),
             delivery_state: delivery_state_label(result),
+            attempted_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "attempted_device_count",
+            ),
+            previously_accepted_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "previously_accepted_device_count",
+            ),
+            newly_accepted_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "newly_accepted_device_count",
+            ),
+            accepted_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "accepted_device_count",
+            ),
+            failed_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "failed_device_count",
+            ),
         }
     }
 }

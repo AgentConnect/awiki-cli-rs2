@@ -121,6 +121,13 @@ awiki-cli msg secure repair --with DID
 
 User-facing output should help repair sessions while redacting private cryptographic material.
 
+When AWiki's multi-device product path is enabled, the JSON `delivery` object
+may also expose `attempted_device_count`, `previously_accepted_device_count`,
+`newly_accepted_device_count`, `accepted_device_count`, and
+`failed_device_count`. These secret-free counters describe only the current
+local product invocation and its durable retry ledger. They are AWiki-internal
+observability fields, not ANP Direct wire fields and not cross-domain state.
+
 `msg secure init`, `msg secure failed`, `msg secure retry`, and `msg secure drop`
 are reserved internal/diagnostic command shapes in this branch. They are stable
 unsupported at the product surface and must not be documented as user workflows.
@@ -145,6 +152,7 @@ System-level validation belongs in the cross-repo system test suite, not in long
 
 - Public discovery enablement.
 - Group E2EE / MLS semantics.
-- Multi-device direct E2EE protocol expansion.
+- A cross-domain Direct batch request such as `deliveries[]`; fan-out remains
+  one standard `direct.send` request per target device.
 - Service-side plaintext decrypt.
 - Compatibility with obsolete HPKE wire objects.
