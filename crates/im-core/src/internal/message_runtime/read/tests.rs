@@ -677,7 +677,7 @@ fn messages_read_runtime_persists_inbox_projection_for_conversations() {
                 }]
             }),
         },
-        NoopDirectoryTransport,
+        StaticHandleDirectoryTransport,
     );
 
     runtime
@@ -715,8 +715,9 @@ fn messages_read_runtime_persists_inbox_projection_for_conversations() {
     );
     assert_eq!(conversation.unread_count, 1);
     assert!(matches!(
-        conversation.thread,
-        crate::messages::ThreadRef::Direct(_)
+        &conversation.thread,
+        crate::messages::ThreadRef::Thread(thread)
+            if thread.as_str().starts_with("dm:peer-scope:v1:")
     ));
 }
 
@@ -820,7 +821,7 @@ fn messages_read_runtime_preserves_remote_read_state_in_projection() {
                 }]
             }),
         },
-        NoopDirectoryTransport,
+        StaticHandleDirectoryTransport,
     );
 
     runtime
@@ -1607,7 +1608,7 @@ async fn messages_read_runtime_emits_conversation_patch_after_history_projection
                 "has_more": false
             }),
         },
-        NoopDirectoryTransport,
+        StaticHandleDirectoryTransport,
     );
 
     runtime

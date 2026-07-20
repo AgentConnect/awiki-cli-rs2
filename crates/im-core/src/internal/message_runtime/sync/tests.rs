@@ -583,10 +583,11 @@ async fn sync_delta_has_more_duplicate_page_without_progress_is_invalid() {
 #[tokio::test]
 async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
     let fixture = Fixture::new("thread-after-direct");
+    let conversation_id = fixture.seed_verified_peer();
     let client = fixture.client();
     fixture.seed_message(
         "local-direct-newest",
-        "dm:did:example:bob",
+        &conversation_id,
         "",
         Some(42),
         "did:example:bob",
