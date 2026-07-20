@@ -20,6 +20,10 @@ CLI 生命周期 implemented；远端 E2E 后续完成；rollout default-off。
 `document_version`、`document_hash`、`registry_version` 和 Handle mapping generation
 只用于 AWiki 域内一致性校验与 CAS，不进入 ANP、DID Document 扩展或公开 Core DTO。
 
+公开 WNS / ANP-04 Handle Resolution Document 只作为完整 Handle、当前 DID、`status` 和
+`binding_generation` 的权威来源。Recovery 不要求、读取或信任其中的 AWiki 数据库
+`user_id` / `subject_id`；这些内部账户标识不得为了 Recovery 被加入公共 WNS 文档。
+
 ## 2. 打开条件
 
 入口为：
@@ -39,7 +43,7 @@ Core 暴露以下高层操作：
 
 | 操作 | 作用 |
 | --- | --- |
-| `begin` | 使用 begin 专用账户验证 grant 创建或语义幂等重试 Recovery Session |
+| `begin` | 使用 begin 专用账户验证 grant 创建或语义幂等重试 Recovery Session，并从域内响应绑定经过验证的账户主体 |
 | `status` | 使用 Vault 中的 session token 获取冷静期状态 |
 | `cancel` | 由旧 DID 当前 `AdminReady` 设备签名取消 |
 | `finalize` | 再确认后生成全新身份并提交 Handle CAS |
@@ -50,6 +54,11 @@ Core 暴露以下高层操作：
 begin grant 和 reconfirmation grant 是 write-only 类型，`Debug` 始终脱敏；session token、
 DeviceProof、新 DID Document、私钥、内部 checkpoint 和返回 token pair 仅存在于 E2EE/HTTPS
 传输或加密 Vault pending record，不向 Host DTO 返回。
+
+`device_recovery_begin` 是 AWiki 域内 JSON-RPC，不是 ANP/WNS 协议。其成功结果必须包含
+`account_user_id`，且该值只能由服务端根据 begin grant 所验证账户和目标 Handle 归属生成；
+客户端不在请求中提供该值。Core 将其与 Recovery Session 一起存入 Vault，且不向 CLI、Dart、
+Flutter 或公开 DTO 暴露。缺失、空白、非 canonical 或幂等重放发生变化时均 fail closed。
 
 Dart/Flutter 将 begin 与 finalize 分别建模为
 `HandleRecoveryBeginVerificationGrant` 和
@@ -82,10 +91,11 @@ token pair。Core 会保留已验证的 cutover 结果，并使用新 DID 的设
 ## 5. 安全校验
 
 - begin/finalize 使用不同用途的账户验证 grant；首次 OTP 不能替代最终再确认；
-- begin 前和 finalize 前都重新读取同域权威 Handle 绑定；finalize 精确绑定原 mapping
-  generation，服务端只允许递增一代；
+- begin 前和 finalize 前都重新读取同域权威 Handle 绑定；公开 WNS 只提供 Handle、DID、状态和
+  generation，不提供内部账户主体；finalize 精确绑定原 mapping generation，服务端只允许递增一代；
 - finalize 只接受与本地生成 Document、bootstrap device、ready-admin generation 1 和原账户
-  `user_id` 一致的结果及设备 token；
+  `account_user_id` 一致的结果及设备 token；该账户主体必须来自经过账户验证的 begin 域内响应，
+  不能从公共 WNS 推断；
 - cancel 必须同时回读当前认证 Registry 和最新 DID Document；设备须在 Registry 中为
   `active + admin + management-ready`，并与 Manifest 公钥绑定一致。这里的 admin 状态是
   AWiki 域内授权，不扩展 ANP Manifest；普通设备、已撤销设备和本地状态过期的旧设备不能取消；

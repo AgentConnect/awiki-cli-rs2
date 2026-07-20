@@ -101,6 +101,7 @@ fn handle_recovery_progress_mapping_exposes_safe_local_status_only() {
     let debug = format!("{mapped:?}");
     for forbidden in [
         "account_verification_token",
+        "account_user_id",
         "reconfirmation_token",
         "recovery_session_token",
         "root_private_key",

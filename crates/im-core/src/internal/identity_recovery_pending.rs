@@ -1,8 +1,9 @@
 //! Vault-only crash recovery record for the vNext Handle Recovery lifecycle.
 //!
-//! The record owns replayable account/session/reconfirmation grants, generated
-//! private keys, the exact finalize proof and the returned device token pair.
-//! None of these values may enter public DTOs or ordinary local-state tables.
+//! The record owns replayable account/session/reconfirmation grants, the
+//! begin-authenticated internal account subject, generated private keys, the
+//! exact finalize proof and the returned device token pair. None of these
+//! values may enter public DTOs or ordinary local-state tables.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,7 @@ use crate::internal::secret_vault::policy::SecretAccessPolicy;
 use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
 use crate::internal::secret_vault::{SealSecretRequest, SecretVault};
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const KEY_VERSION: u32 = 1;
 
 #[derive(PartialEq, Serialize, Deserialize)]
@@ -109,7 +110,6 @@ impl PendingRecoveryRecord {
     pub(crate) fn validate(&self) -> crate::ImResult<()> {
         if self.schema_version != SCHEMA_VERSION
             || self.begin_operation_id.trim().is_empty()
-            || self.binding.user_id.trim().is_empty()
             || self.binding.mapping_generation == 0
             || self.binding.handle.as_str()
                 != format!("{}.{}", self.binding.local_part, self.binding.domain)
@@ -128,6 +128,8 @@ impl PendingRecoveryRecord {
         }
         if let Some(session) = &self.session {
             if session.old_did != self.binding.did.as_str()
+                || session.account_user_id.trim().is_empty()
+                || session.account_user_id.trim() != session.account_user_id
                 || session.recovery_session_id.trim().is_empty()
                 || session.recovery_session_token.trim().is_empty()
             {
@@ -199,7 +201,7 @@ impl PendingRecoveryRecord {
                 || result.old_did != self.binding.did.as_str()
                 || result.did != generated.did.as_str()
                 || result.handle != self.binding.handle.as_str()
-                || result.user_id != self.binding.user_id
+                || result.user_id != session.account_user_id
                 || result.handle_mapping_generation != next_mapping_generation
                 || result.device.device_id != generated.protocol_device_id.as_str()
                 || result.device.signing_key_id != generated.device_signing_key_id
@@ -655,8 +657,6 @@ mod tests {
             &serde_json::json!({
                 "did": "did:wba:awiki.info:user:alice:e1_old",
                 "full_handle": "alice.awiki.info",
-                "user_id": "user-alice",
-                "domain": "awiki.info",
                 "status": "active",
                 "binding_generation": "3"
             }),
@@ -703,6 +703,7 @@ mod tests {
             crate::internal::identity_wire::device_recovery::RecoverySessionResult {
                 recovery_session_id: "recovery-session-stable".to_owned(),
                 recovery_session_token: "session-token-secret".to_owned(),
+                account_user_id: "user-alice".to_owned(),
                 old_did: record.binding.did.as_str().to_owned(),
                 state: crate::internal::identity_wire::device_recovery::RecoveryRemoteState::Ready,
                 cooling_until: "2030-01-01T00:00:00Z".to_owned(),

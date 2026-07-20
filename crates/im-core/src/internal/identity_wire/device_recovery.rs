@@ -1,8 +1,9 @@
 //! Strict AWiki-internal wire contract for Handle Recovery.
 //!
 //! These JSON-RPC methods are same-domain control-plane operations. They are
-//! deliberately not ANP models and their checkpoint/mapping fields never
-//! appear in public Core DTOs or DID Document extensions.
+//! deliberately not ANP models; their authenticated account subject and
+//! checkpoint/mapping fields never appear in public WNS, Core DTOs, or DID
+//! Document extensions.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::RngCore as _;
@@ -44,6 +45,7 @@ pub(crate) enum RecoveryRemoteState {
 pub(crate) struct RecoverySessionResult {
     pub(crate) recovery_session_id: String,
     pub(crate) recovery_session_token: String,
+    pub(crate) account_user_id: String,
     pub(crate) old_did: String,
     pub(crate) state: RecoveryRemoteState,
     pub(crate) cooling_until: String,
@@ -55,6 +57,7 @@ impl std::fmt::Debug for RecoverySessionResult {
         f.debug_struct("RecoverySessionResult")
             .field("recovery_session_id", &self.recovery_session_id)
             .field("recovery_session_token", &"<redacted-recovery-token>")
+            .field("account_user_id", &"<internal-account-subject>")
             .field("old_did", &self.old_did)
             .field("state", &self.state)
             .field("cooling_until", &self.cooling_until)
@@ -331,6 +334,7 @@ pub(crate) fn parse_recovery_begin_result(
     )?;
     if result.state != RecoveryRemoteState::Cooling
         || result.old_did != expected_old_did.as_str()
+        || required(&result.account_user_id, "account_user_id")? != result.account_user_id
         || required(&result.recovery_session_token, "recovery_session_token")?
             == result.recovery_session_id
     {
@@ -850,10 +854,51 @@ mod tests {
     }
 
     #[test]
+    fn begin_result_binds_the_verified_internal_account_subject() {
+        let now = OffsetDateTime::parse("2029-12-31T00:00:00Z", &Rfc3339).unwrap();
+        let old_did = crate::ids::Did::parse("did:wba:awiki.info:user:alice:e1_old").unwrap();
+        let raw = json!({
+            "recovery_session_id": "recovery-1",
+            "recovery_session_token": "session-secret",
+            "account_user_id": "user-alice",
+            "old_did": old_did.as_str(),
+            "state": "cooling",
+            "cooling_until": "2030-01-01T00:00:00Z",
+            "expires_at": "2030-01-02T00:00:00Z",
+        });
+
+        let parsed = parse_recovery_begin_result(raw.clone(), &old_did, now).unwrap();
+        assert_eq!(parsed.account_user_id, "user-alice");
+        assert!(!format!("{parsed:?}").contains("user-alice"));
+
+        for invalid_subject in [None, Some(""), Some(" user-alice ")] {
+            let mut invalid = raw.clone();
+            match invalid_subject {
+                Some(value) => {
+                    invalid["account_user_id"] = Value::String(value.to_owned());
+                }
+                None => {
+                    invalid.as_object_mut().unwrap().remove("account_user_id");
+                }
+            }
+            assert!(parse_recovery_begin_result(invalid, &old_did, now).is_err());
+        }
+
+        let mut legacy_public_subject = raw;
+        legacy_public_subject
+            .as_object_mut()
+            .unwrap()
+            .remove("account_user_id");
+        legacy_public_subject["user_id"] = Value::String("user-alice".to_owned());
+        assert!(parse_recovery_begin_result(legacy_public_subject, &old_did, now).is_err());
+    }
+
+    #[test]
     fn status_parser_rejects_unknown_fields_and_context_changes() {
         let expected = RecoverySessionResult {
             recovery_session_id: "recovery-1".to_owned(),
             recovery_session_token: "secret".to_owned(),
+            account_user_id: "user-alice".to_owned(),
             old_did: "did:wba:awiki.info:user:alice:e1_old".to_owned(),
             state: RecoveryRemoteState::Cooling,
             cooling_until: "2030-01-01T00:00:00Z".to_owned(),
@@ -944,6 +989,7 @@ mod tests {
         let session = RecoverySessionResult {
             recovery_session_id: "recovery-expired-token".to_owned(),
             recovery_session_token: "session-secret".to_owned(),
+            account_user_id: "user-alice".to_owned(),
             old_did: "did:wba:awiki.info:user:alice:e1_old".to_owned(),
             state: RecoveryRemoteState::Ready,
             cooling_until: "2029-12-30T00:00:00Z".to_owned(),

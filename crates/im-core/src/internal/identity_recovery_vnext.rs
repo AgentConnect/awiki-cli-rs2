@@ -2,7 +2,9 @@
 //!
 //! This module is intentionally independent from legacy recovery. It never
 //! merges owner-scoped local state and only saves a brand-new VNext identity
-//! after the first-party Handle cutover has completed.
+//! after the first-party Handle cutover has completed. Public WNS state binds
+//! Handle/DID/generation; the verified internal account subject comes only
+//! from the same-domain Recovery begin result.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::RngCore as _;
@@ -334,6 +336,7 @@ pub(crate) async fn finalize(
             .session
             .as_ref()
             .ok_or(crate::ImError::PermissionDenied)?;
+        let account_user_id = session.account_user_id.clone();
         if !matches!(
             session.state,
             RecoveryRemoteState::Ready | RecoveryRemoteState::Consumed
@@ -357,7 +360,7 @@ pub(crate) async fn finalize(
                 raw,
                 session,
                 record.binding.handle.as_str(),
-                &record.binding.user_id,
+                &account_user_id,
                 record.binding.mapping_generation,
                 generated,
                 OffsetDateTime::now_utc(),
@@ -373,7 +376,7 @@ pub(crate) async fn finalize(
                 crate::internal::identity_wire::device_recovery::complete_recovery_finalize_with_fresh_tokens(
                     cutover,
                     fresh,
-                    &record.binding.user_id,
+                    &account_user_id,
                     generated,
                 )?
             }
@@ -564,6 +567,12 @@ async fn refresh_persisted_recovery_tokens_if_needed(
         Err(error) => return Err(error),
     }
     let fresh = issue_recovery_management_tokens(core, store, record).await?;
+    let account_user_id = record
+        .session
+        .as_ref()
+        .map(|session| session.account_user_id.as_str())
+        .ok_or(crate::ImError::PermissionDenied)?
+        .to_owned();
     let generated = record
         .generated
         .as_ref()
@@ -575,7 +584,7 @@ async fn refresh_persisted_recovery_tokens_if_needed(
     crate::internal::identity_wire::device_recovery::replace_recovery_finalize_tokens(
         remote,
         fresh,
-        &record.binding.user_id,
+        &account_user_id,
         generated,
     )?;
     record.token_issue_operation_id = None;
@@ -978,8 +987,6 @@ mod tests {
             &serde_json::json!({
                 "did": "did:wba:awiki.info:user:alice:e1_old",
                 "full_handle": "alice.awiki.info",
-                "user_id": "user-alice",
-                "domain": "awiki.info",
                 "status": "active",
                 "binding_generation": "8"
             }),
@@ -995,6 +1002,7 @@ mod tests {
             crate::internal::identity_wire::device_recovery::RecoverySessionResult {
                 recovery_session_id: "recovery-activation-pending".to_owned(),
                 recovery_session_token: "session-token-secret".to_owned(),
+                account_user_id: "user-alice".to_owned(),
                 old_did: record.binding.did.as_str().to_owned(),
                 state: RecoveryRemoteState::Consumed,
                 cooling_until: format_test_time(now - time::Duration::hours(1)),
@@ -1022,7 +1030,7 @@ mod tests {
             did: generated.did.as_str().to_owned(),
             handle: record.binding.handle.as_str().to_owned(),
             handle_mapping_generation: 9,
-            user_id: record.binding.user_id.clone(),
+            user_id: record.session.as_ref().unwrap().account_user_id.clone(),
             checkpoint: crate::internal::identity_device_state::IdentityInternalCheckpoint {
                 document_version: 1,
                 document_hash,
@@ -1226,8 +1234,6 @@ mod tests {
         let raw_binding = serde_json::json!({
             "did": old.did.as_str(),
             "full_handle": "alice.awiki.info",
-            "user_id": "user-alice",
-            "domain": "awiki.info",
             "status": "active",
             "binding_generation": "8"
         });

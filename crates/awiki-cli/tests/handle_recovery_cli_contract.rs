@@ -78,6 +78,7 @@ fn recovery_schema_never_accepts_credentials_or_internal_control_fields() {
         for forbidden in [
             "verification-token",
             "account-token",
+            "account_user_id",
             "reconfirmation-token",
             "root-private",
             "root_proof",

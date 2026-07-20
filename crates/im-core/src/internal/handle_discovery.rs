@@ -1,3 +1,9 @@
+//! Handle discovery routes and validation.
+//!
+//! Public WNS documents authorize a permanent full Handle, current DID,
+//! status, and binding generation. Recovery deliberately does not treat
+//! deployment-private account identifiers in that document as authoritative.
+
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -14,7 +20,6 @@ pub(crate) struct RecoveryHandleBinding {
     pub(crate) local_part: String,
     pub(crate) domain: String,
     pub(crate) did: crate::ids::Did,
-    pub(crate) user_id: String,
     pub(crate) mapping_generation: u64,
 }
 
@@ -125,25 +130,22 @@ pub(crate) fn recovery_handle_binding_from_value(
     raw: &Value,
 ) -> crate::ImResult<RecoveryHandleBinding> {
     let normalized = normalize_handle(expected_handle)?;
-    let resolution = resolution_from_public_document(&normalized.full_handle, raw.clone())?;
-    let lookup = crate::internal::directory_runtime::handle_lookup_from_value(raw)?;
-    if lookup.did.as_str() != resolution.target_did
-        || lookup.handle.as_str() != resolution.full_handle
-        || lookup.user_id != resolution.user_id
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let generation = lookup
-        .binding_generation
-        .as_deref()
+    let status = string_field(raw, "status")?;
+    validate_active_status(&normalized.full_handle, &status)?;
+    let full_handle = first_string_field(raw, &["full_handle", "handle"])?;
+    validate_handle_match(&normalized.full_handle, &full_handle)?;
+    let did = crate::ids::Did::parse(&string_field(raw, "did")?)?;
+    validate_did_matches_handle_domain(&full_handle, did.as_str())?;
+    let generation = raw
+        .get("binding_generation")
+        .and_then(Value::as_str)
         .ok_or(crate::ImError::PermissionDenied)?;
     let mapping_generation = canonical_positive_generation(generation)?;
     Ok(RecoveryHandleBinding {
-        handle: lookup.handle,
+        handle: crate::ids::Handle::parse(&full_handle, "")?,
         local_part: normalized.local_part,
         domain: normalized.domain,
-        did: lookup.did,
-        user_id: lookup.user_id,
+        did,
         mapping_generation,
     })
 }
@@ -392,12 +394,12 @@ fn did_wba_domain(did: &str) -> Option<String> {
 }
 
 fn canonical_positive_generation(value: &str) -> crate::ImResult<u64> {
-    let value = value.trim();
+    let trimmed = value.trim();
     let parsed = value
         .parse::<u64>()
         .ok()
         .filter(|generation| *generation > 0)
-        .filter(|generation| generation.to_string() == value)
+        .filter(|generation| value == trimmed && generation.to_string() == value)
         .ok_or(crate::ImError::PermissionDenied)?;
     Ok(parsed)
 }
@@ -461,19 +463,41 @@ mod tests {
         let base = json!({
             "did": "did:wba:awiki.info:user:alice:e1_current",
             "full_handle": "alice.awiki.info",
-            "user_id": "user-alice",
-            "domain": "awiki.info",
             "status": "active",
             "binding_generation": "3"
         });
         let binding = super::recovery_handle_binding_from_value("alice.awiki.info", &base).unwrap();
         assert_eq!(binding.mapping_generation, 3);
 
-        for invalid in ["0", "03", "+3", "-1", ""] {
+        for invalid in ["0", "03", "+3", "-1", "", " 3"] {
             let mut raw = base.clone();
             raw["binding_generation"] = Value::String(invalid.to_owned());
             assert!(super::recovery_handle_binding_from_value("alice.awiki.info", &raw).is_err());
         }
+    }
+
+    #[test]
+    fn recovery_binding_uses_only_public_wns_authority_fields() {
+        let base = json!({
+            "did": "did:wba:awiki.info:user:alice:e1_current",
+            "handle": "alice.awiki.info",
+            "status": "active",
+            "binding_generation": "3"
+        });
+        let without_internal_subject =
+            super::recovery_handle_binding_from_value("alice.awiki.info", &base).unwrap();
+
+        let mut with_untrusted_internal_subject = base;
+        with_untrusted_internal_subject["user_id"] = Value::String("untrusted-user".to_owned());
+        with_untrusted_internal_subject["subject_id"] =
+            Value::String("untrusted-subject".to_owned());
+        let ignored_internal_subject = super::recovery_handle_binding_from_value(
+            "alice.awiki.info",
+            &with_untrusted_internal_subject,
+        )
+        .unwrap();
+
+        assert_eq!(without_internal_subject, ignored_internal_subject);
     }
 
     #[test]

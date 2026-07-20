@@ -97,6 +97,7 @@ fn host_progress_projection_excludes_tokens_proofs_keys_and_internal_checkpoints
     let json = serde_json::to_value(progress).unwrap();
     for forbidden in [
         "account_verification_token",
+        "account_user_id",
         "reconfirmation_token",
         "recovery_session_token",
         "bootstrap_device_proof",
