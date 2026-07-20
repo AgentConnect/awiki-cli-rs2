@@ -10,12 +10,28 @@ repository.workspace = true
 name = "awiki-cli"
 path = "src/main.rs"
 
+[[bin]]
+name = "awiki-system-test-probe"
+path = "src/system_test_probe_main.rs"
+required-features = ["system-test-probe"]
+
+[features]
+default = []
+system-test-probe = [
+    "dep:futures-util",
+    "dep:reqwest",
+    "dep:tokio-tungstenite",
+    "dep:zeroize",
+]
+
 [dependencies]
 anyhow.workspace = true
 anp.workspace = true
 base64.workspace = true
+futures-util = { workspace = true, optional = true }
 im-core = { package = "awiki-im-core", path = "../im-core", features = ["group-e2ee"] }
 rand.workspace = true
+reqwest = { workspace = true, optional = true }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -23,7 +39,9 @@ sha2.workspace = true
 rusqlite.workspace = true
 time.workspace = true
 tokio.workspace = true
+tokio-tungstenite = { workspace = true, optional = true }
 webpki-roots.workspace = true
+zeroize = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
