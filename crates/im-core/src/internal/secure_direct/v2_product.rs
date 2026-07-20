@@ -3,7 +3,9 @@
 //! The cross-domain device set comes only from the resolved DID Document's
 //! embedded `deviceManifest`. AWiki Registry roles are intentionally outside
 //! this path. Each target device receives one standard `direct.send` request,
-//! while a secret-free local ledger aggregates those independent deliveries.
+//! while a secret-free local ledger aggregates those independent deliveries
+//! and reports current-attempt versus previously accepted counts for safe
+//! product retry diagnostics.
 //! Attachment objects are prepared once; their full Manifest is retained only
 //! in the local SecretVault so a partial device fan-out can resume without
 //! uploading a second object.
@@ -408,6 +410,12 @@ pub(crate) struct V2DirectProductSendSummary {
     pub(crate) target_did: String,
     pub(crate) target_device_count: usize,
     pub(crate) own_sync_device_count: usize,
+    /// Eligible endpoints whose delivery pipeline ran in this invocation.
+    pub(crate) attempted_device_count: usize,
+    /// Endpoints skipped because the durable ledger already records acceptance.
+    pub(crate) previously_accepted_device_count: usize,
+    /// Endpoints newly accepted by this invocation.
+    pub(crate) newly_accepted_device_count: usize,
     pub(crate) accepted_device_count: usize,
     pub(crate) failed_device_count: usize,
     pub(crate) accepted_at: Option<String>,
@@ -870,6 +878,9 @@ where
 
     let mut accepted_at = None;
     let mut accepted = 0_usize;
+    let mut attempted = 0_usize;
+    let mut previously_accepted = 0_usize;
+    let mut newly_accepted = 0_usize;
     let mut failed = 0_usize;
     for target in &targets {
         let operation_id = delivery_operation_id(
@@ -894,12 +905,14 @@ where
         if record.phase == DeliveryPhase::Accepted {
             cleanup_accepted_pending(context, &record)?;
             accepted += 1;
+            previously_accepted += 1;
             accepted_at = max_timestamp(accepted_at, record.accepted_at.clone());
             continue;
         }
         if record.phase == DeliveryPhase::Ineligible {
             return Err(crate::ImError::PermissionDenied);
         }
+        attempted += 1;
 
         let binding = binding_for(context, &target.device, &target.recipient_did)?;
         let recipient_document = if target.recipient_did == context.local_did {
@@ -961,6 +974,7 @@ where
         })?;
         let _ = context.with_direct(|direct| direct.mark_outbound_accepted(&prepared))?;
         accepted += 1;
+        newly_accepted += 1;
         accepted_at = max_timestamp(accepted_at, Some(result.accepted_at));
     }
 
@@ -975,6 +989,9 @@ where
             .iter()
             .filter(|target| target.class == DeliveryClass::OwnSync)
             .count(),
+        attempted_device_count: attempted,
+        previously_accepted_device_count: previously_accepted,
+        newly_accepted_device_count: newly_accepted,
         accepted_device_count: accepted,
         failed_device_count: failed,
         accepted_at,

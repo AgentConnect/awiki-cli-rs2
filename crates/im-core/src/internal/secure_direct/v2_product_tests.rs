@@ -389,6 +389,9 @@ async fn one_send_fans_out_exact_init_to_every_peer_and_sibling_device() {
     assert!(summary.fully_accepted());
     assert_eq!(summary.target_device_count, 2);
     assert_eq!(summary.own_sync_device_count, 2);
+    assert_eq!(summary.attempted_device_count, 4);
+    assert_eq!(summary.previously_accepted_device_count, 0);
+    assert_eq!(summary.newly_accepted_device_count, 4);
     assert_eq!(summary.accepted_device_count, 4);
     assert_eq!(host.post_attempts.len(), 4);
     assert!(host
@@ -534,6 +537,9 @@ async fn prekey_failure_keeps_wire_unprepared_and_retries_same_operation() {
     .await
     .unwrap();
     assert_eq!(first.failed_device_count, 1);
+    assert_eq!(first.attempted_device_count, 1);
+    assert_eq!(first.previously_accepted_device_count, 0);
+    assert_eq!(first.newly_accepted_device_count, 0);
     assert_eq!(first.accepted_device_count, 0);
     let connection = alice.open_connection().unwrap();
     let (wire_prepared, operation_id): (i64, String) = connection
@@ -554,11 +560,83 @@ async fn prekey_failure_keeps_wire_unprepared_and_retries_same_operation() {
     .await
     .unwrap();
     assert!(second.fully_accepted());
+    assert_eq!(second.attempted_device_count, 1);
+    assert_eq!(second.previously_accepted_device_count, 0);
+    assert_eq!(second.newly_accepted_device_count, 1);
     assert_eq!(host.fetch_operations.len(), 2);
     assert_eq!(host.fetch_operations[0].2, operation_id);
     assert_eq!(host.fetch_operations[1].2, operation_id);
     assert_eq!(host.post_attempts.len(), 1);
     assert_eq!(host.post_attempts[0].metadata.operation_id, operation_id);
+}
+
+#[tokio::test]
+async fn partial_retry_attempts_only_the_failed_device() {
+    let root = tempfile::tempdir().unwrap();
+    let alice_did = "did:example:alice";
+    let bob_did = "did:example:bob";
+    let a1 = DeviceSpec {
+        id: "alice-a1",
+        signing_seed: 201,
+        static_seed: 202,
+        signed_prekey_seed: 203,
+        one_time_prekey_seed: 204,
+    };
+    let b1 = DeviceSpec {
+        id: "bob-b1",
+        signing_seed: 205,
+        static_seed: 206,
+        signed_prekey_seed: 207,
+        one_time_prekey_seed: 208,
+    };
+    let b2 = DeviceSpec {
+        id: "bob-b2",
+        signing_seed: 209,
+        static_seed: 210,
+        signed_prekey_seed: 211,
+        one_time_prekey_seed: 212,
+    };
+    let alice = context(root.path(), "identity-alice-a1", alice_did, a1, 213);
+    let mut host = FakeHost::default();
+    host.add_document(alice_did, did_document(alice_did, &[a1]));
+    host.add_document(bob_did, did_document(bob_did, &[b1, b2]));
+    host.add_bundle(bob_did, b1);
+    host.add_bundle(bob_did, b2);
+    host.fail_post_once
+        .insert((bob_did.to_owned(), b2.id.to_owned()));
+
+    let input = || text_input("logical-partial", bob_did, "retry failed only");
+    let first = send_with_host(&alice, &mut host, input()).await.unwrap();
+    assert_eq!(first.attempted_device_count, 2);
+    assert_eq!(first.previously_accepted_device_count, 0);
+    assert_eq!(first.newly_accepted_device_count, 1);
+    assert_eq!(first.accepted_device_count, 1);
+    assert_eq!(first.failed_device_count, 1);
+    assert_eq!(host.post_attempts.len(), 2);
+
+    let second = send_with_host(&alice, &mut host, input()).await.unwrap();
+    assert!(second.fully_accepted());
+    assert_eq!(second.attempted_device_count, 1);
+    assert_eq!(second.previously_accepted_device_count, 1);
+    assert_eq!(second.newly_accepted_device_count, 1);
+    assert_eq!(second.accepted_device_count, 2);
+    assert_eq!(second.failed_device_count, 0);
+    assert_eq!(host.post_attempts.len(), 3);
+    assert_eq!(
+        host.post_attempts
+            .last()
+            .unwrap()
+            .metadata
+            .recipient_device_id,
+        b2.id
+    );
+    assert_eq!(
+        host.post_attempts
+            .iter()
+            .filter(|prepared| prepared.metadata.recipient_device_id == b1.id)
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -1145,6 +1223,9 @@ async fn attachment_partial_retry_reuses_one_object_and_exact_device_ciphertext(
         .unwrap();
     assert_eq!(first.direct.accepted_device_count, 1);
     assert_eq!(first.direct.failed_device_count, 1);
+    assert_eq!(first.direct.attempted_device_count, 2);
+    assert_eq!(first.direct.previously_accepted_device_count, 0);
+    assert_eq!(first.direct.newly_accepted_device_count, 1);
     assert_eq!(object_host.prepare_calls, 1);
     assert_eq!(object_host.upload_calls, 1);
     assert_eq!(object_host.commit_calls, 1);
@@ -1159,6 +1240,9 @@ async fn attachment_partial_retry_reuses_one_object_and_exact_device_ciphertext(
         .await
         .unwrap();
     assert!(second.direct.fully_accepted());
+    assert_eq!(second.direct.attempted_device_count, 1);
+    assert_eq!(second.direct.previously_accepted_device_count, 1);
+    assert_eq!(second.direct.newly_accepted_device_count, 1);
     assert_eq!(object_host.prepare_calls, 1);
     assert_eq!(object_host.upload_calls, 1);
     assert_eq!(object_host.commit_calls, 1);

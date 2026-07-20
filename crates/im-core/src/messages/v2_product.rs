@@ -2,7 +2,8 @@
 //!
 //! The protocol-specific runtimes own encryption and exact-device state. This
 //! adapter keeps the public SDK contract at one logical message and persists
-//! only the secret-free local projection.
+//! only the secret-free local projection. Per-invocation delivery counts are
+//! AWiki product metadata and never enter the ANP Direct wire object.
 
 use serde_json::Value;
 
@@ -237,6 +238,21 @@ fn direct_result(
         &mut result,
         "own_sync_device_count",
         &summary.own_sync_device_count.to_string(),
+    );
+    add_product_attribute(
+        &mut result,
+        "attempted_device_count",
+        &summary.attempted_device_count.to_string(),
+    );
+    add_product_attribute(
+        &mut result,
+        "previously_accepted_device_count",
+        &summary.previously_accepted_device_count.to_string(),
+    );
+    add_product_attribute(
+        &mut result,
+        "newly_accepted_device_count",
+        &summary.newly_accepted_device_count.to_string(),
     );
     add_product_attribute(
         &mut result,
