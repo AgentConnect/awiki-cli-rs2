@@ -218,6 +218,23 @@ pub struct DartHandleRecoveryCancelResult {
     pub phase: DartHandleRecoveryPhase,
 }
 
+/// Secret-free, device-local discovery record for an old management device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartOldAdminRecoveryNotice {
+    pub event_id: String,
+    pub recovery_session_id: String,
+    pub handle: String,
+    pub old_did: String,
+    pub requested_at: String,
+    pub cancellable_until: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartOldAdminRecoveryNoticeDismissResult {
+    pub event_id: String,
+    pub dismissed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartHandleRecoveryFinalizeResult {
     pub progress: DartHandleRecoveryProgress,

@@ -957,6 +957,45 @@ fn device_revoke_result_maps_only_safe_product_state() {
 }
 
 #[test]
+fn old_admin_recovery_notice_maps_only_secret_free_discovery_state() {
+    let notice = im_core::identity::OldAdminRecoveryNotice {
+        event_id: "recovery-event-1".to_owned(),
+        recovery_session_id: "recovery-session-1".to_owned(),
+        handle: im_core::ids::Handle::parse("alice.awiki.info", "").expect("handle"),
+        old_did: im_core::ids::Did::parse("did:wba:awiki.info:user:alice:e1_old").expect("did"),
+        requested_at: "2026-07-20T00:00:00Z".to_owned(),
+        cancellable_until: "2026-07-21T00:00:00Z".to_owned(),
+    };
+    let dart: awiki_im_core::dto::identity::DartOldAdminRecoveryNotice = notice.into();
+
+    assert_eq!(dart.event_id, "recovery-event-1");
+    assert_eq!(dart.recovery_session_id, "recovery-session-1");
+    assert_eq!(dart.handle, "alice.awiki.info");
+    assert_eq!(dart.old_did, "did:wba:awiki.info:user:alice:e1_old");
+    let debug = format!("{dart:?}");
+    for forbidden in [
+        "sync_checkpoint",
+        "token",
+        "proof",
+        "email",
+        "secret",
+        "document_hash",
+        "registry_version",
+    ] {
+        assert!(!debug.to_lowercase().contains(forbidden));
+    }
+
+    let dismissed: awiki_im_core::dto::identity::DartOldAdminRecoveryNoticeDismissResult =
+        im_core::identity::OldAdminRecoveryNoticeDismissResult {
+            event_id: "recovery-event-1".to_owned(),
+            dismissed: true,
+        }
+        .into();
+    assert_eq!(dismissed.event_id, "recovery-event-1");
+    assert!(dismissed.dismissed);
+}
+
+#[test]
 fn identity_vault_status_maps_without_secret_refs() {
     let core_status = im_core::identity::IdentityVaultStatus {
         identity: im_core::identity::IdentitySummary {

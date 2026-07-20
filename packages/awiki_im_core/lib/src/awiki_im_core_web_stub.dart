@@ -127,6 +127,26 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<List<OldAdminRecoveryNotice>> listOldAdminRecoveryNotices({
+    required IdentitySelector oldIdentity,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<OldAdminRecoveryNotice?> getOldAdminRecoveryNotice({
+    required IdentitySelector oldIdentity,
+    required String eventId,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<OldAdminRecoveryNoticeDismissResult> dismissOldAdminRecoveryNotice({
+    required IdentitySelector oldIdentity,
+    required String eventId,
+  }) async {
+    throw _unsupported();
+  }
+
   Future<HandleRecoveryProgress> beginHandleRecovery({
     required String handle,
     required HandleRecoveryBeginVerificationGrant verificationGrant,

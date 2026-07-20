@@ -31,6 +31,34 @@ Future<List<DartHandleRecoveryProgress>> localHandleRecoverySessions({
   core: core,
 );
 
+Future<List<DartOldAdminRecoveryNotice>> listOldAdminRecoveryNotices({
+  required ArcDartImCore core,
+  required DartIdentitySelector oldIdentity,
+}) => RustLib.instance.api.crateApiIdentityListOldAdminRecoveryNotices(
+  core: core,
+  oldIdentity: oldIdentity,
+);
+
+Future<DartOldAdminRecoveryNotice?> getOldAdminRecoveryNotice({
+  required ArcDartImCore core,
+  required DartIdentitySelector oldIdentity,
+  required String eventId,
+}) => RustLib.instance.api.crateApiIdentityGetOldAdminRecoveryNotice(
+  core: core,
+  oldIdentity: oldIdentity,
+  eventId: eventId,
+);
+
+Future<DartOldAdminRecoveryNoticeDismissResult> dismissOldAdminRecoveryNotice({
+  required ArcDartImCore core,
+  required DartIdentitySelector oldIdentity,
+  required String eventId,
+}) => RustLib.instance.api.crateApiIdentityDismissOldAdminRecoveryNotice(
+  core: core,
+  oldIdentity: oldIdentity,
+  eventId: eventId,
+);
+
 Future<DartHandleRecoveryProgress> beginHandleRecovery({
   required ArcDartImCore core,
   required String handle,

@@ -351,6 +351,49 @@ class AwikiImCore {
     return sessions.map((session) => session._toModel()).toList();
   }
 
+  Future<List<OldAdminRecoveryNotice>> listOldAdminRecoveryNotices({
+    required IdentitySelector oldIdentity,
+  }) async {
+    _ensureNotDisposed();
+    final notices = await _mapNativeErrors(
+      () => gen_identity_api.listOldAdminRecoveryNotices(
+        core: _inner,
+        oldIdentity: oldIdentity._toGen(),
+      ),
+    );
+    return notices.map((notice) => notice._toModel()).toList();
+  }
+
+  Future<OldAdminRecoveryNotice?> getOldAdminRecoveryNotice({
+    required IdentitySelector oldIdentity,
+    required String eventId,
+  }) async {
+    _ensureNotDisposed();
+    final notice = await _mapNativeErrors(
+      () => gen_identity_api.getOldAdminRecoveryNotice(
+        core: _inner,
+        oldIdentity: oldIdentity._toGen(),
+        eventId: eventId,
+      ),
+    );
+    return notice?._toModel();
+  }
+
+  Future<OldAdminRecoveryNoticeDismissResult> dismissOldAdminRecoveryNotice({
+    required IdentitySelector oldIdentity,
+    required String eventId,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.dismissOldAdminRecoveryNotice(
+        core: _inner,
+        oldIdentity: oldIdentity._toGen(),
+        eventId: eventId,
+      ),
+    );
+    return result._toModel();
+  }
+
   Future<HandleRecoveryProgress> beginHandleRecovery({
     required String handle,
     required HandleRecoveryBeginVerificationGrant verificationGrant,
@@ -2140,6 +2183,25 @@ extension on gen_identity.DartHandleRecoveryProgress {
     newDid: newDid,
     localActivationPending: localActivationPending,
   );
+}
+
+extension on gen_identity.DartOldAdminRecoveryNotice {
+  OldAdminRecoveryNotice _toModel() => OldAdminRecoveryNotice(
+    eventId: eventId,
+    recoverySessionId: recoverySessionId,
+    handle: handle,
+    oldDid: oldDid,
+    requestedAt: requestedAt,
+    cancellableUntil: cancellableUntil,
+  );
+}
+
+extension on gen_identity.DartOldAdminRecoveryNoticeDismissResult {
+  OldAdminRecoveryNoticeDismissResult _toModel() =>
+      OldAdminRecoveryNoticeDismissResult(
+        eventId: eventId,
+        dismissed: dismissed,
+      );
 }
 
 extension on gen_identity.DartHandleRecoveryPhase {

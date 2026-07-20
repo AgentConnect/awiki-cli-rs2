@@ -27,7 +27,8 @@ use crate::dto::{
         DartHandleRegistrationResult, DartIdentityDeviceMode, DartIdentityDeviceReadiness,
         DartIdentityDeviceRole, DartIdentityDeviceSummary, DartIdentitySecretStorageBackend,
         DartIdentitySummary, DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
-        DartIdentityVaultVerificationReport, DartRecoverHandleResult,
+        DartIdentityVaultVerificationReport, DartOldAdminRecoveryNotice,
+        DartOldAdminRecoveryNoticeDismissResult, DartRecoverHandleResult,
         DartRootKeyTransferSendResult, DartRootKeyTransferStatus, DartRootKeyTransferSummary,
     },
     message::{
@@ -51,6 +52,30 @@ use crate::dto::{
         DartSecureOutboxStatus, DartSecureProblem, DartSecureProblemCode,
     },
 };
+
+impl From<im_core::identity::OldAdminRecoveryNotice> for DartOldAdminRecoveryNotice {
+    fn from(value: im_core::identity::OldAdminRecoveryNotice) -> Self {
+        Self {
+            event_id: value.event_id,
+            recovery_session_id: value.recovery_session_id,
+            handle: value.handle.as_str().to_owned(),
+            old_did: value.old_did.as_str().to_owned(),
+            requested_at: value.requested_at,
+            cancellable_until: value.cancellable_until,
+        }
+    }
+}
+
+impl From<im_core::identity::OldAdminRecoveryNoticeDismissResult>
+    for DartOldAdminRecoveryNoticeDismissResult
+{
+    fn from(value: im_core::identity::OldAdminRecoveryNoticeDismissResult) -> Self {
+        Self {
+            event_id: value.event_id,
+            dismissed: value.dismissed,
+        }
+    }
+}
 
 impl From<im_core::identity::DeviceRevokeResult> for DartDeviceRevokeResult {
     fn from(value: im_core::identity::DeviceRevokeResult) -> Self {

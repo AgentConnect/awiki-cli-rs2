@@ -1,8 +1,7 @@
 # Handle Recovery Core 接口（第一阶段）
 
-**状态**：请求方 Recovery Core、Dart/Flutter facade 与 CLI 生命周期 implemented；旧管理设备
-通知消费已在 Core implemented，Dart/Flutter/App 通知桥接和远端 E2E 后续完成；rollout
-default-off。
+**状态**：请求方 Recovery Core、旧管理设备通知消费、Dart/Flutter facade、AWiki Me 产品桥接与
+CLI 生命周期 implemented；远端 E2E 后续完成；rollout default-off。
 
 ## 1. 定位与边界
 
@@ -152,3 +151,28 @@ marker；它不会生成第二套身份或复制旧 Direct/MLS 状态。
 所有 CLI 输出仍只包含本接口已有的 secret-free progress、cancel result 和
 `IdentitySummary`。OTP、grant、session/access/refresh token、Document、proof、私钥以及
 `document_version`、`document_hash`、Registry/generation/checkpoint 均不能进入 schema 或结果。
+
+## 8. Dart/Flutter 与 AWiki Me 旧管理设备桥接
+
+Dart/Flutter facade 在同一个 `multiDeviceHandleRecoveryEnabled` 默认关闭门禁下暴露：
+
+```text
+listOldAdminRecoveryNotices(oldIdentity)
+getOldAdminRecoveryNotice(oldIdentity, eventId)
+dismissOldAdminRecoveryNotice(oldIdentity, eventId)
+```
+
+公开 DTO 与第 6 节完全一致，只包含 event/session ID、Handle、旧 DID、申请时间和可取消截止时间。
+facade、生成的 FRB glue、Flutter 模型和 Web typed stub 均不得增加 raw payload、sync checkpoint、
+token、proof、邮箱、秘密或内部 Document/Registry 字段。
+
+AWiki Me 的设备页只在当前设备为 ready admin 时显示该 secret-free 警报。页面初始化和用户刷新
+都会重新 list，因此 Core 通过 realtime 或 sync 持久化的通知不需要进入 App realtime/message
+模型即可被发现。实际取消前 application service 必须按 `event_id` fresh get，逐字段确认投影未变，
+然后重新获取一次 OS user-presence，最后调用既有 `cancel`；Core/服务端仍权威地 fail closed
+验证当前 management-ready admin。取消成功后再做一次明确分离的本地 dismiss，使已解决警报刷新
+后不再出现。
+
+“仅在本设备隐藏”只调用 dismiss，不调用 cancel，产品文案必须明确它不会改变服务器 Recovery
+Session。过期、由本 App 成功取消并随即 dismiss、或已本地隐藏的通知在刷新后不可见。
+Recovery control notification 始终由 Core 消费，不能投影到会话、普通系统通知或通知预览。

@@ -837,6 +837,67 @@ class DartInitialProfile {
           avatarUrl == other.avatarUrl;
 }
 
+/// Secret-free, device-local discovery record for an old management device.
+class DartOldAdminRecoveryNotice {
+  final String eventId;
+  final String recoverySessionId;
+  final String handle;
+  final String oldDid;
+  final String requestedAt;
+  final String cancellableUntil;
+
+  const DartOldAdminRecoveryNotice({
+    required this.eventId,
+    required this.recoverySessionId,
+    required this.handle,
+    required this.oldDid,
+    required this.requestedAt,
+    required this.cancellableUntil,
+  });
+
+  @override
+  int get hashCode =>
+      eventId.hashCode ^
+      recoverySessionId.hashCode ^
+      handle.hashCode ^
+      oldDid.hashCode ^
+      requestedAt.hashCode ^
+      cancellableUntil.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartOldAdminRecoveryNotice &&
+          runtimeType == other.runtimeType &&
+          eventId == other.eventId &&
+          recoverySessionId == other.recoverySessionId &&
+          handle == other.handle &&
+          oldDid == other.oldDid &&
+          requestedAt == other.requestedAt &&
+          cancellableUntil == other.cancellableUntil;
+}
+
+class DartOldAdminRecoveryNoticeDismissResult {
+  final String eventId;
+  final bool dismissed;
+
+  const DartOldAdminRecoveryNoticeDismissResult({
+    required this.eventId,
+    required this.dismissed,
+  });
+
+  @override
+  int get hashCode => eventId.hashCode ^ dismissed.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartOldAdminRecoveryNoticeDismissResult &&
+          runtimeType == other.runtimeType &&
+          eventId == other.eventId &&
+          dismissed == other.dismissed;
+}
+
 class DartRecoverHandleResult {
   final String handle;
   final String phone;

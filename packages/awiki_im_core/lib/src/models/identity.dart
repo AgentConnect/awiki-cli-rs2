@@ -309,6 +309,35 @@ class HandleRecoveryCancelResult {
   final HandleRecoveryPhase phase;
 }
 
+/// Secret-free recovery warning persisted for one old management device.
+class OldAdminRecoveryNotice {
+  const OldAdminRecoveryNotice({
+    required this.eventId,
+    required this.recoverySessionId,
+    required this.handle,
+    required this.oldDid,
+    required this.requestedAt,
+    required this.cancellableUntil,
+  });
+
+  final String eventId;
+  final String recoverySessionId;
+  final String handle;
+  final String oldDid;
+  final String requestedAt;
+  final String cancellableUntil;
+}
+
+class OldAdminRecoveryNoticeDismissResult {
+  const OldAdminRecoveryNoticeDismissResult({
+    required this.eventId,
+    required this.dismissed,
+  });
+
+  final String eventId;
+  final bool dismissed;
+}
+
 class HandleRecoveryFinalizeResult {
   const HandleRecoveryFinalizeResult({
     required this.progress,

@@ -10,6 +10,7 @@ use crate::dto::{
         DartHandleRecoveryProgress, DartHandleRegistrationResult, DartIdentityDeviceSummary,
         DartIdentitySelector, DartIdentitySummary, DartIdentityVaultMigrationReport,
         DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartInitialProfile,
+        DartOldAdminRecoveryNotice, DartOldAdminRecoveryNoticeDismissResult,
         DartRecoverHandleResult, DartRootKeyTransferSendResult, DartRootKeyTransferSummary,
     },
 };
@@ -42,6 +43,47 @@ pub async fn local_handle_recovery_sessions(
         .handle_recovery()
         .local_sessions()
         .map(|items| items.into_iter().map(Into::into).collect())
+        .map_err(DartImError::from)
+}
+
+pub async fn list_old_admin_recovery_notices(
+    core: &Arc<crate::api::core::DartImCore>,
+    old_identity: DartIdentitySelector,
+) -> Result<Vec<DartOldAdminRecoveryNotice>, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .handle_recovery()
+        .list_old_admin_notices(old_identity.try_into()?)
+        .map(|notices| notices.into_iter().map(Into::into).collect())
+        .map_err(DartImError::from)
+}
+
+pub async fn get_old_admin_recovery_notice(
+    core: &Arc<crate::api::core::DartImCore>,
+    old_identity: DartIdentitySelector,
+    event_id: String,
+) -> Result<Option<DartOldAdminRecoveryNotice>, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .handle_recovery()
+        .get_old_admin_notice(old_identity.try_into()?, &event_id)
+        .map(|notice| notice.map(Into::into))
+        .map_err(DartImError::from)
+}
+
+pub async fn dismiss_old_admin_recovery_notice(
+    core: &Arc<crate::api::core::DartImCore>,
+    old_identity: DartIdentitySelector,
+    event_id: String,
+) -> Result<DartOldAdminRecoveryNoticeDismissResult, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .handle_recovery()
+        .dismiss_old_admin_notice(im_core::identity::OldAdminRecoveryNoticeDismissRequest {
+            old_identity: old_identity.try_into()?,
+            event_id,
+        })
+        .map(Into::into)
         .map_err(DartImError::from)
 }
 

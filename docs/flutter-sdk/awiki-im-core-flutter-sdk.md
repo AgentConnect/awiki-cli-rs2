@@ -191,11 +191,33 @@ activation-pending state. Tokens, proofs, generated documents, private keys,
 and AWiki-internal versions/hashes remain below Core. Flutter Web exposes the
 same typed surface but keeps the native operation unsupported.
 
-The current facade faithfully exposes Core's minimal cancel result
-(`recoverySessionId + phase`). Discovering a cancellable session on an old
-management device still depends on the separate durable
-`awiki.identity.recovery-started.v1` consumer; until that consumer is wired,
-hosts must not claim that the old-admin cancellation surface is complete.
+Old management devices discover a pending request through the separate
+secret-free `OldAdminRecoveryNotice` surface:
+
+```dart
+final notices = await core.listOldAdminRecoveryNotices(
+  oldIdentity: IdentitySelector.did(oldDid),
+);
+final fresh = await core.getOldAdminRecoveryNotice(
+  oldIdentity: IdentitySelector.did(oldDid),
+  eventId: notices.first.eventId,
+);
+await core.dismissOldAdminRecoveryNotice(
+  oldIdentity: IdentitySelector.did(oldDid),
+  eventId: notices.first.eventId,
+);
+```
+
+The notice contains only event/session ID, Handle, old DID, requested time,
+and cancellation deadline. It never exposes the raw control payload, sync
+checkpoint, tokens, proofs, email, secrets, or internal versions/hashes.
+`dismissOldAdminRecoveryNotice` hides the warning on this local device only;
+it does not cancel the server Recovery Session. Actual cancellation continues
+to use `cancelHandleRecovery`, whose minimal result is
+`recoverySessionId + phase` and whose Core path revalidates current
+management-ready authorization. Sync/realtime persistence remains Core-owned,
+and Recovery control notifications never become chat messages or notification
+preview content. Flutter Web retains the typed methods as unsupported stubs.
 
 ## Management-device root-key transfer
 

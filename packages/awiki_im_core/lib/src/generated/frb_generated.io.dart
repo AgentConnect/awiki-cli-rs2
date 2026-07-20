@@ -287,6 +287,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartMessage dco_decode_box_autoadd_dart_message(dynamic raw);
 
   @protected
+  DartOldAdminRecoveryNotice
+  dco_decode_box_autoadd_dart_old_admin_recovery_notice(dynamic raw);
+
+  @protected
   DartProfilePatch dco_decode_box_autoadd_dart_profile_patch(dynamic raw);
 
   @protected
@@ -823,6 +827,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartOldAdminRecoveryNotice dco_decode_dart_old_admin_recovery_notice(
+    dynamic raw,
+  );
+
+  @protected
+  DartOldAdminRecoveryNoticeDismissResult
+  dco_decode_dart_old_admin_recovery_notice_dismiss_result(dynamic raw);
+
+  @protected
   DartProfilePatch dco_decode_dart_profile_patch(dynamic raw);
 
   @protected
@@ -1040,6 +1053,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_dart_message_metadata_attribute(dynamic raw);
 
   @protected
+  List<DartOldAdminRecoveryNotice>
+  dco_decode_list_dart_old_admin_recovery_notice(dynamic raw);
+
+  @protected
   List<DartRelationshipListItem> dco_decode_list_dart_relationship_list_item(
     dynamic raw,
   );
@@ -1124,6 +1141,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartMessage? dco_decode_opt_box_autoadd_dart_message(dynamic raw);
+
+  @protected
+  DartOldAdminRecoveryNotice?
+  dco_decode_opt_box_autoadd_dart_old_admin_recovery_notice(dynamic raw);
 
   @protected
   DartReadWatermark? dco_decode_opt_box_autoadd_dart_read_watermark(
@@ -1434,6 +1455,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartMessage sse_decode_box_autoadd_dart_message(SseDeserializer deserializer);
+
+  @protected
+  DartOldAdminRecoveryNotice
+  sse_decode_box_autoadd_dart_old_admin_recovery_notice(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartProfilePatch sse_decode_box_autoadd_dart_profile_patch(
@@ -2106,6 +2133,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartOldAdminRecoveryNotice sse_decode_dart_old_admin_recovery_notice(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartOldAdminRecoveryNoticeDismissResult
+  sse_decode_dart_old_admin_recovery_notice_dismiss_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartProfilePatch sse_decode_dart_profile_patch(SseDeserializer deserializer);
 
   @protected
@@ -2401,6 +2439,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   sse_decode_list_dart_message_metadata_attribute(SseDeserializer deserializer);
 
   @protected
+  List<DartOldAdminRecoveryNotice>
+  sse_decode_list_dart_old_admin_recovery_notice(SseDeserializer deserializer);
+
+  @protected
   List<DartRelationshipListItem> sse_decode_list_dart_relationship_list_item(
     SseDeserializer deserializer,
   );
@@ -2501,6 +2543,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartMessage? sse_decode_opt_box_autoadd_dart_message(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartOldAdminRecoveryNotice?
+  sse_decode_opt_box_autoadd_dart_old_admin_recovery_notice(
     SseDeserializer deserializer,
   );
 
@@ -2853,6 +2901,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_message(
     DartMessage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_old_admin_recovery_notice(
+    DartOldAdminRecoveryNotice self,
     SseSerializer serializer,
   );
 
@@ -3676,6 +3730,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_old_admin_recovery_notice(
+    DartOldAdminRecoveryNotice self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_old_admin_recovery_notice_dismiss_result(
+    DartOldAdminRecoveryNoticeDismissResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_profile_patch(
     DartProfilePatch self,
     SseSerializer serializer,
@@ -4036,6 +4102,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_dart_old_admin_recovery_notice(
+    List<DartOldAdminRecoveryNotice> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_dart_relationship_list_item(
     List<DartRelationshipListItem> self,
     SseSerializer serializer,
@@ -4149,6 +4221,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_message(
     DartMessage? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_old_admin_recovery_notice(
+    DartOldAdminRecoveryNotice? self,
     SseSerializer serializer,
   );
 
