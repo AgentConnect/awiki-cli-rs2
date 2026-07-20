@@ -906,7 +906,7 @@ async fn publish_v2_prekeys_after_genesis_async(
     let client = core
         .client_async(crate::identity::IdentitySelector::Did(did.clone()))
         .await?;
-    crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_published_from_genesis_document(
+    crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_published_from_authorized_document(
         core,
         &client,
     )

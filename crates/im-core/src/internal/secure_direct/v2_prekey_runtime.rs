@@ -207,15 +207,32 @@ pub(crate) async fn ensure_local_prekey_published(
         client.did().as_str(),
     )
     .await?;
-    ensure_local_prekey_published_with_document(core, client, &did_document).await
+    let mut publisher = crate::internal::transport::CoreHttpTransport::new(client);
+    ensure_local_prekey_published_with_document(core, client, &did_document, &mut publisher).await
 }
 
-/// Publishes the bootstrap device's PreKey from the locally persisted vNext
-/// document that the Genesis response already bound by document hash.
-pub(crate) async fn ensure_local_prekey_published_from_genesis_document(
+/// Publishes from a locally persisted, server-authorized vNext DID Document.
+pub(crate) async fn ensure_local_prekey_published_from_authorized_document(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
 ) -> crate::ImResult<V2LocalPrekeyPublication> {
+    let mut publisher = crate::internal::transport::CoreHttpTransport::new(client);
+    ensure_local_prekey_published_from_authorized_document_with_transport(
+        core,
+        client,
+        &mut publisher,
+    )
+    .await
+}
+
+pub(crate) async fn ensure_local_prekey_published_from_authorized_document_with_transport<T>(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    publisher: &mut T,
+) -> crate::ImResult<V2LocalPrekeyPublication>
+where
+    T: AsyncAuthenticatedRpcTransport,
+{
     let did_document = client.runtime().key_provider.did_document()?;
     if did_document.get("id").and_then(serde_json::Value::as_str) != Some(client.did().as_str())
         || (client.did().as_str().starts_with("did:wba:")
@@ -223,14 +240,18 @@ pub(crate) async fn ensure_local_prekey_published_from_genesis_document(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    ensure_local_prekey_published_with_document(core, client, &did_document).await
+    ensure_local_prekey_published_with_document(core, client, &did_document, publisher).await
 }
 
-async fn ensure_local_prekey_published_with_document(
+async fn ensure_local_prekey_published_with_document<T>(
     core: &crate::core::ImCore,
     client: &crate::core::ImClient,
     did_document: &serde_json::Value,
-) -> crate::ImResult<V2LocalPrekeyPublication> {
+    publisher: &mut T,
+) -> crate::ImResult<V2LocalPrekeyPublication>
+where
+    T: AsyncAuthenticatedRpcTransport,
+{
     let (scope, authorization) = local_scope_and_authorization(core, client)?;
     let eligible = anp::authentication::find_eligible_device(
         did_document,
@@ -285,7 +306,7 @@ async fn ensure_local_prekey_published_with_document(
     );
     let request = publish_request(&publication, &service_did, &operation_id)?;
     let (method, params) = split_rpc_request(request)?;
-    let response = crate::internal::transport::CoreHttpTransport::new(client)
+    let response = publisher
         .authenticated_rpc("/im/rpc", &method, params)
         .await?;
     validate_publish_result(&response, &publication)?;

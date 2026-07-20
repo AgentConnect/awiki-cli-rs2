@@ -1020,6 +1020,43 @@ async fn publish_v2_prekeys_after_activation(
     core: &crate::core::ImCore,
     session: &crate::identity::DeviceJoinSessionSummary,
 ) -> crate::ImResult<()> {
+    let mut publisher = ProductionDeviceJoinPrekeyPublisher;
+    publish_v2_prekeys_after_activation_with_publisher(core, session, &mut publisher).await
+}
+
+pub(crate) trait DeviceJoinPrekeyPublisher {
+    async fn publish(
+        &mut self,
+        core: &crate::core::ImCore,
+        client: &crate::core::ImClient,
+    ) -> crate::ImResult<()>;
+}
+
+struct ProductionDeviceJoinPrekeyPublisher;
+
+impl DeviceJoinPrekeyPublisher for ProductionDeviceJoinPrekeyPublisher {
+    async fn publish(
+        &mut self,
+        core: &crate::core::ImCore,
+        client: &crate::core::ImClient,
+    ) -> crate::ImResult<()> {
+        crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_published_from_authorized_document(
+            core,
+            client,
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+pub(crate) async fn publish_v2_prekeys_after_activation_with_publisher<P>(
+    core: &crate::core::ImCore,
+    session: &crate::identity::DeviceJoinSessionSummary,
+    publisher: &mut P,
+) -> crate::ImResult<()>
+where
+    P: DeviceJoinPrekeyPublisher,
+{
     if !v2_prekey_publication_required(
         core.inner().direct_e2ee_v2_enabled(),
         core.inner().root_key_transfer_enabled(),
@@ -1029,9 +1066,7 @@ async fn publish_v2_prekeys_after_activation(
     let client = core
         .client_async(crate::identity::IdentitySelector::Did(session.did.clone()))
         .await?;
-    crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_published(core, &client)
-        .await?;
-    Ok(())
+    publisher.publish(core, &client).await
 }
 
 fn v2_prekey_publication_required(

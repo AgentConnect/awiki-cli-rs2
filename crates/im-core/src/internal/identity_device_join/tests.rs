@@ -39,18 +39,29 @@ fn test_paths(root: &Path) -> crate::ImCorePaths {
 }
 
 fn open_vault_core(root: &Path) -> crate::ImCore {
+    open_vault_core_with_prekey_flags(root, false, false)
+}
+
+fn open_vault_core_with_prekey_flags(
+    root: &Path,
+    direct_e2ee_enabled: bool,
+    root_transfer_enabled: bool,
+) -> crate::ImCore {
     crate::ImCore::new_with_options(
         test_config(),
         test_paths(root),
-        crate::ImCoreOpenOptions::default().with_identity_secret_vault(
-            crate::IdentitySecretStoragePolicy::VaultRequired,
-            crate::ImCoreSecretVaultOptions::new(
-                crate::vault::DeviceVaultRootKey::from_bytes([47_u8; 32]),
-                root.join("vault"),
-                "join-test-workspace",
-                "join-test-vault-device",
-            ),
-        ),
+        crate::ImCoreOpenOptions::default()
+            .with_identity_secret_vault(
+                crate::IdentitySecretStoragePolicy::VaultRequired,
+                crate::ImCoreSecretVaultOptions::new(
+                    crate::vault::DeviceVaultRootKey::from_bytes([47_u8; 32]),
+                    root.join("vault"),
+                    "join-test-workspace",
+                    "join-test-vault-device",
+                ),
+            )
+            .with_multi_device_direct_e2ee_enabled(direct_e2ee_enabled)
+            .with_multi_device_root_transfer_enabled(root_transfer_enabled),
     )
     .unwrap()
 }
@@ -132,9 +143,89 @@ impl crate::internal::transport::AsyncRawJsonTransport for PanicDidResolverTrans
     }
 }
 
+#[derive(Default)]
+struct RecordingJoinPrekeyTransport {
+    fail_next: bool,
+    calls: Vec<(String, String, Value)>,
+}
+
+impl crate::internal::transport::AsyncAuthenticatedRpcTransport for RecordingJoinPrekeyTransport {
+    async fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> crate::ImResult<Value> {
+        self.calls
+            .push((endpoint.to_owned(), method.to_owned(), params.clone()));
+        if self.fail_next {
+            self.fail_next = false;
+            return Err(crate::ImError::TransportUnavailable {
+                detail: "simulated PreKey publish failure".to_owned(),
+            });
+        }
+        let request = serde_json::json!({"method": method, "params": params});
+        let (_, body) = anp::direct_e2ee::parse_publish_prekey_bundle_request_v2(&request)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        Ok(serde_json::json!({
+            "published": true,
+            "owner_did": body.prekey_bundle.owner_did,
+            "owner_device_id": body.prekey_bundle.owner_device_id,
+            "bundle_id": body.prekey_bundle.bundle_id,
+            "published_at": "2026-07-20T00:00:01Z",
+            "published_opk_count": body.one_time_prekeys.len(),
+        }))
+    }
+}
+
+struct RecordingJoinPrekeyPublisher {
+    transport: RecordingJoinPrekeyTransport,
+}
+
+impl crate::internal::identity_device_join_runtime::DeviceJoinPrekeyPublisher
+    for RecordingJoinPrekeyPublisher
+{
+    async fn publish(
+        &mut self,
+        core: &crate::core::ImCore,
+        client: &crate::core::ImClient,
+    ) -> crate::ImResult<()> {
+        crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_published_from_authorized_document_with_transport(
+            core,
+            client,
+            &mut self.transport,
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+struct PanicJoinPrekeyPublisher;
+
+impl crate::internal::identity_device_join_runtime::DeviceJoinPrekeyPublisher
+    for PanicJoinPrekeyPublisher
+{
+    async fn publish(
+        &mut self,
+        _core: &crate::core::ImCore,
+        _client: &crate::core::ImClient,
+    ) -> crate::ImResult<()> {
+        panic!("disabled Join PreKey publication must not invoke the publisher")
+    }
+}
+
 fn open_vnext_identity_core(
     root: &Path,
     role: crate::internal::identity_device_state::DeviceAuthorizationRole,
+) -> (crate::ImCore, Value, crate::ids::Did) {
+    open_vnext_identity_core_with_prekey_flags(root, role, false, false)
+}
+
+fn open_vnext_identity_core_with_prekey_flags(
+    root: &Path,
+    role: crate::internal::identity_device_state::DeviceAuthorizationRole,
+    direct_e2ee_enabled: bool,
+    root_transfer_enabled: bool,
 ) -> (crate::ImCore, Value, crate::ids::Did) {
     use crate::internal::identity_device_state::{
         DeviceAuthorizationProjection, DeviceAuthorizationStatus, IdentityDeviceMode,
@@ -213,7 +304,93 @@ fn open_vnext_identity_core(
         .unwrap();
     let did = generated.did;
     let document = generated.did_document;
-    (open_vault_core(root), document, did)
+    (
+        open_vault_core_with_prekey_flags(root, direct_e2ee_enabled, root_transfer_enabled),
+        document,
+        did,
+    )
+}
+
+#[tokio::test]
+async fn direct_only_join_activation_publishes_prekey_and_retries_safely() {
+    use crate::internal::identity_device_join_runtime::publish_v2_prekeys_after_activation_with_publisher;
+    use crate::internal::identity_device_state::DeviceAuthorizationRole;
+
+    let root = tempfile::tempdir().unwrap();
+    let (core, document, did) = open_vnext_identity_core_with_prekey_flags(
+        root.path(),
+        DeviceAuthorizationRole::Member,
+        true,
+        false,
+    );
+    let manifest = anp::authentication::validate_device_manifest(&document)
+        .unwrap()
+        .unwrap();
+    let session = crate::identity::DeviceJoinSessionSummary {
+        join_session_id: "join-direct-prekey".to_owned(),
+        did,
+        protocol_device_id: crate::ids::ProtocolDeviceId::parse(
+            manifest.devices[0].device_id.clone(),
+        )
+        .unwrap(),
+        side: DeviceJoinSide::NewDevice,
+        phase: DeviceJoinLocalPhase::Authorized,
+        join_request_hash: "sha256:authorized-join".to_owned(),
+        challenge_id: Some("challenge-direct-prekey".to_owned()),
+        expires_at: format_time(OffsetDateTime::now_utc() + Duration::minutes(5)).unwrap(),
+    };
+    let mut publisher = RecordingJoinPrekeyPublisher {
+        transport: RecordingJoinPrekeyTransport {
+            fail_next: true,
+            calls: Vec::new(),
+        },
+    };
+
+    let error = publish_v2_prekeys_after_activation_with_publisher(&core, &session, &mut publisher)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, crate::ImError::TransportUnavailable { .. }));
+    let after_failure = core
+        .identities()
+        .device_summary(crate::identity::IdentitySelector::Default)
+        .unwrap();
+    assert_eq!(
+        after_failure.readiness,
+        crate::identity::IdentityDeviceReadiness::MemberReady
+    );
+
+    publish_v2_prekeys_after_activation_with_publisher(&core, &session, &mut publisher)
+        .await
+        .unwrap();
+    assert_eq!(publisher.transport.calls.len(), 2);
+    assert_eq!(publisher.transport.calls[0].0, "/im/rpc");
+    assert_eq!(
+        publisher.transport.calls[0].1,
+        "direct.e2ee.publish_prekey_bundle"
+    );
+    assert_eq!(
+        publisher.transport.calls[0].2, publisher.transport.calls[1].2,
+        "retry must reuse the persisted PreKey bundle and operation"
+    );
+
+    let off_root = tempfile::tempdir().unwrap();
+    let (off_core, off_document, off_did) =
+        open_vnext_identity_core(off_root.path(), DeviceAuthorizationRole::Member);
+    let off_manifest = anp::authentication::validate_device_manifest(&off_document)
+        .unwrap()
+        .unwrap();
+    let mut off_session = session;
+    off_session.did = off_did;
+    off_session.protocol_device_id =
+        crate::ids::ProtocolDeviceId::parse(off_manifest.devices[0].device_id.clone()).unwrap();
+    let mut panic_publisher = PanicJoinPrekeyPublisher;
+    publish_v2_prekeys_after_activation_with_publisher(
+        &off_core,
+        &off_session,
+        &mut panic_publisher,
+    )
+    .await
+    .unwrap();
 }
 
 fn sample_proof() -> DeviceProof {
