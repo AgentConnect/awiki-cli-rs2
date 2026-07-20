@@ -1,6 +1,7 @@
 mod dto;
 mod join;
 mod profile;
+mod recovery;
 mod registry;
 mod root_key_transfer;
 mod service;
@@ -38,6 +39,12 @@ pub(crate) use self::join::{
     EncryptedJoinChallenge, DEVICE_JOIN_CHALLENGE_ALGORITHM, DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS,
     DEVICE_JOIN_MAX_TTL_SECONDS, DEVICE_JOIN_REQUEST_TYPE, DEVICE_JOIN_VNEXT_PROFILES,
     DEVICE_PROOF_TYPE,
+};
+pub use self::recovery::{
+    HandleRecoveryBeginGrant, HandleRecoveryBeginRequest, HandleRecoveryCancelRequest,
+    HandleRecoveryCancelResult, HandleRecoveryFinalizeRequest, HandleRecoveryFinalizeResult,
+    HandleRecoveryPhase, HandleRecoveryProgress, HandleRecoveryReconfirmationGrant,
+    HandleRecoveryService, HandleRecoverySide,
 };
 pub use self::registry::IdentityRegistry;
 pub use self::root_key_transfer::{

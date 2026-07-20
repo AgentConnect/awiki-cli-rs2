@@ -2038,7 +2038,7 @@ fn prepared_approval_result(
     })
 }
 
-fn ready_admin_context(
+pub(crate) fn ready_admin_context(
     core: &crate::core::ImCore,
     admin_identity: &crate::identity::IdentitySelector,
     expected_did: Option<&str>,

@@ -2798,6 +2798,7 @@ mod tests {
                 identity_secret_vault: None,
                 multi_device_join_enabled: false,
                 multi_device_root_transfer_enabled: false,
+                multi_device_handle_recovery_enabled: false,
             },
         )
         .unwrap();
@@ -2938,6 +2939,7 @@ mod tests {
                 identity_secret_vault: None,
                 multi_device_join_enabled: false,
                 multi_device_root_transfer_enabled: false,
+                multi_device_handle_recovery_enabled: false,
             },
         ) {
             Ok(_) => panic!("VaultRequired without vault options should fail"),

@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
+use zeroize::Zeroize;
 
 use crate::identity::DeviceProof;
 use crate::internal::identity_device_state::{
@@ -73,6 +74,13 @@ impl std::fmt::Debug for DeviceTokenIssueResult {
             .field("auth_generation", &self.auth_generation)
             .field("scopes", &self.scopes)
             .finish()
+    }
+}
+
+impl Drop for DeviceTokenIssueResult {
+    fn drop(&mut self) {
+        self.access_token.zeroize();
+        self.refresh_token.zeroize();
     }
 }
 
@@ -235,6 +243,13 @@ struct RawDeviceTokenIssueResult {
     device_id: String,
     auth_generation: u64,
     scopes: Vec<String>,
+}
+
+impl Drop for RawDeviceTokenIssueResult {
+    fn drop(&mut self) {
+        self.access_token.zeroize();
+        self.refresh_token.zeroize();
+    }
 }
 
 #[derive(Deserialize)]
@@ -579,7 +594,7 @@ pub(crate) fn parse_device_token_issue_result(
     expected_auth_generation: u64,
     now: OffsetDateTime,
 ) -> crate::ImResult<DeviceTokenIssueResult> {
-    let raw: RawDeviceTokenIssueResult = strict_from_value(raw, "device token issue result")?;
+    let mut raw: RawDeviceTokenIssueResult = strict_from_value(raw, "device token issue result")?;
     if raw.token_type != "bearer"
         || raw.device_id != prepared.device_id
         || raw.auth_generation != expected_auth_generation
@@ -628,9 +643,9 @@ pub(crate) fn parse_device_token_issue_result(
         refresh_token,
         expires_at: format_time(expires_at)?,
         user_id: access.user_id,
-        device_id: raw.device_id,
+        device_id: std::mem::take(&mut raw.device_id),
         auth_generation: raw.auth_generation,
-        scopes: raw.scopes,
+        scopes: std::mem::take(&mut raw.scopes),
     })
 }
 
@@ -736,7 +751,7 @@ pub(crate) fn strip_proof_and_token_fields(value: &Value) -> Value {
     }
 }
 
-fn validate_generated_document(
+pub(crate) fn validate_generated_document(
     generated: &crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey,
 ) -> crate::ImResult<()> {
     if generated.did_document.get("id").and_then(Value::as_str) != Some(generated.did.as_str())
@@ -758,6 +773,61 @@ fn validate_generated_document(
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(())
+}
+
+/// Validates the generation-bound management-ready token pair returned by a
+/// first-party control-plane operation and returns its stable user id.
+///
+/// Recovery reuses the same device-token format as Genesis, but its result
+/// intentionally does not repeat `user_id` outside the tokens.
+pub(crate) fn validate_management_ready_token_pair(
+    generated: &crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey,
+    access_token: &str,
+    refresh_token: &str,
+    token_expires_at: &str,
+    now: OffsetDateTime,
+) -> crate::ImResult<String> {
+    validate_generated_document(generated)?;
+    let access_token = access_token.trim();
+    let refresh_token = refresh_token.trim();
+    if access_token.is_empty() || refresh_token.is_empty() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    if access_token == refresh_token {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let expires_at = parse_future_time("token_expires_at", token_expires_at, now)?;
+    let expected_scopes = expected_token_scopes(true);
+    let access = validate_device_token(
+        access_token,
+        "access",
+        DEVICE_ACCESS_PURPOSE,
+        generated.did.as_str(),
+        None,
+        generated.protocol_device_id.as_str(),
+        &generated.device_signing_key_id,
+        1,
+        &expected_scopes,
+        now,
+        Some(expires_at),
+    )?;
+    let refresh = validate_device_token(
+        refresh_token,
+        "refresh",
+        DEVICE_REFRESH_PURPOSE,
+        generated.did.as_str(),
+        Some(&access.user_id),
+        generated.protocol_device_id.as_str(),
+        &generated.device_signing_key_id,
+        1,
+        &expected_scopes,
+        now,
+        None,
+    )?;
+    if access.user_id != refresh.user_id {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(access.user_id)
 }
 
 fn verify_prepared_proof(prepared: &PreparedDeviceGenesis) -> crate::ImResult<()> {
