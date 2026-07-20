@@ -7,7 +7,9 @@
 //! are sealed before a caller can resume the flow. The explicit rollout gate
 //! defaults to disabled and fails closed before local or remote side effects.
 //! Once authorized, a device publishes its P5 PreKey whenever Direct v2 or
-//! root-key transfer is enabled because both capabilities use that channel.
+//! root-key transfer is enabled, and publishes its current P6 KeyPackage when
+//! Group E2EE v2 is enabled. A publication failure is returned after local
+//! authorization so the same Join poll can retry the missing public material.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -828,7 +830,7 @@ where
                 self.core,
                 join_session_id,
             )?;
-            publish_v2_prekeys_after_activation(self.core, &local).await?;
+            publish_v2_messaging_material_after_activation(self.core, &local).await?;
             return Ok(DeviceJoinAdvanceResult {
                 session: local,
                 remote_state: DeviceJoinRemoteState::Consumed,
@@ -994,7 +996,7 @@ where
             self.core,
             &pending.join_session_id,
         )?;
-        publish_v2_prekeys_after_activation(self.core, &session).await?;
+        publish_v2_messaging_material_after_activation(self.core, &session).await?;
         Ok(DeviceJoinAdvanceResult {
             session,
             remote_state: DeviceJoinRemoteState::Consumed,
@@ -1016,12 +1018,20 @@ where
     }
 }
 
-async fn publish_v2_prekeys_after_activation(
+async fn publish_v2_messaging_material_after_activation(
     core: &crate::core::ImCore,
     session: &crate::identity::DeviceJoinSessionSummary,
 ) -> crate::ImResult<()> {
-    let mut publisher = ProductionDeviceJoinPrekeyPublisher;
-    publish_v2_prekeys_after_activation_with_publisher(core, session, &mut publisher).await
+    let mut prekey_publisher = ProductionDeviceJoinPrekeyPublisher;
+    publish_v2_prekeys_after_activation_with_publisher(core, session, &mut prekey_publisher)
+        .await?;
+    let mut group_key_package_publisher = ProductionDeviceJoinGroupKeyPackagePublisher;
+    publish_v2_group_key_package_after_activation_with_publisher(
+        core,
+        session,
+        &mut group_key_package_publisher,
+    )
+    .await
 }
 
 pub(crate) trait DeviceJoinPrekeyPublisher {
@@ -1067,6 +1077,44 @@ where
         .client_async(crate::identity::IdentitySelector::Did(session.did.clone()))
         .await?;
     publisher.publish(core, &client).await
+}
+
+pub(crate) trait DeviceJoinGroupKeyPackagePublisher {
+    async fn publish(&mut self, client: &crate::core::ImClient) -> crate::ImResult<()>;
+}
+
+struct ProductionDeviceJoinGroupKeyPackagePublisher;
+
+impl DeviceJoinGroupKeyPackagePublisher for ProductionDeviceJoinGroupKeyPackagePublisher {
+    async fn publish(&mut self, client: &crate::core::ImClient) -> crate::ImResult<()> {
+        client
+            .groups()
+            .publish_key_package_async(crate::groups::GroupKeyPackagePublishRequest {
+                purpose: crate::groups::GroupKeyPackagePurpose::Normal,
+                group: None,
+                device_id: None,
+                key_package_id: None,
+            })
+            .await?;
+        Ok(())
+    }
+}
+
+pub(crate) async fn publish_v2_group_key_package_after_activation_with_publisher<P>(
+    core: &crate::core::ImCore,
+    session: &crate::identity::DeviceJoinSessionSummary,
+    publisher: &mut P,
+) -> crate::ImResult<()>
+where
+    P: DeviceJoinGroupKeyPackagePublisher,
+{
+    if !core.inner().group_e2ee_v2_enabled() {
+        return Ok(());
+    }
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Did(session.did.clone()))
+        .await?;
+    publisher.publish(&client).await
 }
 
 fn v2_prekey_publication_required(

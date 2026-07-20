@@ -47,6 +47,15 @@ fn open_vault_core_with_prekey_flags(
     direct_e2ee_enabled: bool,
     root_transfer_enabled: bool,
 ) -> crate::ImCore {
+    open_vault_core_with_messaging_flags(root, direct_e2ee_enabled, root_transfer_enabled, false)
+}
+
+fn open_vault_core_with_messaging_flags(
+    root: &Path,
+    direct_e2ee_enabled: bool,
+    root_transfer_enabled: bool,
+    group_e2ee_enabled: bool,
+) -> crate::ImCore {
     crate::ImCore::new_with_options(
         test_config(),
         test_paths(root),
@@ -61,7 +70,8 @@ fn open_vault_core_with_prekey_flags(
                 ),
             )
             .with_multi_device_direct_e2ee_enabled(direct_e2ee_enabled)
-            .with_multi_device_root_transfer_enabled(root_transfer_enabled),
+            .with_multi_device_root_transfer_enabled(root_transfer_enabled)
+            .with_multi_device_group_e2ee_enabled(group_e2ee_enabled),
     )
     .unwrap()
 }
@@ -214,6 +224,37 @@ impl crate::internal::identity_device_join_runtime::DeviceJoinPrekeyPublisher
     }
 }
 
+#[derive(Default)]
+struct RecordingJoinGroupKeyPackagePublisher {
+    fail_next: bool,
+    calls: usize,
+}
+
+impl crate::internal::identity_device_join_runtime::DeviceJoinGroupKeyPackagePublisher
+    for RecordingJoinGroupKeyPackagePublisher
+{
+    async fn publish(&mut self, _client: &crate::core::ImClient) -> crate::ImResult<()> {
+        self.calls += 1;
+        if self.fail_next {
+            self.fail_next = false;
+            return Err(crate::ImError::TransportUnavailable {
+                detail: "simulated Group KeyPackage publish failure".to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
+
+struct PanicJoinGroupKeyPackagePublisher;
+
+impl crate::internal::identity_device_join_runtime::DeviceJoinGroupKeyPackagePublisher
+    for PanicJoinGroupKeyPackagePublisher
+{
+    async fn publish(&mut self, _client: &crate::core::ImClient) -> crate::ImResult<()> {
+        panic!("disabled Join Group KeyPackage publication must not invoke the publisher")
+    }
+}
+
 fn open_vnext_identity_core(
     root: &Path,
     role: crate::internal::identity_device_state::DeviceAuthorizationRole,
@@ -226,6 +267,22 @@ fn open_vnext_identity_core_with_prekey_flags(
     role: crate::internal::identity_device_state::DeviceAuthorizationRole,
     direct_e2ee_enabled: bool,
     root_transfer_enabled: bool,
+) -> (crate::ImCore, Value, crate::ids::Did) {
+    open_vnext_identity_core_with_messaging_flags(
+        root,
+        role,
+        direct_e2ee_enabled,
+        root_transfer_enabled,
+        false,
+    )
+}
+
+fn open_vnext_identity_core_with_messaging_flags(
+    root: &Path,
+    role: crate::internal::identity_device_state::DeviceAuthorizationRole,
+    direct_e2ee_enabled: bool,
+    root_transfer_enabled: bool,
+    group_e2ee_enabled: bool,
 ) -> (crate::ImCore, Value, crate::ids::Did) {
     use crate::internal::identity_device_state::{
         DeviceAuthorizationProjection, DeviceAuthorizationStatus, IdentityDeviceMode,
@@ -305,7 +362,12 @@ fn open_vnext_identity_core_with_prekey_flags(
     let did = generated.did;
     let document = generated.did_document;
     (
-        open_vault_core_with_prekey_flags(root, direct_e2ee_enabled, root_transfer_enabled),
+        open_vault_core_with_messaging_flags(
+            root,
+            direct_e2ee_enabled,
+            root_transfer_enabled,
+            group_e2ee_enabled,
+        ),
         document,
         did,
     )
@@ -385,6 +447,82 @@ async fn direct_only_join_activation_publishes_prekey_and_retries_safely() {
         crate::ids::ProtocolDeviceId::parse(off_manifest.devices[0].device_id.clone()).unwrap();
     let mut panic_publisher = PanicJoinPrekeyPublisher;
     publish_v2_prekeys_after_activation_with_publisher(
+        &off_core,
+        &off_session,
+        &mut panic_publisher,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn group_v2_join_activation_publishes_key_package_and_retries_safely() {
+    use crate::internal::identity_device_join_runtime::publish_v2_group_key_package_after_activation_with_publisher;
+    use crate::internal::identity_device_state::DeviceAuthorizationRole;
+
+    let root = tempfile::tempdir().unwrap();
+    let (core, document, did) = open_vnext_identity_core_with_messaging_flags(
+        root.path(),
+        DeviceAuthorizationRole::Member,
+        false,
+        false,
+        true,
+    );
+    let manifest = anp::authentication::validate_device_manifest(&document)
+        .unwrap()
+        .unwrap();
+    let session = crate::identity::DeviceJoinSessionSummary {
+        join_session_id: "join-group-key-package".to_owned(),
+        did,
+        protocol_device_id: crate::ids::ProtocolDeviceId::parse(
+            manifest.devices[0].device_id.clone(),
+        )
+        .unwrap(),
+        side: DeviceJoinSide::NewDevice,
+        phase: DeviceJoinLocalPhase::Authorized,
+        join_request_hash: "sha256:authorized-group-join".to_owned(),
+        challenge_id: Some("challenge-group-key-package".to_owned()),
+        expires_at: format_time(OffsetDateTime::now_utc() + Duration::minutes(5)).unwrap(),
+    };
+    let mut publisher = RecordingJoinGroupKeyPackagePublisher {
+        fail_next: true,
+        calls: 0,
+    };
+
+    let error = publish_v2_group_key_package_after_activation_with_publisher(
+        &core,
+        &session,
+        &mut publisher,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, crate::ImError::TransportUnavailable { .. }));
+    let after_failure = core
+        .identities()
+        .device_summary(crate::identity::IdentitySelector::Default)
+        .unwrap();
+    assert_eq!(
+        after_failure.readiness,
+        crate::identity::IdentityDeviceReadiness::MemberReady
+    );
+
+    publish_v2_group_key_package_after_activation_with_publisher(&core, &session, &mut publisher)
+        .await
+        .unwrap();
+    assert_eq!(publisher.calls, 2);
+
+    let off_root = tempfile::tempdir().unwrap();
+    let (off_core, off_document, off_did) =
+        open_vnext_identity_core(off_root.path(), DeviceAuthorizationRole::Member);
+    let off_manifest = anp::authentication::validate_device_manifest(&off_document)
+        .unwrap()
+        .unwrap();
+    let mut off_session = session;
+    off_session.did = off_did;
+    off_session.protocol_device_id =
+        crate::ids::ProtocolDeviceId::parse(off_manifest.devices[0].device_id.clone()).unwrap();
+    let mut panic_publisher = PanicJoinGroupKeyPackagePublisher;
+    publish_v2_group_key_package_after_activation_with_publisher(
         &off_core,
         &off_session,
         &mut panic_publisher,
