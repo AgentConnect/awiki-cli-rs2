@@ -2093,6 +2093,69 @@ fn exact_retry_repairs_live_provider_after_index_commit_and_first_ref_advance_fa
 }
 
 #[test]
+fn exact_retry_repairs_live_provider_after_committed_access_token_expires() {
+    let scenario = scenario();
+    let imported = import_receiver_root(&scenario);
+    let store = IdentityStore::new(&scenario.receiver.paths);
+    let old_refs = store.load_index().unwrap().credentials[LOCAL_ALIAS]
+        .vault_migration
+        .as_ref()
+        .unwrap()
+        .vnext_refs
+        .clone()
+        .unwrap();
+    let live_vault = Arc::new(FailOnceTargetOpenVault {
+        inner: scenario.receiver.vault.clone(),
+        target: std::sync::Mutex::new(None),
+        armed: std::sync::atomic::AtomicBool::new(false),
+    });
+    let provider = crate::internal::key_provider::vault::VaultBackedKeyMaterialProvider::new_vnext(
+        scenario
+            .receiver
+            .paths
+            .identity_root_dir
+            .join("receiver-identity"),
+        live_vault.clone(),
+        old_refs,
+    );
+
+    let committed = store
+        .converge_root_import_management_ready(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &ready_checkpoint(&scenario),
+            "expired-access-token",
+            "refresh-still-valid",
+            "2000-01-01T00:00:00Z",
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+    *live_vault.target.lock().unwrap() = Some(committed.clone());
+    live_vault
+        .armed
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(provider.advance_vault_auth_ref(&committed).is_err());
+
+    let retry_ref = store
+        .committed_root_import_management_auth_ref(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+    provider.advance_vault_auth_ref(&retry_ref).unwrap();
+    let repaired = provider.auth_state().unwrap();
+    assert!(repaired.has_token);
+    assert!(!repaired.has_valid_token);
+    assert_eq!(
+        repaired.refresh_token.as_deref(),
+        Some("refresh-still-valid")
+    );
+}
+
+#[test]
 fn failed_index_commit_keeps_old_token_ref_and_authorization_state() {
     let scenario = scenario();
     let imported = import_receiver_root(&scenario);

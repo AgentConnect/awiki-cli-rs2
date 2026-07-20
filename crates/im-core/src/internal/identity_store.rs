@@ -696,7 +696,11 @@ impl<'a> IdentityStore<'a> {
             .ok_or(crate::ImError::PermissionDenied)?;
         let opened = vault.open(&auth_ref)?;
         let snapshot = crate::internal::auth::state::parse_auth_state(opened.expose_secret())?;
-        if !snapshot.has_valid_token || snapshot.refresh_token.is_none() {
+        // The access token may expire between the index commit and an exact
+        // retry that repairs this process's live provider. The committed
+        // generation remains recoverable as long as the token pair is intact;
+        // the session layer can refresh it after the provider advances.
+        if !snapshot.has_token || snapshot.refresh_token.is_none() {
             return Err(crate::ImError::PermissionDenied);
         }
         Ok(auth_ref)
@@ -2271,9 +2275,13 @@ fn write_secure_bytes_atomic(path: &Path, raw: &[u8]) -> crate::ImResult<()> {
     let write_result = (|| -> crate::ImResult<()> {
         let mut file = create_private_file(&temporary)?;
         file.write_all(raw)?;
+        // Apply the final permissions before replacement so that `replace` is
+        // the last fallible operation. Once it succeeds, callers may safely
+        // treat the new index image as committed and must not roll back Vault
+        // records referenced by it.
+        set_private_file_mode(&temporary)?;
         file.sync_all()?;
         crate::internal::atomic_file::replace(&temporary, path)?;
-        set_private_file_mode(path)?;
         if let Ok(directory) = fs::File::open(parent) {
             let _ = directory.sync_all();
         }
