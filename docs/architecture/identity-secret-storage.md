@@ -105,12 +105,27 @@ root 导入的本地非秘密状态包括：
   `message_id` 可在确认 Vault 中是同一 root 后原子替换 ACK reservation，且不重新 seal。
 - imported completion 是唯一业务 ACK。相同 Envelope/ACK 重放复用首次持久化的完整签名
   声明，不重新 seal 或覆盖 root；同一 `message_id` 的不同 Envelope 被拒绝。
+- `root_key_import.management_token_operation_id` 是端内保存的 token-issue 幂等状态，不是
+  ANP、DID Document 或跨域字段。首次签发前仅在确认尚无持久化值时生成，并在远端调用前
+  原子落盘；精确重试复用原值，只有服务端明确返回该 operation 已过期时才通过 CAS 轮换。
+- management-ready 响应丢失时，旧 generation bearer 只通过不刷新、不签名降级、不持久化
+  响应 token 的临时 transport 探测。仅精确 JSON-RPC 码 `device.auth_generation_stale` 可证明
+  generation 已推进；`device.unauthenticated`、HTTP 401 和其他错误都 fail closed。
 
 一致性顺序为：在共享 IdentityIndex mutation lock 内验证当前 Document/Registry 和设备资格，
 写入非秘密 pending reservation，以 seal-if-absent 发布 root Vault record，再原子写入同一份 index image（root
 `SecretRef` + consumed reservation + signed completion + checkpoint），最后尽力删除 pending。
 index image 是本地导入线性化点。若进程在 Vault seal 后、index commit 前退出，后续只能在
 重新验证后的 root 与既有 Vault record 完全相同时复用该 record，绝不覆盖不同 root。
+通过 Registry checkpoint 校验的当前 DID Document 会在 index commit 后原子更新到本地
+projection；若 projection 写入失败，导入仍按已提交状态处理，并由同一 Envelope 的精确重放
+重试投影。文件型 provider 每次读取该 projection，因此当前已打开的 client 无需重建即可看到
+最新文档。
+同一进程中长期存活的 vNext `KeyMaterialProvider` 还维护可推进的 root/auth `SecretRef`
+指针；推进前严格核对 Vault context、identity、DID、secret kind、key id/version 并成功
+解封目标记录。fresh import、Envelope replay 和精确恢复都从 Identity index 的权威 ref
+修复当前 provider，因此导入后不要求重建 client。被替代记录不会在推进时立即删除，避免
+破坏仍引用旧 ref 的其他 live provider，后续由单独的 Vault compaction 处理。
 
 所有 IdentityStore index 的 load-modify-save，以及本地 identity 删除路径，共享同一 OS
 mutation lock；index 本身通过 private temp file、`fsync` 和跨平台 atomic replace 替换
@@ -120,9 +135,11 @@ mutation lock；index 本身通过 private temp file、`fsync` 和跨平台 atom
 不进入 DID Document、ANP SDK model 或跨域 wire。
 
 已有 `root_key_import` 的 identity 只能以同 alias、DID、unique id、Vault context 和同一组
-设备密钥做 rootless vNext 重存。重存前会验证现有 Vault root 与 DID public 一致，并逐字节验证 device/auth material，
-并原样保留全部 Vault refs 与 import record；普通 save 不允许借同一 key id 覆盖设备私钥，
-token 轮换继续使用专用 mutation 路径。
+设备密钥做 rootless vNext 重存。重存前会验证现有 Vault root 与 DID public 一致，并逐字节
+验证设备私钥；auth state 按当前 bearer 语义验证，而不是把可能包含 refresh token/expiry 的
+版本化 JSON 与 access-only JSON 逐字节比较。重存原样保留全部 Vault refs、refresh token 和
+import record；普通 save 不允许借同一 key id 覆盖设备私钥，token 轮换继续使用专用 mutation
+路径。
 
 ## 5. CLI 当前方案
 

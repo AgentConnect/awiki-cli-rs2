@@ -17,6 +17,7 @@ use time::{Duration, OffsetDateTime};
 
 use crate::internal::identity_device_join_runtime::{
     DeviceJoinAdminHttpAdapter, DeviceJoinAdminRemote, DeviceJoinRemoteDeviceSummary,
+    DeviceJoinRemoteRegistry,
 };
 use crate::internal::identity_root_transfer::{
     validate_current_transfer_route, RootControlDirectBinding, RootImportTransportContext,
@@ -101,65 +102,68 @@ pub(crate) async fn retry_root_key_transfer(
     if local_device_id == before.sender_device_id {
         send_root_key(core, client, &before.recipient_device_id, message_id, true).await?;
     } else if local_device_id == before.recipient_device_id {
-        if authorization.management_ready {
+        repair_committed_root_import_root_ref(core, client, message_id)?;
+        let registry = if authorization.management_ready {
             repair_committed_root_import_auth_ref(
                 core,
                 client,
                 message_id,
                 authorization.auth_generation,
             )?;
-        }
-        let mut remote = DeviceJoinAdminHttpAdapter::production(client);
-        let registry = match remote.registry(client.did(), false).await {
-            Ok(registry) => registry,
-            Err(crate::ImError::AuthRequired) if !authorization.management_ready => {
-                // The server can commit root import and rotate auth_generation
-                // even when the ready response or subsequent token response is
-                // lost. Re-enter the persisted completion with the sole legal
-                // next generation; token issuance itself proves the server is
-                // already management-ready before local convergence proceeds.
-                let checkpoint = local_state
-                    .checkpoint
-                    .as_ref()
-                    .ok_or(crate::ImError::PermissionDenied)?;
-                let inferred_ready = RootManagementReadyResult {
-                    did: client.did().as_str().to_owned(),
-                    device_id: local_device_id.clone(),
-                    management_ready: true,
-                    auth_generation: authorization
-                        .auth_generation
-                        .checked_add(1)
-                        .ok_or(crate::ImError::PermissionDenied)?,
-                    registry_version: checkpoint
-                        .registry_version
-                        .checked_add(1)
-                        .ok_or(crate::ImError::PermissionDenied)?,
-                    completed_message_id: message_id.to_owned(),
-                };
-                let completion = local_entry
-                    .root_key_import
-                    .as_ref()
-                    .filter(|record| record.message_id() == message_id)
-                    .map(|record| record.completion.clone())
-                    .ok_or(crate::ImError::PermissionDenied)?;
-                complete_local_management_ready(core, client, &completion, &inferred_ready).await?;
-                let refreshed = local_device_entry(core, client)?;
-                local_state = refreshed
-                    .device_state
-                    .ok_or(crate::ImError::PermissionDenied)?;
-                authorization = local_state
-                    .authorization
-                    .clone()
-                    .filter(|current| {
-                        current.protocol_device_id.as_str() == local_device_id
-                            && current.management_ready
-                            && current.auth_generation == inferred_ready.auth_generation
-                    })
-                    .ok_or(crate::ImError::PermissionDenied)?;
-                let mut retry_remote = DeviceJoinAdminHttpAdapter::production(client);
-                retry_remote.registry(client.did(), false).await?
+            let mut remote = DeviceJoinAdminHttpAdapter::production(client);
+            remote.registry(client.did(), false).await?
+        } else {
+            match probe_root_ready_retry(client).await? {
+                RootReadyRetryProbe::ContinueAck(registry) => registry,
+                RootReadyRetryProbe::ServerAlreadyCommitted => {
+                    // The server can commit root import and rotate auth_generation
+                    // even when the ready response or subsequent token response is
+                    // lost. Re-enter the persisted completion with the sole legal
+                    // next generation; token issuance itself proves the server is
+                    // already management-ready before local convergence proceeds.
+                    let checkpoint = local_state
+                        .checkpoint
+                        .as_ref()
+                        .ok_or(crate::ImError::PermissionDenied)?;
+                    let inferred_ready = RootManagementReadyResult {
+                        did: client.did().as_str().to_owned(),
+                        device_id: local_device_id.clone(),
+                        management_ready: true,
+                        auth_generation: authorization
+                            .auth_generation
+                            .checked_add(1)
+                            .ok_or(crate::ImError::PermissionDenied)?,
+                        registry_version: checkpoint
+                            .registry_version
+                            .checked_add(1)
+                            .ok_or(crate::ImError::PermissionDenied)?,
+                        completed_message_id: message_id.to_owned(),
+                    };
+                    let completion = local_entry
+                        .root_key_import
+                        .as_ref()
+                        .filter(|record| record.message_id() == message_id)
+                        .map(|record| record.completion.clone())
+                        .ok_or(crate::ImError::PermissionDenied)?;
+                    complete_local_management_ready(core, client, &completion, &inferred_ready)
+                        .await?;
+                    let refreshed = local_device_entry(core, client)?;
+                    local_state = refreshed
+                        .device_state
+                        .ok_or(crate::ImError::PermissionDenied)?;
+                    authorization = local_state
+                        .authorization
+                        .clone()
+                        .filter(|current| {
+                            current.protocol_device_id.as_str() == local_device_id
+                                && current.management_ready
+                                && current.auth_generation == inferred_ready.auth_generation
+                        })
+                        .ok_or(crate::ImError::PermissionDenied)?;
+                    let mut retry_remote = DeviceJoinAdminHttpAdapter::production(client);
+                    retry_remote.registry(client.did(), false).await?
+                }
             }
-            Err(error) => return Err(error),
         };
         let local = registry_device(&registry.devices, &local_device_id)?;
         let peer = registry_device(&registry.devices, &before.sender_device_id)?;
@@ -394,6 +398,11 @@ enum ValidatedRootControl {
 enum LocalManagementReadyTransition {
     Fresh,
     AlreadyConverged,
+}
+
+enum RootReadyRetryProbe {
+    ContinueAck(DeviceJoinRemoteRegistry),
+    ServerAlreadyCommitted,
 }
 
 pub(crate) async fn send_root_key(
@@ -729,6 +738,11 @@ pub(crate) async fn receive_root_control(
             validated: ValidatedRootControl::Envelope(ack),
             session,
         } => {
+            repair_committed_root_import_root_ref(
+                core,
+                client,
+                &ack.completion().ack_for_message_id,
+            )?;
             with_v2_runtime(core, &scope, |direct| {
                 direct.complete_session_reply_for_session(&binding, &session.session_id)
             })?;
@@ -766,6 +780,11 @@ pub(crate) async fn receive_root_control(
                     current_did_document: &did_document,
                     current_registry: &registry,
                 })?;
+                repair_committed_root_import_root_ref(
+                    core,
+                    client,
+                    &ack.completion().ack_for_message_id,
+                )?;
                 send_imported_ack(core, client, &scope, &binding, ack, &now_text).await?;
                 Ok(RootControlReceiveOutcome::EnvelopeReplayAcknowledged)
             }
@@ -1015,6 +1034,75 @@ fn repair_committed_root_import_auth_ref(
     Ok(())
 }
 
+pub(crate) fn repair_committed_root_import_root_ref(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    completed_message_id: &str,
+) -> crate::ImResult<()> {
+    let local_alias = client
+        .current_identity()
+        .local_alias
+        .as_deref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let secret_storage =
+        crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
+    let identity_store =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
+    let committed_root_ref = identity_store.committed_root_import_root_ref(
+        local_alias,
+        completed_message_id,
+        &secret_storage,
+    )?;
+    client
+        .runtime()
+        .key_provider
+        .advance_vault_root_ref(&committed_root_ref)
+}
+
+/// Probes the pre-import authorization generation without allowing the
+/// transport to refresh, fall back to a device signature, or persist a token
+/// returned by the server. Only the closed JSON-RPC service code emitted when
+/// that generation is no longer authoritative proves that the ready commit
+/// already happened; HTTP 401 and every other service error remain errors.
+async fn probe_root_ready_retry(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<RootReadyRetryProbe> {
+    let old_bearer = client
+        .runtime()
+        .key_provider
+        .auth_state()?
+        .bearer_token
+        .map(|token| token.trim().to_owned())
+        .filter(|token| !token.is_empty())
+        .ok_or(crate::ImError::AuthRequired)?;
+    let transport = crate::internal::transport::CoreHttpTransport::new_with_ephemeral_bearer(
+        client,
+        &old_bearer,
+    )?;
+    let mut remote = DeviceJoinAdminHttpAdapter::new(transport);
+    classify_root_ready_retry_probe(remote.registry(client.did(), false).await)
+}
+
+fn classify_root_ready_retry_probe(
+    result: crate::ImResult<DeviceJoinRemoteRegistry>,
+) -> crate::ImResult<RootReadyRetryProbe> {
+    match result {
+        Ok(registry) => Ok(RootReadyRetryProbe::ContinueAck(registry)),
+        Err(error) if is_stale_auth_generation_service(&error) => {
+            Ok(RootReadyRetryProbe::ServerAlreadyCommitted)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn is_stale_auth_generation_service(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::Service { code: Some(code), .. }
+            if code == "device.auth_generation_stale"
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn issue_root_import_management_token(
     core: &crate::core::ImCore,
@@ -1030,7 +1118,7 @@ async fn issue_root_import_management_token(
         let operation_id = store.reserve_root_import_management_token_operation(
             local_alias,
             &ready.completed_message_id,
-            &random_root_import_token_operation_id()?,
+            random_root_import_token_operation_id,
         )?;
         let prepared = crate::internal::identity_wire::device_genesis::prepare_management_ready_device_token_issue(
             operation_id.clone(),
@@ -1109,6 +1197,7 @@ fn validate_local_management_ready_transition(
         || completion.ack_for_message_id != ready.completed_message_id
         || authorization.status != DeviceAuthorizationStatus::Active
         || authorization.role != DeviceAuthorizationRole::Admin
+        || checkpoint.document_version < completion.document_version
         || (checkpoint.document_version == completion.document_version
             && checkpoint.document_hash != completion.document_hash)
     {
@@ -1116,15 +1205,17 @@ fn validate_local_management_ready_transition(
     }
     if authorization.management_ready {
         if authorization.auth_generation != ready.auth_generation
-            || checkpoint.document_version < completion.document_version
             || checkpoint.registry_version < ready.registry_version
         {
             return Err(crate::ImError::PermissionDenied);
         }
         return Ok(LocalManagementReadyTransition::AlreadyConverged);
     }
-    if authorization.auth_generation >= ready.auth_generation
-        || checkpoint.document_version > completion.document_version
+    let expected_auth_generation = authorization
+        .auth_generation
+        .checked_add(1)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if ready.auth_generation != expected_auth_generation
         || checkpoint.registry_version >= ready.registry_version
     {
         return Err(crate::ImError::PermissionDenied);
@@ -1608,6 +1699,90 @@ mod tests {
     }
 
     #[test]
+    fn lost_ready_probe_recovers_only_from_exact_closed_wire_code() {
+        let wire_error = crate::internal::json_rpc::decode_response(
+            br#"{
+              "jsonrpc":"2.0",
+              "id":"req-1",
+              "error":{
+                "code":-32001,
+                "message":"authorization generation is stale",
+                "data":{"awiki_code":"device.auth_generation_stale"}
+              }
+            }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            classify_root_ready_retry_probe(Err(wire_error)).unwrap(),
+            RootReadyRetryProbe::ServerAlreadyCommitted
+        ));
+
+        let ambiguous_wire_error = crate::internal::json_rpc::decode_response(
+            br#"{
+              "jsonrpc":"2.0",
+              "id":"req-2",
+              "error":{
+                "code":-32001,
+                "message":"not authenticated",
+                "data":{"awiki_code":"device.unauthenticated"}
+              }
+            }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            classify_root_ready_retry_probe(Err(ambiguous_wire_error)),
+            Err(crate::ImError::Service { code: Some(code), .. })
+                if code == "device.unauthenticated"
+        ));
+
+        let http_unauthorized = crate::ImError::Service {
+            status_code: Some(401),
+            code: None,
+            message: "unauthorized".to_owned(),
+            data: None,
+        };
+        assert!(matches!(
+            classify_root_ready_retry_probe(Err(http_unauthorized)),
+            Err(crate::ImError::Service {
+                status_code: Some(401),
+                code: None,
+                ..
+            })
+        ));
+        let unrelated = crate::ImError::Service {
+            status_code: None,
+            code: Some("device.inactive".to_owned()),
+            message: "inactive".to_owned(),
+            data: None,
+        };
+        assert!(matches!(
+            classify_root_ready_retry_probe(Err(unrelated)),
+            Err(crate::ImError::Service { code: Some(code), .. })
+                if code == "device.inactive"
+        ));
+    }
+
+    #[test]
+    fn successful_lost_ready_probe_keeps_ack_retry_path() {
+        let registry = DeviceJoinRemoteRegistry {
+            did: crate::ids::Did::parse("did:example:alice").unwrap(),
+            checkpoint: crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                document_version: 19,
+                document_hash: "sha256:test".to_owned(),
+                registry_version: 7,
+            },
+            devices: Vec::new(),
+            pending_join_requests: Vec::new(),
+        };
+        match classify_root_ready_retry_probe(Ok(registry.clone())).unwrap() {
+            RootReadyRetryProbe::ContinueAck(actual) => assert_eq!(actual, registry),
+            RootReadyRetryProbe::ServerAlreadyCommitted => {
+                panic!("an uncommitted server must keep the ACK retry path")
+            }
+        }
+    }
+
+    #[test]
     fn local_management_ready_transition_accepts_fresh_and_idempotent_crash_retry() {
         use crate::internal::identity_device_state::{
             DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
@@ -1624,8 +1799,8 @@ mod tests {
             auth_generation: 1,
         };
         let checkpoint = IdentityInternalCheckpoint {
-            document_version: 18,
-            document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+            document_version: 20,
+            document_hash: "sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC".to_owned(),
             registry_version: 7,
         };
         let mut completion = completion();
@@ -1652,6 +1827,33 @@ mod tests {
             .unwrap(),
             LocalManagementReadyTransition::Fresh
         );
+
+        let stale_checkpoint = IdentityInternalCheckpoint {
+            document_version: completion.document_version - 1,
+            document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+            registry_version: 7,
+        };
+        assert!(validate_local_management_ready_transition(
+            "did:example:alice",
+            &authorization,
+            Some(&stale_checkpoint),
+            &completion,
+            &ready,
+        )
+        .is_err());
+        let same_version_fork = IdentityInternalCheckpoint {
+            document_version: completion.document_version,
+            document_hash: "sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC".to_owned(),
+            registry_version: 7,
+        };
+        assert!(validate_local_management_ready_transition(
+            "did:example:alice",
+            &authorization,
+            Some(&same_version_fork),
+            &completion,
+            &ready,
+        )
+        .is_err());
 
         let mut already_ready = authorization.clone();
         already_ready.management_ready = true;
@@ -1692,6 +1894,25 @@ mod tests {
             Some(&checkpoint),
             &completion,
             &ready,
+        )
+        .is_err());
+
+        let skipped_generation: RootManagementReadyResult =
+            serde_json::from_value(serde_json::json!({
+                "did": "did:example:alice",
+                "device_id": "device-member",
+                "management_ready": true,
+                "auth_generation": 3,
+                "registry_version": 8,
+                "completed_message_id": "root-control-message-1"
+            }))
+            .unwrap();
+        assert!(validate_local_management_ready_transition(
+            "did:example:alice",
+            &authorization,
+            Some(&checkpoint),
+            &completion,
+            &skipped_generation,
         )
         .is_err());
 

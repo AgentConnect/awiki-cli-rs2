@@ -224,6 +224,29 @@ impl<'a> RootKeyTransferCore<'a> {
                     input.direct_binding,
                     persisted,
                 )?;
+                let target = index
+                    .credentials
+                    .get_mut(input.local_alias)
+                    .ok_or_else(|| crate::ImError::IdentityNotFound {
+                        selector: input.local_alias.to_owned(),
+                    })?;
+                let checkpoint_changed = target
+                    .device_state
+                    .as_ref()
+                    .and_then(|state| state.checkpoint.as_ref())
+                    != Some(&input.current_registry.checkpoint);
+                if checkpoint_changed {
+                    target
+                        .device_state
+                        .as_mut()
+                        .ok_or(crate::ImError::PermissionDenied)?
+                        .checkpoint = Some(input.current_registry.checkpoint.clone());
+                    store.save_index_locked(&index_lock, index)?;
+                }
+                // The index/checkpoint is authoritative. The DID document is
+                // a repairable local projection; if this write fails after a
+                // committed import, the same exact Envelope replay retries it.
+                store.save_did_document(&entry.dir_name, input.current_did_document)?;
                 remove_matching_pending(&identity_dir, &reservation);
                 return imported_ack(replay, input.transport_context.clone(), true);
             }
@@ -306,6 +329,7 @@ impl<'a> RootKeyTransferCore<'a> {
             // No Vault write occurs in this retry path. The index replacement
             // atomically moves the replay/ACK reservation to the new message.
             store.save_index_locked(&index_lock, index)?;
+            store.save_did_document(&entry.dir_name, input.current_did_document)?;
             remove_matching_pending(&identity_dir, &previous_reservation);
             return imported_ack(completion, input.transport_context.clone(), false);
         }
@@ -382,6 +406,7 @@ impl<'a> RootKeyTransferCore<'a> {
         // The atomic index image is the linearization point: it contains the
         // root SecretRef, consumed message reservation and signed completion.
         store.save_index_locked(&index_lock, index)?;
+        store.save_did_document(&entry.dir_name, input.current_did_document)?;
         remove_matching_pending(&identity_dir, &reservation);
         imported_ack(completion, input.transport_context.clone(), false)
     }
@@ -397,11 +422,11 @@ impl<'a> RootKeyTransferCore<'a> {
         validate_message_id(input.message_id)?;
         let store = IdentityStore::new(self.paths);
         let _index_lock = store.lock_index_mutation()?;
-        let index = store.load_index()?;
-        let entry = local_entry(&index, input.local_alias)?;
+        let mut index = store.load_index()?;
+        let entry = local_entry(&index, input.local_alias)?.clone();
         let identity_dir = store.local_identity_dir(&entry.dir_name)?;
         let did = crate::ids::Did::parse(&entry.did)?;
-        let (authorization, local_checkpoint) = require_local_authorization(entry, &did)?;
+        let (authorization, local_checkpoint) = require_local_authorization(&entry, &did)?;
         validate_checkpoint_advance(local_checkpoint, &input.current_registry.checkpoint)?;
         let persisted = entry
             .root_key_import
@@ -437,7 +462,7 @@ impl<'a> RootKeyTransferCore<'a> {
         validate_manifest_device(input.current_did_document, importer)?;
         verify_completion_signature(&persisted.completion, input.current_did_document, importer)?;
 
-        let vault_context = require_vault_context(entry, &self.secret_storage)?;
+        let vault_context = require_vault_context(&entry, &self.secret_storage)?;
         let root_ref = vault_context
             .refs
             .did_document_root_private
@@ -454,6 +479,26 @@ impl<'a> RootKeyTransferCore<'a> {
             .map_err(|_| crate::ImError::PermissionDenied)?;
         validate_root_private(root_pem, &current_root)?;
 
+        let target = index
+            .credentials
+            .get_mut(input.local_alias)
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: input.local_alias.to_owned(),
+            })?;
+        let checkpoint_changed = target
+            .device_state
+            .as_ref()
+            .and_then(|state| state.checkpoint.as_ref())
+            != Some(&input.current_registry.checkpoint);
+        if checkpoint_changed {
+            target
+                .device_state
+                .as_mut()
+                .ok_or(crate::ImError::PermissionDenied)?
+                .checkpoint = Some(input.current_registry.checkpoint.clone());
+            store.save_index_locked(&_index_lock, index)?;
+        }
+        store.save_did_document(&entry.dir_name, input.current_did_document)?;
         remove_matching_pending(&identity_dir, reservation);
         imported_ack(
             persisted.completion.clone(),
@@ -923,6 +968,10 @@ pub(crate) struct PersistedRootKeyImport {
 impl PersistedRootKeyImport {
     pub(crate) fn message_id(&self) -> &str {
         &self.reservation.message_id
+    }
+
+    pub(crate) fn root_key_id(&self) -> &str {
+        &self.reservation.root_key_id
     }
 }
 

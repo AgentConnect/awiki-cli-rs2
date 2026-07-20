@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use zeroize::Zeroizing;
 
 const INDEX_SCHEMA_VERSION: i64 = 5;
 const IDENTITY_FILE_NAME: &str = "identity.json";
@@ -551,15 +550,18 @@ impl<'a> IdentityStore<'a> {
         Ok(())
     }
 
-    /// Returns the stable token-issue operation for one imported-root ACK,
-    /// persisting `candidate` before its first remote use.
-    pub(crate) fn reserve_root_import_management_token_operation(
+    /// Returns the stable token-issue operation for one imported-root ACK.
+    /// The candidate is generated only after the locked state confirms that no
+    /// operation has already been persisted, then is committed before use.
+    pub(crate) fn reserve_root_import_management_token_operation<F>(
         &self,
         local_alias: &str,
         completed_message_id: &str,
-        candidate: &str,
-    ) -> crate::ImResult<String> {
-        validate_root_import_token_operation(candidate)?;
+        candidate: F,
+    ) -> crate::ImResult<String>
+    where
+        F: FnOnce() -> crate::ImResult<String>,
+    {
         let alias = sanitize_identity_name(local_alias);
         let lock = self.lock_index_mutation()?;
         let mut index = self.load_index()?;
@@ -573,9 +575,11 @@ impl<'a> IdentityStore<'a> {
             validate_root_import_token_operation(existing)?;
             return Ok(existing.to_owned());
         }
-        record.management_token_operation_id = Some(candidate.to_owned());
+        let candidate = candidate()?;
+        validate_root_import_token_operation(&candidate)?;
+        record.management_token_operation_id = Some(candidate.clone());
         self.save_index_locked(&lock, index)?;
-        Ok(candidate.to_owned())
+        Ok(candidate)
     }
 
     /// Rotates an expired token-issue operation with compare-and-swap. If a
@@ -704,6 +708,79 @@ impl<'a> IdentityStore<'a> {
             return Err(crate::ImError::PermissionDenied);
         }
         Ok(auth_ref)
+    }
+
+    /// Loads and validates the DID root ref from an already committed import.
+    /// A long-lived client uses this authoritative pointer to repair its live
+    /// Vault provider after fresh import or an exact replay.
+    pub(crate) fn committed_root_import_root_ref(
+        &self,
+        local_alias: &str,
+        completed_message_id: &str,
+        secret_storage: &SaveIdentitySecretStorage,
+    ) -> crate::ImResult<crate::internal::secret_vault::record::SecretRef> {
+        let SaveIdentitySecretStorage::Vault {
+            workspace_id,
+            device_id,
+            vault,
+        } = secret_storage
+        else {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "vNext DID root keys require Vault storage".to_owned(),
+            });
+        };
+        let alias = sanitize_identity_name(local_alias);
+        let _lock = self.lock_index_mutation()?;
+        let index = self.load_index()?;
+        let entry =
+            index
+                .credentials
+                .get(&alias)
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: alias.clone(),
+                })?;
+        let imported = entry
+            .root_key_import
+            .as_ref()
+            .filter(|record| record.message_id() == completed_message_id)
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if imported.root_key_id() != imported.completion.root_key_id {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let metadata = entry
+            .vault_migration
+            .as_ref()
+            .filter(|metadata| {
+                metadata.workspace_id == *workspace_id
+                    && metadata.device_id == *device_id
+                    && metadata.status == IdentityVaultMigrationStatus::Verified
+            })
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let root_ref = metadata
+            .vnext_refs
+            .as_ref()
+            .and_then(|refs| refs.did_document_root_private.clone())
+            .filter(|root_ref| {
+                root_ref.workspace_id == *workspace_id
+                    && root_ref.device_id == *device_id
+                    && root_ref.identity_id.as_deref() == Some(entry.unique_id.as_str())
+                    && root_ref.did.as_deref() == Some(entry.did.as_str())
+                    && root_ref.kind
+                        == crate::internal::secret_vault::record::SecretKind::IdentityRootPrivate
+                    && root_ref.key_id == imported.completion.root_key_id
+                    && root_ref.key_version > 0
+            })
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let opened = vault.open(&root_ref)?;
+        let root_pem = std::str::from_utf8(opened.expose_secret())
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        if !matches!(
+            anp::PrivateKeyMaterial::from_pem(root_pem),
+            Ok(anp::PrivateKeyMaterial::Ed25519(_))
+        ) {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(root_ref)
     }
 
     /// Seals the replacement token under a new Vault `SecretRef`, then commits
@@ -1165,7 +1242,12 @@ impl<'a> IdentityStore<'a> {
         did_document: &Value,
     ) -> crate::ImResult<()> {
         let identity_dir = local_identity_dir(&self.paths.identity_root_dir, identity_dir_name)?;
-        write_secure_json(&identity_dir.join(DID_DOCUMENT_FILE_NAME), did_document)
+        let raw = serde_json::to_vec_pretty(did_document).map_err(|err| {
+            crate::ImError::Serialization {
+                detail: err.to_string(),
+            }
+        })?;
+        write_secure_bytes_atomic(&identity_dir.join(DID_DOCUMENT_FILE_NAME), &raw)
     }
 
     pub(crate) fn load_key1_private_pem(&self, identity_dir_name: &str) -> crate::ImResult<String> {
@@ -2083,11 +2165,9 @@ fn preserve_imported_root_for_resave(
     }
     drop(root_material);
     drop(root_secret);
-    let expected_auth = Zeroizing::new(crate::internal::auth::state::auth_state_json_for_token(
-        &input.jwt_token,
-    )?);
     let opened_auth = vault.open(&refs.auth_jwt)?;
-    if opened_auth.expose_secret() != expected_auth.as_slice() {
+    let auth = crate::internal::auth::state::parse_auth_state(opened_auth.expose_secret())?;
+    if !auth.has_token || auth.bearer_token.as_deref() != Some(input.jwt_token.trim()) {
         return Err(crate::ImError::PermissionDenied);
     }
     match (

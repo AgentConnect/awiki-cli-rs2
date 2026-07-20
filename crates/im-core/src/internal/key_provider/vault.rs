@@ -48,6 +48,7 @@ pub(crate) struct VaultBackedKeyMaterialProvider {
     file_provider: super::FileBackedKeyMaterialProvider,
     vault: Arc<dyn SecretVault + Send + Sync>,
     refs: VaultKeyRoleRefs,
+    did_document_root_private_ref: RwLock<Option<SecretRef>>,
     auth_jwt_ref: RwLock<SecretRef>,
 }
 
@@ -62,6 +63,7 @@ impl VaultBackedKeyMaterialProvider {
             file_provider: super::FileBackedKeyMaterialProvider::new(identity_dir),
             vault,
             refs: VaultKeyRoleRefs::Legacy(refs),
+            did_document_root_private_ref: RwLock::new(None),
             auth_jwt_ref: RwLock::new(auth_jwt_ref),
         }
     }
@@ -72,10 +74,12 @@ impl VaultBackedKeyMaterialProvider {
         refs: VNextVaultKeyMaterialRefs,
     ) -> Self {
         let auth_jwt_ref = refs.auth_jwt.clone();
+        let did_document_root_private_ref = refs.did_document_root_private.clone();
         Self {
             file_provider: super::FileBackedKeyMaterialProvider::new(identity_dir),
             vault,
             refs: VaultKeyRoleRefs::VNext(refs),
+            did_document_root_private_ref: RwLock::new(did_document_root_private_ref),
             auth_jwt_ref: RwLock::new(auth_jwt_ref),
         }
     }
@@ -196,8 +200,14 @@ impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
                 .legacy_key1_role_adapter(refs)?
                 .did_document_root_private_pem()),
             VaultKeyRoleRefs::VNext(refs) => {
-                let secret_ref = refs.did_document_root_private.as_ref().ok_or_else(|| {
-                    crate::ImError::IdentityNotReady {
+                let secret_ref = self
+                    .did_document_root_private_ref
+                    .read()
+                    .map_err(|_| crate::ImError::LocalStateUnavailable {
+                        detail: "vault root ref lock poisoned".to_owned(),
+                    })?
+                    .clone()
+                    .ok_or_else(|| crate::ImError::IdentityNotReady {
                         identity: refs
                             .device_request_signing_private
                             .did
@@ -205,10 +215,9 @@ impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
                             .or_else(|| refs.device_request_signing_private.identity_id.clone())
                             .unwrap_or_else(|| "vault-backed".to_owned()),
                         missing: vec!["did_document_root_private_key".to_owned()],
-                    }
-                })?;
+                    })?;
                 self.open_utf8_secret_for_kind(
-                    secret_ref,
+                    &secret_ref,
                     SecretKind::IdentityRootPrivate,
                     "did_document_root_private_key",
                 )
@@ -276,6 +285,62 @@ impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
             return Ok(());
         }
         *current = committed.clone();
+        Ok(())
+    }
+
+    fn advance_vault_root_ref(&self, committed: &SecretRef) -> crate::ImResult<()> {
+        let VaultKeyRoleRefs::VNext(refs) = &self.refs else {
+            return Err(crate::ImError::PermissionDenied);
+        };
+        let binding = &refs.device_request_signing_private;
+        let did = binding
+            .did
+            .as_deref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let expected_key_id = format!("{did}#{}", anp::authentication::VM_KEY_AUTH);
+        if committed.workspace_id != binding.workspace_id
+            || committed.device_id != binding.device_id
+            || committed.identity_id != binding.identity_id
+            || committed.did != binding.did
+            || committed.kind != SecretKind::IdentityRootPrivate
+            || committed.key_id != expected_key_id
+            || committed.key_version == 0
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let mut current = self.did_document_root_private_ref.write().map_err(|_| {
+            crate::ImError::LocalStateUnavailable {
+                detail: "vault root ref lock poisoned".to_owned(),
+            }
+        })?;
+        if let Some(existing) = current.as_ref() {
+            if existing.workspace_id != committed.workspace_id
+                || existing.device_id != committed.device_id
+                || existing.identity_id != committed.identity_id
+                || existing.did != committed.did
+                || existing.kind != SecretKind::IdentityRootPrivate
+                || existing.key_id != committed.key_id
+                || committed.key_version < existing.key_version
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+        // Validate and parse the target before exposing it to management code.
+        let root_pem = self.open_utf8_secret_for_kind(
+            committed,
+            SecretKind::IdentityRootPrivate,
+            "did_document_root_private_key",
+        )?;
+        if !matches!(
+            anp::PrivateKeyMaterial::from_pem(&root_pem),
+            Ok(anp::PrivateKeyMaterial::Ed25519(_))
+        ) {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if current.as_ref() == Some(committed) {
+            return Ok(());
+        }
+        *current = Some(committed.clone());
         Ok(())
     }
 }
@@ -520,6 +585,68 @@ mod tests {
             provider.valid_auth_token().unwrap().as_deref(),
             Some("new-token")
         );
+    }
+
+    #[test]
+    fn live_vnext_provider_advances_to_committed_root_ref() {
+        let root = tempfile::tempdir().unwrap();
+        let identity_dir = root.path().join("identity");
+        std::fs::create_dir_all(&identity_dir).unwrap();
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([8_u8; 32]),
+            FileSecretVaultStore::new(root.path().join("vault")),
+        ));
+        let device_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityDeviceSigningPrivate,
+            "device-sign",
+            b"device-secret",
+        );
+        let agreement_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityE2eeAgreementPrivate,
+            "device-e2ee",
+            b"agreement-secret",
+        );
+        let auth_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::AuthJwt,
+            "auth.json",
+            &crate::internal::auth::state::auth_state_json_for_token("token-secret").unwrap(),
+        );
+        let generated = anp::authentication::create_did_wba_document(
+            "root.example",
+            anp::authentication::DidDocumentOptions::default(),
+        )
+        .unwrap();
+        let root_pem = generated.keys[anp::authentication::VM_KEY_AUTH]
+            .private_key_pem
+            .clone();
+        let root_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityRootPrivate,
+            "did:example:alice#key-1",
+            root_pem.as_bytes(),
+        );
+        let provider = VaultBackedKeyMaterialProvider::new_vnext(
+            identity_dir,
+            vault,
+            VNextVaultKeyMaterialRefs {
+                device_request_signing_private: device_ref,
+                did_document_root_private: None,
+                e2ee_agreement_private: agreement_ref,
+                auth_jwt: auth_ref,
+            },
+        );
+
+        assert!(provider.did_document_root_private_pem().is_err());
+        provider.advance_vault_root_ref(&root_ref).unwrap();
+        assert_eq!(provider.did_document_root_private_pem().unwrap(), root_pem);
+
+        let mut wrong_binding = root_ref;
+        wrong_binding.device_id = "other-device".to_owned();
+        assert!(provider.advance_vault_root_ref(&wrong_binding).is_err());
+        assert_eq!(provider.did_document_root_private_pem().unwrap(), root_pem);
     }
 
     #[test]

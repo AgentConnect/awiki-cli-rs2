@@ -67,4 +67,13 @@ pub(crate) trait KeyMaterialProvider: Send + Sync {
     ) -> crate::ImResult<()> {
         Err(crate::ImError::PermissionDenied)
     }
+
+    /// Advances a live vNext Vault-backed provider to the DID root SecretRef
+    /// committed by the identity index after root import.
+    fn advance_vault_root_ref(
+        &self,
+        _committed: &crate::internal::secret_vault::record::SecretRef,
+    ) -> crate::ImResult<()> {
+        Err(crate::ImError::PermissionDenied)
+    }
 }

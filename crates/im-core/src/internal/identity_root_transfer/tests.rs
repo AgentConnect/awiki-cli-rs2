@@ -405,6 +405,115 @@ fn import_seals_root_and_emits_one_identical_signed_completion() {
 }
 
 #[test]
+fn long_lived_client_can_use_imported_root_without_reopen() {
+    let scenario = scenario();
+    let core = receiver_live_core(&scenario);
+    let client = core
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            LOCAL_ALIAS.to_owned(),
+        ))
+        .unwrap();
+    assert!(client
+        .runtime()
+        .key_provider
+        .did_document_root_private_pem()
+        .is_err());
+
+    let imported = import_receiver_root(&scenario);
+    crate::internal::identity_root_transfer_runtime::repair_committed_root_import_root_ref(
+        &core,
+        &client,
+        &imported.completion().ack_for_message_id,
+    )
+    .unwrap();
+    let root_pem = client
+        .runtime()
+        .key_provider
+        .did_document_root_private_pem()
+        .unwrap();
+    assert_eq!(root_pem, scenario.generated.root_private_pem);
+    let root = anp::PrivateKeyMaterial::from_pem(&root_pem).unwrap();
+    let management_payload = b"awiki.test.management-ready";
+    let signature = root.sign_message(management_payload).unwrap();
+    root.public_key()
+        .verify_message(management_payload, &signature)
+        .unwrap();
+}
+
+#[test]
+fn envelope_replay_repairs_live_root_ref_after_first_advance_failure() {
+    let scenario = scenario();
+    let core = receiver_live_core(&scenario);
+    let client = core
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            LOCAL_ALIAS.to_owned(),
+        ))
+        .unwrap();
+    let prepared = scenario.prepare();
+    let imported = scenario
+        .import(
+            &prepared,
+            &scenario.direct_binding(),
+            prepared.transport_context(),
+            &scenario.document,
+            &scenario.registry,
+            scenario.now + Duration::seconds(1),
+        )
+        .unwrap();
+    let store = IdentityStore::new(&scenario.receiver.paths);
+    let root_ref = store
+        .committed_root_import_root_ref(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+    let record_path = scenario.receiver.vault.store().record_path(&root_ref);
+    let hidden_path = record_path.with_extension("advance-failure");
+    std::fs::rename(&record_path, &hidden_path).unwrap();
+    assert!(
+        crate::internal::identity_root_transfer_runtime::repair_committed_root_import_root_ref(
+            &core,
+            &client,
+            &imported.completion().ack_for_message_id,
+        )
+        .is_err()
+    );
+    assert!(client
+        .runtime()
+        .key_provider
+        .did_document_root_private_pem()
+        .is_err());
+    std::fs::rename(&hidden_path, &record_path).unwrap();
+
+    let replay = scenario
+        .import(
+            &prepared,
+            &scenario.direct_binding(),
+            prepared.transport_context(),
+            &scenario.document,
+            &scenario.registry,
+            scenario.now + Duration::seconds(2),
+        )
+        .unwrap();
+    assert!(replay.replayed());
+    crate::internal::identity_root_transfer_runtime::repair_committed_root_import_root_ref(
+        &core,
+        &client,
+        &replay.completion().ack_for_message_id,
+    )
+    .unwrap();
+    assert_eq!(
+        client
+            .runtime()
+            .key_provider
+            .did_document_root_private_pem()
+            .unwrap(),
+        scenario.generated.root_private_pem
+    );
+}
+
+#[test]
 fn ack_retry_canonicalizes_projected_expiry_to_the_persisted_reservation() {
     let scenario = scenario();
     let prepared = scenario.prepare();
@@ -446,6 +555,16 @@ fn ack_retry_canonicalizes_projected_expiry_to_the_persisted_reservation() {
 #[test]
 fn fresh_import_accepts_newer_current_document_without_historical_snapshot() {
     let scenario = scenario();
+    let core = receiver_live_core(&scenario);
+    let client = core
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            LOCAL_ALIAS.to_owned(),
+        ))
+        .unwrap();
+    assert_eq!(
+        client.runtime().key_provider.did_document().unwrap(),
+        scenario.document
+    );
     let prepared = scenario.prepare();
     let context = prepared.transport_context().clone();
     let direct = scenario.direct_binding();
@@ -465,6 +584,10 @@ fn fresh_import_accepts_newer_current_document_without_historical_snapshot() {
     assert!(!imported.replayed());
     assert_eq!(imported.completion().document_version, 2);
     assert_eq!(
+        client.runtime().key_provider.did_document().unwrap(),
+        current_document
+    );
+    assert_eq!(
         IdentityStore::new(&scenario.receiver.paths)
             .load_index()
             .unwrap()
@@ -476,6 +599,72 @@ fn fresh_import_accepts_newer_current_document_without_historical_snapshot() {
             .as_ref()
             .unwrap(),
         &current_registry.checkpoint
+    );
+}
+
+#[test]
+fn exact_replay_repairs_document_projection_after_committed_import() {
+    let scenario = scenario();
+    let core = receiver_live_core(&scenario);
+    let client = core
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            LOCAL_ALIAS.to_owned(),
+        ))
+        .unwrap();
+    let prepared = scenario.prepare();
+    let (current_document, current_registry, _) = add_ready_admin(&scenario, "dev-later-admin");
+    let document_path = scenario
+        .receiver
+        .paths
+        .identity_root_dir
+        .join("receiver-identity")
+        .join("did_document.json");
+    let backup_path = document_path.with_extension("projection-backup");
+    std::fs::rename(&document_path, &backup_path).unwrap();
+    std::fs::create_dir(&document_path).unwrap();
+
+    let first = scenario.import(
+        &prepared,
+        &scenario.direct_binding(),
+        prepared.transport_context(),
+        &current_document,
+        &current_registry,
+        scenario.now + Duration::seconds(1),
+    );
+    assert!(first.is_err());
+    let committed = IdentityStore::new(&scenario.receiver.paths)
+        .load_index()
+        .unwrap();
+    assert_eq!(
+        committed.credentials[LOCAL_ALIAS]
+            .device_state
+            .as_ref()
+            .unwrap()
+            .checkpoint
+            .as_ref(),
+        Some(&current_registry.checkpoint)
+    );
+
+    std::fs::remove_dir(&document_path).unwrap();
+    std::fs::rename(&backup_path, &document_path).unwrap();
+    assert_ne!(
+        client.runtime().key_provider.did_document().unwrap(),
+        current_document
+    );
+    let replay = scenario
+        .import(
+            &prepared,
+            &scenario.direct_binding(),
+            prepared.transport_context(),
+            &current_document,
+            &current_registry,
+            scenario.now + Duration::seconds(2),
+        )
+        .unwrap();
+    assert!(replay.replayed());
+    assert_eq!(
+        client.runtime().key_provider.did_document().unwrap(),
+        current_document
     );
 }
 
@@ -661,6 +850,52 @@ fn imported_root_resave_is_rootless_same_identity_only_and_concurrency_safe() {
 }
 
 #[test]
+fn management_ready_root_resave_preserves_versioned_token_pair() {
+    let scenario = scenario();
+    let imported = import_receiver_root(&scenario);
+    let store = IdentityStore::new(&scenario.receiver.paths);
+    store
+        .converge_root_import_management_ready(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &ready_checkpoint(&scenario),
+            "management-access-token",
+            "management-refresh-token",
+            "2099-07-20T01:00:00Z",
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+
+    let mut input = scenario.receiver_save_input();
+    input.jwt_token = "management-access-token".to_owned();
+    store
+        .save_identity_with_secret_storage(input, scenario.receiver.storage.clone())
+        .unwrap();
+    let index = store.load_index().unwrap();
+    let auth_ref = index.credentials[LOCAL_ALIAS]
+        .vault_migration
+        .as_ref()
+        .unwrap()
+        .vnext_refs
+        .as_ref()
+        .unwrap()
+        .auth_jwt
+        .clone();
+    assert_eq!(auth_ref.key_version, 2);
+    let opened = scenario.receiver.vault.open(&auth_ref).unwrap();
+    let auth = crate::internal::auth::state::parse_auth_state(opened.expose_secret()).unwrap();
+    assert_eq!(
+        auth.bearer_token.as_deref(),
+        Some("management-access-token")
+    );
+    assert_eq!(
+        auth.refresh_token.as_deref(),
+        Some("management-refresh-token")
+    );
+}
+
+#[test]
 fn exact_replay_after_expiry_and_sender_revoke_reuses_completion_and_vault_record() {
     let scenario = scenario();
     let prepared = scenario.prepare();
@@ -768,6 +1003,8 @@ fn expired_import_allows_new_sender_message_without_resealing_root() {
     let mut retry_envelope: RootKeyEnvelope = decode_root_envelope(original.plaintext()).unwrap();
     retry_envelope.message_id = retry_message_id.to_owned();
     retry_envelope.sender_device_id = second_sender.device_id.clone();
+    retry_envelope.document_version = current_registry.checkpoint.document_version;
+    retry_envelope.document_hash = current_registry.checkpoint.document_hash.clone();
     retry_envelope.expires_at = format_time(retry_expires_at).unwrap();
     let retry_plaintext = encode_zeroizing_json(&retry_envelope).unwrap();
     let retry_context = RootImportTransportContext {
@@ -1745,11 +1982,18 @@ fn root_import_token_operation_is_persisted_and_rotated_with_compare_and_swap() 
     let imported = import_receiver_root(&scenario);
     let store = IdentityStore::new(&scenario.receiver.paths);
 
+    assert!(store
+        .reserve_root_import_management_token_operation(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            || Ok("x".repeat(129)),
+        )
+        .is_err());
     let first = store
         .reserve_root_import_management_token_operation(
             LOCAL_ALIAS,
             &imported.completion().ack_for_message_id,
-            "root-ready-first",
+            || Ok("root-ready-first".to_owned()),
         )
         .unwrap();
     assert_eq!(first, "root-ready-first");
@@ -1758,7 +2002,7 @@ fn root_import_token_operation_is_persisted_and_rotated_with_compare_and_swap() 
             .reserve_root_import_management_token_operation(
                 LOCAL_ALIAS,
                 &imported.completion().ack_for_message_id,
-                "root-ready-unused",
+                || panic!("persisted operation must bypass candidate RNG"),
             )
             .unwrap(),
         first
@@ -1800,13 +2044,6 @@ fn root_import_token_operation_is_persisted_and_rotated_with_compare_and_swap() 
         persisted.management_token_operation_id.as_deref(),
         Some(rotated_again.as_str())
     );
-    assert!(store
-        .reserve_root_import_management_token_operation(
-            LOCAL_ALIAS,
-            &imported.completion().ack_for_message_id,
-            &"x".repeat(129),
-        )
-        .is_err());
 }
 
 #[test]
@@ -2489,6 +2726,45 @@ fn scenario() -> Scenario {
         now,
         expires_at: now + Duration::minutes(2),
     }
+}
+
+fn receiver_live_core(scenario: &Scenario) -> crate::ImCore {
+    let root = scenario.receiver._root.path();
+    crate::ImCore::new_with_options(
+        crate::ImCoreConfig {
+            service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
+            did_domain: "awiki.test".to_owned(),
+            user_service_endpoint: None,
+            message_service_endpoint: None,
+            mail_service_endpoint: None,
+            anp_service_endpoint: None,
+            anp_service_did: None,
+            ca_bundle: None,
+            transport_policy: crate::MessageTransportPolicy::HttpOnly,
+        },
+        crate::ImCorePaths {
+            identities: scenario.receiver.paths.clone(),
+            local_state: crate::LocalStatePaths {
+                sqlite_path: root.join("local").join("im.sqlite"),
+            },
+            runtime: crate::RuntimePaths {
+                cache_dir: root.join("cache"),
+                temp_dir: root.join("tmp"),
+            },
+        },
+        crate::ImCoreOpenOptions::default()
+            .with_identity_secret_vault(
+                crate::IdentitySecretStoragePolicy::VaultRequired,
+                crate::ImCoreSecretVaultOptions::new(
+                    crate::vault::DeviceVaultRootKey::from_bytes([47_u8; 32]),
+                    root.join("vault"),
+                    "workspace-root-transfer",
+                    "vault-context-receiver-identity",
+                ),
+            )
+            .with_multi_device_root_transfer_enabled(true),
+    )
+    .unwrap()
 }
 
 fn add_ready_admin(
