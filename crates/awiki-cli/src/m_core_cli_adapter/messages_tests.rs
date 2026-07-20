@@ -80,6 +80,23 @@ fn direct_delivery_preserves_final_acceptance_from_core_metadata() {
 }
 
 #[test]
+fn direct_partial_delivery_preserves_non_final_acceptance_from_core_metadata() {
+    let mut result = thread_scoped_send_result(&[
+        ("resolved_target_did", "did:wba:awiki.ai:bob:e1"),
+        ("final_acceptance", "false"),
+    ]);
+    result.delivery = DeliveryState::Sent;
+    result.message.metadata.delivery_state = Some("sent".to_owned());
+    let target = direct_target_from_result(&result);
+
+    let rendered = render_send_result(&target, &result, false).expect("render");
+
+    assert_eq!(rendered.data["delivery"]["accepted"], true);
+    assert_eq!(rendered.data["delivery"]["delivery_state"], "sent");
+    assert_eq!(rendered.data["delivery"]["final_acceptance"], false);
+}
+
+#[test]
 fn direct_delivery_projects_internal_partial_retry_counts() {
     let result = thread_scoped_send_result(&[
         ("resolved_target_did", "did:wba:awiki.ai:bob:e1"),

@@ -193,8 +193,9 @@ fn direct_result(
     summary: &crate::internal::secure_direct::v2_product::V2DirectProductSendSummary,
     attachment_projection: Option<&Value>,
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
+    let fully_accepted = summary.fully_accepted();
     let delivery = product_delivery(
-        summary.fully_accepted(),
+        fully_accepted,
         summary.accepted_device_count,
         summary.failed_device_count,
     );
@@ -229,6 +230,11 @@ fn direct_result(
     }
     result.message.sent_at = summary.accepted_at.clone();
     add_product_attribute(&mut result, "e2ee_profile", "anp.direct.e2ee.v2");
+    add_product_attribute(
+        &mut result,
+        "final_acceptance",
+        if fully_accepted { "true" } else { "false" },
+    );
     add_product_attribute(
         &mut result,
         "target_device_count",
@@ -726,6 +732,117 @@ mod tests {
             product_delivery(false, 0, 2),
             crate::messages::DeliveryState::Failed { .. }
         ));
+    }
+
+    #[test]
+    #[cfg(feature = "sqlite")]
+    fn direct_result_projects_aggregate_final_acceptance() {
+        let root = tempfile::tempdir().unwrap();
+        let identity_root = root.path().join("identities");
+        let identity_dir = identity_root.join("alice");
+        std::fs::create_dir_all(&identity_dir).unwrap();
+        std::fs::create_dir_all(root.path().join("local")).unwrap();
+        std::fs::write(identity_root.join("default"), "alice\n").unwrap();
+        std::fs::write(
+            identity_root.join("registry.json"),
+            serde_json::json!({
+                "default_identity": "alice",
+                "identities": [{
+                    "id": "alice-id",
+                    "did": "did:example:alice",
+                    "local_alias": "alice",
+                    "ready_for_auth": true,
+                    "ready_for_messaging": true,
+                    "missing": []
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(identity_dir.join("did.json"), "{}").unwrap();
+        let client = crate::core::ImCore::new(
+            crate::ImCoreConfig {
+                service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
+                did_domain: "example.test".to_owned(),
+                user_service_endpoint: None,
+                message_service_endpoint: None,
+                mail_service_endpoint: None,
+                anp_service_endpoint: None,
+                anp_service_did: None,
+                ca_bundle: None,
+                transport_policy: crate::MessageTransportPolicy::HttpOnly,
+            },
+            crate::ImCorePaths {
+                identities: crate::IdentityRegistryPaths {
+                    identity_root_dir: identity_root.clone(),
+                    registry_path: identity_root.join("registry.json"),
+                    default_identity_path: Some(identity_root.join("default")),
+                },
+                local_state: crate::LocalStatePaths {
+                    sqlite_path: root.path().join("local").join("im.sqlite"),
+                },
+                runtime: crate::RuntimePaths {
+                    cache_dir: root.path().join("cache"),
+                    temp_dir: root.path().join("tmp"),
+                },
+            },
+        )
+        .unwrap()
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            "alice".to_owned(),
+        ))
+        .unwrap();
+        let resolved = ResolvedSendRequest {
+            request: crate::messages::SendMessageRequest {
+                target: crate::messages::MessageTarget::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                body: crate::messages::MessageBody::Text {
+                    text: "hello".to_owned(),
+                    kind: crate::messages::MessageKind::Text,
+                },
+                security: crate::messages::MessageSecurityMode::SecureDirect,
+                client_message_id: Some(crate::ids::MessageId::parse("msg-final").unwrap()),
+                delivery: crate::messages::MessageDeliveryOptions {
+                    idempotency_key: Some("op-final".to_owned()),
+                    wait_for_final_acceptance: false,
+                },
+                delegated_signing: None,
+            },
+            target_did: Some("did:example:bob".to_owned()),
+            peer_scope: None,
+        };
+        let summary = |accepted_device_count, failed_device_count| {
+            crate::internal::secure_direct::v2_product::V2DirectProductSendSummary {
+                logical_message_id: "msg-final".to_owned(),
+                target_did: "did:example:bob".to_owned(),
+                target_device_count: 2,
+                own_sync_device_count: 0,
+                attempted_device_count: 2,
+                previously_accepted_device_count: 0,
+                newly_accepted_device_count: accepted_device_count,
+                accepted_device_count,
+                failed_device_count,
+                accepted_at: Some("2026-07-20T00:00:00Z".to_owned()),
+            }
+        };
+        let attribute = |result: &crate::messages::SendMessageResult| {
+            result
+                .message
+                .metadata
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key == "final_acceptance")
+                .map(|attribute| attribute.value.clone())
+        };
+
+        let partial = direct_result(&client, &resolved, &summary(1, 1), None).unwrap();
+        assert_eq!(partial.delivery, crate::messages::DeliveryState::Sent);
+        assert_eq!(attribute(&partial).as_deref(), Some("false"));
+
+        let complete = direct_result(&client, &resolved, &summary(2, 0), None).unwrap();
+        assert_eq!(complete.delivery, crate::messages::DeliveryState::Accepted);
+        assert_eq!(attribute(&complete).as_deref(), Some("true"));
     }
 
     #[test]
