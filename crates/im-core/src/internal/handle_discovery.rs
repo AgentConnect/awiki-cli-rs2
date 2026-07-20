@@ -1,8 +1,9 @@
 //! Handle discovery routes and validation.
 //!
 //! Public WNS documents authorize a permanent full Handle, current DID,
-//! status, and binding generation. Recovery deliberately does not treat
-//! deployment-private account identifiers in that document as authoritative.
+//! status, and binding generation. Cross-domain identity deliberately does not
+//! treat deployment-private account identifiers in that document as
+//! authoritative.
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -11,7 +12,27 @@ use std::collections::BTreeMap;
 pub(crate) struct DirectHandleResolution {
     pub(crate) target_did: String,
     pub(crate) full_handle: String,
-    pub(crate) user_id: String,
+    pub(crate) authority_subject_id: String,
+}
+
+impl DirectHandleResolution {
+    pub(crate) fn peer_scope(
+        &self,
+    ) -> crate::ImResult<crate::internal::local_state::owner_scope::DirectPeerScope> {
+        crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            self.authority_subject_id.clone(),
+            self.full_handle.clone(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublicHandleBinding {
+    handle: crate::ids::Handle,
+    did: crate::ids::Did,
+    domain: String,
+    status: String,
+    binding_generation: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -84,17 +105,7 @@ pub(crate) async fn resolve_authoritative_handle_binding_async(
         BTreeMap::new(),
     )
     .await?;
-    let resolution = resolution_from_public_document(&normalized.full_handle, raw.clone())?;
-    let lookup = crate::internal::directory_runtime::handle_lookup_from_value(&raw)?;
-    if lookup.did.as_str() != resolution.target_did
-        || lookup.handle.as_str() != resolution.full_handle
-    {
-        return Err(crate::ImError::invalid_input(
-            Some("handle".to_owned()),
-            "authoritative Handle document changed during normalization",
-        ));
-    }
-    Ok(lookup)
+    authoritative_lookup_from_public_document(&normalized.full_handle, &raw)
 }
 
 /// Resolves the current same-domain Handle mapping without requiring an
@@ -160,7 +171,7 @@ fn resolution_from_lookup(
     Ok(DirectHandleResolution {
         target_did: lookup.did.as_str().to_owned(),
         full_handle,
-        user_id: persona.authority_subject_id,
+        authority_subject_id: persona.authority_subject_id,
     })
 }
 
@@ -168,29 +179,80 @@ fn resolution_from_public_document(
     expected_handle: &str,
     raw: Value,
 ) -> crate::ImResult<DirectHandleResolution> {
-    let status = string_field(&raw, "status")?;
-    validate_active_status(expected_handle, status.as_str())?;
-    let full_handle = first_string_field(&raw, &["full_handle", "handle"])?;
-    validate_handle_match(expected_handle, full_handle.as_str())?;
-    let target_did = string_field(&raw, "did")?;
-    let did = crate::ids::Did::parse(target_did.as_str())?;
-    validate_did_matches_handle_domain(full_handle.as_str(), did.as_str())?;
-    let authority = normalize_handle(expected_handle)?.domain;
-    let authority_subject_id =
-        first_non_empty_string(&raw, &["user_id", "userId", "subject_id", "subjectId"])
-            .ok_or_else(|| crate::ImError::IdentityUnresolved {
-                detail: "Handle authority did not return a stable user_id/subject_id".to_owned(),
-            })?;
+    let binding = public_handle_binding_from_value(expected_handle, &raw)?;
+    let full_handle = binding.handle.as_str().to_owned();
+    // A full Handle is permanently reserved by its provider. It is therefore
+    // the cross-domain authority subject; provider-private account IDs are not
+    // part of WNS and must not affect the Persona or conversation scope.
+    let authority_subject_id = full_handle.clone();
     let persona = crate::internal::canonical_identity::PeerPersona::from_verified_handle(
-        &authority,
+        &binding.domain,
         &authority_subject_id,
         &full_handle,
-        Some(&status),
+        Some(&binding.status),
     )?;
     Ok(DirectHandleResolution {
-        target_did: did.as_str().to_owned(),
+        target_did: binding.did.as_str().to_owned(),
         full_handle: persona.full_handle,
-        user_id: persona.authority_subject_id,
+        authority_subject_id: persona.authority_subject_id,
+    })
+}
+
+fn authoritative_lookup_from_public_document(
+    expected_handle: &str,
+    raw: &Value,
+) -> crate::ImResult<crate::directory::HandleLookupResult> {
+    let binding = public_handle_binding_from_value(expected_handle, raw)?;
+    let authority_subject_id = binding.handle.as_str().to_owned();
+    Ok(crate::directory::HandleLookupResult {
+        handle: binding.handle,
+        did: binding.did,
+        user_id: authority_subject_id,
+        domain: Some(binding.domain),
+        status: Some(binding.status),
+        binding_generation: Some(binding.binding_generation),
+        profile: None,
+        warnings: Vec::new(),
+    })
+}
+
+fn public_handle_binding_from_value(
+    expected_handle: &str,
+    raw: &Value,
+) -> crate::ImResult<PublicHandleBinding> {
+    let expected = normalize_handle(expected_handle)?;
+    let status = string_field(raw, "status")?;
+    validate_active_status(&expected.full_handle, &status)?;
+    // `handle` is the ANP-04 field. `full_handle` and provider-private subject
+    // identifiers are intentionally ignored on the public WNS boundary.
+    let handle = string_field(raw, "handle")?;
+    validate_handle_match(&expected.full_handle, &handle)?;
+    let normalized = normalize_handle(&handle)?;
+    let did = crate::ids::Did::parse(&string_field(raw, "did")?)?;
+    validate_did_matches_handle_domain(&normalized.full_handle, did.as_str())?;
+    let generation = raw
+        .get("binding_generation")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            crate::ImError::invalid_input(
+                Some("binding_generation".to_owned()),
+                "public WNS document requires a canonical positive decimal binding_generation",
+            )
+        })?;
+    let binding_generation = anp::wns::BindingGeneration::new(generation.to_owned())
+        .map_err(|_| {
+            crate::ImError::invalid_input(
+                Some("binding_generation".to_owned()),
+                "public WNS document requires a canonical positive decimal binding_generation",
+            )
+        })?
+        .to_string();
+    Ok(PublicHandleBinding {
+        handle: crate::ids::Handle::parse(&normalized.full_handle, "")?,
+        did,
+        domain: normalized.domain,
+        status,
+        binding_generation,
     })
 }
 
@@ -564,40 +626,162 @@ mod tests {
     }
 
     #[test]
-    fn public_document_resolution_accepts_active_matching_wba_handle() {
+    fn public_document_resolution_accepts_standard_four_field_document() {
         let resolved = super::resolution_from_public_document(
             "peer.awiki.info",
             json!({
                 "status": "active",
                 "handle": "peer.awiki.info",
                 "did": "did:wba:awiki.info:user:peer:e1",
-                "user_id": "user-peer",
+                "binding_generation": "7",
             }),
         )
         .unwrap();
 
         assert_eq!(resolved.full_handle, "peer.awiki.info");
         assert_eq!(resolved.target_did, "did:wba:awiki.info:user:peer:e1");
-        assert_eq!(resolved.user_id, "user-peer");
+        assert_eq!(resolved.authority_subject_id, "peer.awiki.info");
+        assert_eq!(resolved.peer_scope().unwrap().user_id, "peer.awiki.info");
     }
 
     #[test]
-    fn public_document_resolution_rejects_missing_or_did_fallback_subject() {
-        for subject in [None, Some("did:wba:awiki.info:user:peer:e1")] {
-            let mut raw = json!({
+    fn public_document_resolution_ignores_private_subject_fields() {
+        let base = json!({
+            "status": "active",
+            "handle": "peer.awiki.info",
+            "did": "did:wba:awiki.info:user:peer:e1",
+            "binding_generation": "7",
+        });
+        let expected =
+            super::resolution_from_public_document("peer.awiki.info", base.clone()).unwrap();
+
+        for (user_id, subject_id) in [
+            ("user-one", "subject-one"),
+            ("user-two", "subject-two"),
+            ("conflict", "different-conflict"),
+        ] {
+            let mut raw = base.clone();
+            raw["user_id"] = Value::String(user_id.to_owned());
+            raw["subject_id"] = Value::String(subject_id.to_owned());
+            raw["userId"] = Value::String("camel-user".to_owned());
+            raw["subjectId"] = Value::String("camel-subject".to_owned());
+            raw["full_handle"] = Value::String("ignored.internal.example".to_owned());
+            assert_eq!(
+                super::resolution_from_public_document("peer.awiki.info", raw).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn public_document_resolution_requires_canonical_unbounded_generation() {
+        let base = json!({
+            "status": "active",
+            "handle": "peer.awiki.info",
+            "did": "did:wba:awiki.info:user:peer:e1",
+            "binding_generation": "7",
+        });
+        let mut large = base.clone();
+        large["binding_generation"] = Value::String(format!("1{}", "0".repeat(100)));
+        super::resolution_from_public_document("peer.awiki.info", large).unwrap();
+
+        let mut missing = base.clone();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("binding_generation");
+        assert!(super::resolution_from_public_document("peer.awiki.info", missing).is_err());
+
+        let mut numeric = base.clone();
+        numeric["binding_generation"] = json!(7);
+        assert!(super::resolution_from_public_document("peer.awiki.info", numeric).is_err());
+
+        for invalid in ["0", "07", "+7", "-1", "", " 7"] {
+            let mut raw = base.clone();
+            raw["binding_generation"] = Value::String(invalid.to_owned());
+            assert!(super::resolution_from_public_document("peer.awiki.info", raw).is_err());
+        }
+    }
+
+    #[test]
+    fn public_subject_isolates_same_local_part_across_domains() {
+        let awiki = super::resolution_from_public_document(
+            "peer.awiki.info",
+            json!({
                 "status": "active",
                 "handle": "peer.awiki.info",
                 "did": "did:wba:awiki.info:user:peer:e1",
-            });
-            if let Some(subject) = subject {
-                raw["user_id"] = Value::String(subject.to_owned());
-            }
+                "binding_generation": "7",
+                "user_id": "same-private-id",
+            }),
+        )
+        .unwrap();
+        let example = super::resolution_from_public_document(
+            "peer.example.com",
+            json!({
+                "status": "active",
+                "handle": "peer.example.com",
+                "did": "did:wba:example.com:user:peer:e1",
+                "binding_generation": "7",
+                "user_id": "same-private-id",
+            }),
+        )
+        .unwrap();
 
-            assert!(matches!(
-                super::resolution_from_public_document("peer.awiki.info", raw),
-                Err(crate::ImError::IdentityUnresolved { .. })
-            ));
-        }
+        assert_ne!(awiki.authority_subject_id, example.authority_subject_id);
+        assert_ne!(
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &awiki.peer_scope().unwrap()
+            ),
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &example.peer_scope().unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn same_domain_directory_resolution_keeps_internal_subject() {
+        let resolved = super::resolution_from_lookup(
+            "peer.awiki.test",
+            crate::directory::HandleLookupResult {
+                handle: crate::ids::Handle::parse("peer.awiki.test", "").unwrap(),
+                did: crate::ids::Did::parse("did:wba:awiki.test:user:peer:e1").unwrap(),
+                user_id: "internal-user-peer".to_owned(),
+                domain: Some("awiki.test".to_owned()),
+                status: Some("active".to_owned()),
+                binding_generation: None,
+                profile: None,
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resolved.authority_subject_id, "internal-user-peer");
+    }
+
+    #[test]
+    fn authoritative_group_lookup_uses_only_public_binding_fields() {
+        let base = json!({
+            "status": "active",
+            "handle": "peer.awiki.info",
+            "did": "did:wba:awiki.info:user:peer:e1",
+            "binding_generation": "8",
+        });
+        let expected =
+            super::authoritative_lookup_from_public_document("peer.awiki.info", &base).unwrap();
+        let mut with_conflicting_private_ids = base;
+        with_conflicting_private_ids["user_id"] = Value::String("private-user".to_owned());
+        with_conflicting_private_ids["subject_id"] =
+            Value::String("different-private-subject".to_owned());
+        let actual = super::authoritative_lookup_from_public_document(
+            "peer.awiki.info",
+            &with_conflicting_private_ids,
+        )
+        .unwrap();
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.user_id, "peer.awiki.info");
+        assert_eq!(actual.binding_generation.as_deref(), Some("8"));
     }
 
     #[test]

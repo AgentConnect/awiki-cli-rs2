@@ -774,6 +774,17 @@ canonical conversation 到 current DID 的内部 route；因此空会话的首�
 发送也直接使用 canonical ID。App/CLI 不得复制 hash 算法、拼 `dm:<DID>` write alias，或在
 收到首条消息后才纠正会话 ID。route 缺失或完整性校验失败必须 fail closed。
 
+Authority subject 按域边界区分：同域 AWiki Directory lookup 继续使用域内 `user_id`；跨域
+Direct 与 target-first attachment 只从目标域公开 WNS 文档读取并验证 ANP-04 的 `handle`、
+`did`、`status`、`binding_generation`，以规范化且永久保留的完整 Handle 作为 authority
+subject。公开文档中即使出现 `user_id` / `subject_id` 也必须忽略；generation 必须是无固定位宽
+限制的 canonical positive decimal string。相同 local-part 位于不同 domain 时始终属于不同
+scope。stale-DID 重试也必须重新走该权威路由，不能使用错误响应携带的私有 subject ID。
+
+旧预发布实现若曾使用公开 WNS 中的私有 ID 生成 scope，Core 不猜测该 ID 与完整 Handle 的
+唯一对应关系，也不自动创建合并 alias；当前没有足够可信输入完成无歧义迁移。新解析统一使用
+上述 scope，历史数据迁移需未来提供独立、可验证的迁移证据后再实现。
+
 `HandleLookupResult` 和 `DirectoryResolution.profile` 可以承载 WNS Handle Resolution Document 中的 DID Subject Profile 投影。SDK 优先接受合法的 `profile`：
 
 - `profile.subject_did` 必须等于外层 `did`；
@@ -890,6 +901,10 @@ impl GroupService<'_> {
 Rust SDK 调用方创建群组时推荐使用 `GroupCreateRequest::new(name)`，再按需设置 `description`、`avatar_uri`、`discoverability` 等可选字段，避免后续新增可选字段时依赖完整 struct literal。群资料更新继续使用 `GroupProfilePatch::default()` 后按需填写字段；`avatar_uri` 对应 Group Host 权威的 `group_profile.avatar_uri`，`name` 仍只是 `group_profile.display_name` 的兼容输入。
 
 Handle recovery 后，host 通过现有 high-level `resume_rebind_recovery_async(limit)` 恢复 durable P4/P6 任务。该调用会先从完整 Handle 的 provider-domain HTTPS `/.well-known/handle/{local-part}` 读取公开 WNS 文档，再补建历史缺失的 P4 job；普通 `handle.lookup` RPC 不含权威 generation，不能替代该文档。只有以下条件全部满足时才补建：公开状态为 `active`、返回的完整 Handle 精确一致、WNS DID 等于当前签名 DID、`did:wba` domain 与 Handle provider 一致、`binding_generation` 是 canonical positive decimal string 且严格大于本地成员 generation、旧成员 DID 精确属于当前 `IdentityId` 的 previous DID history。缺字段、numeric/非 canonical generation、DID/domain mismatch、跨域同名 local-part 都 fail closed；不得推算 generation。
+
+该 Group recovery 权威读取与跨域 Direct 使用同一公共 WNS 绑定边界，只消费
+`handle` / `did` / `status` / `binding_generation`；公共响应中的域内 `user_id` /
+`subject_id` 不参与群成员换绑、Persona 或 scope 判断。
 
 补建后仍由新 DID 的 origin proof 调用 `group.rebind_member`，Group Host 负责再次校验 WNS continuity 和幂等性。SDK 不直接修改服务端 roster；transport-protected 群在 P4 接受后完成，Group E2EE 群继续遵循既有 P4 `group_state_ref` → P6 Add(new DID) → Remove(old DID) durable 顺序。群安全分类必须保留 Group Host `group.get` / `group.list` 返回的 `required_security_profile` 或等价 `group_policy.message_security_profile`；只有明确的 `transport-protected` 才能跳过 P6，缺失、畸形或冲突值一律按未知 fail closed。若旧客户端已把 transport 群误留在 `awaiting_p6`，high-level resume 会先刷新权威群快照，再仅完成本地 P4 outbox，不重复发送 P4，也不改服务端成员表。App/CLI 只调用 high-level resume 并消费脱敏 summary，不拼 raw RPC 或 SQL。
 

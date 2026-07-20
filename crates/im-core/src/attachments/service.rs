@@ -721,16 +721,7 @@ fn resolve_peer(
         });
     }
     let lookup = crate::internal::handle_discovery::resolve_direct_handle(client, raw)?;
-    Ok(ResolvedDirectTarget {
-        target_did: Some(lookup.target_did),
-        direct_handle: Some(lookup.full_handle.clone()),
-        peer_scope: Some(
-            crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                lookup.user_id,
-                lookup.full_handle,
-            )?,
-        ),
-    })
+    resolved_direct_target_from_handle(lookup)
 }
 
 async fn resolve_peer_async(
@@ -747,14 +738,33 @@ async fn resolve_peer_async(
     }
     let lookup =
         crate::internal::handle_discovery::resolve_direct_handle_async(client, raw).await?;
+    resolved_direct_target_from_handle(lookup)
+}
+
+fn resolved_direct_target_from_handle(
+    lookup: crate::internal::handle_discovery::DirectHandleResolution,
+) -> crate::ImResult<ResolvedDirectTarget> {
+    let peer_scope = lookup.peer_scope()?;
     Ok(ResolvedDirectTarget {
         target_did: Some(lookup.target_did),
-        direct_handle: Some(lookup.full_handle.clone()),
-        peer_scope: Some(
-            crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                lookup.user_id,
-                lookup.full_handle,
-            )?,
-        ),
+        direct_handle: Some(lookup.full_handle),
+        peer_scope: Some(peer_scope),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn attachment_target_preserves_cross_domain_handle_subject() {
+        let resolved = super::resolved_direct_target_from_handle(
+            crate::internal::handle_discovery::DirectHandleResolution {
+                target_did: "did:wba:remote.example:user:peer:e1".to_owned(),
+                full_handle: "peer.remote.example".to_owned(),
+                authority_subject_id: "peer.remote.example".to_owned(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resolved.peer_scope.unwrap().user_id, "peer.remote.example");
+    }
 }
