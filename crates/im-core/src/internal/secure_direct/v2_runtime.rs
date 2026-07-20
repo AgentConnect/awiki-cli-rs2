@@ -262,6 +262,13 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
     ) -> crate::ImResult<PreparedV2Outbound> {
         binding.validate().map_err(v2_error)?;
         require_operation_id(operation_id)?;
+        if self
+            .store
+            .private_outbound_status(operation_id, now)?
+            .is_some_and(|status| !status.retryable)
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
         if let Some(existing) = self.store.load_pending(binding, operation_id)? {
             let existing_sidecar = self
                 .store
@@ -310,6 +317,14 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         binding.validate().map_err(v2_error)?;
         plaintext.validate().map_err(v2_error)?;
         require_operation_id(operation_id)?;
+        if sidecar.is_some()
+            && self
+                .store
+                .private_outbound_status(operation_id, now)?
+                .is_some_and(|status| !status.retryable)
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
         if let Some(existing) = self.store.load_pending(binding, operation_id)? {
             let existing_sidecar = self
                 .store
@@ -432,6 +447,15 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
     ) -> crate::ImResult<()> {
         self.store
             .mark_private_outbound_completed(binding, operation_id)
+    }
+
+    pub(crate) fn complete_session_reply_for_session(
+        &self,
+        binding: &V2SessionBinding,
+        session_id: &str,
+    ) -> crate::ImResult<bool> {
+        self.store
+            .complete_session_reply_for_session(binding, session_id)
     }
 
     /// Decrypts one exact cipher and atomically commits the advanced ratchet
@@ -1128,7 +1152,7 @@ mod tests {
                 delivery_class: "awiki-root-key-control".to_owned(),
                 sender_device_id: "alice-phone".to_owned(),
                 recipient_device_id: "alice-laptop".to_owned(),
-                expires_at: "2026-07-20T00:05:00Z".to_owned(),
+                expires_at: "2030-07-20T00:05:00Z".to_owned(),
             },
             None,
         )
@@ -1314,7 +1338,7 @@ mod tests {
                 delivery_class: "awiki-root-key-control".to_owned(),
                 sender_device_id: "alice-phone".to_owned(),
                 recipient_device_id: "alice-laptop".to_owned(),
-                expires_at: "2026-07-20T00:05:00Z".to_owned(),
+                expires_at: "2030-07-20T00:05:00Z".to_owned(),
             },
             Some(
                 crate::internal::identity_root_transfer::RootKeyImportedCompletion {
@@ -1382,6 +1406,227 @@ mod tests {
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn first_authenticated_cipher_retires_session_reply_after_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let db_path = root.path().join("reply.sqlite");
+        let connection = Connection::open(&db_path).unwrap();
+        let secret_vault = vault(&root.path().join("reply-vault"), 41);
+        let (_, responder_state) = established_pair();
+        let responder_scope = scope(
+            "identity-alice-laptop",
+            "did:example:alice",
+            "alice-laptop",
+            "did:example:alice#laptop-e2ee",
+        );
+        let store = SqliteV2DirectStateStore::new_with_secret_vault(
+            &connection,
+            secret_vault.clone(),
+            responder_scope.clone(),
+        )
+        .unwrap();
+        store
+            .commit_inbound(
+                &responder_state,
+                "setup-reply",
+                "sha256:setup-reply",
+                None,
+                V2SessionExpectation::Absent,
+                "2026-07-20T00:00:00Z",
+            )
+            .unwrap();
+        let runtime = V2EstablishedDirectRuntime::new(&store);
+        let operation_id = session_reply_operation_id("session-init-1").unwrap();
+        let reply = runtime
+            .prepare_outbound(
+                &responder_state.binding,
+                &operation_id,
+                &session_established_plaintext("session-init-1").unwrap(),
+                "2026-07-20T00:00:01Z",
+            )
+            .unwrap();
+        assert!(runtime.mark_outbound_accepted(&reply).unwrap());
+        drop(runtime);
+        drop(store);
+        drop(connection);
+
+        let connection = Connection::open(&db_path).unwrap();
+        let store = SqliteV2DirectStateStore::new_with_secret_vault(
+            &connection,
+            secret_vault.clone(),
+            responder_scope,
+        )
+        .unwrap();
+        let runtime = V2EstablishedDirectRuntime::new(&store);
+        assert!(runtime
+            .complete_session_reply_for_session(
+                &responder_state.binding,
+                &responder_state.session_id
+            )
+            .unwrap());
+        assert!(!runtime
+            .complete_session_reply_for_session(
+                &responder_state.binding,
+                &responder_state.session_id
+            )
+            .unwrap());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM direct_e2ee_v2_pending WHERE operation_id = ?1",
+                    [&operation_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            secret_vault
+                .list()
+                .unwrap()
+                .into_iter()
+                .filter(|secret_ref| secret_ref.kind == SecretKind::DirectE2eeV2PendingOutbound)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn expired_private_retry_becomes_secret_free_failed_tombstone() {
+        let root = tempfile::tempdir().unwrap();
+        let db_path = root.path().join("expired.sqlite");
+        let connection = Connection::open(&db_path).unwrap();
+        let secret_vault = vault(&root.path().join("expired-vault"), 42);
+        let (sender_state, _) = established_pair();
+        let sender_scope = scope(
+            "identity-alice-phone",
+            "did:example:alice",
+            "alice-phone",
+            "did:example:alice#phone-e2ee",
+        );
+        let store = SqliteV2DirectStateStore::new_with_secret_vault(
+            &connection,
+            secret_vault.clone(),
+            sender_scope.clone(),
+        )
+        .unwrap();
+        store
+            .commit_inbound(
+                &sender_state,
+                "setup-expired",
+                "sha256:setup-expired",
+                None,
+                V2SessionExpectation::Absent,
+                "2026-07-20T00:00:00Z",
+            )
+            .unwrap();
+        let runtime = V2EstablishedDirectRuntime::new(&store);
+        let sidecar = V2PrivateOutboundSidecar::root_control(
+            "root-expired-1",
+            crate::internal::identity_root_transfer::RootImportTransportContext {
+                message_id: "root-expired-1".to_owned(),
+                delivery_class: "awiki-root-key-control".to_owned(),
+                sender_device_id: "alice-phone".to_owned(),
+                recipient_device_id: "alice-laptop".to_owned(),
+                expires_at: "2026-07-20T00:00:02Z".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
+        let plaintext = V2ApplicationPlaintext {
+            application_content_type: "application/json".to_owned(),
+            logical_message_id: None,
+            conversation_id: None,
+            reply_to_message_id: None,
+            annotations: None,
+            text: None,
+            payload: Some(serde_json::json!({"system_type": "test-expiring-root"})),
+            payload_b64u: None,
+        };
+        runtime
+            .prepare_private_outbound(
+                &sender_state.binding,
+                "root-expired-1",
+                &plaintext,
+                "2026-07-20T00:00:01Z",
+                sidecar.clone(),
+            )
+            .unwrap();
+        let failed = runtime
+            .private_outbound_status("root-expired-1", "2026-07-20T00:00:03Z")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            failed.phase,
+            crate::internal::secure_direct::v2_store::V2PrivateOutboundPhase::Failed
+        );
+        assert!(!failed.retryable);
+        assert!(failed.completed_at.is_none());
+        assert!(runtime
+            .resume_private_outbound(&sender_state.binding, "root-expired-1")
+            .unwrap()
+            .is_none());
+        assert!(runtime
+            .prepare_private_outbound(
+                &sender_state.binding,
+                "root-expired-1",
+                &plaintext,
+                "2026-07-20T00:00:03Z",
+                sidecar,
+            )
+            .is_err());
+        drop(runtime);
+        drop(store);
+        drop(connection);
+
+        let connection = Connection::open(&db_path).unwrap();
+        let store = SqliteV2DirectStateStore::new_with_secret_vault(
+            &connection,
+            secret_vault.clone(),
+            sender_scope,
+        )
+        .unwrap();
+        let runtime = V2EstablishedDirectRuntime::new(&store);
+        let failed_after_restart = runtime
+            .private_outbound_status("root-expired-1", "2026-07-20T00:00:04Z")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            failed_after_restart.phase,
+            crate::internal::secure_direct::v2_store::V2PrivateOutboundPhase::Failed
+        );
+        assert!(!failed_after_restart.retryable);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM direct_e2ee_v2_pending WHERE operation_id = 'root-expired-1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM direct_e2ee_v2_private_outbound WHERE operation_id = 'root-expired-1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            secret_vault
+                .list()
+                .unwrap()
+                .into_iter()
+                .filter(|secret_ref| secret_ref.kind == SecretKind::DirectE2eeV2PendingOutbound)
+                .count(),
             0
         );
     }

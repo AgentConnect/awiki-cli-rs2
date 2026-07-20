@@ -382,20 +382,28 @@ pub(crate) async fn send_root_key(
         local_state,
     )?;
 
+    let status_now = user_presence_at.format(&Rfc3339).map_err(time_error)?;
+    let existing_status = with_v2_runtime(core, &scope, |direct| {
+        direct.private_outbound_status(message_id, &status_now)
+    })?;
+    if existing_status
+        .as_ref()
+        .is_some_and(|status| !status.retryable)
+    {
+        // Completed and expired operations retain only a secret-free terminal
+        // record. Their operation id can never derive a second ciphertext.
+        return Err(crate::ImError::PermissionDenied);
+    }
     let retry = with_v2_runtime(core, &scope, |direct| {
         direct.resume_private_outbound(&binding, message_id)
     })?;
     let prepared = if let Some(retry) = retry {
+        if existing_status.is_none() {
+            return Err(crate::ImError::PermissionDenied);
+        }
         retry
     } else {
-        let now = user_presence_at.format(&Rfc3339).map_err(time_error)?;
-        if with_v2_runtime(core, &scope, |direct| {
-            direct.private_outbound_status(message_id, &now)
-        })?
-        .is_some()
-        {
-            // A completed operation keeps only a secret-free tombstone. Never
-            // reuse its operation id to derive a second ratchet ciphertext.
+        if existing_status.is_some() {
             return Err(crate::ImError::PermissionDenied);
         }
         ensure_root_control_session(
@@ -655,8 +663,11 @@ pub(crate) async fn receive_root_control(
     match decrypted {
         V2ValidatedSecretInboundOutcome::Decrypted {
             validated: ValidatedRootControl::Envelope(ack),
-            ..
+            session,
         } => {
+            with_v2_runtime(core, &scope, |direct| {
+                direct.complete_session_reply_for_session(&binding, &session.session_id)
+            })?;
             let replayed_import = ack.replayed();
             send_imported_ack(core, client, &scope, &binding, ack, &now_text).await?;
             Ok(if replayed_import {
@@ -674,7 +685,7 @@ pub(crate) async fn receive_root_control(
             })?;
             Ok(RootControlReceiveOutcome::ImportedAckConsumed)
         }
-        V2ValidatedSecretInboundOutcome::Replay { .. } => match route {
+        V2ValidatedSecretInboundOutcome::Replay { session } => match route {
             RootControlRoute::Ack => {
                 with_v2_runtime(core, &scope, |direct| {
                     direct.mark_private_outbound_completed(&binding, &metadata.message_id)
@@ -682,6 +693,9 @@ pub(crate) async fn receive_root_control(
                 Ok(RootControlReceiveOutcome::ImportedAckConsumed)
             }
             RootControlRoute::Envelope => {
+                with_v2_runtime(core, &scope, |direct| {
+                    direct.complete_session_reply_for_session(&binding, &session.session_id)
+                })?;
                 let ack = root_core.resume_imported_ack(RootKeyAckResumeInput {
                     local_alias,
                     message_id: &metadata.message_id,

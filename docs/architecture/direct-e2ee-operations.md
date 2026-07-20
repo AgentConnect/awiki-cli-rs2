@@ -47,6 +47,13 @@ backup contents, or JWTs.
 
 Direct E2EE state is identity-scoped. Private session/prekey material and pending secure delivery state are owned by `im-core` internals and must not be printed, logged, or serialized into CLI output.
 
+PreKey publication keeps the original immutable public OPK batch beside the
+Vault-sealed signed-prekey material. A publish retry therefore reuses the same
+operation ID and byte-identical batch even after a consumed OPK private record
+has been deleted. Legacy records that cannot reconstruct that original batch
+rotate to a new bundle instead of sending a changed payload under an old
+idempotency key.
+
 The CLI business SQLite may store high-level message indexes, local plaintext views, delivery summaries and outbox summaries. It must not expose or log:
 
 - root keys, chain keys, skipped message keys.
@@ -71,6 +78,10 @@ The CLI business SQLite may store high-level message indexes, local plaintext vi
 2. SDK processes init, persists session state and returns a safe plaintext view.
 3. Recipient reply with secure required sends a secure cipher message.
 4. Sender processes the first valid reply and marks the session established.
+5. The responder retains the exact Session Reply retry only until it receives
+   the first authenticated Cipher for that same session; it then deletes the
+   pending ciphertext and Vault record. Replay after restart repeats only this
+   idempotent cleanup.
 
 ### Follow-up messages
 
@@ -82,6 +93,11 @@ The CLI business SQLite may store high-level message indexes, local plaintext vi
   ratchet again; a later failed replay must never overwrite a committed
   decrypted view.
 - Replay, tamper and skip-window behavior remains SDK-owned.
+
+Private device-control retries have a stricter terminal lifecycle. Completion
+or expiry atomically removes the pending ciphertext and private sidecar, then
+garbage-collects the corresponding Vault secret. Only a secret-free completed
+or failed tombstone remains, and its operation ID cannot be reused.
 
 ## Command Surface
 

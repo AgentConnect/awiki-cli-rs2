@@ -51,10 +51,21 @@ pub(crate) fn ensure_local_prekey_publication(
             .map_err(|_| crate::ImError::PermissionDenied)?
             .with_timezone(&Utc);
         if expires_at > now && !available.is_empty() {
-            return Ok(V2LocalPrekeyPublication {
-                bundle: local.bundle,
-                one_time_prekeys: available,
-            });
+            if let Some(published) = local.published_one_time_prekeys {
+                if !available
+                    .iter()
+                    .all(|remaining| published.iter().any(|original| original == remaining))
+                {
+                    return Err(crate::ImError::PermissionDenied);
+                }
+                return Ok(V2LocalPrekeyPublication {
+                    bundle: local.bundle,
+                    one_time_prekeys: published,
+                });
+            }
+            // Legacy local material did not retain the immutable public
+            // publish batch. Reusing its bundle id with the now-smaller OPK
+            // set would violate server digest idempotency, so rotate instead.
         }
     }
 
@@ -497,8 +508,12 @@ mod tests {
             DeviceVaultRootKey::from_bytes([71; 32]),
             FileSecretVaultStore::new(temp.path().join("vault")),
         ));
-        let store =
-            SqliteV2DirectStateStore::new_with_secret_vault(&connection, vault, scope).unwrap();
+        let store = SqliteV2DirectStateStore::new_with_secret_vault(
+            &connection,
+            vault.clone(),
+            scope.clone(),
+        )
+        .unwrap();
         let signing =
             anp::PrivateKeyMaterial::Ed25519(ed25519_dalek::SigningKey::from_bytes(&[72; 32]));
         let now = DateTime::parse_from_rfc3339("2026-07-20T00:00:00Z")
@@ -538,8 +553,53 @@ mod tests {
         .unwrap();
         assert_eq!(resumed, publication);
 
-        let publish =
+        let original_publish =
             publish_request(&publication, "did:example:message-service", "publish-1").unwrap();
+        let consumed_key_id = publication.one_time_prekeys[0].key_id.clone();
+        connection
+            .execute(
+                r#"DELETE FROM direct_e2ee_v2_one_time_prekeys
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND key_id = ?3"#,
+                rusqlite::params!["identity-alice-phone", "alice-phone", consumed_key_id],
+            )
+            .unwrap();
+        drop(store);
+        drop(connection);
+
+        let connection = Connection::open(temp.path().join("prekeys.sqlite")).unwrap();
+        let store =
+            SqliteV2DirectStateStore::new_with_secret_vault(&connection, vault, scope).unwrap();
+        let resumed_after_consumption = ensure_local_prekey_publication(
+            &store,
+            V2LocalPrekeyIdentity {
+                did: did.as_str(),
+                device_id: "alice-phone",
+                signing_key_id: "did:example:alice#phone-sign",
+                e2ee_key_id: "did:example:alice#phone-e2ee",
+                signing_private: &signing,
+            },
+            now,
+        )
+        .unwrap();
+        assert_eq!(resumed_after_consumption, publication);
+        assert_eq!(
+            store
+                .load_available_opk_publics(&publication.bundle.bundle_id)
+                .unwrap()
+                .len(),
+            DEFAULT_OPK_BATCH_SIZE - 1
+        );
+        assert_eq!(
+            publish_request(
+                &resumed_after_consumption,
+                "did:example:message-service",
+                "publish-1"
+            )
+            .unwrap(),
+            original_publish
+        );
+
+        let publish = original_publish;
         let (meta, body) =
             anp::direct_e2ee::parse_publish_prekey_bundle_request_v2(&publish).unwrap();
         assert_eq!(meta.sender_device_id, "alice-phone");

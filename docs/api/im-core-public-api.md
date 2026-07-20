@@ -393,6 +393,11 @@ projection rather than inferred from transport status alone.
 After signed completion, Core deletes the retained retry ciphertext and its
 Vault-backed pending ratchet record; only a secret-free completed status
 tombstone remains for idempotent listing and replay handling.
+The recipient's first authenticated root Envelope also confirms delivery of
+the preceding Session Reply, so Core removes that reply's pending ciphertext
+and Vault record. Expiry performs the same private-record cleanup and retains
+only a non-retryable, secret-free `Failed` tombstone. Completed and expired
+operation IDs are terminal and cannot be used to derive another ciphertext.
 
 Identity vault DTOs are redacted status/report surfaces. They report selected
 backend, storage policy, vault availability, metadata verification, workspace /
