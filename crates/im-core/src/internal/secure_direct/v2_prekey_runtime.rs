@@ -14,6 +14,7 @@ use sha2::{Digest as _, Sha256};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
 
 use super::v2_store::SqliteV2DirectStateStore;
+use crate::internal::transport::AsyncAuthenticatedRpcTransport;
 
 const DEFAULT_OPK_BATCH_SIZE: usize = 16;
 const SIGNED_PREKEY_LIFETIME_DAYS: i64 = 30;
@@ -45,7 +46,7 @@ pub(crate) fn ensure_local_prekey_publication(
     require_exact("e2ee_key_id", identity.e2ee_key_id)?;
 
     if let Some(local) = store.load_active_bundle()? {
-        let available = store.load_available_opk_publics()?;
+        let available = store.load_available_opk_publics(&local.bundle.bundle_id)?;
         let expires_at = DateTime::parse_from_rfc3339(&local.bundle.signed_prekey.expires_at)
             .map_err(|_| crate::ImError::PermissionDenied)?
             .with_timezone(&Utc);
@@ -185,6 +186,250 @@ pub(crate) fn verify_get_result(
     Ok(result)
 }
 
+pub(crate) async fn ensure_local_prekey_published(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+) -> crate::ImResult<V2LocalPrekeyPublication> {
+    let (scope, authorization) = local_scope_and_authorization(core, client)?;
+    let mut resolver = crate::internal::transport::CoreHttpTransport::new(client);
+    let did_document = crate::internal::discovery::did_document::resolve_did_document_async(
+        &mut resolver,
+        client.did().as_str(),
+    )
+    .await?;
+    let eligible = anp::authentication::find_eligible_device(
+        &did_document,
+        authorization.protocol_device_id.as_str(),
+        anp::authentication::PROFILE_DIRECT_E2EE_V2,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?
+    .ok_or(crate::ImError::PermissionDenied)?;
+    if eligible.signing_key_id != authorization.signing_key_id
+        || eligible.e2ee_key_id != authorization.e2ee_key_id
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let signing_private = anp::PrivateKeyMaterial::from_pem(
+        &client
+            .runtime()
+            .key_provider
+            .device_request_signing_private_pem()?,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?;
+    let publication = {
+        let connection = crate::internal::local_state::open_writable(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+        )?;
+        let vault = core
+            .inner()
+            .identity_vault()
+            .ok_or(crate::ImError::IdentityVault {
+                failure: crate::IdentityVaultFailure::Unavailable,
+            })?
+            .vault();
+        let store = SqliteV2DirectStateStore::new_with_secret_vault(&connection, vault, scope)?;
+        ensure_local_prekey_publication(
+            &store,
+            V2LocalPrekeyIdentity {
+                did: client.did().as_str(),
+                device_id: authorization.protocol_device_id.as_str(),
+                signing_key_id: &authorization.signing_key_id,
+                e2ee_key_id: &authorization.e2ee_key_id,
+                signing_private: &signing_private,
+            },
+            Utc::now(),
+        )?
+    };
+
+    let service_did = anp::direct_e2ee::message_service_did_from_document(&did_document)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let operation_id = format!(
+        "p5-v2-prekey-publish:{}:{}",
+        authorization.protocol_device_id.as_str(),
+        publication.bundle.bundle_id
+    );
+    let request = publish_request(&publication, &service_did, &operation_id)?;
+    let (method, params) = split_rpc_request(request)?;
+    let response = crate::internal::transport::CoreHttpTransport::new(client)
+        .authenticated_rpc("/im/rpc", &method, params)
+        .await?;
+    validate_publish_result(&response, &publication)?;
+    Ok(publication)
+}
+
+pub(crate) async fn fetch_verified_prekey(
+    client: &crate::core::ImClient,
+    target_did: &str,
+    target_device_id: &str,
+    target_did_document: &serde_json::Value,
+    operation_seed: &str,
+) -> crate::ImResult<V2GetPrekeyBundleResult> {
+    require_exact("operation_seed", operation_seed)?;
+    let local_document = client.runtime().key_provider.did_document()?;
+    let service_did = anp::direct_e2ee::message_service_did_from_document(&local_document)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let local_state = local_authorization(client)?;
+    for require_opk in [true, false] {
+        let operation_id = format!(
+            "p5-v2-prekey-get:{}:{}",
+            operation_seed,
+            if require_opk { "opk" } else { "fallback" }
+        );
+        let request = get_request(
+            client.did().as_str(),
+            local_state.protocol_device_id.as_str(),
+            &service_did,
+            &operation_id,
+            target_did,
+            target_device_id,
+            require_opk,
+        )?;
+        let (method, params) = split_rpc_request(request)?;
+        let response = crate::internal::transport::CoreHttpTransport::new(client)
+            .authenticated_rpc("/im/rpc", &method, params)
+            .await;
+        match response {
+            Ok(response) => {
+                return verify_get_result(
+                    &response,
+                    target_did,
+                    target_device_id,
+                    target_did_document,
+                    Utc::now(),
+                    require_opk,
+                );
+            }
+            Err(error)
+                if require_opk
+                    && anp::direct_e2ee::should_retry_without_opk_message(&error.to_string()) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(crate::ImError::PermissionDenied)
+}
+
+pub(crate) async fn post_standard_direct(
+    client: &crate::core::ImClient,
+    prepared: &super::v2_runtime::PreparedV2Outbound,
+) -> crate::ImResult<anp::direct_e2ee::V2DirectSendResult> {
+    let (method, params) = split_rpc_request(prepared.direct_request()?)?;
+    let response = crate::internal::transport::CoreHttpTransport::new(client)
+        .authenticated_rpc("/im/rpc", &method, params)
+        .await?;
+    super::v2_runtime::parse_send_result(&response, prepared)
+}
+
+pub(crate) fn local_static_private(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<X25519StaticSecret> {
+    match anp::PrivateKeyMaterial::from_pem(
+        &client.runtime().key_provider.e2ee_agreement_private_pem()?,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?
+    {
+        anp::PrivateKeyMaterial::X25519(private) => Ok(private),
+        _ => Err(crate::ImError::PermissionDenied),
+    }
+}
+
+pub(crate) fn static_public_from_document(
+    did_document: &serde_json::Value,
+    key_id: &str,
+) -> crate::ImResult<[u8; 32]> {
+    let method = did_document
+        .get("verificationMethod")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|methods| {
+            methods
+                .iter()
+                .find(|method| method.get("id").and_then(serde_json::Value::as_str) == Some(key_id))
+        })
+        .ok_or(crate::ImError::PermissionDenied)?;
+    match anp::authentication::extract_public_key(method)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+    {
+        anp::PublicKeyMaterial::X25519(public) => Ok(public),
+        _ => Err(crate::ImError::PermissionDenied),
+    }
+}
+
+fn local_scope_and_authorization(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+) -> crate::ImResult<(
+    super::v2_store::V2OwnerScope,
+    crate::internal::identity_device_state::DeviceAuthorizationProjection,
+)> {
+    let authorization = local_authorization(client)?;
+    let alias = client
+        .current_identity()
+        .local_alias
+        .as_deref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let index =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .load_index()?;
+    let state = index
+        .credentials
+        .get(alias)
+        .and_then(|entry| entry.device_state.as_ref())
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let scope = super::v2_store::V2OwnerScope::from_identity_state(
+        &client.current_identity().id,
+        client.did(),
+        state,
+    )?;
+    Ok((scope, authorization))
+}
+
+fn local_authorization(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<crate::internal::identity_device_state::DeviceAuthorizationProjection> {
+    let alias = client
+        .current_identity()
+        .local_alias
+        .as_deref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let index = crate::internal::identity_store::IdentityStore::new(
+        &client.core_inner().sdk_paths().identities,
+    )
+    .load_index()?;
+    index
+        .credentials
+        .get(alias)
+        .and_then(|entry| entry.device_state.as_ref())
+        .and_then(|state| state.authorization.clone())
+        .filter(|authorization| {
+            authorization.status
+                == crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
+        })
+        .ok_or(crate::ImError::PermissionDenied)
+}
+
+fn split_rpc_request(value: serde_json::Value) -> crate::ImResult<(String, serde_json::Value)> {
+    let mut object = value
+        .as_object()
+        .filter(|object| object.len() == 2)
+        .cloned()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let method = object
+        .remove("method")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .filter(|value| !value.is_empty())
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let params = object
+        .remove("params")
+        .filter(serde_json::Value::is_object)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if !object.is_empty() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok((method, params))
+}
+
 fn opaque_key_id(prefix: &str, public: &[u8; 32]) -> String {
     let digest = Sha256::digest(public);
     format!("{prefix}-{}", URL_SAFE_NO_PAD.encode(&digest[..16]))
@@ -274,7 +519,9 @@ mod tests {
         assert_eq!(publication.one_time_prekeys.len(), DEFAULT_OPK_BATCH_SIZE);
         assert!(store.load_active_bundle().unwrap().is_some());
         assert_eq!(
-            store.load_available_opk_publics().unwrap(),
+            store
+                .load_available_opk_publics(&publication.bundle.bundle_id)
+                .unwrap(),
             publication.one_time_prekeys
         );
         let resumed = ensure_local_prekey_publication(

@@ -110,7 +110,11 @@ impl<'a> RootKeyTransferCore<'a> {
     ) -> crate::ImResult<PreparedRootKeyEnvelope> {
         self.gate.require_enabled()?;
         validate_message_id(input.message_id)?;
-        validate_short_window(input.now, input.expires_at)?;
+        // PostgreSQL TIMESTAMPTZ normalizes offsets and truncates beyond
+        // microseconds. Emit whole-second expiry so the DB projection can
+        // round-trip the same instant without changing protocol semantics.
+        let expires_at = canonical_control_expiry(input.expires_at)?;
+        validate_short_window(input.now, expires_at)?;
         validate_user_presence(input.user_presence_at, input.now)?;
         crate::ids::ProtocolDeviceId::parse(input.recipient_device_id)?;
 
@@ -118,33 +122,13 @@ impl<'a> RootKeyTransferCore<'a> {
         let index = store.load_index()?;
         let entry = local_entry(&index, input.local_alias)?;
         let did = crate::ids::Did::parse(&entry.did)?;
-        if input.registry.did != did {
-            return denied();
-        }
-        let (authorization, local_checkpoint) = require_local_authorization(entry, &did)?;
-        if authorization.status != DeviceAuthorizationStatus::Active
-            || authorization.role != DeviceAuthorizationRole::Admin
-            || !authorization.management_ready
-            || authorization.protocol_device_id.as_str() == input.recipient_device_id
-        {
-            return denied();
-        }
-        validate_checkpoint_advance(local_checkpoint, &input.registry.checkpoint)?;
-        validate_current_document(&did, input.did_document, input.registry)?;
-
-        let sender = require_registry_admin(
+        let (sender, recipient) = validate_current_transfer_route(
+            entry,
+            &did,
+            input.did_document,
             input.registry,
-            authorization.protocol_device_id.as_str(),
-            true,
+            input.recipient_device_id,
         )?;
-        let recipient = require_registry_admin(input.registry, input.recipient_device_id, false)?;
-        validate_manifest_device(input.did_document, sender)?;
-        validate_manifest_device(input.did_document, recipient)?;
-        if sender.signing_key_id != authorization.signing_key_id
-            || sender.e2ee_key_id != authorization.e2ee_key_id
-        {
-            return denied();
-        }
 
         let vault_context = require_vault_context(entry, &self.secret_storage)?;
         let root_ref = vault_context
@@ -171,7 +155,7 @@ impl<'a> RootKeyTransferCore<'a> {
         let validated_root = validate_root_document(input.did_document, &did, &root_ref.key_id)?;
         validate_root_private(root_pem, &validated_root)?;
 
-        let expires_at = format_time(input.expires_at)?;
+        let expires_at = format_time(expires_at)?;
         let envelope = RootKeyEnvelope {
             system_type: ROOT_KEY_ENVELOPE_SYSTEM_TYPE.to_owned(),
             message_id: input.message_id.to_owned(),
@@ -476,6 +460,60 @@ impl<'a> RootKeyTransferCore<'a> {
         )
     }
 
+    /// Verifies the signed completion carried by a decrypted ACK before the
+    /// original sender treats the import as complete.
+    pub(crate) fn validate_imported_ack_plaintext(
+        &self,
+        plaintext: &SecretBytes,
+        transport_context: &RootImportTransportContext,
+        current_did_document: &Value,
+        current_registry: &DeviceJoinRemoteRegistry,
+        now: OffsetDateTime,
+    ) -> crate::ImResult<RootKeyImportedCompletion> {
+        self.gate.require_enabled()?;
+        if plaintext.expose_secret().len() > ROOT_CONTROL_MAX_INNER_BYTES {
+            return denied();
+        }
+        let inner: RootKeyImportedInner = decode_strict_json(plaintext)?;
+        if inner.system_type != ROOT_KEY_IMPORTED_SYSTEM_TYPE {
+            return denied();
+        }
+        let completion = inner.completion;
+        validate_unsigned_completion(&completion)?;
+        transport_context.validate()?;
+        if completion.ack_for_message_id != transport_context.message_id
+            || completion.sending_device_id != transport_context.sender_device_id
+            || completion.importing_device_id != transport_context.recipient_device_id
+            || completion.did != current_registry.did.as_str()
+            || completion.document_version > current_registry.checkpoint.document_version
+            || (completion.document_version == current_registry.checkpoint.document_version
+                && completion.document_hash != current_registry.checkpoint.document_hash)
+            || completion.device_signature.is_empty()
+        {
+            return denied();
+        }
+        let imported_at = parse_time("completion.imported_at", &completion.imported_at)?;
+        let expires_at = parse_time(
+            "transport_context.expires_at",
+            &transport_context.expires_at,
+        )?;
+        if imported_at > expires_at || imported_at > now + Duration::seconds(30) {
+            return denied();
+        }
+        let did = crate::ids::Did::parse(&completion.did)?;
+        validate_current_document(&did, current_did_document, current_registry)?;
+        let current_root =
+            validate_root_document(current_did_document, &did, &completion.root_key_id)?;
+        if current_root.fingerprint != completion.root_public_key_fingerprint {
+            return denied();
+        }
+        let importer =
+            require_registry_admin(current_registry, &completion.importing_device_id, true)?;
+        validate_manifest_device(current_did_document, importer)?;
+        verify_completion_signature(&completion, current_did_document, importer)?;
+        Ok(completion)
+    }
+
     fn validate_exact_replay(
         &self,
         entry: &IndexEntry,
@@ -525,6 +563,43 @@ impl<'a> RootKeyTransferCore<'a> {
         verify_completion_signature(&persisted.completion, current_document, importer)?;
         Ok(persisted.completion.clone())
     }
+}
+
+/// Revalidates the exact sender/recipient route without opening root material.
+/// Runtime retries use this before re-sending an already-persisted ciphertext.
+pub(crate) fn validate_current_transfer_route<'a>(
+    entry: &IndexEntry,
+    did: &crate::ids::Did,
+    did_document: &Value,
+    registry: &'a DeviceJoinRemoteRegistry,
+    recipient_device_id: &str,
+) -> crate::ImResult<(
+    &'a DeviceJoinRemoteDeviceSummary,
+    &'a DeviceJoinRemoteDeviceSummary,
+)> {
+    if registry.did != *did {
+        return denied();
+    }
+    let (authorization, local_checkpoint) = require_local_authorization(entry, did)?;
+    if authorization.status != DeviceAuthorizationStatus::Active
+        || authorization.role != DeviceAuthorizationRole::Admin
+        || !authorization.management_ready
+        || authorization.protocol_device_id.as_str() == recipient_device_id
+    {
+        return denied();
+    }
+    validate_checkpoint_advance(local_checkpoint, &registry.checkpoint)?;
+    validate_current_document(did, did_document, registry)?;
+    let sender = require_registry_admin(registry, authorization.protocol_device_id.as_str(), true)?;
+    let recipient = require_registry_admin(registry, recipient_device_id, false)?;
+    validate_manifest_device(did_document, sender)?;
+    validate_manifest_device(did_document, recipient)?;
+    if sender.signing_key_id != authorization.signing_key_id
+        || sender.e2ee_key_id != authorization.e2ee_key_id
+    {
+        return denied();
+    }
+    Ok((sender, recipient))
 }
 
 pub(crate) struct RootKeyEnvelopePrepareInput<'a> {
@@ -706,7 +781,7 @@ impl RootImportTransportContext {
         }
     }
 
-    fn validate(&self) -> crate::ImResult<()> {
+    pub(crate) fn validate(&self) -> crate::ImResult<()> {
         validate_message_id(&self.message_id)?;
         crate::ids::ProtocolDeviceId::parse(&self.sender_device_id)?;
         crate::ids::ProtocolDeviceId::parse(&self.recipient_device_id)?;
@@ -720,11 +795,22 @@ impl RootImportTransportContext {
         Ok(())
     }
 
+    fn canonicalized(mut self) -> crate::ImResult<Self> {
+        self.expires_at = format_time(parse_time(
+            "transport_context.expires_at",
+            &self.expires_at,
+        )?)?;
+        Ok(self)
+    }
+
     fn validate_for_envelope(&self, envelope: &RootKeyEnvelope) -> crate::ImResult<()> {
+        let expiry_matches = parse_time("transport_context.expires_at", &self.expires_at)?
+            .unix_timestamp_nanos()
+            == parse_time("envelope.expires_at", &envelope.expires_at)?.unix_timestamp_nanos();
         if self.message_id != envelope.message_id
             || self.sender_device_id != envelope.sender_device_id
             || self.recipient_device_id != envelope.recipient_device_id
-            || self.expires_at != envelope.expires_at
+            || !expiry_matches
         {
             return denied();
         }
@@ -828,6 +914,12 @@ pub(crate) struct PersistedRootKeyImport {
     pub(crate) completion: RootKeyImportedCompletion,
 }
 
+impl PersistedRootKeyImport {
+    pub(crate) fn message_id(&self) -> &str {
+        &self.reservation.message_id
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RootKeyImportedInner {
@@ -911,6 +1003,11 @@ fn imported_ack(
     transport_context: RootImportTransportContext,
     replayed: bool,
 ) -> crate::ImResult<ImportedRootKeyAck> {
+    // The Inbox projection may spell the same PostgreSQL timestamp with an
+    // explicit offset/fraction. Persist/retry the ACK sidecar in the same
+    // canonical RFC3339 form as the encrypted Envelope reservation so an
+    // ambiguous POST retry remains byte-identical.
+    let transport_context = transport_context.canonicalized()?;
     let plaintext = encode_zeroizing_json(&RootKeyImportedInner {
         system_type: ROOT_KEY_IMPORTED_SYSTEM_TYPE.to_owned(),
         completion: completion.clone(),
@@ -1573,6 +1670,14 @@ fn validate_short_window(now: OffsetDateTime, expires_at: OffsetDateTime) -> cra
     Ok(())
 }
 
+fn canonical_control_expiry(value: OffsetDateTime) -> crate::ImResult<OffsetDateTime> {
+    value
+        .replace_nanosecond(0)
+        .map_err(|error| crate::ImError::Serialization {
+            detail: error.to_string(),
+        })
+}
+
 fn validate_user_presence(
     confirmed_at: OffsetDateTime,
     now: OffsetDateTime,
@@ -1606,8 +1711,10 @@ fn format_time(value: OffsetDateTime) -> crate::ImResult<String> {
 
 fn encode_zeroizing_json(value: &impl Serialize) -> crate::ImResult<SecretBytes> {
     let mut raw = Zeroizing::new(Vec::new());
-    serde_json::to_writer(&mut *raw, value).map_err(|error| crate::ImError::Serialization {
-        detail: error.to_string(),
+    serde_json_canonicalizer::to_writer(value, &mut *raw).map_err(|error| {
+        crate::ImError::Serialization {
+            detail: error.to_string(),
+        }
     })?;
     Ok(SecretBytes::from_vec(std::mem::take(&mut *raw)))
 }

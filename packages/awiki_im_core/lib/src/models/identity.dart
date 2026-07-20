@@ -398,3 +398,56 @@ class DeviceJoinApprovalPrompt {
       'DeviceJoinApprovalPrompt(joinSessionId: $joinSessionId, role: $role, '
       'approvalHandle: <redacted>, sas: <redacted>)';
 }
+
+/// Safe result for an accepted management-device root-key control delivery.
+///
+/// Acceptance means the encrypted Envelope reached the recipient device
+/// mailbox; it does not mean the recipient has imported the root key yet.
+class RootKeyTransferSendResult {
+  const RootKeyTransferSendResult({
+    required this.did,
+    required this.senderDeviceId,
+    required this.recipientDeviceId,
+    required this.messageId,
+    required this.acceptedAt,
+  });
+
+  final String did;
+  final String senderDeviceId;
+  final String recipientDeviceId;
+  final String messageId;
+  final String acceptedAt;
+}
+
+enum RootKeyTransferStatus {
+  pendingDelivery,
+  awaitingImport,
+  importing,
+  failed,
+  completed,
+}
+
+/// Restart-safe, non-secret Core projection for a root-key transfer.
+class RootKeyTransferSummary {
+  const RootKeyTransferSummary({
+    required this.did,
+    required this.messageId,
+    required this.senderDeviceId,
+    required this.recipientDeviceId,
+    required this.status,
+    required this.createdAt,
+    this.acceptedAt,
+    this.completedAt,
+    required this.retryable,
+  });
+
+  final String did;
+  final String messageId;
+  final String senderDeviceId;
+  final String recipientDeviceId;
+  final RootKeyTransferStatus status;
+  final String createdAt;
+  final String? acceptedAt;
+  final String? completedAt;
+  final bool retryable;
+}

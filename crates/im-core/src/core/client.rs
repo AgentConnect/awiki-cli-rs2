@@ -93,6 +93,12 @@ impl ImClient {
         &self.core
     }
 
+    pub(crate) fn core_handle(&self) -> super::ImCore {
+        super::ImCore {
+            inner: self.core.clone(),
+        }
+    }
+
     pub(crate) fn conversation_store(
         &self,
     ) -> Arc<crate::internal::runtime_store::conversation_store::ConversationStore> {

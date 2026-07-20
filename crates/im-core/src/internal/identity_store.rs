@@ -551,6 +551,83 @@ impl<'a> IdentityStore<'a> {
         Ok(())
     }
 
+    /// Stages the new generation token in the existing Vault record, then
+    /// atomically flips the local authorization/checkpoint to management-ready.
+    /// A crash between the two steps remains fail-closed because the index is
+    /// still not management-ready and this operation is exactly retryable.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn converge_root_import_management_ready(
+        &self,
+        local_alias: &str,
+        completed_message_id: &str,
+        auth_generation: u64,
+        checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+        access_token: &str,
+        refresh_token: &str,
+        token_expires_at: &str,
+        secret_storage: &SaveIdentitySecretStorage,
+    ) -> crate::ImResult<()> {
+        if completed_message_id.trim().is_empty() || auth_generation == 0 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        self.persist_vnext_auth_token_pair(
+            local_alias,
+            access_token,
+            refresh_token,
+            token_expires_at,
+            secret_storage,
+        )?;
+
+        let alias = sanitize_identity_name(local_alias);
+        let lock = self.lock_index_mutation()?;
+        let mut index = self.load_index()?;
+        let entry =
+            index
+                .credentials
+                .get_mut(&alias)
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: alias.clone(),
+                })?;
+        if entry
+            .root_key_import
+            .as_ref()
+            .map(|record| record.message_id())
+            != Some(completed_message_id)
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let state = entry
+            .device_state
+            .as_mut()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let authorization = state
+            .authorization
+            .as_mut()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
+            || authorization.status
+                != crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
+            || authorization.role
+                != crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
+            || authorization.auth_generation > auth_generation
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if let Some(current) = state.checkpoint.as_ref() {
+            if checkpoint.document_version < current.document_version
+                || checkpoint.registry_version < current.registry_version
+                || (checkpoint.document_version == current.document_version
+                    && checkpoint.document_hash != current.document_hash)
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+        authorization.management_ready = true;
+        authorization.auth_generation = auth_generation;
+        state.checkpoint = Some(checkpoint.clone());
+        self.save_index_locked(&lock, index)
+    }
+
     pub(crate) async fn persist_vnext_auth_token_pair_async(
         paths: crate::paths::IdentityRegistryPaths,
         local_alias: String,

@@ -128,6 +128,39 @@ returned by the CLI. JSON/pretty output uses only the safe host projections and
 must not contain tokens, pairing/private/root material, challenge ciphertext,
 or internal Document/Registry/auth versions and hashes.
 
+### 4.2 Root-key transfer adapter
+
+`id device root-key send --device <id> --message-id <id>` is guarded by the
+independent `AWIKI_MULTI_DEVICE_ROOT_TRANSFER_ENABLED=1` rollout flag before
+workspace/Core open. It rejects dry-run and non-interactive input. In a
+foreground TTY the user must re-enter the exact recipient device ID and type
+`TRANSFER`; there is no argv user-presence bypass, root material flag, inner
+JSON flag, or separate `transfer_id`.
+
+The command calls the Core facade and renders delivery acceptance metadata
+only. It must state that mailbox acceptance is not import completion and must
+never output root bytes, encrypted control payloads, private sidecars,
+completion proofs, or internal checkpoints.
+
+For a device pair without an established P5 v2 session, the first `send`
+delivers only the fixed session Init and returns
+`p5-v2-session-establishment-pending`; it has not opened or persisted a root
+Envelope. After both devices sync the Init/reply, the operator repeats `send`
+with the same `--device` and `--message-id` and confirms user presence again.
+The pre-Envelope handshake is intentionally absent from `root-key list`, and
+`root-key retry` becomes applicable only after a root-control sidecar exists.
+
+`id device root-key list [--include-completed]` reads Core's owner-scoped,
+restart-safe status projection. Its output is limited to DID, standard
+`message_id`, sender/recipient device IDs, status, timestamps, and `retryable`.
+It never opens the persisted root Envelope or exposes internal versions/hashes.
+
+`id device root-key retry --message-id <id>` requires a foreground TTY and an
+explicit `RETRY` confirmation. It accepts no recipient, secret, sidecar, inner
+JSON, or user-presence override flags. Core derives the route from the exact
+persisted operation selected by the original `message_id` and rejects expired,
+completed, unknown, or otherwise non-retryable entries.
+
 ## 5. Message Adapter
 
 ```rust

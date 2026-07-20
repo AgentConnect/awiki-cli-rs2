@@ -79,18 +79,21 @@ class DartImCoreOpenOptions {
   final DartIdentitySecretStoragePolicy identitySecretStoragePolicy;
   final DartImCoreSecretVaultOptions? identitySecretVault;
   final bool multiDeviceJoinEnabled;
+  final bool multiDeviceRootTransferEnabled;
 
   const DartImCoreOpenOptions({
     required this.identitySecretStoragePolicy,
     this.identitySecretVault,
     required this.multiDeviceJoinEnabled,
+    required this.multiDeviceRootTransferEnabled,
   });
 
   @override
   int get hashCode =>
       identitySecretStoragePolicy.hashCode ^
       identitySecretVault.hashCode ^
-      multiDeviceJoinEnabled.hashCode;
+      multiDeviceJoinEnabled.hashCode ^
+      multiDeviceRootTransferEnabled.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -99,7 +102,9 @@ class DartImCoreOpenOptions {
           runtimeType == other.runtimeType &&
           identitySecretStoragePolicy == other.identitySecretStoragePolicy &&
           identitySecretVault == other.identitySecretVault &&
-          multiDeviceJoinEnabled == other.multiDeviceJoinEnabled;
+          multiDeviceJoinEnabled == other.multiDeviceJoinEnabled &&
+          multiDeviceRootTransferEnabled ==
+              other.multiDeviceRootTransferEnabled;
 }
 
 class DartImCorePaths {

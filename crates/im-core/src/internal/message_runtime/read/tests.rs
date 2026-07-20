@@ -2307,6 +2307,101 @@ async fn messages_read_async_projects_direct_init_without_legacy_fallback() {
 }
 
 #[tokio::test]
+async fn messages_read_async_never_projects_private_root_control_when_gate_is_off() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let response = json!({
+        "messages": [{
+            "id": "root-control-message-1",
+            "sender_did": "did:example:alice",
+            "receiver_did": "did:example:alice",
+            "content_type": "application/anp-direct-cipher+json;v=2",
+            "server_seq": 1,
+            "meta": {},
+            "body": {"ciphertext_b64u": "ROOT-PLAINTEXT-MUST-NEVER-APPEAR"},
+            "private_transport_context": {
+                "message_id": "root-control-message-1",
+                "delivery_class": "awiki-root-key-control",
+                "sender_device_id": "device-admin",
+                "recipient_device_id": "device-member",
+                "expires_at": "2026-07-20T01:00:00Z"
+            }
+        }],
+        "has_more": false
+    });
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response,
+        },
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .inbox_async(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::DirectOnly,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: None,
+            },
+        })
+        .await
+        .unwrap();
+
+    assert!(result.page.items.is_empty());
+    assert_eq!(result.raw["messages"], json!([]));
+    let public_raw = serde_json::to_string(&result.raw).unwrap();
+    assert!(!public_raw.contains("ROOT-PLAINTEXT-MUST-NEVER-APPEAR"));
+    assert!(!public_raw.contains("private_transport_context"));
+}
+
+#[test]
+fn private_root_control_parser_requires_exact_standard_wire_and_private_sidecar() {
+    let message = json!({
+        "meta": {
+            "profile": "anp.direct.e2ee.v2",
+            "security_profile": "direct-e2ee",
+            "sender_did": "did:example:alice",
+            "sender_device_id": "device-admin",
+            "target": {"kind": "agent", "did": "did:example:alice"},
+            "recipient_device_id": "device-member",
+            "operation_id": "root-control-message-1",
+            "message_id": "root-control-message-1",
+            "content_type": "application/anp-direct-cipher+json;v=2"
+        },
+        "body": {
+            "session_id": "AAAAAAAAAAAAAAAAAAAAAA",
+            "suite": "X25519-HKDF-SHA256+ChaCha20-Poly1305+Ed25519",
+            "ratchet_header": {
+                "dh_pub_b64u": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "pn": "0",
+                "n": "0"
+            },
+            "ciphertext_b64u": "AA"
+        },
+        "private_transport_context": {
+            "message_id": "root-control-message-1",
+            "delivery_class": "awiki-root-key-control",
+            "sender_device_id": "device-admin",
+            "recipient_device_id": "device-member",
+            "expires_at": "2026-07-20T01:00:00Z"
+        }
+    });
+
+    let (meta, _, context) = parse_private_root_control(&message).unwrap();
+    assert_eq!(meta.message_id, "root-control-message-1");
+    assert_eq!(context.delivery_class, "awiki-root-key-control");
+
+    let mut with_private_extension = message;
+    with_private_extension["private_transport_context"]["document_version"] = json!(19);
+    assert!(parse_private_root_control(&with_private_extension).is_err());
+}
+
+#[tokio::test]
 async fn messages_read_async_replays_pending_direct_cipher_after_init() {
     use anp::direct_e2ee::{ApplicationPlaintext, DirectE2eeSession, DirectEnvelopeMetadata};
 

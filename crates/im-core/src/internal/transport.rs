@@ -283,6 +283,21 @@ impl<'a> CoreHttpTransport<'a> {
         }
     }
 
+    /// Uses the current device signing key without attaching a potentially
+    /// stale generation-bound bearer token.
+    pub(crate) fn new_signature_only(client: &'a crate::core::ImClient) -> Self {
+        let runtime = client.runtime();
+        Self {
+            client,
+            http: crate::internal::http::HttpClient::from_config(client.core_inner().sdk_config()),
+            auth: crate::internal::key_provider::ProviderBackedDidAuth::new(
+                runtime.key_provider.clone(),
+                anp::authentication::AuthMode::HttpSignatures,
+            ),
+            jwt_token: None,
+        }
+    }
+
     fn rpc_url(&self, endpoint: &str) -> String {
         let endpoint = endpoint.trim();
         if endpoint.starts_with("http://") || endpoint.starts_with("https://") {

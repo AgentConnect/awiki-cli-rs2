@@ -2,6 +2,7 @@ mod dto;
 mod join;
 mod profile;
 mod registry;
+mod root_key_transfer;
 mod service;
 
 pub use self::dto::{
@@ -39,4 +40,9 @@ pub(crate) use self::join::{
     DEVICE_PROOF_TYPE,
 };
 pub use self::registry::IdentityRegistry;
+pub use self::root_key_transfer::{
+    RootKeyTransferListRequest, RootKeyTransferRetryRequest, RootKeyTransferSendRequest,
+    RootKeyTransferSendResult, RootKeyTransferService, RootKeyTransferStatus,
+    RootKeyTransferSummary,
+};
 pub use self::service::IdentityService;

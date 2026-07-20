@@ -9,18 +9,21 @@ use anp::direct_e2ee::{
     direct_send_request_v2, parse_direct_send_result_v2, V2ApplicationPlaintext, V2DirectBody,
     V2DirectCipherBody, V2DirectE2eeSession, V2DirectInitBody, V2DirectMetadata,
     V2DirectSendResult, V2DirectSessionState, V2GetPrekeyBundleResult, V2PendingOutboundRecord,
-    V2SessionBinding, V2Target, CONTENT_TYPE_DIRECT_CIPHER_V2, CONTENT_TYPE_DIRECT_INIT_V2,
-    DIRECT_E2EE_PROFILE_V2, DIRECT_E2EE_SECURITY_PROFILE,
+    V2SecretJsonPayload, V2SessionBinding, V2Target, CONTENT_TYPE_DIRECT_CIPHER_V2,
+    CONTENT_TYPE_DIRECT_INIT_V2, DIRECT_E2EE_PROFILE_V2, DIRECT_E2EE_SECURITY_PROFILE,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use sha2::{Digest as _, Sha256};
 
 use super::v2_store::{
-    SqliteV2DirectStateStore, V2InboundCommit, V2PrivateOutboundSidecar, V2SessionExpectation,
+    SqliteV2DirectStateStore, V2InboundCommit, V2PrivateOutboundSidecar, V2PrivateOutboundStatus,
+    V2SessionExpectation,
 };
 
 pub(crate) const SESSION_ESTABLISH_SYSTEM_TYPE: &str = "awiki.device.session-establish.v1";
 pub(crate) const SESSION_ESTABLISHED_SYSTEM_TYPE: &str = "awiki.device.session-established.v1";
+pub(crate) const SESSION_INIT_OPERATION_PREFIX: &str = "p5-v2-session-init:";
+pub(crate) const SESSION_REPLY_OPERATION_PREFIX: &str = "p5-v2-session-reply:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum V2SessionControlKind {
@@ -54,6 +57,22 @@ pub(crate) fn session_established_plaintext(
         }),
         Some(init_message_id.to_owned()),
     ))
+}
+
+pub(crate) fn session_init_operation_id(seed: &str) -> crate::ImResult<String> {
+    session_control_operation_id(SESSION_INIT_OPERATION_PREFIX, seed)
+}
+
+pub(crate) fn session_reply_operation_id(init_message_id: &str) -> crate::ImResult<String> {
+    session_control_operation_id(SESSION_REPLY_OPERATION_PREFIX, init_message_id)
+}
+
+pub(crate) fn is_session_init_operation_id(value: &str) -> bool {
+    is_session_control_operation_id(SESSION_INIT_OPERATION_PREFIX, value)
+}
+
+pub(crate) fn is_session_reply_operation_id(value: &str) -> bool {
+    is_session_control_operation_id(SESSION_REPLY_OPERATION_PREFIX, value)
 }
 
 pub(crate) fn classify_session_control(
@@ -121,6 +140,32 @@ pub(crate) struct V2EstablishedDirectRuntime<'a, 'connection> {
 impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
     pub(crate) fn new(store: &'a SqliteV2DirectStateStore<'connection>) -> Self {
         Self { store }
+    }
+
+    pub(crate) fn has_established_session(
+        &self,
+        binding: &V2SessionBinding,
+    ) -> crate::ImResult<bool> {
+        Ok(self.store.select_established_session(binding)?.is_some())
+    }
+
+    pub(crate) fn complete_session_init(
+        &self,
+        binding: &V2SessionBinding,
+        init_message_id: &str,
+        session_id: &str,
+    ) -> crate::ImResult<bool> {
+        self.store
+            .complete_session_init(binding, init_message_id, session_id)
+    }
+
+    pub(crate) fn complete_session_init_for_session(
+        &self,
+        binding: &V2SessionBinding,
+        session_id: &str,
+    ) -> crate::ImResult<bool> {
+        self.store
+            .complete_session_init_for_session(binding, session_id)
     }
 
     /// Encrypts and persists a follow-up before it can be sent. Repeating the
@@ -205,6 +250,53 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         sidecar: V2PrivateOutboundSidecar,
     ) -> crate::ImResult<PreparedV2Outbound> {
         self.prepare_outbound_inner(binding, operation_id, plaintext, now, Some(sidecar))
+    }
+
+    pub(crate) fn prepare_private_outbound_secret_json(
+        &self,
+        binding: &V2SessionBinding,
+        operation_id: &str,
+        plaintext: &V2SecretJsonPayload,
+        now: &str,
+        sidecar: V2PrivateOutboundSidecar,
+    ) -> crate::ImResult<PreparedV2Outbound> {
+        binding.validate().map_err(v2_error)?;
+        require_operation_id(operation_id)?;
+        if let Some(existing) = self.store.load_pending(binding, operation_id)? {
+            let existing_sidecar = self
+                .store
+                .load_private_outbound_sidecar(binding, operation_id)?;
+            if existing_sidecar.as_ref() != Some(&sidecar) {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            return prepared_from_pending(existing, existing_sidecar);
+        }
+        let stored = self
+            .store
+            .select_established_session(binding)?
+            .ok_or_else(|| crate::ImError::unsupported("p5-v2-established-session-required"))?;
+        let metadata = outbound_metadata(binding, operation_id);
+        let mut next_state = stored.state;
+        let (pending, body) = V2DirectE2eeSession::encrypt_follow_up_secret_json(
+            &mut next_state,
+            binding,
+            &metadata,
+            plaintext,
+        )
+        .map_err(v2_error)?;
+        self.store.commit_outbound_with_private_sidecar(
+            &next_state,
+            &pending,
+            V2SessionExpectation::Revision(stored.revision),
+            now,
+            &sidecar,
+        )?;
+        Ok(PreparedV2Outbound {
+            binding: binding.clone(),
+            metadata,
+            body: V2DirectBody::Cipher(body),
+            sidecar: Some(sidecar),
+        })
     }
 
     fn prepare_outbound_inner(
@@ -310,6 +402,38 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
             .mark_pending_accepted(&prepared.binding(), &prepared.metadata.operation_id)
     }
 
+    pub(crate) fn list_private_outbound_statuses(
+        &self,
+        now: &str,
+    ) -> crate::ImResult<Vec<V2PrivateOutboundStatus>> {
+        self.store.list_private_outbound_statuses(now)
+    }
+
+    pub(crate) fn private_outbound_status(
+        &self,
+        operation_id: &str,
+        now: &str,
+    ) -> crate::ImResult<Option<V2PrivateOutboundStatus>> {
+        self.store.private_outbound_status(operation_id, now)
+    }
+
+    pub(crate) fn mark_private_outbound_failed(
+        &self,
+        prepared: &PreparedV2Outbound,
+    ) -> crate::ImResult<()> {
+        self.store
+            .mark_private_outbound_failed(&prepared.binding(), &prepared.metadata.operation_id)
+    }
+
+    pub(crate) fn mark_private_outbound_completed(
+        &self,
+        binding: &V2SessionBinding,
+        operation_id: &str,
+    ) -> crate::ImResult<()> {
+        self.store
+            .mark_private_outbound_completed(binding, operation_id)
+    }
+
     /// Decrypts one exact cipher and atomically commits the advanced ratchet
     /// and replay marker. Exact replay is reported without a second decrypt.
     pub(crate) fn decrypt_inbound(
@@ -319,6 +443,31 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         body: &V2DirectCipherBody,
         now: &str,
     ) -> crate::ImResult<V2InboundDecryptOutcome> {
+        match self.decrypt_inbound_validated(binding, metadata, body, now, |plaintext, _| {
+            Ok(plaintext.clone())
+        })? {
+            V2ValidatedInboundOutcome::Decrypted { validated, session } => {
+                Ok(V2InboundDecryptOutcome::Decrypted {
+                    plaintext: validated,
+                    session,
+                })
+            }
+            V2ValidatedInboundOutcome::Replay { session } => {
+                Ok(V2InboundDecryptOutcome::Replay { session })
+            }
+        }
+    }
+
+    /// Decrypts tentatively, validates the application-level control shape,
+    /// and advances the ratchet only after that validation succeeds.
+    pub(crate) fn decrypt_inbound_validated<T>(
+        &self,
+        binding: &V2SessionBinding,
+        metadata: &V2DirectMetadata,
+        body: &V2DirectCipherBody,
+        now: &str,
+        validator: impl FnOnce(&V2ApplicationPlaintext, &V2DirectSessionState) -> crate::ImResult<T>,
+    ) -> crate::ImResult<V2ValidatedInboundOutcome<T>> {
         binding.validate().map_err(v2_error)?;
         metadata.validate().map_err(v2_error)?;
         body.validate().map_err(v2_error)?;
@@ -332,7 +481,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
                 .store
                 .load_session(binding, session_id)?
                 .ok_or(crate::ImError::PermissionDenied)?;
-            return Ok(V2InboundDecryptOutcome::Replay {
+            return Ok(V2ValidatedInboundOutcome::Replay {
                 session: stored.state,
             });
         }
@@ -344,6 +493,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         let plaintext =
             V2DirectE2eeSession::decrypt_follow_up(&mut next_state, binding, metadata, body)
                 .map_err(v2_error)?;
+        let validated = validator(&plaintext, &next_state)?;
         match self.store.commit_inbound(
             &next_state,
             &metadata.message_id,
@@ -352,7 +502,68 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
             V2SessionExpectation::Revision(stored.revision),
             now,
         )? {
-            V2InboundCommit::Applied => Ok(V2InboundDecryptOutcome::Decrypted {
+            V2InboundCommit::Applied => Ok(V2ValidatedInboundOutcome::Decrypted {
+                validated,
+                session: next_state,
+            }),
+            V2InboundCommit::Replay => {
+                let stored = self
+                    .store
+                    .load_session(binding, &body.session_id)?
+                    .ok_or(crate::ImError::PermissionDenied)?;
+                Ok(V2ValidatedInboundOutcome::Replay {
+                    session: stored.state,
+                })
+            }
+        }
+    }
+
+    pub(crate) fn decrypt_inbound_secret_json(
+        &self,
+        binding: &V2SessionBinding,
+        metadata: &V2DirectMetadata,
+        body: &V2DirectCipherBody,
+        now: &str,
+    ) -> crate::ImResult<V2SecretInboundDecryptOutcome> {
+        binding.validate().map_err(v2_error)?;
+        metadata.validate().map_err(v2_error)?;
+        body.validate().map_err(v2_error)?;
+        let digest = cipher_digest(body)?;
+        if self.store.is_exact_inbound_replay(
+            binding,
+            &metadata.message_id,
+            &digest,
+            &body.session_id,
+        )? {
+            let stored = self
+                .store
+                .load_session(binding, &body.session_id)?
+                .ok_or(crate::ImError::PermissionDenied)?;
+            return Ok(V2SecretInboundDecryptOutcome::Replay {
+                session: stored.state,
+            });
+        }
+        let stored = self
+            .store
+            .load_session(binding, &body.session_id)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let mut next_state = stored.state;
+        let plaintext = V2DirectE2eeSession::decrypt_follow_up_secret_json(
+            &mut next_state,
+            binding,
+            metadata,
+            body,
+        )
+        .map_err(v2_error)?;
+        match self.store.commit_inbound(
+            &next_state,
+            &metadata.message_id,
+            &digest,
+            None,
+            V2SessionExpectation::Revision(stored.revision),
+            now,
+        )? {
+            V2InboundCommit::Applied => Ok(V2SecretInboundDecryptOutcome::Decrypted {
                 plaintext,
                 session: next_state,
             }),
@@ -361,7 +572,73 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
                     .store
                     .load_session(binding, &body.session_id)?
                     .ok_or(crate::ImError::PermissionDenied)?;
-                Ok(V2InboundDecryptOutcome::Replay {
+                Ok(V2SecretInboundDecryptOutcome::Replay {
+                    session: stored.state,
+                })
+            }
+        }
+    }
+
+    /// Decrypts tentatively, runs caller-owned semantic validation, and only
+    /// then commits the ratchet/replay marker. The validator must be
+    /// idempotent because a concurrent exact replay may win the final CAS.
+    pub(crate) fn decrypt_inbound_secret_json_validated<T>(
+        &self,
+        binding: &V2SessionBinding,
+        metadata: &V2DirectMetadata,
+        body: &V2DirectCipherBody,
+        now: &str,
+        validator: impl FnOnce(&V2SecretJsonPayload, &V2DirectSessionState) -> crate::ImResult<T>,
+    ) -> crate::ImResult<V2ValidatedSecretInboundOutcome<T>> {
+        binding.validate().map_err(v2_error)?;
+        metadata.validate().map_err(v2_error)?;
+        body.validate().map_err(v2_error)?;
+        let digest = cipher_digest(body)?;
+        if self.store.is_exact_inbound_replay(
+            binding,
+            &metadata.message_id,
+            &digest,
+            &body.session_id,
+        )? {
+            let stored = self
+                .store
+                .load_session(binding, &body.session_id)?
+                .ok_or(crate::ImError::PermissionDenied)?;
+            return Ok(V2ValidatedSecretInboundOutcome::Replay {
+                session: stored.state,
+            });
+        }
+        let stored = self
+            .store
+            .load_session(binding, &body.session_id)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let mut next_state = stored.state;
+        let plaintext = V2DirectE2eeSession::decrypt_follow_up_secret_json(
+            &mut next_state,
+            binding,
+            metadata,
+            body,
+        )
+        .map_err(v2_error)?;
+        let validated = validator(&plaintext, &next_state)?;
+        match self.store.commit_inbound(
+            &next_state,
+            &metadata.message_id,
+            &digest,
+            None,
+            V2SessionExpectation::Revision(stored.revision),
+            now,
+        )? {
+            V2InboundCommit::Applied => Ok(V2ValidatedSecretInboundOutcome::Decrypted {
+                validated,
+                session: next_state,
+            }),
+            V2InboundCommit::Replay => {
+                let stored = self
+                    .store
+                    .load_session(binding, &body.session_id)?
+                    .ok_or(crate::ImError::PermissionDenied)?;
+                Ok(V2ValidatedSecretInboundOutcome::Replay {
                     session: stored.state,
                 })
             }
@@ -380,6 +657,41 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
         sender_static_public: &[u8; 32],
         now: &str,
     ) -> crate::ImResult<V2InboundDecryptOutcome> {
+        match self.decrypt_inbound_init_validated(
+            binding,
+            metadata,
+            body,
+            local_static_private,
+            sender_static_public,
+            now,
+            |plaintext, _| Ok(plaintext.clone()),
+        )? {
+            V2ValidatedInboundOutcome::Decrypted { validated, session } => {
+                Ok(V2InboundDecryptOutcome::Decrypted {
+                    plaintext: validated,
+                    session,
+                })
+            }
+            V2ValidatedInboundOutcome::Replay { session } => {
+                Ok(V2InboundDecryptOutcome::Replay { session })
+            }
+        }
+    }
+
+    /// Accepts an Init only after caller-owned application validation. This
+    /// keeps a malformed or unexpected control payload from consuming the OPK
+    /// or creating a replay marker/session.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decrypt_inbound_init_validated<T>(
+        &self,
+        binding: &V2SessionBinding,
+        metadata: &V2DirectMetadata,
+        body: &V2DirectInitBody,
+        local_static_private: &x25519_dalek::StaticSecret,
+        sender_static_public: &[u8; 32],
+        now: &str,
+        validator: impl FnOnce(&V2ApplicationPlaintext, &V2DirectSessionState) -> crate::ImResult<T>,
+    ) -> crate::ImResult<V2ValidatedInboundOutcome<T>> {
         binding.validate().map_err(v2_error)?;
         metadata.validate().map_err(v2_error)?;
         body.validate().map_err(v2_error)?;
@@ -393,18 +705,21 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
                 .store
                 .load_session(binding, session_id)?
                 .ok_or(crate::ImError::PermissionDenied)?;
-            return Ok(V2InboundDecryptOutcome::Replay {
+            return Ok(V2ValidatedInboundOutcome::Replay {
                 session: stored.state,
             });
         }
         let local = self
             .store
-            .load_active_bundle()?
+            .load_accepted_bundle(&body.recipient_bundle_id, now)?
             .ok_or(crate::ImError::PermissionDenied)?;
         let opk = body
             .recipient_one_time_prekey_id
             .as_deref()
-            .map(|key_id| self.store.load_available_opk(key_id))
+            .map(|key_id| {
+                self.store
+                    .load_available_opk(&body.recipient_bundle_id, key_id)
+            })
             .transpose()?
             .flatten();
         if body.recipient_one_time_prekey_id.is_some() != opk.is_some() {
@@ -421,6 +736,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
             body,
         )
         .map_err(v2_error)?;
+        let validated = validator(&plaintext, &next_state)?;
         match self.store.commit_inbound(
             &next_state,
             &metadata.message_id,
@@ -429,8 +745,8 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
             V2SessionExpectation::Absent,
             now,
         )? {
-            V2InboundCommit::Applied => Ok(V2InboundDecryptOutcome::Decrypted {
-                plaintext,
+            V2InboundCommit::Applied => Ok(V2ValidatedInboundOutcome::Decrypted {
+                validated,
                 session: next_state,
             }),
             V2InboundCommit::Replay => {
@@ -438,7 +754,7 @@ impl<'a, 'connection> V2EstablishedDirectRuntime<'a, 'connection> {
                     .store
                     .load_session(binding, &body.session_id)?
                     .ok_or(crate::ImError::PermissionDenied)?;
-                Ok(V2InboundDecryptOutcome::Replay {
+                Ok(V2ValidatedInboundOutcome::Replay {
                     session: stored.state,
                 })
             }
@@ -481,6 +797,36 @@ impl PreparedV2Outbound {
 pub(crate) enum V2InboundDecryptOutcome {
     Decrypted {
         plaintext: V2ApplicationPlaintext,
+        session: V2DirectSessionState,
+    },
+    Replay {
+        session: V2DirectSessionState,
+    },
+}
+
+pub(crate) enum V2ValidatedInboundOutcome<T> {
+    Decrypted {
+        validated: T,
+        session: V2DirectSessionState,
+    },
+    Replay {
+        session: V2DirectSessionState,
+    },
+}
+
+pub(crate) enum V2SecretInboundDecryptOutcome {
+    Decrypted {
+        plaintext: V2SecretJsonPayload,
+        session: V2DirectSessionState,
+    },
+    Replay {
+        session: V2DirectSessionState,
+    },
+}
+
+pub(crate) enum V2ValidatedSecretInboundOutcome<T> {
+    Decrypted {
+        validated: T,
         session: V2DirectSessionState,
     },
     Replay {
@@ -556,6 +902,22 @@ fn outbound_metadata_for_content_type(
     }
 }
 
+fn session_control_operation_id(prefix: &str, seed: &str) -> crate::ImResult<String> {
+    require_operation_id(seed)?;
+    let digest = Sha256::digest(seed.as_bytes());
+    Ok(format!("{prefix}{}", URL_SAFE_NO_PAD.encode(&digest[..16])))
+}
+
+fn is_session_control_operation_id(prefix: &str, value: &str) -> bool {
+    let Some(digest) = value.strip_prefix(prefix) else {
+        return false;
+    };
+    digest.len() == 22
+        && URL_SAFE_NO_PAD
+            .decode(digest)
+            .is_ok_and(|decoded| decoded.len() == 16)
+}
+
 fn init_digest(body: &V2DirectInitBody) -> crate::ImResult<String> {
     body_digest(body)
 }
@@ -603,7 +965,7 @@ mod tests {
     };
     use crate::internal::secure_direct::secret_store::DirectSecretVault;
     use crate::internal::secure_direct::v2_store::{SqliteV2DirectStateStore, V2OwnerScope};
-    use crate::vault::{DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore};
+    use crate::vault::{DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SecretKind};
     use anp::direct_e2ee::{
         V2DirectSessionState, V2GetPrekeyBundleResult, V2OneTimePrekey, V2PrekeyBundle,
         V2SignedPrekey, DIRECT_E2EE_V2_SESSION_STATE_FORMAT, MTI_DIRECT_E2EE_SUITE_V2,
@@ -759,14 +1121,18 @@ mod tests {
             )
             .unwrap();
 
-        let sidecar = V2PrivateOutboundSidecar {
-            operation_id: "root-message-1".to_owned(),
-            delivery_class: "awiki-root-key-control".to_owned(),
-            context: serde_json::json!({
-                "transport_context": {"message_id": "root-message-1"},
-                "completion": null
-            }),
-        };
+        let sidecar = V2PrivateOutboundSidecar::root_control(
+            "root-message-1",
+            crate::internal::identity_root_transfer::RootImportTransportContext {
+                message_id: "root-message-1".to_owned(),
+                delivery_class: "awiki-root-key-control".to_owned(),
+                sender_device_id: "alice-phone".to_owned(),
+                recipient_device_id: "alice-laptop".to_owned(),
+                expires_at: "2026-07-20T00:05:00Z".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
         let plaintext = V2ApplicationPlaintext {
             application_content_type: "application/json".to_owned(),
             logical_message_id: None,
@@ -793,9 +1159,12 @@ mod tests {
         drop(runtime);
         drop(alice_store);
 
-        let restarted_store =
-            SqliteV2DirectStateStore::new_with_secret_vault(&alice_db, alice_vault, alice_scope)
-                .unwrap();
+        let restarted_store = SqliteV2DirectStateStore::new_with_secret_vault(
+            &alice_db,
+            alice_vault.clone(),
+            alice_scope,
+        )
+        .unwrap();
         let restarted = V2EstablishedDirectRuntime::new(&restarted_store);
         let retry = restarted
             .resume_private_outbound(&alice_state.binding, "root-message-1")
@@ -807,6 +1176,24 @@ mod tests {
             retry.direct_request().unwrap(),
             first.direct_request().unwrap()
         );
+        assert_eq!(
+            restarted
+                .private_outbound_status("root-message-1", "2026-07-20T00:00:01Z")
+                .unwrap()
+                .unwrap()
+                .phase,
+            crate::internal::secure_direct::v2_store::V2PrivateOutboundPhase::PendingDelivery
+        );
+        restarted.mark_private_outbound_failed(&retry).unwrap();
+        let failed = restarted
+            .private_outbound_status("root-message-1", "2026-07-20T00:00:01Z")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            failed.phase,
+            crate::internal::secure_direct::v2_store::V2PrivateOutboundPhase::Failed
+        );
+        assert!(failed.retryable);
 
         let bob_runtime = V2EstablishedDirectRuntime::new(&bob_store);
         let inbound = bob_runtime
@@ -834,10 +1221,169 @@ mod tests {
         ));
 
         assert!(restarted.mark_outbound_accepted(&retry).unwrap());
+        assert_eq!(
+            restarted
+                .private_outbound_status("root-message-1", "2026-07-20T00:00:04Z")
+                .unwrap()
+                .unwrap()
+                .phase,
+            crate::internal::secure_direct::v2_store::V2PrivateOutboundPhase::AwaitingImport
+        );
+        let accepted_retry = restarted
+            .resume_private_outbound(&alice_state.binding, "root-message-1")
+            .unwrap()
+            .expect("accepted private ciphertext remains retryable until completion");
+        assert_eq!(accepted_retry, retry);
+        assert_eq!(
+            alice_vault
+                .list()
+                .unwrap()
+                .into_iter()
+                .filter(|secret_ref| { secret_ref.kind == SecretKind::DirectE2eeV2PendingOutbound })
+                .count(),
+            1
+        );
+        let mut wrong_peer_binding = alice_state.binding.clone();
+        wrong_peer_binding.peer_device_id = "alice-tablet".to_owned();
+        assert!(restarted
+            .mark_private_outbound_completed(&wrong_peer_binding, "root-message-1")
+            .is_err());
+        restarted
+            .mark_private_outbound_completed(&alice_state.binding, "root-message-1")
+            .unwrap();
+        let completed = restarted
+            .private_outbound_status("root-message-1", "2026-07-20T00:00:04Z")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            completed.phase,
+            crate::internal::secure_direct::v2_store::V2PrivateOutboundPhase::Completed
+        );
+        assert!(!completed.retryable);
         assert!(restarted
             .resume_private_outbound(&alice_state.binding, "root-message-1")
             .unwrap()
             .is_none());
+        assert_eq!(
+            alice_db
+                .query_row(
+                    "SELECT COUNT(*) FROM direct_e2ee_v2_pending WHERE operation_id = 'root-message-1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            alice_db
+                .query_row(
+                    "SELECT COUNT(*) FROM direct_e2ee_v2_private_outbound WHERE operation_id = 'root-message-1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            alice_db
+                .query_row(
+                    "SELECT COUNT(*) FROM direct_e2ee_v2_private_outbound_tombstones WHERE operation_id = 'root-message-1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            alice_vault
+                .list()
+                .unwrap()
+                .into_iter()
+                .filter(|secret_ref| { secret_ref.kind == SecretKind::DirectE2eeV2PendingOutbound })
+                .count(),
+            0
+        );
+        restarted
+            .mark_private_outbound_completed(&alice_state.binding, "root-message-1")
+            .unwrap();
+
+        let ack_sidecar = V2PrivateOutboundSidecar::root_control(
+            "root-ack-1",
+            crate::internal::identity_root_transfer::RootImportTransportContext {
+                message_id: "root-ack-1".to_owned(),
+                delivery_class: "awiki-root-key-control".to_owned(),
+                sender_device_id: "alice-phone".to_owned(),
+                recipient_device_id: "alice-laptop".to_owned(),
+                expires_at: "2026-07-20T00:05:00Z".to_owned(),
+            },
+            Some(
+                crate::internal::identity_root_transfer::RootKeyImportedCompletion {
+                    completion_type: "awiki.device.root-key-imported.v1".to_owned(),
+                    ack_for_message_id: "root-ack-1".to_owned(),
+                    did: "did:example:alice".to_owned(),
+                    sending_device_id: "alice-phone".to_owned(),
+                    importing_device_id: "alice-laptop".to_owned(),
+                    root_key_id: "did:example:alice#root".to_owned(),
+                    root_public_key_fingerprint: "sha256:test".to_owned(),
+                    document_version: 1,
+                    document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+                    result: "imported".to_owned(),
+                    imported_at: "2026-07-20T00:00:04Z".to_owned(),
+                    device_signature: "test-signature".to_owned(),
+                },
+            ),
+        )
+        .unwrap();
+        let ack_plaintext = V2ApplicationPlaintext {
+            application_content_type: "application/json".to_owned(),
+            logical_message_id: None,
+            conversation_id: None,
+            reply_to_message_id: None,
+            annotations: None,
+            text: None,
+            payload: Some(serde_json::json!({"system_type": "test-ack"})),
+            payload_b64u: None,
+        };
+        let ack = bob_runtime
+            .prepare_private_outbound(
+                &bob_state.binding,
+                "root-ack-1",
+                &ack_plaintext,
+                "2026-07-20T00:00:04Z",
+                ack_sidecar,
+            )
+            .unwrap();
+        assert!(bob_runtime.mark_outbound_accepted(&ack).unwrap());
+        let accepted_ack = bob_runtime
+            .private_outbound_status("root-ack-1", "2026-07-20T00:00:04Z")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            accepted_ack.phase,
+            crate::internal::secure_direct::v2_store::V2PrivateOutboundPhase::Importing
+        );
+        assert!(accepted_ack.retryable);
+        bob_runtime
+            .mark_private_outbound_completed(&bob_state.binding, "root-ack-1")
+            .unwrap();
+        assert_eq!(
+            bob_runtime
+                .private_outbound_status("root-ack-1", "2026-07-20T00:00:04Z")
+                .unwrap()
+                .unwrap()
+                .phase,
+            crate::internal::secure_direct::v2_store::V2PrivateOutboundPhase::Completed
+        );
+        assert_eq!(
+            bob_db
+                .query_row(
+                    "SELECT COUNT(*) FROM direct_e2ee_v2_pending WHERE operation_id = 'root-ack-1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -939,7 +1485,7 @@ mod tests {
         let fetched = V2GetPrekeyBundleResult {
             target_did: bob_binding.local_did.clone(),
             target_device_id: bob_binding.local_device_id.clone(),
-            prekey_bundle: bundle,
+            prekey_bundle: bundle.clone(),
             one_time_prekey: Some(opk.clone()),
         };
         let init_plaintext = session_establish_plaintext();
@@ -976,6 +1522,37 @@ mod tests {
             .unwrap();
         assert_eq!(init_retry, init);
 
+        let bob_spk_rotated = x25519_dalek::StaticSecret::from([47; 32]);
+        let mut rotated_bundle = bundle.clone();
+        rotated_bundle.bundle_id = "bob-bundle-2".to_owned();
+        rotated_bundle.signed_prekey.key_id = "bob-spk-2".to_owned();
+        rotated_bundle.signed_prekey.public_key_b64u =
+            URL_SAFE_NO_PAD.encode(x25519_dalek::PublicKey::from(&bob_spk_rotated).to_bytes());
+        bob_store
+            .publish_local_bundle(
+                &rotated_bundle,
+                &bob_spk_rotated,
+                &[],
+                "2026-07-20T00:00:02Z",
+            )
+            .unwrap();
+        drop(bob_store);
+        let bob_store =
+            SqliteV2DirectStateStore::new_with_secret_vault(&bob_db, bob_vault, bob_scope).unwrap();
+        assert_eq!(
+            bob_store
+                .load_active_bundle()
+                .unwrap()
+                .unwrap()
+                .bundle
+                .bundle_id,
+            "bob-bundle-2"
+        );
+        assert!(bob_store
+            .load_accepted_bundle("bob-bundle-1", "2026-07-20T00:00:03Z")
+            .unwrap()
+            .is_some());
+
         let bob_runtime = V2EstablishedDirectRuntime::new(&bob_store);
         let accepted = bob_runtime
             .decrypt_inbound_init(
@@ -998,7 +1575,10 @@ mod tests {
             plaintext.payload.unwrap()["system_type"],
             "awiki.device.session-establish.v1"
         );
-        assert!(bob_store.load_available_opk(&opk.key_id).unwrap().is_none());
+        assert!(bob_store
+            .load_available_opk(&bundle.bundle_id, &opk.key_id)
+            .unwrap()
+            .is_none());
         assert!(matches!(
             bob_runtime
                 .decrypt_inbound_init(

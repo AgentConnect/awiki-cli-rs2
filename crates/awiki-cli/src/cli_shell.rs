@@ -40,6 +40,7 @@ mod mail_handlers;
 mod msg_handlers;
 mod page_handlers;
 mod people_handlers;
+mod root_key_transfer_handlers;
 mod runtime_handlers;
 mod runtime_hermes_handlers;
 mod runtime_host_notify_refresh;

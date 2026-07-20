@@ -65,6 +65,30 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<RootKeyTransferSendResult> sendRootKeyTransfer({
+    required IdentitySelector selector,
+    required String recipientDeviceId,
+    required String messageId,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<List<RootKeyTransferSummary>> listRootKeyTransfers({
+    required IdentitySelector selector,
+    bool includeCompleted = false,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<RootKeyTransferSummary> retryRootKeyTransfer({
+    required IdentitySelector selector,
+    required String messageId,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
   Future<List<DeviceJoinSessionSummary>> localDeviceJoinSessions() async {
     throw _unsupported();
   }

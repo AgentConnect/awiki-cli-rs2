@@ -133,6 +133,40 @@ pub struct DartDeviceJoinRegistrySnapshot {
     pub pending_join_requests: Vec<DartDeviceJoinPendingSummary>,
 }
 
+/// Safe host projection for one accepted root-key control delivery. It never
+/// contains the private key, decrypted envelope, completion, or checkpoints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartRootKeyTransferSendResult {
+    pub did: String,
+    pub sender_device_id: String,
+    pub recipient_device_id: String,
+    pub message_id: String,
+    pub accepted_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartRootKeyTransferStatus {
+    PendingDelivery,
+    AwaitingImport,
+    Importing,
+    Failed,
+    Completed,
+}
+
+/// Restart-safe, non-secret projection of one local root-control operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartRootKeyTransferSummary {
+    pub did: String,
+    pub message_id: String,
+    pub sender_device_id: String,
+    pub recipient_device_id: String,
+    pub status: DartRootKeyTransferStatus,
+    pub created_at: String,
+    pub accepted_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub retryable: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinProgress {
     pub session: DartDeviceJoinSessionSummary,

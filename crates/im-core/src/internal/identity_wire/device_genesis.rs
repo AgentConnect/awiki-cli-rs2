@@ -398,6 +398,49 @@ pub(crate) fn prepare_device_token_issue(
     signing_private: &anp::PrivateKeyMaterial,
     service_domain: &str,
 ) -> crate::ImResult<PreparedDeviceTokenIssue> {
+    prepare_device_token_issue_for_readiness(
+        operation_id,
+        did_document,
+        device_id,
+        signing_key_id,
+        expected_scopes,
+        signing_private,
+        service_domain,
+        false,
+    )
+}
+
+pub(crate) fn prepare_management_ready_device_token_issue(
+    operation_id: String,
+    did_document: &Value,
+    device_id: &str,
+    signing_key_id: &str,
+    signing_private: &anp::PrivateKeyMaterial,
+    service_domain: &str,
+) -> crate::ImResult<PreparedDeviceTokenIssue> {
+    prepare_device_token_issue_for_readiness(
+        operation_id,
+        did_document,
+        device_id,
+        signing_key_id,
+        expected_token_scopes(true),
+        signing_private,
+        service_domain,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_device_token_issue_for_readiness(
+    operation_id: String,
+    did_document: &Value,
+    device_id: &str,
+    signing_key_id: &str,
+    expected_scopes: Vec<String>,
+    signing_private: &anp::PrivateKeyMaterial,
+    service_domain: &str,
+    management_ready: bool,
+) -> crate::ImResult<PreparedDeviceTokenIssue> {
     let operation_id = required(&operation_id, "operation_id")?;
     let did = did_document
         .get("id")
@@ -409,7 +452,7 @@ pub(crate) fn prepare_device_token_issue(
     let signing_key_id = required(signing_key_id, "signing_key_id")?;
     if !matches!(signing_private, anp::PrivateKeyMaterial::Ed25519(_))
         || !anp::authentication::validate_did_document_binding(did_document, true)
-        || expected_scopes != expected_token_scopes(false)
+        || expected_scopes != expected_token_scopes(management_ready)
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -495,7 +538,8 @@ pub(crate) fn verify_prepared_device_token_issue(
         || did_document.get("id").and_then(Value::as_str) != Some(prepared.did.as_str())
         || parsed.did != prepared.did
         || parsed.verification_method != expected_fragment
-        || prepared.expected_scopes != expected_token_scopes(false)
+        || (prepared.expected_scopes != expected_token_scopes(false)
+            && prepared.expected_scopes != expected_token_scopes(true))
     {
         return Err(crate::ImError::PermissionDenied);
     }

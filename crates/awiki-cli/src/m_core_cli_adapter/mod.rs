@@ -28,6 +28,7 @@ pub mod paths;
 pub mod people;
 pub mod realtime;
 pub mod render;
+pub mod root_key_transfer;
 pub mod site;
 pub mod unsupported;
 pub mod vault;

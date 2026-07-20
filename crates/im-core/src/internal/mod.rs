@@ -33,6 +33,8 @@ pub(crate) mod identity_registration_runtime;
 pub(crate) mod identity_replace_did_execution;
 pub(crate) mod identity_replace_did_plan;
 pub(crate) mod identity_root_transfer;
+#[cfg(feature = "sqlite")]
+pub(crate) mod identity_root_transfer_runtime;
 pub(crate) mod identity_runtime;
 pub(crate) mod identity_store;
 pub(crate) mod identity_wire;

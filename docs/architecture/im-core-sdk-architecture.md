@@ -166,6 +166,25 @@ AWiki-internal document/Registry/auth checkpoints do not cross the host facade o
 CLI output boundary. These AWiki-local controls do not add fields to cross-domain
 ANP messages.
 
+Management-device root transfer is a separate default-off local control plane.
+It reuses an existing exact-device P5 v2 session and its standard `meta`/cipher
+`body`; a same-domain private sidecar supplies only routing/completion context
+and never changes ANP, P5 AAD, history, or sync. Sender eligibility is derived
+from the current Registry, DID Document, local admin readiness, and explicit
+user presence. Ciphertext and its private sidecar commit atomically before
+network I/O and restart retry is byte-identical. The recipient decrypts through
+the same ratchet/replay store, verifies current admin authorization and DID root
+binding, imports directly into Vault, then returns one encrypted signed ACK.
+Inbox projection consumes and removes these controls before any normal message
+renderer; neither root plaintext nor control JSON reaches Core/Dart/CLI output.
+When no P5 v2 session exists, the first send persists only a standard fixed
+session Init and returns a stable pending capability without opening the root
+Vault record. Root-control status begins only after the session reply is
+consumed and a repeated, freshly confirmed send creates the encrypted Envelope.
+Signed completion atomically replaces the retained ciphertext/private sidecar
+with a secret-free status tombstone and garbage-collects the Vault pending
+ratchet record; an interrupted cleanup remains exact-retryable.
+
 ## 5. Paths and Configuration
 
 Hosts pass explicit `ImCoreConfig` and `ImCorePaths`.

@@ -826,6 +826,7 @@ where
                 self.core,
                 join_session_id,
             )?;
+            publish_v2_prekeys_after_activation(self.core, &local).await?;
             return Ok(DeviceJoinAdvanceResult {
                 session: local,
                 remote_state: DeviceJoinRemoteState::Consumed,
@@ -991,6 +992,7 @@ where
             self.core,
             &pending.join_session_id,
         )?;
+        publish_v2_prekeys_after_activation(self.core, &session).await?;
         Ok(DeviceJoinAdvanceResult {
             session,
             remote_state: DeviceJoinRemoteState::Consumed,
@@ -1010,6 +1012,21 @@ where
             crate::identity::DeviceJoinSide::NewDevice,
         )
     }
+}
+
+async fn publish_v2_prekeys_after_activation(
+    core: &crate::core::ImCore,
+    session: &crate::identity::DeviceJoinSessionSummary,
+) -> crate::ImResult<()> {
+    if !core.inner().root_key_transfer_enabled() {
+        return Ok(());
+    }
+    let client = core
+        .client_async(crate::identity::IdentitySelector::Did(session.did.clone()))
+        .await?;
+    crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_published(core, &client)
+        .await?;
+    Ok(())
 }
 
 pub(crate) struct DeviceJoinAdminRuntime<'a, R> {

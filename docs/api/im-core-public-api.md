@@ -68,6 +68,7 @@ pub struct ImCoreOpenOptions {
     pub identity_secret_storage_policy: IdentitySecretStoragePolicy,
     pub identity_secret_vault: Option<ImCoreSecretVaultOptions>,
     pub multi_device_join_enabled: bool, // default false
+    pub multi_device_root_transfer_enabled: bool, // default false
 }
 
 pub enum IdentitySecretStoragePolicy {
@@ -352,6 +353,46 @@ Vault 落盘以及 rootless vNext 身份提升；全部成功后 session 才变�
 重启或网络响应丢失会从加密的 pending activation 继续，不向 host 暴露 token、
 临时授权或内部 checkpoint。普通设备此时为 `MemberReady`；被授予 Admin 的设备在
 根密钥导入前仍为 `AdminAwaitingRoot`。
+
+### 5.2 Management-device root-key transfer
+
+`ImCore::root_key_transfer()` is a separate, default-off AWiki-local control
+plane. Its send request contains only the selected identity, exact recipient
+`ProtocolDeviceId`, P5 v2 `MessageId`, and host-confirmed local user presence.
+The result exposes only DID/device/message IDs and server acceptance time;
+acceptance does **not** mean that the recipient has imported the root key.
+
+Core requires the sender to be a current, active, `management_ready` admin and
+the recipient to be the exact authorized admin device. It then carries the
+RootKeyEnvelope as `application/json` inside an already-established exact-device
+P5 v2 Direct session. The standard `meta` and cipher `body` remain unchanged;
+AWiki-private delivery context is a separate same-domain sidecar and is not an
+ANP field or AAD input. Pending ciphertext and sidecar are persisted together,
+so restart retries reuse the exact bytes and message ID.
+
+The async inbox consumes these controls internally, imports the root only into
+the recipient Vault, and sends one encrypted, device-signed imported ACK. Root
+controls are never projected as messages, notifications, or public DTOs. A
+malformed/disabled control is dropped from public projection and never falls
+back to the legacy Direct renderer.
+
+On a device pair without an established P5 v2 session, the first `send` sends
+only the fixed session Init and returns
+`p5-v2-session-establishment-pending`. It does not open or persist the root
+Envelope. After both devices sync the Init/reply, the host repeats `send` with
+the same recipient and `MessageId` under fresh user presence. Therefore
+`list`/`retry` do not expose this pre-Envelope handshake as a root transfer.
+
+`RootKeyTransferService::list` exposes only restart-safe delivery/import status
+and timestamps. `retry` accepts the original `MessageId` plus fresh user
+presence; Core derives the recipient from the closed persisted sidecar and
+reuses the exact ciphertext. There is no retry recipient, secret, inner JSON,
+or sidecar override. `Completed` and expired entries are non-retryable, while
+actual management readiness is read from the Device Registry/local identity
+projection rather than inferred from transport status alone.
+After signed completion, Core deletes the retained retry ciphertext and its
+Vault-backed pending ratchet record; only a secret-free completed status
+tombstone remains for idempotent listing and replay handling.
 
 Identity vault DTOs are redacted status/report surfaces. They report selected
 backend, storage policy, vault availability, metadata verification, workspace /

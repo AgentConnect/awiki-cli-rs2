@@ -198,6 +198,52 @@ fn rollout_gate_defaults_off_before_root_is_opened() {
 }
 
 #[test]
+fn transport_expiry_compares_rfc3339_instants_not_spelling() {
+    let scenario = scenario();
+    let prepared = scenario.prepare();
+    let envelope: RootKeyEnvelope =
+        serde_json::from_slice(prepared.plaintext().expose_secret()).unwrap();
+    let mut context = prepared.transport_context().clone();
+
+    assert!(context.expires_at.ends_with('Z'));
+    context.expires_at = context.expires_at.trim_end_matches('Z').to_owned() + "+00:00";
+    context.validate_for_envelope(&envelope).unwrap();
+}
+
+#[test]
+fn sender_expiry_survives_postgres_precision_round_trip_without_relaxing_instant() {
+    let scenario = scenario();
+    let expires_at = scenario.expires_at.replace_nanosecond(987_654_321).unwrap();
+    let prepared = scenario
+        .sender_core(true)
+        .prepare_envelope(RootKeyEnvelopePrepareInput {
+            local_alias: LOCAL_ALIAS,
+            did_document: &scenario.document,
+            registry: &scenario.registry,
+            recipient_device_id: &scenario.recipient_device_id,
+            message_id: MESSAGE_ID,
+            user_presence_at: scenario.now,
+            now: scenario.now,
+            expires_at,
+        })
+        .unwrap();
+    let envelope: RootKeyEnvelope =
+        serde_json::from_slice(prepared.plaintext().expose_secret()).unwrap();
+    let canonical = parse_time("envelope.expires_at", &envelope.expires_at).unwrap();
+    assert_eq!(canonical.nanosecond(), 0);
+
+    let mut context = prepared.transport_context().clone();
+    context.expires_at = format!("{}.000000+00:00", envelope.expires_at.trim_end_matches('Z'));
+    context.validate_for_envelope(&envelope).unwrap();
+
+    context.expires_at = format_time(canonical + Duration::microseconds(1)).unwrap();
+    assert_eq!(
+        context.validate_for_envelope(&envelope).unwrap_err(),
+        crate::ImError::PermissionDenied
+    );
+}
+
+#[test]
 fn prepare_envelope_requires_ready_admin_recent_presence_and_redacts_debug() {
     let scenario = scenario();
     let prepared = scenario.prepare();
@@ -355,6 +401,45 @@ fn import_seals_root_and_emits_one_identical_signed_completion() {
     let debug = format!("{imported:?}");
     assert!(!debug.contains("BEGIN PRIVATE KEY"));
     assert!(!debug.contains(&scenario.generated.root_private_pem));
+}
+
+#[test]
+fn ack_retry_canonicalizes_projected_expiry_to_the_persisted_reservation() {
+    let scenario = scenario();
+    let prepared = scenario.prepare();
+    let mut projected_context = prepared.transport_context().clone();
+    projected_context.expires_at = format!(
+        "{}.000000+00:00",
+        projected_context.expires_at.trim_end_matches('Z')
+    );
+
+    let imported = scenario
+        .import(
+            &prepared,
+            &scenario.direct_binding(),
+            &projected_context,
+            &scenario.document,
+            &scenario.registry,
+            scenario.now + Duration::seconds(10),
+        )
+        .unwrap();
+    assert_eq!(imported.transport_context(), prepared.transport_context());
+
+    let resumed = scenario
+        .receiver_core(true)
+        .resume_imported_ack(RootKeyAckResumeInput {
+            local_alias: LOCAL_ALIAS,
+            message_id: MESSAGE_ID,
+            current_did_document: &scenario.document,
+            current_registry: &scenario.registry,
+        })
+        .unwrap();
+    assert_eq!(resumed.transport_context(), imported.transport_context());
+    assert_eq!(resumed.completion(), imported.completion());
+    assert_eq!(
+        resumed.plaintext().expose_secret(),
+        imported.plaintext().expose_secret()
+    );
 }
 
 #[test]

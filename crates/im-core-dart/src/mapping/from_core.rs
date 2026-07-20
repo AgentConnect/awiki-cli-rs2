@@ -26,6 +26,7 @@ use crate::dto::{
         DartIdentityDeviceSummary, DartIdentitySecretStorageBackend, DartIdentitySummary,
         DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
         DartIdentityVaultVerificationReport, DartRecoverHandleResult,
+        DartRootKeyTransferSendResult, DartRootKeyTransferStatus, DartRootKeyTransferSummary,
     },
     message::{
         DartConversation, DartConversationAlias, DartConversationAliasSource,
@@ -48,6 +49,50 @@ use crate::dto::{
         DartSecureOutboxStatus, DartSecureProblem, DartSecureProblemCode,
     },
 };
+
+impl From<im_core::identity::RootKeyTransferSendResult> for DartRootKeyTransferSendResult {
+    fn from(value: im_core::identity::RootKeyTransferSendResult) -> Self {
+        Self {
+            did: value.did.as_str().to_owned(),
+            sender_device_id: value.sender_device_id.as_str().to_owned(),
+            recipient_device_id: value.recipient_device_id.as_str().to_owned(),
+            message_id: value.message_id.as_str().to_owned(),
+            accepted_at: value.accepted_at,
+        }
+    }
+}
+
+impl From<im_core::identity::RootKeyTransferSummary> for DartRootKeyTransferSummary {
+    fn from(value: im_core::identity::RootKeyTransferSummary) -> Self {
+        Self {
+            did: value.did.as_str().to_owned(),
+            message_id: value.message_id.as_str().to_owned(),
+            sender_device_id: value.sender_device_id.as_str().to_owned(),
+            recipient_device_id: value.recipient_device_id.as_str().to_owned(),
+            status: match value.status {
+                im_core::identity::RootKeyTransferStatus::PendingDelivery => {
+                    DartRootKeyTransferStatus::PendingDelivery
+                }
+                im_core::identity::RootKeyTransferStatus::AwaitingImport => {
+                    DartRootKeyTransferStatus::AwaitingImport
+                }
+                im_core::identity::RootKeyTransferStatus::Importing => {
+                    DartRootKeyTransferStatus::Importing
+                }
+                im_core::identity::RootKeyTransferStatus::Failed => {
+                    DartRootKeyTransferStatus::Failed
+                }
+                im_core::identity::RootKeyTransferStatus::Completed => {
+                    DartRootKeyTransferStatus::Completed
+                }
+            },
+            created_at: value.created_at,
+            accepted_at: value.accepted_at,
+            completed_at: value.completed_at,
+            retryable: value.retryable,
+        }
+    }
+}
 
 impl From<im_core::identity::DeviceJoinSessionView> for DartDeviceJoinSessionSummary {
     fn from(value: im_core::identity::DeviceJoinSessionView) -> Self {

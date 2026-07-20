@@ -13,6 +13,42 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 // These functions are ignored because they are not marked as `pub`: `recover_handle_request`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
 
+Future<DartRootKeyTransferSendResult> sendRootKeyTransfer({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String recipientDeviceId,
+  required String messageId,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentitySendRootKeyTransfer(
+  core: core,
+  selector: selector,
+  recipientDeviceId: recipientDeviceId,
+  messageId: messageId,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
+Future<List<DartRootKeyTransferSummary>> listRootKeyTransfers({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required bool includeCompleted,
+}) => RustLib.instance.api.crateApiIdentityListRootKeyTransfers(
+  core: core,
+  selector: selector,
+  includeCompleted: includeCompleted,
+);
+
+Future<DartRootKeyTransferSummary> retryRootKeyTransfer({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String messageId,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityRetryRootKeyTransfer(
+  core: core,
+  selector: selector,
+  messageId: messageId,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
 Future<List<DartDeviceJoinSessionSummary>> localDeviceJoinSessions({
   required ArcDartImCore core,
 }) => RustLib.instance.api.crateApiIdentityLocalDeviceJoinSessions(core: core);

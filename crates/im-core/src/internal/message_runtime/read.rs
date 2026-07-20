@@ -1690,6 +1690,10 @@ fn project_secure_direct_messages_impl(
             return;
         };
         let mut message_values = std::mem::take(messages);
+        // Root-control delivery is async-only because import and its signed
+        // ACK require authenticated network calls. A synchronous read must
+        // still fail closed by removing the private control from projection.
+        message_values.retain(|message| message.get("private_transport_context").is_none());
         apply_cached_secure_direct_messages(client, &mut message_values);
         let warnings =
             crate::internal::secure_direct::incoming::maybe_decrypt_direct_e2ee_messages_for_client(
@@ -1758,7 +1762,71 @@ async fn project_secure_direct_messages_async_impl(
             compare_secure_direct_message_order(&message_values[*left], &message_values[*right])
         });
         for index in order {
+            if message_values[index]
+                .get("private_transport_context")
+                .is_some()
+            {
+                // Only the same-domain inbox projection can set this marker.
+                // It must never enter normal Direct rendering or the v1
+                // fallback, including while rollout is disabled or malformed.
+                mark_private_root_control(&mut message_values[index]);
+                processed_async[index] = true;
+                if !client.core_inner().root_key_transfer_enabled() {
+                    continue;
+                }
+                let (metadata, body, transport_context) =
+                    match parse_private_root_control(&message_values[index]) {
+                        Ok(value) => value,
+                        Err(_) => continue,
+                    };
+                let core = client.core_handle();
+                let _ = crate::internal::identity_root_transfer_runtime::receive_root_control(
+                    &core,
+                    client,
+                    metadata,
+                    body,
+                    transport_context,
+                )
+                .await;
+                continue;
+            }
             let content_type = direct_message_content_type(&message_values[index]);
+            if client.core_inner().root_key_transfer_enabled() {
+                match parse_v2_session_control(&message_values[index]) {
+                    Ok(Some((metadata, body))) => {
+                        mark_private_root_control(&mut message_values[index]);
+                        processed_async[index] = true;
+                        let core = client.core_handle();
+                        if let Err(error) = crate::internal::identity_root_transfer_runtime::receive_session_control(
+                            &core,
+                            client,
+                            metadata,
+                            body,
+                        )
+                        .await
+                        {
+                            mark_async_direct_failure(
+                                &mut message_values[index],
+                                &mut async_warnings,
+                                error,
+                            );
+                            mark_private_root_control(&mut message_values[index]);
+                        }
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        mark_async_direct_failure(
+                            &mut message_values[index],
+                            &mut async_warnings,
+                            error,
+                        );
+                        mark_private_root_control(&mut message_values[index]);
+                        processed_async[index] = true;
+                        continue;
+                    }
+                }
+            }
             let notification = match crate::internal::secure_direct::incoming::direct_e2ee_notification_from_message_view(&message_values[index]) {
                 Ok(notification) => notification,
                 Err(_) => continue,
@@ -1990,6 +2058,101 @@ fn looks_like_did_document(value: &Value) -> bool {
         .and_then(Value::as_str)
         .is_some_and(|value| value.starts_with("did:"))
         && value.get("verificationMethod").is_some()
+}
+
+#[cfg(feature = "sqlite")]
+fn parse_private_root_control(
+    message: &Value,
+) -> crate::ImResult<(
+    anp::direct_e2ee::V2DirectMetadata,
+    anp::direct_e2ee::V2DirectCipherBody,
+    crate::internal::identity_root_transfer::RootImportTransportContext,
+)> {
+    let object = message
+        .as_object()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let metadata = serde_json::from_value(
+        object
+            .get("meta")
+            .cloned()
+            .ok_or(crate::ImError::PermissionDenied)?,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?;
+    let body = serde_json::from_value(
+        object
+            .get("body")
+            .cloned()
+            .ok_or(crate::ImError::PermissionDenied)?,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?;
+    let transport_context = serde_json::from_value(
+        object
+            .get("private_transport_context")
+            .cloned()
+            .ok_or(crate::ImError::PermissionDenied)?,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?;
+    Ok((metadata, body, transport_context))
+}
+
+#[cfg(feature = "sqlite")]
+fn parse_v2_session_control(
+    message: &Value,
+) -> crate::ImResult<
+    Option<(
+        anp::direct_e2ee::V2DirectMetadata,
+        anp::direct_e2ee::V2DirectBody,
+    )>,
+> {
+    let Some(object) = message.as_object() else {
+        return Ok(None);
+    };
+    let Some(meta_value) = object.get("meta") else {
+        return Ok(None);
+    };
+    if meta_value.get("profile").and_then(Value::as_str)
+        != Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
+    {
+        return Ok(None);
+    }
+    let metadata: anp::direct_e2ee::V2DirectMetadata =
+        serde_json::from_value(meta_value.clone()).map_err(|_| crate::ImError::PermissionDenied)?;
+    let recognized = crate::internal::secure_direct::v2_runtime::is_session_init_operation_id(
+        &metadata.operation_id,
+    ) || crate::internal::secure_direct::v2_runtime::is_session_reply_operation_id(
+        &metadata.operation_id,
+    );
+    if !recognized {
+        return Ok(None);
+    }
+    let body_value = object
+        .get("body")
+        .cloned()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let body = match metadata.content_type.as_str() {
+        anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2 => anp::direct_e2ee::V2DirectBody::Init(
+            serde_json::from_value(body_value).map_err(|_| crate::ImError::PermissionDenied)?,
+        ),
+        anp::direct_e2ee::CONTENT_TYPE_DIRECT_CIPHER_V2 => anp::direct_e2ee::V2DirectBody::Cipher(
+            serde_json::from_value(body_value).map_err(|_| crate::ImError::PermissionDenied)?,
+        ),
+        _ => return Err(crate::ImError::PermissionDenied),
+    };
+    Ok(Some((metadata, body)))
+}
+
+#[cfg(feature = "sqlite")]
+fn mark_private_root_control(message: &mut Value) {
+    let Some(object) = message.as_object_mut() else {
+        return;
+    };
+    object.insert("secure".to_owned(), Value::Bool(true));
+    object.insert("secure_control".to_owned(), Value::Bool(true));
+    object.insert(
+        "type".to_owned(),
+        Value::String("secure_control".to_owned()),
+    );
+    object.insert("content".to_owned(), Value::String(String::new()));
 }
 
 fn mark_async_direct_failure(message: &mut Value, warnings: &mut Vec<String>, err: crate::ImError) {

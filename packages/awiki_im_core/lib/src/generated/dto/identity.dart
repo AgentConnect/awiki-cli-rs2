@@ -748,3 +748,100 @@ class DartRecoverHandleResult {
           accessTokenPresent == other.accessTokenPresent &&
           warnings == other.warnings;
 }
+
+/// Safe host projection for one accepted root-key control delivery. It never
+/// contains the private key, decrypted envelope, completion, or checkpoints.
+class DartRootKeyTransferSendResult {
+  final String did;
+  final String senderDeviceId;
+  final String recipientDeviceId;
+  final String messageId;
+  final String acceptedAt;
+
+  const DartRootKeyTransferSendResult({
+    required this.did,
+    required this.senderDeviceId,
+    required this.recipientDeviceId,
+    required this.messageId,
+    required this.acceptedAt,
+  });
+
+  @override
+  int get hashCode =>
+      did.hashCode ^
+      senderDeviceId.hashCode ^
+      recipientDeviceId.hashCode ^
+      messageId.hashCode ^
+      acceptedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartRootKeyTransferSendResult &&
+          runtimeType == other.runtimeType &&
+          did == other.did &&
+          senderDeviceId == other.senderDeviceId &&
+          recipientDeviceId == other.recipientDeviceId &&
+          messageId == other.messageId &&
+          acceptedAt == other.acceptedAt;
+}
+
+enum DartRootKeyTransferStatus {
+  pendingDelivery,
+  awaitingImport,
+  importing,
+  failed,
+  completed,
+}
+
+/// Restart-safe, non-secret projection of one local root-control operation.
+class DartRootKeyTransferSummary {
+  final String did;
+  final String messageId;
+  final String senderDeviceId;
+  final String recipientDeviceId;
+  final DartRootKeyTransferStatus status;
+  final String createdAt;
+  final String? acceptedAt;
+  final String? completedAt;
+  final bool retryable;
+
+  const DartRootKeyTransferSummary({
+    required this.did,
+    required this.messageId,
+    required this.senderDeviceId,
+    required this.recipientDeviceId,
+    required this.status,
+    required this.createdAt,
+    this.acceptedAt,
+    this.completedAt,
+    required this.retryable,
+  });
+
+  @override
+  int get hashCode =>
+      did.hashCode ^
+      messageId.hashCode ^
+      senderDeviceId.hashCode ^
+      recipientDeviceId.hashCode ^
+      status.hashCode ^
+      createdAt.hashCode ^
+      acceptedAt.hashCode ^
+      completedAt.hashCode ^
+      retryable.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartRootKeyTransferSummary &&
+          runtimeType == other.runtimeType &&
+          did == other.did &&
+          messageId == other.messageId &&
+          senderDeviceId == other.senderDeviceId &&
+          recipientDeviceId == other.recipientDeviceId &&
+          status == other.status &&
+          createdAt == other.createdAt &&
+          acceptedAt == other.acceptedAt &&
+          completedAt == other.completedAt &&
+          retryable == other.retryable;
+}

@@ -203,6 +203,39 @@ Document/Manifest 后，才使用候选设备签名密钥调用 `device_token_is
 同一候选密钥刷新过期的短期授权。Member 进入 `MemberReady`；Admin 在根密钥导入
 完成前保持 `AdminAwaitingRoot`。
 
+## 3.2 Root-key transfer control plane
+
+`ImCore::root_key_transfer()` is independently gated and defaults off. The
+sender host supplies only an identity selector, exact recipient device ID,
+message ID/idempotency key, and a local user-presence assertion. Core verifies
+the current ready admin and recipient authorization before opening the root
+Vault record. The safe result reports delivery acceptance metadata only.
+
+RootKeyEnvelope and imported ACK are JSON plaintexts only inside an established
+exact-device P5 v2 cipher. Standard P5 metadata/body are unchanged; the
+same-domain routing/completion sidecar is internal and does not enter ANP or
+AAD. Async inbox processing imports into Vault and filters the control before
+public projection. No root key, inner JSON, sidecar, completion proof, or
+ratchet state is exposed by this interface.
+
+If the exact device pair has no established P5 v2 session, the first `send`
+persists and sends only the fixed session Init, does not open or persist the
+root Envelope, and returns the stable capability
+`p5-v2-session-establishment-pending`. After both devices sync the Init/reply,
+the host repeats `send` with the same recipient and `message_id` under fresh
+user presence. A root-transfer status record exists only after the encrypted
+Envelope is prepared.
+
+`list` returns an owner-scoped, restart-safe, non-secret status projection.
+`retry` accepts only the original `message_id` plus fresh user presence and
+reuses the persisted route and exact ciphertext; callers cannot override the
+recipient or sidecar. Expired, completed, unknown, and otherwise non-retryable
+operations fail closed. Device Registry/local identity readiness remains the
+authority for whether an Admin is actually management-ready.
+Signed completion removes the pending ciphertext, private sidecar, and
+Vault-backed pending ratchet record. The local store retains only a
+secret-free completed status tombstone for idempotency.
+
 ## 4. Register Handle
 
 P1 只做注册，不做 recover/replace DID。

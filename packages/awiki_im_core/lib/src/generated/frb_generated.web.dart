@@ -832,6 +832,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartRelationshipPage dco_decode_dart_relationship_page(dynamic raw);
 
   @protected
+  DartRootKeyTransferSendResult dco_decode_dart_root_key_transfer_send_result(
+    dynamic raw,
+  );
+
+  @protected
+  DartRootKeyTransferStatus dco_decode_dart_root_key_transfer_status(
+    dynamic raw,
+  );
+
+  @protected
+  DartRootKeyTransferSummary dco_decode_dart_root_key_transfer_summary(
+    dynamic raw,
+  );
+
+  @protected
   DartScopedInboxToken dco_decode_dart_scoped_inbox_token(dynamic raw);
 
   @protected
@@ -1000,6 +1015,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<DartRelationshipListItem> dco_decode_list_dart_relationship_list_item(
     dynamic raw,
   );
+
+  @protected
+  List<DartRootKeyTransferSummary>
+  dco_decode_list_dart_root_key_transfer_summary(dynamic raw);
 
   @protected
   List<DartSecureOutboxEntry> dco_decode_list_dart_secure_outbox_entry(
@@ -2078,6 +2097,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartRootKeyTransferSendResult sse_decode_dart_root_key_transfer_send_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartRootKeyTransferStatus sse_decode_dart_root_key_transfer_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartRootKeyTransferSummary sse_decode_dart_root_key_transfer_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartScopedInboxToken sse_decode_dart_scoped_inbox_token(
     SseDeserializer deserializer,
   );
@@ -2304,6 +2338,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<DartRelationshipListItem> sse_decode_list_dart_relationship_list_item(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<DartRootKeyTransferSummary>
+  sse_decode_list_dart_root_key_transfer_summary(SseDeserializer deserializer);
 
   @protected
   List<DartSecureOutboxEntry> sse_decode_list_dart_secure_outbox_entry(
@@ -3596,6 +3634,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_root_key_transfer_send_result(
+    DartRootKeyTransferSendResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_root_key_transfer_status(
+    DartRootKeyTransferStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_root_key_transfer_summary(
+    DartRootKeyTransferSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_scoped_inbox_token(
     DartScopedInboxToken self,
     SseSerializer serializer,
@@ -3868,6 +3924,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_relationship_list_item(
     List<DartRelationshipListItem> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_root_key_transfer_summary(
+    List<DartRootKeyTransferSummary> self,
     SseSerializer serializer,
   );
 

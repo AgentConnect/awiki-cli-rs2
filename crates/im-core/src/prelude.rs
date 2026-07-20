@@ -48,10 +48,13 @@ pub use crate::identity::{
     IdentityVaultVerificationReport, InitialProfile, Profile, ProfileAttribute, ProfilePatch,
     RecoverHandleLocalFinalizeRequest, RecoverHandlePlan, RecoverHandlePlanRequest,
     RecoverHandleRequest, RecoverHandleState, RecoverLocalIdentitySummary, RecoverLocalUserState,
-    RecoveredIdentity, RegisterHandleRequest, RegistrationMethod, VerificationInput,
+    RecoveredIdentity, RegisterHandleRequest, RegistrationMethod, RootKeyTransferListRequest,
+    RootKeyTransferRetryRequest, RootKeyTransferSendRequest, RootKeyTransferSendResult,
+    RootKeyTransferService, RootKeyTransferStatus, RootKeyTransferSummary, VerificationInput,
 };
 pub use crate::ids::{
-    Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,
+    Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef,
+    ProtocolDeviceId, ThreadId,
 };
 pub use crate::messages::{
     Conversation, ConversationQuery, ConversationReadRef, DelegatedSigningOptions, DeliveryState,

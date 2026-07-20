@@ -2797,6 +2797,7 @@ mod tests {
                 identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultPreferred,
                 identity_secret_vault: None,
                 multi_device_join_enabled: false,
+                multi_device_root_transfer_enabled: false,
             },
         )
         .unwrap();
@@ -2936,6 +2937,7 @@ mod tests {
                 identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultRequired,
                 identity_secret_vault: None,
                 multi_device_join_enabled: false,
+                multi_device_root_transfer_enabled: false,
             },
         ) {
             Ok(_) => panic!("VaultRequired without vault options should fail"),

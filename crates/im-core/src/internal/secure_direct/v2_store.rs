@@ -76,11 +76,29 @@ CREATE TABLE IF NOT EXISTS direct_e2ee_v2_private_outbound (
     delivery_class    TEXT NOT NULL,
     context_json      TEXT NOT NULL,
     created_at        TEXT NOT NULL,
+    accepted_at       TEXT,
+    failure_code      TEXT,
+    completed_at      TEXT,
     PRIMARY KEY (owner_identity_id, local_device_id, operation_id),
     FOREIGN KEY (owner_identity_id, local_device_id, operation_id)
       REFERENCES direct_e2ee_v2_pending (
         owner_identity_id, local_device_id, operation_id
       ) ON DELETE CASCADE
+);
+
+-- A completed control operation retains only secret-free status. Its exact
+-- retry ciphertext and pending ratchet state are deleted from SQLite/Vault.
+CREATE TABLE IF NOT EXISTS direct_e2ee_v2_private_outbound_tombstones (
+    owner_identity_id   TEXT NOT NULL,
+    owner_did           TEXT NOT NULL,
+    local_device_id     TEXT NOT NULL,
+    operation_id        TEXT NOT NULL,
+    sender_device_id    TEXT NOT NULL,
+    recipient_device_id TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    accepted_at         TEXT,
+    completed_at        TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, local_device_id, operation_id)
 );
 
 CREATE TABLE IF NOT EXISTS direct_e2ee_v2_replay (
@@ -114,6 +132,7 @@ CREATE TABLE IF NOT EXISTS direct_e2ee_v2_one_time_prekeys (
     owner_identity_id TEXT NOT NULL,
     owner_did         TEXT NOT NULL,
     local_device_id   TEXT NOT NULL,
+    bundle_id         TEXT NOT NULL,
     key_id            TEXT NOT NULL,
     public_json       TEXT NOT NULL,
     private_key_blob  BLOB NOT NULL,
@@ -125,7 +144,7 @@ CREATE TABLE IF NOT EXISTS direct_e2ee_v2_one_time_prekeys (
 
 CREATE INDEX IF NOT EXISTS idx_direct_e2ee_v2_opk_available
 ON direct_e2ee_v2_one_time_prekeys (
-    owner_identity_id, local_device_id, status, created_at
+    owner_identity_id, local_device_id, bundle_id, status, created_at
 );
 "#;
 
@@ -133,7 +152,10 @@ pub(crate) fn ensure_v2_schema(connection: &Connection) -> crate::ImResult<()> {
     connection
         .execute_batch(DIRECT_E2EE_V2_SCHEMA)
         .map_err(crate::internal::local_state::local_state_unavailable)?;
-    ensure_pending_session_revision_column(connection)
+    ensure_pending_session_revision_column(connection)?;
+    ensure_private_outbound_accepted_column(connection)?;
+    ensure_private_outbound_status_columns(connection)?;
+    ensure_opk_bundle_id_column(connection)
 }
 
 fn ensure_pending_session_revision_column(connection: &Connection) -> crate::ImResult<()> {
@@ -151,6 +173,74 @@ fn ensure_pending_session_revision_column(connection: &Connection) -> crate::ImR
     connection
         .execute(
             "ALTER TABLE direct_e2ee_v2_pending ADD COLUMN session_revision INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(())
+}
+
+fn ensure_private_outbound_accepted_column(connection: &Connection) -> crate::ImResult<()> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(direct_e2ee_v2_private_outbound)")
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if columns.iter().any(|column| column == "accepted_at") {
+        return Ok(());
+    }
+    connection
+        .execute(
+            "ALTER TABLE direct_e2ee_v2_private_outbound ADD COLUMN accepted_at TEXT",
+            [],
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(())
+}
+
+fn ensure_private_outbound_status_columns(connection: &Connection) -> crate::ImResult<()> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(direct_e2ee_v2_private_outbound)")
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    drop(statement);
+    for (column, definition) in [
+        ("failure_code", "failure_code TEXT"),
+        ("completed_at", "completed_at TEXT"),
+    ] {
+        if !columns.iter().any(|existing| existing == column) {
+            connection
+                .execute(
+                    &format!("ALTER TABLE direct_e2ee_v2_private_outbound ADD COLUMN {definition}"),
+                    [],
+                )
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_opk_bundle_id_column(connection: &Connection) -> crate::ImResult<()> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(direct_e2ee_v2_one_time_prekeys)")
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if columns.iter().any(|column| column == "bundle_id") {
+        return Ok(());
+    }
+    connection
+        .execute(
+            "ALTER TABLE direct_e2ee_v2_one_time_prekeys ADD COLUMN bundle_id TEXT NOT NULL DEFAULT ''",
             [],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
@@ -175,22 +265,78 @@ pub(crate) struct V2StoredSession {
     pub(crate) revision: i64,
 }
 
-/// Same-domain transport metadata paired with an exact persisted P5 v2
-/// ciphertext. The JSON object must never contain the encrypted inner
-/// plaintext or private key material.
-#[derive(Debug, Clone, PartialEq)]
+/// Closed, same-domain transport metadata paired with an exact persisted P5
+/// v2 ciphertext. Only the explicitly modeled root-control fields can be
+/// stored here; encrypted inner plaintext and private key material have no
+/// representable field.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct V2PrivateOutboundSidecar {
-    pub(crate) operation_id: String,
-    pub(crate) delivery_class: String,
-    pub(crate) context: serde_json::Value,
+    operation_id: String,
+    context: V2RootControlPrivateContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct V2RootControlPrivateContext {
+    transport_context: crate::internal::identity_root_transfer::RootImportTransportContext,
+    completion: Option<crate::internal::identity_root_transfer::RootKeyImportedCompletion>,
 }
 
 impl V2PrivateOutboundSidecar {
+    pub(crate) fn root_control(
+        operation_id: &str,
+        transport_context: crate::internal::identity_root_transfer::RootImportTransportContext,
+        completion: Option<crate::internal::identity_root_transfer::RootKeyImportedCompletion>,
+    ) -> crate::ImResult<Self> {
+        let sidecar = Self {
+            operation_id: operation_id.to_owned(),
+            context: V2RootControlPrivateContext {
+                transport_context,
+                completion,
+            },
+        };
+        sidecar.validate()?;
+        Ok(sidecar)
+    }
+
+    pub(crate) fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+
+    pub(crate) fn delivery_class(&self) -> &'static str {
+        crate::internal::identity_root_transfer::ROOT_KEY_CONTROL_DELIVERY_CLASS
+    }
+
+    pub(crate) fn root_control_context(
+        &self,
+    ) -> (
+        &crate::internal::identity_root_transfer::RootImportTransportContext,
+        Option<&crate::internal::identity_root_transfer::RootKeyImportedCompletion>,
+    ) {
+        (
+            &self.context.transport_context,
+            self.context.completion.as_ref(),
+        )
+    }
+
     fn validate(&self) -> crate::ImResult<()> {
-        if self.operation_id.trim().is_empty()
-            || self.delivery_class.trim().is_empty()
-            || !self.context.is_object()
-        {
+        if self.operation_id.trim().is_empty() || self.operation_id.len() > 2 * 1024 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        self.context.transport_context.validate()
+    }
+
+    fn validate_binding(&self, binding: &V2SessionBinding) -> crate::ImResult<()> {
+        self.validate()?;
+        let context = &self.context.transport_context;
+        let matches = if self.context.completion.is_some() {
+            binding.local_device_id == context.recipient_device_id
+                && binding.peer_device_id == context.sender_device_id
+        } else {
+            binding.local_device_id == context.sender_device_id
+                && binding.peer_device_id == context.recipient_device_id
+        };
+        if !matches {
             return Err(crate::ImError::PermissionDenied);
         }
         Ok(())
@@ -255,6 +401,27 @@ pub(crate) struct V2LocalBundleMaterial {
 pub(crate) struct V2LocalOneTimePrekeyMaterial {
     pub(crate) public: V2OneTimePrekey,
     pub(crate) private: x25519_dalek::StaticSecret,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V2PrivateOutboundPhase {
+    PendingDelivery,
+    AwaitingImport,
+    Importing,
+    Failed,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct V2PrivateOutboundStatus {
+    pub(crate) operation_id: String,
+    pub(crate) sender_device_id: String,
+    pub(crate) recipient_device_id: String,
+    pub(crate) phase: V2PrivateOutboundPhase,
+    pub(crate) created_at: String,
+    pub(crate) accepted_at: Option<String>,
+    pub(crate) completed_at: Option<String>,
+    pub(crate) retryable: bool,
 }
 
 pub(crate) struct SqliteV2DirectStateStore<'a> {
@@ -394,7 +561,7 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND bundle_id = ?3"#,
         }
         transaction
             .execute(
-                r#"DELETE FROM direct_e2ee_v2_prekey_bundles
+                r#"UPDATE direct_e2ee_v2_prekey_bundles SET status = 'retained'
 WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND status = 'active'
   AND bundle_id <> ?3"#,
                 params![owner_identity_id, local_device_id, bundle.bundle_id],
@@ -426,14 +593,15 @@ ON CONFLICT(owner_identity_id, local_device_id, bundle_id) DO UPDATE SET
             let inserted = transaction
                 .execute(
                     r#"INSERT INTO direct_e2ee_v2_one_time_prekeys
- (owner_identity_id, owner_did, local_device_id, key_id, public_json,
+ (owner_identity_id, owner_did, local_device_id, bundle_id, key_id, public_json,
   private_key_blob, status, created_at, consumed_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'available', ?7, NULL)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'available', ?8, NULL)
 ON CONFLICT(owner_identity_id, local_device_id, key_id) DO NOTHING"#,
                     params![
                         owner_identity_id,
                         owner_did,
                         local_device_id,
+                        bundle.bundle_id,
                         public.key_id,
                         public_json,
                         private_blob,
@@ -444,19 +612,42 @@ ON CONFLICT(owner_identity_id, local_device_id, key_id) DO NOTHING"#,
             if inserted == 0 {
                 let existing = transaction
                     .query_row(
-                        r#"SELECT public_json FROM direct_e2ee_v2_one_time_prekeys
+                        r#"SELECT public_json, bundle_id FROM direct_e2ee_v2_one_time_prekeys
 WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND key_id = ?3"#,
                         params![owner_identity_id, local_device_id, public.key_id],
-                        |row| row.get::<_, String>(0),
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                     )
                     .map_err(crate::internal::local_state::local_state_unavailable)?;
-                if existing != public_json {
+                if existing != (public_json, bundle.bundle_id.clone()) {
                     drop(transaction);
                     self.gc_orphaned_v2_secrets()?;
                     return Err(crate::ImError::PermissionDenied);
                 }
             }
         }
+        transaction
+            .execute(
+                r#"DELETE FROM direct_e2ee_v2_one_time_prekeys
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND bundle_id IN (
+  SELECT bundle_id FROM direct_e2ee_v2_prekey_bundles
+  WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND status = 'retained'
+  ORDER BY updated_at DESC, bundle_id DESC LIMIT -1 OFFSET 2
+)"#,
+                params![owner_identity_id, local_device_id],
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        transaction
+            .execute(
+                r#"DELETE FROM direct_e2ee_v2_prekey_bundles
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND status = 'retained'
+  AND bundle_id IN (
+    SELECT bundle_id FROM direct_e2ee_v2_prekey_bundles
+    WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND status = 'retained'
+    ORDER BY updated_at DESC, bundle_id DESC LIMIT -1 OFFSET 2
+  )"#,
+                params![owner_identity_id, local_device_id],
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
         transaction
             .commit()
             .map_err(crate::internal::local_state::local_state_unavailable)?;
@@ -466,7 +657,6 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND key_id = ?3"#,
 
     pub(crate) fn load_active_bundle(&self) -> crate::ImResult<Option<V2LocalBundleMaterial>> {
         let owner_identity_id = self.scope.owner_identity_id.as_str();
-        let owner_did = self.scope.owner_did.as_str();
         let local_device_id = self.scope.local_device_id.as_str();
         let row = self
             .connection
@@ -484,39 +674,90 @@ ORDER BY updated_at DESC LIMIT 1"#,
             .optional()
             .map_err(crate::internal::local_state::local_state_unavailable)?;
         row.map(|(bundle_json, private_blob)| {
-            let bundle: V2PrekeyBundle =
-                serde_json::from_str(&bundle_json).map_err(serialization_error)?;
-            bundle.validate_structure().map_err(v2_error)?;
-            let private = self.open_fixed_private(
-                private_blob,
-                DirectSecretOpenExpectation {
-                    owner_identity_id,
-                    owner_did,
-                    device_id: local_device_id,
-                    kind: SecretKind::DirectE2eeV2SignedPrekeyPrivate,
-                    key_id_prefix: direct_secret_key_id_prefix(
-                        owner_identity_id,
-                        "v2-signed-prekey",
-                        &bundle.signed_prekey.key_id,
-                        local_device_id,
-                    ),
-                },
-            )?;
-            if x25519_dalek::PublicKey::from(&private).to_bytes()
-                != decode_x25519(&bundle.signed_prekey.public_key_b64u)?
-            {
-                return Err(crate::ImError::PermissionDenied);
-            }
-            Ok(V2LocalBundleMaterial {
-                bundle,
-                signed_prekey_private: private,
-            })
+            self.open_local_bundle_material(bundle_json, private_blob)
         })
         .transpose()
     }
 
+    pub(crate) fn load_accepted_bundle(
+        &self,
+        bundle_id: &str,
+        now: &str,
+    ) -> crate::ImResult<Option<V2LocalBundleMaterial>> {
+        let owner_identity_id = self.scope.owner_identity_id.as_str();
+        let local_device_id = self.scope.local_device_id.as_str();
+        let now = required("now", now)?;
+        let now = chrono::DateTime::parse_from_rfc3339(&now)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        let row = self
+            .connection
+            .query_row(
+                r#"SELECT bundle_json, signed_prekey_private_blob
+FROM direct_e2ee_v2_prekey_bundles
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND bundle_id = ?3
+  AND status IN ('active', 'retained')"#,
+                params![
+                    required("owner_identity_id", owner_identity_id)?,
+                    required("local_device_id", local_device_id)?,
+                    required("bundle_id", bundle_id)?,
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        row.map(|(bundle_json, private_blob)| {
+            let material = self.open_local_bundle_material(bundle_json, private_blob)?;
+            let expires_at =
+                chrono::DateTime::parse_from_rfc3339(&material.bundle.signed_prekey.expires_at)
+                    .map_err(|_| crate::ImError::PermissionDenied)?;
+            if expires_at <= now {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            Ok(material)
+        })
+        .transpose()
+    }
+
+    fn open_local_bundle_material(
+        &self,
+        bundle_json: String,
+        private_blob: Vec<u8>,
+    ) -> crate::ImResult<V2LocalBundleMaterial> {
+        let owner_identity_id = self.scope.owner_identity_id.as_str();
+        let owner_did = self.scope.owner_did.as_str();
+        let local_device_id = self.scope.local_device_id.as_str();
+        let bundle: V2PrekeyBundle =
+            serde_json::from_str(&bundle_json).map_err(serialization_error)?;
+        bundle.validate_structure().map_err(v2_error)?;
+        let private = self.open_fixed_private(
+            private_blob,
+            DirectSecretOpenExpectation {
+                owner_identity_id,
+                owner_did,
+                device_id: local_device_id,
+                kind: SecretKind::DirectE2eeV2SignedPrekeyPrivate,
+                key_id_prefix: direct_secret_key_id_prefix(
+                    owner_identity_id,
+                    "v2-signed-prekey",
+                    &bundle.signed_prekey.key_id,
+                    local_device_id,
+                ),
+            },
+        )?;
+        if x25519_dalek::PublicKey::from(&private).to_bytes()
+            != decode_x25519(&bundle.signed_prekey.public_key_b64u)?
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(V2LocalBundleMaterial {
+            bundle,
+            signed_prekey_private: private,
+        })
+    }
+
     pub(crate) fn load_available_opk(
         &self,
+        bundle_id: &str,
         key_id: &str,
     ) -> crate::ImResult<Option<V2LocalOneTimePrekeyMaterial>> {
         let owner_identity_id = self.scope.owner_identity_id.as_str();
@@ -527,11 +768,12 @@ ORDER BY updated_at DESC LIMIT 1"#,
             .query_row(
                 r#"SELECT public_json, private_key_blob
 FROM direct_e2ee_v2_one_time_prekeys
-WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND key_id = ?3
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND bundle_id = ?3 AND key_id = ?4
   AND status = 'available'"#,
                 params![
                     required("owner_identity_id", owner_identity_id)?,
                     required("local_device_id", local_device_id)?,
+                    required("bundle_id", bundle_id)?,
                     required("key_id", key_id)?,
                 ],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
@@ -567,21 +809,30 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND key_id = ?3
         .transpose()
     }
 
-    pub(crate) fn load_available_opk_publics(&self) -> crate::ImResult<Vec<V2OneTimePrekey>> {
+    pub(crate) fn load_available_opk_publics(
+        &self,
+        bundle_id: &str,
+    ) -> crate::ImResult<Vec<V2OneTimePrekey>> {
         let owner_identity_id = self.scope.owner_identity_id.as_str();
         let local_device_id = self.scope.local_device_id.as_str();
         let mut statement = self
             .connection
             .prepare(
                 r#"SELECT public_json FROM direct_e2ee_v2_one_time_prekeys
-WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND status = 'available'
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND bundle_id = ?3
+  AND status = 'available'
 ORDER BY created_at, key_id"#,
             )
             .map_err(crate::internal::local_state::local_state_unavailable)?;
         let rows = statement
-            .query_map(params![owner_identity_id, local_device_id], |row| {
-                row.get::<_, String>(0)
-            })
+            .query_map(
+                params![
+                    owner_identity_id,
+                    local_device_id,
+                    required("bundle_id", bundle_id)?,
+                ],
+                |row| row.get::<_, String>(0),
+            )
             .map_err(crate::internal::local_state::local_state_unavailable)?
             .map(|row| {
                 let public: V2OneTimePrekey = serde_json::from_str(
@@ -617,7 +868,7 @@ ORDER BY created_at, key_id"#,
         now: &str,
         sidecar: &V2PrivateOutboundSidecar,
     ) -> crate::ImResult<()> {
-        sidecar.validate()?;
+        sidecar.validate_binding(&state.binding)?;
         if sidecar.operation_id != pending.operation_id {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -728,14 +979,14 @@ ON CONFLICT(owner_identity_id, local_device_id, operation_id) DO NOTHING"#,
                 .execute(
                     r#"INSERT INTO direct_e2ee_v2_private_outbound
  (owner_identity_id, owner_did, local_device_id, operation_id,
-  delivery_class, context_json, created_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+  delivery_class, context_json, created_at, accepted_at, failure_code, completed_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, NULL)"#,
                     params![
                         owner_identity_id,
                         state.binding.local_did,
                         state.binding.local_device_id,
-                        sidecar.operation_id,
-                        sidecar.delivery_class,
+                        sidecar.operation_id(),
+                        sidecar.delivery_class(),
                         context_json,
                         now,
                     ],
@@ -772,15 +1023,362 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
             .optional()
             .map_err(crate::internal::local_state::local_state_unavailable)?;
         row.map(|(delivery_class, context_json)| {
+            if delivery_class
+                != crate::internal::identity_root_transfer::ROOT_KEY_CONTROL_DELIVERY_CLASS
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
             let sidecar = V2PrivateOutboundSidecar {
                 operation_id: operation_id.to_owned(),
-                delivery_class,
                 context: serde_json::from_str(&context_json).map_err(serialization_error)?,
             };
-            sidecar.validate()?;
+            sidecar.validate_binding(binding)?;
             Ok(sidecar)
         })
         .transpose()
+    }
+
+    pub(crate) fn list_private_outbound_statuses(
+        &self,
+        now: &str,
+    ) -> crate::ImResult<Vec<V2PrivateOutboundStatus>> {
+        let now = chrono::DateTime::parse_from_rfc3339(&required("now", now)?)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT operation_id, delivery_class, context_json, created_at,
+       accepted_at, failure_code, completed_at
+FROM direct_e2ee_v2_private_outbound
+WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3
+ORDER BY created_at DESC, operation_id DESC"#,
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let rows = statement
+            .query_map(
+                params![
+                    self.scope.owner_identity_id,
+                    self.scope.owner_did,
+                    self.scope.local_device_id,
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                },
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let mut statuses = rows
+            .into_iter()
+            .map(
+                |(
+                    operation_id,
+                    delivery_class,
+                    context_json,
+                    created_at,
+                    accepted_at,
+                    failure_code,
+                    completed_at,
+                )| {
+                    if delivery_class
+                        != crate::internal::identity_root_transfer::ROOT_KEY_CONTROL_DELIVERY_CLASS
+                        || created_at.trim().is_empty()
+                        || failure_code
+                            .as_deref()
+                            .is_some_and(|value| value != "delivery_failed")
+                    {
+                        return Err(crate::ImError::PermissionDenied);
+                    }
+                    let context: V2RootControlPrivateContext =
+                        serde_json::from_str(&context_json).map_err(serialization_error)?;
+                    context.transport_context.validate()?;
+                    if operation_id != context.transport_context.message_id {
+                        return Err(crate::ImError::PermissionDenied);
+                    }
+                    let expires_at =
+                        chrono::DateTime::parse_from_rfc3339(&context.transport_context.expires_at)
+                            .map_err(|_| crate::ImError::PermissionDenied)?;
+                    let expired = expires_at <= now;
+                    let is_ack = context.completion.is_some();
+                    let owned_by_local_device = if is_ack {
+                        context.transport_context.recipient_device_id == self.scope.local_device_id
+                    } else {
+                        context.transport_context.sender_device_id == self.scope.local_device_id
+                    };
+                    if !owned_by_local_device {
+                        return Err(crate::ImError::PermissionDenied);
+                    }
+                    let phase = if completed_at.is_some() {
+                        V2PrivateOutboundPhase::Completed
+                    } else if failure_code.is_some() || expired {
+                        V2PrivateOutboundPhase::Failed
+                    } else if is_ack {
+                        V2PrivateOutboundPhase::Importing
+                    } else if accepted_at.is_some() {
+                        V2PrivateOutboundPhase::AwaitingImport
+                    } else {
+                        V2PrivateOutboundPhase::PendingDelivery
+                    };
+                    Ok(V2PrivateOutboundStatus {
+                        operation_id,
+                        sender_device_id: context.transport_context.sender_device_id,
+                        recipient_device_id: context.transport_context.recipient_device_id,
+                        phase,
+                        created_at,
+                        accepted_at,
+                        completed_at,
+                        retryable: !expired && !matches!(phase, V2PrivateOutboundPhase::Completed),
+                    })
+                },
+            )
+            .collect::<crate::ImResult<Vec<_>>>()?;
+        drop(statement);
+
+        let mut tombstone_statement = self
+            .connection
+            .prepare(
+                r#"SELECT operation_id, sender_device_id, recipient_device_id,
+       created_at, accepted_at, completed_at
+FROM direct_e2ee_v2_private_outbound_tombstones
+WHERE owner_identity_id = ?1 AND owner_did = ?2 AND local_device_id = ?3"#,
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let tombstones = tombstone_statement
+            .query_map(
+                params![
+                    self.scope.owner_identity_id,
+                    self.scope.owner_did,
+                    self.scope.local_device_id,
+                ],
+                |row| {
+                    Ok(V2PrivateOutboundStatus {
+                        operation_id: row.get(0)?,
+                        sender_device_id: row.get(1)?,
+                        recipient_device_id: row.get(2)?,
+                        phase: V2PrivateOutboundPhase::Completed,
+                        created_at: row.get(3)?,
+                        accepted_at: row.get(4)?,
+                        completed_at: Some(row.get(5)?),
+                        retryable: false,
+                    })
+                },
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        for tombstone in tombstones {
+            if tombstone.operation_id.trim().is_empty()
+                || tombstone.sender_device_id.trim().is_empty()
+                || tombstone.recipient_device_id.trim().is_empty()
+                || tombstone.sender_device_id == tombstone.recipient_device_id
+                || tombstone.created_at.trim().is_empty()
+                || tombstone.completed_at.as_deref().is_none_or(str::is_empty)
+                || (tombstone.sender_device_id != self.scope.local_device_id
+                    && tombstone.recipient_device_id != self.scope.local_device_id)
+                || statuses
+                    .iter()
+                    .any(|status| status.operation_id == tombstone.operation_id)
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            statuses.push(tombstone);
+        }
+        statuses.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.operation_id.cmp(&left.operation_id))
+        });
+        Ok(statuses)
+    }
+
+    pub(crate) fn private_outbound_status(
+        &self,
+        operation_id: &str,
+        now: &str,
+    ) -> crate::ImResult<Option<V2PrivateOutboundStatus>> {
+        let operation_id = required("operation_id", operation_id)?;
+        let mut matches = self
+            .list_private_outbound_statuses(now)?
+            .into_iter()
+            .filter(|status| status.operation_id == operation_id);
+        let status = matches.next();
+        if matches.next().is_some() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(status)
+    }
+
+    pub(crate) fn mark_private_outbound_failed(
+        &self,
+        binding: &V2SessionBinding,
+        operation_id: &str,
+    ) -> crate::ImResult<()> {
+        self.update_private_outbound_failed(binding, operation_id)
+    }
+
+    pub(crate) fn mark_private_outbound_completed(
+        &self,
+        binding: &V2SessionBinding,
+        operation_id: &str,
+    ) -> crate::ImResult<()> {
+        self.scope.validate_binding(binding)?;
+        let operation_id = required("operation_id", operation_id)?;
+        if self.completed_tombstone_matches(binding, &operation_id)? {
+            return Ok(());
+        }
+        let sidecar = self
+            .load_private_outbound_sidecar(binding, &operation_id)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        sidecar.validate_binding(binding)?;
+        let (context, _) = sidecar.root_control_context();
+        let transaction = self.transaction()?;
+        let (created_at, accepted_at) = transaction
+            .query_row(
+                r#"SELECT created_at, accepted_at
+FROM direct_e2ee_v2_private_outbound
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
+                params![
+                    self.scope.owner_identity_id,
+                    binding.local_device_id,
+                    operation_id,
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        if created_at.trim().is_empty() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let completed_at = chrono::Utc::now().to_rfc3339();
+        let inserted = transaction
+            .execute(
+                r#"INSERT INTO direct_e2ee_v2_private_outbound_tombstones
+ (owner_identity_id, owner_did, local_device_id, operation_id,
+  sender_device_id, recipient_device_id, created_at, accepted_at, completed_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
+                params![
+                    self.scope.owner_identity_id,
+                    self.scope.owner_did,
+                    binding.local_device_id,
+                    operation_id,
+                    context.sender_device_id,
+                    context.recipient_device_id,
+                    created_at,
+                    accepted_at,
+                    completed_at,
+                ],
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        if inserted != 1 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let deleted_sidecar = transaction
+            .execute(
+                r#"DELETE FROM direct_e2ee_v2_private_outbound
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
+                params![
+                    self.scope.owner_identity_id,
+                    binding.local_device_id,
+                    operation_id,
+                ],
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        if deleted_sidecar != 1 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let deleted = transaction
+            .execute(
+                r#"DELETE FROM direct_e2ee_v2_pending
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
+                params![
+                    self.scope.owner_identity_id,
+                    binding.local_device_id,
+                    operation_id,
+                ],
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        if deleted != 1 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        transaction
+            .commit()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        self.gc_orphaned_v2_secrets()?;
+        Ok(())
+    }
+
+    fn update_private_outbound_failed(
+        &self,
+        binding: &V2SessionBinding,
+        operation_id: &str,
+    ) -> crate::ImResult<()> {
+        self.scope.validate_binding(binding)?;
+        let operation_id = required("operation_id", operation_id)?;
+        let sidecar = self
+            .load_private_outbound_sidecar(binding, &operation_id)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        sidecar.validate_binding(binding)?;
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE direct_e2ee_v2_private_outbound
+SET failure_code = 'delivery_failed'
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3
+  AND completed_at IS NULL"#,
+                params![
+                    self.scope.owner_identity_id,
+                    binding.local_device_id,
+                    operation_id,
+                ],
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        if changed != 1 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(())
+    }
+
+    fn completed_tombstone_matches(
+        &self,
+        binding: &V2SessionBinding,
+        operation_id: &str,
+    ) -> crate::ImResult<bool> {
+        let row = self
+            .connection
+            .query_row(
+                r#"SELECT sender_device_id, recipient_device_id
+FROM direct_e2ee_v2_private_outbound_tombstones
+WHERE owner_identity_id = ?1 AND owner_did = ?2
+  AND local_device_id = ?3 AND operation_id = ?4"#,
+                params![
+                    self.scope.owner_identity_id,
+                    self.scope.owner_did,
+                    binding.local_device_id,
+                    operation_id,
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let Some((sender_device_id, recipient_device_id)) = row else {
+            return Ok(false);
+        };
+        let matches = (binding.local_device_id == sender_device_id
+            && binding.peer_device_id == recipient_device_id)
+            || (binding.local_device_id == recipient_device_id
+                && binding.peer_device_id == sender_device_id);
+        if !matches {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(true)
     }
 
     pub(crate) fn load_pending(
@@ -868,6 +1466,45 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
             &stored_session_id,
             session_revision,
         )?;
+        let private_exists = transaction
+            .query_row(
+                r#"SELECT 1 FROM direct_e2ee_v2_private_outbound
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
+                params![owner_identity_id, binding.local_device_id, operation_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .is_some();
+        if private_exists
+            || pending.wire_content_type == anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2
+            || pending
+                .operation_id
+                .starts_with(super::v2_runtime::SESSION_REPLY_OPERATION_PREFIX)
+        {
+            if !private_exists {
+                transaction
+                    .commit()
+                    .map_err(crate::internal::local_state::local_state_unavailable)?;
+                return Ok(true);
+            }
+            let changed = transaction
+                .execute(
+                    r#"UPDATE direct_e2ee_v2_private_outbound
+SET accepted_at = COALESCE(accepted_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    failure_code = NULL
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
+                    params![owner_identity_id, binding.local_device_id, operation_id],
+                )
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+            if changed != 1 {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            transaction
+                .commit()
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+            return Ok(true);
+        }
         transaction
             .execute(
                 r#"DELETE FROM direct_e2ee_v2_private_outbound
@@ -890,6 +1527,137 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
             .map_err(crate::internal::local_state::local_state_unavailable)?;
         self.gc_orphaned_v2_secrets()?;
         Ok(true)
+    }
+
+    /// Removes the retained exact Init retry only after its authenticated
+    /// first reply has established the same session. Replaying that first
+    /// reply after a crash remains idempotent because a missing Init is
+    /// accepted as already completed.
+    pub(crate) fn complete_session_init(
+        &self,
+        binding: &V2SessionBinding,
+        operation_id: &str,
+        session_id: &str,
+    ) -> crate::ImResult<bool> {
+        self.scope.validate_binding(binding)?;
+        let owner_identity_id = self.scope.owner_identity_id.as_str();
+        let operation_id = required("operation_id", operation_id)?;
+        let session_id = required("session_id", session_id)?;
+        let transaction = self.transaction()?;
+        let row = transaction
+            .query_row(
+                r#"SELECT pending_blob, session_revision, session_id
+FROM direct_e2ee_v2_pending
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
+                params![owner_identity_id, binding.local_device_id, operation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let Some((blob, session_revision, stored_session_id)) = row else {
+            transaction
+                .rollback()
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+            return Ok(false);
+        };
+        let pending = self.open_pending(blob, binding, &operation_id)?;
+        if stored_session_id != session_id
+            || pending.session_id != session_id
+            || pending.wire_content_type != anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        self.validate_pending_session_checkpoint(
+            &transaction,
+            binding,
+            &stored_session_id,
+            session_revision,
+        )?;
+        let private_exists = transaction
+            .query_row(
+                r#"SELECT 1 FROM direct_e2ee_v2_private_outbound
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
+                params![owner_identity_id, binding.local_device_id, operation_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .is_some();
+        if private_exists {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let deleted = transaction
+            .execute(
+                r#"DELETE FROM direct_e2ee_v2_pending
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
+                params![owner_identity_id, binding.local_device_id, operation_id],
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        if deleted != 1 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        transaction
+            .commit()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        self.gc_orphaned_v2_secrets()?;
+        Ok(true)
+    }
+
+    pub(crate) fn complete_session_init_for_session(
+        &self,
+        binding: &V2SessionBinding,
+        session_id: &str,
+    ) -> crate::ImResult<bool> {
+        self.scope.validate_binding(binding)?;
+        let session_id = required("session_id", session_id)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT operation_id, pending_blob
+FROM direct_e2ee_v2_pending
+WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND peer_did = ?3
+  AND peer_device_id = ?4 AND session_id = ?5"#,
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let rows = statement
+            .query_map(
+                params![
+                    self.scope.owner_identity_id,
+                    binding.local_device_id,
+                    binding.peer_did,
+                    binding.peer_device_id,
+                    session_id,
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        drop(statement);
+        let mut matching = rows
+            .into_iter()
+            .map(|(operation_id, blob)| {
+                let pending = self.open_pending(blob, binding, &operation_id)?;
+                Ok((operation_id, pending))
+            })
+            .collect::<crate::ImResult<Vec<_>>>()?
+            .into_iter()
+            .filter(|(_, pending)| {
+                pending.wire_content_type == anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2
+            });
+        let Some((operation_id, _)) = matching.next() else {
+            return Ok(false);
+        };
+        if matching.next().is_some() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        self.complete_session_init(binding, &operation_id, &session_id)
     }
 
     pub(crate) fn load_session(
@@ -1628,9 +2396,9 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND operation_id = ?3"#,
         (None, None) => Ok(()),
         (Some((delivery_class, context_json)), Some(expected)) => {
             expected.validate()?;
-            let context: serde_json::Value =
+            let context: V2RootControlPrivateContext =
                 serde_json::from_str(&context_json).map_err(serialization_error)?;
-            if delivery_class == expected.delivery_class && context == expected.context {
+            if delivery_class == expected.delivery_class() && context == expected.context {
                 Ok(())
             } else {
                 Err(crate::ImError::PermissionDenied)
@@ -1792,6 +2560,38 @@ mod tests {
                 "created": "2026-07-19T00:00:00Z",
                 "proofValue": "zProof"
             }),
+        }
+    }
+
+    #[test]
+    fn rotated_prekey_bundles_keep_only_two_delayed_init_windows() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        let store = store(&db, root.path());
+        for index in 1_u8..=4 {
+            let private = x25519_dalek::StaticSecret::from([index; 32]);
+            let mut bundle = local_bundle(&private);
+            bundle.bundle_id = format!("bundle-{index}");
+            bundle.signed_prekey.key_id = format!("spk-{index}");
+            bundle.signed_prekey.expires_at = "2030-01-01T00:00:00Z".to_owned();
+            store
+                .publish_local_bundle(
+                    &bundle,
+                    &private,
+                    &[],
+                    &format!("2026-07-20T00:00:0{index}Z"),
+                )
+                .unwrap();
+        }
+        assert!(store
+            .load_accepted_bundle("bundle-1", "2026-07-20T00:01:00Z")
+            .unwrap()
+            .is_none());
+        for bundle_id in ["bundle-2", "bundle-3", "bundle-4"] {
+            assert!(store
+                .load_accepted_bundle(bundle_id, "2026-07-20T00:01:00Z")
+                .unwrap()
+                .is_some());
         }
     }
 
@@ -2456,7 +3256,7 @@ mod tests {
             params![vec![10_u8; 32]],
         )
         .unwrap();
-        assert!(store.load_available_opk("opk-raw").is_err());
+        assert!(store.load_available_opk("bundle-1", "opk-raw").is_err());
         db.execute(
             "UPDATE direct_e2ee_v2_one_time_prekeys SET private_key_blob = ?1 WHERE key_id = 'opk-raw'",
             params![sealed_opk],

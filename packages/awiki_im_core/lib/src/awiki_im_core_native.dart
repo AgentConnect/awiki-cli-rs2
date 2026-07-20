@@ -211,6 +211,57 @@ class AwikiImCore {
     return summary._toModel();
   }
 
+  Future<RootKeyTransferSendResult> sendRootKeyTransfer({
+    required IdentitySelector selector,
+    required String recipientDeviceId,
+    required String messageId,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.sendRootKeyTransfer(
+        core: _inner,
+        selector: selector._toGen(),
+        recipientDeviceId: recipientDeviceId,
+        messageId: messageId,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<List<RootKeyTransferSummary>> listRootKeyTransfers({
+    required IdentitySelector selector,
+    bool includeCompleted = false,
+  }) async {
+    _ensureNotDisposed();
+    final summaries = await _mapNativeErrors(
+      () => gen_identity_api.listRootKeyTransfers(
+        core: _inner,
+        selector: selector._toGen(),
+        includeCompleted: includeCompleted,
+      ),
+    );
+    return summaries.map((summary) => summary._toModel()).toList();
+  }
+
+  Future<RootKeyTransferSummary> retryRootKeyTransfer({
+    required IdentitySelector selector,
+    required String messageId,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final summary = await _mapNativeErrors(
+      () => gen_identity_api.retryRootKeyTransfer(
+        core: _inner,
+        selector: selector._toGen(),
+        messageId: messageId,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return summary._toModel();
+  }
+
   Future<List<DeviceJoinSessionSummary>> localDeviceJoinSessions() async {
     _ensureNotDisposed();
     final sessions = await _mapNativeErrors(
@@ -1748,6 +1799,7 @@ extension on AwikiImCoreOpenOptions {
     identitySecretStoragePolicy: identitySecretStoragePolicy._toGen(),
     identitySecretVault: identitySecretVault?._toGen(),
     multiDeviceJoinEnabled: multiDeviceJoinEnabled,
+    multiDeviceRootTransferEnabled: multiDeviceRootTransferEnabled,
   );
 }
 
@@ -3377,5 +3429,40 @@ extension on gen_message.DartMessageTarget {
   MessageTarget _toModel() => when(
     direct: (peer) => MessageTarget.direct(peer),
     group: (group) => MessageTarget.group(group),
+  );
+}
+
+extension on gen_identity.DartRootKeyTransferSendResult {
+  RootKeyTransferSendResult _toModel() => RootKeyTransferSendResult(
+    did: did,
+    senderDeviceId: senderDeviceId,
+    recipientDeviceId: recipientDeviceId,
+    messageId: messageId,
+    acceptedAt: acceptedAt,
+  );
+}
+
+extension on gen_identity.DartRootKeyTransferSummary {
+  RootKeyTransferSummary _toModel() => RootKeyTransferSummary(
+    did: did,
+    messageId: messageId,
+    senderDeviceId: senderDeviceId,
+    recipientDeviceId: recipientDeviceId,
+    status: switch (status) {
+      gen_identity.DartRootKeyTransferStatus.pendingDelivery =>
+        RootKeyTransferStatus.pendingDelivery,
+      gen_identity.DartRootKeyTransferStatus.awaitingImport =>
+        RootKeyTransferStatus.awaitingImport,
+      gen_identity.DartRootKeyTransferStatus.importing =>
+        RootKeyTransferStatus.importing,
+      gen_identity.DartRootKeyTransferStatus.failed =>
+        RootKeyTransferStatus.failed,
+      gen_identity.DartRootKeyTransferStatus.completed =>
+        RootKeyTransferStatus.completed,
+    },
+    createdAt: createdAt,
+    acceptedAt: acceptedAt,
+    completedAt: completedAt,
+    retryable: retryable,
   );
 }

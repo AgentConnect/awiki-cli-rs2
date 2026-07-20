@@ -31,26 +31,31 @@ class AwikiImCoreOpenOptions {
     this.identitySecretStoragePolicy = IdentitySecretStoragePolicy.fileCompat,
     this.identitySecretVault,
     this.multiDeviceJoinEnabled = false,
+    this.multiDeviceRootTransferEnabled = false,
   });
 
   const AwikiImCoreOpenOptions.fileCompat()
     : identitySecretStoragePolicy = IdentitySecretStoragePolicy.fileCompat,
       identitySecretVault = null,
-      multiDeviceJoinEnabled = false;
+      multiDeviceJoinEnabled = false,
+      multiDeviceRootTransferEnabled = false;
 
   const AwikiImCoreOpenOptions.vaultPreferred({
     required ImCoreSecretVaultOptions this.identitySecretVault,
     this.multiDeviceJoinEnabled = false,
+    this.multiDeviceRootTransferEnabled = false,
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultPreferred;
 
   const AwikiImCoreOpenOptions.vaultRequired({
     required ImCoreSecretVaultOptions this.identitySecretVault,
     this.multiDeviceJoinEnabled = false,
+    this.multiDeviceRootTransferEnabled = false,
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultRequired;
 
   final IdentitySecretStoragePolicy identitySecretStoragePolicy;
   final ImCoreSecretVaultOptions? identitySecretVault;
   final bool multiDeviceJoinEnabled;
+  final bool multiDeviceRootTransferEnabled;
 }
 
 class ImCoreSecretVaultOptions {

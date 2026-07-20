@@ -163,6 +163,40 @@ key material, root material, challenge ciphertext, or AWiki-internal
 Document/Registry/auth versions and hashes. Flutter Web keeps this native flow
 unsupported.
 
+## Management-device root-key transfer
+
+Native hosts must explicitly set `multiDeviceRootTransferEnabled: true`; it is
+independent from the Join gate and defaults to false. After real local user
+presence, the host may call `sendRootKeyTransfer` with the selected identity,
+exact recipient device ID, and message ID. The returned
+`RootKeyTransferSendResult` contains delivery metadata only. `acceptedAt` means
+the encrypted control was accepted for device delivery, not that import is
+complete.
+
+RootKeyEnvelope and its imported ACK stay inside an established P5 v2 Direct
+session and are consumed automatically by the native async inbox. Dart never
+receives root bytes, inner control JSON, private transport context, completion
+proofs, or ratchet state, and the control is never rendered as chat content.
+Flutter Web keeps this native Vault-backed operation unsupported.
+
+If this device pair has no P5 v2 session yet, the first send establishes only
+that session and throws an `unsupported_capability` whose capability is
+`p5-v2-session-establishment-pending`. No root Envelope has been created at
+that point. After both devices sync the Init/reply, repeat
+`sendRootKeyTransfer` with the same recipient/message ID and fresh user
+presence; do not report that the root key was sent while the session is still
+pending.
+
+`listRootKeyTransfers(selector:, includeCompleted:)` returns only the local,
+restart-safe `RootKeyTransferSummary` fields. A retryable stored operation may
+be resumed with `retryRootKeyTransfer(selector:, messageId:,
+userPresenceConfirmed:)`. Retry never accepts a recipient or secret override
+and reuses the exact persisted ciphertext. The app must use
+`IdentityDeviceSummary.readiness`, not transport status alone, as the final
+management-ready source of truth.
+After signed completion, native Core scrubs the retained retry ciphertext and
+pending Vault state; Dart can observe only the resulting non-retryable status.
+
 ## Directory profile metadata
 
 `client.directory.resolvePeer(handle)` and `client.directory.lookupHandle(handle)` return a

@@ -9,6 +9,53 @@ fn dart_error_unsupported_has_stable_code() {
 }
 
 #[test]
+fn root_key_transfer_result_mapping_exposes_delivery_metadata_only() {
+    let mapped = awiki_im_core::dto::identity::DartRootKeyTransferSendResult::from(
+        im_core::identity::RootKeyTransferSendResult {
+            did: im_core::ids::Did::parse("did:example:alice").unwrap(),
+            sender_device_id: im_core::ids::ProtocolDeviceId::parse("device-admin").unwrap(),
+            recipient_device_id: im_core::ids::ProtocolDeviceId::parse("device-member").unwrap(),
+            message_id: im_core::ids::MessageId::parse("root-control-message-1").unwrap(),
+            accepted_at: "2026-07-20T01:00:00Z".to_owned(),
+        },
+    );
+
+    assert_eq!(mapped.message_id, "root-control-message-1");
+    let debug = format!("{mapped:?}");
+    assert!(!debug.contains("root_private_key"));
+    assert!(!debug.contains("transport_context"));
+    assert!(!debug.contains("completion"));
+}
+
+#[test]
+fn root_key_transfer_summary_mapping_exposes_restart_safe_status_only() {
+    let mapped = awiki_im_core::dto::identity::DartRootKeyTransferSummary::from(
+        im_core::identity::RootKeyTransferSummary {
+            did: im_core::ids::Did::parse("did:example:alice").unwrap(),
+            message_id: im_core::ids::MessageId::parse("root-control-message-1").unwrap(),
+            sender_device_id: im_core::ids::ProtocolDeviceId::parse("device-admin").unwrap(),
+            recipient_device_id: im_core::ids::ProtocolDeviceId::parse("device-member").unwrap(),
+            status: im_core::identity::RootKeyTransferStatus::AwaitingImport,
+            created_at: "2026-07-20T00:59:00Z".to_owned(),
+            accepted_at: Some("2026-07-20T01:00:00Z".to_owned()),
+            completed_at: None,
+            retryable: true,
+        },
+    );
+
+    assert_eq!(
+        mapped.status,
+        awiki_im_core::dto::identity::DartRootKeyTransferStatus::AwaitingImport
+    );
+    assert!(mapped.retryable);
+    assert_eq!(mapped.accepted_at.as_deref(), Some("2026-07-20T01:00:00Z"));
+    let debug = format!("{mapped:?}");
+    assert!(!debug.contains("root_private_key"));
+    assert!(!debug.contains("transport_context"));
+    assert!(!debug.contains("completion"));
+}
+
+#[test]
 fn local_state_upgrade_inspection_is_available_before_core_open() {
     let directory = tempfile::tempdir().unwrap();
     let inspection = awiki_im_core::api::local_state_upgrade::inspect_local_state_upgrade(
@@ -770,6 +817,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
             device_id: "device-a".to_string(),
         }),
         multi_device_join_enabled: true,
+        multi_device_root_transfer_enabled: true,
     };
 
     let mapped: im_core::ImCoreOpenOptions = options.try_into().expect("open options map");
@@ -778,6 +826,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
         im_core::IdentitySecretStoragePolicy::VaultRequired
     ));
     assert!(mapped.multi_device_join_enabled);
+    assert!(mapped.multi_device_root_transfer_enabled);
     let vault = mapped.identity_secret_vault.expect("vault options");
     assert_eq!(
         vault.vault_dir,
@@ -804,6 +853,7 @@ fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
             device_id: "device-a".to_string(),
         }),
         multi_device_join_enabled: false,
+        multi_device_root_transfer_enabled: false,
     };
 
     let error = im_core::ImCoreOpenOptions::try_from(options).unwrap_err();
