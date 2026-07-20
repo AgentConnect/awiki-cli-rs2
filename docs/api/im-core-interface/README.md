@@ -61,6 +61,7 @@ async API
 | `07-phase1-acceptance.md` | P1 验收测试、fixture、边界检查和完成标准。 |
 | `08-email-interface.md` | Email / Mail 迁移阶段的 SDK service、DTO、wire contract、CLI adapter 和 Dart facade 边界。 |
 | `09-handle-recovery-interface.md` | AWiki 域内 Handle Recovery Core 生命周期、Vault exact retry、新 DID 隔离和公开 DTO 边界。 |
+| `10-device-revoke-interface.md` | AWiki 域内永久设备撤销、双证明/CAS、Vault exact retry 和公开安全 DTO 边界。 |
 
 ## 4. 使用方式
 

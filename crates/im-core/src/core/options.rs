@@ -69,6 +69,11 @@ pub struct ImCoreOpenOptions {
     /// This rollout gate is independent from Join and defaults to `false`.
     /// It is local configuration, not an ANP or DID Document field.
     pub multi_device_root_transfer_enabled: bool,
+    /// Enables AWiki-local permanent device revocation.
+    ///
+    /// This rollout gate defaults to `false`. It is independent from Join and
+    /// root transfer, and is never serialized into ANP or a DID Document.
+    pub multi_device_device_revoke_enabled: bool,
     /// Enables AWiki same-domain Handle Recovery that creates a new vNext DID.
     ///
     /// This rollout gate defaults to `false`. It is local configuration and is
@@ -103,6 +108,11 @@ impl ImCoreOpenOptions {
 
     pub fn with_multi_device_root_transfer_enabled(mut self, enabled: bool) -> Self {
         self.multi_device_root_transfer_enabled = enabled;
+        self
+    }
+
+    pub fn with_multi_device_device_revoke_enabled(mut self, enabled: bool) -> Self {
+        self.multi_device_device_revoke_enabled = enabled;
         self
     }
 

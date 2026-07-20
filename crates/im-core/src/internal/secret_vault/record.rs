@@ -30,6 +30,9 @@ pub enum SecretKind {
     IdentityRecoveryPending,
     /// Encrypted exact-retry intent for a ready admin cancelling Recovery.
     IdentityRecoveryCancelPending,
+    /// Encrypted exact-retry intent for one permanent device revocation.
+    /// This is AWiki-local state and never appears in ANP or DID Documents.
+    IdentityDeviceRevokePending,
     IdentityDaemonPrivate,
     AuthJwt,
     DirectE2eeSignedPrekeyPrivate,
@@ -60,6 +63,7 @@ impl SecretKind {
             Self::IdentityGenesisPending => "identity.genesis.pending",
             Self::IdentityRecoveryPending => "identity.recovery.pending",
             Self::IdentityRecoveryCancelPending => "identity.recovery.cancel.pending",
+            Self::IdentityDeviceRevokePending => "identity.device.revoke.pending",
             Self::IdentityDaemonPrivate => "identity.daemon.private",
             Self::AuthJwt => "auth.jwt",
             Self::DirectE2eeSignedPrekeyPrivate => "direct_e2ee.signed_prekey.private",

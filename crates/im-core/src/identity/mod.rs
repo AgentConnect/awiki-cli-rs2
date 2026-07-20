@@ -1,3 +1,4 @@
+mod device_revoke;
 mod dto;
 mod join;
 mod profile;
@@ -6,6 +7,9 @@ mod registry;
 mod root_key_transfer;
 mod service;
 
+pub use self::device_revoke::{
+    DeviceRevokeRequest, DeviceRevokeResult, DeviceRevokeService, DeviceRevokeStatus,
+};
 pub use self::dto::{
     ContactBindingMethod, ContactBindingMethodKind, ContactBindingRequest, ContactBindingResult,
     ContactBindingState, DaemonSubkeyAuthorizationRevokeResult, DaemonSubkeyPrivatePackage,

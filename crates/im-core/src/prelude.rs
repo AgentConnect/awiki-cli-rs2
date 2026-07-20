@@ -42,6 +42,7 @@ pub use crate::identity::{
     DeviceJoinBeginRequest, DeviceJoinConfirmApprovalRequest, DeviceJoinLocalPhase,
     DeviceJoinPendingSummary, DeviceJoinProgress, DeviceJoinRegistrySnapshot,
     DeviceJoinRemoteState, DeviceJoinRole, DeviceJoinSessionView, DeviceJoinSide,
+    DeviceRevokeRequest, DeviceRevokeResult, DeviceRevokeService, DeviceRevokeStatus,
     HandleRegistrationResult, HandleRegistrationState, HostedIdentityMaterial, IdentityMissingItem,
     IdentityReadiness, IdentityRegistry, IdentitySecretStorageBackend, IdentitySelector,
     IdentityService, IdentitySummary, IdentityVaultMigrationReport, IdentityVaultStatus,

@@ -21,6 +21,8 @@ pub(crate) mod identity_bind_runtime;
 pub(crate) mod identity_daemon_subkey;
 pub(crate) mod identity_device_join;
 pub(crate) mod identity_device_join_runtime;
+pub(crate) mod identity_device_revoke;
+pub(crate) mod identity_device_revoke_pending;
 pub(crate) mod identity_device_state;
 pub(crate) mod identity_document_cache;
 pub(crate) mod identity_generation;

@@ -2,6 +2,7 @@ pub(crate) mod bind;
 pub(crate) mod device_genesis;
 pub(crate) mod device_join;
 pub(crate) mod device_recovery;
+pub(crate) mod device_revoke;
 pub(crate) mod directory;
 pub(crate) mod profile;
 pub(crate) mod recovery;
