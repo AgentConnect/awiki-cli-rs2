@@ -129,14 +129,20 @@ where
         let mut raw =
             self.transport
                 .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)?;
-        let p5_provenance = if delegated.is_some() {
+        let mut p5_provenance = if delegated.is_some() {
             filter_delegated_e2ee_messages(&mut raw);
             DirectP5ProjectionProvenance::default()
         } else {
             consume_group_e2ee_control_messages(self.client, &mut raw);
             project_secure_direct_messages(self.client, &mut raw, &mut self.directory_transport)
         };
-        annotate_direct_peer_scopes(self.client, &mut raw, &mut self.directory_transport, None);
+        annotate_direct_peer_scopes(
+            self.client,
+            &mut raw,
+            &mut self.directory_transport,
+            None,
+            Some(&mut p5_provenance),
+        );
         let mut page = page_from_raw(self.client, &raw, query.limit)?;
         page.items.retain(|message| message.group.is_none());
         page.has_more |= dedupe_and_truncate_messages(&mut page.items, query.limit);
@@ -244,7 +250,7 @@ where
                     "direct.get_history",
                     params,
                 )?;
-                let p5_provenance = if delegated.is_some() {
+                let mut p5_provenance = if delegated.is_some() {
                     filter_delegated_e2ee_messages(&mut raw);
                     DirectP5ProjectionProvenance::default()
                 } else {
@@ -260,6 +266,7 @@ where
                     &mut raw,
                     &mut self.directory_transport,
                     input.peer_scope.as_ref(),
+                    Some(&mut p5_provenance),
                 );
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
                 persist_projection_best_effort(self.client, &page.items, &p5_provenance);
@@ -397,7 +404,7 @@ where
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)
             .await?;
-        let p5_provenance = if delegated.is_some() {
+        let mut p5_provenance = if delegated.is_some() {
             filter_delegated_e2ee_messages(&mut raw);
             DirectP5ProjectionProvenance::default()
         } else {
@@ -414,6 +421,7 @@ where
             &mut raw,
             &mut self.directory_transport,
             None,
+            Some(&mut p5_provenance),
         )
         .await;
         let mut page = page_from_raw(self.client, &raw, query.limit)?;
@@ -527,7 +535,7 @@ where
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
                     .await?;
-                let p5_provenance = if delegated.is_some() {
+                let mut p5_provenance = if delegated.is_some() {
                     filter_delegated_e2ee_messages(&mut raw);
                     DirectP5ProjectionProvenance::default()
                 } else {
@@ -544,6 +552,7 @@ where
                     &mut raw,
                     &mut self.directory_transport,
                     input.peer_scope.as_ref(),
+                    Some(&mut p5_provenance),
                 )
                 .await;
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
@@ -715,9 +724,13 @@ fn remote_projection_records(
                 )?;
             let binding = p5_provenance.binding_for_message(message);
             if let Some(binding) = binding {
-                if p5_cache_record_has_direct_route(&record)
-                    && p5_cache_record_endpoint_matches(&record, binding)
-                {
+                if let Some(wire_peer_did) = p5_projection_wire_peer_did(
+                    message,
+                    &record,
+                    binding,
+                    p5_provenance.verified_scoped_route_for_message(message),
+                ) {
+                    record = record.with_resolved_wire_thread("direct", wire_peer_did);
                     persist_p5_cache_binding_metadata(&mut record, binding)?;
                 }
             }
@@ -1561,12 +1574,19 @@ pub(crate) fn annotate_direct_peer_scopes(
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
     preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    mut p5_provenance: Option<&mut DirectP5ProjectionProvenance>,
 ) {
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
     for message in messages {
-        annotate_direct_peer_scope(client, message, directory_transport, preferred_scope);
+        annotate_direct_peer_scope(
+            client,
+            message,
+            directory_transport,
+            preferred_scope,
+            p5_provenance.as_deref_mut(),
+        );
     }
 }
 
@@ -1575,6 +1595,7 @@ fn annotate_direct_peer_scope(
     message: &mut Value,
     directory_transport: &mut impl RpcTransport,
     preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    p5_provenance: Option<&mut DirectP5ProjectionProvenance>,
 ) {
     let Some(object) = message.as_object_mut() else {
         return;
@@ -1598,10 +1619,16 @@ fn annotate_direct_peer_scope(
     }
     if let Some(scope) = preferred_scope {
         annotate_object_with_peer_scope(object, scope, Some(peer_did));
+        if let Some(provenance) = p5_provenance {
+            provenance.record_verified_peer_scope(object, scope, peer_did);
+        }
         return;
     }
     if let Some(scope) = resolve_direct_peer_scope(client, directory_transport, peer_did) {
         annotate_object_with_peer_scope(object, &scope, Some(peer_did));
+        if let Some(provenance) = p5_provenance {
+            provenance.record_verified_peer_scope(object, &scope, peer_did);
+        }
     }
 }
 
@@ -1610,13 +1637,20 @@ pub(crate) async fn annotate_direct_peer_scopes_async(
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
     preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    mut p5_provenance: Option<&mut DirectP5ProjectionProvenance>,
 ) {
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
     for message in messages {
-        annotate_direct_peer_scope_async(client, message, directory_transport, preferred_scope)
-            .await;
+        annotate_direct_peer_scope_async(
+            client,
+            message,
+            directory_transport,
+            preferred_scope,
+            p5_provenance.as_deref_mut(),
+        )
+        .await;
     }
 }
 
@@ -1625,6 +1659,7 @@ async fn annotate_direct_peer_scope_async(
     message: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
     preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    p5_provenance: Option<&mut DirectP5ProjectionProvenance>,
 ) {
     let Some(object) = message.as_object_mut() else {
         return;
@@ -1648,12 +1683,18 @@ async fn annotate_direct_peer_scope_async(
     }
     if let Some(scope) = preferred_scope {
         annotate_object_with_peer_scope(object, scope, Some(peer_did));
+        if let Some(provenance) = p5_provenance {
+            provenance.record_verified_peer_scope(object, scope, peer_did);
+        }
         return;
     }
     if let Some(scope) =
         resolve_direct_peer_scope_async(client, directory_transport, peer_did).await
     {
         annotate_object_with_peer_scope(object, &scope, Some(peer_did));
+        if let Some(provenance) = p5_provenance {
+            provenance.record_verified_peer_scope(object, &scope, peer_did);
+        }
     }
 }
 
@@ -2648,10 +2689,17 @@ struct P5ProjectionInstanceKey {
 }
 
 impl P5ProjectionInstanceKey {
-    fn from_message(message: &crate::messages::Message) -> Option<Self> {
+    fn from_direct_message(message: &crate::messages::Message) -> Option<Self> {
         if message.group.is_some()
             || !matches!(message.thread, crate::messages::ThreadRef::Direct(_))
         {
+            return None;
+        }
+        Self::from_ungrouped_message(message)
+    }
+
+    fn from_ungrouped_message(message: &crate::messages::Message) -> Option<Self> {
+        if message.group.is_some() {
             return None;
         }
         Some(Self {
@@ -2661,6 +2709,27 @@ impl P5ProjectionInstanceKey {
                 .to_owned(),
         })
     }
+
+    fn from_ungrouped_object(object: &Map<String, Value>) -> Option<Self> {
+        if !string_value(object.get("group_did")).trim().is_empty() {
+            return None;
+        }
+        let logical_message_id = string_value(object.get("id"));
+        let raw_message_id = string_value(object.get("raw_message_id"));
+        if logical_message_id.trim().is_empty() || raw_message_id.trim().is_empty() {
+            return None;
+        }
+        Some(Self {
+            logical_message_id,
+            raw_message_id,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct P5VerifiedScopedRoute {
+    peer_did: String,
+    thread_id: String,
 }
 
 /// Ephemeral proof that a P5 projection in this exact Direct read call came
@@ -2671,6 +2740,7 @@ impl P5ProjectionInstanceKey {
 #[derive(Debug, Default)]
 pub(crate) struct DirectP5ProjectionProvenance {
     bindings: HashMap<P5ProjectionInstanceKey, Vec<P5CacheBinding>>,
+    verified_scoped_routes: HashMap<P5ProjectionInstanceKey, P5VerifiedScopedRoute>,
 }
 
 impl DirectP5ProjectionProvenance {
@@ -2701,7 +2771,10 @@ impl DirectP5ProjectionProvenance {
             let Ok(Some(message)) = message_from_value(client, value, None) else {
                 continue;
             };
-            let Some(key) = P5ProjectionInstanceKey::from_message(&message) else {
+            // At this point verified peer-scope metadata has not been added.
+            // Only an authenticated product/cache result that still resolves
+            // to the concrete Direct endpoint may retain provenance.
+            let Some(key) = P5ProjectionInstanceKey::from_direct_message(&message) else {
                 continue;
             };
             *logical_counts
@@ -2719,13 +2792,72 @@ impl DirectP5ProjectionProvenance {
     }
 
     fn binding_for_message(&self, message: &crate::messages::Message) -> Option<&P5CacheBinding> {
-        let key = P5ProjectionInstanceKey::from_message(message)?;
+        // Verified Handle projection may replace Direct(peer DID) with the
+        // stable dm:peer-scope thread after provenance was frozen. Route and
+        // endpoint binding are checked separately before persistence.
+        let key = P5ProjectionInstanceKey::from_ungrouped_message(message)?;
         let bindings = self.bindings.get(&key)?;
         if bindings.len() != 1 {
             return None;
         }
         bindings.first()
     }
+
+    fn record_verified_peer_scope(
+        &mut self,
+        object: &Map<String, Value>,
+        scope: &crate::internal::local_state::owner_scope::DirectPeerScope,
+        peer_did: &str,
+    ) {
+        let Some(key) = P5ProjectionInstanceKey::from_ungrouped_object(object) else {
+            return;
+        };
+        let Some(bindings) = self.bindings.get(&key) else {
+            return;
+        };
+        let Some(binding) = (bindings.len() == 1).then(|| &bindings[0]) else {
+            return;
+        };
+        if !p5_projected_object_endpoint_matches_binding(object, peer_did, binding) {
+            return;
+        }
+        self.verified_scoped_routes.insert(
+            key,
+            P5VerifiedScopedRoute {
+                peer_did: peer_did.to_owned(),
+                thread_id: crate::internal::message_runtime::local_projection::direct_conversation_id_for_peer_scope(scope),
+            },
+        );
+    }
+
+    fn verified_scoped_route_for_message(
+        &self,
+        message: &crate::messages::Message,
+    ) -> Option<&P5VerifiedScopedRoute> {
+        let key = P5ProjectionInstanceKey::from_ungrouped_message(message)?;
+        self.verified_scoped_routes.get(&key)
+    }
+}
+
+fn p5_projected_object_endpoint_matches_binding(
+    object: &Map<String, Value>,
+    peer_did: &str,
+    binding: &P5CacheBinding,
+) -> bool {
+    let sender_did = string_value(object.get("sender_did"));
+    let receiver_did = string_value(object.get("receiver_did"));
+    let direction = i64_value(object.get("direction"));
+    if binding.sender_did != binding.recipient_did {
+        return direction == Some(0)
+            && sender_did == binding.sender_did
+            && receiver_did == binding.recipient_did
+            && peer_did == binding.sender_did;
+    }
+    direction == Some(1)
+        && sender_did == binding.sender_did
+        && !receiver_did.trim().is_empty()
+        && receiver_did != binding.recipient_did
+        && peer_did == receiver_did
 }
 
 #[cfg(feature = "sqlite")]
@@ -2838,7 +2970,16 @@ fn clear_untrusted_p5_projection_state(messages: &mut [Value]) {
             // These fields are local projection output. A service-provided
             // value must not be mistaken for a completed authenticated
             // receive or an accepted local cache hit.
-            for key in ["secure", "decryption_state", "raw_message_id"] {
+            for key in [
+                "secure",
+                "decryption_state",
+                "raw_message_id",
+                "peer_user_id",
+                "peer_full_handle",
+                "peer_current_did",
+                "resolved_target_did",
+                "target_handle",
+            ] {
                 object.remove(key);
             }
         }
@@ -3273,6 +3414,58 @@ fn p5_cache_record_has_direct_route(
         && !record.wire_thread_ref.trim().is_empty()
         && record.conversation_id.trim().starts_with("dm:")
         && record.thread_id.trim().starts_with("dm:")
+}
+
+#[cfg(feature = "sqlite")]
+fn p5_projection_wire_peer_did(
+    message: &crate::messages::Message,
+    record: &crate::internal::local_state::messages::MessageRecord,
+    binding: &P5CacheBinding,
+    verified_scoped_route: Option<&P5VerifiedScopedRoute>,
+) -> Option<String> {
+    if !p5_cache_record_endpoint_matches(record, binding)
+        || !record.group_id.trim().is_empty()
+        || !record.group_did.trim().is_empty()
+        || record.conversation_id.trim() != record.thread_id.trim()
+        || !record.conversation_id.trim().starts_with("dm:")
+    {
+        return None;
+    }
+
+    let wire_peer_did = if binding.sender_did != binding.recipient_did {
+        binding.sender_did.trim()
+    } else {
+        record.receiver_did.trim()
+    };
+    if !wire_peer_did.starts_with("did:") || wire_peer_did == record.owner_did.trim() {
+        return None;
+    }
+
+    let route_matches = match &message.thread {
+        crate::messages::ThreadRef::Direct(peer) => peer.as_str() == wire_peer_did,
+        crate::messages::ThreadRef::Thread(thread) => {
+            let verified_route_matches = verified_scoped_route.is_some_and(|route| {
+                route.peer_did == wire_peer_did && route.thread_id == thread.as_str()
+            });
+            let scope =
+                crate::internal::message_runtime::local_projection::peer_scope_from_metadata(
+                    &message.metadata,
+                );
+            let canonical_thread = scope.as_ref().map(
+                crate::internal::message_runtime::local_projection::direct_conversation_id_for_peer_scope,
+            );
+            verified_route_matches
+                && canonical_thread.as_deref() == Some(thread.as_str())
+                && record.conversation_id.trim() == thread.as_str()
+                && record.wire_thread_kind.trim() == "thread"
+                && record.wire_thread_ref.trim() == thread.as_str()
+                && metadata_attribute(&message.metadata, "peer_current_did") == Some(wire_peer_did)
+                && metadata_attribute(&message.metadata, "resolved_target_did")
+                    == Some(wire_peer_did)
+        }
+        crate::messages::ThreadRef::Group(_) => false,
+    };
+    route_matches.then(|| wire_peer_did.to_owned())
 }
 
 #[cfg(feature = "sqlite")]

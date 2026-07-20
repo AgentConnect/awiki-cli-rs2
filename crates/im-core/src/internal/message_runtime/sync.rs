@@ -137,7 +137,7 @@ where
                     "direct.get_history",
                     params,
                 )?;
-                let p5_provenance =
+                let mut p5_provenance =
                     crate::internal::message_runtime::read::project_secure_direct_messages(
                         self.client,
                         &mut raw,
@@ -148,6 +148,7 @@ where
                     &mut raw,
                     &mut self.directory_transport,
                     input.peer_scope.as_ref(),
+                    Some(&mut p5_provenance),
                 );
                 let page = crate::internal::message_runtime::read::page_from_raw(
                     self.client,
@@ -310,7 +311,7 @@ where
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
                     .await?;
-                let p5_provenance =
+                let mut p5_provenance =
                     crate::internal::message_runtime::read::project_secure_direct_messages_async(
                         self.client,
                         &mut raw,
@@ -322,6 +323,7 @@ where
                     &mut raw,
                     &mut self.directory_transport,
                     input.peer_scope.as_ref(),
+                    Some(&mut p5_provenance),
                 )
                 .await;
                 let page = crate::internal::message_runtime::read::page_from_raw(

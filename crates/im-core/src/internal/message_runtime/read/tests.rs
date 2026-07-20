@@ -3083,8 +3083,14 @@ async fn p5_backlog_retries_by_authenticated_wire_and_converges_after_handle_res
         ),
     );
     let mut first_raw = json!({"messages": [first_projection], "has_more": false});
-    annotate_direct_peer_scopes_async(&client, &mut first_raw, &mut NoopDirectoryTransport, None)
-        .await;
+    annotate_direct_peer_scopes_async(
+        &client,
+        &mut first_raw,
+        &mut NoopDirectoryTransport,
+        None,
+        None,
+    )
+    .await;
     let first_page = page_from_raw(&client, &first_raw, crate::ids::PageLimit(20)).unwrap();
     assert_eq!(first_page.items.len(), 1);
     let mut p5_provenance = DirectP5ProjectionProvenance::default();
@@ -3304,6 +3310,208 @@ async fn cached_p5_projection_restores_logical_id_without_redecrypting_replay() 
     assert!(cached.iter().all(|record| {
         p5_cache_record_has_direct_route(record) && p5_cache_binding_from_record(record).is_some()
     }));
+}
+
+#[tokio::test]
+async fn verified_scoped_thread_p5_projection_persists_wire_route_and_replays() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let wire = ordinary_p5_cache_message(
+        "wire-p5-scoped-thread",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    let own_sync_wire = json_rpc_p5_cache_message(ordinary_p5_cache_message(
+        "wire-p5-scoped-own-sync",
+        &fixture.did,
+        "device-alice-sender",
+        &fixture.did,
+        &fixture.device_id,
+    ));
+    let mut projected = wire.clone();
+    projected["peer_user_id"] = json!("service-forged-user");
+    projected["peer_full_handle"] = json!("service-forged.example");
+    projected["peer_current_did"] = json!("did:example:mallory");
+    projected["resolved_target_did"] = json!("did:example:mallory");
+    clear_untrusted_p5_projection_state(std::slice::from_mut(&mut projected));
+    assert!(projected.get("peer_user_id").is_none());
+    assert!(projected.get("peer_full_handle").is_none());
+    assert!(projected.get("peer_current_did").is_none());
+    assert!(projected.get("resolved_target_did").is_none());
+    apply_p5_v2_product_outcome(
+        &mut projected,
+        crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Business(
+            crate::internal::secure_direct::v2_product::V2InboundBusinessProjection {
+                logical_message_id: "msg-logical-scoped-thread".to_owned(),
+                conversation_id: None,
+                sender_did: "did:example:bob-new".to_owned(),
+                sender_device_id: "device-bob".to_owned(),
+                wire_message_id: "wire-p5-scoped-thread".to_owned(),
+                body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
+                    text: "scoped thread plaintext".to_owned(),
+                    markdown: false,
+                },
+                session_reply_pending: false,
+            },
+        ),
+    );
+    let mut own_sync_projected = own_sync_wire.clone();
+    clear_untrusted_p5_projection_state(std::slice::from_mut(&mut own_sync_projected));
+    apply_p5_v2_product_outcome(
+        &mut own_sync_projected,
+        crate::internal::secure_direct::v2_product::V2InboundProductOutcome::OwnSync(
+            crate::internal::secure_direct::v2_product::V2InboundOwnSyncProjection {
+                logical_message_id: "msg-logical-scoped-own-sync".to_owned(),
+                conversation_id: None,
+                original_sender_did: fixture.did.clone(),
+                original_sender_device_id: "device-alice-sender".to_owned(),
+                target_did: "did:example:bob-new".to_owned(),
+                wire_message_id: "wire-p5-scoped-own-sync".to_owned(),
+                body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
+                    text: "scoped own-sync plaintext".to_owned(),
+                    markdown: false,
+                },
+                session_reply_pending: false,
+            },
+        ),
+    );
+    let mut raw = json!({"messages": [projected, own_sync_projected], "has_more": false});
+    let mut provenance = DirectP5ProjectionProvenance::default();
+    provenance.record(
+        "msg-logical-scoped-thread",
+        p5_cache_binding_from_message(&raw["messages"][0])
+            .unwrap()
+            .unwrap(),
+    );
+    provenance.record(
+        "msg-logical-scoped-own-sync",
+        p5_cache_binding_from_message(&raw["messages"][1])
+            .unwrap()
+            .unwrap(),
+    );
+    provenance.retain_unambiguous_projected_instances(&client, raw["messages"].as_array().unwrap());
+    annotate_direct_peer_scopes_async(
+        &client,
+        &mut raw,
+        &mut StaticHandleDirectoryTransport,
+        None,
+        Some(&mut provenance),
+    )
+    .await;
+    let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
+    assert_eq!(page.items.len(), 2);
+    assert!(page
+        .items
+        .iter()
+        .all(|message| matches!(message.thread, crate::messages::ThreadRef::Thread(_))));
+    let records = remote_projection_records(&client, &page.items, &provenance).unwrap();
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|record| {
+        p5_cache_record_has_direct_route(record) && p5_cache_binding_from_record(record).is_some()
+    }));
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(records)
+        .await
+        .unwrap();
+
+    for _ in 0..2 {
+        let result = MessageReadRuntime::new(
+            &client,
+            ReadyAnyReadSessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response: json!({
+                    "messages": [wire.clone(), own_sync_wire.clone()],
+                    "has_more": false
+                }),
+            },
+            StaticHandleDirectoryTransport,
+        )
+        .inbox_async(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::DirectOnly,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: None,
+            },
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.page.items.len(), 2);
+        let ids = result
+            .page
+            .items
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            ids,
+            HashSet::from(["msg-logical-scoped-thread", "msg-logical-scoped-own-sync"])
+        );
+    }
+}
+
+#[test]
+fn self_reported_scoped_thread_without_verified_route_cannot_mint_p5_cache() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let wire = ordinary_p5_cache_message(
+        "wire-p5-unverified-thread",
+        "did:example:bob-new",
+        "device-bob",
+        "did:example:alice",
+        "device-alice",
+    );
+    let mut projected = wire.clone();
+    apply_p5_v2_product_outcome(
+        &mut projected,
+        crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Business(
+            crate::internal::secure_direct::v2_product::V2InboundBusinessProjection {
+                logical_message_id: "msg-logical-unverified-thread".to_owned(),
+                conversation_id: None,
+                sender_did: "did:example:bob-new".to_owned(),
+                sender_device_id: "device-bob".to_owned(),
+                wire_message_id: "wire-p5-unverified-thread".to_owned(),
+                body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
+                    text: "unverified scoped plaintext".to_owned(),
+                    markdown: false,
+                },
+                session_reply_pending: false,
+            },
+        ),
+    );
+    let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "service-forged-user",
+        "service-forged.example",
+    )
+    .unwrap();
+    annotate_object_with_peer_scope(
+        projected.as_object_mut().unwrap(),
+        &scope,
+        Some("did:example:bob-new"),
+    );
+    let raw = json!({"messages": [projected], "has_more": false});
+    let mut provenance = DirectP5ProjectionProvenance::default();
+    provenance.record(
+        "msg-logical-unverified-thread",
+        p5_cache_binding_from_message(&wire).unwrap().unwrap(),
+    );
+    let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
+    assert!(matches!(
+        page.items[0].thread,
+        crate::messages::ThreadRef::Thread(_)
+    ));
+    let records = remote_projection_records(&client, &page.items, &provenance).unwrap();
+    assert_eq!(records.len(), 1);
+    assert!(p5_cache_binding_from_record(&records[0]).is_none());
+    assert!(!p5_cache_record_has_direct_route(&records[0]));
 }
 
 #[tokio::test]
