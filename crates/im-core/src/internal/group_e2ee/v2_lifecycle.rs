@@ -154,15 +154,17 @@ pub(crate) fn publish_current_key_package(
     })
 }
 
-/// Publishes the one deterministic P6 KeyPackage associated with an
-/// authorized device-Join session. The SDK WAL owns retry identity and the
-/// accepted Host result, so a repeated successful Join poll has no network
-/// side effect.
+/// Publishes the stable P6 KeyPackage family associated with an authorized
+/// device-Join session. Core always supplies the deterministic family base
+/// IDs; the SDK WAL may return a fresh attempt-specific `meta` and body after
+/// an unaccepted attempt expires. Only that returned wire attempt is sent to
+/// the Host, while an accepted family remains terminal and has no network side
+/// effect on later Join polling.
 pub(crate) async fn publish_join_key_package(
     client: &crate::core::ImClient,
     expected_device_id: &str,
-    operation_id: &str,
-    key_package_id: &str,
+    base_operation_id: &str,
+    base_key_package_id: &str,
 ) -> crate::ImResult<()> {
     let context = production_context(client)?;
     require_current_device_selection(Some(expected_device_id), &context.device.device_id)?;
@@ -174,7 +176,7 @@ pub(crate) async fn publish_join_key_package(
         client,
         &context.device,
         service_did.as_str(),
-        operation_id,
+        base_operation_id,
         GROUP_E2EE_TRANSPORT_PROFILE_V2,
         &now_text,
     );
@@ -187,12 +189,12 @@ pub(crate) async fn publish_join_key_package(
             owner_did: client.did().as_str().to_owned(),
             owner_device_id: context.device.device_id.clone(),
             verification_method: context.device.signing_key_id.clone(),
-            key_package_id: key_package_id.to_owned(),
+            key_package_id: base_key_package_id.to_owned(),
             issued_at: now_text.clone(),
             expires_at,
             now: now_text,
             draft_extension_negotiated: true,
-            request_id: format!("{operation_id}-local"),
+            request_id: format!("{base_operation_id}-local"),
         },
         &context.did_document,
         &context.device_signing_private_key,

@@ -685,6 +685,111 @@ async fn key_package_publish_restarts_with_exact_bytes_and_skips_host_after_acce
     );
 }
 
+#[tokio::test]
+async fn key_package_publish_rotates_an_expired_unaccepted_join_attempt() {
+    let directory = TestDirectory::new("im-core-p6-v2-key-package-rotate");
+    let fixture = make_did_fixture("alice-key-package-rotate", &["alice-kp-rotate"]);
+    let device = &fixture.devices[0];
+    let transport = LoopbackTransport::default();
+    let key = signing_key(device);
+    let mut meta = key_service_meta(&fixture.did, &device.device_id, "op-join-kp-stable");
+    meta.created_at = None;
+    let first_input = key_package_input(
+        &fixture,
+        device,
+        "kp-join-stable",
+        "req-join-kp-rotate-first",
+    );
+    let initial = product(&directory, &fixture, device, transport.clone());
+    let first = initial
+        .prepare_current_key_package(meta.clone(), first_input, &fixture.document, &key)
+        .expect("prepare the stable Join KeyPackage family");
+    transport.set_next(NextResponse::TransportFailure);
+    let mut async_transport = transport.clone();
+    assert!(matches!(
+        initial
+            .publish_current_key_package_async(&mut async_transport, &first)
+            .await,
+        Err(crate::ImError::TransportUnavailable { .. })
+    ));
+    drop(initial);
+
+    let mut expired_retry = key_package_input(
+        &fixture,
+        device,
+        "kp-join-stable",
+        "req-join-kp-rotate-expired",
+    );
+    expired_retry.issued_at = "2026-08-20T00:00:00Z".to_owned();
+    expired_retry.expires_at = "2026-09-20T00:00:00Z".to_owned();
+    expired_retry.now = "2026-08-20T00:00:00Z".to_owned();
+    let restarted = product(&directory, &fixture, device, transport.clone());
+    let rotated = restarted
+        .prepare_current_key_package(meta.clone(), expired_retry.clone(), &fixture.document, &key)
+        .expect("expired unaccepted attempt rotates within the stable Join family");
+    assert_ne!(rotated.meta.operation_id, first.meta.operation_id);
+    assert_ne!(
+        rotated.body.group_key_package.key_package_id,
+        first.body.group_key_package.key_package_id
+    );
+    assert!(rotated.meta.operation_id.starts_with("kp-op-attempt-"));
+    assert!(rotated
+        .body
+        .group_key_package
+        .key_package_id
+        .starts_with("kp-attempt-"));
+
+    expired_retry.now = "2026-08-21T00:00:00Z".to_owned();
+    expired_retry.request_id = "req-join-kp-rotate-exact-retry".to_owned();
+    let exact_retry = restarted
+        .prepare_current_key_package(meta.clone(), expired_retry.clone(), &fixture.document, &key)
+        .expect("the rotated attempt resumes byte-for-byte");
+    assert_eq!(exact_retry, rotated);
+    let accepted = restarted
+        .publish_current_key_package_async(&mut async_transport, &exact_retry)
+        .await
+        .expect("publish and accept the attempt-specific wire IDs");
+
+    let calls = transport.calls();
+    let publish_calls = calls
+        .iter()
+        .filter(|call| call.method == "group.e2ee.publish_key_package")
+        .collect::<Vec<_>>();
+    assert_eq!(publish_calls.len(), 2);
+    assert_ne!(publish_calls[0].params, publish_calls[1].params);
+    assert_eq!(
+        publish_calls[1].params["meta"]["operation_id"],
+        rotated.meta.operation_id
+    );
+    assert_eq!(
+        publish_calls[1].params["body"]["group_key_package"]["key_package_id"],
+        rotated.body.group_key_package.key_package_id
+    );
+
+    expired_retry.now = "2026-10-01T00:00:00Z".to_owned();
+    expired_retry.request_id = "req-join-kp-accepted-after-ttl".to_owned();
+    let cached = restarted
+        .prepare_current_key_package(meta, expired_retry, &fixture.document, &key)
+        .expect("accepted Join family remains terminal after TTL");
+    assert_eq!(cached.meta, rotated.meta);
+    assert_eq!(cached.accepted_result.as_ref(), Some(&accepted));
+    assert_eq!(
+        restarted
+            .publish_current_key_package_async(&mut async_transport, &cached)
+            .await
+            .expect("terminal retry uses the cached Host result"),
+        accepted
+    );
+    assert_eq!(
+        transport
+            .calls()
+            .iter()
+            .filter(|call| call.method == "group.e2ee.publish_key_package")
+            .count(),
+        2
+    );
+}
+
 #[test]
 fn sequential_device_membership_reloads_finalized_epoch_for_each_leaf() {
     let directory = TestDirectory::new("im-core-p6-v2-membership-epochs");
