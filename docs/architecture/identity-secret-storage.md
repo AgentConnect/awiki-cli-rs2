@@ -121,11 +121,25 @@ index image 是本地导入线性化点。若进程在 Vault seal 后、index co
 projection；若 projection 写入失败，导入仍按已提交状态处理，并由同一 Envelope 的精确重放
 重试投影。文件型 provider 每次读取该 projection，因此当前已打开的 client 无需重建即可看到
 最新文档。
+management-ready ACK 可能对应比 Envelope 更新的 Document checkpoint。端内先验证解析到的
+Document 与 Registry hash、当前设备 key/role/generation，再提交 auth/checkpoint，最后原子更新
+Document projection；投影失败返回固定的 exact-retry 本地错误。重试进入 AlreadyConverged 时
+仍须重新解析并校验当前 Document/Registry 后修复 projection，但不得再次签发 management token，
+也不得改变已提交的 auth ref、operation id 或 authorization generation；同版本不同 hash 拒绝。
+该投影重试本身不刷新 access token；若持久化 token 已过期，先由正常会话刷新路径更新 auth
+state，再以新的当前 bearer 重试投影，避免把 token refresh 隐式混入 root-import 幂等状态机。
 同一进程中长期存活的 vNext `KeyMaterialProvider` 还维护可推进的 root/auth `SecretRef`
 指针；推进前严格核对 Vault context、identity、DID、secret kind、key id/version 并成功
-解封目标记录。fresh import、Envelope replay 和精确恢复都从 Identity index 的权威 ref
+解封目标记录。导入 root ref 只接受 `key_version=1`，并从私钥重算公钥指纹核对已签名的
+imported completion。fresh import、Envelope replay 和精确恢复都从 Identity index 的权威 ref
 修复当前 provider，因此导入后不要求重建 client。被替代记录不会在推进时立即删除，避免
 破坏仍引用旧 ref 的其他 live provider，后续由单独的 Vault compaction 处理。
+V1 明确约束每个本地 identity 只有一个活动 runtime。多个同时存活的 client/provider 不保证
+内存 `SecretRef` 广播收敛；非当前执行 runtime 需在重开或自身 exact-retry 时修复。跨 runtime
+主动广播留作后续版本，不在本期增加全局协调器。
+本流程只面向使用 canonical `did_document.json` 的新建 vNext identity；同时保留 legacy
+`did.json` 的旧身份仍由兼容 adapter 处理，不进入本期 root-import 核心状态机，避免双文件
+读取优先级造成 projection 分歧。
 
 所有 IdentityStore index 的 load-modify-save，以及本地 identity 删除路径，共享同一 OS
 mutation lock；index 本身通过 private temp file、`fsync` 和跨平台 atomic replace 替换

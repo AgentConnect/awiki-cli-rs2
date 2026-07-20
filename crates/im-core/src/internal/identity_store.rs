@@ -768,19 +768,136 @@ impl<'a> IdentityStore<'a> {
                     && root_ref.kind
                         == crate::internal::secret_vault::record::SecretKind::IdentityRootPrivate
                     && root_ref.key_id == imported.completion.root_key_id
-                    && root_ref.key_version > 0
+                    && root_ref.key_version == 1
             })
             .ok_or(crate::ImError::PermissionDenied)?;
         let opened = vault.open(&root_ref)?;
         let root_pem = std::str::from_utf8(opened.expose_secret())
             .map_err(|_| crate::ImError::PermissionDenied)?;
-        if !matches!(
-            anp::PrivateKeyMaterial::from_pem(root_pem),
-            Ok(anp::PrivateKeyMaterial::Ed25519(_))
-        ) {
+        let root = anp::PrivateKeyMaterial::from_pem(root_pem)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        if !matches!(root, anp::PrivateKeyMaterial::Ed25519(_)) {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let fingerprint = format!(
+            "e1_{}",
+            anp::authentication::compute_multikey_fingerprint(&root.public_key())
+                .map_err(|_| crate::ImError::PermissionDenied)?
+        );
+        if imported.completion.did != entry.did
+            || imported.completion.root_public_key_fingerprint != fingerprint
+            || entry.did.rsplit(':').next() != Some(fingerprint.as_str())
+        {
             return Err(crate::ImError::PermissionDenied);
         }
         Ok(root_ref)
+    }
+
+    /// Commits the verified DID document projection for one management-ready
+    /// root import without changing its auth ref, token operation or
+    /// authorization generation. The index checkpoint remains authoritative;
+    /// an atomic document projection failure is reported so the same signed
+    /// completion can repair it by exact retry.
+    pub(crate) fn commit_root_import_management_document(
+        &self,
+        local_alias: &str,
+        completed_message_id: &str,
+        auth_generation: u64,
+        checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+        did_document: &Value,
+    ) -> crate::ImResult<()> {
+        if completed_message_id.trim().is_empty()
+            || auth_generation == 0
+            || checkpoint.document_version == 0
+            || checkpoint.registry_version == 0
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let alias = sanitize_identity_name(local_alias);
+        let lock = self.lock_index_mutation()?;
+        let mut index = self.load_index()?;
+        let entry =
+            index
+                .credentials
+                .get_mut(&alias)
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: alias.clone(),
+                })?;
+        let imported = entry
+            .root_key_import
+            .as_ref()
+            .filter(|record| record.message_id() == completed_message_id)
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if imported.completion.did != entry.did
+            || imported.completion.importing_device_id
+                != entry
+                    .device_state
+                    .as_ref()
+                    .and_then(|state| state.authorization.as_ref())
+                    .map(|authorization| authorization.protocol_device_id.as_str())
+                    .unwrap_or_default()
+            || checkpoint.document_version < imported.completion.document_version
+            || (checkpoint.document_version == imported.completion.document_version
+                && checkpoint.document_hash != imported.completion.document_hash)
+            || did_document.get("id").and_then(Value::as_str) != Some(entry.did.as_str())
+            || !anp::authentication::validate_did_document_binding(did_document, true)
+            || crate::internal::identity_wire::device_genesis::document_hash(did_document)?
+                != checkpoint.document_hash
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let state = entry
+            .device_state
+            .as_mut()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let authorization = state
+            .authorization
+            .as_ref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
+            || authorization.status
+                != crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
+            || authorization.role
+                != crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
+            || !authorization.management_ready
+            || authorization.auth_generation != auth_generation
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let manifest = anp::authentication::find_eligible_device(
+            did_document,
+            authorization.protocol_device_id.as_str(),
+            anp::authentication::PROFILE_DIRECT_E2EE_V2,
+        )
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+        if manifest.signing_key_id != authorization.signing_key_id
+            || manifest.e2ee_key_id != authorization.e2ee_key_id
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if let Some(current) = state.checkpoint.as_ref() {
+            if checkpoint.document_version < current.document_version
+                || checkpoint.registry_version < current.registry_version
+                || (checkpoint.document_version == current.document_version
+                    && checkpoint.document_hash != current.document_hash)
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+        let checkpoint_changed = state.checkpoint.as_ref() != Some(checkpoint);
+        if checkpoint_changed {
+            state.checkpoint = Some(checkpoint.clone());
+        }
+        let dir_name = entry.dir_name.clone();
+        if checkpoint_changed {
+            index.schema_version = INDEX_SCHEMA_VERSION;
+            self.save_index_locked(&lock, index)?;
+        }
+        self.save_did_document(&dir_name, did_document)
+            .map_err(|_| crate::ImError::LocalStateUnavailable {
+                detail: "verified DID document projection requires exact retry".to_owned(),
+            })
     }
 
     /// Seals the replacement token under a new Vault `SecretRef`, then commits

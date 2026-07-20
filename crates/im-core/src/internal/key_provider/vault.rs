@@ -304,7 +304,7 @@ impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
             || committed.did != binding.did
             || committed.kind != SecretKind::IdentityRootPrivate
             || committed.key_id != expected_key_id
-            || committed.key_version == 0
+            || committed.key_version != 1
         {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -643,6 +643,9 @@ mod tests {
         provider.advance_vault_root_ref(&root_ref).unwrap();
         assert_eq!(provider.did_document_root_private_pem().unwrap(), root_pem);
 
+        let mut wrong_version = root_ref.clone();
+        wrong_version.key_version = 2;
+        assert!(provider.advance_vault_root_ref(&wrong_version).is_err());
         let mut wrong_binding = root_ref;
         wrong_binding.device_id = "other-device".to_owned();
         assert!(provider.advance_vault_root_ref(&wrong_binding).is_err());

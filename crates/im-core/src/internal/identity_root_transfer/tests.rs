@@ -441,6 +441,41 @@ fn long_lived_client_can_use_imported_root_without_reopen() {
 }
 
 #[test]
+fn committed_root_ref_rejects_private_fingerprint_claim_drift() {
+    let scenario = scenario();
+    let imported = import_receiver_root(&scenario);
+    let store = IdentityStore::new(&scenario.receiver.paths);
+    store
+        .committed_root_import_root_ref(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+    let lock = store.lock_index_mutation().unwrap();
+    let mut index = store.load_index().unwrap();
+    index
+        .credentials
+        .get_mut(LOCAL_ALIAS)
+        .unwrap()
+        .root_key_import
+        .as_mut()
+        .unwrap()
+        .completion
+        .root_public_key_fingerprint = "e1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned();
+    store.save_index_locked(&lock, index).unwrap();
+    drop(lock);
+
+    assert!(store
+        .committed_root_import_root_ref(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            &scenario.receiver.storage,
+        )
+        .is_err());
+}
+
+#[test]
 fn envelope_replay_repairs_live_root_ref_after_first_advance_failure() {
     let scenario = scenario();
     let core = receiver_live_core(&scenario);
@@ -2157,6 +2192,400 @@ fn management_ready_convergence_commits_versioned_token_ref_and_state_together()
 }
 
 #[test]
+fn management_ready_projection_exposes_ack_document_to_live_client_and_management() {
+    let scenario = scenario();
+    let core = receiver_live_core(&scenario);
+    let client = core
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            LOCAL_ALIAS.to_owned(),
+        ))
+        .unwrap();
+    let imported = import_receiver_root(&scenario);
+    crate::internal::identity_root_transfer_runtime::repair_committed_root_import_root_ref(
+        &core,
+        &client,
+        &imported.completion().ack_for_message_id,
+    )
+    .unwrap();
+    let (ack_document, ack_registry) = management_ready_document(&scenario, "dev-ack-later");
+    assert!(ack_registry.checkpoint.document_version > imported.completion().document_version);
+
+    let store = IdentityStore::new(&scenario.receiver.paths);
+    let auth_ref = store
+        .converge_root_import_management_ready(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &ack_registry.checkpoint,
+            "ack-access-token",
+            "ack-refresh-token",
+            "2099-07-20T01:00:00Z",
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+    store
+        .commit_root_import_management_document(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &ack_registry.checkpoint,
+            &ack_document,
+        )
+        .unwrap();
+    client
+        .runtime()
+        .key_provider
+        .advance_vault_auth_ref(&auth_ref)
+        .unwrap();
+
+    assert_eq!(
+        client.runtime().key_provider.did_document().unwrap(),
+        ack_document
+    );
+    let prepared = RootKeyTransferCore::from_core_for_rollout(&core, true)
+        .unwrap()
+        .prepare_envelope(RootKeyEnvelopePrepareInput {
+            local_alias: LOCAL_ALIAS,
+            did_document: &ack_document,
+            registry: &ack_registry,
+            recipient_device_id: "dev-ack-later",
+            message_id: "root-management-after-ack",
+            user_presence_at: scenario.now,
+            now: scenario.now,
+            expires_at: scenario.now + Duration::minutes(2),
+        })
+        .unwrap();
+    assert_eq!(
+        prepared.transport_context().sender_device_id,
+        scenario.recipient_device_id
+    );
+}
+
+#[test]
+fn management_ready_projection_exact_retry_and_restart_preserve_auth_commit() {
+    let scenario = scenario();
+    let live_core = receiver_live_core(&scenario);
+    let live_client = live_core
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            LOCAL_ALIAS.to_owned(),
+        ))
+        .unwrap();
+    let imported = import_receiver_root(&scenario);
+    let store = IdentityStore::new(&scenario.receiver.paths);
+    let operation_id = store
+        .reserve_root_import_management_token_operation(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            || Ok("root-ready-projection-retry".to_owned()),
+        )
+        .unwrap();
+    let (ack_document, ack_registry) = management_ready_document(&scenario, "dev-ack-restart");
+    let auth_ref = store
+        .converge_root_import_management_ready(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &ack_registry.checkpoint,
+            "restart-access-token",
+            "restart-refresh-token",
+            "2099-07-20T01:00:00Z",
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+    let vault_refs_before = scenario.receiver.vault.list().unwrap();
+    let document_path = scenario
+        .receiver
+        .paths
+        .identity_root_dir
+        .join("receiver-identity")
+        .join("did_document.json");
+    let backup_path = document_path.with_extension("management-ready-backup");
+    std::fs::rename(&document_path, &backup_path).unwrap();
+    std::fs::create_dir(&document_path).unwrap();
+
+    let failed = store.commit_root_import_management_document(
+        LOCAL_ALIAS,
+        &imported.completion().ack_for_message_id,
+        2,
+        &ack_registry.checkpoint,
+        &ack_document,
+    );
+    assert!(matches!(
+        failed,
+        Err(crate::ImError::LocalStateUnavailable { detail })
+            if detail == "verified DID document projection requires exact retry"
+    ));
+    std::fs::remove_dir(&document_path).unwrap();
+    std::fs::rename(&backup_path, &document_path).unwrap();
+    let after_failure = store.load_index().unwrap();
+    let failed_entry = &after_failure.credentials[LOCAL_ALIAS];
+    let failed_authorization = failed_entry
+        .device_state
+        .as_ref()
+        .and_then(|state| state.authorization.as_ref())
+        .unwrap();
+    assert!(failed_authorization.management_ready);
+    assert_eq!(failed_authorization.auth_generation, 2);
+    assert_eq!(
+        failed_entry
+            .vault_migration
+            .as_ref()
+            .unwrap()
+            .vnext_refs
+            .as_ref()
+            .unwrap()
+            .auth_jwt,
+        auth_ref
+    );
+    assert_eq!(
+        failed_entry
+            .root_key_import
+            .as_ref()
+            .unwrap()
+            .management_token_operation_id
+            .as_deref(),
+        Some(operation_id.as_str())
+    );
+
+    assert_ne!(
+        live_client.runtime().key_provider.did_document().unwrap(),
+        ack_document
+    );
+    live_client
+        .runtime()
+        .key_provider
+        .advance_vault_auth_ref(&auth_ref)
+        .unwrap();
+    store
+        .commit_root_import_management_document(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &ack_registry.checkpoint,
+            &ack_document,
+        )
+        .unwrap();
+    assert_eq!(
+        live_client.runtime().key_provider.did_document().unwrap(),
+        ack_document
+    );
+    assert_eq!(
+        live_client
+            .runtime()
+            .key_provider
+            .auth_state()
+            .unwrap()
+            .bearer_token
+            .as_deref(),
+        Some("restart-access-token")
+    );
+
+    // Recreate the same durable crash image (committed index/auth plus stale
+    // document), then prove a newly opened runtime repairs it idempotently.
+    store
+        .save_did_document("receiver-identity", &scenario.document)
+        .unwrap();
+    drop(live_client);
+    drop(live_core);
+    let restarted_core = receiver_live_core(&scenario);
+    let restarted_client = restarted_core
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            LOCAL_ALIAS.to_owned(),
+        ))
+        .unwrap();
+    assert_eq!(
+        restarted_client
+            .runtime()
+            .key_provider
+            .auth_state()
+            .unwrap()
+            .bearer_token
+            .as_deref(),
+        Some("restart-access-token")
+    );
+    assert_ne!(
+        restarted_client
+            .runtime()
+            .key_provider
+            .did_document()
+            .unwrap(),
+        ack_document
+    );
+    store
+        .commit_root_import_management_document(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &ack_registry.checkpoint,
+            &ack_document,
+        )
+        .unwrap();
+    assert_eq!(
+        restarted_client
+            .runtime()
+            .key_provider
+            .did_document()
+            .unwrap(),
+        ack_document
+    );
+
+    let repaired = store.load_index().unwrap();
+    let entry = &repaired.credentials[LOCAL_ALIAS];
+    let authorization = entry
+        .device_state
+        .as_ref()
+        .and_then(|state| state.authorization.as_ref())
+        .unwrap();
+    assert!(authorization.management_ready);
+    assert_eq!(authorization.auth_generation, 2);
+    assert_eq!(
+        entry
+            .vault_migration
+            .as_ref()
+            .unwrap()
+            .vnext_refs
+            .as_ref()
+            .unwrap()
+            .auth_jwt,
+        auth_ref
+    );
+    assert_eq!(
+        entry
+            .root_key_import
+            .as_ref()
+            .unwrap()
+            .management_token_operation_id
+            .as_deref(),
+        Some(operation_id.as_str())
+    );
+    assert_eq!(scenario.receiver.vault.list().unwrap(), vault_refs_before);
+}
+
+#[test]
+fn management_ready_projection_rejects_same_version_document_fork() {
+    let scenario = scenario();
+    let imported = import_receiver_root(&scenario);
+    let store = IdentityStore::new(&scenario.receiver.paths);
+    let (document, registry) = management_ready_document(&scenario, "dev-ack-canonical");
+    store
+        .converge_root_import_management_ready(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &registry.checkpoint,
+            "fork-access-token",
+            "fork-refresh-token",
+            "2099-07-20T01:00:00Z",
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+    let committed_before_fork = store.load_index().unwrap();
+    let committed_entry = &committed_before_fork.credentials[LOCAL_ALIAS];
+    let auth_ref_before_fork = committed_entry
+        .vault_migration
+        .as_ref()
+        .unwrap()
+        .vnext_refs
+        .as_ref()
+        .unwrap()
+        .auth_jwt
+        .clone();
+    let generation_before_fork = committed_entry
+        .device_state
+        .as_ref()
+        .unwrap()
+        .authorization
+        .as_ref()
+        .unwrap()
+        .auth_generation;
+    let operation_before_fork = committed_entry
+        .root_key_import
+        .as_ref()
+        .unwrap()
+        .management_token_operation_id
+        .clone();
+    let vault_before_fork = scenario.receiver.vault.list().unwrap();
+    store
+        .commit_root_import_management_document(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &registry.checkpoint,
+            &document,
+        )
+        .unwrap();
+    let (fork_document, mut fork_registry) = management_ready_document(&scenario, "dev-ack-fork");
+    fork_registry.checkpoint.registry_version = registry.checkpoint.registry_version + 1;
+    assert_eq!(
+        fork_registry.checkpoint.document_version,
+        registry.checkpoint.document_version
+    );
+    assert_ne!(
+        fork_registry.checkpoint.document_hash,
+        registry.checkpoint.document_hash
+    );
+
+    assert_eq!(
+        store
+            .commit_root_import_management_document(
+                LOCAL_ALIAS,
+                &imported.completion().ack_for_message_id,
+                2,
+                &fork_registry.checkpoint,
+                &fork_document,
+            )
+            .unwrap_err(),
+        crate::ImError::PermissionDenied
+    );
+    assert_eq!(
+        store.load_did_document("receiver-identity").unwrap(),
+        document
+    );
+    assert_eq!(
+        store.load_index().unwrap().credentials[LOCAL_ALIAS]
+            .device_state
+            .as_ref()
+            .unwrap()
+            .checkpoint
+            .as_ref(),
+        Some(&registry.checkpoint)
+    );
+    let after_fork = store.load_index().unwrap();
+    let after_entry = &after_fork.credentials[LOCAL_ALIAS];
+    assert_eq!(
+        after_entry
+            .vault_migration
+            .as_ref()
+            .unwrap()
+            .vnext_refs
+            .as_ref()
+            .unwrap()
+            .auth_jwt,
+        auth_ref_before_fork
+    );
+    assert_eq!(
+        after_entry
+            .device_state
+            .as_ref()
+            .unwrap()
+            .authorization
+            .as_ref()
+            .unwrap()
+            .auth_generation,
+        generation_before_fork
+    );
+    assert_eq!(
+        after_entry
+            .root_key_import
+            .as_ref()
+            .unwrap()
+            .management_token_operation_id,
+        operation_before_fork
+    );
+    assert_eq!(scenario.receiver.vault.list().unwrap(), vault_before_fork);
+}
+
+#[test]
 fn concurrent_management_ready_convergence_cannot_overwrite_newer_token_generation() {
     let scenario = scenario();
     let imported = import_receiver_root(&scenario);
@@ -2489,6 +2918,28 @@ fn ready_checkpoint(scenario: &Scenario) -> IdentityInternalCheckpoint {
     let mut checkpoint = scenario.registry.checkpoint.clone();
     checkpoint.registry_version += 1;
     checkpoint
+}
+
+fn management_ready_document(
+    scenario: &Scenario,
+    added_admin_device_id: &str,
+) -> (Value, DeviceJoinRemoteRegistry) {
+    let (document, mut registry, _) = add_ready_admin(scenario, added_admin_device_id);
+    let local = registry
+        .devices
+        .iter_mut()
+        .find(|device| device.device_id == scenario.recipient_device_id)
+        .unwrap();
+    local.management_ready = true;
+    local.auth_generation = 2;
+    registry
+        .devices
+        .iter_mut()
+        .find(|device| device.device_id == added_admin_device_id)
+        .unwrap()
+        .management_ready = false;
+    registry.checkpoint.registry_version += 1;
+    (document, registry)
 }
 
 #[derive(Debug)]

@@ -916,14 +916,11 @@ async fn complete_local_management_ready(
             &ready.completed_message_id,
             ready.auth_generation,
         )?;
-        return Ok(());
     }
 
-    // Root-import completion advances auth_generation before this process can
-    // persist its replacement token. Therefore neither the old bearer nor a
-    // signature-only Registry read is valid here. Resolve the public document,
-    // issue the generation-bound token, then use that uncommitted access token
-    // for the one Registry checkpoint read needed before local convergence.
+    // Always re-resolve the public document. An exact retry may be repairing a
+    // document projection that failed after auth/checkpoint commit, so the
+    // AlreadyConverged path must not return before validating current state.
     let mut resolver = crate::internal::transport::CorePlainTransport::new(core);
     let did_document = crate::internal::discovery::did_document::resolve_did_document_async(
         &mut resolver,
@@ -942,34 +939,62 @@ async fn complete_local_management_ready(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let signing_private = anp::PrivateKeyMaterial::from_pem(
-        &client
-            .runtime()
-            .key_provider
-            .device_request_signing_private_pem()?,
-    )
-    .map_err(|_| crate::ImError::PermissionDenied)?;
     let identity_store =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
-    let service_domain =
-        crate::internal::identity_join_activation_pending::service_domain_from_did(client.did())?;
-    let token = issue_root_import_management_token(
-        core,
-        &identity_store,
-        local_alias,
-        ready,
-        &did_document,
-        &authorization.signing_key_id,
-        &signing_private,
-        &service_domain,
-    )
-    .await?;
-    let mut registry_remote = DeviceJoinAdminHttpAdapter::new(
-        crate::internal::transport::CoreHttpTransport::new_with_ephemeral_bearer(
-            client,
-            &token.access_token,
-        )?,
-    );
+    let (mut registry_remote, fresh_token) = match transition {
+        LocalManagementReadyTransition::Fresh => {
+            // Root-import completion advances auth_generation before this
+            // process can persist its replacement token. Neither the old
+            // bearer nor signature fallback is valid, so issue once and use
+            // the uncommitted access token for the verification read.
+            let signing_private = anp::PrivateKeyMaterial::from_pem(
+                &client
+                    .runtime()
+                    .key_provider
+                    .device_request_signing_private_pem()?,
+            )
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+            let service_domain =
+                crate::internal::identity_join_activation_pending::service_domain_from_did(
+                    client.did(),
+                )?;
+            let token = issue_root_import_management_token(
+                core,
+                &identity_store,
+                local_alias,
+                ready,
+                &did_document,
+                &authorization.signing_key_id,
+                &signing_private,
+                &service_domain,
+            )
+            .await?;
+            let transport =
+                crate::internal::transport::CoreHttpTransport::new_with_ephemeral_bearer(
+                    client,
+                    &token.access_token,
+                )?;
+            (DeviceJoinAdminHttpAdapter::new(transport), Some(token))
+        }
+        LocalManagementReadyTransition::AlreadyConverged => {
+            // Exact projection repair must not issue another token or mutate
+            // the committed auth ref/generation. Use the current committed
+            // access token through the no-persist ephemeral transport.
+            let bearer = client
+                .runtime()
+                .key_provider
+                .auth_state()?
+                .bearer_token
+                .map(|token| token.trim().to_owned())
+                .filter(|token| !token.is_empty())
+                .ok_or(crate::ImError::AuthRequired)?;
+            let transport =
+                crate::internal::transport::CoreHttpTransport::new_with_ephemeral_bearer(
+                    client, &bearer,
+                )?;
+            (DeviceJoinAdminHttpAdapter::new(transport), None)
+        }
+    };
     let registry = registry_remote.registry(client.did(), false).await?;
     validate_management_ready_registry_checkpoint(
         completion,
@@ -987,22 +1012,35 @@ async fn complete_local_management_ready(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let secret_storage =
-        crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
-    let committed_auth_ref = identity_store.converge_root_import_management_ready(
+    let committed_auth_ref = if let Some(token) = fresh_token {
+        let secret_storage =
+            crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
+        Some(identity_store.converge_root_import_management_ready(
+            local_alias,
+            &ready.completed_message_id,
+            ready.auth_generation,
+            &registry.checkpoint,
+            &token.access_token,
+            &token.refresh_token,
+            &token.expires_at,
+            &secret_storage,
+        )?)
+    } else {
+        None
+    };
+    identity_store.commit_root_import_management_document(
         local_alias,
         &ready.completed_message_id,
         ready.auth_generation,
         &registry.checkpoint,
-        &token.access_token,
-        &token.refresh_token,
-        &token.expires_at,
-        &secret_storage,
+        &did_document,
     )?;
-    client
-        .runtime()
-        .key_provider
-        .advance_vault_auth_ref(&committed_auth_ref)?;
+    if let Some(committed_auth_ref) = committed_auth_ref {
+        client
+            .runtime()
+            .key_provider
+            .advance_vault_auth_ref(&committed_auth_ref)?;
+    }
     Ok(())
 }
 
