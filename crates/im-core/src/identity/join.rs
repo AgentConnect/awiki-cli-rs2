@@ -763,13 +763,15 @@ fn parse_approval_expiry(value: &str) -> crate::ImResult<OffsetDateTime> {
 fn public_progress(
     value: crate::internal::identity_device_join_runtime::DeviceJoinAdvanceResult,
 ) -> crate::ImResult<DeviceJoinProgress> {
+    let current_device = (value.session.side == DeviceJoinSide::NewDevice)
+        .then(|| value.session.protocol_device_id.clone());
     Ok(DeviceJoinProgress {
         session: value.session.into(),
         remote_state: public_remote_state(value.remote_state),
         sas: value.sas,
         authorized_device: value
             .authorization
-            .map(|authorization| public_device(authorization.device, None))
+            .map(|authorization| public_device(authorization.device, current_device.as_ref()))
             .transpose()?,
     })
 }
@@ -910,5 +912,62 @@ fn approval_error_is_retryable(error: &crate::ImError) -> bool {
         crate::ImError::Service { status_code, .. } => status_code
             .is_none_or(|status| status == 408 || status == 425 || status == 429 || status >= 500),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authorized_device_is_current_only_in_new_device_progress() {
+        for (side, expected_current) in [
+            (DeviceJoinSide::NewDevice, true),
+            (DeviceJoinSide::Admin, false),
+        ] {
+            let did = crate::ids::Did::parse("did:wba:awiki.test:user:alice:e1_test").unwrap();
+            let protocol_device_id = crate::ids::ProtocolDeviceId::parse("dev-new").unwrap();
+            let progress = public_progress(
+                crate::internal::identity_device_join_runtime::DeviceJoinAdvanceResult {
+                    session: DeviceJoinSessionSummary {
+                        join_session_id: "join-test".to_owned(),
+                        did,
+                        protocol_device_id,
+                        side,
+                        phase: DeviceJoinLocalPhase::Authorized,
+                        join_request_hash: "sha256:test".to_owned(),
+                        challenge_id: None,
+                        expires_at: "2026-07-20T00:10:00Z".to_owned(),
+                    },
+                    remote_state:
+                        crate::internal::identity_device_join_runtime::DeviceJoinRemoteState::Consumed,
+                    authorization: Some(
+                        crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization {
+                            checkpoint: crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                                document_version: 2,
+                                document_hash: "sha256:document".to_owned(),
+                                registry_version: 2,
+                            },
+                            device: crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                                device_id: "dev-new".to_owned(),
+                                signing_key_id: "did:wba:awiki.test:user:alice:e1_test#sign".to_owned(),
+                                e2ee_key_id: "did:wba:awiki.test:user:alice:e1_test#e2ee".to_owned(),
+                                status: crate::internal::identity_device_state::DeviceAuthorizationStatus::Active,
+                                role: crate::internal::identity_device_state::DeviceAuthorizationRole::Member,
+                                management_ready: false,
+                                auth_generation: 1,
+                            },
+                        },
+                    ),
+                    sas: None,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                progress.authorized_device.unwrap().is_current,
+                expected_current
+            );
+        }
     }
 }
