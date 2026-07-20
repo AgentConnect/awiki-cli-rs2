@@ -15,6 +15,12 @@ is not an ANP capability and is never serialized into DID or cross-domain wire
 objects. Enabling it selects the v2 implementation for the existing redacted
 group status/repair facade; it does not expose low-level MLS commands.
 
+The CLI maps the deployment-local environment variable
+`AWIKI_MULTI_DEVICE_GROUP_E2EE_ENABLED` to that Core option. It is unset/`0`
+by default, accepts only `0` or `1`, and fails closed on every other value.
+This gate is independent from Join, Direct, root transfer, revoke and Handle
+Recovery and is never serialized into ANP discovery or message payloads.
+
 ## CLI responsibility
 
 `awiki-cli` owns argument parsing, workspace/config selection, dry-run rendering, errors, schema/help/completion, and user-facing output. Supported E2EE behavior must execute through `im-core` public services; the CLI must not orchestrate MLS or expose raw crypto artifacts.
