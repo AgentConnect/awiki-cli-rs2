@@ -104,8 +104,7 @@ pub(crate) fn open_direct_secret_blob(
     };
     let vault = vault.ok_or_else(|| crate::ImError::LocalStateUnavailable {
         detail: format!(
-            "{field} requires {env} to open direct secret envelope",
-            env = IM_CORE_VAULT_ROOT_KEY_ENV
+            "{field} requires {IM_CORE_VAULT_ROOT_KEY_ENV} to open direct secret envelope"
         ),
     })?;
     Ok(vault.open(&envelope.secret_ref)?.expose_secret().to_vec())

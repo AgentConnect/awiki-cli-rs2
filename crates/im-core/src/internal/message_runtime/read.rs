@@ -993,7 +993,7 @@ pub(crate) fn sort_dedupe_and_truncate_messages(
     messages: &mut Vec<crate::messages::Message>,
     requested_limit: crate::ids::PageLimit,
 ) -> bool {
-    messages.sort_by(|left, right| compare_messages_desc(left, right));
+    messages.sort_by(compare_messages_desc);
     dedupe_and_truncate_messages(messages, requested_limit)
 }
 
@@ -1007,7 +1007,7 @@ fn compare_messages_desc(
     ) {
         (Some(a), Some(b)) if a != b => b.cmp(&a),
         _ => message_timestamp(right)
-            .cmp(&message_timestamp(left))
+            .cmp(message_timestamp(left))
             .then_with(|| right.id.as_str().cmp(left.id.as_str())),
     }
 }

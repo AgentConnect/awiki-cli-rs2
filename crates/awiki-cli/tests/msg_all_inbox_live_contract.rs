@@ -343,6 +343,10 @@ fn write_msg_ws_config(workspace: &Path, base_url: &str) {
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test fixture mirrors one message row"
+)]
 fn seed_direct_message(
     workspace: &Path,
     owner_identity_id: &str,
@@ -363,6 +367,10 @@ fn seed_direct_message(
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test fixture mirrors one message row"
+)]
 fn seed_group_message(
     workspace: &Path,
     owner_identity_id: &str,

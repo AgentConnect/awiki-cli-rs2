@@ -34,6 +34,7 @@ fn acquire_state_root_owner(config: &DaemonConfig) -> Result<StateRootOwnerGuard
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&lock_path)
         .context("open daemon state owner lock")?;
     let _ = std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600));

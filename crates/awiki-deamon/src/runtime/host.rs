@@ -790,31 +790,30 @@ where
 
     if launch_outcome.status == RuntimeRunStatus::Failed
         && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed
+        && mark_active_runtime_run_failed(state, &run.run_id)?
     {
-        if mark_active_runtime_run_failed(state, &run.run_id)? {
-            if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
-                let failure = generic_cli_failure_detail(&launch_outcome);
-                let metadata = failure.metadata_json();
-                emit_runtime_status_with_metadata(
-                    outbox,
-                    &run,
-                    "failed",
-                    Some("Runtime failed"),
-                    Some(failure.error_code.as_str()),
-                    Some(failure.error_summary.as_str()),
-                    Some(&metadata),
-                )?;
-            } else {
-                let failure_summary = runtime_launch_failure_summary(&launch_outcome);
-                emit_runtime_status(
-                    outbox,
-                    &run,
-                    "failed",
-                    Some("Runtime failed"),
-                    Some("runtime_failed"),
-                    Some(&failure_summary),
-                )?;
-            }
+        if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+            let failure = generic_cli_failure_detail(&launch_outcome);
+            let metadata = failure.metadata_json();
+            emit_runtime_status_with_metadata(
+                outbox,
+                &run,
+                "failed",
+                Some("Runtime failed"),
+                Some(failure.error_code.as_str()),
+                Some(failure.error_summary.as_str()),
+                Some(&metadata),
+            )?;
+        } else {
+            let failure_summary = runtime_launch_failure_summary(&launch_outcome);
+            emit_runtime_status(
+                outbox,
+                &run,
+                "failed",
+                Some("Runtime failed"),
+                Some("runtime_failed"),
+                Some(&failure_summary),
+            )?;
         }
     }
     if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {

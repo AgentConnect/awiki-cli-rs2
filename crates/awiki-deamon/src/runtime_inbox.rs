@@ -250,7 +250,7 @@ fn refresh_runtime_conversation_projection(
     scope: RuntimeInboxScope,
     limit: u32,
 ) -> Result<()> {
-    let inbox_limit = limit.max(INBOX_DEFAULT_LIMIT).min(MAX_LIMIT);
+    let inbox_limit = limit.clamp(INBOX_DEFAULT_LIMIT, MAX_LIMIT);
     client.messages().inbox(im_core::messages::InboxQuery {
         scope: scope.inbox_scope(),
         limit: PageLimit(inbox_limit),

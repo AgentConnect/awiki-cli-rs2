@@ -356,7 +356,7 @@ fn normalize_gateway_command(value: Option<String>) -> Option<String> {
 fn detect_hermes_gateway_command(config: &DaemonConfig) -> Option<DetectedHermesGatewayCommand> {
     hermes_gateway_command_candidates()
         .into_iter()
-        .filter(|candidate| candidate_executable_is_available(candidate))
+        .filter(candidate_executable_is_available)
         .find_map(|candidate| {
             let command = gateway_command_from_parts(&candidate.parts);
             smoke_test_gateway_command(&command, config).ok().map(|_| {
@@ -636,9 +636,7 @@ impl StdioHermesGateway {
         if current.is_some() {
             return current;
         }
-        let Some(config) = self.config.as_ref() else {
-            return None;
-        };
+        let config = self.config.as_ref()?;
         let refreshed = configured_gateway_command(config).or_else(|| {
             detect_hermes_gateway_command(config).map(|detected| {
                 let _ = config.write_persistent_hermes_gateway_cmd(Some(detected.command.clone()));

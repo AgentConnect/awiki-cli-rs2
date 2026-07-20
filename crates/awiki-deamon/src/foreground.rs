@@ -369,11 +369,8 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                     let outbox = rpc_outbox
                         .lock()
                         .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?;
-                    match heartbeat.tick(&config, &state, &im_core, &*outbox) {
-                        Err(error) => {
-                            let _ = record_foreground_status_error(&state, &error.to_string());
-                        }
-                        Ok(_) => {}
+                    if let Err(error) = heartbeat.tick(&config, &state, &im_core, &*outbox) {
+                        let _ = record_foreground_status_error(&state, &error.to_string());
                     }
                 };
             }
@@ -1562,22 +1559,20 @@ fn drain_runtime_retry_queue_once_limited(
                             "busy_reason": busy_reason,
                         }),
                     )?;
-                } else {
-                    if state.fail_running_runtime_retry(&retry.retry_id)? {
-                        state.insert_audit_event_json(
-                            "runtime.run.retry.failed",
-                            Some(&retry.agent_did),
-                            Some(&retry.runtime_profile_id),
-                            Some(&retry.original_run_id),
-                            None,
-                            json!({
-                                "retry_id": retry.retry_id,
-                                "original_run_id": retry.original_run_id,
-                                "task_id": retry.task_id,
-                                "error": sanitized_error,
-                            }),
-                        )?;
-                    }
+                } else if state.fail_running_runtime_retry(&retry.retry_id)? {
+                    state.insert_audit_event_json(
+                        "runtime.run.retry.failed",
+                        Some(&retry.agent_did),
+                        Some(&retry.runtime_profile_id),
+                        Some(&retry.original_run_id),
+                        None,
+                        json!({
+                            "retry_id": retry.retry_id,
+                            "original_run_id": retry.original_run_id,
+                            "task_id": retry.task_id,
+                            "error": sanitized_error,
+                        }),
+                    )?;
                 }
             }
         }
@@ -3276,7 +3271,7 @@ fn try_send_runtime_agent_welcome_message(
         config,
         &identity,
         jwt_token.as_deref(),
-        &controller_did,
+        controller_did,
         runtime_agent_welcome_text(created),
         RuntimeMessageSecurity::DefaultPlain,
         MessageDeliveryOptions {

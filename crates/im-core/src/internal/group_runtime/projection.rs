@@ -464,9 +464,11 @@ fn group_member_record(
         &string_value(member.get("handle")),
         &default_string(
             &string_value(member.get("member_handle")),
-            &use_agent_handle
-                .then(|| string_value(member.get("agent_handle")))
-                .unwrap_or_default(),
+            &if use_agent_handle {
+                string_value(member.get("agent_handle"))
+            } else {
+                String::new()
+            },
         ),
     ));
     let handle_binding_generation = string_value(member.get("handle_binding_generation"));
@@ -779,9 +781,11 @@ fn normalize_group_member_json(mut member: Value) -> Value {
         &string_value(object.get("handle")),
         &default_string(
             &protocol_member_handle,
-            &use_agent_handle
-                .then(|| string_value(object.get("agent_handle")))
-                .unwrap_or_default(),
+            &if use_agent_handle {
+                string_value(object.get("agent_handle"))
+            } else {
+                String::new()
+            },
         ),
     ));
     if !protocol_member_handle.is_empty() {

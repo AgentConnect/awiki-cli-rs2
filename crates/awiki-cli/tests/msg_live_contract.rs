@@ -695,6 +695,10 @@ fn seed_direct_message(
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test fixture mirrors one message row"
+)]
 fn seed_direct_message_with_type(
     workspace: &Path,
     owner_identity_id: &str,

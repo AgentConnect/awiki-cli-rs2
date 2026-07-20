@@ -631,6 +631,10 @@ fn sync_one_agent_identity(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "the inline suite tests the status publisher declared later in this module"
+)]
 mod tests {
     use super::*;
     use crate::agent::{agent_data_paths, generate_agent_identity, AgentKind};

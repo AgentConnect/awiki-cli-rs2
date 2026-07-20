@@ -1,13 +1,29 @@
 pub mod agent;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "status assembly keeps each reported dimension explicit"
+)]
 pub mod agent_status;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "app bridge boundaries keep authorization and encrypted-envelope inputs explicit"
+)]
 pub mod app_bridge;
 pub mod archive;
 pub mod cli_runtime_env;
 pub mod cli_wrapper;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "command handlers keep authority, request, status, and outbox inputs explicit"
+)]
 pub mod commands;
 pub mod config;
 pub mod controller_scope;
 pub mod daemon_cli;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "foreground routing keeps security, persistence, and delivery dependencies explicit"
+)]
 pub mod foreground;
 pub mod im_core_adapter;
 pub mod inbox;
@@ -15,12 +31,24 @@ pub mod local_rpc;
 pub mod outbox;
 pub mod plugins;
 pub mod registration;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "runtime host calls keep plugin, authority, process, and persistence inputs explicit"
+)]
 pub mod runtime;
 pub mod runtime_inbox;
 pub mod secret_vault;
 pub mod security;
 pub mod service;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "state record validation mirrors persisted row contracts"
+)]
 pub mod state;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "upgrade progress helpers keep integrity and destination inputs explicit"
+)]
 pub mod upgrade;
 pub mod workspace;
 
@@ -79,6 +107,10 @@ pub enum DaemonCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "boxing would change the public Rust command output API; serialized output is already stable"
+)]
 pub enum DaemonCommandOutput {
     Status(DaemonStatus),
     AgentList(crate::daemon_cli::AgentListOutput),

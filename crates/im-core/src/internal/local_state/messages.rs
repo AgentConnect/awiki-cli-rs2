@@ -3723,10 +3723,7 @@ fn normalize_read_watermark_seq(value: &str) -> crate::ImResult<String> {
     crate::internal::local_state::sync_state::normalize_decimal_seq(value).map_err(|_| {
         crate::ImError::invalid_input(
             Some("read_watermark_seq".to_owned()),
-            format!(
-                "read_watermark_seq must be a non-negative decimal string, got {:?}",
-                value
-            ),
+            format!("read_watermark_seq must be a non-negative decimal string, got {value:?}"),
         )
     })
 }

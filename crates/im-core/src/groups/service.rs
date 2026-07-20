@@ -1068,7 +1068,7 @@ impl<'a> GroupService<'a> {
         #[cfg(not(feature = "group-e2ee"))]
         {
             let _ = request;
-            return Err(crate::ImError::unsupported("group-e2ee"));
+            Err(crate::ImError::unsupported("group-e2ee"))
         }
         #[cfg(feature = "group-e2ee")]
         {
@@ -1110,7 +1110,7 @@ impl<'a> GroupService<'a> {
         #[cfg(not(feature = "group-e2ee"))]
         {
             let _ = request;
-            return Err(crate::ImError::unsupported("group-e2ee"));
+            Err(crate::ImError::unsupported("group-e2ee"))
         }
         #[cfg(feature = "group-e2ee")]
         {
@@ -1154,7 +1154,7 @@ impl<'a> GroupService<'a> {
         #[cfg(not(feature = "group-e2ee"))]
         {
             let _ = request;
-            return Err(crate::ImError::unsupported("group-e2ee"));
+            Err(crate::ImError::unsupported("group-e2ee"))
         }
         #[cfg(feature = "group-e2ee")]
         {
@@ -1191,7 +1191,7 @@ impl<'a> GroupService<'a> {
         #[cfg(not(feature = "group-e2ee"))]
         {
             let _ = request;
-            return Err(crate::ImError::unsupported("group-e2ee"));
+            Err(crate::ImError::unsupported("group-e2ee"))
         }
         #[cfg(feature = "group-e2ee")]
         {
@@ -1230,7 +1230,7 @@ impl<'a> GroupService<'a> {
         #[cfg(not(feature = "group-e2ee"))]
         {
             let _ = request;
-            return Err(crate::ImError::unsupported("group-e2ee"));
+            Err(crate::ImError::unsupported("group-e2ee"))
         }
         #[cfg(feature = "group-e2ee")]
         {
@@ -1267,7 +1267,7 @@ impl<'a> GroupService<'a> {
         #[cfg(not(feature = "group-e2ee"))]
         {
             let _ = request;
-            return Err(crate::ImError::unsupported("group-e2ee"));
+            Err(crate::ImError::unsupported("group-e2ee"))
         }
         #[cfg(feature = "group-e2ee")]
         {

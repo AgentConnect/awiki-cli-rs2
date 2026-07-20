@@ -1413,7 +1413,6 @@ fn profile_patch_from_command(
         markdown,
         avatar_uri: trimmed_optional(avatar_uri),
         avatar_url: trimmed_optional(avatar_url),
-        ..ProfilePatch::default()
     })
 }
 

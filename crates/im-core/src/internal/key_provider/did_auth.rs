@@ -107,7 +107,7 @@ impl ProviderBackedDidAuth {
             return false;
         };
         let challenge = parse_www_authenticate(www_authenticate);
-        if challenge.get("nonce").is_some() {
+        if challenge.contains_key("nonce") {
             return true;
         }
         !matches!(

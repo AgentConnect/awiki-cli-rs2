@@ -62,6 +62,10 @@ pub(super) struct DaemonRealtimeEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "notification variants preserve the typed realtime event contract"
+)]
 pub(super) enum RuntimeRealtimeNotification {
     Event(DaemonRealtimeEvent),
     SessionStatus {

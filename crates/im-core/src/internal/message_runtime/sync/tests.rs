@@ -633,11 +633,13 @@ async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
     );
     assert_eq!(result.next_after_server_seq.as_deref(), Some("44"));
     assert!(!result.has_more);
-    let calls = calls.borrow();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].method, "direct.get_history");
-    assert_eq!(calls[0].params["body"]["since_seq"], "42");
-    assert_eq!(calls[0].params["body"]["limit"], 10);
+    {
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "direct.get_history");
+        assert_eq!(calls[0].params["body"]["since_seq"], "42");
+        assert_eq!(calls[0].params["body"]["limit"], 10);
+    }
     match patch_session.next_patch().await {
         Some(crate::messages::ThreadMessageStorePatch::Reset { items, .. }) => {
             assert!(items

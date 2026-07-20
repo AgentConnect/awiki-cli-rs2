@@ -151,10 +151,9 @@ impl HeartbeatScheduler {
                 .map(|last| now.saturating_sub(*last) >= interval)
                 .unwrap_or(true);
             let should_write_latest = signature_changed
-                || self
+                || !self
                     .last_user_service_write_at_ms_by_daemon
-                    .get(&daemon.agent_did)
-                    .is_none()
+                    .contains_key(&daemon.agent_did)
                 || write_interval_due;
             if should_write_latest {
                 match update_user_service_latest(config, state, &daemon, latest_items) {
@@ -1918,6 +1917,10 @@ fn sanitize_public_error(message: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "the trailing executable writer is a test-only helper used by this inline suite"
+)]
 mod tests {
     use super::*;
     use crate::agent::{generate_agent_identity, AgentDefinition};

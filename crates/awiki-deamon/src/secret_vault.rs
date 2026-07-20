@@ -91,11 +91,8 @@ fn load_or_create_root_key(config: &DaemonConfig) -> Result<DeviceVaultRootKey> 
 }
 
 fn load_or_create_local_root_key(path: &Path) -> Result<DeviceVaultRootKey> {
-    match read_local_root_key_file(path)? {
-        Some(raw) => {
-            return parse_root_key_from_source(Some(&raw), "daemon local vault root key file");
-        }
-        None => {}
+    if let Some(raw) = read_local_root_key_file(path)? {
+        return parse_root_key_from_source(Some(&raw), "daemon local vault root key file");
     }
 
     let mut bytes = [0_u8; DEVICE_VAULT_ROOT_KEY_LEN];

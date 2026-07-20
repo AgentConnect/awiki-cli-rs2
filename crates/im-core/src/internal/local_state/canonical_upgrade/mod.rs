@@ -267,6 +267,7 @@ pub(crate) fn acquire_lock(upgrade_dir: &Path) -> crate::ImResult<CanonicalUpgra
     let lock_path = upgrade_dir.join("canonical-conversation-upgrade.lock");
     let file = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(&lock_path)

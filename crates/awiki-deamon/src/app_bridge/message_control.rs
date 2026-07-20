@@ -28,6 +28,10 @@ pub struct IncomingAppControlPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "control outcomes are short-lived and preserve a direct typed bootstrap result"
+)]
 pub enum AppControlOutcome {
     BootstrapReceived {
         bootstrap: BootstrapProcessOutcome,

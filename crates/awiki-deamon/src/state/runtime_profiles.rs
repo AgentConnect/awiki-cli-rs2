@@ -1062,8 +1062,7 @@ WHERE daemon_agent_did = ?1
         if !statuses.is_empty() {
             sql.push_str("  AND status IN (");
             sql.push_str(
-                &std::iter::repeat("?")
-                    .take(statuses.len())
+                &std::iter::repeat_n("?", statuses.len())
                     .collect::<Vec<_>>()
                     .join(", "),
             );

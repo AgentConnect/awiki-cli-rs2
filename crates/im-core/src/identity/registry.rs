@@ -1329,7 +1329,7 @@ impl IdentityRegistry<'_> {
         if vault_metadata_present && !vault_metadata_verified {
             missing.push("identity_vault_metadata_verified".to_owned());
         }
-        if !context.is_some() {
+        if context.is_none() {
             missing.push("identity_secret_vault".to_owned());
         }
         if vault_metadata_present && context.is_some() && !vault_workspace_matches {

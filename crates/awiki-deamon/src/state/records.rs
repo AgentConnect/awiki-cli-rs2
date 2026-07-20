@@ -533,9 +533,9 @@ pub(crate) fn decode_cli_route_hash_salt_hex(input: &str) -> Result<[u8; 32]> {
         bail!("route hash salt must use 32-byte lowercase hex format");
     }
     let mut salt = [0u8; 32];
-    for index in 0..32 {
+    for (index, byte) in salt.iter_mut().enumerate() {
         let start = index * 2;
-        salt[index] = u8::from_str_radix(&value[start..start + 2], 16)
+        *byte = u8::from_str_radix(&value[start..start + 2], 16)
             .map_err(|error| anyhow::anyhow!("invalid route hash salt hex: {error}"))?;
     }
     Ok(salt)
@@ -1448,7 +1448,7 @@ impl HermesNativeSessionRecord {
 fn stable_hermes_session_record_id(route_key: &str, stored_session_id: &str) -> String {
     let digest = Sha256::digest(route_key.as_bytes());
     let digest = Sha256::digest([digest.as_slice(), stored_session_id.as_bytes()].concat());
-    format!("hns_{:x}", digest)
+    format!("hns_{digest:x}")
 }
 
 pub(crate) fn validate_cli_route_key(route_key: &str) -> Result<()> {

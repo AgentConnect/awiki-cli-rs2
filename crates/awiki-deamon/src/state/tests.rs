@@ -5,6 +5,15 @@ use crate::runtime::{
 };
 use sha2::{Digest, Sha256};
 
+type StoredIdentitySecretColumns = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 #[test]
 fn initialize_creates_required_tables() {
     let root = tempfile::tempdir().unwrap();
@@ -3349,14 +3358,7 @@ fn agent_identity_record_roundtrips_without_debug_leaking_private_key() {
         auth_private_key_ref_json,
         e2ee_signing_private_key_ref_json,
         e2ee_agreement_private_key_ref_json,
-    ): (
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = connection
+    ): StoredIdentitySecretColumns = connection
         .query_row(
             r#"
 SELECT

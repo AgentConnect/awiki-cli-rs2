@@ -307,9 +307,10 @@ fn status_command_result(status: Value, plan: &CliVaultOpenPlan) -> CommandResul
     let selected_backend = status["selected_backend"].as_str().unwrap_or("unknown");
     let mut warnings = Vec::new();
     if !plan.root_key_available && plan.vault_enabled {
-        warnings.push(format!(
+        warnings.push(
             "identity vault root key is unavailable; vault-backed identity open will fail."
-        ));
+                .to_string(),
+        );
     }
     for warning in status["warnings"].as_array().into_iter().flatten() {
         if let Some(warning) = warning.as_str() {

@@ -170,7 +170,7 @@ impl DaemonUpgradeRequest {
             bin_root: std::env::var_os("AWIKI_DAEMON_BIN_ROOT")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
-                .unwrap_or_else(|| default_bin_root()),
+                .unwrap_or_else(default_bin_root),
             restart_service: std::env::var("AWIKI_DAEMON_UPGRADE_SKIP_SERVICE_RESTART")
                 .map(|value| value.trim() != "1")
                 .unwrap_or(true)

@@ -10,10 +10,12 @@ use crate::runtime::{RuntimeAgentProfile, RuntimeRun};
 
 use super::*;
 
+type DelegatedInboxCall = (String, String, Option<String>);
+
 #[derive(Clone)]
 struct MockClient {
     pages: Arc<Mutex<Vec<DelegatedInboxPage>>>,
-    calls: Arc<Mutex<Vec<(String, String, Option<String>)>>>,
+    calls: Arc<Mutex<Vec<DelegatedInboxCall>>>,
 }
 
 impl UserDelegatedInboxClient for MockClient {

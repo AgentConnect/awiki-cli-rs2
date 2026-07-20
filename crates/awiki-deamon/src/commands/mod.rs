@@ -100,6 +100,10 @@ pub struct RuntimeAgentCreateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "command outcomes preserve the existing direct typed creation result"
+)]
 pub enum AgentCommandOutcome {
     RuntimeAgentCreated(RuntimeAgentCreateOutcome),
     StatusReported { command_id: String },
@@ -2613,7 +2617,7 @@ where
         "event_id": format!("evt_{}", crate::security::runtime_token::current_time_millis().unwrap_or(0)),
         "sent_at": rfc3339_now(),
         "daemon_agent_did": daemon_agent.agent_did,
-        "runtime_agent_did": details.get("runtime_agent_did").cloned().unwrap_or_else(|| json!(null)),
+        "runtime_agent_did": details.get("runtime_agent_did").cloned().unwrap_or(Value::Null),
         "status_scope": status_scope,
         "command": envelope.command,
         "command_id": envelope.command_id,
@@ -2729,12 +2733,12 @@ fn top_level_runs_for_result(result: &Value) -> Value {
         "run_id": run_id,
         "message_id": result.get("message_id").cloned().unwrap_or_else(|| json!("")),
         "runtime_agent_did": result.get("runtime_agent_did").cloned().unwrap_or_else(|| json!("")),
-        "conversation_id": result.get("conversation_id").cloned().unwrap_or_else(|| json!(null)),
+        "conversation_id": result.get("conversation_id").cloned().unwrap_or(Value::Null),
         "status": normalize_run_status(status),
-        "started_at": result.get("started_at").cloned().unwrap_or_else(|| json!(null)),
-        "updated_at": result.get("updated_at").cloned().unwrap_or_else(|| json!(null)),
-        "last_error_code": result.get("last_error_code").cloned().unwrap_or_else(|| json!(null)),
-        "last_error_summary": result.get("last_error_summary").cloned().unwrap_or_else(|| json!(null)),
+        "started_at": result.get("started_at").cloned().unwrap_or(Value::Null),
+        "updated_at": result.get("updated_at").cloned().unwrap_or(Value::Null),
+        "last_error_code": result.get("last_error_code").cloned().unwrap_or(Value::Null),
+        "last_error_summary": result.get("last_error_summary").cloned().unwrap_or(Value::Null),
     }])
 }
 

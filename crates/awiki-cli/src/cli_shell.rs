@@ -1542,7 +1542,7 @@ fn append_flag_rows(lines: &mut Vec<String>, flags: &[command_catalog::FlagSpec]
         }
         let value_hint = match flag.flag_type {
             "bool" => String::new(),
-            value if value.is_empty() => " <value>".to_string(),
+            "" => " <value>".to_string(),
             value => format!(" <{value}>"),
         };
         let required = if flag.required { " (required)" } else { "" };

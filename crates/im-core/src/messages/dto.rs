@@ -651,14 +651,12 @@ impl ConversationPatchSession {
         if let Some(patch) = self.initial.pop_front() {
             return Some(patch);
         }
-        loop {
-            match self.receiver.recv().await {
-                Ok(patch) => return Some(patch),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    return Some(self.store.repair_required_patch("subscriber_lag"));
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+        match self.receiver.recv().await {
+            Ok(patch) => Some(patch),
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                Some(self.store.repair_required_patch("subscriber_lag"))
             }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
         }
     }
 

@@ -1298,7 +1298,7 @@ async fn normalize_group_e2ee_realtime_notification_async(
 fn normalize_group_e2ee_realtime_notification(
     _client: &crate::core::ImClient,
     notification: Value,
-    _warnings: &mut Vec<String>,
+    _warnings: &mut [String],
 ) -> Option<Value> {
     Some(notification)
 }
@@ -1307,7 +1307,7 @@ fn normalize_group_e2ee_realtime_notification(
 async fn normalize_group_e2ee_realtime_notification_async(
     _client: &crate::core::ImClient,
     notification: Value,
-    _warnings: &mut Vec<String>,
+    _warnings: &mut [String],
 ) -> Option<Value> {
     Some(notification)
 }
@@ -1317,7 +1317,7 @@ fn normalize_group_e2ee_realtime_notification_async_first(
     _client: &crate::core::ImClient,
     _runtime: Option<&tokio::runtime::Runtime>,
     notification: Value,
-    _warnings: &mut Vec<String>,
+    _warnings: &mut [String],
 ) -> Option<Value> {
     Some(notification)
 }

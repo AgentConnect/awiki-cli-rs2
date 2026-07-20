@@ -192,6 +192,10 @@ impl ControllerRuntimeOutbox {
 }
 
 #[derive(Clone)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "outbox senders are long-lived handles rather than dense collection elements"
+)]
 pub(super) enum ControllerOutboxSender {
     ImCore(ImCoreAgentOutbox),
     Mock,

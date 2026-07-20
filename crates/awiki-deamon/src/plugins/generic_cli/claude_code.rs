@@ -418,9 +418,7 @@ impl GenericCliDriver for ClaudeCodeDriver {
         let exit_code = output.status.code().unwrap_or(1);
         let success = exit_code == 0;
         let native_session_id = parsed_native_session_id.clone().or_else(|| {
-            if success {
-                Some(session_mode.native_session_id().to_string())
-            } else if matches!(session_mode, ClaudeCodeSessionMode::ResumeId(_)) {
+            if success || matches!(session_mode, ClaudeCodeSessionMode::ResumeId(_)) {
                 Some(session_mode.native_session_id().to_string())
             } else {
                 None

@@ -427,11 +427,11 @@ fn committed_thread_items(
                 i64::from(normalized_limit(Some(limit))),
                 None,
             )?;
-        return records
+        records
             .records
             .iter()
             .map(crate::internal::message_runtime::conversations::message_from_record)
-            .collect::<crate::ImResult<Vec<_>>>();
+            .collect::<crate::ImResult<Vec<_>>>()
     }
     #[cfg(not(all(feature = "sqlite", any(feature = "blocking", test))))]
     {
