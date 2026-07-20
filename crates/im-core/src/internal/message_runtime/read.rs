@@ -141,6 +141,7 @@ where
             &mut raw,
             &mut self.directory_transport,
             None,
+            None,
             Some(&mut p5_provenance),
         );
         let mut page = page_from_raw(self.client, &raw, query.limit)?;
@@ -261,11 +262,18 @@ where
                         &mut self.directory_transport,
                     )
                 };
+                retain_direct_messages_for_expected_peer(
+                    self.client,
+                    &mut raw,
+                    &peer.resolved_did,
+                    &mut p5_provenance,
+                );
                 annotate_direct_peer_scopes(
                     self.client,
                     &mut raw,
                     &mut self.directory_transport,
                     input.peer_scope.as_ref(),
+                    Some(&peer.resolved_did),
                     Some(&mut p5_provenance),
                 );
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
@@ -421,6 +429,7 @@ where
             &mut raw,
             &mut self.directory_transport,
             None,
+            None,
             Some(&mut p5_provenance),
         )
         .await;
@@ -547,11 +556,18 @@ where
                     )
                     .await
                 };
+                retain_direct_messages_for_expected_peer(
+                    self.client,
+                    &mut raw,
+                    &peer.resolved_did,
+                    &mut p5_provenance,
+                );
                 annotate_direct_peer_scopes_async(
                     self.client,
                     &mut raw,
                     &mut self.directory_transport,
                     input.peer_scope.as_ref(),
+                    Some(&peer.resolved_did),
                     Some(&mut p5_provenance),
                 )
                 .await;
@@ -728,6 +744,7 @@ fn remote_projection_records(
                     message,
                     &record,
                     binding,
+                    p5_provenance.expected_peer_did.as_deref(),
                     p5_provenance.verified_scoped_route_for_message(message),
                 ) {
                     record = record.with_resolved_wire_thread("direct", wire_peer_did);
@@ -1574,6 +1591,7 @@ pub(crate) fn annotate_direct_peer_scopes(
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
     preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    expected_peer_did: Option<&str>,
     mut p5_provenance: Option<&mut DirectP5ProjectionProvenance>,
 ) {
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
@@ -1585,6 +1603,7 @@ pub(crate) fn annotate_direct_peer_scopes(
             message,
             directory_transport,
             preferred_scope,
+            expected_peer_did,
             p5_provenance.as_deref_mut(),
         );
     }
@@ -1595,6 +1614,7 @@ fn annotate_direct_peer_scope(
     message: &mut Value,
     directory_transport: &mut impl RpcTransport,
     preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    expected_peer_did: Option<&str>,
     p5_provenance: Option<&mut DirectP5ProjectionProvenance>,
 ) {
     let Some(object) = message.as_object_mut() else {
@@ -1617,17 +1637,32 @@ fn annotate_direct_peer_scope(
     if peer_did.is_empty() || !peer_did.starts_with("did:") || peer_did == client.did().as_str() {
         return;
     }
+    if expected_peer_did.is_some_and(|expected| expected.trim() != peer_did) {
+        return;
+    }
     if let Some(scope) = preferred_scope {
         annotate_object_with_peer_scope(object, scope, Some(peer_did));
-        if let Some(provenance) = p5_provenance {
-            provenance.record_verified_peer_scope(object, scope, peer_did);
+        if expected_peer_did.is_some() {
+            if let Some(provenance) = p5_provenance {
+                provenance.record_verified_peer_scope(object, scope, peer_did);
+            }
         }
         return;
     }
-    if let Some(scope) = resolve_direct_peer_scope(client, directory_transport, peer_did) {
-        annotate_object_with_peer_scope(object, &scope, Some(peer_did));
-        if let Some(provenance) = p5_provenance {
-            provenance.record_verified_peer_scope(object, &scope, peer_did);
+    if let Some(resolved) = resolve_direct_peer_scope(client, directory_transport, peer_did) {
+        if !resolved.cache_attestable
+            && p5_provenance
+                .as_deref()
+                .is_some_and(|provenance| provenance.has_binding_for_object(object))
+        {
+            return;
+        }
+        annotate_object_with_peer_scope(object, &resolved.scope, Some(peer_did));
+        if resolved.cache_attestable {
+            let Some(provenance) = p5_provenance else {
+                return;
+            };
+            provenance.record_verified_peer_scope(object, &resolved.scope, peer_did);
         }
     }
 }
@@ -1637,6 +1672,7 @@ pub(crate) async fn annotate_direct_peer_scopes_async(
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
     preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    expected_peer_did: Option<&str>,
     mut p5_provenance: Option<&mut DirectP5ProjectionProvenance>,
 ) {
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
@@ -1648,6 +1684,7 @@ pub(crate) async fn annotate_direct_peer_scopes_async(
             message,
             directory_transport,
             preferred_scope,
+            expected_peer_did,
             p5_provenance.as_deref_mut(),
         )
         .await;
@@ -1659,6 +1696,7 @@ async fn annotate_direct_peer_scope_async(
     message: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
     preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    expected_peer_did: Option<&str>,
     p5_provenance: Option<&mut DirectP5ProjectionProvenance>,
 ) {
     let Some(object) = message.as_object_mut() else {
@@ -1681,19 +1719,34 @@ async fn annotate_direct_peer_scope_async(
     if peer_did.is_empty() || !peer_did.starts_with("did:") || peer_did == client.did().as_str() {
         return;
     }
+    if expected_peer_did.is_some_and(|expected| expected.trim() != peer_did) {
+        return;
+    }
     if let Some(scope) = preferred_scope {
         annotate_object_with_peer_scope(object, scope, Some(peer_did));
-        if let Some(provenance) = p5_provenance {
-            provenance.record_verified_peer_scope(object, scope, peer_did);
+        if expected_peer_did.is_some() {
+            if let Some(provenance) = p5_provenance {
+                provenance.record_verified_peer_scope(object, scope, peer_did);
+            }
         }
         return;
     }
-    if let Some(scope) =
+    if let Some(resolved) =
         resolve_direct_peer_scope_async(client, directory_transport, peer_did).await
     {
-        annotate_object_with_peer_scope(object, &scope, Some(peer_did));
-        if let Some(provenance) = p5_provenance {
-            provenance.record_verified_peer_scope(object, &scope, peer_did);
+        if !resolved.cache_attestable
+            && p5_provenance
+                .as_deref()
+                .is_some_and(|provenance| provenance.has_binding_for_object(object))
+        {
+            return;
+        }
+        annotate_object_with_peer_scope(object, &resolved.scope, Some(peer_did));
+        if resolved.cache_attestable {
+            let Some(provenance) = p5_provenance else {
+                return;
+            };
+            provenance.record_verified_peer_scope(object, &resolved.scope, peer_did);
         }
     }
 }
@@ -1704,13 +1757,29 @@ enum VerifiedHandleScopeLookup {
     Rejected,
 }
 
+struct ResolvedDirectPeerScope {
+    scope: crate::internal::local_state::owner_scope::DirectPeerScope,
+    cache_attestable: bool,
+}
+
+impl std::ops::Deref for ResolvedDirectPeerScope {
+    type Target = crate::internal::local_state::owner_scope::DirectPeerScope;
+
+    fn deref(&self) -> &Self::Target {
+        &self.scope
+    }
+}
+
 fn resolve_direct_peer_scope(
     client: &crate::core::ImClient,
     directory_transport: &mut impl RpcTransport,
     peer_did: &str,
-) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+) -> Option<ResolvedDirectPeerScope> {
     match lookup_direct_peer_scope(client, directory_transport, peer_did) {
-        VerifiedHandleScopeLookup::Verified(scope) => Some(scope),
+        VerifiedHandleScopeLookup::Verified(scope) => Some(ResolvedDirectPeerScope {
+            scope,
+            cache_attestable: true,
+        }),
         VerifiedHandleScopeLookup::Rejected => None,
         VerifiedHandleScopeLookup::Unavailable => {
             let call =
@@ -1719,7 +1788,10 @@ fn resolve_direct_peer_scope(
             let raw = directory_transport
                 .rpc(call.endpoint, call.method, call.params)
                 .ok()?;
-            direct_peer_scope_from_profile(raw, peer_did)
+            direct_peer_scope_from_profile(raw, peer_did).map(|scope| ResolvedDirectPeerScope {
+                scope,
+                cache_attestable: false,
+            })
         }
     }
 }
@@ -1763,9 +1835,12 @@ async fn resolve_direct_peer_scope_async(
     client: &crate::core::ImClient,
     directory_transport: &mut impl AsyncRpcTransport,
     peer_did: &str,
-) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+) -> Option<ResolvedDirectPeerScope> {
     match lookup_direct_peer_scope_async(client, directory_transport, peer_did).await {
-        VerifiedHandleScopeLookup::Verified(scope) => Some(scope),
+        VerifiedHandleScopeLookup::Verified(scope) => Some(ResolvedDirectPeerScope {
+            scope,
+            cache_attestable: true,
+        }),
         VerifiedHandleScopeLookup::Rejected => None,
         VerifiedHandleScopeLookup::Unavailable => {
             let call =
@@ -1775,7 +1850,10 @@ async fn resolve_direct_peer_scope_async(
                 .rpc(call.endpoint, call.method, call.params)
                 .await
                 .ok()?;
-            direct_peer_scope_from_profile(raw, peer_did)
+            direct_peer_scope_from_profile(raw, peer_did).map(|scope| ResolvedDirectPeerScope {
+                scope,
+                cache_attestable: false,
+            })
         }
     }
 }
@@ -2741,6 +2819,7 @@ struct P5VerifiedScopedRoute {
 pub(crate) struct DirectP5ProjectionProvenance {
     bindings: HashMap<P5ProjectionInstanceKey, Vec<P5CacheBinding>>,
     verified_scoped_routes: HashMap<P5ProjectionInstanceKey, P5VerifiedScopedRoute>,
+    expected_peer_did: Option<String>,
 }
 
 impl DirectP5ProjectionProvenance {
@@ -2836,6 +2915,15 @@ impl DirectP5ProjectionProvenance {
     ) -> Option<&P5VerifiedScopedRoute> {
         let key = P5ProjectionInstanceKey::from_ungrouped_message(message)?;
         self.verified_scoped_routes.get(&key)
+    }
+
+    fn has_binding_for_object(&self, object: &Map<String, Value>) -> bool {
+        let Some(key) = P5ProjectionInstanceKey::from_ungrouped_object(object) else {
+            return false;
+        };
+        self.bindings
+            .get(&key)
+            .is_some_and(|bindings| bindings.len() == 1)
     }
 }
 
@@ -3421,6 +3509,7 @@ fn p5_projection_wire_peer_did(
     message: &crate::messages::Message,
     record: &crate::internal::local_state::messages::MessageRecord,
     binding: &P5CacheBinding,
+    expected_peer_did: Option<&str>,
     verified_scoped_route: Option<&P5VerifiedScopedRoute>,
 ) -> Option<String> {
     if !p5_cache_record_endpoint_matches(record, binding)
@@ -3438,6 +3527,9 @@ fn p5_projection_wire_peer_did(
         record.receiver_did.trim()
     };
     if !wire_peer_did.starts_with("did:") || wire_peer_did == record.owner_did.trim() {
+        return None;
+    }
+    if expected_peer_did.is_some_and(|expected| expected.trim() != wire_peer_did) {
         return None;
     }
 
@@ -4374,6 +4466,31 @@ fn direct_peer_did_for_message<'a>(
         return receiver_did;
     }
     sender_did
+}
+
+pub(crate) fn retain_direct_messages_for_expected_peer(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    expected_peer_did: &str,
+    p5_provenance: &mut DirectP5ProjectionProvenance,
+) {
+    let expected_peer_did = expected_peer_did.trim();
+    p5_provenance.expected_peer_did = Some(expected_peer_did.to_owned());
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    messages.retain(|message| {
+        let Some(object) = message.as_object() else {
+            return false;
+        };
+        if !string_value(object.get("group_did")).trim().is_empty() {
+            return false;
+        }
+        let sender_did = string_value(object.get("sender_did"));
+        let receiver_did = string_value(object.get("receiver_did"));
+        direct_peer_did_for_message(client.did().as_str(), &sender_did, &receiver_did).trim()
+            == expected_peer_did
+    });
 }
 
 fn message_metadata_from_object(

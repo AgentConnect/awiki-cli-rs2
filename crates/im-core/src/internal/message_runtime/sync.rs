@@ -143,11 +143,18 @@ where
                         &mut raw,
                         &mut self.directory_transport,
                     );
+                crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+                    self.client,
+                    &mut raw,
+                    &peer.resolved_did,
+                    &mut p5_provenance,
+                );
                 crate::internal::message_runtime::read::annotate_direct_peer_scopes(
                     self.client,
                     &mut raw,
                     &mut self.directory_transport,
                     input.peer_scope.as_ref(),
+                    Some(&peer.resolved_did),
                     Some(&mut p5_provenance),
                 );
                 let page = crate::internal::message_runtime::read::page_from_raw(
@@ -318,11 +325,18 @@ where
                         &mut self.directory_transport,
                     )
                     .await;
+                crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+                    self.client,
+                    &mut raw,
+                    &peer.resolved_did,
+                    &mut p5_provenance,
+                );
                 crate::internal::message_runtime::read::annotate_direct_peer_scopes_async(
                     self.client,
                     &mut raw,
                     &mut self.directory_transport,
                     input.peer_scope.as_ref(),
+                    Some(&peer.resolved_did),
                     Some(&mut p5_provenance),
                 )
                 .await;
