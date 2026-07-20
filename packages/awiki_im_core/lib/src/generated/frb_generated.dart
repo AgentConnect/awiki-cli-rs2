@@ -8051,8 +8051,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartImCoreOpenOptions dco_decode_dart_im_core_open_options(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return DartImCoreOpenOptions(
       identitySecretStoragePolicy:
           dco_decode_dart_identity_secret_storage_policy(arr[0]),
@@ -8061,8 +8061,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       multiDeviceJoinEnabled: dco_decode_bool(arr[2]),
       multiDeviceRootTransferEnabled: dco_decode_bool(arr[3]),
       multiDeviceDeviceRevokeEnabled: dco_decode_bool(arr[4]),
-      multiDeviceHandleRecoveryEnabled: dco_decode_bool(arr[5]),
-      multiDeviceGroupE2EeEnabled: dco_decode_bool(arr[6]),
+      multiDeviceDirectE2EeEnabled: dco_decode_bool(arr[5]),
+      multiDeviceHandleRecoveryEnabled: dco_decode_bool(arr[6]),
+      multiDeviceGroupE2EeEnabled: dco_decode_bool(arr[7]),
     );
   }
 
@@ -12001,6 +12002,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_multiDeviceJoinEnabled = sse_decode_bool(deserializer);
     var var_multiDeviceRootTransferEnabled = sse_decode_bool(deserializer);
     var var_multiDeviceDeviceRevokeEnabled = sse_decode_bool(deserializer);
+    var var_multiDeviceDirectE2EeEnabled = sse_decode_bool(deserializer);
     var var_multiDeviceHandleRecoveryEnabled = sse_decode_bool(deserializer);
     var var_multiDeviceGroupE2EeEnabled = sse_decode_bool(deserializer);
     return DartImCoreOpenOptions(
@@ -12009,6 +12011,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       multiDeviceJoinEnabled: var_multiDeviceJoinEnabled,
       multiDeviceRootTransferEnabled: var_multiDeviceRootTransferEnabled,
       multiDeviceDeviceRevokeEnabled: var_multiDeviceDeviceRevokeEnabled,
+      multiDeviceDirectE2EeEnabled: var_multiDeviceDirectE2EeEnabled,
       multiDeviceHandleRecoveryEnabled: var_multiDeviceHandleRecoveryEnabled,
       multiDeviceGroupE2EeEnabled: var_multiDeviceGroupE2EeEnabled,
     );
@@ -16126,6 +16129,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.multiDeviceJoinEnabled, serializer);
     sse_encode_bool(self.multiDeviceRootTransferEnabled, serializer);
     sse_encode_bool(self.multiDeviceDeviceRevokeEnabled, serializer);
+    sse_encode_bool(self.multiDeviceDirectE2EeEnabled, serializer);
     sse_encode_bool(self.multiDeviceHandleRecoveryEnabled, serializer);
     sse_encode_bool(self.multiDeviceGroupE2EeEnabled, serializer);
   }

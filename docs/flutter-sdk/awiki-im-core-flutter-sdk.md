@@ -245,6 +245,16 @@ documents, proofs, tokens, and key material never enter the Dart API. Native
 Core rejects self-revocation and revoking the final ready management device;
 Flutter Web exposes the typed surface but keeps the operation unsupported.
 
+## Multi-device Direct E2EE rollout
+
+Native hosts select the exact-device P5 v2 Direct product path with
+`AwikiImCoreOpenOptions(multiDeviceDirectE2eeEnabled: true)`. The option is
+host-local, defaults to false, and is independent from Join, root transfer,
+device revoke, Handle Recovery, and Group E2EE. It is never serialized into
+ANP, a DID Document, or a cross-domain request. Enabling it changes only Core's
+Direct product routing; it does not expose ciphertext, ratchet state, control
+JSON, or internal delivery ledgers to Dart.
+
 ## Multi-device group encryption rollout
 
 Native hosts opt in with

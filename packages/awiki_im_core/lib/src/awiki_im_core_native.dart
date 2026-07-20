@@ -1987,6 +1987,7 @@ extension on AwikiImCoreOpenOptions {
     multiDeviceJoinEnabled: multiDeviceJoinEnabled,
     multiDeviceRootTransferEnabled: multiDeviceRootTransferEnabled,
     multiDeviceDeviceRevokeEnabled: multiDeviceDeviceRevokeEnabled,
+    multiDeviceDirectE2EeEnabled: multiDeviceDirectE2eeEnabled,
     multiDeviceHandleRecoveryEnabled: multiDeviceHandleRecoveryEnabled,
     multiDeviceGroupE2EeEnabled: multiDeviceGroupE2eeEnabled,
   );

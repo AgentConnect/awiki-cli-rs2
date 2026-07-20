@@ -81,6 +81,7 @@ class DartImCoreOpenOptions {
   final bool multiDeviceJoinEnabled;
   final bool multiDeviceRootTransferEnabled;
   final bool multiDeviceDeviceRevokeEnabled;
+  final bool multiDeviceDirectE2EeEnabled;
   final bool multiDeviceHandleRecoveryEnabled;
   final bool multiDeviceGroupE2EeEnabled;
 
@@ -90,6 +91,7 @@ class DartImCoreOpenOptions {
     required this.multiDeviceJoinEnabled,
     required this.multiDeviceRootTransferEnabled,
     required this.multiDeviceDeviceRevokeEnabled,
+    required this.multiDeviceDirectE2EeEnabled,
     required this.multiDeviceHandleRecoveryEnabled,
     required this.multiDeviceGroupE2EeEnabled,
   });
@@ -101,6 +103,7 @@ class DartImCoreOpenOptions {
       multiDeviceJoinEnabled.hashCode ^
       multiDeviceRootTransferEnabled.hashCode ^
       multiDeviceDeviceRevokeEnabled.hashCode ^
+      multiDeviceDirectE2EeEnabled.hashCode ^
       multiDeviceHandleRecoveryEnabled.hashCode ^
       multiDeviceGroupE2EeEnabled.hashCode;
 
@@ -116,6 +119,7 @@ class DartImCoreOpenOptions {
               other.multiDeviceRootTransferEnabled &&
           multiDeviceDeviceRevokeEnabled ==
               other.multiDeviceDeviceRevokeEnabled &&
+          multiDeviceDirectE2EeEnabled == other.multiDeviceDirectE2EeEnabled &&
           multiDeviceHandleRecoveryEnabled ==
               other.multiDeviceHandleRecoveryEnabled &&
           multiDeviceGroupE2EeEnabled == other.multiDeviceGroupE2EeEnabled;
