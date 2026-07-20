@@ -18,6 +18,21 @@ void main() {
     expect(AwikiImCore, isNotNull);
   });
 
+  test('group secure repair result exposes reconciliation counts', () {
+    const result = GroupSecureRepairResult(
+      group: 'did:example:group',
+      state: GroupSecureState.needsRepair,
+      repaired: true,
+      addedDevices: 2,
+      removedDevices: 3,
+      remainingDevices: 1,
+    );
+
+    expect(result.addedDevices, 2);
+    expect(result.removedDevices, 3);
+    expect(result.remainingDevices, 1);
+  });
+
   test('identity vault open options remain optional and constructible', () {
     final rootKey = DeviceVaultRootKey.fromList(List<int>.filled(32, 9));
     final options = AwikiImCoreOpenOptions.vaultRequired(

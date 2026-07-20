@@ -1547,6 +1547,9 @@ impl From<im_core::secure::GroupSecureRepairResult> for DartGroupSecureRepairRes
             group: value.group.as_str().to_string(),
             state: value.state.into(),
             repaired: value.repaired,
+            added_devices: value.added_devices,
+            removed_devices: value.removed_devices,
+            remaining_devices: value.remaining_devices,
             problem: value.problem.map(Into::into),
             warnings: value.warnings,
         }

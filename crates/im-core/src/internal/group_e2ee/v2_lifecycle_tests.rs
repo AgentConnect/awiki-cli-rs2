@@ -201,6 +201,65 @@ fn revoke_inventory_calls_exact_remove_only_for_active_owned_groups() {
 }
 
 #[test]
+fn full_page_without_completeness_marker_never_drives_leaf_deletion() {
+    let groups = (0..100)
+        .map(|index| {
+            serde_json::json!({
+                "group_did": format!("did:example:owned-{index}"),
+                "member_role": "owner",
+                "member_status": "active"
+            })
+        })
+        .collect::<Vec<_>>();
+    let listed = crate::groups::GroupReadResult::from_raw_response(
+        serde_json::json!({ "groups": groups }),
+        Vec::new(),
+    );
+    let mut removal_calls = 0usize;
+
+    let error = reconcile_owned_group_device_removals(listed, |_| {
+        removal_calls += 1;
+        Ok(true)
+    })
+    .expect_err("an unmarked full page must not be treated as a complete inventory");
+
+    assert!(matches!(
+        error,
+        crate::ImError::LocalStateUnavailable { .. }
+    ));
+    assert_eq!(removal_calls, 0);
+}
+
+#[test]
+fn inventory_completeness_requires_consistent_has_more_or_total() {
+    let groups = (0..100)
+        .map(|index| serde_json::json!({ "group_did": format!("did:example:g-{index}") }))
+        .collect::<Vec<_>>();
+
+    let no_marker = serde_json::json!({ "groups": groups });
+    assert!(require_complete_inventory(&no_marker, "groups", 100, None, "incomplete").is_err());
+
+    let has_more = serde_json::json!({ "groups": no_marker["groups"], "has_more": true });
+    assert!(require_complete_inventory(&has_more, "groups", 100, None, "incomplete").is_err());
+
+    let final_page = serde_json::json!({
+        "groups": no_marker["groups"],
+        "has_more": false
+    });
+    assert!(require_complete_inventory(&final_page, "groups", 100, None, "incomplete").is_ok());
+
+    let matching_total = serde_json::json!({ "groups": no_marker["groups"], "total": 100 });
+    assert!(
+        require_complete_inventory(&matching_total, "groups", 100, Some(100), "incomplete").is_ok()
+    );
+
+    let larger_total = serde_json::json!({ "groups": no_marker["groups"], "total": 101 });
+    assert!(
+        require_complete_inventory(&larger_total, "groups", 100, Some(101), "incomplete").is_err()
+    );
+}
+
+#[test]
 fn prepared_remove_wal_rebuild_preserves_operation_and_exact_device() {
     let meta = V2GroupControlMetadata {
         anp_version: Some("2.0".to_owned()),

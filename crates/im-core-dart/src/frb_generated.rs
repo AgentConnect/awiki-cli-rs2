@@ -9741,6 +9741,9 @@ impl SseDecode for crate::dto::secure::DartGroupSecureRepairResult {
         let mut var_group = <String>::sse_decode(deserializer);
         let mut var_state = <crate::dto::secure::DartGroupSecureState>::sse_decode(deserializer);
         let mut var_repaired = <bool>::sse_decode(deserializer);
+        let mut var_addedDevices = <u32>::sse_decode(deserializer);
+        let mut var_removedDevices = <u32>::sse_decode(deserializer);
+        let mut var_remainingDevices = <u32>::sse_decode(deserializer);
         let mut var_problem =
             <Option<crate::dto::secure::DartSecureProblem>>::sse_decode(deserializer);
         let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
@@ -9748,6 +9751,9 @@ impl SseDecode for crate::dto::secure::DartGroupSecureRepairResult {
             group: var_group,
             state: var_state,
             repaired: var_repaired,
+            added_devices: var_addedDevices,
+            removed_devices: var_removedDevices,
+            remaining_devices: var_remainingDevices,
             problem: var_problem,
             warnings: var_warnings,
         };
@@ -14699,6 +14705,9 @@ impl flutter_rust_bridge::IntoDart for crate::dto::secure::DartGroupSecureRepair
             self.group.into_into_dart().into_dart(),
             self.state.into_into_dart().into_dart(),
             self.repaired.into_into_dart().into_dart(),
+            self.added_devices.into_into_dart().into_dart(),
+            self.removed_devices.into_into_dart().into_dart(),
+            self.remaining_devices.into_into_dart().into_dart(),
             self.problem.into_into_dart().into_dart(),
             self.warnings.into_into_dart().into_dart(),
         ]
@@ -18318,6 +18327,9 @@ impl SseEncode for crate::dto::secure::DartGroupSecureRepairResult {
         <String>::sse_encode(self.group, serializer);
         <crate::dto::secure::DartGroupSecureState>::sse_encode(self.state, serializer);
         <bool>::sse_encode(self.repaired, serializer);
+        <u32>::sse_encode(self.added_devices, serializer);
+        <u32>::sse_encode(self.removed_devices, serializer);
+        <u32>::sse_encode(self.remaining_devices, serializer);
         <Option<crate::dto::secure::DartSecureProblem>>::sse_encode(self.problem, serializer);
         <Vec<String>>::sse_encode(self.warnings, serializer);
     }

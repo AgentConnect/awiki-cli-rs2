@@ -489,15 +489,13 @@ fn reconcile_owned_group_device_removals(
         .ok_or_else(|| crate::ImError::LocalStateUnavailable {
             detail: "group.list omitted its authoritative response".to_owned(),
         })?;
-    if raw.get("has_more").and_then(Value::as_bool) == Some(true)
-        || listed
-            .total
-            .is_some_and(|total| total as usize > listed.groups.len())
-    {
-        return Err(crate::ImError::LocalStateUnavailable {
-            detail: "group.list did not return the complete owned-group inventory".to_owned(),
-        });
-    }
+    require_complete_inventory(
+        raw,
+        "groups",
+        listed.groups.len(),
+        listed.total,
+        "group.list did not return the complete owned-group inventory",
+    )?;
     let groups = listed
         .groups
         .into_iter()
@@ -514,6 +512,38 @@ fn reconcile_owned_group_device_removals(
         }
     }
     Ok(removed)
+}
+
+/// Requires an explicit completeness marker before an inventory can drive P6
+/// membership reconciliation. A matching `total` or `has_more: false` is
+/// sufficient; an unmarked response is never assumed complete merely because
+/// it filled the requested page.
+pub(crate) fn require_complete_inventory(
+    raw: &Value,
+    collection_field: &str,
+    parsed_count: usize,
+    total: Option<u32>,
+    detail: &str,
+) -> crate::ImResult<()> {
+    let raw_count = raw
+        .get(collection_field)
+        .and_then(Value::as_array)
+        .map(Vec::len);
+    let has_more = raw.get("has_more").and_then(Value::as_bool);
+    let total_matches = total.is_some_and(|total| total as usize == parsed_count);
+    let explicitly_complete = has_more == Some(false) || total_matches;
+    let conflicting_total = total.is_some_and(|total| total as usize != parsed_count);
+
+    if raw_count != Some(parsed_count)
+        || has_more == Some(true)
+        || conflicting_total
+        || !explicitly_complete
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: detail.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Reconciles one selected group's MLS endpoints to the authoritative P4
@@ -706,15 +736,18 @@ fn fresh_desired_group_roster(
     if member_raw
         .get("group_did")
         .is_some_and(|value| value.as_str() != Some(group_did.as_str()))
-        || member_raw.get("has_more").and_then(Value::as_bool) == Some(true)
-        || members
-            .total
-            .is_some_and(|total| total as usize > members.members.len())
     {
         return Err(crate::ImError::LocalStateUnavailable {
             detail: "authoritative P4 member roster is incomplete or conflicting".to_owned(),
         });
     }
+    require_complete_inventory(
+        member_raw,
+        "members",
+        members.members.len(),
+        members.total,
+        "authoritative P4 member roster is incomplete or conflicting",
+    )?;
 
     let mut desired = BTreeMap::new();
     for member in members.members {

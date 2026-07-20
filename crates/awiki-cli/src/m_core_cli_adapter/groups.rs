@@ -1732,6 +1732,10 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
                 missing.join(", ")
             ))
         }
+        im_core::ImError::PermissionDenied => MessageAdapterError::PermissionDenied,
+        im_core::ImError::LocalStateUnavailable { detail } => {
+            MessageAdapterError::LocalStateUnavailable(detail)
+        }
         im_core::ImError::Service {
             status_code,
             code,
@@ -1772,6 +1776,22 @@ mod group_message_projection_tests {
     use serde_json::json;
 
     use super::is_attachment_manifest_payload;
+
+    #[test]
+    fn group_adapter_preserves_fail_closed_error_categories() {
+        assert_eq!(
+            super::im_error_to_message_error(im_core::ImError::PermissionDenied),
+            crate::m_core_cli_adapter::message_result::MessageAdapterError::PermissionDenied
+        );
+        assert_eq!(
+            super::im_error_to_message_error(im_core::ImError::LocalStateUnavailable {
+                detail: "authoritative P4 member roster is incomplete".to_owned(),
+            }),
+            crate::m_core_cli_adapter::message_result::MessageAdapterError::LocalStateUnavailable(
+                "authoritative P4 member roster is incomplete".to_owned()
+            )
+        );
+    }
 
     #[test]
     fn attachment_manifest_payload_requires_matching_primary_attachment() {

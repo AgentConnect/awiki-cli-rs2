@@ -602,13 +602,9 @@ impl<'a> GroupService<'a> {
         }
         let secure_required = request.security.required();
         let group = request.group.as_str().to_string();
-        #[cfg(feature = "group-e2ee")]
-        let requested_member_is_did = request.member.is_did();
         let resolved_member = resolve_group_member_async(self.client, &request.member).await?;
         #[cfg(feature = "group-e2ee")]
-        let member = resolved_member.did.as_str().to_owned();
-        #[cfg(feature = "group-e2ee")]
-        let expected_member_did = requested_member_is_did.then(|| member.clone());
+        let member = resolved_member.did.as_str().to_string();
         #[cfg(feature = "group-e2ee")]
         let reason_text = request.reason_text.clone();
         #[cfg(not(feature = "group-e2ee"))]
@@ -616,62 +612,22 @@ impl<'a> GroupService<'a> {
             return Err(crate::ImError::unsupported("group-e2ee"));
         }
         #[cfg(feature = "group-e2ee")]
-        let v2_enabled = use_group_e2ee_v2_lifecycle(self.client);
-        #[cfg(feature = "group-e2ee")]
-        let v2_route = if v2_enabled {
-            let authoritative = self
-                .get_authoritative_group_async(request.group.clone())
-                .await?;
-            Some(v2_member_mutation_route(
-                &group,
-                &authoritative,
-                secure_required,
-            )?)
-        } else {
-            None
-        };
-        #[cfg(feature = "group-e2ee")]
-        let use_v2_p6 = v2_route == Some(V2MemberMutationRoute::OwnerP6);
-        #[cfg(feature = "group-e2ee")]
-        if secure_required && !v2_enabled {
+        if secure_required {
             ensure_group_e2ee_service_available_async(self.client, true).await?;
         }
-        #[cfg(feature = "group-e2ee")]
-        let use_legacy_cache_guard = !v2_enabled;
-        #[cfg(not(feature = "group-e2ee"))]
-        let use_legacy_cache_guard = true;
-        if use_legacy_cache_guard {
-            if let Ok(Some(snapshot)) =
-                crate::internal::group_runtime::cache::cached_group_snapshot_async(
-                    self.client,
-                    request.group.as_str(),
-                )
-                .await
+        if let Ok(Some(snapshot)) =
+            crate::internal::group_runtime::cache::cached_group_snapshot_async(
+                self.client,
+                request.group.as_str(),
+            )
+            .await
+        {
+            if crate::internal::group_runtime::cache::group_snapshot_uses_e2ee(&snapshot)
+                && !secure_required
             {
-                if crate::internal::group_runtime::cache::group_snapshot_uses_e2ee(&snapshot)
-                    && !secure_required
-                {
-                    return Err(crate::ImError::unsupported("group-e2ee"));
-                }
+                return Err(crate::ImError::unsupported("group-e2ee"));
             }
         }
-        #[cfg(feature = "group-e2ee")]
-        if use_v2_p6 {
-            let client = self.client.clone();
-            let group_for_worker = group.clone();
-            crate::internal::runtime::worker::run_blocking(move || {
-                crate::internal::group_e2ee::v2_lifecycle::preflight_current_controller(
-                    &client,
-                    &group_for_worker,
-                )
-            })
-            .await
-            .map_err(|err| crate::ImError::Internal {
-                message: format!("P6 v2 add preflight worker failed: {err}"),
-            })??;
-        }
-        #[cfg(feature = "group-e2ee")]
-        let request = p4_member_mutation_request(request, use_v2_p6);
         let mut result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -689,64 +645,32 @@ impl<'a> GroupService<'a> {
         self.refresh_group_state_for_async(&mut result, &group, true)
             .await;
         #[cfg(feature = "group-e2ee")]
-        if use_v2_p6 {
-            let transition = crate::internal::group_e2ee::v2_lifecycle::required_member_transition(
-                &group,
-                expected_member_did.as_deref(),
-                "active",
-                &result,
-            )?;
-            let authoritative_member = super::GroupMemberResolution {
-                did: crate::ids::Did::parse(&transition.member_did)?,
-                handle: resolved_member.handle.clone(),
-            };
-            result.resolved_member = Some(authoritative_member);
-            let client = self.client.clone();
-            let member_for_worker = transition.member_did;
-            crate::internal::runtime::worker::run_blocking(move || {
-                crate::internal::group_e2ee::v2_lifecycle::add_active_member_devices(
-                    &client,
-                    transition.group_state_ref,
-                    &member_for_worker,
-                )
-            })
-            .await
-            .map_err(|err| crate::ImError::Internal {
-                message: format!("P6 v2 group add worker failed: {err}"),
-            })??;
-        } else if secure_required {
-            if !v2_enabled {
-                let group_state_ref = group_state_ref_from_result(&group, &result);
-                let secure =
-                    crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
-                        self.client,
-                        crate::internal::auth::session::FileSessionProvider::new(self.client),
-                        crate::internal::transport::CoreHttpTransport::new(self.client),
-                        crate::internal::group_e2ee::storage::native_provider_for_client(
-                            self.client,
-                        )?,
-                    )
-                    .add_secure_member_async(
-                        crate::internal::group_e2ee::lifecycle::GroupE2eeMemberMutationInput {
-                            group: crate::ids::GroupRef::parse(&group)?,
-                            member: crate::ids::Did::parse(&member)?,
-                            reason_text,
-                            leave_request_id: None,
-                            credentials: None,
-                            service_did: None,
-                            group_state_ref,
-                            operation_id: None,
-                        },
-                    )
-                    .await?;
-                result =
-                    super::GroupReadResult::from_raw_response(secure.delivery, secure.warnings);
-                result.resolved_member = Some(resolved_member.clone());
-                project_group_system_event_best_effort_async(self.client, &group, &mut result)
-                    .await;
-                self.refresh_group_state_for_async(&mut result, &group, true)
-                    .await;
-            }
+        if secure_required {
+            let group_state_ref = group_state_ref_from_result(&group, &result);
+            let secure = crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+                crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?,
+            )
+            .add_secure_member_async(
+                crate::internal::group_e2ee::lifecycle::GroupE2eeMemberMutationInput {
+                    group: crate::ids::GroupRef::parse(&group)?,
+                    member: crate::ids::Did::parse(&member)?,
+                    reason_text,
+                    leave_request_id: None,
+                    credentials: None,
+                    service_did: None,
+                    group_state_ref,
+                    operation_id: None,
+                },
+            )
+            .await?;
+            result = super::GroupReadResult::from_raw_response(secure.delivery, secure.warnings);
+            result.resolved_member = Some(resolved_member.clone());
+            project_group_system_event_best_effort_async(self.client, &group, &mut result).await;
+            self.refresh_group_state_for_async(&mut result, &group, true)
+                .await;
         }
         Ok(result)
     }
@@ -1347,61 +1271,24 @@ impl<'a> GroupService<'a> {
             return Err(crate::ImError::unsupported("group-e2ee"));
         }
         #[cfg(feature = "group-e2ee")]
-        let v2_enabled = use_group_e2ee_v2_lifecycle(self.client);
-        #[cfg(feature = "group-e2ee")]
-        let v2_route = if v2_enabled {
-            let authoritative = self
-                .get_authoritative_group_async(request.group.clone())
-                .await?;
-            Some(v2_member_mutation_route(
-                &group,
-                &authoritative,
-                secure_required,
-            )?)
-        } else {
-            None
-        };
-        #[cfg(feature = "group-e2ee")]
-        let use_v2_p6 = v2_route == Some(V2MemberMutationRoute::OwnerP6);
-        #[cfg(feature = "group-e2ee")]
-        if secure_required && !v2_enabled {
+        if secure_required {
             ensure_group_e2ee_service_available_async(self.client, false).await?;
         }
-        #[cfg(feature = "group-e2ee")]
-        let use_legacy_cache_guard = !v2_enabled;
-        #[cfg(not(feature = "group-e2ee"))]
-        let use_legacy_cache_guard = true;
-        if use_legacy_cache_guard {
-            if let Ok(Some(snapshot)) =
-                crate::internal::group_runtime::cache::cached_group_snapshot_async(
-                    self.client,
-                    request.group.as_str(),
-                )
-                .await
+        if let Ok(Some(snapshot)) =
+            crate::internal::group_runtime::cache::cached_group_snapshot_async(
+                self.client,
+                request.group.as_str(),
+            )
+            .await
+        {
+            if crate::internal::group_runtime::cache::group_snapshot_uses_e2ee(&snapshot)
+                && !secure_required
             {
-                if crate::internal::group_runtime::cache::group_snapshot_uses_e2ee(&snapshot)
-                    && !secure_required
-                {
-                    return Err(crate::ImError::unsupported("group-e2ee"));
-                }
+                return Err(crate::ImError::unsupported("group-e2ee"));
             }
         }
         #[cfg(feature = "group-e2ee")]
-        if secure_required || use_v2_p6 {
-            if use_v2_p6 {
-                let client = self.client.clone();
-                let group_for_worker = group.clone();
-                crate::internal::runtime::worker::run_blocking(move || {
-                    crate::internal::group_e2ee::v2_lifecycle::preflight_current_controller(
-                        &client,
-                        &group_for_worker,
-                    )
-                })
-                .await
-                .map_err(|err| crate::ImError::Internal {
-                    message: format!("P6 v2 remove preflight worker failed: {err}"),
-                })??;
-            }
+        if secure_required {
             let mut p4_request = resolved_group_member_request(request.clone(), &resolved_member);
             p4_request.security = super::GroupSecurityRequirement::Default;
             let p4_result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
@@ -1411,37 +1298,6 @@ impl<'a> GroupService<'a> {
             )
             .remove_member_async(p4_request, None)
             .await?;
-            if use_v2_p6 {
-                let transition =
-                    crate::internal::group_e2ee::v2_lifecycle::required_member_transition(
-                        &group,
-                        Some(resolved_member.did.as_str()),
-                        "removed",
-                        &p4_result,
-                    )?;
-                let client = self.client.clone();
-                let authoritative_member_did = transition.member_did.clone();
-                let member_for_worker = authoritative_member_did.clone();
-                crate::internal::runtime::worker::run_blocking(move || {
-                    crate::internal::group_e2ee::v2_lifecycle::remove_inactive_member_devices(
-                        &client,
-                        transition.group_state_ref,
-                        &member_for_worker,
-                    )
-                })
-                .await
-                .map_err(|err| crate::ImError::Internal {
-                    message: format!("P6 v2 group remove worker failed: {err}"),
-                })??;
-                let mut result = p4_result;
-                result.resolved_member = Some(super::GroupMemberResolution {
-                    did: crate::ids::Did::parse(&authoritative_member_did)?,
-                    handle: resolved_member.handle,
-                });
-                self.refresh_group_state_for_async(&mut result, &group, true)
-                    .await;
-                return Ok(result);
-            }
             let group_state_ref =
                 group_state_ref_from_result(&group, &p4_result).ok_or_else(|| {
                     crate::ImError::LocalStateUnavailable {
@@ -2090,19 +1946,18 @@ impl<'a> GroupService<'a> {
             group,
             limit: crate::ids::PageLimit(100),
         })?;
-        if roster
+        let raw = roster
             .raw_response()
-            .and_then(|raw| raw.get("has_more"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-            || roster
-                .total
-                .is_some_and(|total| total as usize > roster.members.len())
-        {
-            return Err(crate::ImError::LocalStateUnavailable {
-                detail: "authoritative P4 member roster is incomplete".to_owned(),
-            });
-        }
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "authoritative P4 member roster omitted its response".to_owned(),
+            })?;
+        crate::internal::group_e2ee::v2_lifecycle::require_complete_inventory(
+            raw,
+            "members",
+            roster.members.len(),
+            roster.total,
+            "authoritative P4 member roster is incomplete",
+        )?;
         Ok(roster
             .members
             .into_iter()

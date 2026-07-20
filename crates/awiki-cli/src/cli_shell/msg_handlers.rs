@@ -1138,6 +1138,18 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
             message,
             "Complete user setup with `awiki-cli id register --handle <handle> ...` or recover an existing handle before using `awiki-cli msg` commands.",
         ),
+        MessageAdapterError::PermissionDenied => ExitError::new(
+            "permission_denied",
+            4,
+            err.to_string(),
+            "Check that the active device has the required group role and retry.",
+        ),
+        MessageAdapterError::LocalStateUnavailable(detail) => ExitError::new(
+            "local_state_unavailable",
+            5,
+            detail,
+            "Refresh authoritative group state, then run group secure repair and retry.",
+        ),
         MessageAdapterError::SecureNotSupported => ExitError::new(
             "unsupported_mode",
             1,
@@ -1265,6 +1277,26 @@ mod tests {
         assert_eq!(
             exit.detail.hint,
             "Start the websocket listener/daemon or switch runtime.mode back to http."
+        );
+    }
+
+    #[test]
+    fn message_exit_preserves_group_fail_closed_categories() {
+        let denied = message_exit(MessageAdapterError::PermissionDenied, "fallback hint");
+        assert_eq!(denied.exit_code, 4);
+        assert_eq!(denied.detail.code, "permission_denied");
+
+        let unavailable = message_exit(
+            MessageAdapterError::LocalStateUnavailable(
+                "authoritative P4 member roster is incomplete".to_owned(),
+            ),
+            "fallback hint",
+        );
+        assert_eq!(unavailable.exit_code, 5);
+        assert_eq!(unavailable.detail.code, "local_state_unavailable");
+        assert_eq!(
+            unavailable.detail.message,
+            "authoritative P4 member roster is incomplete"
         );
     }
 }

@@ -3651,6 +3651,9 @@ extension on gen_secure_dto.DartGroupSecureRepairResult {
     group: group,
     state: state._toModel(),
     repaired: repaired,
+    addedDevices: addedDevices,
+    removedDevices: removedDevices,
+    remainingDevices: remainingDevices,
     problem: problem?._toModel(),
     warnings: warnings,
   );

@@ -7870,14 +7870,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return DartGroupSecureRepairResult(
       group: dco_decode_String(arr[0]),
       state: dco_decode_dart_group_secure_state(arr[1]),
       repaired: dco_decode_bool(arr[2]),
-      problem: dco_decode_opt_box_autoadd_dart_secure_problem(arr[3]),
-      warnings: dco_decode_list_String(arr[4]),
+      addedDevices: dco_decode_u_32(arr[3]),
+      removedDevices: dco_decode_u_32(arr[4]),
+      remainingDevices: dco_decode_u_32(arr[5]),
+      problem: dco_decode_opt_box_autoadd_dart_secure_problem(arr[6]),
+      warnings: dco_decode_list_String(arr[7]),
     );
   }
 
@@ -11744,6 +11747,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_group = sse_decode_String(deserializer);
     var var_state = sse_decode_dart_group_secure_state(deserializer);
     var var_repaired = sse_decode_bool(deserializer);
+    var var_addedDevices = sse_decode_u_32(deserializer);
+    var var_removedDevices = sse_decode_u_32(deserializer);
+    var var_remainingDevices = sse_decode_u_32(deserializer);
     var var_problem = sse_decode_opt_box_autoadd_dart_secure_problem(
       deserializer,
     );
@@ -11752,6 +11758,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       group: var_group,
       state: var_state,
       repaired: var_repaired,
+      addedDevices: var_addedDevices,
+      removedDevices: var_removedDevices,
+      remainingDevices: var_remainingDevices,
       problem: var_problem,
       warnings: var_warnings,
     );
@@ -16072,6 +16081,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.group, serializer);
     sse_encode_dart_group_secure_state(self.state, serializer);
     sse_encode_bool(self.repaired, serializer);
+    sse_encode_u_32(self.addedDevices, serializer);
+    sse_encode_u_32(self.removedDevices, serializer);
+    sse_encode_u_32(self.remainingDevices, serializer);
     sse_encode_opt_box_autoadd_dart_secure_problem(self.problem, serializer);
     sse_encode_list_String(self.warnings, serializer);
   }

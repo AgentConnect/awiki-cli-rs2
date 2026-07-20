@@ -413,8 +413,9 @@ P6 gate 只会选择 device-scoped P6 v2 Group 产品路径。
 defaults to `false`, and is never serialized into ANP, DID Documents, or
 cross-domain requests. When enabled, the redacted `secure().group()` status and
 repair facade uses the device-scoped P6 v2 local state. The facade exposes only
-readiness, repair state, and counts; it does not expose KeyPackages, Welcome or
-Commit payloads, Leaf identifiers, MLS secrets, state paths, or raw SQLite rows.
+readiness, repair state, and the `added_devices`, `removed_devices`, and
+`remaining_devices` counts; it does not expose KeyPackages, Welcome or Commit
+payloads, Leaf identifiers, MLS secrets, state paths, or raw SQLite rows.
 
 Identity vault DTOs are redacted status/report surfaces. They report selected
 backend, storage policy, vault availability, metadata verification, workspace /

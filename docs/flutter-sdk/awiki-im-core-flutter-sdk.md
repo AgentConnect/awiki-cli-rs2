@@ -285,6 +285,8 @@ to false and is independent from the Join and root-transfer gates. It is local
 configuration and is not sent as an ANP, DID Document, or cross-domain field.
 When enabled, `client.secure.group(groupDid).status()` and `repair()` read the
 device-scoped P6 v2 state and return only redacted readiness and repair facts.
+`GroupSecureRepairResult` reports `addedDevices`, `removedDevices`, and
+`remainingDevices` for the selected group reconciliation.
 They never return raw KeyPackages, Welcome/Commit data, Leaf identifiers, MLS
 secrets, provider paths, or SQLite rows.
 

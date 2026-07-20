@@ -56,6 +56,26 @@ fn root_key_transfer_summary_mapping_exposes_restart_safe_status_only() {
 }
 
 #[test]
+fn group_secure_repair_mapping_preserves_device_reconciliation_counts() {
+    let mapped = awiki_im_core::dto::secure::DartGroupSecureRepairResult::from(
+        im_core::secure::GroupSecureRepairResult {
+            group: im_core::ids::GroupRef::parse("did:example:group").unwrap(),
+            state: im_core::secure::GroupSecureState::NeedsRepair,
+            repaired: true,
+            added_devices: 2,
+            removed_devices: 3,
+            remaining_devices: 1,
+            problem: None,
+            warnings: Vec::new(),
+        },
+    );
+
+    assert_eq!(mapped.added_devices, 2);
+    assert_eq!(mapped.removed_devices, 3);
+    assert_eq!(mapped.remaining_devices, 1);
+}
+
+#[test]
 fn handle_recovery_progress_mapping_exposes_safe_local_status_only() {
     let mapped = awiki_im_core::dto::identity::DartHandleRecoveryProgress::from(
         im_core::identity::HandleRecoveryProgress {
