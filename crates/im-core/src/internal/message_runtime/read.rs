@@ -91,7 +91,7 @@ where
         direct.page.has_more |=
             dedupe_and_truncate_messages(&mut direct.page.items, requested_limit);
         merge_raw_metadata(&mut direct.raw, &group.raw, "all");
-        persist_projection_best_effort(self.client, &direct.page.items);
+        persist_projection_best_effort(self.client, &direct.page.items, &direct.raw);
         Ok(direct)
     }
 
@@ -140,7 +140,7 @@ where
         let mut page = page_from_raw(self.client, &raw, query.limit)?;
         page.items.retain(|message| message.group.is_none());
         page.has_more |= dedupe_and_truncate_messages(&mut page.items, query.limit);
-        persist_projection_best_effort(self.client, &page.items);
+        persist_projection_best_effort(self.client, &page.items, &raw);
         Ok(ReadPageResult { page, raw })
     }
 
@@ -194,7 +194,7 @@ where
             next_cursor: None,
             has_more,
         };
-        persist_projection_best_effort(self.client, &page.items);
+        persist_projection_best_effort(self.client, &page.items, &raw);
         Ok(ReadPageResult { page, raw })
     }
 
@@ -257,7 +257,7 @@ where
                     input.peer_scope.as_ref(),
                 );
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
-                persist_projection_best_effort(self.client, &page.items);
+                persist_projection_best_effort(self.client, &page.items, &raw);
                 let page = merge_direct_local_projection_best_effort(
                     self.client,
                     page,
@@ -288,7 +288,7 @@ where
                 project_group_e2ee_messages(self.client, &mut raw);
                 let mut page =
                     page_from_raw_with_group(self.client, &raw, input.query.limit, Some(&group))?;
-                persist_projection_best_effort(self.client, &page.items);
+                persist_projection_best_effort(self.client, &page.items, &raw);
                 page = merge_group_local_projection_best_effort(
                     self.client,
                     page,
@@ -347,7 +347,7 @@ where
         direct.page.has_more |=
             dedupe_and_truncate_messages(&mut direct.page.items, requested_limit);
         merge_raw_metadata(&mut direct.raw, &group.raw, "all");
-        persist_projection_best_effort_async(self.client, &direct.page.items).await;
+        persist_projection_best_effort_async(self.client, &direct.page.items, &direct.raw).await;
         Ok(direct)
     }
 
@@ -410,7 +410,7 @@ where
         let mut page = page_from_raw(self.client, &raw, query.limit)?;
         page.items.retain(|message| message.group.is_none());
         page.has_more |= dedupe_and_truncate_messages(&mut page.items, query.limit);
-        persist_projection_best_effort_async(self.client, &page.items).await;
+        persist_projection_best_effort_async(self.client, &page.items, &raw).await;
         Ok(ReadPageResult { page, raw })
     }
 
@@ -463,7 +463,7 @@ where
             next_cursor: None,
             has_more,
         };
-        persist_projection_best_effort_async(self.client, &page.items).await;
+        persist_projection_best_effort_async(self.client, &page.items, &raw).await;
         Ok(ReadPageResult { page, raw })
     }
 
@@ -532,7 +532,7 @@ where
                 )
                 .await;
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
-                persist_projection_best_effort_async(self.client, &page.items).await;
+                persist_projection_best_effort_async(self.client, &page.items, &raw).await;
                 let page = merge_direct_local_projection_best_effort_async(
                     self.client,
                     page,
@@ -564,7 +564,7 @@ where
                 project_group_e2ee_messages_async(self.client, &mut raw).await;
                 let mut page =
                     page_from_raw_with_group(self.client, &raw, input.query.limit, Some(&group))?;
-                persist_projection_best_effort_async(self.client, &page.items).await;
+                persist_projection_best_effort_async(self.client, &page.items, &raw).await;
                 page = merge_group_local_projection_best_effort_async(
                     self.client,
                     page,
@@ -595,6 +595,7 @@ where
 pub(crate) fn persist_projection_best_effort(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
+    raw: &Value,
 ) {
     if messages.is_empty() {
         return;
@@ -602,7 +603,7 @@ pub(crate) fn persist_projection_best_effort(
     #[cfg(feature = "sqlite")]
     {
         let outcome = (|| {
-            let records = remote_projection_records(client, messages)?;
+            let records = remote_projection_records(client, messages, raw)?;
             let mut connection = crate::internal::local_state::open_writable(
                 &client.core_inner().sdk_paths().local_state.sqlite_path,
             )?;
@@ -626,20 +627,21 @@ pub(crate) fn persist_projection_best_effort(
     }
     #[cfg(not(feature = "sqlite"))]
     {
-        let _ = (client, messages);
+        let _ = (client, messages, raw);
     }
 }
 
 pub(crate) async fn persist_projection_best_effort_async(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
+    raw: &Value,
 ) {
     if messages.is_empty() {
         return;
     }
     #[cfg(feature = "sqlite")]
     {
-        let outcome = match remote_projection_records(client, messages) {
+        let outcome = match remote_projection_records(client, messages, raw) {
             Ok(records) => match client.core_inner().local_state_db().await {
                 Ok(db) => db.store_remote_messages(records, "remote_history").await,
                 Err(error) => Err(error),
@@ -652,7 +654,7 @@ pub(crate) async fn persist_projection_best_effort_async(
     }
     #[cfg(not(feature = "sqlite"))]
     {
-        let _ = (client, messages);
+        let _ = (client, messages, raw);
     }
 }
 
@@ -660,7 +662,9 @@ pub(crate) async fn persist_projection_best_effort_async(
 fn remote_projection_records(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
+    raw: &Value,
 ) -> crate::ImResult<Vec<crate::internal::local_state::messages::MessageRecord>> {
+    let bindings = authenticated_p5_cache_bindings(raw);
     messages
         .iter()
         .map(|message| {
@@ -668,7 +672,15 @@ fn remote_projection_records(
                 crate::internal::message_runtime::local_projection::message_record_from_message(
                     client, message,
                 )?;
-            persist_p5_cache_binding_metadata(&mut record, &message.metadata)?;
+            let raw_message_id = metadata_attribute(&message.metadata, "raw_message_id");
+            let binding = bindings
+                .get(message.id.as_str())
+                .filter(|bindings| bindings.len() == 1)
+                .and_then(|bindings| bindings.first())
+                .filter(|binding| raw_message_id == Some(binding.message_id.as_str()));
+            if let Some(binding) = binding {
+                persist_p5_cache_binding_metadata(&mut record, binding)?;
+            }
             Ok(record)
         })
         .collect()
@@ -677,24 +689,9 @@ fn remote_projection_records(
 #[cfg(feature = "sqlite")]
 fn persist_p5_cache_binding_metadata(
     record: &mut crate::internal::local_state::messages::MessageRecord,
-    metadata: &crate::messages::MessageMetadata,
+    binding: &P5CacheBinding,
 ) -> crate::ImResult<()> {
-    let Some(raw_message_id) = metadata_attribute(metadata, "raw_message_id") else {
-        return Ok(());
-    };
-    let values = P5_CACHE_METADATA_KEYS
-        .into_iter()
-        .map(|key| metadata_attribute(metadata, key).map(|value| (key, value)))
-        .collect::<Option<Vec<_>>>();
-    let Some(values) = values else {
-        return Ok(());
-    };
-    let digest = values
-        .iter()
-        .find(|(key, _)| *key == P5_CACHE_BINDING_DIGEST_KEY)
-        .map(|(_, value)| *value)
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let Some(encoded) = digest.strip_prefix("sha256:") else {
+    let Some(encoded) = binding.digest.strip_prefix("sha256:") else {
         return Err(crate::ImError::PermissionDenied);
     };
     if URL_SAFE_NO_PAD
@@ -711,9 +708,22 @@ fn persist_p5_cache_binding_metadata(
         .unwrap_or_default();
     object.insert(
         "raw_message_id".to_owned(),
-        Value::String(raw_message_id.to_owned()),
+        Value::String(binding.message_id.clone()),
     );
-    for (key, value) in values {
+    for (key, value) in [
+        (P5_CACHE_PROFILE_KEY, binding.profile.as_str()),
+        (P5_CACHE_SENDER_DID_KEY, binding.sender_did.as_str()),
+        (
+            P5_CACHE_SENDER_DEVICE_ID_KEY,
+            binding.sender_device_id.as_str(),
+        ),
+        (P5_CACHE_RECIPIENT_DID_KEY, binding.recipient_did.as_str()),
+        (
+            P5_CACHE_RECIPIENT_DEVICE_ID_KEY,
+            binding.recipient_device_id.as_str(),
+        ),
+        (P5_CACHE_BINDING_DIGEST_KEY, binding.digest.as_str()),
+    ] {
         object.insert(key.to_owned(), Value::String(value.to_owned()));
     }
     record.metadata = Value::Object(object).to_string();
@@ -1740,8 +1750,8 @@ fn is_legacy_handle_lookup_error(error: &crate::ImError) -> bool {
         crate::ImError::Service {
             status_code, code, ..
         } => {
-            if *status_code == Some(404) {
-                return true;
+            if let Some(status_code) = status_code {
+                return *status_code == 404;
             }
             matches!(
                 code.as_deref()
@@ -1825,27 +1835,35 @@ fn direct_peer_scope_from_profile(
 fn profile_did_claims_match(raw: &Value, peer_did: &str) -> bool {
     for pointer in [
         "/did",
+        "/id",
         "/subject_did",
         "/subjectDid",
         "/profile/did",
+        "/profile/id",
         "/profile/subject_did",
         "/profile/subjectDid",
         "/result/did",
+        "/result/id",
         "/result/subject_did",
         "/result/subjectDid",
         "/subject/did",
+        "/subject/id",
         "/subject/subject_did",
         "/subject/subjectDid",
         "/profile/subject/did",
+        "/profile/subject/id",
         "/profile/subject/subject_did",
         "/profile/subject/subjectDid",
         "/result/subject/did",
+        "/result/subject/id",
         "/result/subject/subject_did",
         "/result/subject/subjectDid",
         "/result/profile/did",
+        "/result/profile/id",
         "/result/profile/subject_did",
         "/result/profile/subjectDid",
         "/result/profile/subject/did",
+        "/result/profile/subject/id",
         "/result/profile/subject/subject_did",
         "/result/profile/subject/subjectDid",
     ] {
@@ -1976,14 +1994,23 @@ fn project_secure_direct_messages_impl(
         let mut message_values = std::mem::take(messages);
         // Root-control delivery and the P5 v2 session handshake are async-only
         // because they require authenticated network calls. A synchronous read
-        // must still fail closed by removing both control classes from every
-        // ordinary Inbox/History projection, independently of the rollout gate.
+        // may reuse an already authenticated P5 business projection, but only
+        // after revalidating the current rollout gate and local endpoint.
         message_values.retain(|message| {
             message.get("private_transport_context").is_none()
                 && !is_v2_session_control_projection(message)
-                && !is_p5_v2_projection_candidate(message)
         });
-        let _ = apply_cached_secure_direct_messages(client, &mut message_values);
+        clear_untrusted_p5_projection_state(&mut message_values);
+        let cached_secure_indices =
+            apply_cached_secure_direct_messages(client, &mut message_values);
+        message_values = message_values
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, message)| {
+                (!is_p5_v2_projection_candidate(&message) || cached_secure_indices.contains(&index))
+                    .then_some(message)
+            })
+            .collect();
         let warnings =
             crate::internal::secure_direct::incoming::maybe_decrypt_direct_e2ee_messages_for_client(
                 client,
@@ -2554,6 +2581,18 @@ fn p5_cache_binding_from_message(message: &Value) -> crate::ImResult<Option<P5Ca
     Ok(Some(p5_cache_binding(&metadata, &body)?))
 }
 
+fn p5_cache_metadata_from_message(
+    message: &Value,
+) -> crate::ImResult<Option<anp::direct_e2ee::V2DirectMetadata>> {
+    if !is_p5_v2_projection_candidate(message) {
+        return Ok(None);
+    }
+    let wire = p5_v2_wire_projection(message);
+    let (metadata, _) = crate::internal::secure_direct::v2_product::parse_v2_wire_message(&wire)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    Ok(Some(metadata))
+}
+
 fn p5_cache_binding(
     metadata: &anp::direct_e2ee::V2DirectMetadata,
     body: &anp::direct_e2ee::V2DirectBody,
@@ -2598,6 +2637,49 @@ fn p5_cache_binding(
 fn update_digest_part(digest: &mut Sha256, value: &[u8]) {
     digest.update((value.len() as u64).to_be_bytes());
     digest.update(value);
+}
+
+#[cfg(feature = "sqlite")]
+fn authenticated_p5_cache_binding(message: &Value) -> Option<P5CacheBinding> {
+    let object = message.as_object()?;
+    if object.get("secure").and_then(Value::as_bool) != Some(true)
+        || object.get("decryption_state").and_then(Value::as_str) != Some("decrypted")
+        || string_or_number_value(object.get("raw_message_id"))
+            .trim()
+            .is_empty()
+        || anp::direct_e2ee::is_direct_e2ee_wire_content_type(&direct_message_content_type(message))
+    {
+        return None;
+    }
+    let binding = p5_cache_binding_from_message(message).ok().flatten()?;
+    (string_or_number_value(object.get("raw_message_id")) == binding.message_id).then_some(binding)
+}
+
+#[cfg(feature = "sqlite")]
+fn authenticated_p5_cache_bindings(raw: &Value) -> HashMap<String, Vec<P5CacheBinding>> {
+    let mut bindings = HashMap::<String, Vec<P5CacheBinding>>::new();
+    for message in raw
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let logical_message_id = message
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some((logical_message_id, binding)) =
+            logical_message_id.zip(authenticated_p5_cache_binding(message))
+        else {
+            continue;
+        };
+        bindings
+            .entry(logical_message_id.to_owned())
+            .or_default()
+            .push(binding);
+    }
+    bindings
 }
 
 #[cfg(feature = "sqlite")]
@@ -2894,7 +2976,8 @@ fn apply_cached_secure_direct_messages(
     else {
         return HashSet::new();
     };
-    apply_cached_secure_direct_records(messages, records)
+    let authorized_p5_indices = authorized_cached_p5_indices(client, messages);
+    apply_cached_secure_direct_records(messages, records, Some(&authorized_p5_indices))
 }
 
 #[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
@@ -2926,13 +3009,39 @@ async fn apply_cached_secure_direct_messages_async(
     else {
         return HashSet::new();
     };
-    apply_cached_secure_direct_records(messages, records)
+    let authorized_p5_indices = authorized_cached_p5_indices(client, messages);
+    apply_cached_secure_direct_records(messages, records, Some(&authorized_p5_indices))
+}
+
+#[cfg(feature = "sqlite")]
+fn authorized_cached_p5_indices(
+    client: &crate::core::ImClient,
+    messages: &[Value],
+) -> HashSet<usize> {
+    if !client.core_inner().direct_e2ee_v2_enabled() {
+        return HashSet::new();
+    }
+    messages
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| {
+            let metadata = p5_cache_metadata_from_message(message).ok().flatten()?;
+            crate::internal::secure_direct::v2_product::validate_cached_inbound_endpoint_for_client(
+                &client.core_handle(),
+                client,
+                &metadata,
+            )
+            .ok()?;
+            Some(index)
+        })
+        .collect()
 }
 
 #[cfg(feature = "sqlite")]
 fn apply_cached_secure_direct_records(
     messages: &mut [Value],
     records: Vec<crate::internal::local_state::messages::MessageRecord>,
+    authorized_p5_indices: Option<&HashSet<usize>>,
 ) -> HashSet<usize> {
     let mut records_by_wire_id = HashMap::<String, Vec<_>>::new();
     for record in records {
@@ -2944,6 +3053,9 @@ fn apply_cached_secure_direct_records(
     let mut applied = HashSet::new();
     for (index, message) in messages.iter_mut().enumerate() {
         let is_p5 = is_p5_v2_projection_candidate(message);
+        if is_p5 && !authorized_p5_indices.is_some_and(|indices| indices.contains(&index)) {
+            continue;
+        }
         let incoming_p5_binding = p5_cache_binding_from_message(message).ok().flatten();
         let wire_message_id = incoming_p5_binding
             .as_ref()
@@ -3999,20 +4111,7 @@ fn metadata_attributes_from_object(
     } else {
         raw_message_id
     };
-    let projected_message = Value::Object(object.clone());
-    let authenticated_p5_binding = (object.get("secure").and_then(Value::as_bool) == Some(true)
-        && object.get("decryption_state").and_then(Value::as_str) == Some("decrypted")
-        && !string_or_number_value(object.get("raw_message_id"))
-            .trim()
-            .is_empty()
-        && !anp::direct_e2ee::is_direct_e2ee_wire_content_type(&direct_message_content_type(
-            &projected_message,
-        )))
-    .then(|| p5_cache_binding_from_message(&projected_message))
-    .transpose()
-    .ok()
-    .flatten()
-    .flatten();
+    let authenticated_p5_binding = authenticated_p5_cache_binding(&Value::Object(object.clone()));
     if !raw_message_id.trim().is_empty()
         && (raw_message_id != message_id || authenticated_p5_binding.is_some())
     {
@@ -4020,11 +4119,6 @@ fn metadata_attributes_from_object(
             key: "raw_message_id".to_string(),
             value: raw_message_id.clone(),
         });
-    }
-    if let Some(binding) = authenticated_p5_binding {
-        if raw_message_id == binding.message_id {
-            attributes.extend(p5_cache_binding_attributes(&binding));
-        }
     }
     let group_event_seq = string_or_number_value(object.get("group_event_seq"));
     if !group_event_seq.trim().is_empty() {
@@ -4049,31 +4143,6 @@ fn metadata_attributes_from_object(
         }
     }
     attributes
-}
-
-fn p5_cache_binding_attributes(
-    binding: &P5CacheBinding,
-) -> Vec<crate::messages::MessageMetadataAttribute> {
-    [
-        (P5_CACHE_PROFILE_KEY, binding.profile.as_str()),
-        (P5_CACHE_SENDER_DID_KEY, binding.sender_did.as_str()),
-        (
-            P5_CACHE_SENDER_DEVICE_ID_KEY,
-            binding.sender_device_id.as_str(),
-        ),
-        (P5_CACHE_RECIPIENT_DID_KEY, binding.recipient_did.as_str()),
-        (
-            P5_CACHE_RECIPIENT_DEVICE_ID_KEY,
-            binding.recipient_device_id.as_str(),
-        ),
-        (P5_CACHE_BINDING_DIGEST_KEY, binding.digest.as_str()),
-    ]
-    .into_iter()
-    .map(|(key, value)| crate::messages::MessageMetadataAttribute {
-        key: key.to_owned(),
-        value: value.to_owned(),
-    })
-    .collect()
 }
 
 fn metadata_attribute<'a>(

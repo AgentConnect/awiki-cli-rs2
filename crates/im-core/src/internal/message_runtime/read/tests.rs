@@ -4,14 +4,15 @@ use crate::internal::transport::{
     AsyncAuthenticatedRpcTransport, AsyncRpcTransport, AuthenticatedRpcTransport, RpcTransport,
 };
 use crate::vault::{
-    FileSecretVault, FileSecretVaultStore, SealSecretRequest, SecretAccessPolicy, SecretBytes,
-    SecretKind, SecretMetadata, SecretVault,
+    DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealSecretRequest,
+    SecretAccessPolicy, SecretBytes, SecretKind, SecretMetadata, SecretVault,
 };
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 #[test]
 fn messages_read_runtime_builds_inbox_rpc_and_maps_page() {
@@ -2957,14 +2958,15 @@ async fn direct_inbox_projects_verified_handle_before_persisting_message() {
 
 #[tokio::test]
 async fn p5_backlog_retries_by_authenticated_wire_and_converges_after_handle_resolution() {
-    let fixture = Fixture::new();
-    let client = fixture.client();
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let owner_identity_id = client.current_identity().id.as_str().to_owned();
     let wire = ordinary_p5_cache_message(
         "wire-p5-backlog",
         "did:example:bob-new",
         "device-bob",
-        "did:example:alice",
-        "device-alice",
+        &fixture.did,
+        &fixture.device_id,
     );
     let mut first_projection = wire.clone();
     apply_p5_v2_product_outcome(
@@ -2989,13 +2991,16 @@ async fn p5_backlog_retries_by_authenticated_wire_and_converges_after_handle_res
         .await;
     let first_page = page_from_raw(&client, &first_raw, crate::ids::PageLimit(20)).unwrap();
     assert_eq!(first_page.items.len(), 1);
-    persist_projection_best_effort_async(&client, &first_page.items).await;
+    persist_projection_best_effort_async(&client, &first_page.items, &first_raw).await;
 
-    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let sqlite_path = VNextCacheFixture::paths(&fixture.root)
+        .local_state
+        .sqlite_path;
+    let connection = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
     assert_eq!(
         crate::internal::local_state::inbound_resolution_backlog::pending_count(
             &connection,
-            "alice-id"
+            &owner_identity_id
         )
         .unwrap(),
         1
@@ -3003,7 +3008,7 @@ async fn p5_backlog_retries_by_authenticated_wire_and_converges_after_handle_res
     let cached =
         crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
             &connection,
-            "alice-id",
+            &owner_identity_id,
             &["wire-p5-backlog".to_owned()],
         )
         .unwrap();
@@ -3037,11 +3042,11 @@ async fn p5_backlog_retries_by_authenticated_wire_and_converges_after_handle_res
         assert_eq!(result.page.items[0].id.as_str(), "msg-logical-backlog");
     }
 
-    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let connection = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
     assert_eq!(
         crate::internal::local_state::inbound_resolution_backlog::pending_count(
             &connection,
-            "alice-id"
+            &owner_identity_id
         )
         .unwrap(),
         0
@@ -3053,7 +3058,7 @@ async fn p5_backlog_retries_by_authenticated_wire_and_converges_after_handle_res
     .unwrap();
     let records = crate::internal::local_state::messages::list_direct_messages_for_owner_identity(
         &connection,
-        "alice-id",
+        &owner_identity_id,
         &[
             crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
                 &scope,
@@ -3068,22 +3073,23 @@ async fn p5_backlog_retries_by_authenticated_wire_and_converges_after_handle_res
 
 #[tokio::test]
 async fn cached_p5_projection_restores_logical_id_without_redecrypting_replay() {
-    let fixture = Fixture::new();
-    let client = fixture.client();
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
     let direct_wire = ordinary_p5_cache_message(
         "wire-p5-device-delivery",
         "did:example:bob-new",
         "device-bob",
-        "did:example:alice",
-        "device-alice",
+        &fixture.did,
+        &fixture.device_id,
     );
     let own_sync_wire = json_rpc_p5_cache_message(ordinary_p5_cache_message(
         "wire-p5-own-sync-delivery",
-        "did:example:alice",
+        &fixture.did,
         "device-alice-sender",
-        "did:example:alice",
-        "device-alice",
+        &fixture.did,
+        &fixture.device_id,
     ));
+    let owner_identity_id = client.current_identity().id.as_str().to_owned();
     client
         .core_inner()
         .local_state_db()
@@ -3092,13 +3098,13 @@ async fn cached_p5_projection_restores_logical_id_without_redecrypting_replay() 
         .store_messages(vec![
             crate::internal::local_state::messages::MessageRecord {
                 msg_id: "msg-logical-p5".to_owned(),
-                owner_identity_id: "alice-id".to_owned(),
-                owner_did: "did:example:alice".to_owned(),
+                owner_identity_id: owner_identity_id.clone(),
+                owner_did: fixture.did.clone(),
                 conversation_id: "dm:did:example:bob-new".to_owned(),
                 thread_id: "dm:did:example:bob-new".to_owned(),
                 direction: 0,
                 sender_did: "did:example:bob-new".to_owned(),
-                receiver_did: "did:example:alice".to_owned(),
+                receiver_did: fixture.did.clone(),
                 content_type: "text/plain".to_owned(),
                 content: "cached p5 plaintext".to_owned(),
                 sent_at: "2026-07-21T00:00:00Z".to_owned(),
@@ -3109,12 +3115,12 @@ async fn cached_p5_projection_restores_logical_id_without_redecrypting_replay() 
             },
             crate::internal::local_state::messages::MessageRecord {
                 msg_id: "msg-logical-own-sync".to_owned(),
-                owner_identity_id: "alice-id".to_owned(),
-                owner_did: "did:example:alice".to_owned(),
+                owner_identity_id,
+                owner_did: fixture.did.clone(),
                 conversation_id: "dm:did:example:bob-new".to_owned(),
                 thread_id: "dm:did:example:bob-new".to_owned(),
                 direction: 1,
-                sender_did: "did:example:alice".to_owned(),
+                sender_did: fixture.did.clone(),
                 receiver_did: "did:example:bob-new".to_owned(),
                 content_type: "text/plain".to_owned(),
                 content: "cached own-sync plaintext".to_owned(),
@@ -3150,11 +3156,254 @@ async fn cached_p5_projection_restores_logical_id_without_redecrypting_replay() 
     }));
     assert_eq!(messages[1]["id"], "msg-logical-own-sync");
     assert_eq!(messages[1]["raw_message_id"], "wire-p5-own-sync-delivery");
-    assert_eq!(messages[1]["sender_did"], "did:example:alice");
+    assert_eq!(messages[1]["sender_did"], fixture.did);
     assert_eq!(messages[1]["receiver_did"], "did:example:bob-new");
     assert_eq!(messages[1]["content"], "cached own-sync plaintext");
     assert_eq!(messages[1]["decryption_state"], "decrypted");
     assert_eq!(messages[1]["direction"], 1);
+    let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
+    assert!(page
+        .items
+        .iter()
+        .all(
+            |message| P5_CACHE_METADATA_KEYS.into_iter().all(|key| !message
+                .metadata
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key == key))
+        ));
+    assert!(messages.iter().all(|message| P5_CACHE_METADATA_KEYS
+        .into_iter()
+        .all(|key| message.get(key).is_none())));
+}
+
+#[tokio::test]
+async fn cached_p5_projection_sync_restores_authorized_plaintext() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let wire = ordinary_p5_cache_message(
+        "wire-p5-sync-cache-hit",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![p5_cached_incoming_record(
+            &client,
+            &wire,
+            "msg-logical-sync-cache-hit",
+            "sync cached plaintext",
+        )])
+        .await
+        .unwrap();
+    let mut raw = json!({"messages": [wire], "has_more": false});
+
+    project_secure_direct_messages(&client, &mut raw, &mut NoopDirectoryTransport);
+
+    let messages = raw["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["id"], "msg-logical-sync-cache-hit");
+    assert_eq!(messages[0]["content"], "sync cached plaintext");
+    assert_eq!(messages[0]["decryption_state"], "decrypted");
+    assert!(P5_CACHE_METADATA_KEYS
+        .into_iter()
+        .all(|key| messages[0].get(key).is_none()));
+}
+
+#[tokio::test]
+async fn cached_p5_projection_sync_revalidates_gate_and_current_endpoint() {
+    let fixture = VNextCacheFixture::new();
+    let gate_off_client = fixture.client(false);
+    let gate_wire = ordinary_p5_cache_message(
+        "wire-p5-sync-gate-off",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    let wrong_device_wire = ordinary_p5_cache_message(
+        "wire-p5-sync-wrong-device",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        "device-not-current",
+    );
+    let revoked_wire = ordinary_p5_cache_message(
+        "wire-p5-sync-revoked",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    gate_off_client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![
+            p5_cached_incoming_record(
+                &gate_off_client,
+                &gate_wire,
+                "msg-logical-sync-gate-off",
+                "gate-off cached plaintext",
+            ),
+            p5_cached_incoming_record(
+                &gate_off_client,
+                &wrong_device_wire,
+                "msg-logical-sync-wrong-device",
+                "wrong-device cached plaintext",
+            ),
+            p5_cached_incoming_record(
+                &gate_off_client,
+                &revoked_wire,
+                "msg-logical-sync-revoked",
+                "revoked cached plaintext",
+            ),
+        ])
+        .await
+        .unwrap();
+
+    let mut gate_off_raw = json!({"messages": [gate_wire], "has_more": false});
+    project_secure_direct_messages(
+        &gate_off_client,
+        &mut gate_off_raw,
+        &mut NoopDirectoryTransport,
+    );
+    assert!(gate_off_raw["messages"].as_array().unwrap().is_empty());
+
+    let enabled_client = fixture.client(true);
+    let mut wrong_device_raw = json!({"messages": [wrong_device_wire], "has_more": false});
+    project_secure_direct_messages(
+        &enabled_client,
+        &mut wrong_device_raw,
+        &mut NoopDirectoryTransport,
+    );
+    assert!(wrong_device_raw["messages"].as_array().unwrap().is_empty());
+
+    fixture.set_authorization_status("revoked");
+    let mut revoked_raw = json!({"messages": [revoked_wire], "has_more": false});
+    project_secure_direct_messages(
+        &enabled_client,
+        &mut revoked_raw,
+        &mut NoopDirectoryTransport,
+    );
+    assert!(revoked_raw["messages"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cached_p5_projection_is_hidden_when_product_gate_is_disabled() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(false);
+    let wire = ordinary_p5_cache_message(
+        "wire-p5-gate-off",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![p5_cached_incoming_record(
+            &client,
+            &wire,
+            "msg-logical-gate-off",
+            "gate-off cached plaintext",
+        )])
+        .await
+        .unwrap();
+    let mut raw = json!({"messages": [wire], "has_more": false});
+
+    project_secure_direct_messages_async(&client, &mut raw, &mut NoopDirectoryTransport).await;
+
+    assert!(raw["messages"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cached_p5_projection_revalidates_current_device_and_authorization() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let wrong_device_wire = ordinary_p5_cache_message(
+        "wire-p5-wrong-local-device",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        "device-not-current",
+    );
+    let revoked_wire = ordinary_p5_cache_message(
+        "wire-p5-revoked-local-device",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    let unauthorized_wire = ordinary_p5_cache_message(
+        "wire-p5-unauthorized-local-device",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![
+            p5_cached_incoming_record(
+                &client,
+                &wrong_device_wire,
+                "msg-logical-wrong-local-device",
+                "wrong-device cached plaintext",
+            ),
+            p5_cached_incoming_record(
+                &client,
+                &revoked_wire,
+                "msg-logical-revoked-local-device",
+                "revoked cached plaintext",
+            ),
+            p5_cached_incoming_record(
+                &client,
+                &unauthorized_wire,
+                "msg-logical-unauthorized-local-device",
+                "unauthorized cached plaintext",
+            ),
+        ])
+        .await
+        .unwrap();
+
+    let mut wrong_device_raw = json!({"messages": [wrong_device_wire], "has_more": false});
+    project_secure_direct_messages_async(
+        &client,
+        &mut wrong_device_raw,
+        &mut NoopDirectoryTransport,
+    )
+    .await;
+    assert!(wrong_device_raw["messages"].as_array().unwrap().is_empty());
+
+    fixture.set_authorization_status("revoked");
+    let mut revoked_raw = json!({"messages": [revoked_wire], "has_more": false});
+    project_secure_direct_messages_async(&client, &mut revoked_raw, &mut NoopDirectoryTransport)
+        .await;
+    assert!(revoked_raw["messages"].as_array().unwrap().is_empty());
+
+    fixture.set_authorization_status("active");
+    fixture.remove_direct_profile_from_local_document();
+    let mut unauthorized_raw = json!({"messages": [unauthorized_wire], "has_more": false});
+    project_secure_direct_messages_async(
+        &client,
+        &mut unauthorized_raw,
+        &mut NoopDirectoryTransport,
+    )
+    .await;
+    assert!(unauthorized_raw["messages"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -3182,8 +3431,11 @@ fn p5_cache_rejects_tampered_cross_profile_and_ambiguous_wire() {
         ..crate::internal::local_state::messages::MessageRecord::default()
     };
     let rejects = |mut candidate: Value, records: Vec<_>| {
-        let applied =
-            apply_cached_secure_direct_records(std::slice::from_mut(&mut candidate), records);
+        let applied = apply_cached_secure_direct_records(
+            std::slice::from_mut(&mut candidate),
+            records,
+            Some(&HashSet::from([0])),
+        );
         assert!(applied.is_empty());
         assert_ne!(candidate["id"], "msg-logical-binding");
         assert_ne!(candidate["content"], "authenticated cached plaintext");
@@ -3246,8 +3498,11 @@ fn p5_cache_rejects_tampered_cross_profile_and_ambiguous_wire() {
     outer_tamper["id"] = json!("forged-outer-id");
     outer_tamper["sender_did"] = json!("did:example:mallory");
     outer_tamper["receiver_did"] = json!("did:example:mallory");
-    let applied =
-        apply_cached_secure_direct_records(std::slice::from_mut(&mut outer_tamper), vec![record]);
+    let applied = apply_cached_secure_direct_records(
+        std::slice::from_mut(&mut outer_tamper),
+        vec![record],
+        Some(&HashSet::from([0])),
+    );
     assert_eq!(applied.len(), 1);
     assert_eq!(outer_tamper["id"], "msg-logical-binding");
     assert_eq!(
@@ -3372,12 +3627,15 @@ fn p5_cache_metadata_requires_authenticated_outcome_and_persists_same_wire_id() 
         .get("_awiki_p5_cache_authenticated")
         .is_none());
     let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
-    assert!(page.items[0]
+    assert!(P5_CACHE_METADATA_KEYS.into_iter().all(|key| !page.items[0]
         .metadata
         .attributes
         .iter()
-        .all(|attribute| attribute.key != "_awiki_p5_cache_authenticated"));
-    let records = remote_projection_records(&client, &page.items).unwrap();
+        .any(|attribute| attribute.key == key)));
+    assert!(P5_CACHE_METADATA_KEYS
+        .into_iter()
+        .all(|key| raw["messages"][0].get(key).is_none()));
+    let records = remote_projection_records(&client, &page.items, &raw).unwrap();
     assert_eq!(records.len(), 1);
     let metadata: Value = serde_json::from_str(&records[0].metadata).unwrap();
     assert_eq!(metadata["raw_message_id"], message_id);
@@ -3570,6 +3828,22 @@ async fn profile_fallback_is_limited_and_rejects_every_conflicting_did_claim() {
             .is_some()
     );
     assert_eq!(method_absent.calls.borrow().len(), 2);
+    let mut method_absent_sync = ProfileFallbackDirectoryTransport::with_lookup_error(
+        crate::ImError::Service {
+            status_code: None,
+            code: Some("method_not_found".to_owned()),
+            message: "method absent".to_owned(),
+            data: None,
+        },
+        json!({
+            "profile": {
+                "id": requested,
+                "user_id": "legacy-user",
+                "full_handle": "legacy.anpclaw.com"
+            }
+        }),
+    );
+    assert!(resolve_direct_peer_scope(&client, &mut method_absent_sync, requested).is_some());
 
     for error in [
         crate::ImError::PermissionDenied,
@@ -3579,9 +3853,21 @@ async fn profile_fallback_is_limited_and_rejects_every_conflicting_did_claim() {
             message: "temporary failure".to_owned(),
             data: None,
         },
+        crate::ImError::Service {
+            status_code: Some(403),
+            code: Some("not_found".to_owned()),
+            message: "forbidden".to_owned(),
+            data: None,
+        },
+        crate::ImError::Service {
+            status_code: Some(503),
+            code: Some("-32601".to_owned()),
+            message: "upstream unavailable".to_owned(),
+            data: None,
+        },
     ] {
         let mut rejected = ProfileFallbackDirectoryTransport::with_lookup_error(
-            error,
+            error.clone(),
             json!({
                 "user_id": "must-not-be-used",
                 "full_handle": "must-not-be-used.anpclaw.com"
@@ -3593,16 +3879,29 @@ async fn profile_fallback_is_limited_and_rejects_every_conflicting_did_claim() {
                 .is_none()
         );
         assert_eq!(rejected.calls.borrow().as_slice(), ["lookup"]);
+        let mut rejected_sync = ProfileFallbackDirectoryTransport::with_lookup_error(
+            error,
+            json!({
+                "user_id": "must-not-be-used",
+                "full_handle": "must-not-be-used.anpclaw.com"
+            }),
+        );
+        assert!(resolve_direct_peer_scope(&client, &mut rejected_sync, requested).is_none());
+        assert_eq!(rejected_sync.calls.borrow().as_slice(), ["lookup"]);
     }
 
     let conflicting_profile = json!({
         "did": requested,
         "profile": {
+            "id": requested,
             "subject_did": "did:example:other-peer",
             "user_id": "legacy-user",
             "full_handle": "legacy.anpclaw.com"
         },
-        "result": {"subjectDid": requested}
+        "result": {
+            "subjectDid": requested,
+            "profile": {"subject": {"id": requested}}
+        }
     });
     let mut async_conflict = ProfileFallbackDirectoryTransport::legacy(conflicting_profile.clone());
     assert!(
@@ -3630,6 +3929,47 @@ async fn profile_fallback_is_limited_and_rejects_every_conflicting_did_claim() {
     );
     let mut sync_mismatch = ProfileFallbackDirectoryTransport::legacy(profile_subject_mismatch);
     assert!(resolve_direct_peer_scope(&client, &mut sync_mismatch, requested).is_none());
+
+    let all_aliases_match = json!({
+        "id": requested,
+        "profile": {
+            "id": requested,
+            "subject": {"id": requested},
+            "user_id": "legacy-user",
+            "full_handle": "legacy.anpclaw.com"
+        },
+        "result": {
+            "id": requested,
+            "profile": {
+                "id": requested,
+                "subject": {"id": requested}
+            }
+        }
+    });
+    let mut aliases_async = ProfileFallbackDirectoryTransport::legacy(all_aliases_match.clone());
+    assert!(
+        resolve_direct_peer_scope_async(&client, &mut aliases_async, requested)
+            .await
+            .is_some()
+    );
+    let mut aliases_sync = ProfileFallbackDirectoryTransport::legacy(all_aliases_match);
+    assert!(resolve_direct_peer_scope(&client, &mut aliases_sync, requested).is_some());
+
+    let mut nested_id_conflict = ProfileFallbackDirectoryTransport::legacy(json!({
+        "id": requested,
+        "profile": {
+            "user_id": "legacy-user",
+            "full_handle": "legacy.anpclaw.com"
+        },
+        "result": {
+            "profile": {"subject": {"id": "did:example:other-peer"}}
+        }
+    }));
+    assert!(
+        resolve_direct_peer_scope_async(&client, &mut nested_id_conflict, requested)
+            .await
+            .is_none()
+    );
 }
 
 #[derive(Clone)]
@@ -3917,6 +4257,13 @@ struct Fixture {
     root: PathBuf,
 }
 
+struct VNextCacheFixture {
+    root: PathBuf,
+    did: String,
+    device_id: String,
+    identity_dir_name: String,
+}
+
 struct DelegatedIdentityFixture {
     user_did: String,
     verification_method: String,
@@ -3949,6 +4296,179 @@ impl DelegatedIdentityFixture {
             })
             .unwrap();
         crate::internal::delegated_identity::encode_vault_key_ref(&secret_ref).unwrap()
+    }
+}
+
+impl VNextCacheFixture {
+    const VAULT_SEED: [u8; 32] = [41_u8; 32];
+    const WORKSPACE_ID: &'static str = "read-p5-cache-workspace";
+    const VAULT_DEVICE_ID: &'static str = "read-p5-cache-vault-device";
+
+    fn new() -> Self {
+        use crate::internal::identity_device_state::{
+            DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
+            IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
+            IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+        };
+        use crate::internal::identity_store::{
+            IdentityStore, SaveIdentityInput, SaveIdentityKeyMode, SaveIdentitySecretStorage,
+        };
+
+        let root = unique_temp_root();
+        let paths = Self::paths(&root);
+        fs::create_dir_all(&paths.identities.identity_root_dir).unwrap();
+        let generated =
+            crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+                "awiki.test",
+                "read-cache",
+                None,
+                None,
+            )
+            .unwrap();
+        let device_state = IdentityDeviceState {
+            schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+            mode: IdentityDeviceMode::VNext,
+            authorization: Some(DeviceAuthorizationProjection {
+                protocol_device_id: generated.protocol_device_id.clone(),
+                signing_key_id: generated.device_signing_key_id.clone(),
+                e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                status: DeviceAuthorizationStatus::Active,
+                role: DeviceAuthorizationRole::Member,
+                management_ready: false,
+                auth_generation: 1,
+            }),
+            checkpoint: Some(IdentityInternalCheckpoint {
+                document_version: 1,
+                document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+                registry_version: 1,
+            }),
+        };
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes(Self::VAULT_SEED),
+            FileSecretVaultStore::new(root.join("vault")),
+        ));
+        let store = IdentityStore::new(&paths.identities);
+        store
+            .save_identity_with_secret_storage(
+                SaveIdentityInput {
+                    local_alias: "alice".to_owned(),
+                    did: generated.did.clone(),
+                    unique_id: generated.unique_id.clone(),
+                    user_id: "read-cache-user".to_owned(),
+                    display_name: "Read cache".to_owned(),
+                    handle: "read-cache".to_owned(),
+                    full_handle: "read-cache.awiki.test".to_owned(),
+                    jwt_token: "test-device-token".to_owned(),
+                    did_document: Some(generated.did_document.clone()),
+                    key_mode: SaveIdentityKeyMode::VNext {
+                        root_key_id: generated.root_key_id.clone(),
+                        device_signing_key_id: generated.device_signing_key_id.clone(),
+                        device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                    },
+                    device_state: Some(device_state),
+                    key1_private_pem: generated.root_private_pem.clone(),
+                    key1_public_pem: generated.root_public_pem.clone(),
+                    e2ee_signing_private_pem: generated.device_signing_private_pem.clone(),
+                    e2ee_agreement_private_pem: generated.device_e2ee_private_pem.clone(),
+                    daemon_subkey_package: Some(generated.daemon_subkey_package.clone()),
+                    make_default: true,
+                },
+                SaveIdentitySecretStorage::Vault {
+                    workspace_id: Self::WORKSPACE_ID.to_owned(),
+                    device_id: Self::VAULT_DEVICE_ID.to_owned(),
+                    vault,
+                },
+            )
+            .unwrap();
+        let identity_dir_name = store.load_index().unwrap().credentials["alice"]
+            .dir_name
+            .clone();
+        Self {
+            root,
+            did: generated.did.as_str().to_owned(),
+            device_id: generated.protocol_device_id.as_str().to_owned(),
+            identity_dir_name,
+        }
+    }
+
+    fn paths(root: &std::path::Path) -> crate::ImCorePaths {
+        crate::ImCorePaths {
+            identities: crate::paths::IdentityRegistryPaths {
+                identity_root_dir: root.join("identities"),
+                registry_path: root.join("identities").join("registry.json"),
+                default_identity_path: Some(root.join("identities").join("default")),
+            },
+            local_state: crate::paths::LocalStatePaths {
+                sqlite_path: root.join("local").join("im.sqlite"),
+            },
+            runtime: crate::paths::RuntimePaths {
+                cache_dir: root.join("cache"),
+                temp_dir: root.join("tmp"),
+            },
+        }
+    }
+
+    fn client(&self, enabled: bool) -> crate::core::ImClient {
+        crate::core::ImCore::new_with_options(
+            crate::ImCoreConfig {
+                service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
+                did_domain: "awiki.test".to_owned(),
+                user_service_endpoint: None,
+                message_service_endpoint: None,
+                mail_service_endpoint: None,
+                anp_service_endpoint: None,
+                anp_service_did: None,
+                ca_bundle: None,
+                transport_policy: crate::MessageTransportPolicy::HttpOnly,
+            },
+            Self::paths(&self.root),
+            crate::ImCoreOpenOptions::default()
+                .with_identity_secret_vault(
+                    crate::IdentitySecretStoragePolicy::VaultRequired,
+                    crate::ImCoreSecretVaultOptions::new(
+                        DeviceVaultRootKey::from_bytes(Self::VAULT_SEED),
+                        self.root.join("vault"),
+                        Self::WORKSPACE_ID,
+                        Self::VAULT_DEVICE_ID,
+                    ),
+                )
+                .with_multi_device_direct_e2ee_enabled(enabled),
+        )
+        .unwrap()
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            "alice".to_owned(),
+        ))
+        .unwrap()
+    }
+
+    fn set_authorization_status(&self, status: &str) {
+        let path = self.root.join("identities").join("registry.json");
+        let mut registry: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        registry["credentials"]["alice"]["device_state"]["authorization"]["status"] = json!(status);
+        fs::write(path, serde_json::to_vec_pretty(&registry).unwrap()).unwrap();
+    }
+
+    fn remove_direct_profile_from_local_document(&self) {
+        let path = self
+            .root
+            .join("identities")
+            .join(&self.identity_dir_name)
+            .join("did_document.json");
+        let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let devices = document["deviceManifest"]["devices"]
+            .as_array_mut()
+            .unwrap();
+        let device = devices
+            .iter_mut()
+            .find(|device| device["device_id"] == self.device_id)
+            .unwrap();
+        device["profiles"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|profile| {
+                profile.as_str() != Some(anp::authentication::PROFILE_DIRECT_E2EE_V2)
+            });
+        fs::write(path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
     }
 }
 
@@ -4357,6 +4877,30 @@ fn p5_cache_record_metadata(message: &Value) -> String {
         (P5_CACHE_BINDING_DIGEST_KEY): binding.digest,
     })
     .to_string()
+}
+
+fn p5_cached_incoming_record(
+    client: &crate::core::ImClient,
+    wire: &Value,
+    logical_message_id: &str,
+    plaintext: &str,
+) -> crate::internal::local_state::messages::MessageRecord {
+    let binding = p5_cache_binding_from_message(wire).unwrap().unwrap();
+    crate::internal::local_state::messages::MessageRecord {
+        msg_id: logical_message_id.to_owned(),
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        conversation_id: format!("dm:{}", binding.sender_did),
+        thread_id: format!("dm:{}", binding.sender_did),
+        direction: 0,
+        sender_did: binding.sender_did,
+        receiver_did: binding.recipient_did,
+        content_type: "text/plain".to_owned(),
+        content: plaintext.to_owned(),
+        is_e2ee: true,
+        metadata: p5_cache_record_metadata(wire),
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    }
 }
 
 fn install_test_im_core_vault_root_key() {

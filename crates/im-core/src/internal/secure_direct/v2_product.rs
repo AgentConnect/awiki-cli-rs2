@@ -441,36 +441,55 @@ pub(crate) struct V2DirectProductContext {
     scope: V2OwnerScope,
 }
 
+struct ActiveV2LocalEndpoint {
+    scope: V2OwnerScope,
+    device_id: String,
+    signing_key_id: String,
+    e2ee_key_id: String,
+}
+
+fn active_local_endpoint_for_client(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+) -> crate::ImResult<ActiveV2LocalEndpoint> {
+    let alias = client
+        .current_identity()
+        .local_alias
+        .as_deref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let index =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .load_index()?;
+    let state = index
+        .credentials
+        .get(alias)
+        .and_then(|entry| entry.device_state.as_ref())
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let authorization = state
+        .authorization
+        .as_ref()
+        .filter(|authorization| {
+            state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
+                && authorization.status
+                    == crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
+        })
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let scope =
+        V2OwnerScope::from_identity_state(&client.current_identity().id, client.did(), state)?;
+    Ok(ActiveV2LocalEndpoint {
+        scope,
+        device_id: authorization.protocol_device_id.as_str().to_owned(),
+        signing_key_id: authorization.signing_key_id.clone(),
+        e2ee_key_id: authorization.e2ee_key_id.clone(),
+    })
+}
+
 impl V2DirectProductContext {
     fn from_client(
         core: &crate::core::ImCore,
         client: &crate::core::ImClient,
     ) -> crate::ImResult<Self> {
-        let alias = client
-            .current_identity()
-            .local_alias
-            .as_deref()
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let index = crate::internal::identity_store::IdentityStore::new(
-            &core.inner().sdk_paths().identities,
-        )
-        .load_index()?;
-        let state = index
-            .credentials
-            .get(alias)
-            .and_then(|entry| entry.device_state.as_ref())
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let authorization = state
-            .authorization
-            .as_ref()
-            .filter(|authorization| {
-                state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
-                    && authorization.status
-                        == crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
-            })
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let scope =
-            V2OwnerScope::from_identity_state(&client.current_identity().id, client.did(), state)?;
+        let endpoint = active_local_endpoint_for_client(core, client)?;
         let vault = core
             .inner()
             .identity_vault()
@@ -481,12 +500,12 @@ impl V2DirectProductContext {
         Ok(Self {
             owner_identity_id: client.current_identity().id.as_str().to_owned(),
             local_did: client.did().as_str().to_owned(),
-            local_device_id: authorization.protocol_device_id.as_str().to_owned(),
-            local_e2ee_key_id: authorization.e2ee_key_id.clone(),
+            local_device_id: endpoint.device_id,
+            local_e2ee_key_id: endpoint.e2ee_key_id,
             local_static_private: super::v2_prekey_runtime::local_static_private(client)?,
             sqlite_path: core.inner().sdk_paths().local_state.sqlite_path.clone(),
             vault,
-            scope,
+            scope: endpoint.scope,
         })
     }
 
@@ -515,6 +534,49 @@ impl V2DirectProductContext {
         let ledger = DeliveryLedger::new(&connection, self)?;
         action(&ledger)
     }
+}
+
+/// Revalidates a cached P5 delivery against the current local vNext endpoint.
+///
+/// This intentionally performs no network request, PreKey publication, vault
+/// unseal, or ratchet mutation. It only reads the current local authorization
+/// projection and DID Document before a prior plaintext projection may be
+/// reused.
+pub(crate) fn validate_cached_inbound_endpoint_for_client(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    metadata: &V2DirectMetadata,
+) -> crate::ImResult<()> {
+    metadata
+        .validate()
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let endpoint = active_local_endpoint_for_client(core, client)?;
+    if metadata.profile != DIRECT_E2EE_PROFILE_V2
+        || metadata.target.did != client.did().as_str()
+        || metadata.recipient_device_id != endpoint.device_id
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let local_document = client.runtime().key_provider.did_document()?;
+    if local_document.get("id").and_then(Value::as_str) != Some(client.did().as_str())
+        || (client.did().as_str().starts_with("did:wba:")
+            && !anp::authentication::validate_did_document_binding(&local_document, true))
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let eligible = anp::authentication::find_eligible_device(
+        &local_document,
+        &endpoint.device_id,
+        PROFILE_DIRECT_E2EE_V2,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?
+    .ok_or(crate::ImError::PermissionDenied)?;
+    if eligible.signing_key_id != endpoint.signing_key_id
+        || eligible.e2ee_key_id != endpoint.e2ee_key_id
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
 }
 
 pub(crate) trait V2DirectProductHost {
