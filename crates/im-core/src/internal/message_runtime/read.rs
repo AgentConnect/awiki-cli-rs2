@@ -2044,7 +2044,7 @@ fn project_secure_direct_messages_impl(
         clear_untrusted_p5_projection_state(&mut message_values);
         let cached_secure_indices =
             apply_cached_secure_direct_messages(client, &mut message_values);
-        let p5_provenance =
+        let mut p5_provenance =
             p5_projection_provenance_for_applied_indices(&message_values, &cached_secure_indices);
         message_values = message_values
             .into_iter()
@@ -2070,6 +2070,7 @@ fn project_secure_direct_messages_impl(
         if redact_attachment_secrets {
             redact_attachment_manifests_for_public_projection(&mut filtered);
         }
+        p5_provenance.retain_unambiguous_projected_instances(client, &filtered);
         *messages = filtered;
         append_secure_direct_warnings(raw, warnings);
         p5_provenance
@@ -2382,6 +2383,7 @@ async fn project_secure_direct_messages_async_impl(
         if redact_attachment_secrets {
             redact_attachment_manifests_for_public_projection(&mut filtered);
         }
+        p5_provenance.retain_unambiguous_projected_instances(client, &filtered);
         *messages = filtered;
         append_secure_direct_warnings(raw, compact_secure_direct_warnings(async_warnings));
         p5_provenance
@@ -2639,6 +2641,28 @@ struct P5CacheBinding {
     digest: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct P5ProjectionInstanceKey {
+    logical_message_id: String,
+    raw_message_id: String,
+}
+
+impl P5ProjectionInstanceKey {
+    fn from_message(message: &crate::messages::Message) -> Option<Self> {
+        if message.group.is_some()
+            || !matches!(message.thread, crate::messages::ThreadRef::Direct(_))
+        {
+            return None;
+        }
+        Some(Self {
+            logical_message_id: message.id.as_str().to_owned(),
+            raw_message_id: metadata_attribute(&message.metadata, "raw_message_id")
+                .unwrap_or(message.id.as_str())
+                .to_owned(),
+        })
+    }
+}
+
 /// Ephemeral proof that a P5 projection in this exact Direct read call came
 /// from either a successful product receive or a validated local cache hit.
 ///
@@ -2646,35 +2670,61 @@ struct P5CacheBinding {
 /// model so service-supplied projection flags cannot mint cache metadata.
 #[derive(Debug, Default)]
 pub(crate) struct DirectP5ProjectionProvenance {
-    bindings: HashMap<String, Vec<P5CacheBinding>>,
+    bindings: HashMap<P5ProjectionInstanceKey, Vec<P5CacheBinding>>,
 }
 
 impl DirectP5ProjectionProvenance {
     fn record(&mut self, logical_message_id: &str, binding: P5CacheBinding) {
         let logical_message_id = logical_message_id.trim();
-        if logical_message_id.is_empty() {
+        let raw_message_id = binding.message_id.trim();
+        if logical_message_id.is_empty() || raw_message_id.is_empty() {
             return;
         }
-        self.bindings
-            .entry(logical_message_id.to_owned())
-            .or_default()
-            .push(binding);
+        let key = P5ProjectionInstanceKey {
+            logical_message_id: logical_message_id.to_owned(),
+            raw_message_id: raw_message_id.to_owned(),
+        };
+        self.bindings.entry(key).or_default().push(binding);
+    }
+
+    fn retain_unambiguous_projected_instances(
+        &mut self,
+        client: &crate::core::ImClient,
+        messages: &[Value],
+    ) {
+        // Freeze ambiguity against the complete displayable projection before
+        // callers dedupe inboxes or filter/truncate incremental sync pages.
+        let mut logical_counts = HashMap::<String, usize>::new();
+        let mut raw_counts = HashMap::<String, usize>::new();
+        let mut projected_instances = HashSet::new();
+        for value in messages {
+            let Ok(Some(message)) = message_from_value(client, value, None) else {
+                continue;
+            };
+            let Some(key) = P5ProjectionInstanceKey::from_message(&message) else {
+                continue;
+            };
+            *logical_counts
+                .entry(key.logical_message_id.clone())
+                .or_default() += 1;
+            *raw_counts.entry(key.raw_message_id.clone()).or_default() += 1;
+            projected_instances.insert(key);
+        }
+        self.bindings.retain(|key, bindings| {
+            bindings.len() == 1
+                && projected_instances.contains(key)
+                && logical_counts.get(&key.logical_message_id) == Some(&1)
+                && raw_counts.get(&key.raw_message_id) == Some(&1)
+        });
     }
 
     fn binding_for_message(&self, message: &crate::messages::Message) -> Option<&P5CacheBinding> {
-        if message.group.is_some()
-            || !matches!(message.thread, crate::messages::ThreadRef::Direct(_))
-        {
-            return None;
-        }
-        let bindings = self.bindings.get(message.id.as_str())?;
+        let key = P5ProjectionInstanceKey::from_message(message)?;
+        let bindings = self.bindings.get(&key)?;
         if bindings.len() != 1 {
             return None;
         }
-        let binding = bindings.first()?;
-        let raw_message_id =
-            metadata_attribute(&message.metadata, "raw_message_id").unwrap_or(message.id.as_str());
-        (raw_message_id == binding.message_id).then_some(binding)
+        bindings.first()
     }
 }
 

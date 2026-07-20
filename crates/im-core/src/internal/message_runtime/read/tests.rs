@@ -3345,6 +3345,225 @@ async fn cached_p5_projection_sync_restores_authorized_plaintext() {
 }
 
 #[tokio::test]
+async fn direct_inbox_dedupe_collision_cannot_move_p5_provenance_to_plaintext() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let message_id = "msg-p5-direct-inbox-collision";
+    let wire = ordinary_p5_cache_message(
+        message_id,
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![p5_cached_incoming_record(
+            &client,
+            &wire,
+            message_id,
+            "authenticated cached plaintext",
+        )])
+        .await
+        .unwrap();
+    let injected = json!({
+        "message_id": message_id,
+        "sender_did": "did:example:bob-new",
+        "receiver_did": &fixture.did,
+        "content": "service injected plaintext",
+        "content_type": "text/plain",
+        "server_seq": 3
+    });
+
+    let mut projected_raw =
+        json!({"messages": [injected.clone(), wire.clone()], "has_more": false});
+    let provenance =
+        project_secure_direct_messages(&client, &mut projected_raw, &mut NoopDirectoryTransport);
+    let mut projected_page =
+        page_from_raw(&client, &projected_raw, crate::ids::PageLimit(20)).unwrap();
+    dedupe_and_truncate_messages(&mut projected_page.items, crate::ids::PageLimit(20));
+    let records = remote_projection_records(&client, &projected_page.items, &provenance).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].content, "service injected plaintext");
+    assert!(p5_cache_binding_from_record(&records[0]).is_none());
+
+    let result = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [injected, wire.clone()], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .inbox_async(InboxRead {
+        query: crate::messages::InboxQuery {
+            scope: crate::messages::InboxScope::DirectOnly,
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            unread_only: false,
+            inbox_history_options: None,
+        },
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.page.items.len(), 1);
+    assert_eq!(result.page.items[0].id.as_str(), message_id);
+    assert!(matches!(
+        &result.page.items[0].body,
+        crate::messages::MessageBodyView::Text { text, .. }
+            if text == "service injected plaintext"
+    ));
+    let replay = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [wire], "has_more": false}),
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob-new", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob-new".to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert!(replay.page.items.iter().all(|message| !matches!(
+        &message.body,
+        crate::messages::MessageBodyView::Text { text, .. }
+            if text == "service injected plaintext"
+    )));
+}
+
+#[tokio::test]
+async fn sync_thread_after_duplicate_instance_cannot_persist_p5_provenance() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let message_id = "msg-p5-thread-after-collision";
+    let wire = ordinary_p5_cache_message(
+        message_id,
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![p5_cached_incoming_record(
+            &client,
+            &wire,
+            message_id,
+            "authenticated cached plaintext",
+        )])
+        .await
+        .unwrap();
+    let injected = json!({
+        "message_id": message_id,
+        "sender_did": "did:example:bob-new",
+        "receiver_did": &fixture.did,
+        "content": "service injected thread plaintext",
+        "content_type": "text/plain",
+        "server_seq": 3
+    });
+
+    let mut projected_raw =
+        json!({"messages": [wire.clone(), injected.clone()], "has_more": false});
+    let provenance = project_secure_direct_messages_async(
+        &client,
+        &mut projected_raw,
+        &mut NoopDirectoryTransport,
+    )
+    .await;
+    let mut projected_page =
+        page_from_raw(&client, &projected_raw, crate::ids::PageLimit(20)).unwrap();
+    projected_page.items.retain(|message| {
+        message
+            .metadata
+            .server_sequence
+            .is_some_and(|server_sequence| server_sequence > 2)
+    });
+    let records = remote_projection_records(&client, &projected_page.items, &provenance).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].content, "service injected thread plaintext");
+    assert!(p5_cache_binding_from_record(&records[0]).is_none());
+
+    let result = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [wire.clone(), injected], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .sync_thread_after_async(
+        crate::internal::message_runtime::sync::SyncThreadAfterInput {
+            request: crate::messages::SyncThreadAfterRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob-new", "").unwrap(),
+                ),
+                after_server_seq: Some("2".to_owned()),
+                limit: Some(20),
+            },
+            resolved_peer_did: Some("did:example:bob-new".to_owned()),
+            peer_scope: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.messages.len(), 1);
+    assert!(result
+        .messages
+        .iter()
+        .all(|message| message.id.as_str() == message_id));
+    let replay = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [wire], "has_more": false}),
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob-new", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob-new".to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert!(replay.page.items.iter().all(|message| !matches!(
+        &message.body,
+        crate::messages::MessageBodyView::Text { text, .. }
+            if text == "service injected thread plaintext"
+    )));
+}
+
+#[tokio::test]
 async fn untrusted_group_and_own_sync_projections_cannot_seed_p5_cache() {
     let fixture = VNextCacheFixture::new();
     let client = fixture.client(true);
