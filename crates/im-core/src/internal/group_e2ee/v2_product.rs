@@ -20,9 +20,8 @@ use anp::group_e2ee::{
     V2GroupCreateResult, V2GroupIncomingBody, V2GroupIncomingMetadata, V2GroupMembershipResult,
     V2GroupRemoveBody, V2GroupSendMetadata, V2GroupSendResult, V2OriginAuth,
     V2PublishKeyPackageBody, V2PublishKeyPackageResult, V2ServiceMetadata, V2Target,
-    GROUP_E2EE_SECURITY_PROFILE_V2, METHOD_GET_KEY_PACKAGE_V2, METHOD_GROUP_ADD_V2,
-    METHOD_GROUP_CREATE_V2, METHOD_GROUP_REMOVE_V2, METHOD_GROUP_SEND_V2,
-    METHOD_PUBLISH_KEY_PACKAGE_V2,
+    GROUP_E2EE_SECURITY_PROFILE_V2, METHOD_GROUP_ADD_V2, METHOD_GROUP_CREATE_V2,
+    METHOD_GROUP_REMOVE_V2, METHOD_GROUP_SEND_V2,
 };
 use anp::PrivateKeyMaterial;
 use serde::Serialize;
@@ -36,13 +35,6 @@ use super::v2_runtime::GroupE2eeV2Runtime;
 
 const MESSAGE_RPC_ENDPOINT: &str = "/im/rpc";
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct V2HostAccepted<T> {
-    pub(crate) operation_id: String,
-    pub(crate) signed_payload_digest: String,
-    pub(crate) result: T,
-}
-
 /// Typed seam between local P6 v2 state and the Group Host.
 ///
 /// There is intentionally no default or degraded implementation. Production
@@ -53,37 +45,37 @@ pub(crate) trait GroupE2eeV2Host {
         &mut self,
         meta: V2ServiceMetadata,
         body: V2PublishKeyPackageBody,
-    ) -> crate::ImResult<V2HostAccepted<V2PublishKeyPackageResult>>;
+    ) -> crate::ImResult<V2PublishKeyPackageResult>;
 
     fn get_key_package(
         &mut self,
         meta: V2ServiceMetadata,
         body: V2GetKeyPackageBody,
-    ) -> crate::ImResult<V2HostAccepted<V2GetKeyPackageResult>>;
+    ) -> crate::ImResult<V2GetKeyPackageResult>;
 
     fn create_group(
         &mut self,
         meta: V2ServiceMetadata,
         body: V2GroupCreateBody,
-    ) -> crate::ImResult<V2HostAccepted<V2GroupCreateResult>>;
+    ) -> crate::ImResult<V2GroupCreateResult>;
 
     fn add_member(
         &mut self,
         meta: anp::group_e2ee::V2GroupControlMetadata,
         body: V2GroupAddBody,
-    ) -> crate::ImResult<V2HostAccepted<V2GroupMembershipResult>>;
+    ) -> crate::ImResult<V2GroupMembershipResult>;
 
     fn remove_member(
         &mut self,
         meta: anp::group_e2ee::V2GroupControlMetadata,
         body: V2GroupRemoveBody,
-    ) -> crate::ImResult<V2HostAccepted<V2GroupMembershipResult>>;
+    ) -> crate::ImResult<V2GroupMembershipResult>;
 
     fn send_application(
         &mut self,
         meta: V2GroupSendMetadata,
         body: V2GroupCipherObject,
-    ) -> crate::ImResult<V2HostAccepted<V2GroupSendResult>>;
+    ) -> crate::ImResult<V2GroupSendResult>;
 }
 
 /// Production adapter for the existing authenticated JSON-RPC transport.
@@ -129,7 +121,7 @@ where
         &mut self,
         request: Value,
         parse_result: fn(&Value) -> Result<R, anp::group_e2ee::GroupE2eeV2Error>,
-    ) -> crate::ImResult<V2HostAccepted<R>> {
+    ) -> crate::ImResult<R> {
         let method = request
             .get("method")
             .and_then(Value::as_str)
@@ -140,30 +132,10 @@ where
             .cloned()
             .filter(Value::is_object)
             .ok_or_else(|| serialization_error("P6 v2 SDK request is missing params"))?;
-        let meta = params
-            .get("meta")
-            .cloned()
-            .ok_or_else(|| serialization_error("P6 v2 SDK request is missing params.meta"))?;
-        let body = params
-            .get("body")
-            .cloned()
-            .ok_or_else(|| serialization_error("P6 v2 SDK request is missing params.body"))?;
-        let operation_id = meta
-            .get("operation_id")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| serialization_error("P6 v2 SDK request is missing operation_id"))?
-            .to_owned();
-        let signed_payload_digest = signed_payload_digest(&method, &meta, &body)?;
         let raw = self
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, &method, params)?;
-        let result = parse_result(&raw).map_err(map_v2_wire_error)?;
-        Ok(V2HostAccepted {
-            operation_id,
-            signed_payload_digest,
-            result,
-        })
+        parse_result(&raw).map_err(map_v2_wire_error)
     }
 }
 
@@ -175,7 +147,7 @@ where
         &mut self,
         meta: V2ServiceMetadata,
         body: V2PublishKeyPackageBody,
-    ) -> crate::ImResult<V2HostAccepted<V2PublishKeyPackageResult>> {
+    ) -> crate::ImResult<V2PublishKeyPackageResult> {
         let request = publish_key_package_request_v2(meta, body).map_err(map_v2_wire_error)?;
         self.execute(request, parse_publish_key_package_result_v2)
     }
@@ -184,7 +156,7 @@ where
         &mut self,
         meta: V2ServiceMetadata,
         body: V2GetKeyPackageBody,
-    ) -> crate::ImResult<V2HostAccepted<V2GetKeyPackageResult>> {
+    ) -> crate::ImResult<V2GetKeyPackageResult> {
         let request = get_key_package_request_v2(meta, body).map_err(map_v2_wire_error)?;
         self.execute(request, parse_get_key_package_result_v2)
     }
@@ -193,7 +165,7 @@ where
         &mut self,
         meta: V2ServiceMetadata,
         body: V2GroupCreateBody,
-    ) -> crate::ImResult<V2HostAccepted<V2GroupCreateResult>> {
+    ) -> crate::ImResult<V2GroupCreateResult> {
         let auth = self.origin_auth(METHOD_GROUP_CREATE_V2, &meta, &body)?;
         let request = group_create_request_v2(meta, body, auth).map_err(map_v2_wire_error)?;
         self.execute(request, parse_group_create_result_v2)
@@ -203,7 +175,7 @@ where
         &mut self,
         meta: anp::group_e2ee::V2GroupControlMetadata,
         body: V2GroupAddBody,
-    ) -> crate::ImResult<V2HostAccepted<V2GroupMembershipResult>> {
+    ) -> crate::ImResult<V2GroupMembershipResult> {
         let auth = self.origin_auth(METHOD_GROUP_ADD_V2, &meta, &body)?;
         let request = group_add_request_v2(meta, body, auth).map_err(map_v2_wire_error)?;
         self.execute(request, parse_group_membership_result_v2)
@@ -213,7 +185,7 @@ where
         &mut self,
         meta: anp::group_e2ee::V2GroupControlMetadata,
         body: V2GroupRemoveBody,
-    ) -> crate::ImResult<V2HostAccepted<V2GroupMembershipResult>> {
+    ) -> crate::ImResult<V2GroupMembershipResult> {
         let auth = self.origin_auth(METHOD_GROUP_REMOVE_V2, &meta, &body)?;
         let request = group_remove_request_v2(meta, body, auth).map_err(map_v2_wire_error)?;
         self.execute(request, parse_group_membership_result_v2)
@@ -223,7 +195,7 @@ where
         &mut self,
         meta: V2GroupSendMetadata,
         body: V2GroupCipherObject,
-    ) -> crate::ImResult<V2HostAccepted<V2GroupSendResult>> {
+    ) -> crate::ImResult<V2GroupSendResult> {
         let auth = self.origin_auth(METHOD_GROUP_SEND_V2, &meta, &body)?;
         let request = group_send_request_v2(meta, body, auth).map_err(map_v2_wire_error)?;
         self.execute(request, parse_group_send_result_v2)
@@ -234,28 +206,24 @@ where
 pub(crate) struct V2PreparedKeyPackagePublish {
     pub(crate) meta: V2ServiceMetadata,
     pub(crate) body: V2PublishKeyPackageBody,
-    pub(crate) signed_payload_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct V2PreparedCreateSubmission {
     pub(crate) meta: V2ServiceMetadata,
     pub(crate) prepared: V2PreparedCreate,
-    pub(crate) signed_payload_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct V2PreparedAddSubmission {
     pub(crate) meta: anp::group_e2ee::V2GroupControlMetadata,
     pub(crate) prepared: V2PreparedAdd,
-    pub(crate) signed_payload_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct V2PreparedRemoveSubmission {
     pub(crate) meta: anp::group_e2ee::V2GroupControlMetadata,
     pub(crate) prepared: V2PreparedRemove,
-    pub(crate) signed_payload_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -268,7 +236,6 @@ pub(crate) struct V2Committed<R> {
 pub(crate) struct V2PreparedApplicationSend {
     pub(crate) meta: V2GroupSendMetadata,
     pub(crate) cipher: V2GroupCipherObject,
-    pub(crate) signed_payload_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,12 +298,7 @@ where
             group_key_package: package,
         };
         publish_key_package_request_v2(meta.clone(), body.clone()).map_err(map_v2_wire_error)?;
-        let signed_payload_digest = request_digest(METHOD_PUBLISH_KEY_PACKAGE_V2, &meta, &body)?;
-        Ok(V2PreparedKeyPackagePublish {
-            meta,
-            body,
-            signed_payload_digest,
-        })
+        Ok(V2PreparedKeyPackagePublish { meta, body })
     }
 
     pub(crate) fn publish_current_key_package(
@@ -347,21 +309,15 @@ where
             &prepared.body.group_key_package.owner_did,
             &prepared.body.group_key_package.owner_device_id,
         )?;
-        let accepted = self
+        let result = self
             .host
             .publish_key_package(prepared.meta.clone(), prepared.body.clone())?;
-        verify_host_correlation(
-            &accepted,
-            &prepared.meta.operation_id,
-            &prepared.signed_payload_digest,
-        )?;
-        let result = accepted.result;
         result.validate().map_err(map_v2_wire_error)?;
         if result.owner_did != prepared.body.group_key_package.owner_did
             || result.owner_device_id != prepared.body.group_key_package.owner_device_id
             || result.key_package_id != prepared.body.group_key_package.key_package_id
         {
-            return Err(host_mismatch("KeyPackage publish result"));
+            return Err(host_typed_result_mismatch("KeyPackage publish result"));
         }
         Ok(result)
     }
@@ -373,14 +329,11 @@ where
     ) -> crate::ImResult<V2GetKeyPackageResult> {
         self.ensure_current_device(&meta.sender_did, &meta.sender_device_id)?;
         get_key_package_request_v2(meta.clone(), body.clone()).map_err(map_v2_wire_error)?;
-        let digest = request_digest(METHOD_GET_KEY_PACKAGE_V2, &meta, &body)?;
-        let accepted = self.host.get_key_package(meta.clone(), body.clone())?;
-        verify_host_correlation(&accepted, &meta.operation_id, &digest)?;
-        let result = accepted.result;
+        let result = self.host.get_key_package(meta, body.clone())?;
         result.validate().map_err(map_v2_wire_error)?;
         if result.target_did != body.target_did || result.target_device_id != body.target_device_id
         {
-            return Err(host_mismatch("KeyPackage lookup result"));
+            return Err(host_typed_result_mismatch("KeyPackage lookup result"));
         }
         Ok(result)
     }
@@ -392,12 +345,7 @@ where
         self.ensure_current_device(&input.meta.sender_did, &input.meta.sender_device_id)?;
         let meta = input.meta.clone();
         let prepared = self.runtime.create_group_prepare(input)?;
-        let signed_payload_digest = request_digest(METHOD_GROUP_CREATE_V2, &meta, &prepared.body)?;
-        Ok(V2PreparedCreateSubmission {
-            meta,
-            prepared,
-            signed_payload_digest,
-        })
+        Ok(V2PreparedCreateSubmission { meta, prepared })
     }
 
     pub(crate) fn submit_create(
@@ -405,15 +353,9 @@ where
         submission: &V2PreparedCreateSubmission,
         request_id: impl Into<String>,
     ) -> crate::ImResult<V2Committed<V2GroupCreateResult>> {
-        let accepted = self
+        let result = self
             .host
             .create_group(submission.meta.clone(), submission.prepared.body.clone())?;
-        verify_host_correlation(
-            &accepted,
-            &submission.meta.operation_id,
-            &submission.signed_payload_digest,
-        )?;
-        let result = accepted.result;
         result.validate().map_err(map_v2_wire_error)?;
         let body = &submission.prepared.body;
         if result.group_did != body.group_did
@@ -421,7 +363,7 @@ where
             || result.crypto_group_id_b64u != body.crypto_group_id_b64u
             || result.epoch != body.epoch
         {
-            return Err(host_mismatch("group create result"));
+            return Err(host_typed_result_mismatch("group create result"));
         }
         let finalized = self.runtime.finalize_commit(V2FinalizeInput {
             pending_commit_id: submission.prepared.pending_commit_id.clone(),
@@ -440,12 +382,7 @@ where
         self.ensure_current_device(&input.meta.sender_did, &input.meta.sender_device_id)?;
         let meta = input.meta.clone();
         let prepared = self.runtime.add_member_prepare(input)?;
-        let signed_payload_digest = request_digest(METHOD_GROUP_ADD_V2, &meta, &prepared.body)?;
-        Ok(V2PreparedAddSubmission {
-            meta,
-            prepared,
-            signed_payload_digest,
-        })
+        Ok(V2PreparedAddSubmission { meta, prepared })
     }
 
     pub(crate) fn submit_add(
@@ -453,15 +390,9 @@ where
         submission: &V2PreparedAddSubmission,
         request_id: impl Into<String>,
     ) -> crate::ImResult<V2Committed<V2GroupMembershipResult>> {
-        let accepted = self
+        let result = self
             .host
             .add_member(submission.meta.clone(), submission.prepared.body.clone())?;
-        verify_host_correlation(
-            &accepted,
-            &submission.meta.operation_id,
-            &submission.signed_payload_digest,
-        )?;
-        let result = accepted.result;
         verify_membership_result(&result, &submission.prepared.body)?;
         let finalized = self.runtime.finalize_commit(V2FinalizeInput {
             pending_commit_id: submission.prepared.pending_commit_id.clone(),
@@ -480,12 +411,7 @@ where
         self.ensure_current_device(&input.meta.sender_did, &input.meta.sender_device_id)?;
         let meta = input.meta.clone();
         let prepared = self.runtime.remove_member_prepare(input)?;
-        let signed_payload_digest = request_digest(METHOD_GROUP_REMOVE_V2, &meta, &prepared.body)?;
-        Ok(V2PreparedRemoveSubmission {
-            meta,
-            prepared,
-            signed_payload_digest,
-        })
+        Ok(V2PreparedRemoveSubmission { meta, prepared })
     }
 
     pub(crate) fn submit_remove(
@@ -493,15 +419,9 @@ where
         submission: &V2PreparedRemoveSubmission,
         request_id: impl Into<String>,
     ) -> crate::ImResult<V2Committed<V2GroupMembershipResult>> {
-        let accepted = self
+        let result = self
             .host
             .remove_member(submission.meta.clone(), submission.prepared.body.clone())?;
-        verify_host_correlation(
-            &accepted,
-            &submission.meta.operation_id,
-            &submission.signed_payload_digest,
-        )?;
-        let result = accepted.result;
         verify_remove_result(&result, &submission.prepared.body)?;
         let finalized = self.runtime.finalize_commit(V2FinalizeInput {
             pending_commit_id: submission.prepared.pending_commit_id.clone(),
@@ -562,27 +482,16 @@ where
         self.ensure_current_device(&input.meta.sender_did, &input.meta.sender_device_id)?;
         let meta = input.meta.clone();
         let cipher = self.runtime.encrypt(input)?;
-        let signed_payload_digest = request_digest(METHOD_GROUP_SEND_V2, &meta, &cipher)?;
-        Ok(V2PreparedApplicationSend {
-            meta,
-            cipher,
-            signed_payload_digest,
-        })
+        Ok(V2PreparedApplicationSend { meta, cipher })
     }
 
     pub(crate) fn submit_application_send(
         &mut self,
         prepared: &V2PreparedApplicationSend,
     ) -> crate::ImResult<V2GroupSendResult> {
-        let accepted = self
+        let result = self
             .host
             .send_application(prepared.meta.clone(), prepared.cipher.clone())?;
-        verify_host_correlation(
-            &accepted,
-            &prepared.meta.operation_id,
-            &prepared.signed_payload_digest,
-        )?;
-        let result = accepted.result;
         result.validate().map_err(map_v2_wire_error)?;
         if result.group_did != prepared.cipher.group_state_ref.group_did
             || result.message_id != prepared.meta.message_id
@@ -590,7 +499,7 @@ where
             || result.group_state_version != prepared.cipher.group_state_ref.group_state_version
             || result.epoch != prepared.cipher.epoch
         {
-            return Err(host_mismatch("group send result"));
+            return Err(host_typed_result_mismatch("group send result"));
         }
         Ok(result)
     }
@@ -664,7 +573,7 @@ fn verify_membership_result(
         || result.crypto_group_id_b64u != body.crypto_group_id_b64u
         || result.epoch != body.epoch
     {
-        return Err(host_mismatch("group add result"));
+        return Err(host_typed_result_mismatch("group add result"));
     }
     Ok(())
 }
@@ -681,48 +590,9 @@ fn verify_remove_result(
         || result.crypto_group_id_b64u != body.crypto_group_id_b64u
         || result.epoch != body.epoch
     {
-        return Err(host_mismatch("group remove result"));
+        return Err(host_typed_result_mismatch("group remove result"));
     }
     Ok(())
-}
-
-fn verify_host_correlation<T>(
-    accepted: &V2HostAccepted<T>,
-    expected_operation_id: &str,
-    expected_digest: &str,
-) -> crate::ImResult<()> {
-    if accepted.operation_id != expected_operation_id
-        || accepted.signed_payload_digest != expected_digest
-    {
-        return Err(host_mismatch("operation/digest correlation"));
-    }
-    Ok(())
-}
-
-fn request_digest<M: Serialize, B: Serialize>(
-    method: &str,
-    meta: &M,
-    body: &B,
-) -> crate::ImResult<String> {
-    signed_payload_digest(
-        method,
-        &to_value(meta, "P6 v2 request metadata")?,
-        &to_value(body, "P6 v2 request body")?,
-    )
-}
-
-fn signed_payload_digest(method: &str, meta: &Value, body: &Value) -> crate::ImResult<String> {
-    let signed = anp::proof::build_signed_request_object(method, meta, body).map_err(|err| {
-        crate::ImError::Serialization {
-            detail: format!("build P6 v2 signed request: {err}"),
-        }
-    })?;
-    let canonical = anp::proof::canonicalize_signed_request_object(&signed).map_err(|err| {
-        crate::ImError::Serialization {
-            detail: format!("canonicalize P6 v2 signed request: {err}"),
-        }
-    })?;
-    Ok(anp::proof::build_im_content_digest(&canonical))
 }
 
 fn to_value<T: Serialize>(value: &T, context: &str) -> crate::ImResult<Value> {
@@ -741,9 +611,9 @@ fn serialization_error(message: impl Into<String>) -> crate::ImError {
     }
 }
 
-fn host_mismatch(context: &str) -> crate::ImError {
+fn host_typed_result_mismatch(context: &str) -> crate::ImError {
     crate::ImError::Internal {
-        message: format!("P6 v2 Host accepted response mismatch: {context}"),
+        message: format!("P6 v2 Host typed result field mismatch: {context}"),
     }
 }
 

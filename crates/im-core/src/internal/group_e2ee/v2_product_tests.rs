@@ -266,8 +266,6 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
     wrong_target.meta.recipient_device_id = a1.device_id.clone();
     assert!(a2_product.consume_notice(wrong_target).is_err());
 
-    // Current SDK deliberately fails closed for the sender's post-finalize
-    // Commit echo. This is a recorded release blocker, not a simulated pass.
     let self_echo = commit_notice(
         &fixture,
         a1,
@@ -275,7 +273,23 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         "notice-add-a2-self-echo",
         "active",
     );
-    assert!(a1_product.consume_notice(self_echo).is_err());
+    let V2ControlDisposition::ConsumedControl(self_echo_output) = a1_product
+        .consume_notice(self_echo.clone())
+        .expect("A1 records its exact finalized Commit echo without merging twice");
+    assert_eq!(
+        self_echo_output.source_operation_id.as_deref(),
+        Some("op-add-a2")
+    );
+    let replayed_self_echo = product(&directory, &fixture, a1, transport.clone())
+        .consume_notice(V2ProcessNoticeInput {
+            request_id: "req-add-a2-self-echo-replay-after-restart".to_owned(),
+            ..self_echo
+        })
+        .expect("A1 self-echo receipt replays after restart");
+    assert_eq!(
+        replayed_self_echo,
+        V2ControlDisposition::ConsumedControl(self_echo_output)
+    );
 
     let send = a1_product
         .prepare_application_send(V2EncryptInput {
@@ -441,7 +455,7 @@ fn uncertain_submit_survives_restart_and_requires_host_recheck() {
 }
 
 #[test]
-fn explicit_abort_and_host_correlation_are_fail_closed() {
+fn explicit_abort_is_idempotent() {
     let directory = TestDirectory::new("im-core-p6-v2-abort");
     let fixture = make_did_fixture("alice-abort", &["alice-x1"]);
     let device = &fixture.devices[0];
@@ -482,13 +496,6 @@ fn explicit_abort_and_host_correlation_are_fail_closed() {
             .status,
         "aborted"
     );
-
-    let accepted = V2HostAccepted {
-        operation_id: "other-operation".to_owned(),
-        signed_payload_digest: "other-digest".to_owned(),
-        result: (),
-    };
-    assert!(verify_host_correlation(&accepted, "expected-operation", "expected-digest").is_err());
 }
 
 fn product(

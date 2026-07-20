@@ -21,15 +21,19 @@
 使用不同的 scoped SQLite/OpenMLS 状态；KeyPackage 私钥、Leaf 私钥、epoch secret 和 MLS
 数据库不得复制给兄弟设备。
 
-Host 返回 accepted 后，Core 仍须逐项核对：
+对于协议要求 origin auth 的 create/add/remove/send，Core 在提交前使用 RFC 9421 origin
+proof 将本地 `method + meta + body`（包括 `operation_id`）绑定到签名的
+`content-digest`。这些值属于本地请求关联信息；当前协议的 Host result 不回显请求 digest，
+因此不把本地重算值描述成 Host 回包校验。publish/get 使用其协议定义的认证边界和 typed
+result，不虚构 origin proof。
+
+Host 同步返回 accepted 后，Core 只按协议实际定义的 typed result 逐项核对：
 
 ```text
-operation_id
-RFC 9421 signed-payload digest
 group_did / group_state_ref
 crypto_group_id / epoch
 目标 member DID + device_id
-message_id（消息发送）
+operation_id + message_id（仅协议实际回显这些字段的消息发送结果）
 ```
 
 全部匹配后才允许 finalize。网络结果不确定或回包不匹配时，pending commit 保持
@@ -45,10 +49,10 @@ SDK 的可恢复 WAL：`preparing -> prepared -> accepted -> finalized/aborted`�
 timeline message。`group.incoming` 只有通过标准结构校验、精确 recipient DID/device 校验和
 MLS 解密后，才返回 Application plaintext 供后续业务投影。
 
-当前切片记录一个发布阻塞项：发起设备在 Host accepted 后已本地 finalize，再收到 Host
-广播的自身 Commit echo 时，现有 SDK 会因本地 epoch 已前进而 fail closed。Core 不把该错误
-伪装为成功；SDK 必须基于 finalized pending journal 对 operation、group、commit、epoch 和
-actor device 做精确匹配后，才能把自身 echo 记为幂等 receipt。
+发起设备在 Host accepted 后已本地 finalize，再收到 Host 广播的自身 Commit echo 时，SDK
+只在 finalized pending journal 与 actor DID/device、operation、group/state、subject、epoch 和
+Commit bytes/digest 全部精确且唯一匹配时记录幂等 receipt，不会再次 merge Commit。重启后的
+精确 replay 返回同一控制结果；任何不匹配继续 fail closed。
 
 ## 4. 尚未完成
 
