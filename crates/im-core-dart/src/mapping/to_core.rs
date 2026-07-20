@@ -167,8 +167,7 @@ impl TryFrom<crate::dto::config::DartImCoreOpenOptions> for im_core::ImCoreOpenO
             identity_secret_vault: None,
             multi_device_join_enabled: value.multi_device_join_enabled,
             multi_device_root_transfer_enabled: value.multi_device_root_transfer_enabled,
-            // Device revoke is not part of the Dart rollout surface yet.
-            multi_device_device_revoke_enabled: false,
+            multi_device_device_revoke_enabled: value.multi_device_device_revoke_enabled,
             // Direct E2EE rollout is exposed by its dedicated public-flow slice.
             multi_device_direct_e2ee_enabled: false,
             multi_device_handle_recovery_enabled: value.multi_device_handle_recovery_enabled,

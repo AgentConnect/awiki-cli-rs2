@@ -6,13 +6,33 @@ use crate::dto::{
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
         DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt, DartDeviceJoinProgress,
         DartDeviceJoinRegistrySnapshot, DartDeviceJoinRole, DartDeviceJoinSessionSummary,
-        DartHandleRecoveryCancelResult, DartHandleRecoveryFinalizeResult,
+        DartDeviceRevokeResult, DartHandleRecoveryCancelResult, DartHandleRecoveryFinalizeResult,
         DartHandleRecoveryProgress, DartHandleRegistrationResult, DartIdentityDeviceSummary,
         DartIdentitySelector, DartIdentitySummary, DartIdentityVaultMigrationReport,
         DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartInitialProfile,
         DartRecoverHandleResult, DartRootKeyTransferSendResult, DartRootKeyTransferSummary,
     },
 };
+
+pub async fn revoke_device(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+    target_device_id: String,
+    user_presence_confirmed: bool,
+) -> Result<DartDeviceRevokeResult, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .device_revoke()
+        .revoke(im_core::identity::DeviceRevokeRequest {
+            identity: selector.try_into()?,
+            target_device_id: im_core::ids::ProtocolDeviceId::parse(target_device_id)
+                .map_err(DartImError::from)?,
+            user_presence_confirmed,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
 
 pub async fn local_handle_recovery_sessions(
     core: &Arc<crate::api::core::DartImCore>,

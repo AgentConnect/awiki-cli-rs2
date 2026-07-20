@@ -502,3 +502,18 @@ class RootKeyTransferSummary {
   final String? completedAt;
   final bool retryable;
 }
+
+enum DeviceRevokeStatus { revoked }
+
+/// Secret-free result of permanently revoking one AWiki device.
+class DeviceRevokeResult {
+  const DeviceRevokeResult({
+    required this.did,
+    required this.targetDeviceId,
+    required this.status,
+  });
+
+  final String did;
+  final String targetDeviceId;
+  final DeviceRevokeStatus status;
+}

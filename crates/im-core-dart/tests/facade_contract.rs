@@ -871,6 +871,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
         }),
         multi_device_join_enabled: true,
         multi_device_root_transfer_enabled: true,
+        multi_device_device_revoke_enabled: true,
         multi_device_handle_recovery_enabled: true,
         multi_device_group_e2ee_enabled: true,
     };
@@ -882,6 +883,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
     ));
     assert!(mapped.multi_device_join_enabled);
     assert!(mapped.multi_device_root_transfer_enabled);
+    assert!(mapped.multi_device_device_revoke_enabled);
     assert!(mapped.multi_device_handle_recovery_enabled);
     assert!(mapped.multi_device_group_e2ee_enabled);
     let vault = mapped.identity_secret_vault.expect("vault options");
@@ -911,6 +913,7 @@ fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
         }),
         multi_device_join_enabled: false,
         multi_device_root_transfer_enabled: false,
+        multi_device_device_revoke_enabled: false,
         multi_device_handle_recovery_enabled: false,
         multi_device_group_e2ee_enabled: false,
     };
@@ -920,6 +923,34 @@ fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
     assert_eq!(error.field.as_deref(), Some("root_key"));
     assert!(error.message.contains("32 bytes"));
     assert!(!error.message.contains("short-secret"));
+}
+
+#[test]
+fn device_revoke_result_maps_only_safe_product_state() {
+    let result = im_core::identity::DeviceRevokeResult {
+        did: im_core::ids::Did::parse("did:wba:example.test:alice").expect("did"),
+        target_device_id: im_core::ids::ProtocolDeviceId::parse("device-member")
+            .expect("device id"),
+        status: im_core::identity::DeviceRevokeStatus::Revoked,
+    };
+
+    let dart: awiki_im_core::dto::identity::DartDeviceRevokeResult = result.into();
+    assert_eq!(dart.did, "did:wba:example.test:alice");
+    assert_eq!(dart.target_device_id, "device-member");
+    assert!(matches!(
+        dart.status,
+        awiki_im_core::dto::identity::DartDeviceRevokeStatus::Revoked
+    ));
+    let debug = format!("{dart:?}");
+    for forbidden in [
+        "auth_generation",
+        "document_hash",
+        "registry_version",
+        "root_proof",
+        "admin_proof",
+    ] {
+        assert!(!debug.contains(forbidden));
+    }
 }
 
 #[test]

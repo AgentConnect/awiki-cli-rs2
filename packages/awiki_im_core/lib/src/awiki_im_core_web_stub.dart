@@ -100,6 +100,14 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<DeviceRevokeResult> revokeDevice({
+    required IdentitySelector selector,
+    required String targetDeviceId,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
   Future<List<RootKeyTransferSummary>> listRootKeyTransfers({
     required IdentitySelector selector,
     bool includeCompleted = false,

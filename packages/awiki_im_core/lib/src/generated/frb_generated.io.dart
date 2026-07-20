@@ -525,6 +525,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartDeviceJoinSide dco_decode_dart_device_join_side(dynamic raw);
 
   @protected
+  DartDeviceRevokeResult dco_decode_dart_device_revoke_result(dynamic raw);
+
+  @protected
+  DartDeviceRevokeStatus dco_decode_dart_device_revoke_status(dynamic raw);
+
+  @protected
   DartDeviceVaultRootKey dco_decode_dart_device_vault_root_key(dynamic raw);
 
   @protected
@@ -1720,6 +1726,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartDeviceJoinSide sse_decode_dart_device_join_side(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceRevokeResult sse_decode_dart_device_revoke_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceRevokeStatus sse_decode_dart_device_revoke_status(
     SseDeserializer deserializer,
   );
 
@@ -3185,6 +3201,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_device_join_side(
     DartDeviceJoinSide self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_revoke_result(
+    DartDeviceRevokeResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_revoke_status(
+    DartDeviceRevokeStatus self,
     SseSerializer serializer,
   );
 

@@ -156,7 +156,8 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         | "id.device.join.poll"
         | "id.device.join.claim"
         | "id.device.join.approve"
-        | "id.device.join.cancel" => Err(async_only_error(&command.name)),
+        | "id.device.join.cancel"
+        | "id.device.revoke" => Err(async_only_error(&command.name)),
         "msg.send" => app.run_msg_send(command),
         "msg.attachment.download" => app.run_msg_attachment_download(command),
         "msg.inbox" => app.run_msg_inbox(command),
@@ -307,6 +308,7 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "id.device.join.claim" => app.run_id_device_join_claim_async(command).await,
         "id.device.join.approve" => app.run_id_device_join_approve_async(command).await,
         "id.device.join.cancel" => app.run_id_device_join_cancel_async(command).await,
+        "id.device.revoke" => app.run_id_device_revoke_async(command).await,
         "id.device.root-key.send" => app.run_id_device_root_key_send_async(command).await,
         "id.device.root-key.list" => app.run_id_device_root_key_list_async(command).await,
         "id.device.root-key.retry" => app.run_id_device_root_key_retry_async(command).await,

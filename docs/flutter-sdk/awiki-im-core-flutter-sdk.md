@@ -231,6 +231,20 @@ management-ready source of truth.
 After signed completion, native Core scrubs the retained retry ciphertext and
 pending Vault state; Dart can observe only the resulting non-retryable status.
 
+## Permanent device revocation
+
+Native hosts opt in with
+`AwikiImCoreOpenOptions(multiDeviceDeviceRevokeEnabled: true)`; the option is
+independent from Join and defaults to false. After the host obtains foreground
+OS user presence, it calls `revokeDevice` with an identity selector, the exact
+opaque target device ID, and `userPresenceConfirmed: true`.
+
+The result contains only DID, target device ID, and `revoked` status. Internal
+Document/Registry versions and hashes, `auth_generation`, operation IDs,
+documents, proofs, tokens, and key material never enter the Dart API. Native
+Core rejects self-revocation and revoking the final ready management device;
+Flutter Web exposes the typed surface but keeps the operation unsupported.
+
 ## Multi-device group encryption rollout
 
 Native hosts opt in with

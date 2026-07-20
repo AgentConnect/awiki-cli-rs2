@@ -389,6 +389,34 @@ class DartDeviceJoinSessionSummary {
 
 enum DartDeviceJoinSide { newDevice, admin }
 
+/// Safe host projection. Internal checkpoints, documents, proofs and
+/// generations remain inside Core.
+class DartDeviceRevokeResult {
+  final String did;
+  final String targetDeviceId;
+  final DartDeviceRevokeStatus status;
+
+  const DartDeviceRevokeResult({
+    required this.did,
+    required this.targetDeviceId,
+    required this.status,
+  });
+
+  @override
+  int get hashCode => did.hashCode ^ targetDeviceId.hashCode ^ status.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDeviceRevokeResult &&
+          runtimeType == other.runtimeType &&
+          did == other.did &&
+          targetDeviceId == other.targetDeviceId &&
+          status == other.status;
+}
+
+enum DartDeviceRevokeStatus { revoked }
+
 class DartHandleRecoveryCancelResult {
   final String recoverySessionId;
   final DartHandleRecoveryPhase phase;

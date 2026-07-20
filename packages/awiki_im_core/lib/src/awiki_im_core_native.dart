@@ -294,6 +294,23 @@ class AwikiImCore {
     return result._toModel();
   }
 
+  Future<DeviceRevokeResult> revokeDevice({
+    required IdentitySelector selector,
+    required String targetDeviceId,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.revokeDevice(
+        core: _inner,
+        selector: selector._toGen(),
+        targetDeviceId: targetDeviceId,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return result._toModel();
+  }
+
   Future<List<RootKeyTransferSummary>> listRootKeyTransfers({
     required IdentitySelector selector,
     bool includeCompleted = false,
@@ -1969,6 +1986,7 @@ extension on AwikiImCoreOpenOptions {
     identitySecretVault: identitySecretVault?._toGen(),
     multiDeviceJoinEnabled: multiDeviceJoinEnabled,
     multiDeviceRootTransferEnabled: multiDeviceRootTransferEnabled,
+    multiDeviceDeviceRevokeEnabled: multiDeviceDeviceRevokeEnabled,
     multiDeviceHandleRecoveryEnabled: multiDeviceHandleRecoveryEnabled,
     multiDeviceGroupE2EeEnabled: multiDeviceGroupE2eeEnabled,
   );
@@ -3656,6 +3674,16 @@ extension on gen_identity.DartRootKeyTransferSendResult {
     recipientDeviceId: recipientDeviceId,
     messageId: messageId,
     acceptedAt: acceptedAt,
+  );
+}
+
+extension on gen_identity.DartDeviceRevokeResult {
+  DeviceRevokeResult _toModel() => DeviceRevokeResult(
+    did: did,
+    targetDeviceId: targetDeviceId,
+    status: switch (status) {
+      gen_identity.DartDeviceRevokeStatus.revoked => DeviceRevokeStatus.revoked,
+    },
   );
 }
 

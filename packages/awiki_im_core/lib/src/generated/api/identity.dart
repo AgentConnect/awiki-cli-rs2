@@ -13,6 +13,18 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 // These functions are ignored because they are not marked as `pub`: `recover_handle_request`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
 
+Future<DartDeviceRevokeResult> revokeDevice({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String targetDeviceId,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityRevokeDevice(
+  core: core,
+  selector: selector,
+  targetDeviceId: targetDeviceId,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
 Future<List<DartHandleRecoveryProgress>> localHandleRecoverySessions({
   required ArcDartImCore core,
 }) => RustLib.instance.api.crateApiIdentityLocalHandleRecoverySessions(

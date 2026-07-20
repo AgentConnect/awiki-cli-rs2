@@ -17,6 +17,7 @@ use std::path::Path;
 
 mod debug_handlers;
 mod device_join_handlers;
+mod device_revoke_handlers;
 mod error_hints;
 mod group_e2ee_handlers;
 mod group_handlers;

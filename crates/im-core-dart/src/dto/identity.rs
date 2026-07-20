@@ -133,6 +133,20 @@ pub struct DartDeviceJoinRegistrySnapshot {
     pub pending_join_requests: Vec<DartDeviceJoinPendingSummary>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartDeviceRevokeStatus {
+    Revoked,
+}
+
+/// Safe host projection. Internal checkpoints, documents, proofs and
+/// generations remain inside Core.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDeviceRevokeResult {
+    pub did: String,
+    pub target_device_id: String,
+    pub status: DartDeviceRevokeStatus,
+}
+
 /// Safe host projection for one accepted root-key control delivery. It never
 /// contains the private key, decrypted envelope, completion, or checkpoints.
 #[derive(Debug, Clone, PartialEq, Eq)]

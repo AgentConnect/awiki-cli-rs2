@@ -21,12 +21,13 @@ use crate::dto::{
         DartDeviceJoinAuthorizationStatus, DartDeviceJoinAuthorizedDeviceSummary,
         DartDeviceJoinPendingSummary, DartDeviceJoinPhase, DartDeviceJoinProgress,
         DartDeviceJoinRegistrySnapshot, DartDeviceJoinRemoteState, DartDeviceJoinRole,
-        DartDeviceJoinSessionSummary, DartDeviceJoinSide, DartHandleRecoveryCancelResult,
-        DartHandleRecoveryFinalizeResult, DartHandleRecoveryPhase, DartHandleRecoveryProgress,
-        DartHandleRecoverySide, DartHandleRegistrationResult, DartIdentityDeviceMode,
-        DartIdentityDeviceReadiness, DartIdentityDeviceRole, DartIdentityDeviceSummary,
-        DartIdentitySecretStorageBackend, DartIdentitySummary, DartIdentityVaultMigrationReport,
-        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartRecoverHandleResult,
+        DartDeviceJoinSessionSummary, DartDeviceJoinSide, DartDeviceRevokeResult,
+        DartDeviceRevokeStatus, DartHandleRecoveryCancelResult, DartHandleRecoveryFinalizeResult,
+        DartHandleRecoveryPhase, DartHandleRecoveryProgress, DartHandleRecoverySide,
+        DartHandleRegistrationResult, DartIdentityDeviceMode, DartIdentityDeviceReadiness,
+        DartIdentityDeviceRole, DartIdentityDeviceSummary, DartIdentitySecretStorageBackend,
+        DartIdentitySummary, DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
+        DartIdentityVaultVerificationReport, DartRecoverHandleResult,
         DartRootKeyTransferSendResult, DartRootKeyTransferStatus, DartRootKeyTransferSummary,
     },
     message::{
@@ -50,6 +51,18 @@ use crate::dto::{
         DartSecureOutboxStatus, DartSecureProblem, DartSecureProblemCode,
     },
 };
+
+impl From<im_core::identity::DeviceRevokeResult> for DartDeviceRevokeResult {
+    fn from(value: im_core::identity::DeviceRevokeResult) -> Self {
+        Self {
+            did: value.did.as_str().to_owned(),
+            target_device_id: value.target_device_id.as_str().to_owned(),
+            status: match value.status {
+                im_core::identity::DeviceRevokeStatus::Revoked => DartDeviceRevokeStatus::Revoked,
+            },
+        }
+    }
+}
 
 impl From<im_core::identity::HandleRecoveryProgress> for DartHandleRecoveryProgress {
     fn from(value: im_core::identity::HandleRecoveryProgress) -> Self {

@@ -1,6 +1,6 @@
 # 设备永久撤销 Core 接口（第一阶段）
 
-**状态**：Core implemented，独立 rollout default-off；Host/App、CLI 与远端 E2E 后续完成。
+**状态**：Core、Dart/Flutter SDK、AWiki Me 与 CLI 已实现，独立 rollout default-off；远端 E2E 待部署能力启用。
 
 ## 1. 定位与边界
 
@@ -39,6 +39,12 @@ Join、Root Transfer 或 Direct E2EE 均不会隐式打开撤销。开关启用�
 - 操作不会撤销最后一台 ready admin。
 
 任何条件不满足都在状态提交前 fail closed。
+
+Dart/Flutter Host 使用 `multiDeviceDeviceRevokeEnabled` 与
+`revokeDevice(selector:, targetDeviceId:, userPresenceConfirmed:)`。CLI 使用
+`AWIKI_MULTI_DEVICE_DEVICE_REVOKE_ENABLED=1 awiki-cli id device revoke --device <device_id>`，
+且只允许前台交互式终端；用户必须重新输入目标设备 ID 和 `REVOKE`。两者均不接受版本、
+hash、proof、generation 或任何密钥参数。
 
 ## 3. 域内执行流程
 
@@ -88,7 +94,7 @@ root/admin proof、access/refresh token 或任何私钥。pending record 中只�
 
 ## 6. 验证覆盖
 
-Core focused tests覆盖：
+Core、SDK、CLI 和 App focused tests 覆盖：
 
 - 独立开关默认关闭，其他多设备开关不能隐式启用；
 - member 调用者、self revoke 和最后 ready admin 拒绝；
@@ -98,3 +104,6 @@ Core focused tests覆盖：
 - 版本冲突清理旧 intent，服务端错误数据脱敏；
 - 非法成功响应不推进本地状态；
 - wire/result/Debug 不泄漏 proof、Document 内容或私钥形态。
+- CLI 默认关闭、拒绝脚本/`--dry-run`，且只输出安全撤销结果；
+- App 在显式破坏性确认后才请求一次系统 user-presence，拒绝时不调用 Core；
+- 撤销开关不隐式启用 Join，当前设备不显示撤销动作，成功后重新读取权威 Registry。
