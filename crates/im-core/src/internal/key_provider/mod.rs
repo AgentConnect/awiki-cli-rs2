@@ -57,4 +57,14 @@ pub(crate) trait KeyMaterialProvider: Send + Sync {
     fn valid_auth_token(&self) -> crate::ImResult<Option<String>>;
 
     fn persist_auth_token(&self, token: &str) -> crate::ImResult<()>;
+
+    /// Advances a live Vault-backed provider to the auth SecretRef committed
+    /// by the identity index. Non-Vault providers cannot participate in this
+    /// local vNext convergence operation.
+    fn advance_vault_auth_ref(
+        &self,
+        _committed: &crate::internal::secret_vault::record::SecretRef,
+    ) -> crate::ImResult<()> {
+        Err(crate::ImError::PermissionDenied)
+    }
 }

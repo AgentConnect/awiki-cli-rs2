@@ -551,10 +551,161 @@ impl<'a> IdentityStore<'a> {
         Ok(())
     }
 
-    /// Stages the new generation token in the existing Vault record, then
-    /// atomically flips the local authorization/checkpoint to management-ready.
-    /// A crash between the two steps remains fail-closed because the index is
-    /// still not management-ready and this operation is exactly retryable.
+    /// Returns the stable token-issue operation for one imported-root ACK,
+    /// persisting `candidate` before its first remote use.
+    pub(crate) fn reserve_root_import_management_token_operation(
+        &self,
+        local_alias: &str,
+        completed_message_id: &str,
+        candidate: &str,
+    ) -> crate::ImResult<String> {
+        validate_root_import_token_operation(candidate)?;
+        let alias = sanitize_identity_name(local_alias);
+        let lock = self.lock_index_mutation()?;
+        let mut index = self.load_index()?;
+        let record = index
+            .credentials
+            .get_mut(&alias)
+            .and_then(|entry| entry.root_key_import.as_mut())
+            .filter(|record| record.message_id() == completed_message_id)
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if let Some(existing) = record.management_token_operation_id.as_deref() {
+            validate_root_import_token_operation(existing)?;
+            return Ok(existing.to_owned());
+        }
+        record.management_token_operation_id = Some(candidate.to_owned());
+        self.save_index_locked(&lock, index)?;
+        Ok(candidate.to_owned())
+    }
+
+    /// Rotates an expired token-issue operation with compare-and-swap. If a
+    /// concurrent retry already rotated it, that winning operation is reused.
+    pub(crate) fn rotate_root_import_management_token_operation(
+        &self,
+        local_alias: &str,
+        completed_message_id: &str,
+        expected: &str,
+        replacement: &str,
+    ) -> crate::ImResult<String> {
+        validate_root_import_token_operation(expected)?;
+        validate_root_import_token_operation(replacement)?;
+        if expected == replacement {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let alias = sanitize_identity_name(local_alias);
+        let lock = self.lock_index_mutation()?;
+        let mut index = self.load_index()?;
+        let record = index
+            .credentials
+            .get_mut(&alias)
+            .and_then(|entry| entry.root_key_import.as_mut())
+            .filter(|record| record.message_id() == completed_message_id)
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let current = record
+            .management_token_operation_id
+            .as_deref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        validate_root_import_token_operation(current)?;
+        if current != expected {
+            return Ok(current.to_owned());
+        }
+        record.management_token_operation_id = Some(replacement.to_owned());
+        self.save_index_locked(&lock, index)?;
+        Ok(replacement.to_owned())
+    }
+
+    /// Loads the auth ref from an already committed imported-root transition.
+    /// Exact ACK retries use this to repair a live provider whose first ref
+    /// advance failed after the index commit.
+    pub(crate) fn committed_root_import_management_auth_ref(
+        &self,
+        local_alias: &str,
+        completed_message_id: &str,
+        auth_generation: u64,
+        secret_storage: &SaveIdentitySecretStorage,
+    ) -> crate::ImResult<crate::internal::secret_vault::record::SecretRef> {
+        let SaveIdentitySecretStorage::Vault {
+            workspace_id,
+            device_id,
+            vault,
+        } = secret_storage
+        else {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "vNext device refresh tokens require Vault storage".to_owned(),
+            });
+        };
+        let alias = sanitize_identity_name(local_alias);
+        let _lock = self.lock_index_mutation()?;
+        let index = self.load_index()?;
+        let entry =
+            index
+                .credentials
+                .get(&alias)
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: alias.clone(),
+                })?;
+        if entry
+            .root_key_import
+            .as_ref()
+            .map(|record| record.message_id())
+            != Some(completed_message_id)
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let state = entry
+            .device_state
+            .as_ref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let authorization = state
+            .authorization
+            .as_ref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
+            || authorization.status
+                != crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
+            || authorization.role
+                != crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
+            || !authorization.management_ready
+            || authorization.auth_generation != auth_generation
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let metadata = entry
+            .vault_migration
+            .as_ref()
+            .filter(|metadata| {
+                metadata.workspace_id == *workspace_id
+                    && metadata.device_id == *device_id
+                    && metadata.status == IdentityVaultMigrationStatus::Verified
+            })
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let auth_ref = metadata
+            .vnext_refs
+            .as_ref()
+            .map(|refs| refs.auth_jwt.clone())
+            .filter(|auth_ref| {
+                metadata.refs.auth_jwt == *auth_ref
+                    && auth_ref.workspace_id == *workspace_id
+                    && auth_ref.device_id == *device_id
+                    && auth_ref.identity_id.as_deref() == Some(entry.unique_id.as_str())
+                    && auth_ref.did.as_deref() == Some(entry.did.as_str())
+                    && auth_ref.kind == crate::internal::secret_vault::record::SecretKind::AuthJwt
+                    && auth_ref.key_id == AUTH_FILE_NAME
+                    && auth_ref.key_version > 0
+            })
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let opened = vault.open(&auth_ref)?;
+        let snapshot = crate::internal::auth::state::parse_auth_state(opened.expose_secret())?;
+        if !snapshot.has_valid_token || snapshot.refresh_token.is_none() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(auth_ref)
+    }
+
+    /// Seals the replacement token under a new Vault `SecretRef`, then commits
+    /// that ref, authorization generation and checkpoint in one atomic index
+    /// image. A crash before the index rename leaves the old ref/state active;
+    /// a crash after it leaves the complete new ref/state active.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn converge_root_import_management_ready(
         &self,
@@ -566,21 +717,23 @@ impl<'a> IdentityStore<'a> {
         refresh_token: &str,
         token_expires_at: &str,
         secret_storage: &SaveIdentitySecretStorage,
-    ) -> crate::ImResult<()> {
+    ) -> crate::ImResult<crate::internal::secret_vault::record::SecretRef> {
         if completed_message_id.trim().is_empty() || auth_generation == 0 {
             return Err(crate::ImError::PermissionDenied);
         }
-        self.persist_vnext_auth_token_pair(
-            local_alias,
-            access_token,
-            refresh_token,
-            token_expires_at,
-            secret_storage,
-        )?;
-
         let alias = sanitize_identity_name(local_alias);
         let lock = self.lock_index_mutation()?;
         let mut index = self.load_index()?;
+        let SaveIdentitySecretStorage::Vault {
+            workspace_id,
+            device_id,
+            vault,
+        } = secret_storage
+        else {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "vNext device refresh tokens require Vault storage".to_owned(),
+            });
+        };
         let entry =
             index
                 .credentials
@@ -622,10 +775,106 @@ impl<'a> IdentityStore<'a> {
                 return Err(crate::ImError::PermissionDenied);
             }
         }
+        let already_ready = authorization.management_ready;
+        if already_ready && authorization.auth_generation != auth_generation {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if !already_ready && authorization.auth_generation >= auth_generation {
+            return Err(crate::ImError::PermissionDenied);
+        }
+
+        let metadata = entry
+            .vault_migration
+            .as_mut()
+            .filter(|metadata| {
+                metadata.workspace_id == *workspace_id
+                    && metadata.device_id == *device_id
+                    && metadata.status == IdentityVaultMigrationStatus::Verified
+            })
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let refs = metadata
+            .vnext_refs
+            .as_mut()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let current_auth_ref = refs.auth_jwt.clone();
+        if metadata.refs.auth_jwt != current_auth_ref
+            || current_auth_ref.workspace_id != *workspace_id
+            || current_auth_ref.device_id != *device_id
+            || current_auth_ref.identity_id.as_deref() != Some(entry.unique_id.as_str())
+            || current_auth_ref.did.as_deref() != Some(entry.did.as_str())
+            || current_auth_ref.kind != crate::internal::secret_vault::record::SecretKind::AuthJwt
+            || current_auth_ref.key_id != AUTH_FILE_NAME
+            || current_auth_ref.key_version == 0
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if already_ready {
+            return Ok(current_auth_ref);
+        }
+        // Prove that the currently committed ref is readable before staging a
+        // successor. The plaintext is held only by zeroizing SecretBytes.
+        let current_auth = vault.open(&current_auth_ref)?;
+        drop(current_auth);
+        let next_key_version = current_auth_ref
+            .key_version
+            .checked_add(1)
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let raw = crate::internal::auth::state::auth_state_json_for_token_pair(
+            access_token,
+            Some(refresh_token),
+            Some(token_expires_at),
+        )?;
+        let staged_auth_ref = vault.seal(crate::internal::secret_vault::SealSecretRequest {
+            metadata: crate::internal::secret_vault::record::SecretMetadata {
+                workspace_id: current_auth_ref.workspace_id.clone(),
+                device_id: current_auth_ref.device_id.clone(),
+                identity_id: current_auth_ref.identity_id.clone(),
+                did: current_auth_ref.did.clone(),
+                kind: current_auth_ref.kind.clone(),
+                key_id: current_auth_ref.key_id.clone(),
+                key_version: next_key_version,
+                policy: crate::internal::secret_vault::policy::SecretAccessPolicy::no_prompt_local_secret(),
+            },
+            plaintext: crate::internal::platform_secret::SecretBytes::from_vec(raw),
+        })?;
+        let opened = match vault.open(&staged_auth_ref) {
+            Ok(opened) => opened,
+            Err(error) => {
+                let _ = vault.delete(&staged_auth_ref);
+                return Err(error);
+            }
+        };
+        let snapshot = match crate::internal::auth::state::parse_auth_state(opened.expose_secret())
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let _ = vault.delete(&staged_auth_ref);
+                return Err(error);
+            }
+        };
+        if snapshot.bearer_token.as_deref() != Some(access_token.trim())
+            || snapshot.refresh_token.as_deref() != Some(refresh_token.trim())
+        {
+            let _ = vault.delete(&staged_auth_ref);
+            return Err(crate::ImError::PermissionDenied);
+        }
+        drop(snapshot);
+        drop(opened);
+
+        refs.auth_jwt = staged_auth_ref.clone();
+        metadata.refs.auth_jwt = staged_auth_ref.clone();
         authorization.management_ready = true;
         authorization.auth_generation = auth_generation;
         state.checkpoint = Some(checkpoint.clone());
-        self.save_index_locked(&lock, index)
+        index.schema_version = INDEX_SCHEMA_VERSION;
+        if let Err(error) = self.save_index_locked(&lock, index) {
+            let _ = vault.delete(&staged_auth_ref);
+            return Err(error);
+        }
+        // Keep the superseded encrypted record until live providers have
+        // advanced to the committed ref. It is no longer authoritative and a
+        // later Vault compaction may remove it safely.
+        Ok(staged_auth_ref)
     }
 
     pub(crate) async fn persist_vnext_auth_token_pair_async(
@@ -1787,7 +2036,7 @@ fn preserve_imported_root_for_resave(
         || refs.auth_jwt.did.as_deref() != Some(input.did.as_str())
         || refs.auth_jwt.kind != crate::internal::secret_vault::record::SecretKind::AuthJwt
         || refs.auth_jwt.key_id != AUTH_FILE_NAME
-        || refs.auth_jwt.key_version != 1
+        || refs.auth_jwt.key_version == 0
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -1970,6 +2219,19 @@ fn nullable_string(value: &str) -> Value {
     } else {
         Value::String(value.to_string())
     }
+}
+
+fn validate_root_import_token_operation(value: &str) -> crate::ImResult<()> {
+    if value.is_empty()
+        || value != value.trim()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
 }
 
 fn write_secure_json(path: &Path, payload: &impl Serialize) -> crate::ImResult<()> {

@@ -4,6 +4,7 @@ use crate::internal::identity_device_state::{
 };
 use crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey;
 use crate::internal::identity_store::{SaveIdentityInput, SaveIdentityKeyMode};
+use crate::internal::key_provider::KeyMaterialProvider;
 use crate::internal::platform_secret::DeviceVaultRootKey;
 use crate::internal::secret_vault::{FileSecretVault, FileSecretVaultStore};
 use serde_json::json;
@@ -1736,6 +1737,537 @@ fn inner_size_and_document_version_bounds_fail_before_persistence() {
         .credentials[LOCAL_ALIAS]
         .root_key_import
         .is_none());
+}
+
+#[test]
+fn root_import_token_operation_is_persisted_and_rotated_with_compare_and_swap() {
+    let scenario = scenario();
+    let imported = import_receiver_root(&scenario);
+    let store = IdentityStore::new(&scenario.receiver.paths);
+
+    let first = store
+        .reserve_root_import_management_token_operation(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            "root-ready-first",
+        )
+        .unwrap();
+    assert_eq!(first, "root-ready-first");
+    assert_eq!(
+        store
+            .reserve_root_import_management_token_operation(
+                LOCAL_ALIAS,
+                &imported.completion().ack_for_message_id,
+                "root-ready-unused",
+            )
+            .unwrap(),
+        first
+    );
+
+    let rotated = store
+        .rotate_root_import_management_token_operation(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            &first,
+            "root-ready-second",
+        )
+        .unwrap();
+    assert_eq!(rotated, "root-ready-second");
+    assert_eq!(
+        store
+            .rotate_root_import_management_token_operation(
+                LOCAL_ALIAS,
+                &imported.completion().ack_for_message_id,
+                &first,
+                "root-ready-loser",
+            )
+            .unwrap(),
+        rotated
+    );
+    let rotated_again = store
+        .rotate_root_import_management_token_operation(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            &rotated,
+            "root-ready-third",
+        )
+        .unwrap();
+    let persisted = store.load_index().unwrap().credentials[LOCAL_ALIAS]
+        .root_key_import
+        .clone()
+        .unwrap();
+    assert_eq!(
+        persisted.management_token_operation_id.as_deref(),
+        Some(rotated_again.as_str())
+    );
+    assert!(store
+        .reserve_root_import_management_token_operation(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            &"x".repeat(129),
+        )
+        .is_err());
+}
+
+#[test]
+fn management_ready_convergence_commits_versioned_token_ref_and_state_together() {
+    let scenario = scenario();
+    let imported = import_receiver_root(&scenario);
+    let store = IdentityStore::new(&scenario.receiver.paths);
+    let before = store.load_index().unwrap();
+    let before_entry = &before.credentials[LOCAL_ALIAS];
+    let old_auth_ref = before_entry
+        .vault_migration
+        .as_ref()
+        .and_then(|metadata| metadata.vnext_refs.as_ref())
+        .map(|refs| refs.auth_jwt.clone())
+        .unwrap();
+    let checkpoint = ready_checkpoint(&scenario);
+
+    assert!(store
+        .converge_root_import_management_ready(
+            LOCAL_ALIAS,
+            "wrong-completed-message",
+            2,
+            &checkpoint,
+            "new-access-token",
+            "new-refresh-token",
+            "2099-07-20T01:00:00Z",
+            &scenario.receiver.storage,
+        )
+        .is_err());
+    let still_before = store.load_index().unwrap();
+    assert_eq!(
+        still_before.credentials[LOCAL_ALIAS]
+            .vault_migration
+            .as_ref()
+            .unwrap()
+            .vnext_refs
+            .as_ref()
+            .unwrap()
+            .auth_jwt,
+        old_auth_ref
+    );
+
+    store
+        .converge_root_import_management_ready(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &checkpoint,
+            "new-access-token",
+            "new-refresh-token",
+            "2099-07-20T01:00:00Z",
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+
+    let converged = store.load_index().unwrap();
+    let entry = &converged.credentials[LOCAL_ALIAS];
+    let authorization = entry
+        .device_state
+        .as_ref()
+        .and_then(|state| state.authorization.as_ref())
+        .unwrap();
+    assert!(authorization.management_ready);
+    assert_eq!(authorization.auth_generation, 2);
+    assert_eq!(
+        entry.device_state.as_ref().unwrap().checkpoint,
+        Some(checkpoint)
+    );
+    let metadata = entry.vault_migration.as_ref().unwrap();
+    let new_auth_ref = metadata.vnext_refs.as_ref().unwrap().auth_jwt.clone();
+    assert_eq!(metadata.refs.auth_jwt, new_auth_ref);
+    assert_eq!(new_auth_ref.key_version, old_auth_ref.key_version + 1);
+    // The superseded encrypted record remains readable until live providers
+    // have advanced; only the new ref is authoritative in the index.
+    assert!(scenario.receiver.vault.open(&old_auth_ref).is_ok());
+    let opened = scenario.receiver.vault.open(&new_auth_ref).unwrap();
+    let auth = crate::internal::auth::state::parse_auth_state(opened.expose_secret()).unwrap();
+    assert_eq!(auth.bearer_token.as_deref(), Some("new-access-token"));
+    assert_eq!(auth.refresh_token.as_deref(), Some("new-refresh-token"));
+
+    store
+        .converge_root_import_management_ready(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            entry
+                .device_state
+                .as_ref()
+                .unwrap()
+                .checkpoint
+                .as_ref()
+                .unwrap(),
+            "ignored-access-token",
+            "ignored-refresh-token",
+            "2099-07-20T01:00:00Z",
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+    let idempotent = store.load_index().unwrap();
+    assert_eq!(
+        idempotent.credentials[LOCAL_ALIAS]
+            .vault_migration
+            .as_ref()
+            .unwrap()
+            .vnext_refs
+            .as_ref()
+            .unwrap()
+            .auth_jwt,
+        new_auth_ref
+    );
+}
+
+#[test]
+fn concurrent_management_ready_convergence_cannot_overwrite_newer_token_generation() {
+    let scenario = scenario();
+    let imported = import_receiver_root(&scenario);
+    let checkpoint = ready_checkpoint(&scenario);
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let mut workers = Vec::new();
+    for _ in 0..2 {
+        let paths = scenario.receiver.paths.clone();
+        let storage = scenario.receiver.storage.clone();
+        let message_id = imported.completion().ack_for_message_id.clone();
+        let checkpoint = checkpoint.clone();
+        let barrier = barrier.clone();
+        workers.push(std::thread::spawn(move || {
+            barrier.wait();
+            IdentityStore::new(&paths).converge_root_import_management_ready(
+                LOCAL_ALIAS,
+                &message_id,
+                2,
+                &checkpoint,
+                "concurrent-access-token",
+                "concurrent-refresh-token",
+                "2099-07-20T01:00:00Z",
+                &storage,
+            )
+        }));
+    }
+    barrier.wait();
+    for worker in workers {
+        worker.join().unwrap().unwrap();
+    }
+
+    let index = IdentityStore::new(&scenario.receiver.paths)
+        .load_index()
+        .unwrap();
+    let entry = &index.credentials[LOCAL_ALIAS];
+    let authorization = entry
+        .device_state
+        .as_ref()
+        .and_then(|state| state.authorization.as_ref())
+        .unwrap();
+    assert!(authorization.management_ready);
+    assert_eq!(authorization.auth_generation, 2);
+    assert_eq!(
+        entry
+            .vault_migration
+            .as_ref()
+            .unwrap()
+            .vnext_refs
+            .as_ref()
+            .unwrap()
+            .auth_jwt
+            .key_version,
+        2
+    );
+    let current_auth_ref = entry
+        .vault_migration
+        .as_ref()
+        .unwrap()
+        .vnext_refs
+        .as_ref()
+        .unwrap()
+        .auth_jwt
+        .clone();
+    assert!(IdentityStore::new(&scenario.receiver.paths)
+        .converge_root_import_management_ready(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            1,
+            &checkpoint,
+            "stale-access-token",
+            "stale-refresh-token",
+            "2099-07-20T01:00:00Z",
+            &scenario.receiver.storage,
+        )
+        .is_err());
+    let after_stale = IdentityStore::new(&scenario.receiver.paths)
+        .load_index()
+        .unwrap();
+    assert_eq!(
+        after_stale.credentials[LOCAL_ALIAS]
+            .vault_migration
+            .as_ref()
+            .unwrap()
+            .vnext_refs
+            .as_ref()
+            .unwrap()
+            .auth_jwt,
+        current_auth_ref
+    );
+    let opened = scenario.receiver.vault.open(&current_auth_ref).unwrap();
+    assert_eq!(
+        crate::internal::auth::state::parse_auth_state(opened.expose_secret())
+            .unwrap()
+            .bearer_token
+            .as_deref(),
+        Some("concurrent-access-token")
+    );
+}
+
+#[test]
+fn exact_retry_repairs_live_provider_after_index_commit_and_first_ref_advance_failure() {
+    let scenario = scenario();
+    let imported = import_receiver_root(&scenario);
+    let store = IdentityStore::new(&scenario.receiver.paths);
+    let before = store.load_index().unwrap();
+    let old_refs = before.credentials[LOCAL_ALIAS]
+        .vault_migration
+        .as_ref()
+        .unwrap()
+        .vnext_refs
+        .clone()
+        .unwrap();
+    let old_auth_ref = old_refs.auth_jwt.clone();
+    let live_vault = Arc::new(FailOnceTargetOpenVault {
+        inner: scenario.receiver.vault.clone(),
+        target: std::sync::Mutex::new(None),
+        armed: std::sync::atomic::AtomicBool::new(false),
+    });
+    let provider = crate::internal::key_provider::vault::VaultBackedKeyMaterialProvider::new_vnext(
+        scenario
+            .receiver
+            .paths
+            .identity_root_dir
+            .join("receiver-identity"),
+        live_vault.clone(),
+        old_refs,
+    );
+    assert_eq!(
+        provider.valid_auth_token().unwrap().as_deref(),
+        Some("device-token")
+    );
+
+    let committed = store
+        .converge_root_import_management_ready(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &ready_checkpoint(&scenario),
+            "retry-access-token",
+            "retry-refresh-token",
+            "2099-07-20T01:00:00Z",
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+    *live_vault.target.lock().unwrap() = Some(committed.clone());
+    live_vault
+        .armed
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(provider.advance_vault_auth_ref(&committed).is_err());
+    assert_eq!(
+        provider.valid_auth_token().unwrap().as_deref(),
+        Some("device-token")
+    );
+
+    let retry_ref = store
+        .committed_root_import_management_auth_ref(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+    provider.advance_vault_auth_ref(&retry_ref).unwrap();
+    assert_eq!(
+        provider.valid_auth_token().unwrap().as_deref(),
+        Some("retry-access-token")
+    );
+    // The old encrypted ref is retained for other live providers but is no
+    // longer authoritative in the identity index.
+    assert!(scenario.receiver.vault.open(&old_auth_ref).is_ok());
+}
+
+#[test]
+fn failed_index_commit_keeps_old_token_ref_and_authorization_state() {
+    let scenario = scenario();
+    let imported = import_receiver_root(&scenario);
+    let store = IdentityStore::new(&scenario.receiver.paths);
+    let before = store.load_index().unwrap();
+    let old_auth_ref = before.credentials[LOCAL_ALIAS]
+        .vault_migration
+        .as_ref()
+        .unwrap()
+        .vnext_refs
+        .as_ref()
+        .unwrap()
+        .auth_jwt
+        .clone();
+    let backup_path = scenario
+        .receiver
+        .paths
+        .registry_path
+        .with_extension("before-failed-commit");
+    let failing_vault = Arc::new(FailIndexCommitAfterTokenStageVault {
+        inner: scenario.receiver.vault.clone(),
+        registry_path: scenario.receiver.paths.registry_path.clone(),
+        backup_path: backup_path.clone(),
+        armed: std::sync::atomic::AtomicBool::new(true),
+    });
+    let storage = SaveIdentitySecretStorage::Vault {
+        workspace_id: "workspace-root-transfer".to_owned(),
+        device_id: "vault-context-receiver-identity".to_owned(),
+        vault: failing_vault,
+    };
+
+    let result = store.converge_root_import_management_ready(
+        LOCAL_ALIAS,
+        &imported.completion().ack_for_message_id,
+        2,
+        &ready_checkpoint(&scenario),
+        "failed-access-token",
+        "failed-refresh-token",
+        "2099-07-20T01:00:00Z",
+        &storage,
+    );
+    assert!(scenario.receiver.paths.registry_path.is_dir());
+    std::fs::remove_dir(&scenario.receiver.paths.registry_path).unwrap();
+    std::fs::rename(&backup_path, &scenario.receiver.paths.registry_path).unwrap();
+    assert!(result.is_err());
+
+    let after = store.load_index().unwrap();
+    let entry = &after.credentials[LOCAL_ALIAS];
+    let authorization = entry
+        .device_state
+        .as_ref()
+        .and_then(|state| state.authorization.as_ref())
+        .unwrap();
+    assert!(!authorization.management_ready);
+    assert_eq!(authorization.auth_generation, 1);
+    assert_eq!(
+        entry
+            .vault_migration
+            .as_ref()
+            .unwrap()
+            .vnext_refs
+            .as_ref()
+            .unwrap()
+            .auth_jwt,
+        old_auth_ref
+    );
+    assert!(scenario.receiver.vault.open(&old_auth_ref).is_ok());
+    assert!(!scenario
+        .receiver
+        .vault
+        .list()
+        .unwrap()
+        .iter()
+        .any(|secret_ref| {
+            secret_ref.kind == SecretKind::AuthJwt && secret_ref.key_version == 2
+        }));
+}
+
+fn import_receiver_root(scenario: &Scenario) -> ImportedRootKeyAck {
+    let prepared = scenario.prepare();
+    scenario
+        .import(
+            &prepared,
+            &scenario.direct_binding(),
+            prepared.transport_context(),
+            &scenario.document,
+            &scenario.registry,
+            scenario.now + Duration::seconds(1),
+        )
+        .unwrap()
+}
+
+fn ready_checkpoint(scenario: &Scenario) -> IdentityInternalCheckpoint {
+    let mut checkpoint = scenario.registry.checkpoint.clone();
+    checkpoint.registry_version += 1;
+    checkpoint
+}
+
+#[derive(Debug)]
+struct FailIndexCommitAfterTokenStageVault {
+    inner: Arc<FileSecretVault>,
+    registry_path: std::path::PathBuf,
+    backup_path: std::path::PathBuf,
+    armed: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Debug)]
+struct FailOnceTargetOpenVault {
+    inner: Arc<FileSecretVault>,
+    target: std::sync::Mutex<Option<SecretRef>>,
+    armed: std::sync::atomic::AtomicBool,
+}
+
+impl SecretVault for FailOnceTargetOpenVault {
+    fn seal(&self, request: SealSecretRequest) -> crate::ImResult<SecretRef> {
+        self.inner.seal(request)
+    }
+
+    fn seal_if_absent(&self, request: SealSecretRequest) -> crate::ImResult<SealIfAbsentResult> {
+        self.inner.seal_if_absent(request)
+    }
+
+    fn open(&self, secret_ref: &SecretRef) -> crate::ImResult<SecretBytes> {
+        let fail = self
+            .target
+            .lock()
+            .map_err(|_| crate::ImError::PermissionDenied)?
+            .as_ref()
+            == Some(secret_ref)
+            && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst);
+        if fail {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "injected live provider ref advance failure".to_owned(),
+            });
+        }
+        self.inner.open(secret_ref)
+    }
+
+    fn delete(&self, secret_ref: &SecretRef) -> crate::ImResult<()> {
+        self.inner.delete(secret_ref)
+    }
+
+    fn list(&self) -> crate::ImResult<Vec<SecretRef>> {
+        self.inner.list()
+    }
+}
+
+impl SecretVault for FailIndexCommitAfterTokenStageVault {
+    fn seal(&self, request: SealSecretRequest) -> crate::ImResult<SecretRef> {
+        let is_staged_auth = request.metadata.kind == SecretKind::AuthJwt
+            && request.metadata.key_version > 1
+            && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst);
+        let secret_ref = self.inner.seal(request)?;
+        if is_staged_auth {
+            std::fs::rename(&self.registry_path, &self.backup_path)?;
+            std::fs::create_dir(&self.registry_path)?;
+        }
+        Ok(secret_ref)
+    }
+
+    fn seal_if_absent(&self, request: SealSecretRequest) -> crate::ImResult<SealIfAbsentResult> {
+        self.inner.seal_if_absent(request)
+    }
+
+    fn open(&self, secret_ref: &SecretRef) -> crate::ImResult<SecretBytes> {
+        self.inner.open(secret_ref)
+    }
+
+    fn delete(&self, secret_ref: &SecretRef) -> crate::ImResult<()> {
+        self.inner.delete(secret_ref)
+    }
+
+    fn list(&self) -> crate::ImResult<Vec<SecretRef>> {
+        self.inner.list()
+    }
 }
 
 impl Scenario {

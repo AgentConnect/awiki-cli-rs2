@@ -300,6 +300,7 @@ impl<'a> RootKeyTransferCore<'a> {
                 schema_version: ROOT_KEY_IMPORT_SCHEMA_VERSION,
                 reservation: reservation.clone(),
                 completion: completion.clone(),
+                management_token_operation_id: None,
             });
             index.schema_version = 5;
             // No Vault write occurs in this retry path. The index replacement
@@ -375,6 +376,7 @@ impl<'a> RootKeyTransferCore<'a> {
             schema_version: ROOT_KEY_IMPORT_SCHEMA_VERSION,
             reservation: reservation.clone(),
             completion: completion.clone(),
+            management_token_operation_id: None,
         });
         index.schema_version = 5;
         // The atomic index image is the linearization point: it contains the
@@ -912,6 +914,10 @@ pub(crate) struct PersistedRootKeyImport {
     pub(crate) schema_version: u32,
     pub(crate) reservation: RootKeyImportReservation,
     pub(crate) completion: RootKeyImportedCompletion,
+    /// Stable, local-only idempotency key for the post-import token issue.
+    /// It is rotated only after an exact replay returns an expired token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) management_token_operation_id: Option<String>,
 }
 
 impl PersistedRootKeyImport {

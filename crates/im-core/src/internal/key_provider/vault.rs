@@ -1,5 +1,5 @@
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 
@@ -48,6 +48,7 @@ pub(crate) struct VaultBackedKeyMaterialProvider {
     file_provider: super::FileBackedKeyMaterialProvider,
     vault: Arc<dyn SecretVault + Send + Sync>,
     refs: VaultKeyRoleRefs,
+    auth_jwt_ref: RwLock<SecretRef>,
 }
 
 impl VaultBackedKeyMaterialProvider {
@@ -56,10 +57,12 @@ impl VaultBackedKeyMaterialProvider {
         vault: Arc<dyn SecretVault + Send + Sync>,
         refs: LegacyVaultKeyMaterialRefs,
     ) -> Self {
+        let auth_jwt_ref = refs.auth_jwt.clone();
         Self {
             file_provider: super::FileBackedKeyMaterialProvider::new(identity_dir),
             vault,
             refs: VaultKeyRoleRefs::Legacy(refs),
+            auth_jwt_ref: RwLock::new(auth_jwt_ref),
         }
     }
 
@@ -68,10 +71,12 @@ impl VaultBackedKeyMaterialProvider {
         vault: Arc<dyn SecretVault + Send + Sync>,
         refs: VNextVaultKeyMaterialRefs,
     ) -> Self {
+        let auth_jwt_ref = refs.auth_jwt.clone();
         Self {
             file_provider: super::FileBackedKeyMaterialProvider::new(identity_dir),
             vault,
             refs: VaultKeyRoleRefs::VNext(refs),
+            auth_jwt_ref: RwLock::new(auth_jwt_ref),
         }
     }
 
@@ -130,11 +135,13 @@ impl VaultBackedKeyMaterialProvider {
         }
     }
 
-    fn auth_jwt_ref(&self) -> &SecretRef {
-        match &self.refs {
-            VaultKeyRoleRefs::Legacy(refs) => &refs.auth_jwt,
-            VaultKeyRoleRefs::VNext(refs) => &refs.auth_jwt,
-        }
+    fn auth_jwt_ref(&self) -> crate::ImResult<SecretRef> {
+        self.auth_jwt_ref
+            .read()
+            .map(|secret_ref| secret_ref.clone())
+            .map_err(|_| crate::ImError::LocalStateUnavailable {
+                detail: "vault auth ref lock poisoned".to_owned(),
+            })
     }
 
     fn metadata_from_ref(secret_ref: &SecretRef) -> SecretMetadata {
@@ -217,8 +224,8 @@ impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
     }
 
     fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
-        let auth_ref = self.auth_jwt_ref();
-        let secret = self.vault.open(auth_ref)?;
+        let auth_ref = self.auth_jwt_ref()?;
+        let secret = self.vault.open(&auth_ref)?;
         crate::internal::auth::state::parse_auth_state(secret.expose_secret())
     }
 
@@ -233,11 +240,42 @@ impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
 
     fn persist_auth_token(&self, token: &str) -> crate::ImResult<()> {
         let raw = crate::internal::auth::state::auth_state_json_for_token(token)?;
-        let auth_ref = self.auth_jwt_ref();
+        let auth_ref = self.auth_jwt_ref()?;
         self.vault.seal(SealSecretRequest {
-            metadata: Self::metadata_from_ref(auth_ref),
+            metadata: Self::metadata_from_ref(&auth_ref),
             plaintext: SecretBytes::from_vec(raw),
         })?;
+        Ok(())
+    }
+
+    fn advance_vault_auth_ref(&self, committed: &SecretRef) -> crate::ImResult<()> {
+        let mut current =
+            self.auth_jwt_ref
+                .write()
+                .map_err(|_| crate::ImError::LocalStateUnavailable {
+                    detail: "vault auth ref lock poisoned".to_owned(),
+                })?;
+        if committed.workspace_id != current.workspace_id
+            || committed.device_id != current.device_id
+            || committed.identity_id != current.identity_id
+            || committed.did != current.did
+            || committed.kind != SecretKind::AuthJwt
+            || current.kind != SecretKind::AuthJwt
+            || committed.key_id != current.key_id
+            || committed.key_version < current.key_version
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        // Validate the target before exposing it to any subsequent request.
+        let opened = self.vault.open(committed)?;
+        let snapshot = crate::internal::auth::state::parse_auth_state(opened.expose_secret())?;
+        if !snapshot.has_token {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if *current == *committed {
+            return Ok(());
+        }
+        *current = committed.clone();
         Ok(())
     }
 }
@@ -415,6 +453,73 @@ mod tests {
         assert!(!debug.contains(&device_signing_pem));
         assert!(!debug.contains("agreement-secret"));
         assert!(!debug.contains("token-secret"));
+    }
+
+    #[test]
+    fn live_vnext_provider_advances_to_committed_versioned_auth_ref() {
+        let root = tempfile::tempdir().unwrap();
+        let identity_dir = root.path().join("identity");
+        std::fs::create_dir_all(&identity_dir).unwrap();
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([7_u8; 32]),
+            FileSecretVaultStore::new(root.path().join("vault")),
+        ));
+        let device_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityDeviceSigningPrivate,
+            "device-sign",
+            b"device-secret",
+        );
+        let agreement_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityE2eeAgreementPrivate,
+            "device-e2ee",
+            b"agreement-secret",
+        );
+        let old_auth_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::AuthJwt,
+            "auth.json",
+            &crate::internal::auth::state::auth_state_json_for_token("old-token").unwrap(),
+        );
+        let mut new_metadata = VaultBackedKeyMaterialProvider::metadata_from_ref(&old_auth_ref);
+        new_metadata.key_version += 1;
+        let new_auth_ref = vault
+            .seal(SealSecretRequest {
+                metadata: new_metadata,
+                plaintext: SecretBytes::from_vec(
+                    crate::internal::auth::state::auth_state_json_for_token("new-token").unwrap(),
+                ),
+            })
+            .unwrap();
+        let provider = VaultBackedKeyMaterialProvider::new_vnext(
+            identity_dir,
+            vault,
+            VNextVaultKeyMaterialRefs {
+                device_request_signing_private: device_ref,
+                did_document_root_private: None,
+                e2ee_agreement_private: agreement_ref,
+                auth_jwt: old_auth_ref.clone(),
+            },
+        );
+
+        assert_eq!(
+            provider.valid_auth_token().unwrap().as_deref(),
+            Some("old-token")
+        );
+        provider.advance_vault_auth_ref(&new_auth_ref).unwrap();
+        assert_eq!(
+            provider.valid_auth_token().unwrap().as_deref(),
+            Some("new-token")
+        );
+        assert!(provider.advance_vault_auth_ref(&old_auth_ref).is_err());
+        let mut missing_ref = new_auth_ref;
+        missing_ref.key_version += 1;
+        assert!(provider.advance_vault_auth_ref(&missing_ref).is_err());
+        assert_eq!(
+            provider.valid_auth_token().unwrap().as_deref(),
+            Some("new-token")
+        );
     }
 
     #[test]
