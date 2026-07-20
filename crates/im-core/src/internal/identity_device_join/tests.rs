@@ -843,6 +843,7 @@ fn two_devices_derive_the_same_sas_and_approval_is_restart_safe() {
     .unwrap();
     assert_eq!(renewed.operation_id, "approve-full-pairing-renewed");
     assert_eq!(renewed.pairing_confirmation.user_presence_at, renewed_at);
+    assert_eq!(renewed.new_document["proof"]["domain"], "awiki.test");
 
     let manifest = anp::authentication::validate_device_manifest(&renewed.new_document)
         .unwrap()
