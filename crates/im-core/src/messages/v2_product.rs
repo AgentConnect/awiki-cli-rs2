@@ -219,7 +219,7 @@ fn direct_result(
         resolved.direct_handle(),
         resolved.peer_scope.as_ref(),
     )?;
-    if attachment_projection.is_some() {
+    if let Some(manifest) = attachment_projection {
         let content_type =
             crate::attachments::manifest::attachment_manifest_content_type().to_owned();
         result.message.body = crate::messages::MessageBodyView::Unsupported {
@@ -227,6 +227,11 @@ fn direct_result(
         };
         result.message.metadata.content_type = Some(content_type);
         result.message.metadata.retry_plan = None;
+        add_product_attribute(
+            &mut result,
+            "attachment_manifest",
+            &crate::attachments::manifest::manifest_content_string(manifest),
+        );
     }
     result.message.sent_at = summary.accepted_at.clone();
     add_product_attribute(&mut result, "e2ee_profile", "anp.direct.e2ee.v2");
@@ -660,7 +665,7 @@ fn group_result(
         None,
         None,
     )?;
-    if attachment_projection.is_some() {
+    if let Some(manifest) = attachment_projection {
         let content_type =
             crate::attachments::manifest::attachment_manifest_content_type().to_owned();
         result.message.body = crate::messages::MessageBodyView::Unsupported {
@@ -668,6 +673,11 @@ fn group_result(
         };
         result.message.metadata.content_type = Some(content_type);
         result.message.metadata.retry_plan = None;
+        add_product_attribute(
+            &mut result,
+            "attachment_manifest",
+            &crate::attachments::manifest::manifest_content_string(manifest),
+        );
     }
     result.message.sent_at = Some(accepted.accepted_at.clone());
     add_product_attribute(&mut result, "e2ee_profile", "anp.group.e2ee.v2");
@@ -826,23 +836,45 @@ mod tests {
                 accepted_at: Some("2026-07-20T00:00:00Z".to_owned()),
             }
         };
-        let attribute = |result: &crate::messages::SendMessageResult| {
+        let attribute = |result: &crate::messages::SendMessageResult, key: &str| {
             result
                 .message
                 .metadata
                 .attributes
                 .iter()
-                .find(|attribute| attribute.key == "final_acceptance")
+                .find(|attribute| attribute.key == key)
                 .map(|attribute| attribute.value.clone())
         };
 
         let partial = direct_result(&client, &resolved, &summary(1, 1), None).unwrap();
         assert_eq!(partial.delivery, crate::messages::DeliveryState::Sent);
-        assert_eq!(attribute(&partial).as_deref(), Some("false"));
+        assert_eq!(
+            attribute(&partial, "final_acceptance").as_deref(),
+            Some("false")
+        );
 
         let complete = direct_result(&client, &resolved, &summary(2, 0), None).unwrap();
         assert_eq!(complete.delivery, crate::messages::DeliveryState::Accepted);
-        assert_eq!(attribute(&complete).as_deref(), Some("true"));
+        assert_eq!(
+            attribute(&complete, "final_acceptance").as_deref(),
+            Some("true")
+        );
+
+        let manifest = serde_json::json!({
+            "type": "awiki.attachment.manifest.v1",
+            "attachments": [{
+                "attachment_id": "attachment-redacted",
+                "object_uri": "https://objects.example/attachment-redacted"
+            }]
+        });
+        let attachment =
+            direct_result(&client, &resolved, &summary(2, 0), Some(&manifest)).unwrap();
+        let stored_manifest = attribute(&attachment, "attachment_manifest").unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&stored_manifest).unwrap(),
+            manifest
+        );
+        assert!(!stored_manifest.contains("object_key"));
     }
 
     #[test]
