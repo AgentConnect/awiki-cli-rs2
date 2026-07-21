@@ -406,8 +406,37 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
 
 #[test]
 fn release_artifact_script_documents_e2ee_feature_gate() {
+    let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = std::fs::read_to_string(crate_root.join("Cargo.toml"))
+        .expect("read awiki-cli Cargo manifest");
+    let im_core_dependency = manifest
+        .lines()
+        .find(|line| line.starts_with("im-core = "))
+        .expect("awiki-cli im-core dependency");
+    assert!(im_core_dependency.contains("\"group-e2ee\""));
+    assert!(im_core_dependency.contains("\"blocking\""));
+
+    let group_service =
+        std::fs::read_to_string(crate_root.join("../im-core/src/groups/service.rs"))
+            .expect("read im-core Group service");
+    let create_async = group_service
+        .split("pub async fn create_async(")
+        .nth(1)
+        .and_then(|rest| rest.split("pub fn join(").next())
+        .expect("GroupService::create_async source");
+    let worker_start = create_async
+        .find("run_blocking(move ||")
+        .expect("P6 sync initialization should enter the blocking worker");
+    let worker_end = create_async[worker_start..]
+        .find(".map_err(|err| crate::ImError::Internal")
+        .map(|offset| worker_start + offset)
+        .expect("P6 blocking worker result mapping");
+    let worker_call = &create_async[worker_start..worker_end];
+    assert!(worker_call.contains("initialize_created_group("));
+    assert!(worker_call.trim_end().ends_with(".await"));
+
     let script = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        crate_root
             .join("../..")
             .join("scripts/release/build-release-artifact.sh"),
     )
