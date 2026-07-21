@@ -2448,11 +2448,7 @@ async fn messages_read_async_replays_pending_direct_cipher_after_init() {
         .list_decrypted_secure_messages("alice-id", vec!["msg-pending-follow-up".to_owned()])
         .await
         .unwrap();
-    assert_eq!(
-        cached.len(),
-        1,
-        "expected one committed decrypted projection"
-    );
+    assert_eq!(cached.len(), 1, "expected one cached decrypted projection");
     assert_eq!(cached[0].content_type, "text/plain");
     assert_eq!(cached[0].content, "follow-up after init");
 

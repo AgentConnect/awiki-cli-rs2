@@ -1294,6 +1294,25 @@ WHERE owner_identity_id = ?
     for row in rows {
         result.push(row.map_err(super::local_state_unavailable)?);
     }
+    let committed_ids = result
+        .iter()
+        .map(|record| record.msg_id.clone())
+        .collect::<BTreeSet<_>>();
+    let message_ids = message_ids
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
+    let backlogged =
+        super::inbound_resolution_backlog::list_decrypted_secure_messages_for_owner_identity(
+            connection,
+            &owner_identity_id,
+            &message_ids,
+        )?;
+    result.extend(
+        backlogged
+            .into_iter()
+            .filter(|record| !committed_ids.contains(&record.msg_id)),
+    );
     Ok(result)
 }
 
