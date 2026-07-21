@@ -4,11 +4,13 @@
 //! The adjacent state file contains only public control objects, digests and
 //! opaque SecretVault references. Remote tokens stay sealed, approval requests
 //! are frozen before network I/O, and SAS values are derived on demand rather
-//! than persisted.
+//! than persisted. Join state mutations are serialized across both threads and
+//! processes that share the same identity root.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+use fs2::FileExt as _;
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use rand::RngCore;
@@ -38,6 +40,7 @@ use crate::internal::secret_vault::{SealSecretRequest, SecretAccessPolicy, Secre
 
 const JOIN_STATE_SCHEMA_VERSION: u32 = 1;
 const JOIN_STATE_DIR: &str = ".device-join";
+const JOIN_STATE_LOCK_FILE: &str = ".awiki-device-join-state.lock";
 const JOIN_CHALLENGE_LEN: usize = 32;
 const JOIN_NONCE_LEN: usize = 12;
 const JOIN_RANDOM_ID_LEN: usize = 16;
@@ -2199,13 +2202,41 @@ fn delete_secret_refs(vault: &dyn SecretVault, refs: Vec<&SecretRef>) -> crate::
     first_error.map_or(Ok(()), Err)
 }
 
-fn lock_join_state(core: &crate::core::ImCore) -> crate::ImResult<std::sync::MutexGuard<'_, ()>> {
-    core.inner()
-        .device_join_lock
-        .lock()
-        .map_err(|_| crate::ImError::LocalStateUnavailable {
+struct JoinStateMutationLock<'a> {
+    _process_guard: std::sync::MutexGuard<'a, ()>,
+    file: fs::File,
+}
+
+impl Drop for JoinStateMutationLock<'_> {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
+fn lock_join_state(core: &crate::core::ImCore) -> crate::ImResult<JoinStateMutationLock<'_>> {
+    let process_guard = core.inner().device_join_lock.lock().map_err(|_| {
+        crate::ImError::LocalStateUnavailable {
             detail: "device Join state lock poisoned".to_owned(),
-        })
+        }
+    })?;
+    let dir = JoinStateStore::new(core).dir();
+    fs::create_dir_all(&dir)?;
+    set_private_dir_mode(&dir)?;
+    let path = dir.join(JOIN_STATE_LOCK_FILE);
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let file = options.open(&path)?;
+    set_private_file_mode(&path)?;
+    file.lock_exclusive().map_err(crate::ImError::from)?;
+    Ok(JoinStateMutationLock {
+        _process_guard: process_guard,
+        file,
+    })
 }
 
 fn required_vault(

@@ -42,6 +42,36 @@ fn open_vault_core(root: &Path) -> crate::ImCore {
     open_vault_core_with_prekey_flags(root, false, false)
 }
 
+#[test]
+fn join_state_lock_serializes_independent_cores_sharing_identity_root() {
+    let root = tempfile::tempdir().unwrap();
+    let first = open_vault_core(root.path());
+    let second = open_vault_core(root.path());
+    let guard = lock_join_state(&first).unwrap();
+    let lock_path = JoinStateStore::new(&second)
+        .dir()
+        .join(JOIN_STATE_LOCK_FILE);
+    let probe = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+
+    assert!(fs2::FileExt::try_lock_exclusive(&probe).is_err());
+    drop(guard);
+    fs2::FileExt::try_lock_exclusive(&probe).unwrap();
+    fs2::FileExt::unlock(&probe).unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(lock_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
 fn open_vault_core_with_prekey_flags(
     root: &Path,
     direct_e2ee_enabled: bool,
