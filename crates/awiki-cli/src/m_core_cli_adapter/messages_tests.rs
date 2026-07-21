@@ -199,6 +199,74 @@ fn attachment_destination_errors_map_to_cli_path_errors() {
     );
 }
 
+#[test]
+fn message_service_public_code_does_not_degrade_to_internal_error() {
+    let private_marker = "remote-private-message-data";
+    for service_code in ["anp.device_not_eligible", "anp.device_state_changed"] {
+        let mapped = im_error_to_message_error(im_core::ImError::Service {
+            status_code: None,
+            code: Some(service_code.to_owned()),
+            message: private_marker.to_owned(),
+            data: Some(json!({"private": private_marker})),
+        });
+
+        assert_eq!(
+            mapped,
+            MessageAdapterError::PublicServiceCode(service_code.to_owned())
+        );
+        assert!(!format!("{mapped:?}").contains(private_marker));
+        assert!(!mapped.to_string().contains(private_marker));
+    }
+}
+
+#[test]
+fn message_service_auth_status_precedes_public_service_code() {
+    let private_marker = "remote-private-auth-error";
+    for status_code in [401, 403] {
+        let mapped = im_error_to_message_error(im_core::ImError::Service {
+            status_code: Some(status_code),
+            code: Some("anp.device_not_eligible".to_owned()),
+            message: private_marker.to_owned(),
+            data: Some(json!({"private": private_marker})),
+        });
+
+        assert_eq!(
+            mapped,
+            MessageAdapterError::Service(ServiceError {
+                status_code,
+                rpc_code: 0,
+                message: "remote service request failed".to_owned(),
+                data: None,
+            })
+        );
+        assert!(!format!("{mapped:?}").contains(private_marker));
+        assert!(!mapped.to_string().contains(private_marker));
+    }
+}
+
+#[test]
+fn message_service_private_code_and_payload_are_not_preserved() {
+    let private_marker = "remote-private-error-payload";
+    let mapped = im_error_to_message_error(im_core::ImError::Service {
+        status_code: None,
+        code: Some("private diagnostic code".to_owned()),
+        message: private_marker.to_owned(),
+        data: Some(json!({"private": private_marker})),
+    });
+
+    assert_eq!(
+        mapped,
+        MessageAdapterError::Service(ServiceError {
+            status_code: 0,
+            rpc_code: 0,
+            message: "remote service request failed".to_owned(),
+            data: None,
+        })
+    );
+    assert!(!format!("{mapped:?}").contains(private_marker));
+    assert!(!mapped.to_string().contains(private_marker));
+}
+
 fn unique_temp_root(name: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

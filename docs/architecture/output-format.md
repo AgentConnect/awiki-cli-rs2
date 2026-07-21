@@ -80,6 +80,8 @@ awiki-cli msg inbox --jq '.data.messages[] | .id'
 - `error.message` 面向人类，但要简短明确。
 - `error.hint` 给下一步操作建议。
 - `error.details` 只放可公开的结构化上下文，不放私钥、JWT、raw secure state 或本机敏感信息。
+- 消息命令不得透传远端 message、data 或其他自由格式详情；服务返回经过校验的稳定公共
+  错误码时，CLI 使用顶层 `service_error`，并且只在 `error.details.service_code` 中保留该码。
 
 ## 5. Dry-run
 

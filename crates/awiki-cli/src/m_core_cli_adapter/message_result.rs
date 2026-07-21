@@ -61,6 +61,7 @@ pub enum MessageAdapterError {
     IdentityRequired(String),
     PermissionDenied,
     LocalStateUnavailable(String),
+    PublicServiceCode(String),
     Service(ServiceError),
     Identity(IdentityError),
     PathUnavailable(String),
@@ -166,6 +167,7 @@ impl fmt::Display for MessageAdapterError {
             | Self::PathUnavailable(message)
             | Self::Internal(message) => formatter.write_str(message),
             Self::PermissionDenied => formatter.write_str("permission denied"),
+            Self::PublicServiceCode(_) => formatter.write_str("remote service request failed"),
             Self::Service(error) => write!(formatter, "{error}"),
             Self::Identity(error) => write!(formatter, "{error}"),
             Self::InvalidAttachmentServiceEndpoint(message) => {

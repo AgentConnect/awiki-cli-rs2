@@ -1191,43 +1191,92 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
         MessageAdapterError::AttachmentNotSupported | MessageAdapterError::GroupNotSupported => {
             ExitError::new("not_implemented", 1, err.to_string(), hint)
         }
-        MessageAdapterError::Service(service_err) => match () {
-            _ if service_err.status_code == 400 || service_err.rpc_code == -32602 => {
-                ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
+        MessageAdapterError::PublicServiceCode(service_code) => {
+            let mut mapped = ExitError::new(
+                "service_error",
+                5,
+                "message operation: remote service request failed.",
+                hint,
+            );
+            if crate::m_core_cli_adapter::error::is_public_service_code(&service_code) {
+                mapped.detail.details = json!({"service_code": service_code});
             }
-            _ if service_err.status_code == 401 || service_err.rpc_code == -32000 => {
+            mapped
+        }
+        MessageAdapterError::Service(service_err) => match () {
+            _ if service_err.status_code == 403 => ExitError::new(
+                "permission_denied",
+                4,
+                "message operation: permission denied.",
+                "Check identity permissions and service access.",
+            ),
+            _ if service_err.status_code == 401 => ExitError::new(
+                "auth_required",
+                3,
+                "message operation: authentication is required.",
+                "Use an identity with a valid JWT or DID WBA auth material.",
+            ),
+            _ if service_err.status_code == 400 || service_err.rpc_code == -32602 => {
+                ExitError::new(
+                    "invalid_argument",
+                    2,
+                    "message operation: remote service rejected the request.",
+                    hint,
+                )
+            }
+            _ if service_err.rpc_code == -32000 => {
                 ExitError::new(
                     "auth_required",
                     3,
-                    service_err.to_string(),
+                    "message operation: authentication is required.",
                     "Use an identity with a valid JWT or DID WBA auth material.",
                 )
             }
             _ if service_err.rpc_code == 1401 => ExitError::new(
                 "auth_required",
                 3,
-                service_err.to_string(),
+                "message operation: authentication is required.",
                 "Use an identity with a valid JWT or DID WBA auth material.",
             ),
             _ if service_err.status_code == 404
                 || service_err.rpc_code == -32002
                 || matches!(service_err.rpc_code, 6000 | 6005 | 6007 | 6012) =>
             {
-                ExitError::new("not_found", 5, service_err.to_string(), hint)
+                ExitError::new(
+                    "not_found",
+                    5,
+                    "message operation: remote resource was not found.",
+                    hint,
+                )
             }
             _ if service_err.status_code == 409
                 || matches!(service_err.rpc_code, -32003 | -32004) =>
             {
-                ExitError::new("conflict", 1, service_err.to_string(), hint)
+                ExitError::new(
+                    "conflict",
+                    1,
+                    "message operation: remote state conflict.",
+                    hint,
+                )
             }
             _ if matches!(
                 service_err.rpc_code,
                 6006 | 6008 | 6009 | 6010 | 6011 | 6013
             ) =>
             {
-                ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
+                ExitError::new(
+                    "invalid_argument",
+                    2,
+                    "message operation: remote service rejected the request.",
+                    hint,
+                )
             }
-            _ => ExitError::new("internal_error", 1, service_err.to_string(), hint),
+            _ => ExitError::new(
+                "internal_error",
+                1,
+                "message operation: remote service request failed.",
+                hint,
+            ),
         },
         MessageAdapterError::Identity(err) => match err.kind {
             IdentityErrorKind::InvalidInput => ExitError::new(
@@ -1306,5 +1355,64 @@ mod tests {
             unavailable.detail.message,
             "authoritative P4 member roster is incomplete"
         );
+    }
+
+    #[test]
+    fn message_exit_preserves_only_stable_public_service_code() {
+        let exit = message_exit(
+            MessageAdapterError::PublicServiceCode("anp.device_state_changed".to_owned()),
+            "Refresh the device state and retry.",
+        );
+
+        assert_eq!(exit.exit_code, 5);
+        assert_eq!(exit.detail.code, "service_error");
+        assert_eq!(
+            exit.detail.details,
+            json!({"service_code": "anp.device_state_changed"})
+        );
+        assert_eq!(
+            exit.detail.message,
+            "message operation: remote service request failed."
+        );
+    }
+
+    #[test]
+    fn message_exit_rejects_unvalidated_service_code() {
+        let private_marker = "remote-private-service-code";
+        let exit = message_exit(
+            MessageAdapterError::PublicServiceCode(private_marker.to_owned()),
+            "Retry later.",
+        );
+
+        assert_eq!(exit.exit_code, 5);
+        assert_eq!(exit.detail.code, "service_error");
+        assert_eq!(exit.detail.details, serde_json::Value::Null);
+        assert!(!format!("{exit:?}").contains(private_marker));
+    }
+
+    #[test]
+    fn message_exit_does_not_expose_remote_auth_error_payload() {
+        let private_marker = "remote-private-auth-payload";
+        for (status_code, rpc_code, expected_code, expected_exit_code) in [
+            (401, -32602, "auth_required", 3),
+            (403, -32602, "permission_denied", 4),
+        ] {
+            let exit = message_exit(
+                MessageAdapterError::Service(
+                    crate::m_core_cli_adapter::message_result::ServiceError {
+                        status_code,
+                        rpc_code,
+                        message: private_marker.to_owned(),
+                        data: Some(json!({"private": private_marker})),
+                    },
+                ),
+                "Retry later.",
+            );
+
+            assert_eq!(exit.exit_code, expected_exit_code);
+            assert_eq!(exit.detail.code, expected_code);
+            assert_eq!(exit.detail.details, serde_json::Value::Null);
+            assert!(!format!("{exit:?}").contains(private_marker));
+        }
     }
 }

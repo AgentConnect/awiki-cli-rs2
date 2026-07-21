@@ -242,7 +242,7 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
     }
 }
 
-fn is_public_service_code(code: &str) -> bool {
+pub(crate) fn is_public_service_code(code: &str) -> bool {
     if code.is_empty() || code.len() > PUBLIC_SERVICE_CODE_MAX_LEN || !code.is_ascii() {
         return false;
     }

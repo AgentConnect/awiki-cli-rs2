@@ -1941,16 +1941,27 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
             message,
             ..
         } => {
+            let status_code = status_code.unwrap_or_default();
+            let public_code = code
+                .as_deref()
+                .filter(|value| super::error::is_public_service_code(value))
+                .map(str::to_owned);
+            if !matches!(status_code, 401 | 403) {
+                if let Some(public_code) = public_code {
+                    return MessageAdapterError::PublicServiceCode(public_code);
+                }
+            }
             let rpc_code = code
+                .as_deref()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or_default();
             if group_e2ee_service_unsupported(rpc_code, &message) {
                 return MessageAdapterError::GroupNotSupported;
             }
             MessageAdapterError::Service(ServiceError {
-                status_code: status_code.unwrap_or_default(),
+                status_code,
                 rpc_code,
-                message,
+                message: "remote service request failed".to_owned(),
                 data: None,
             })
         }
