@@ -8,12 +8,13 @@ RUN_CODEGEN_CHECK=1
 BUILD_APPLE=1
 BUILD_ANDROID=1
 BUILD_LINUX=0
+BUILD_WINDOWS=0
 APPLE_ARGS=()
 DRY_RUN=0
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/flutter/build-sdk-native.sh [--dry-run] [--apple-only|--android-only|--linux-only|--ios-only|--macos-only] [--skip-codegen-check]
+Usage: scripts/flutter/build-sdk-native.sh [--dry-run] [--apple-only|--android-only|--linux-only|--windows-only|--ios-only|--macos-only] [--skip-codegen-check]
 
 Build the Flutter SDK native artifacts used by awiki_im_core.
 
@@ -27,6 +28,7 @@ Options:
   --apple-only          Run codegen check and build both iOS and macOS artifacts.
   --android-only        Run codegen check and build Android artifacts only.
   --linux-only          Run codegen check and build Linux artifacts only.
+  --windows-only        Run codegen check and build the Windows x64 artifact only.
   --ios-only            Run codegen check and build iOS artifacts only.
   --macos-only          Run codegen check and build macOS artifacts only.
   --skip-codegen-check  Skip generated Rust/Dart bridge consistency check.
@@ -48,6 +50,7 @@ while [[ $# -gt 0 ]]; do
       BUILD_APPLE=1
       BUILD_ANDROID=0
       BUILD_LINUX=0
+      BUILD_WINDOWS=0
       APPLE_ARGS=()
       shift
       ;;
@@ -55,6 +58,7 @@ while [[ $# -gt 0 ]]; do
       BUILD_APPLE=0
       BUILD_ANDROID=1
       BUILD_LINUX=0
+      BUILD_WINDOWS=0
       APPLE_ARGS=()
       shift
       ;;
@@ -62,6 +66,15 @@ while [[ $# -gt 0 ]]; do
       BUILD_APPLE=0
       BUILD_ANDROID=0
       BUILD_LINUX=1
+      BUILD_WINDOWS=0
+      APPLE_ARGS=()
+      shift
+      ;;
+    --windows-only)
+      BUILD_APPLE=0
+      BUILD_ANDROID=0
+      BUILD_LINUX=0
+      BUILD_WINDOWS=1
       APPLE_ARGS=()
       shift
       ;;
@@ -69,6 +82,7 @@ while [[ $# -gt 0 ]]; do
       BUILD_APPLE=1
       BUILD_ANDROID=0
       BUILD_LINUX=0
+      BUILD_WINDOWS=0
       APPLE_ARGS=(--ios)
       shift
       ;;
@@ -76,6 +90,7 @@ while [[ $# -gt 0 ]]; do
       BUILD_APPLE=1
       BUILD_ANDROID=0
       BUILD_LINUX=0
+      BUILD_WINDOWS=0
       APPLE_ARGS=(--macos)
       shift
       ;;
@@ -93,7 +108,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "${BUILD_APPLE}" != "1" && "${BUILD_ANDROID}" != "1" && "${BUILD_LINUX}" != "1" ]]; then
+if [[ "${BUILD_APPLE}" != "1" && "${BUILD_ANDROID}" != "1" && "${BUILD_LINUX}" != "1" && "${BUILD_WINDOWS}" != "1" ]]; then
   die "at least one platform must be selected"
 fi
 
@@ -117,6 +132,9 @@ if [[ "${DRY_RUN}" == "1" ]]; then
   if [[ "${BUILD_LINUX}" == "1" ]]; then
     echo "  would run: scripts/flutter/build-linux.sh"
   fi
+  if [[ "${BUILD_WINDOWS}" == "1" ]]; then
+    echo "  would run: scripts/flutter/build-windows.ps1"
+  fi
   exit 0
 fi
 
@@ -138,4 +156,14 @@ fi
 
 if [[ "${BUILD_LINUX}" == "1" ]]; then
   scripts/flutter/build-linux.sh
+fi
+
+if [[ "${BUILD_WINDOWS}" == "1" ]]; then
+  if command -v pwsh >/dev/null 2>&1; then
+    pwsh -NoProfile -File scripts/flutter/build-windows.ps1
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/flutter/build-windows.ps1
+  else
+    die "PowerShell is required for the Windows native SDK build"
+  fi
 fi

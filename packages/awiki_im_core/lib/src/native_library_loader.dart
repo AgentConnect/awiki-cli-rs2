@@ -3,54 +3,67 @@ import 'dart:io';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+enum AwikiImCoreLibrarySource { open, process }
+
+final class AwikiImCoreLibrarySelection {
+  const AwikiImCoreLibrarySelection.open(this.path)
+    : source = AwikiImCoreLibrarySource.open;
+
+  const AwikiImCoreLibrarySelection.process()
+    : source = AwikiImCoreLibrarySource.process,
+      path = null;
+
+  final AwikiImCoreLibrarySource source;
+  final String? path;
+}
+
+AwikiImCoreLibrarySelection resolveAwikiImCoreLibrary({
+  required String operatingSystem,
+  String? macOsDylibPath,
+}) {
+  switch (operatingSystem) {
+    case 'android':
+    case 'linux':
+      return const AwikiImCoreLibrarySelection.open('libawiki_im_core.so');
+    case 'windows':
+      return const AwikiImCoreLibrarySelection.open('awiki_im_core.dll');
+    case 'macos':
+      final configuredPath = macOsDylibPath?.trim();
+      if (configuredPath != null && configuredPath.isNotEmpty) {
+        return AwikiImCoreLibrarySelection.open(configuredPath);
+      }
+      return const AwikiImCoreLibrarySelection.process();
+    case 'ios':
+      return const AwikiImCoreLibrarySelection.process();
+    default:
+      throw UnsupportedError(
+        'Unsupported platform for awiki_im_core native library: '
+        '$operatingSystem.',
+      );
+  }
+}
+
 DynamicLibrary loadAwikiImCoreLibrary() {
-  if (Platform.isAndroid) {
-    return DynamicLibrary.open('libawiki_im_core.so');
-  }
-  if (Platform.isLinux) {
-    return DynamicLibrary.open('libawiki_im_core.so');
-  }
-  if (Platform.isMacOS) {
-    final dylibPath = _configuredMacOsDylibPath();
-    if (dylibPath != null) {
-      return DynamicLibrary.open(dylibPath);
-    }
-    return DynamicLibrary.process();
-  }
-  if (Platform.isIOS) {
-    return DynamicLibrary.process();
-  }
-  if (Platform.isWindows) {
-    throw UnsupportedError('Windows is not supported by awiki_im_core v0.1.');
-  }
-  throw UnsupportedError(
-    'Unsupported platform for awiki_im_core native library.',
+  final selection = resolveAwikiImCoreLibrary(
+    operatingSystem: Platform.operatingSystem,
+    macOsDylibPath: _configuredMacOsDylibPath(),
   );
+  return switch (selection.source) {
+    AwikiImCoreLibrarySource.open => DynamicLibrary.open(selection.path!),
+    AwikiImCoreLibrarySource.process => DynamicLibrary.process(),
+  };
 }
 
 ExternalLibrary loadAwikiImCoreExternalLibrary() {
-  if (Platform.isAndroid) {
-    return ExternalLibrary.open('libawiki_im_core.so');
-  }
-  if (Platform.isLinux) {
-    return ExternalLibrary.open('libawiki_im_core.so');
-  }
-  if (Platform.isMacOS) {
-    final dylibPath = _configuredMacOsDylibPath();
-    if (dylibPath != null) {
-      return ExternalLibrary.open(dylibPath);
-    }
-    return ExternalLibrary.process(iKnowHowToUseIt: true);
-  }
-  if (Platform.isIOS) {
-    return ExternalLibrary.process(iKnowHowToUseIt: true);
-  }
-  if (Platform.isWindows) {
-    throw UnsupportedError('Windows is not supported by awiki_im_core v0.1.');
-  }
-  throw UnsupportedError(
-    'Unsupported platform for awiki_im_core native library.',
+  final selection = resolveAwikiImCoreLibrary(
+    operatingSystem: Platform.operatingSystem,
+    macOsDylibPath: _configuredMacOsDylibPath(),
   );
+  return switch (selection.source) {
+    AwikiImCoreLibrarySource.open => ExternalLibrary.open(selection.path!),
+    AwikiImCoreLibrarySource.process =>
+      ExternalLibrary.process(iKnowHowToUseIt: true),
+  };
 }
 
 String? _configuredMacOsDylibPath() {

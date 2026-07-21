@@ -510,15 +510,12 @@ impl DirectSecureFileRuntimeClient {
             .one_time_prekey_store
             .list_one_time_prekeys()
             .map_err(map_direct_error)?;
-        let operation_id =
-            super::prekey_lifecycle::publish_operation_id(bundle, &one_time_prekeys)?;
-        let request = anp::direct_e2ee::prekey_bundle_publish_request(
+        let request = super::prekey_lifecycle::prekey_bundle_publish_request(
             &self.prepared.owner_did,
             &self.prepared.local_service_did,
             bundle,
             &one_time_prekeys,
-            &operation_id,
-        );
+        )?;
         self.call_request(request)
     }
 

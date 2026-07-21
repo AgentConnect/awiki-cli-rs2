@@ -595,11 +595,11 @@ fn create_private_dir(path: &Path) -> crate::ImResult<()> {
     Ok(())
 }
 
-fn set_private_file_permissions(path: &Path) -> crate::ImResult<()> {
+fn set_private_file_permissions(_path: &Path) -> crate::ImResult<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o600))
             .map_err(|_| upgrade_failed("filesystem", "file_permissions_failed"))?;
     }
     Ok(())

@@ -544,15 +544,12 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
         bundle: &PrekeyBundle,
     ) -> crate::ImResult<DirectSecurePrekeyPublishRequest> {
         let one_time_prekeys = self.one_time_prekey_store()?.list_one_time_prekeys()?;
-        let operation_id =
-            super::prekey_lifecycle::publish_operation_id(bundle, &one_time_prekeys)?;
-        let request = anp::direct_e2ee::prekey_bundle_publish_request(
+        let request = super::prekey_lifecycle::prekey_bundle_publish_request(
             &self.prepared.owner_did,
             &self.prepared.local_service_did,
             bundle,
             &one_time_prekeys,
-            &operation_id,
-        );
+        )?;
         direct_secure_request_method_params(request)
     }
 

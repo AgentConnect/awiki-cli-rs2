@@ -1,6 +1,7 @@
 use anp::direct_e2ee::{OneTimePrekey, PrekeyBundle, SignedPrekey};
 use anp::{PrivateKeyMaterial, PublicKeyMaterial};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
@@ -57,6 +58,32 @@ pub(crate) fn publish_operation_id(
         }
     })?;
     Ok(format!("op-publish-{}", short_digest(&bytes)))
+}
+
+pub(crate) fn prekey_bundle_publish_request(
+    local_did: &str,
+    local_service_did: &str,
+    bundle: &PrekeyBundle,
+    one_time_prekeys: &[OneTimePrekey],
+) -> crate::ImResult<Value> {
+    let operation_id = publish_operation_id(bundle, one_time_prekeys)?;
+    Ok(json!({
+        "method": "direct.e2ee.publish_prekey_bundle",
+        "params": {
+            "meta": {
+                "anp_version": "1.0",
+                "profile": "anp.direct.e2ee.v1",
+                "security_profile": "transport-protected",
+                "sender_did": local_did,
+                "target": {
+                    "kind": "service",
+                    "did": local_service_did,
+                },
+                "operation_id": operation_id,
+            },
+            "body": anp::direct_e2ee::prekey_bundle_publish_body(bundle, one_time_prekeys),
+        },
+    }))
 }
 
 fn x25519_public_key_b64u(private_key: &PrivateKeyMaterial) -> crate::ImResult<String> {
@@ -142,6 +169,27 @@ mod tests {
         assert_eq!(
             publish_operation_id(&bundle, &first).unwrap(),
             publish_operation_id(&semantically_equivalent, &first).unwrap()
+        );
+
+        let request = prekey_bundle_publish_request(
+            "did:wba:example.test:alice",
+            "did:wba:example.test:service",
+            &bundle,
+            &first,
+        )
+        .unwrap();
+        assert_eq!(request["method"], "direct.e2ee.publish_prekey_bundle");
+        assert_eq!(
+            request["params"]["meta"]["operation_id"],
+            publish_operation_id(&bundle, &first).unwrap()
+        );
+        assert_eq!(
+            request["params"]["meta"]["security_profile"],
+            "transport-protected"
+        );
+        assert_eq!(
+            request["params"]["body"],
+            anp::direct_e2ee::prekey_bundle_publish_body(&bundle, &first)
         );
     }
 }
