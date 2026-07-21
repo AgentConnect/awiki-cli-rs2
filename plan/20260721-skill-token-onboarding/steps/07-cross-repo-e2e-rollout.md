@@ -1,6 +1,6 @@
 # 步骤 07：国内环境跨仓库 E2E、灰度和回滚
 
-状态：`pending`  
+状态：`completed_with_blockers`
 实施仓库：`awiki-system-test`，并验证四个功能仓库  
 目标环境：国内 `awiki.info`  
 前置依赖：步骤 02-06 全部完成  
@@ -157,3 +157,35 @@ uv run awiki-system-test --show-command
 - 国内 remote system test 和 AWiki Me full E2E 有完整证据。
 - 灰度、监控和回滚均经过演练或桌面复核。
 - 四仓库工作区只包含本功能相关提交和文档。
+
+## 12. 2026-07-21 实施记录
+
+### 12.1 提交与部署
+
+- CLI/im-core：`a2180bb0`，`feature/skill-token-onboarding`，已推送。
+- AWiki Me：`bb96617`，`feature/aliyun-emas-android`，已推送。
+- User Service：`57c63ec`，`feature/emas-push-user-service`，已推送并部署到国内服务。
+- Message Service：`2deba55`，`feature/emas-push-message-service`，已推送；仅测试和边界文档，无生产代码。
+- Message Service 功能分支二进制因现网存在更新迁移而拒绝降级启动，已恢复现网较新二进制；服务保持 active。
+
+### 12.2 通过结果
+
+- 国内真实 Skill 链路通过：30 分钟一次性 Token、空 workspace claim、固定 greeting 唯一到达、Controller 回复可由 Skill CLI 读取、重复 claim 复用同一 DID 和 greeting ID、本地无 raw Token。
+- User Service：`829 passed, 10 skipped`；真实 MySQL Skill storage `10 passed`；任务相关 Ruff 通过。
+- Message Service：workspace check、`274` 个测试、Clippy、fmt 全部通过；真实 PostgreSQL Skill greeting 隔离测试 `1 passed`。
+- AWiki Me：`dart analyze` 通过，完整 unit suite `1180 passed`。
+- CLI：`im-core-dart` `42 passed`，release staging `2 passed`，fmt 和 diff check 通过。
+
+### 12.3 已确认阻塞
+
+- CLI workspace 全量测试命中未修改的 message read 基线：`32 passed, 5 failed`；同一用例在 `origin/release/0714@de44ee74` 结果完全相同，另有一个未修改 sync 用例长期不结束。
+- CLI workspace Clippy 被未修改文件中的 `13` 个既有 lint 阻断；未扩大修改范围。
+- AWiki Me `full` 在 Flutter 启动前的 CLI ready 检查失败：现网返回 `anp.device_binding_required`；原有 CLI peer 配置同样失败。
+- 国内 remote system suite：`69 passed, 50 failed, 41 skipped, 148 errors`；主要阻塞为基础 CLI worktree 构建空间不足、远端请求超时及 local/provider-only 用例。
+- 正式 `awiki.info/cli/onboarding.md` 和 stable CLI artifact 尚未发布；本次只完成分支提交推送和国内分支二进制联调。
+
+### 12.4 清理与安全
+
+- 独立临时 MySQL/PostgreSQL 数据库及账号已删除。
+- 私密 E2E 配置、临时联调脚本和构建缓存已删除。
+- 实施记录不包含 raw Token、JWT、私钥或数据库凭据。

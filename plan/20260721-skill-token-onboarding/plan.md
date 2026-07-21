@@ -1,11 +1,11 @@
 # 计划：App 一键安装 AWiki Skill 并用一次性 Token 注册 Agent DID
 
-状态：步骤 01-06 已完成，步骤 07 实施中  
+状态：步骤 01-06 已完成；步骤 07 已执行，国内 Skill 主链路通过，全量门禁存在已记录的基线阻塞
 创建日期：2026-07-21  
 文档目录：`plan/20260721-skill-token-onboarding/`  
 主实施分支：`awiki-cli-rs2/feature/skill-token-onboarding`  
 基线：`origin/release/0714@de44ee74`  
-恢复指针：从步骤 07 开始，执行四仓全量验证、国内联调、提交和推送。  
+恢复指针：功能分支均已提交推送；后续从步骤 07 的 device-bound bearer、remote suite 基线和正式 CLI artifact 发布阻塞继续。
 行数约束：本文必须少于 500 行。
 
 ## 1. 执行摘要
