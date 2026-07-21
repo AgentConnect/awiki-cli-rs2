@@ -196,6 +196,40 @@ jobs:
             tests/unit/package_manifest_test.dart `
             tests/unit/windows_scope_secret_integration_configuration_test.dart
 
+      - name: Compile Inno installer script
+        working-directory: awiki-me
+        shell: pwsh
+        run: |
+          $sourceDir = Join-Path $env:RUNNER_TEMP 'awiki-inno-contract-source'
+          $outputDir = Join-Path $env:RUNNER_TEMP 'awiki-inno-contract-output'
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $sourceDir, $outputDir
+          New-Item -ItemType Directory -Force -Path $sourceDir, $outputDir | Out-Null
+          Set-Content `
+            -LiteralPath (Join-Path $sourceDir 'runtime-placeholder.txt') `
+            -Value 'installer syntax fixture' `
+            -Encoding utf8
+
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) {
+            throw "Inno Setup compiler was not found: $compiler"
+          }
+          & $compiler `
+            "/DMyAppSourceDir=$sourceDir" `
+            "/DMySetupIcon=$(Join-Path $PWD 'windows\runner\resources\app_icon.ico')" `
+            '/DMyAppVersion=0.0.0' `
+            '/DMyVersionInfoVersion=0.0.0.1' `
+            '/DMyBuildNumber=1' `
+            "/DMyOutputDir=$outputDir" `
+            '/DMyOutputBaseFilename=AWiki-Me-inno-contract' `
+            (Join-Path $PWD 'installer\windows\awiki-me.iss')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno installer contract compilation failed with exit code $LASTEXITCODE"
+          }
+          $installer = Join-Path $outputDir 'AWiki-Me-inno-contract.exe'
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+            throw "Inno installer contract output is missing: $installer"
+          }
+
       - name: Build Windows Debug
         working-directory: awiki-me
         shell: pwsh
