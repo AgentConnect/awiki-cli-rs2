@@ -1,6 +1,6 @@
 # 步骤 07：国内环境跨仓库 E2E、灰度和回滚
 
-状态：`in_progress`（等待 device-bound 客户端前置后执行最终全量门禁）
+状态：`in_progress`（AWiki Me `full` 已通过；remote system test 尚有 2 个 secure-direct 失败）
 实施仓库：`awiki-system-test`，并验证四个功能仓库  
 目标环境：国内 `awiki.info`  
 前置依赖：步骤 02-06 全部完成  
@@ -162,11 +162,11 @@ uv run awiki-system-test --show-command
 
 ### 12.1 提交与部署
 
-- CLI/im-core：功能 `a2180bb0`，发布修复至 `911fc51d`，`feature/skill-token-onboarding`，已推送。
-- AWiki Me：`bb96617`，`feature/aliyun-emas-android`，已推送。
+- CLI/im-core：功能 `a2180bb0`，发布修复至 `911fc51d`，当前计划记录 `ea75e250`，`feature/skill-token-onboarding`，已推送。
+- AWiki Me：功能 `bb96617`，E2E harness 修复 `9708c4c`，`feature/aliyun-emas-android`，已推送。
 - User Service：`57c63ec`，`feature/emas-push-user-service`，已推送并部署到国内服务。
-- Message Service：`2deba55`，`feature/emas-push-message-service`，已推送；仅测试和边界文档，无生产代码。
-- Message Service 功能分支二进制因现网存在更新迁移而拒绝降级启动，已恢复现网较新二进制；服务保持 active。
+- Message Service：EMAS 功能 `93b4ce8`、Skill 隔离测试 `2deba55`，`feature/emas-push-message-service`，已推送。
+- 最终联调使用该功能分支 release 二进制和独立临时 PostgreSQL；现网较新 schema 不做降级或回滚，测试后已恢复原 unit。
 
 ### 12.2 通过结果
 
@@ -174,22 +174,25 @@ uv run awiki-system-test --show-command
 - User Service：`829 passed, 10 skipped`；真实 MySQL Skill storage `10 passed`；任务相关 Ruff 通过。
 - Message Service：workspace check、`274` 个测试、Clippy、fmt 全部通过；真实 PostgreSQL Skill greeting 隔离测试 `1 passed`。
 - AWiki Me：`dart analyze` 通过，完整 unit suite `1180 passed`。
+- AWiki Me 真实后端 `full` E2E：24 个 case 全部通过、失败 0、跳过 0，耗时 `4m 6s`；覆盖 direct、group、contact、unread、sequence、attachment 和 profile refresh。
 - CLI：`im-core-dart` `42 passed`，release staging `2 passed`，fmt 和 diff check 通过。
 - 正式国内 CLI stable `1.0.23` 已发布：tag `cli-v1.0.23`、commit `911fc51d`、GitHub Actions run `29852384648`；Linux amd64、macOS Intel、macOS arm64、Windows amd64 的 archive、版本 smoke 和 artifact upload 全部通过。
 - `https://awiki.info/cli/stable/manifest.json`、`/cli/onboarding.md` 和 `/onboarding.md` 均可访问；两个 onboarding 入口内容一致，公开 Linux 包 checksum、版本和 commit 已复核。
-- system-test CLI selector 使用 `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2-skill-token-onboarding` 和 `AWIKI_CLI_SOURCE_REF=911fc51d...`，定向选择测试 `3 passed`。
+- system-test CLI selector 使用功能 worktree 和 `AWIKI_CLI_SOURCE_REF=ea75e250...`，定向选择测试 `3 passed`。
 
 ### 12.3 已确认阻塞
 
 - CLI workspace 全量测试命中未修改的 message read 基线：`32 passed, 5 failed`；同一用例在 `origin/release/0714@de44ee74` 结果完全相同，另有一个未修改 sync 用例长期不结束。
 - CLI workspace Clippy 被未修改文件中的 `13` 个既有 lint 阻断；未扩大修改范围。
-- AWiki Me `full` 在 Flutter 启动前的 CLI ready 检查失败：现网返回 `anp.device_binding_required`；原有 CLI peer 配置同样失败。
+- AWiki Me 历史 `anp.device_binding_required` 已通过正式 hidden-rollout 测试窗口解除；Flutter 3.44 隔离 build-dir 和持续 frame 等待也已修复，最终 `full` 通过。
 - 国内 remote system suite 历史执行结果为 `69 passed, 50 failed, 41 skipped, 148 errors`；当时包含基础 CLI worktree 选择错误、磁盘不足、远端请求超时及 local/provider-only 用例。CLI 源码选择和磁盘问题已解除，但按统一测试节奏不在中间阶段重跑全量。
-- 当前唯一跨仓前置阻塞是 device-bound 客户端：现网 Message Service 要求 Inbox/WebSocket 使用当前设备 bearer，而 release/0714 App/CLI 尚无 device genesis、token refresh 和本地持久化实现。仅 mock `device_id` 字符串不能满足真实 DID Manifest/JWT 绑定，且不得放宽服务端鉴权。
-- 设备任务接入后，最后统一运行 AWiki Me `full` E2E 和带上述 CLI repo/source selector 的国内 remote system test；在此之前步骤 07 不标记完成。
+- 2026-07-22 最终 remote suite：`255 passed, 2 failed, 51 skipped`，耗时 `9m 0s`；失败 2 均属 CLI secure-direct：回复历史解密为 `undecryptable`，Handle history 的明文记录丢失 `secure` 标记。
+- 51 个 skip 按功能域归因：daemon 17、listener 7、mail 5、MCP 9、multi-tenant 7、message-service local/flag 3、admin-controller 1、已移除 store contract 1、search 1；均由显式 capability、凭据或 local topology 门禁触发。
+- 两项失败不属于 Skill onboarding 改动，未扩大范围修改 secure-direct；但最终 remote suite 未全绿，因此步骤 07 保持 `in_progress`，不得标记完成。
 
 ### 12.4 清理与安全
 
 - 独立临时 MySQL/PostgreSQL 数据库及账号已删除。
 - 私密 E2E 配置、临时联调脚本和构建缓存已删除。
+- Message Service 原 unit、三项 hidden rollout/root control 配置均已恢复，国内 health 为 `200`。
 - 实施记录不包含 raw Token、JWT、私钥或数据库凭据。
