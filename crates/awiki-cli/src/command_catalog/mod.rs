@@ -81,6 +81,7 @@ impl CommandAudience {
 pub enum CommandOwner {
     CliShell,
     ImCoreIdentity,
+    ImCoreOnboarding,
     ImCoreAuth,
     ImCoreDirectory,
     ImCoreMessages,
@@ -101,6 +102,7 @@ impl CommandOwner {
         match self {
             Self::CliShell => "cli_shell",
             Self::ImCoreIdentity => "im_core_identity",
+            Self::ImCoreOnboarding => "im_core_onboarding",
             Self::ImCoreAuth => "im_core_auth",
             Self::ImCoreDirectory => "im_core_directory",
             Self::ImCoreMessages => "im_core_messages",
@@ -387,6 +389,9 @@ pub fn cutover_status(raw: &str) -> CutoverStatus {
 pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "onboarding") {
+        return Some(CutoverStatus::ImCore);
+    }
     if is_one_of(
         name,
         &[
@@ -726,6 +731,9 @@ pub fn command_audience(raw: &str) -> CommandAudience {
 pub fn primary_owner(raw: &str) -> CommandOwner {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "onboarding") {
+        return CommandOwner::ImCoreOnboarding;
+    }
     if has_any_command_prefix(name, &["debug.raw", "group.code"]) {
         return CommandOwner::ExternalUnsupported;
     }
@@ -811,6 +819,9 @@ pub fn secondary_owners(raw: &str) -> &'static [CommandOwner] {
 pub fn cli_shell_role(raw: &str) -> CliShellRole {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if name == "onboarding.claim" {
+        return CliShellRole::ParsesInputOnly;
+    }
     if name == "id.use" {
         return CliShellRole::WritesDefaultIdentityFile;
     }
@@ -1143,6 +1154,7 @@ fn default_surface_owner(owner: CommandOwner) -> bool {
         owner,
         CommandOwner::CliShell
             | CommandOwner::ImCoreIdentity
+            | CommandOwner::ImCoreOnboarding
             | CommandOwner::ImCoreAuth
             | CommandOwner::ImCoreDirectory
             | CommandOwner::ImCoreMessages
@@ -1271,6 +1283,8 @@ fn default_specs() -> &'static [CommandSpec] {
         cmd!("version", "version", "Show build information", "phase1", "version"),
         CommandSpec { name: "upgrade", use_: "upgrade", short: "Check for newer awiki-cli versions and show upgrade hints", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "upgrade", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "init", use_: "init", short: "Initialize the awiki-cli workspace and config.yaml", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "init", side_effect: true, outputs: &["json", "pretty", "table"], flags: &[] },
+        CommandSpec { name: "onboarding", use_: "onboarding", short: "Claim an authorized Skill Agent identity", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "onboarding.claim", use_: "claim", short: "Claim a one-time Skill Agent registration", long: "Read exactly one one-time Token from stdin, verify its Controller and Agent Handle scope, create a new Skill Agent identity in an empty workspace, and send the fixed Controller greeting. The Token is never accepted as an argument or printed.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "onboarding.claim", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("service-base-url", "string", "Exact HTTPS User Service origin", required), flag!("expected-controller-handle", "string", "Controller full Handle copied from the authorized block", required), flag!("expected-agent-handle", "string", "Skill Agent full Handle copied from the authorized block", required), flag!("token-stdin", "bool", "Read the one-time Token from stdin", required)] },
         CommandSpec { name: "completion", use_: "completion", short: "Generate shell completion scripts", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "completion.bash", use_: "bash", short: "Generate Bash completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.bash", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "completion.zsh", use_: "zsh", short: "Generate Zsh completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.zsh", side_effect: false, outputs: &[], flags: &[] },

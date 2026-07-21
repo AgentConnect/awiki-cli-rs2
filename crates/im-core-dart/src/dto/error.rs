@@ -159,6 +159,25 @@ impl From<im_core::ImError> for DartImError {
                 "credential_file_unreadable",
                 format!("{path_kind} credential file unreadable: {detail}"),
             ),
+            im_core::ImError::SkillOnboarding {
+                code,
+                phase,
+                retryable,
+            } => Self {
+                code: "skill_onboarding_error".to_owned(),
+                message: format!("Skill onboarding failed during {phase}"),
+                field: None,
+                status_code: None,
+                capability: None,
+                service_code: Some(code),
+                service_data_json: Some(
+                    serde_json::json!({
+                        "phase": phase,
+                        "retryable": retryable,
+                    })
+                    .to_string(),
+                ),
+            },
             im_core::ImError::Service {
                 status_code,
                 code,

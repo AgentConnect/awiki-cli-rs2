@@ -24,6 +24,7 @@ rusqlite.workspace = true
 time.workspace = true
 tokio.workspace = true
 webpki-roots.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [

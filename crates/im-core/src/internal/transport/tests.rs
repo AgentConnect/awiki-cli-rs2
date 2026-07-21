@@ -103,3 +103,31 @@ async fn async_unavailable_transport_errors_match_sync_shape() {
         "GET transport is not configured for https://object.test/download",
     );
 }
+
+#[test]
+fn skill_onboarding_rpc_error_preserves_reason_on_non_success_http_status() {
+    let body = serde_json::to_vec(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+            "code": -32001,
+            "message": "request rejected",
+            "data": {"reason": "skill_onboarding_token_expired"}
+        }
+    }))
+    .unwrap();
+
+    let error = decode_rpc_http_response(503, &body).unwrap_err();
+    match error {
+        crate::ImError::Service {
+            status_code, data, ..
+        } => {
+            assert_eq!(status_code, Some(503));
+            assert_eq!(
+                data.and_then(|value| value.get("reason").cloned()),
+                Some(json!("skill_onboarding_token_expired"))
+            );
+        }
+        other => panic!("expected service error, got {other:?}"),
+    }
+}

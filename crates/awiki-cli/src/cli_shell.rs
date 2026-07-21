@@ -37,6 +37,7 @@ mod legacy_sqlite {
 }
 mod mail_handlers;
 mod msg_handlers;
+mod onboarding_handlers;
 mod page_handlers;
 mod people_handlers;
 mod runtime_handlers;

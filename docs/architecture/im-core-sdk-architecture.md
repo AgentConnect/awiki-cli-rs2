@@ -107,6 +107,7 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 | --- | --- | --- |
 | core | `ImCore`, `ImClient`, config, paths, bootstrap, errors | `ClientIdentityRuntime`, path expansion, store handles |
 | identity | selectors, summaries, registration, recovery, profile, DID replacement plan | private key material, DID writer, raw identity store rows |
+| onboarding | Skill Token claim request/result and resumable claim operation | raw Token transport, pending key bundle, journal, DID generation, exchange and greeting orchestration |
 | auth | login, ensure, refresh, status | proof builder, JWT file format, bearer header handling |
 | directory | peer resolve, handle lookup, contacts, relationships | user-service raw request/response, contact store rows |
 | messages | send, inbox, history, mark-read, conversations, reliable sync | message RPC params, wire DTOs, raw notification frames, checkpoint load/store |
@@ -121,6 +122,7 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 
 - `core`: environment entrypoint, identity-bound client, bootstrap, errors, common IDs and paging types.
 - `identity`: local registry, default identity, handle registration/recovery, profile, contact binding, DID replacement plan.
+- `onboarding`: environment-level Skill Agent claim for an initialized, empty workspace. It verifies the scoped Token before key generation, persists a recoverable pending identity, exchanges it for a new DID identity, authenticates, and sends the deterministic Controller greeting before completion.
 - `auth`: DID auth, session/JWT persistence, refresh, status, and retry support for business services.
 - `local_state`: SQLite schema, owner isolation, messages, contacts, groups, email notification, secure outbox, realtime projection, and reliable sync checkpoints.
 - `discovery`: endpoint and capability selection from config, DID documents, profile, and service metadata.
@@ -148,6 +150,7 @@ Transport is explicit through configuration and capability checks:
 
 - Remote messages are untrusted input.
 - CLI/App output must not expose JWTs, private keys, raw secure state, ciphertext internals, MLS artifacts, provider stdout/stderr, or host secrets.
+- Skill onboarding requests use a redacted, non-serializable Token type. Token HTTP requests reject redirects; journals contain only non-secret scope and recovery state. A non-empty or ambiguous workspace fails closed.
 - Host notification payloads must contain approved event summaries, not raw message instructions.
 - Diagnostics may expose lower-level details only behind explicit debug/diagnostic gates.
 

@@ -83,6 +83,10 @@ identity ID, records old/current DID history, refreshes owner-DID snapshots, and
 Handle-backed group member rebind work. Dart hosts must not persist the returned DID as a new local
 identity owner or supply a separate generated identity.
 
+Skill Token claim is intentionally not exposed through the Dart facade in v1. The raw one-time
+Token is consumed only by the CLI/Rust onboarding path; App code signs and copies the instruction
+but does not pass the Token into im-core, persist it, or manage the resulting Skill Agent identity.
+
 ## Identity secret storage
 
 Native hosts can open `AwikiImCore` with explicit identity SecretVault options:

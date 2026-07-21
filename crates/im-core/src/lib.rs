@@ -17,6 +17,7 @@ pub mod ids;
 #[cfg(feature = "sqlite")]
 pub mod local_state_upgrade;
 pub mod messages;
+pub mod onboarding;
 pub mod paths;
 pub mod prelude;
 pub mod realtime;
@@ -50,6 +51,10 @@ pub use crate::local_state_upgrade::{
     inspect_local_state_upgrade, restore_local_state_backup, upgrade_local_state,
     LocalStateConversationAliasMapping, LocalStateRestoreResult, LocalStateUpgradeEligibility,
     LocalStateUpgradeInspection, LocalStateUpgradeResult, LocalStateUpgradeStatus,
+};
+pub use crate::onboarding::{
+    SkillClaimPhase, SkillClaimRequest, SkillClaimResult, SkillClaimStatus, SkillOnboardingService,
+    SkillOnboardingToken,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::RealtimeService;

@@ -42,6 +42,7 @@ pub(crate) mod runtime;
 pub(crate) mod runtime_store;
 pub(crate) mod secret_vault;
 pub(crate) mod secure_direct;
+pub(crate) mod skill_onboarding;
 pub(crate) mod snapshot;
 pub(crate) mod store;
 pub(crate) mod transport;

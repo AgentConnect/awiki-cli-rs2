@@ -405,6 +405,28 @@ fn common_im_errors_map_to_exit_errors() {
 }
 
 #[test]
+fn skill_onboarding_errors_preserve_stable_code_phase_and_retryability() {
+    for (retryable, expected_exit) in [(false, 3), (true, 5)] {
+        let mapped = error::map_im_error(
+            ImError::SkillOnboarding {
+                code: "skill_onboarding_token_expired".to_owned(),
+                phase: "verify".to_owned(),
+                retryable,
+            },
+            "onboarding claim",
+        );
+        assert_eq!(mapped.exit_code, expected_exit);
+        assert_eq!(mapped.detail.code, "skill_onboarding_token_expired");
+        assert_eq!(mapped.detail.retryable, retryable);
+        assert_eq!(
+            mapped.detail.details,
+            serde_json::json!({"phase": "verify"})
+        );
+        assert!(!mapped.detail.message.contains("awsk1_"));
+    }
+}
+
+#[test]
 fn canonical_identity_and_upgrade_errors_map_to_stable_redacted_codes() {
     let private_marker = "did:wba:private.example:alice:e1_private";
     let cases = [

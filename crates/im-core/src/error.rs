@@ -104,6 +104,11 @@ pub enum ImError {
         path_kind: String,
         detail: String,
     },
+    SkillOnboarding {
+        code: String,
+        phase: String,
+        retryable: bool,
+    },
     Service {
         status_code: Option<u16>,
         code: Option<String>,
@@ -213,6 +218,14 @@ impl fmt::Display for ImError {
             Self::CredentialFileUnreadable { path_kind, detail } => {
                 write!(f, "{path_kind} credential file unreadable: {detail}")
             }
+            Self::SkillOnboarding {
+                code,
+                phase,
+                retryable,
+            } => write!(
+                f,
+                "Skill onboarding failed during {phase}: {code} (retryable={retryable})"
+            ),
             Self::Service {
                 status_code,
                 code,
