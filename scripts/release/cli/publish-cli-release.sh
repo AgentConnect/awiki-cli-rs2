@@ -86,9 +86,9 @@ if [[ "${CHANNEL}" == "stable" ]]; then
   onboarding_tmp="${ARCHIVE_ROOT}/channels/.stable-onboarding.$$"
   sudo ln -s "${release_dir}/onboarding.md" "${onboarding_tmp}"
   sudo mv -Tf "${onboarding_tmp}" "${ARCHIVE_ROOT}/channels/stable-onboarding.md"
-  beta_tmp="${WEB_ROOT}/.beta.${VERSION}.$$"
-  sudo ln -s "${release_dir}" "${beta_tmp}"
-  sudo mv -Tf "${beta_tmp}" "${WEB_ROOT}/beta"
+  public_onboarding_tmp="${WEB_ROOT}/.onboarding.${VERSION}.$$"
+  sudo ln -s "${release_dir}/onboarding.md" "${public_onboarding_tmp}"
+  sudo mv -Tf "${public_onboarding_tmp}" "${WEB_ROOT}/onboarding.md"
 fi
 
 mapfile -t versions < <(sudo find "${ARCHIVE_ROOT}/releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn | awk '{print $2}')
