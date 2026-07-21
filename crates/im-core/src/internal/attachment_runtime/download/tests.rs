@@ -958,6 +958,73 @@ fn attachments_download_runtime_direct_object_e2ee_uses_internal_manifest_cache(
     calls[2].object_get("https://objects.example/att-e2ee-1");
 }
 
+#[cfg(feature = "internal-test-helpers")]
+#[tokio::test]
+async fn system_test_ticket_planner_reuses_v2_profile_and_wire_message_id() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let object = object_e2ee_case(b"ticket planner plaintext".to_vec());
+    {
+        let connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        crate::internal::local_state::attachment_manifest_cache::upsert_attachment_manifest_cache(
+            &connection,
+            &crate::internal::local_state::attachment_manifest_cache::AttachmentManifestCacheRecord {
+                owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                owner_did: client.did().as_str().to_owned(),
+                thread_kind: "direct".to_owned(),
+                thread_id: "did:web:example.com:bob".to_owned(),
+                message_id: "msg-ticket-planner".to_owned(),
+                wire_message_id: "wire-ticket-planner".to_owned(),
+                sender_did: "did:web:example.com:bob".to_owned(),
+                message_security_profile: "direct-e2ee".to_owned(),
+                content: serde_json::to_string(&object.full_manifest).unwrap(),
+                stored_at: "2026-06-02T00:00:00Z".to_owned(),
+            },
+        )
+        .unwrap();
+    }
+    let calls = Rc::new(RefCell::new(Vec::new()));
+
+    let params = AttachmentDownloadRuntime::new(
+        &client,
+        ReadySessionProvider {
+            scopes: Rc::new(RefCell::new(Vec::new())),
+        },
+        E2eeTransport {
+            calls: Rc::clone(&calls),
+            history: json!({"messages": [], "has_more": false}),
+            object_body: object.ciphertext,
+            object_content_type: Some("application/octet-stream".to_string()),
+        },
+    )
+    .build_download_ticket_rpc_params_for_system_test(AttachmentDownloadInput {
+        request: crate::attachments::DownloadAttachmentRequest {
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
+            ),
+            message_id: crate::ids::MessageId::parse("msg-ticket-planner").unwrap(),
+            attachment_id: Some("att-e2ee-1".to_string()),
+            destination: crate::attachments::AttachmentDestination::Memory,
+            overwrite: false,
+        },
+        resolved_peer_did: Some("did:web:example.com:bob".to_string()),
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(params["meta"]["profile"], "anp.attachment.v2");
+    assert_eq!(params["meta"]["anp_version"], "2.0");
+    assert_eq!(params["body"]["message_id"], "wire-ticket-planner");
+    assert_eq!(params["body"]["message_target_did"], "did:example:alice");
+    assert_eq!(params["body"]["message_security_profile"], "direct-e2ee");
+    let calls = calls.borrow();
+    assert_eq!(calls.len(), 1, "planner must not issue or redeem a ticket");
+    calls[0].get_json("https://example.com/bob/did.json");
+}
+
 #[test]
 fn attachments_download_runtime_object_e2ee_local_file_writes_plaintext() {
     let fixture = Fixture::new();

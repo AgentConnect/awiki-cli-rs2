@@ -470,23 +470,8 @@ where
         selection: &crate::attachments::selection::InternalAttachmentSelection,
         attachment_service: &crate::internal::discovery::attachment::ProfiledAttachmentService,
     ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentDownloadTicketResult> {
-        let group_did = match target {
-            DownloadTarget::Direct { .. } => "",
-            DownloadTarget::Group { group } => group.as_str(),
-        };
-        let message_target_did =
-            original_direct_message_target_did(self.client.did().as_str(), target, selection);
         let params =
-            crate::internal::wire::attachment::build_attachment_download_ticket_rpc_params_with_profile_and_target(
-                self.client.did().as_str(),
-                &attachment_service.service.service_did,
-                &selection.public.sender_did,
-                &selection.authorization_message_id,
-                message_target_did,
-                group_did,
-                &attachment_service.profile,
-                &selection.public,
-            )?;
+            self.build_download_ticket_rpc_params(target, selection, attachment_service)?;
         let raw = self
             .transport
             .authenticated_rpc(
@@ -498,6 +483,58 @@ where
         serde_json::from_value(raw).map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),
         })
+    }
+
+    fn build_download_ticket_rpc_params(
+        &self,
+        target: &DownloadTarget,
+        selection: &crate::attachments::selection::InternalAttachmentSelection,
+        attachment_service: &crate::internal::discovery::attachment::ProfiledAttachmentService,
+    ) -> crate::ImResult<Value> {
+        let group_did = match target {
+            DownloadTarget::Direct { .. } => "",
+            DownloadTarget::Group { group } => group.as_str(),
+        };
+        let message_target_did =
+            original_direct_message_target_did(self.client.did().as_str(), target, selection);
+        crate::internal::wire::attachment::build_attachment_download_ticket_rpc_params_with_profile_and_target(
+            self.client.did().as_str(),
+            &attachment_service.service.service_did,
+            &selection.public.sender_did,
+            &selection.authorization_message_id,
+            message_target_did,
+            group_did,
+            &attachment_service.profile,
+            &selection.public,
+        )
+    }
+
+    #[cfg(feature = "internal-test-helpers")]
+    pub(crate) async fn build_download_ticket_rpc_params_for_system_test(
+        mut self,
+        input: AttachmentDownloadInput,
+    ) -> crate::ImResult<Value> {
+        let target = download_target(&input.request.thread, input.resolved_peer_did)?;
+        self.session_provider
+            .ensure_session(auth_scope(&target))
+            .await?;
+        let selection = self
+            .find_selection_async(
+                &target,
+                input.request.message_id.as_str(),
+                input.request.attachment_id.as_deref().unwrap_or_default(),
+            )
+            .await?;
+        if selection.public.sender_did.trim().is_empty() {
+            return Err(crate::ImError::invalid_input(
+                Some("sender_did".to_string()),
+                "attachment message sender_did is required",
+            ));
+        }
+        let attachment_service = self
+            .resolve_attachment_service_async(&selection.public.sender_did)
+            .await?;
+        self.build_download_ticket_rpc_params(&target, &selection, &attachment_service)
     }
 }
 

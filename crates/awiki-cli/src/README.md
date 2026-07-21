@@ -34,7 +34,7 @@
 | `README.md` | 本文档，记录 `src` 模块数量和职责。 |
 | `lib.rs` | crate 的 public module 入口；当前只导出新的模块名，如 `cli_shell`、`m_core_cli_adapter`、`workspace_upgrade` 等，并 `pub use cli_shell::execute`。 |
 | `main.rs` | 二进制入口；调用库里的 CLI 执行入口并处理进程退出。 |
-| `system_test_probe_main.rs` | 仅由 `system-test-probe` feature 启用的多设备系统测试探针；从同一个 `ImCore` 的设备投影读取协议设备 ID 并创建 client，stdin/stdout 只承载闭合 JSONL 动作和脱敏结果。 |
+| `system_test_probe_main.rs` | 仅由 `system-test-probe` feature 启用的多设备系统测试探针；从同一个 `ImCore` 的设备投影读取协议设备 ID 并创建 client，附件票据请求复用生产下载规划以绑定 v2 Profile 和逐设备 wire message，stdin/stdout 只承载闭合 JSONL 动作和脱敏结果。 |
 | `build_info.rs` | 版本、构建信息、目标平台名等 `version` / `status` 需要的 metadata。 |
 | `cli_http.rs` | CLI 自有 HTTP 模块入口；包装 HTTP client / profile 解析。 |
 | `cli_output.rs` | CLI 输出 envelope、JSON / pretty 渲染、`ExitError` / 错误响应结构。 |

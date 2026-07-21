@@ -187,6 +187,27 @@ pub fn download_attachment_with_details(
     })
 }
 
+#[cfg(feature = "internal-test-helpers")]
+#[doc(hidden)]
+pub async fn build_download_ticket_rpc_params_for_system_test(
+    client: &crate::core::ImClient,
+    request: crate::attachments::DownloadAttachmentRequest,
+    resolved_peer_did: Option<String>,
+) -> crate::ImResult<Value> {
+    crate::internal::attachment_runtime::download::AttachmentDownloadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .build_download_ticket_rpc_params_for_system_test(
+        crate::internal::attachment_runtime::download::AttachmentDownloadInput {
+            request,
+            resolved_peer_did,
+        },
+    )
+    .await
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AttachmentSigningIdentity {
     pub identity_name: String,

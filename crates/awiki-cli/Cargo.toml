@@ -22,6 +22,7 @@ system-test-probe = [
     "dep:reqwest",
     "dep:tokio-tungstenite",
     "dep:zeroize",
+    "im-core/internal-test-helpers",
 ]
 
 [dependencies]

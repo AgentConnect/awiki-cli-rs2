@@ -9,7 +9,9 @@
 //! [PROTOCOL]:
 //! 1. Resolve the protocol device ID from `IdentityDeviceSummary`, not the legacy identity summary.
 //! 2. Build the probe client from that same `ImCore` instance so identity/device state is coherent.
-//! 3. Keep stdout/stderr free of credentials and cryptographic state.
+//! 3. Plan attachment ticket requests through the production runtime so Profile, service target,
+//!    and per-device wire message authorization remain identical to normal downloads.
+//! 4. Keep stdout/stderr free of credentials and cryptographic state.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -56,6 +58,7 @@ const SESSION_UNAUTHORIZED: &str = "client.session_unauthorized";
 const DOWNLOAD_TICKET_INVALID: &str = "anp.attachment.download_ticket_invalid";
 
 const DIRECT_E2EE: &str = "direct-e2ee";
+const ATTACHMENT_V2: &str = "anp.attachment.v2";
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -309,9 +312,8 @@ impl Probe {
                 }
             },
             Action::HoldDownloadTicket(params) => {
-                match self.request_download_ticket(&params).await? {
-                    RpcOutcome::Success(ticket) => {
-                        let held = self.validated_held_ticket(ticket, &params)?;
+                match self.request_held_download_ticket(&params).await? {
+                    RpcOutcome::Success(held) => {
                         self.held_ticket = Some(held);
                         Ok((json!({"held": true}), false))
                     }
@@ -319,9 +321,8 @@ impl Probe {
                 }
             }
             Action::ProbeDownloadTicket(params) => {
-                match self.request_download_ticket(&params).await? {
-                    RpcOutcome::Success(ticket) => {
-                        let held = self.validated_held_ticket(ticket, &params)?;
+                match self.request_held_download_ticket(&params).await? {
+                    RpcOutcome::Success(held) => {
                         drop(held);
                         Ok((json!({"allowed": true}), false))
                     }
@@ -378,38 +379,89 @@ impl Probe {
         }
     }
 
-    async fn request_download_ticket(
+    async fn request_held_download_ticket(
         &self,
         params: &AttachmentTicketParams,
-    ) -> Result<RpcOutcome<DownloadTicketResult>, ProbeFailure> {
-        let object_uri = self.validate_object_uri(&params.object_uri)?;
-        let selection = im_core::attachments::AttachmentSelection {
-            message_id: params.message_id.clone(),
-            sender_did: params.sender_did.clone(),
-            attachment_id: params.attachment_id.clone(),
-            object_uri: object_uri.to_string(),
-            message_security_profile: DIRECT_E2EE.to_owned(),
-            ..Default::default()
-        };
-        let rpc_params = im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
-            &self.local_did,
-            &self.service_did,
-            &params.sender_did,
-            &params.message_id,
-            "",
-            &selection,
-        )
-        .map_err(|_| ProbeFailure::Runtime)?;
-        self.rpc("attachment.get_download_ticket", rpc_params).await
+    ) -> Result<RpcOutcome<HeldTicket>, ProbeFailure> {
+        let rpc_params = self.download_ticket_rpc_params(params).await?;
+        let request_body =
+            validated_ticket_request_body(&rpc_params, params, &self.local_did, &self.service_did)?;
+        match self
+            .rpc::<DownloadTicketResult>("attachment.get_download_ticket", rpc_params)
+            .await?
+        {
+            RpcOutcome::Success(result) => Ok(RpcOutcome::Success(self.validated_held_ticket(
+                result,
+                params,
+                &request_body,
+            )?)),
+            RpcOutcome::Rejected(code) => Ok(RpcOutcome::Rejected(code)),
+        }
+    }
+
+    async fn download_ticket_rpc_params(
+        &self,
+        params: &AttachmentTicketParams,
+    ) -> Result<Value, ProbeFailure> {
+        if let Some(client) = self._client.as_ref() {
+            let request = im_core::attachments::DownloadAttachmentRequest {
+                thread: im_core::messages::ThreadRef::Direct(
+                    im_core::ids::PeerRef::parse(&params.sender_did, "")
+                        .map_err(|_| ProbeFailure::Runtime)?,
+                ),
+                message_id: im_core::ids::MessageId::parse(&params.message_id)
+                    .map_err(|_| ProbeFailure::Runtime)?,
+                attachment_id: Some(params.attachment_id.clone()),
+                destination: im_core::attachments::AttachmentDestination::Memory,
+                overwrite: false,
+            };
+            return im_core::compat::attachments::build_download_ticket_rpc_params_for_system_test(
+                client,
+                request,
+                Some(params.sender_did.clone()),
+            )
+            .await
+            .map_err(|_| ProbeFailure::Runtime);
+        }
+
+        #[cfg(test)]
+        {
+            let object_uri = self.validate_object_uri(&params.object_uri)?;
+            let selection = im_core::attachments::AttachmentSelection {
+                message_id: params.message_id.clone(),
+                sender_did: params.sender_did.clone(),
+                attachment_id: params.attachment_id.clone(),
+                object_uri: object_uri.to_string(),
+                message_security_profile: DIRECT_E2EE.to_owned(),
+                ..Default::default()
+            };
+            let mut rpc_params =
+                im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
+                    &self.local_did,
+                    &self.service_did,
+                    &params.sender_did,
+                    &params.message_id,
+                    "",
+                    &selection,
+                )
+                .map_err(|_| ProbeFailure::Runtime)?;
+            rpc_params["meta"]["profile"] = Value::String(ATTACHMENT_V2.to_owned());
+            rpc_params["meta"]["anp_version"] = Value::String("2.0".to_owned());
+            return Ok(rpc_params);
+        }
+
+        #[cfg(not(test))]
+        Err(ProbeFailure::Runtime)
     }
 
     fn validated_held_ticket(
         &self,
         mut result: DownloadTicketResult,
         params: &AttachmentTicketParams,
+        request_body: &Map<String, Value>,
     ) -> Result<HeldTicket, ProbeFailure> {
         if result.download_ticket_b64u.trim().is_empty()
-            || !ticket_binding_matches(&result.ticket_binding, params, &self.local_did)
+            || !ticket_binding_matches_request(&result.ticket_binding, request_body)
         {
             return Err(ProbeFailure::Runtime);
         }
@@ -829,18 +881,61 @@ fn redeem_result(digest_matches: bool, replay_rejected: bool, code: Option<&'sta
     Value::Object(result)
 }
 
-fn ticket_binding_matches(
-    binding: &Map<String, Value>,
+fn validated_ticket_request_body(
+    rpc_params: &Value,
     params: &AttachmentTicketParams,
     local_did: &str,
+    service_did: &str,
+) -> Result<Map<String, Value>, ProbeFailure> {
+    let object = rpc_params.as_object().ok_or(ProbeFailure::Runtime)?;
+    let meta = object
+        .get("meta")
+        .and_then(Value::as_object)
+        .ok_or(ProbeFailure::Runtime)?;
+    let body = object
+        .get("body")
+        .and_then(Value::as_object)
+        .ok_or(ProbeFailure::Runtime)?;
+    let target_service_did = meta
+        .get("target")
+        .and_then(Value::as_object)
+        .and_then(|target| string_field(target, "did"));
+    let target_kind = meta
+        .get("target")
+        .and_then(Value::as_object)
+        .and_then(|target| string_field(target, "kind"));
+    if string_field(meta, "profile") != Some(ATTACHMENT_V2)
+        || string_field(meta, "anp_version") != Some("2.0")
+        || string_field(meta, "security_profile") != Some("transport-protected")
+        || string_field(meta, "sender_did") != Some(local_did)
+        || target_kind != Some("service")
+        || target_service_did != Some(service_did)
+        || string_field(body, "attachment_id") != Some(params.attachment_id.as_str())
+        || string_field(body, "object_uri") != Some(params.object_uri.as_str())
+        || string_field(body, "requester_did") != Some(local_did)
+        || string_field(body, "message_security_profile") != Some(DIRECT_E2EE)
+        || string_field(body, "message_target_did") != Some(local_did)
+        || string_field(body, "message_id").is_none_or(str::is_empty)
+    {
+        return Err(ProbeFailure::Runtime);
+    }
+    Ok(body.clone())
+}
+
+fn ticket_binding_matches_request(
+    binding: &Map<String, Value>,
+    request_body: &Map<String, Value>,
 ) -> bool {
-    string_field(binding, "attachment_id") == Some(params.attachment_id.as_str())
-        && string_field(binding, "object_uri") == Some(params.object_uri.as_str())
-        && string_field(binding, "sender_did") == Some(params.sender_did.as_str())
-        && string_field(binding, "requester_did") == Some(local_did)
-        && string_field(binding, "message_id") == Some(params.message_id.as_str())
-        && string_field(binding, "message_security_profile") == Some(DIRECT_E2EE)
-        && string_field(binding, "message_target_did") == Some(local_did)
+    [
+        "attachment_id",
+        "object_uri",
+        "requester_did",
+        "message_id",
+        "message_security_profile",
+        "message_target_did",
+    ]
+    .into_iter()
+    .all(|key| string_field(binding, key) == string_field(request_body, key))
 }
 
 fn string_field<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
@@ -1134,6 +1229,12 @@ mod tests {
                         )
                     }
                 } else if request.contains("attachment.get_download_ticket") {
+                    assert!(request.contains("\"profile\":\"anp.attachment.v2\""));
+                    assert!(request.contains("\"anp_version\":\"2.0\""));
+                    assert!(request.contains("\"security_profile\":\"transport-protected\""));
+                    assert!(request.contains("\"message_security_profile\":\"direct-e2ee\""));
+                    assert!(request
+                        .contains("\"message_target_did\":\"did:wba:example.test:user:local\""));
                     ticket_calls += 1;
                     if ticket_calls == 1 {
                         json_response(
@@ -1146,7 +1247,6 @@ mod tests {
                                     "ticket_binding": {
                                         "attachment_id": "attachment-1",
                                         "object_uri": format!("{response_base_url}/objects/attachment-1"),
-                                        "sender_did": SENDER_DID,
                                         "requester_did": LOCAL_DID,
                                         "message_id": "message-1",
                                         "message_security_profile": DIRECT_E2EE,
