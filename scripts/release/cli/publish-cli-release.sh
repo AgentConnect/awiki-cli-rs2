@@ -77,6 +77,7 @@ sudo mkdir -p "$(dirname "${release_dir}")" "${ARCHIVE_ROOT}/channels" "${WEB_RO
 [[ ! -e "${release_dir}" ]] || { echo "Error: release archive already exists at ${release_dir}" >&2; exit 1; }
 sudo rm -rf "${release_dir}.staging"
 sudo cp -R "${tmp}/stage" "${release_dir}.staging"
+sudo chmod -R u=rwX,go=rX "${release_dir}.staging"
 sudo mv "${release_dir}.staging" "${release_dir}"
 link_tmp="${WEB_ROOT}/.${CHANNEL}.${VERSION}.$$"
 sudo ln -s "${release_dir}" "${link_tmp}"
