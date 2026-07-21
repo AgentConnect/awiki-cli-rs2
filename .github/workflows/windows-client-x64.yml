@@ -155,7 +155,7 @@ jobs:
 
       - name: Install pinned Inno Setup
         shell: pwsh
-        run: choco install innosetup --version=6.3.2 --no-progress --yes
+        run: choco install innosetup --version=6.3.2 --allow-downgrade --no-progress --yes
 
       - name: Run IM Core Rust Windows tests
         working-directory: awiki-cli-rs2
