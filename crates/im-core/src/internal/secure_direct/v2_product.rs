@@ -9,6 +9,8 @@
 //! Attachment objects are prepared once; their full Manifest is retained only
 //! in the local SecretVault so a partial device fan-out can resume without
 //! uploading a second object.
+//! Each attachment delivery also carries the same non-secret grant ref through
+//! the sender-home private adapter while its standard P5 request stays intact.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -596,6 +598,12 @@ pub(crate) trait V2DirectProductHost {
         &mut self,
         prepared: &PreparedV2Outbound,
     ) -> crate::ImResult<V2DirectSendResult>;
+
+    async fn post_direct_attachment(
+        &mut self,
+        prepared: &PreparedV2Outbound,
+        attachment_grant_ref: &Value,
+    ) -> crate::ImResult<V2DirectSendResult>;
 }
 
 struct CoreV2DirectProductHost<'a> {
@@ -640,6 +648,19 @@ impl V2DirectProductHost for CoreV2DirectProductHost<'_> {
         prepared: &PreparedV2Outbound,
     ) -> crate::ImResult<V2DirectSendResult> {
         super::v2_prekey_runtime::post_standard_direct(self.client, prepared).await
+    }
+
+    async fn post_direct_attachment(
+        &mut self,
+        prepared: &PreparedV2Outbound,
+        attachment_grant_ref: &Value,
+    ) -> crate::ImResult<V2DirectSendResult> {
+        super::v2_prekey_runtime::post_standard_direct_attachment(
+            self.client,
+            prepared,
+            attachment_grant_ref,
+        )
+        .await
     }
 }
 
@@ -755,7 +776,13 @@ where
             full_manifest: prepared.full_manifest.clone(),
         },
     };
-    let direct = send_with_host(context, direct_host, direct_input).await?;
+    let direct = send_with_host_with_attachment_grant(
+        context,
+        direct_host,
+        direct_input,
+        Some(&prepared.grant_ref),
+    )
+    .await?;
     Ok(V2AttachmentProductSendSummary {
         direct,
         redacted_manifest: prepared.redacted_manifest,
@@ -891,6 +918,18 @@ pub(crate) async fn send_with_host<H>(
 where
     H: V2DirectProductHost,
 {
+    send_with_host_with_attachment_grant(context, host, input, None).await
+}
+
+async fn send_with_host_with_attachment_grant<H>(
+    context: &V2DirectProductContext,
+    host: &mut H,
+    input: V2DirectProductSendInput,
+    attachment_grant_ref: Option<&Value>,
+) -> crate::ImResult<V2DirectProductSendSummary>
+where
+    H: V2DirectProductHost,
+{
     required("logical_message_id", &input.logical_message_id)?;
     required("target_did", &input.target_did)?;
     let plaintext = input
@@ -1010,7 +1049,11 @@ where
         context.with_ledger(|ledger| ledger.mark_prepared(&record, &now))?;
         record.wire_prepared = true;
 
-        let result = match host.post_direct(&prepared).await {
+        let posted = match attachment_grant_ref {
+            Some(grant_ref) => host.post_direct_attachment(&prepared, grant_ref).await,
+            None => host.post_direct(&prepared).await,
+        };
+        let result = match posted {
             Ok(result) => result,
             Err(error) => {
                 context.with_ledger(|ledger| {

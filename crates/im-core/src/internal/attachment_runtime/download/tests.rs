@@ -713,6 +713,7 @@ fn attachments_download_runtime_group_object_e2ee_uses_internal_manifest_cache()
                 thread_kind: "group".to_owned(),
                 thread_id: "did:example:group:e2ee".to_owned(),
                 message_id: "did:example:group:e2ee:7".to_owned(),
+                wire_message_id: String::new(),
                 sender_did: "did:web:example.com:bob".to_owned(),
                 message_security_profile: "group-e2ee".to_owned(),
                 content: serde_json::to_string(&object.full_manifest).unwrap(),
@@ -797,6 +798,7 @@ fn attachments_download_runtime_direct_object_e2ee_uses_internal_manifest_cache(
                 thread_kind: "direct".to_owned(),
                 thread_id: "did:web:example.com:bob".to_owned(),
                 message_id: "msg-direct-e2ee-7".to_owned(),
+                wire_message_id: "wire-direct-e2ee-7".to_owned(),
                 sender_did: "did:web:example.com:bob".to_owned(),
                 message_security_profile: "direct-e2ee".to_owned(),
                 content: serde_json::to_string(&object.full_manifest).unwrap(),
@@ -838,12 +840,18 @@ fn attachments_download_runtime_direct_object_e2ee_uses_internal_manifest_cache(
 
     assert_eq!(result.selection.message_security_profile, "direct-e2ee");
     assert_eq!(result.selection.object_encryption_mode, "object-e2ee");
+    assert_eq!(result.selection.message_id, "msg-direct-e2ee-7");
+    assert_eq!(
+        result.sdk_result.selection.as_ref().unwrap().message_id,
+        "msg-direct-e2ee-7"
+    );
     assert!(matches!(
         result.sdk_result.destination,
         crate::attachments::DownloadedAttachmentDestination::Memory(bytes)
             if bytes == object.plaintext
     ));
     let public_selection = serde_json::to_string(&result.selection).unwrap();
+    assert!(!public_selection.contains("wire-direct-e2ee-7"));
     assert!(!public_selection.contains("object_key_b64u"));
     assert!(!public_selection.contains("nonce_b64u"));
     assert!(!public_selection.contains(&object.object_key_b64u));
@@ -857,6 +865,7 @@ fn attachments_download_runtime_direct_object_e2ee_uses_internal_manifest_cache(
         ticket.params["body"]["message_security_profile"],
         "direct-e2ee"
     );
+    assert_eq!(ticket.params["body"]["message_id"], "wire-direct-e2ee-7");
     assert_eq!(ticket.params["body"].get("group_did"), None);
     assert_eq!(ticket.params["body"].get("object_key_b64u"), None);
     assert_eq!(ticket.params["body"].get("nonce_b64u"), None);

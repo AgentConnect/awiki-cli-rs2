@@ -246,6 +246,7 @@ CREATE TABLE IF NOT EXISTS attachment_manifest_cache (
     thread_kind             TEXT NOT NULL,
     thread_id               TEXT NOT NULL,
     message_id              TEXT NOT NULL,
+    wire_message_id         TEXT NOT NULL DEFAULT '',
     sender_did              TEXT,
     message_security_profile TEXT NOT NULL DEFAULT 'transport-protected',
     content                 TEXT NOT NULL,
@@ -956,6 +957,12 @@ pub(super) fn create_schema(
     connection
         .execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL)
         .map_err(super::local_state_unavailable)?;
+    ensure_column(
+        connection,
+        "attachment_manifest_cache",
+        "wire_message_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
     connection
         .execute_batch(SYNC_STATE_SQL)
         .map_err(super::local_state_unavailable)?;
@@ -1254,6 +1261,7 @@ CREATE TABLE IF NOT EXISTS attachment_manifest_cache{suffix} (
     thread_kind             TEXT NOT NULL,
     thread_id               TEXT NOT NULL,
     message_id              TEXT NOT NULL,
+    wire_message_id         TEXT NOT NULL DEFAULT '',
     sender_did              TEXT,
     message_security_profile TEXT NOT NULL DEFAULT 'transport-protected',
     content                 TEXT NOT NULL,

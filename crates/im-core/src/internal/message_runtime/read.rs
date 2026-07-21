@@ -4379,6 +4379,7 @@ fn attachment_manifest_cache_record(
             thread_kind: thread_kind.to_owned(),
             thread_id,
             message_id,
+            wire_message_id: string_value(object.get("raw_message_id")),
             sender_did: string_value(object.get("sender_did")),
             message_security_profile: secure_message_security_profile(object),
             content: serde_json::to_string(&content).ok()?,

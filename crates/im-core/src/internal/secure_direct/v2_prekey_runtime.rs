@@ -1,4 +1,7 @@
 //! Product-owned P5 v2 PreKey lifecycle and strict wire adapters.
+//!
+//! Secure attachment grant refs use the AWiki sender-home private adapter and
+//! are never merged into the standard cross-domain `direct.send` request.
 
 use anp::direct_e2ee::{
     build_prekey_bundle_v2, get_prekey_bundle_request_v2, key_service_metadata_v2,
@@ -14,10 +17,11 @@ use sha2::{Digest as _, Sha256};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
 
 use super::v2_store::SqliteV2DirectStateStore;
-use crate::internal::transport::AsyncAuthenticatedRpcTransport;
+use crate::internal::transport::{AsyncAuthenticatedRestTransport, AsyncAuthenticatedRpcTransport};
 
 const DEFAULT_OPK_BATCH_SIZE: usize = 16;
 const SIGNED_PREKEY_LIFETIME_DAYS: i64 = 30;
+const DIRECT_E2EE_ATTACHMENT_ENDPOINT: &str = "/im/private/direct-e2ee-attachment";
 
 pub(crate) struct V2LocalPrekeyIdentity<'a> {
     pub(crate) did: &'a str,
@@ -378,6 +382,52 @@ pub(crate) async fn post_standard_direct(
     super::v2_runtime::parse_send_result(&response, prepared)
 }
 
+pub(crate) async fn post_standard_direct_attachment(
+    client: &crate::core::ImClient,
+    prepared: &super::v2_runtime::PreparedV2Outbound,
+    attachment_grant_ref: &serde_json::Value,
+) -> crate::ImResult<anp::direct_e2ee::V2DirectSendResult> {
+    let body = direct_attachment_http_body(
+        prepared.direct_request()?,
+        &prepared.metadata.operation_id,
+        attachment_grant_ref,
+    )?;
+    let response = crate::internal::transport::CoreHttpTransport::new(client)
+        .authenticated_rest_post(DIRECT_E2EE_ATTACHMENT_ENDPOINT, "POST", body)
+        .await?;
+    super::v2_runtime::parse_send_result(&response, prepared)
+}
+
+fn direct_attachment_http_body(
+    mut direct_request: serde_json::Value,
+    request_id: &str,
+    attachment_grant_ref: &serde_json::Value,
+) -> crate::ImResult<serde_json::Value> {
+    let request = direct_request
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if request_id.is_empty()
+        || request_id.trim() != request_id
+        || !attachment_grant_ref.is_object()
+        || request.contains_key("jsonrpc")
+        || request.contains_key("id")
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    request.insert(
+        "jsonrpc".to_owned(),
+        serde_json::Value::String("2.0".to_owned()),
+    );
+    request.insert(
+        "id".to_owned(),
+        serde_json::Value::String(request_id.to_owned()),
+    );
+    Ok(serde_json::json!({
+        "direct_request": direct_request,
+        "attachment_grant_refs": [attachment_grant_ref],
+    }))
+}
+
 pub(crate) fn local_static_private(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<X25519StaticSecret> {
@@ -519,6 +569,40 @@ mod tests {
     use crate::vault::{DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore};
     use rusqlite::Connection;
     use std::sync::Arc;
+
+    #[test]
+    fn direct_attachment_wrapper_keeps_grant_ref_outside_standard_request() {
+        let direct_request = serde_json::json!({
+            "method": "direct.send",
+            "params": {
+                "meta": {"message_id": "wire-message-1"},
+                "body": {"ciphertext_b64u": "opaque"}
+            }
+        });
+        let grant_ref = serde_json::json!({
+            "attachment_id": "attachment-1",
+            "object_uri": "https://objects.example/attachment-1",
+            "size": "16",
+            "digest": {"alg": "sha-256", "value_b64u": "digest"},
+            "mime_type": "text/plain",
+            "object_encryption_mode": "object-e2ee",
+            "plaintext_size": "0"
+        });
+
+        let body =
+            direct_attachment_http_body(direct_request.clone(), "wire-message-1", &grant_ref)
+                .unwrap();
+
+        assert_eq!(body["direct_request"]["jsonrpc"], "2.0");
+        assert_eq!(body["direct_request"]["id"], "wire-message-1");
+        assert_eq!(body["direct_request"]["method"], direct_request["method"]);
+        assert_eq!(body["direct_request"]["params"], direct_request["params"]);
+        assert_eq!(
+            body["attachment_grant_refs"],
+            serde_json::json!([grant_ref])
+        );
+        assert!(body["direct_request"].get("client").is_none());
+    }
 
     #[test]
     fn local_material_precedes_strict_publish_and_get_requests() {

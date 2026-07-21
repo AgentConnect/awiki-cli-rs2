@@ -229,6 +229,7 @@ struct FakeHost {
     fetched: BTreeMap<(String, String), V2GetPrekeyBundleResult>,
     fetch_operations: Vec<(String, String, String)>,
     post_attempts: Vec<PreparedV2Outbound>,
+    post_attachment_grant_refs: Vec<Value>,
     fail_fetch_once: BTreeSet<(String, String)>,
     fail_post_once: BTreeSet<(String, String)>,
     ensure_count: usize,
@@ -619,6 +620,16 @@ impl V2DirectProductHost for FakeHost {
             recipient_device_id: prepared.metadata.recipient_device_id.clone(),
             accepted_at: ACCEPTED_AT.to_owned(),
         })
+    }
+
+    async fn post_direct_attachment(
+        &mut self,
+        prepared: &PreparedV2Outbound,
+        attachment_grant_ref: &Value,
+    ) -> crate::ImResult<V2DirectSendResult> {
+        self.post_attachment_grant_refs
+            .push(attachment_grant_ref.clone());
+        self.post_direct(prepared).await
     }
 }
 
@@ -1688,6 +1699,11 @@ async fn attachment_object_is_committed_once_and_one_manifest_is_wrapped_per_dev
     assert_eq!(summary.direct.target_device_count, 2);
     assert_eq!(summary.direct.own_sync_device_count, 1);
     assert_eq!(direct_host.post_attempts.len(), 3);
+    assert_eq!(direct_host.post_attachment_grant_refs.len(), 3);
+    assert!(direct_host
+        .post_attachment_grant_refs
+        .iter()
+        .all(|grant_ref| grant_ref == &summary.grant_ref));
     assert!(!format!("{summary:?}").contains(&object_key));
     assert!(!format!("{summary:?}").contains(&nonce));
 
@@ -1848,6 +1864,7 @@ async fn attachment_partial_retry_reuses_one_object_and_exact_device_ciphertext(
     assert_eq!(object_host.upload_calls, 1);
     assert_eq!(object_host.commit_calls, 1);
     assert_eq!(direct_host.post_attempts.len(), 3);
+    assert_eq!(direct_host.post_attachment_grant_refs.len(), 3);
     let retry = direct_host.post_attempts.last().unwrap();
     assert_eq!(retry.metadata.recipient_device_id, b2.id);
     assert_eq!(retry, &failed_attempt, "retry must reuse exact wire bytes");

@@ -27,6 +27,7 @@ pub struct AttachmentSelection {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct InternalAttachmentSelection {
     pub public: AttachmentSelection,
+    pub(crate) authorization_message_id: String,
     pub object_key_b64u: Option<String>,
     pub nonce_b64u: Option<String>,
 }
@@ -79,9 +80,10 @@ pub(crate) fn find_internal_attachment_selection(
             .unwrap_or(crate::attachments::manifest::OBJECT_ENCRYPTION_MODE_NONE)
             .trim()
             .to_string();
+        let authorization_message_id = string_from_value(message_object.get("raw_message_id"));
         return Ok(InternalAttachmentSelection {
             public: AttachmentSelection {
-                message_id: actual_message_id,
+                message_id: actual_message_id.clone(),
                 requested_id: view_id,
                 sender_did: string_from_value(message_object.get("sender_did")),
                 attachment_id: string_from_value(selected.get("attachment_id")),
@@ -113,6 +115,11 @@ pub(crate) fn find_internal_attachment_selection(
                     .and_then(|value| value.get("plaintext_size"))
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned),
+            },
+            authorization_message_id: if authorization_message_id.is_empty() {
+                actual_message_id
+            } else {
+                authorization_message_id
             },
             object_key_b64u: encryption_info
                 .and_then(|value| value.get("object_key_b64u"))

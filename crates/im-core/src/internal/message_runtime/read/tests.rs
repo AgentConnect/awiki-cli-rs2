@@ -2264,8 +2264,9 @@ fn direct_attachment_manifest_cache_uses_peer_did_while_public_projection_redact
     let fixture = Fixture::new();
     let client = fixture.client();
     let mut messages = vec![json!({
-        "id": "msg-direct-e2ee-9",
+        "id": "logical-direct-e2ee-9",
         "message_id": "msg-direct-e2ee-9",
+        "raw_message_id": "wire-direct-e2ee-9",
         "sender_did": "did:example:alice",
         "receiver_did": client.did().as_str(),
         "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
@@ -2293,10 +2294,14 @@ fn direct_attachment_manifest_cache_uses_peer_did_while_public_projection_redact
         client.current_identity().id.as_str(),
         "direct",
         "did:example:alice",
-        "msg-direct-e2ee-9",
+        "logical-direct-e2ee-9",
     )
     .unwrap()
     .unwrap();
+    assert_eq!(cached["id"], "logical-direct-e2ee-9");
+    assert_eq!(cached["message_id"], "logical-direct-e2ee-9");
+    assert_eq!(cached["raw_message_id"], "wire-direct-e2ee-9");
+    assert!(cached.get("wire_message_id").is_none());
     assert_eq!(cached["message_security_profile"], "direct-e2ee");
     assert_eq!(
         cached["content"]["attachments"][0]["encryption_info"]["object_key_b64u"],

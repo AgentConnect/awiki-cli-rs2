@@ -75,7 +75,7 @@ where
             ));
         }
         let attachment_service = self.resolve_attachment_service(&selection.public.sender_did)?;
-        let ticket = self.get_download_ticket(&target, &selection.public, &attachment_service)?;
+        let ticket = self.get_download_ticket(&target, &selection, &attachment_service)?;
         let object = self
             .transport
             .get_attachment_object(&selection.public.object_uri, &ticket.download_ticket_b64u)?;
@@ -229,7 +229,7 @@ where
     fn get_download_ticket(
         &mut self,
         target: &DownloadTarget,
-        selection: &crate::attachments::selection::AttachmentSelection,
+        selection: &crate::attachments::selection::InternalAttachmentSelection,
         attachment_service: &crate::internal::discovery::attachment::DiscoveredAttachmentService,
     ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentDownloadTicketResult> {
         let group_did = match target {
@@ -240,10 +240,10 @@ where
             crate::internal::wire::attachment::build_attachment_download_ticket_rpc_params(
                 self.client.did().as_str(),
                 &attachment_service.service_did,
-                &selection.sender_did,
-                &selection.message_id,
+                &selection.public.sender_did,
+                &selection.authorization_message_id,
                 group_did,
-                selection,
+                &selection.public,
             )?;
         let raw = self.transport.authenticated_rpc(
             attachment_service.rpc_endpoint.as_str(),
@@ -295,7 +295,7 @@ where
             .resolve_attachment_service_async(&selection.public.sender_did)
             .await?;
         let ticket = self
-            .get_download_ticket_async(&target, &selection.public, &attachment_service)
+            .get_download_ticket_async(&target, &selection, &attachment_service)
             .await?;
         let object = self
             .transport
@@ -463,7 +463,7 @@ where
     async fn get_download_ticket_async(
         &mut self,
         target: &DownloadTarget,
-        selection: &crate::attachments::selection::AttachmentSelection,
+        selection: &crate::attachments::selection::InternalAttachmentSelection,
         attachment_service: &crate::internal::discovery::attachment::DiscoveredAttachmentService,
     ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentDownloadTicketResult> {
         let group_did = match target {
@@ -474,10 +474,10 @@ where
             crate::internal::wire::attachment::build_attachment_download_ticket_rpc_params(
                 self.client.did().as_str(),
                 &attachment_service.service_did,
-                &selection.sender_did,
-                &selection.message_id,
+                &selection.public.sender_did,
+                &selection.authorization_message_id,
                 group_did,
-                selection,
+                &selection.public,
             )?;
         let raw = self
             .transport
