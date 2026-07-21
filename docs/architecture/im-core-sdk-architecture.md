@@ -218,6 +218,11 @@ is likewise encrypted and uploaded once, with its Manifest carried inside the
 single MLS Application message. Every device still owns independent MLS local
 state; the one-ciphertext rule does not imply shared Leaf secrets.
 
+P6 的本地 MLS OwnerScope 每次都从 identity index 中当前 `active` 的 vNext
+device authorization 读取 `ProtocolDeviceId`。重启或重建 `ImClient` 后仍使用同一
+权威设备标识；不得依赖进程内 `IdentitySummary.device_id`，也不得为 legacy、缺失授权
+或已撤销设备合成 sibling/`default` fallback。
+
 Inbound confidentiality filtering is gate-independent. Inbox/History, reliable
 sync, realtime, and delegated projections recognize P5/P6 v2 candidates before
 legacy rendering. Enabled paths may expose only an authenticated, decrypted

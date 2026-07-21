@@ -1,8 +1,9 @@
 //! Production construction and public lifecycle adapters for P6 v2.
 //!
 //! The public Group API remains device-agnostic. This module binds each P6
-//! operation to the current authenticated protocol device and never accepts a
-//! caller-selected sibling or the legacy `default` device.
+//! operation to the authoritative active vNext device authorization and never
+//! accepts a caller-selected sibling or the legacy `default` device. The same
+//! persisted projection scopes the P6 cryptographic runtime after a restart.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1386,7 +1387,9 @@ fn require_exact_group(reference: &V2GroupStateRef) -> crate::ImResult<()> {
     }
 }
 
-fn current_v2_device(client: &crate::core::ImClient) -> crate::ImResult<CurrentV2Device> {
+pub(crate) fn current_v2_device(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<CurrentV2Device> {
     let alias = client
         .current_identity()
         .local_alias

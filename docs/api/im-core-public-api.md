@@ -316,6 +316,11 @@ key ID、角色和由本地密钥可用性与服务端授权共同计算出的 r
 Vault 引用、根私钥存在标志或 AWiki 域内的 `document_version`、
 `document_hash`、`registry_version`、`auth_generation` checkpoint。
 
+`IdentitySummary.device_id` 是兼容摘要字段，不是多设备密码运行时的授权来源。
+P5/P6 需要精确设备端点时，Core 从持久化 identity index 的当前 active vNext
+authorization 读取 `ProtocolDeviceId`；host 如需展示设备摘要，应调用
+`IdentityRegistry::device_summary`，不得从缺失值推导 `default` 或 sibling 设备。
+
 `register_handle` 的 vNext 行为由同一个默认关闭的 multi-device gate 控制。启用后
 首设备注册只支持同域 Phone OTP，并要求 `VaultRequired`；Core 通过 account
 verification exchange 和 `device_genesis` 创建带 Manifest 的 DID，成功后返回原有

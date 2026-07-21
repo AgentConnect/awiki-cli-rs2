@@ -2,7 +2,8 @@
 //!
 //! Product orchestration remains responsible for P4 membership/owner policy,
 //! message-service CAS, KeyPackage leasing, and device-targeted delivery. This
-//! wrapper only maps the SDK's typed local cryptographic operations into the
+//! wrapper scopes storage from the authoritative active vNext device
+//! authorization and maps typed local cryptographic operations into the
 //! im-core error model.
 
 use anp::group_e2ee::operations::v2::{
@@ -165,21 +166,12 @@ pub(crate) fn runtime_for_client(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<GroupE2eeV2Runtime> {
     let identity = client.current_identity();
-    let device_id = identity
-        .device_id
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            crate::ImError::invalid_input(
-                None,
-                "P6 v2 requires the current identity to have a protocol device_id",
-            )
-        })?;
+    let device = super::v2_lifecycle::current_v2_device(client)?;
     let store = ImCoreSqliteGroupMlsStore::from_local_state_sqlite_path(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
         identity.id.as_str(),
         identity.did.as_str(),
-        device_id,
+        &device.device_id,
     )
     .map_err(|err| crate::ImError::LocalStateUnavailable {
         detail: format!("initialize P6 v2 group MLS store: {err}"),
@@ -191,6 +183,7 @@ pub(crate) fn runtime_for_client(
 mod tests {
     use anp::authentication::{create_did_wba_document, DidDocumentOptions};
     use anp::group_e2ee::storage::GroupMlsOwnerScope;
+    use serde_json::json;
 
     use super::*;
 
@@ -262,6 +255,90 @@ mod tests {
 
         if let Some(parent) = state_path.parent() {
             let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn runtime_reloads_exact_device_scope_after_client_rebuild() {
+        let fixture = crate::internal::secure_direct::v2_product::v2_product_tests::RuntimeP5TestClientFixture::new(
+            "p6-runtime-device-reload",
+        );
+        let first_client = fixture.client();
+        assert_eq!(first_client.current_identity().device_id, None);
+        let expected_device_id = first_client
+            .core_handle()
+            .identities()
+            .device_summary(crate::identity::IdentitySelector::Default)
+            .unwrap()
+            .protocol_device_id
+            .unwrap();
+        let first_scope = runtime_for_client(&first_client)
+            .unwrap()
+            .owner_scope()
+            .unwrap();
+        assert_eq!(
+            first_scope.device_id,
+            expected_device_id.as_str(),
+            "the runtime must not depend on the transient IdentitySummary device_id"
+        );
+        drop(first_client);
+
+        let rebuilt_client = fixture.client();
+        assert_eq!(rebuilt_client.current_identity().device_id, None);
+        let rebuilt_scope = runtime_for_client(&rebuilt_client)
+            .unwrap()
+            .owner_scope()
+            .unwrap();
+        assert_eq!(rebuilt_scope.device_id, expected_device_id.as_str());
+    }
+
+    #[test]
+    fn runtime_rejects_legacy_or_missing_device_authorization() {
+        for (label, device_state) in [
+            (
+                "legacy",
+                json!({
+                    "schema_version": 1,
+                    "mode": "legacy"
+                }),
+            ),
+            (
+                "missing-authorization",
+                json!({
+                    "schema_version": 1,
+                    "mode": "v_next",
+                    "checkpoint": {
+                        "document_version": 1,
+                        "document_hash": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                        "registry_version": 1
+                    }
+                }),
+            ),
+        ] {
+            let fixture = crate::internal::secure_direct::v2_product::v2_product_tests::RuntimeP5TestClientFixture::new(
+                &format!("p6-runtime-{label}"),
+            );
+            let client = fixture.client();
+            let registry_path = client
+                .core_inner()
+                .sdk_paths()
+                .identities
+                .registry_path
+                .clone();
+
+            let mut registry: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+            registry["credentials"]["alice"]["device_state"] = device_state;
+            std::fs::write(
+                &registry_path,
+                serde_json::to_vec_pretty(&registry).unwrap(),
+            )
+            .unwrap();
+
+            assert!(matches!(
+                runtime_for_client(&client),
+                Err(crate::ImError::PermissionDenied)
+            ));
         }
     }
 
