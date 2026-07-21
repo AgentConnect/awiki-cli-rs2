@@ -234,6 +234,8 @@ fn direct_result(
         );
     }
     result.message.sent_at = summary.accepted_at.clone();
+    add_product_attribute(&mut result, "security", "direct-e2ee");
+    add_product_attribute(&mut result, "message_security_profile", "direct-e2ee");
     add_product_attribute(&mut result, "e2ee_profile", "anp.direct.e2ee.v2");
     add_product_attribute(
         &mut result,
@@ -680,6 +682,8 @@ fn group_result(
         );
     }
     result.message.sent_at = Some(accepted.accepted_at.clone());
+    add_product_attribute(&mut result, "security", "group-e2ee");
+    add_product_attribute(&mut result, "message_security_profile", "group-e2ee");
     add_product_attribute(&mut result, "e2ee_profile", "anp.group.e2ee.v2");
     add_product_attribute(
         &mut result,
@@ -869,6 +873,14 @@ mod tests {
         });
         let attachment =
             direct_result(&client, &resolved, &summary(2, 0), Some(&manifest)).unwrap();
+        assert_eq!(
+            attribute(&attachment, "security").as_deref(),
+            Some("direct-e2ee")
+        );
+        assert_eq!(
+            attribute(&attachment, "message_security_profile").as_deref(),
+            Some("direct-e2ee")
+        );
         let stored_manifest = attribute(&attachment, "attachment_manifest").unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&stored_manifest).unwrap(),
