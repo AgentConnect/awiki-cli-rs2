@@ -1,6 +1,6 @@
 # aWiki-CLI src Module Map
 
-更新日期：2026-05-26
+更新日期：2026-07-22
 
 本文档记录 `crates/awiki-cli/src` 当前文件系统下的模块数量和职责划分。统计包含本 `README.md` 文件。
 
@@ -8,10 +8,10 @@
 
 | 范围 | 数量 |
 | --- | ---: |
-| `src` 递归文件总数 | 135 |
+| `src` 递归文件总数 | 147 |
 | `src` 递归目录总数，包含 `src` 自身 | 16 |
 | `src` 子目录总数，不包含 `src` 自身 | 15 |
-| `src` 直属文件数 | 9 |
+| `src` 直属文件数 | 10 |
 | `src` 直属文件夹数 | 11 |
 
 ## 顶层结构
@@ -34,12 +34,19 @@
 | `README.md` | 本文档，记录 `src` 模块数量和职责。 |
 | `lib.rs` | crate 的 public module 入口；当前只导出新的模块名，如 `cli_shell`、`m_core_cli_adapter`、`workspace_upgrade` 等，并 `pub use cli_shell::execute`。 |
 | `main.rs` | 二进制入口；调用库里的 CLI 执行入口并处理进程退出。 |
+| `system_test_probe_main.rs` | 仅由 `system-test-probe` feature 启用的多设备系统测试探针；从同一个 `ImCore` 的设备投影读取协议设备 ID 并创建 client，stdin/stdout 只承载闭合 JSONL 动作和脱敏结果。 |
 | `build_info.rs` | 版本、构建信息、目标平台名等 `version` / `status` 需要的 metadata。 |
 | `cli_http.rs` | CLI 自有 HTTP 模块入口；包装 HTTP client / profile 解析。 |
 | `cli_output.rs` | CLI 输出 envelope、JSON / pretty 渲染、`ExitError` / 错误响应结构。 |
 | `cli_shell.rs` | CLI 命令执行核心壳层；解析后的 command dispatch、上下文、handler 聚合。 |
 | `cli_trace.rs` | `AWIKI_TRACE_TIMING` 之类的 CLI trace / timing 记录和输出。 |
 | `durable_fs.rs` | 原子写、目录 fsync、跨平台耐久化文件写入 helper。 |
+
+`system_test_probe_main.rs` 的启动合同由
+[`../tests/system_test_probe_startup_contract.rs`](../tests/system_test_probe_startup_contract.rs)
+覆盖：测试通过生产 CLI Genesis 流程生成真实 vNext Vault workspace，再启动真实探针并执行
+`shutdown` JSONL 动作。fixture 只使用一次性 loopback 控制面，不复制或手写身份私钥、
+Double Ratchet state、MLS state 或 vNext 设备授权状态；探针启动阶段不连接服务端。
 
 ## 顶层文件夹
 

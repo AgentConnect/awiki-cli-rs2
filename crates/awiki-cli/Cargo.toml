@@ -52,3 +52,6 @@ windows-sys = { version = "0.52", features = [
     "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }
+
+[dev-dependencies]
+serde_json_canonicalizer.workspace = true

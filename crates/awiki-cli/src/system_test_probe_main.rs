@@ -1,3 +1,16 @@
+//! Feature-gated, secret-contained probe for multi-device system tests.
+//!
+//! [INPUT]: The resolved CLI workspace, vNext identity/device projections, and JSONL probe
+//! requests on stdin.
+//! [OUTPUT]: Closed probe results on stdout; runtime failures expose only stable error codes.
+//! [POS]: Test-only binary boundary that exercises production `im-core` clients without exposing
+//! private keys, tokens, ratchet state, or MLS state.
+//!
+//! [PROTOCOL]:
+//! 1. Resolve the protocol device ID from `IdentityDeviceSummary`, not the legacy identity summary.
+//! 2. Build the probe client from that same `ImCore` instance so identity/device state is coherent.
+//! 3. Keep stdout/stderr free of credentials and cryptographic state.
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -197,12 +210,21 @@ impl Probe {
     async fn from_workspace() -> Result<Self, ProbeFailure> {
         let resolved = awiki_cli::workspace_config::resolve(Default::default())
             .map_err(|_| ProbeFailure::Runtime)?;
-        let client = awiki_cli::m_core_cli_adapter::build_im_client_async(
-            &resolved,
-            im_core::IdentitySelector::Default,
-        )
-        .await
-        .map_err(|_| ProbeFailure::Runtime)?;
+        let core = awiki_cli::m_core_cli_adapter::build_im_core_async(&resolved)
+            .await
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let local_device_id = core
+            .identities()
+            .device_summary_async(im_core::IdentitySelector::Default)
+            .await
+            .map_err(|_| ProbeFailure::Runtime)?
+            .protocol_device_id
+            .map(|value| value.as_str().to_owned())
+            .ok_or(ProbeFailure::Runtime)?;
+        let client = core
+            .client_async(im_core::IdentitySelector::Default)
+            .await
+            .map_err(|_| ProbeFailure::Runtime)?;
         let mut session = client
             .auth()
             .ensure_session_async(im_core::auth::AuthScope::Messaging)
@@ -215,13 +237,6 @@ impl Probe {
             .map(Zeroizing::new)
             .ok_or(ProbeFailure::Runtime)?;
         let local_did = client.did().as_str().to_owned();
-        let local_device_id = client
-            .current_identity()
-            .device_id
-            .as_deref()
-            .and_then(|value| im_core::ids::ProtocolDeviceId::parse(value).ok())
-            .map(|value| value.as_str().to_owned())
-            .ok_or(ProbeFailure::Runtime)?;
         let service_did = im_core::ids::Did::parse(&resolved.anp_service_did)
             .map_err(|_| ProbeFailure::Runtime)?
             .as_str()
