@@ -5,7 +5,7 @@ use crate::internal::transport::{
 };
 use serde_json::{json, Value};
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -506,6 +506,193 @@ async fn direct_attachment_lookup_rejects_manifest_from_unrequested_peer_before_
     assert!(matches!(error, crate::ImError::MessageNotFound { .. }));
     assert_eq!(calls.borrow().len(), 1);
     calls.borrow()[0].rpc("direct.get_history");
+}
+
+#[tokio::test]
+async fn direct_attachment_runtime_pages_fresh_p5_wire_by_raw_count_and_reuses_cached_manifest() {
+    use crate::internal::secure_direct::v2_product::v2_product_tests::{
+        prepare_runtime_p5_test_wires, RuntimeP5TestBody, RuntimeP5TestClientFixture,
+        RuntimeP5TestWire,
+    };
+
+    const BOB_DID: &str = "did:web:runtime-attachment.example:bob";
+    const MALLORY_DID: &str = "did:web:runtime-attachment.example:mallory";
+    let fixture = RuntimeP5TestClientFixture::new("runtime-attachment-wire");
+    let client = fixture.client();
+    let correct_object = object_e2ee_case(b"fresh encrypted attachment bytes".to_vec());
+    let wrong_object = object_e2ee_case(b"wrong peer attachment bytes".to_vec());
+    let wrong_ciphertext = wrong_object.ciphertext.clone();
+    let wrong_plaintext = wrong_object.plaintext.clone();
+    let wires = prepare_runtime_p5_test_wires(
+        &client,
+        vec![
+            RuntimeP5TestWire {
+                peer_did: MALLORY_DID,
+                peer_device_id: "runtime-attachment-mallory-device",
+                seed: 201,
+                logical_message_id: "runtime-attachment-target",
+                server_seq: 61,
+                body: RuntimeP5TestBody::Attachment(wrong_object.full_manifest),
+            },
+            RuntimeP5TestWire {
+                peer_did: BOB_DID,
+                peer_device_id: "runtime-attachment-bob-filler-device",
+                seed: 211,
+                logical_message_id: "runtime-attachment-filler",
+                server_seq: 62,
+                body: RuntimeP5TestBody::Text("encrypted page filler"),
+            },
+            RuntimeP5TestWire {
+                peer_did: BOB_DID,
+                peer_device_id: "runtime-attachment-bob-target-device",
+                seed: 221,
+                logical_message_id: "runtime-attachment-target",
+                server_seq: 63,
+                body: RuntimeP5TestBody::Attachment(correct_object.full_manifest.clone()),
+            },
+        ],
+    )
+    .await;
+    assert_eq!(wires.len(), 3);
+    let serialized_wire = serde_json::to_string(&wires).unwrap();
+    assert!(!serialized_wire.contains("encrypted page filler"));
+    assert!(!serialized_wire.contains(&correct_object.object_key_b64u));
+    assert!(!serialized_wire.contains(&correct_object.nonce_b64u));
+    let wrong_wire = wires[0].clone();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let transport = RuntimeP5AttachmentTransport {
+        calls: Rc::clone(&calls),
+        history: Rc::new(RefCell::new(VecDeque::from([
+            json!({
+                "messages": [wrong_wire.clone(), wires[1].clone()],
+                "has_more": true
+            }),
+            json!({"messages": [wires[2].clone()], "has_more": false}),
+        ]))),
+        object_body: correct_object.ciphertext.clone(),
+        sender_did: BOB_DID,
+    };
+
+    let result = runtime_p5_attachment_download(&client, transport)
+        .download_async(AttachmentDownloadInput {
+            request: crate::attachments::DownloadAttachmentRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse(BOB_DID, "").unwrap(),
+                ),
+                message_id: crate::ids::MessageId::parse("runtime-attachment-target").unwrap(),
+                attachment_id: Some("att-e2ee-1".to_owned()),
+                destination: crate::attachments::AttachmentDestination::Memory,
+                overwrite: false,
+            },
+            resolved_peer_did: Some(BOB_DID.to_owned()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(result.selection.sender_did, BOB_DID);
+    assert_eq!(result.selection.message_id, "runtime-attachment-target");
+    assert!(matches!(
+        result.sdk_result.destination,
+        crate::attachments::DownloadedAttachmentDestination::Memory(bytes)
+            if bytes == correct_object.plaintext
+    ));
+
+    let recorded_calls = calls.borrow();
+    let history_calls = recorded_calls
+        .iter()
+        .filter_map(|call| match call {
+            RecordedCall::Rpc { method, params, .. } if method == "direct.get_history" => {
+                Some(params)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(history_calls.len(), 2);
+    assert_eq!(history_calls[0]["body"].get("skip"), None);
+    assert_eq!(history_calls[1]["body"]["skip"], 2);
+    drop(recorded_calls);
+
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let cached = crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
+        &connection,
+        client.current_identity().id.as_str(),
+        "direct",
+        BOB_DID,
+        "runtime-attachment-target",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(cached["sender_did"], BOB_DID);
+    assert_eq!(
+        cached["content"]["attachments"][0]["encryption_info"]["object_key_b64u"],
+        correct_object.object_key_b64u
+    );
+    drop(connection);
+
+    let reopened = fixture.client();
+    let replay_calls = Rc::new(RefCell::new(Vec::new()));
+    let replay = runtime_p5_attachment_download(
+        &reopened,
+        RuntimeP5AttachmentTransport {
+            calls: Rc::clone(&replay_calls),
+            history: Rc::new(RefCell::new(VecDeque::new())),
+            object_body: correct_object.ciphertext,
+            sender_did: BOB_DID,
+        },
+    )
+    .download_async(AttachmentDownloadInput {
+        request: crate::attachments::DownloadAttachmentRequest {
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse(BOB_DID, "").unwrap(),
+            ),
+            message_id: crate::ids::MessageId::parse("runtime-attachment-target").unwrap(),
+            attachment_id: Some("att-e2ee-1".to_owned()),
+            destination: crate::attachments::AttachmentDestination::Memory,
+            overwrite: false,
+        },
+        resolved_peer_did: Some(BOB_DID.to_owned()),
+    })
+    .await
+    .unwrap();
+    assert_eq!(replay.selection.sender_did, BOB_DID);
+    assert!(replay_calls.borrow().iter().all(|call| !matches!(
+        call,
+        RecordedCall::Rpc { method, .. } if method == "direct.get_history"
+    )));
+
+    // The wrong-peer attachment Init remains fresh because Bob-scoped lookup
+    // rejected it before the replay/ratchet transaction committed.
+    let wrong = runtime_p5_attachment_download(
+        &reopened,
+        RuntimeP5AttachmentTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            history: Rc::new(RefCell::new(VecDeque::from([json!({
+                "messages": [wrong_wire],
+                "has_more": false
+            })]))),
+            object_body: wrong_ciphertext,
+            sender_did: MALLORY_DID,
+        },
+    )
+    .download_async(AttachmentDownloadInput {
+        request: crate::attachments::DownloadAttachmentRequest {
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse(MALLORY_DID, "").unwrap(),
+            ),
+            message_id: crate::ids::MessageId::parse("runtime-attachment-target").unwrap(),
+            attachment_id: Some("att-e2ee-1".to_owned()),
+            destination: crate::attachments::AttachmentDestination::Memory,
+            overwrite: false,
+        },
+        resolved_peer_did: Some(MALLORY_DID.to_owned()),
+    })
+    .await
+    .unwrap();
+    assert_eq!(wrong.selection.sender_did, MALLORY_DID);
+    assert!(matches!(
+        wrong.sdk_result.destination,
+        crate::attachments::DownloadedAttachmentDestination::Memory(bytes)
+            if bytes == wrong_plaintext
+    ));
 }
 
 #[test]
@@ -1209,6 +1396,127 @@ struct E2eeTransport {
     history: Value,
     object_body: Vec<u8>,
     object_content_type: Option<String>,
+}
+
+struct RuntimeP5AttachmentTransport {
+    calls: Rc<RefCell<Vec<RecordedCall>>>,
+    history: Rc<RefCell<VecDeque<Value>>>,
+    object_body: Vec<u8>,
+    sender_did: &'static str,
+}
+
+fn runtime_p5_attachment_download(
+    client: &crate::core::ImClient,
+    transport: RuntimeP5AttachmentTransport,
+) -> AttachmentDownloadRuntime<'_, ReadySessionProvider, RuntimeP5AttachmentTransport> {
+    AttachmentDownloadRuntime {
+        client,
+        session_provider: ReadySessionProvider {
+            scopes: Rc::new(RefCell::new(Vec::new())),
+        },
+        transport,
+    }
+}
+
+impl crate::internal::transport::AsyncAuthenticatedRpcTransport for RuntimeP5AttachmentTransport {
+    async fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> crate::ImResult<Value> {
+        self.calls.borrow_mut().push(RecordedCall::Rpc {
+            endpoint: endpoint.to_owned(),
+            method: method.to_owned(),
+            params: params.clone(),
+        });
+        match method {
+            "direct.get_history" => self.history.borrow_mut().pop_front().ok_or_else(|| {
+                crate::ImError::TransportUnavailable {
+                    detail: "unexpected extra P5 attachment history page".to_owned(),
+                }
+            }),
+            "attachment.get_download_ticket" => Ok(json!({
+                "download_ticket_b64u": "runtime-p5-ticket",
+                "expires_at": "2026-07-21T01:00:00Z",
+                "ticket_binding": {
+                    "attachment_id": params["body"]["attachment_id"].clone()
+                }
+            })),
+            _ => Err(crate::ImError::TransportUnavailable {
+                detail: format!("unexpected runtime P5 attachment RPC {method}"),
+            }),
+        }
+    }
+}
+
+impl crate::internal::transport::AsyncRawJsonTransport for RuntimeP5AttachmentTransport {
+    async fn get_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        self.calls.borrow_mut().push(RecordedCall::GetJson {
+            url: url.to_owned(),
+            headers,
+        });
+        Ok(json!({
+            "id": self.sender_did,
+            "service": [{
+                "id": "#attachment",
+                "type": "ANPMessageService",
+                "serviceEndpoint": "https://attachment.example/rpc",
+                "serviceDid": "did:web:attachment.example",
+                "profiles": ["anp.attachment.v1"],
+                "securityProfiles": ["transport-protected"],
+                "priority": 1
+            }]
+        }))
+    }
+}
+
+impl crate::internal::transport::AsyncAttachmentObjectTransport for RuntimeP5AttachmentTransport {
+    async fn put_attachment_object(
+        &mut self,
+        _upload_uri: &str,
+        _headers: BTreeMap<String, String>,
+        _body: Vec<u8>,
+    ) -> crate::ImResult<()> {
+        unreachable!("attachment download test must not upload")
+    }
+
+    async fn get_attachment_object(
+        &mut self,
+        object_uri: &str,
+        download_ticket: &str,
+    ) -> crate::ImResult<AttachmentObjectResponse> {
+        self.calls.borrow_mut().push(RecordedCall::GetObject {
+            object_uri: object_uri.to_owned(),
+            ticket: download_ticket.to_owned(),
+        });
+        Ok(AttachmentObjectResponse {
+            body: self.object_body.clone(),
+            content_type: Some("application/octet-stream".to_owned()),
+        })
+    }
+
+    async fn get_attachment_object_stream(
+        &mut self,
+        object_uri: &str,
+        download_ticket: &str,
+    ) -> crate::ImResult<crate::internal::transport::AsyncAttachmentObjectResponse> {
+        self.calls.borrow_mut().push(RecordedCall::GetObjectStream {
+            object_uri: object_uri.to_owned(),
+            ticket: download_ticket.to_owned(),
+        });
+        Ok(
+            crate::internal::transport::AsyncAttachmentObjectResponse::Bytes {
+                body: self.object_body.clone(),
+                content_type: Some("application/octet-stream".to_owned()),
+                consumed: false,
+            },
+        )
+    }
 }
 
 impl AuthenticatedRpcTransport for E2eeTransport {

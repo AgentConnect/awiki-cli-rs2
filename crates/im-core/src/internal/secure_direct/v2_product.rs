@@ -2209,6 +2209,17 @@ pub(crate) async fn receive_for_client_scoped(
         ));
     }
     let context = V2DirectProductContext::from_client(core, client)?;
+    #[cfg(test)]
+    if let Some(outcome) = v2_product_tests::receive_registered_runtime_wire(
+        &context,
+        metadata.clone(),
+        body.clone(),
+        expected_peer_did,
+    )
+    .await
+    {
+        return outcome;
+    }
     let mut host = CoreV2DirectProductHost { core, client };
     receive_with_host_scoped(&context, &mut host, metadata, body, expected_peer_did).await
 }

@@ -3692,6 +3692,292 @@ async fn fresh_scoped_p5_rejection_then_correct_receive_projects_and_persists() 
 }
 
 #[tokio::test]
+async fn history_runtime_fresh_p5_mixed_page_rejects_wrong_peer_and_reopens_exactly_once() {
+    use crate::internal::secure_direct::v2_product::v2_product_tests::{
+        prepare_runtime_p5_test_wires, RuntimeP5TestBody, RuntimeP5TestClientFixture,
+        RuntimeP5TestWire,
+    };
+
+    const BOB_DID: &str = "did:example:runtime-history-bob";
+    const MALLORY_DID: &str = "did:example:runtime-history-mallory";
+    let fixture = RuntimeP5TestClientFixture::new("runtime-history-wire");
+    let client = fixture.client();
+    let wires = prepare_runtime_p5_test_wires(
+        &client,
+        vec![
+            RuntimeP5TestWire {
+                peer_did: MALLORY_DID,
+                peer_device_id: "runtime-history-mallory-device",
+                seed: 161,
+                logical_message_id: "runtime-history-wrong",
+                server_seq: 41,
+                body: RuntimeP5TestBody::Text("wrong peer encrypted text"),
+            },
+            RuntimeP5TestWire {
+                peer_did: BOB_DID,
+                peer_device_id: "runtime-history-bob-device",
+                seed: 171,
+                logical_message_id: "runtime-history-correct",
+                server_seq: 42,
+                body: RuntimeP5TestBody::Text("correct peer encrypted text"),
+            },
+        ],
+    )
+    .await;
+    assert_eq!(wires.len(), 2);
+    let serialized_wire = serde_json::to_string(&wires).unwrap();
+    assert!(!serialized_wire.contains("wrong peer encrypted text"));
+    assert!(!serialized_wire.contains("correct peer encrypted text"));
+    let wrong_wire = wires[0].clone();
+    let correct_wire = wires[1].clone();
+    let correct_wire_id = correct_wire["id"].as_str().unwrap().to_owned();
+    let bob_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "runtime-history-bob-user",
+        "runtime-history-bob.example",
+    )
+    .unwrap();
+    let request = || HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse(BOB_DID, "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some(BOB_DID.to_owned()),
+        peer_scope: Some(bob_scope.clone()),
+    };
+
+    let first = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [wrong_wire.clone(), correct_wire.clone()],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(request())
+    .await
+    .unwrap();
+    assert_eq!(first.page.items.len(), 1);
+    assert_eq!(first.page.items[0].id.as_str(), "runtime-history-correct");
+    assert!(matches!(
+        &first.page.items[0].body,
+        crate::messages::MessageBodyView::Text { text, .. }
+            if text == "correct peer encrypted text"
+    ));
+
+    let reopened = fixture.client();
+    let replay = MessageReadRuntime::new(
+        &reopened,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [wrong_wire.clone(), correct_wire],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(request())
+    .await
+    .unwrap();
+    assert_eq!(replay.page.items.len(), 1);
+    assert_eq!(replay.page.items[0].id.as_str(), "runtime-history-correct");
+
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let bob_records =
+        crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
+            &connection,
+            reopened.current_identity().id.as_str(),
+            &[correct_wire_id],
+        )
+        .unwrap();
+    assert_eq!(bob_records.len(), 1);
+    assert_eq!(bob_records[0].msg_id, "runtime-history-correct");
+    drop(connection);
+
+    // The same ciphertext must still decrypt under its authenticated peer scope.
+    // If the mixed Bob page had committed Mallory's replay state, this returns no item.
+    let mallory = MessageReadRuntime::new(
+        &reopened,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [wrong_wire], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse(MALLORY_DID, "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some(MALLORY_DID.to_owned()),
+        peer_scope: Some(
+            crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                "runtime-history-mallory-user",
+                "runtime-history-mallory.example",
+            )
+            .unwrap(),
+        ),
+    })
+    .await
+    .unwrap();
+    assert_eq!(mallory.page.items.len(), 1);
+    assert_eq!(mallory.page.items[0].id.as_str(), "runtime-history-wrong");
+}
+
+#[tokio::test]
+async fn sync_runtime_fresh_p5_mixed_page_rejects_wrong_peer_and_reopens_exactly_once() {
+    use crate::internal::secure_direct::v2_product::v2_product_tests::{
+        prepare_runtime_p5_test_wires, RuntimeP5TestBody, RuntimeP5TestClientFixture,
+        RuntimeP5TestWire,
+    };
+
+    const BOB_DID: &str = "did:example:runtime-sync-bob";
+    const MALLORY_DID: &str = "did:example:runtime-sync-mallory";
+    let fixture = RuntimeP5TestClientFixture::new("runtime-sync-wire");
+    let client = fixture.client();
+    let wires = prepare_runtime_p5_test_wires(
+        &client,
+        vec![
+            RuntimeP5TestWire {
+                peer_did: MALLORY_DID,
+                peer_device_id: "runtime-sync-mallory-device",
+                seed: 181,
+                logical_message_id: "runtime-sync-wrong",
+                server_seq: 51,
+                body: RuntimeP5TestBody::Text("wrong sync encrypted text"),
+            },
+            RuntimeP5TestWire {
+                peer_did: BOB_DID,
+                peer_device_id: "runtime-sync-bob-device",
+                seed: 191,
+                logical_message_id: "runtime-sync-correct",
+                server_seq: 52,
+                body: RuntimeP5TestBody::Text("correct sync encrypted text"),
+            },
+        ],
+    )
+    .await;
+    assert!(!serde_json::to_string(&wires)
+        .unwrap()
+        .contains("correct sync encrypted text"));
+    let wrong_wire = wires[0].clone();
+    let correct_wire = wires[1].clone();
+    let correct_wire_id = correct_wire["id"].as_str().unwrap().to_owned();
+    let bob_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "runtime-sync-bob-user",
+        "runtime-sync-bob.example",
+    )
+    .unwrap();
+    let request = || crate::internal::message_runtime::sync::SyncThreadAfterInput {
+        request: crate::messages::SyncThreadAfterRequest {
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse(BOB_DID, "").unwrap(),
+            ),
+            after_server_seq: Some("0".to_owned()),
+            limit: Some(20),
+        },
+        resolved_peer_did: Some(BOB_DID.to_owned()),
+        peer_scope: Some(bob_scope.clone()),
+    };
+
+    let first = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [wrong_wire.clone(), correct_wire.clone()],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    )
+    .sync_thread_after_async(request())
+    .await
+    .unwrap();
+    assert_eq!(first.messages.len(), 1);
+    assert_eq!(first.messages[0].id.as_str(), "runtime-sync-correct");
+
+    let reopened = fixture.client();
+    let replay = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+        &reopened,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [wrong_wire.clone(), correct_wire],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    )
+    .sync_thread_after_async(request())
+    .await
+    .unwrap();
+    assert_eq!(replay.messages.len(), 1);
+    assert_eq!(replay.messages[0].id.as_str(), "runtime-sync-correct");
+
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let records =
+        crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
+            &connection,
+            reopened.current_identity().id.as_str(),
+            &[correct_wire_id],
+        )
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].msg_id, "runtime-sync-correct");
+    drop(connection);
+
+    let mallory = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+        &reopened,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [wrong_wire], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .sync_thread_after_async(
+        crate::internal::message_runtime::sync::SyncThreadAfterInput {
+            request: crate::messages::SyncThreadAfterRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse(MALLORY_DID, "").unwrap(),
+                ),
+                after_server_seq: Some("0".to_owned()),
+                limit: Some(20),
+            },
+            resolved_peer_did: Some(MALLORY_DID.to_owned()),
+            peer_scope: Some(
+                crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                    "runtime-sync-mallory-user",
+                    "runtime-sync-mallory.example",
+                )
+                .unwrap(),
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(mallory.messages.len(), 1);
+    assert_eq!(mallory.messages[0].id.as_str(), "runtime-sync-wrong");
+}
+
+#[tokio::test]
 async fn scoped_history_and_sync_fail_closed_on_nonadvancing_wrong_peer_page() {
     let fixture = Fixture::new();
     let client = fixture.client();

@@ -11,6 +11,8 @@ use anp::direct_e2ee::{
 };
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 const NOW: &str = "2026-07-20T00:00:00Z";
 const ACCEPTED_AT: &str = "2026-07-20T00:00:01Z";
@@ -230,6 +232,314 @@ struct FakeHost {
     fail_fetch_once: BTreeSet<(String, String)>,
     fail_post_once: BTreeSet<(String, String)>,
     ensure_count: usize,
+}
+
+static RUNTIME_WIRE_DOCUMENTS: OnceLock<Mutex<BTreeMap<PathBuf, BTreeMap<String, Value>>>> =
+    OnceLock::new();
+
+pub(crate) struct RuntimeP5TestClientFixture {
+    root: tempfile::TempDir,
+}
+
+impl RuntimeP5TestClientFixture {
+    const VAULT_SEED: [u8; 32] = [151_u8; 32];
+    const WORKSPACE_ID: &'static str = "runtime-p5-test-workspace";
+    const VAULT_DEVICE_ID: &'static str = "runtime-p5-test-vault-device";
+
+    pub(crate) fn new(label: &str) -> Self {
+        use crate::internal::identity_store::{
+            IdentityStore, SaveIdentityInput, SaveIdentityKeyMode, SaveIdentitySecretStorage,
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = Self::paths(root.path());
+        std::fs::create_dir_all(&paths.identities.identity_root_dir).unwrap();
+        let generated =
+            crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+                "awiki.test",
+                label,
+                None,
+                None,
+            )
+            .unwrap();
+        let device_state = IdentityDeviceState {
+            schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+            mode: IdentityDeviceMode::VNext,
+            authorization: Some(DeviceAuthorizationProjection {
+                protocol_device_id: generated.protocol_device_id.clone(),
+                signing_key_id: generated.device_signing_key_id.clone(),
+                e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                status: DeviceAuthorizationStatus::Active,
+                role: DeviceAuthorizationRole::Member,
+                management_ready: false,
+                auth_generation: 1,
+            }),
+            checkpoint: Some(IdentityInternalCheckpoint {
+                document_version: 1,
+                document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+                registry_version: 1,
+            }),
+        };
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes(Self::VAULT_SEED),
+            FileSecretVaultStore::new(root.path().join("vault")),
+        ));
+        IdentityStore::new(&paths.identities)
+            .save_identity_with_secret_storage(
+                SaveIdentityInput {
+                    local_alias: "alice".to_owned(),
+                    did: generated.did.clone(),
+                    unique_id: generated.unique_id.clone(),
+                    user_id: format!("{label}-user"),
+                    display_name: "Runtime P5 test".to_owned(),
+                    handle: label.to_owned(),
+                    full_handle: format!("{label}.awiki.test"),
+                    jwt_token: "runtime-p5-device-token".to_owned(),
+                    did_document: Some(generated.did_document.clone()),
+                    key_mode: SaveIdentityKeyMode::VNext {
+                        root_key_id: generated.root_key_id.clone(),
+                        device_signing_key_id: generated.device_signing_key_id.clone(),
+                        device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                    },
+                    device_state: Some(device_state),
+                    key1_private_pem: generated.root_private_pem,
+                    key1_public_pem: generated.root_public_pem,
+                    e2ee_signing_private_pem: generated.device_signing_private_pem,
+                    e2ee_agreement_private_pem: generated.device_e2ee_private_pem,
+                    daemon_subkey_package: Some(generated.daemon_subkey_package),
+                    make_default: true,
+                },
+                SaveIdentitySecretStorage::Vault {
+                    workspace_id: Self::WORKSPACE_ID.to_owned(),
+                    device_id: Self::VAULT_DEVICE_ID.to_owned(),
+                    vault,
+                },
+            )
+            .unwrap();
+        Self { root }
+    }
+
+    fn paths(root: &Path) -> crate::ImCorePaths {
+        crate::ImCorePaths {
+            identities: crate::paths::IdentityRegistryPaths {
+                identity_root_dir: root.join("identities"),
+                registry_path: root.join("identities").join("registry.json"),
+                default_identity_path: Some(root.join("identities").join("default")),
+            },
+            local_state: crate::paths::LocalStatePaths {
+                sqlite_path: root.join("local").join("im.sqlite"),
+            },
+            runtime: crate::paths::RuntimePaths {
+                cache_dir: root.join("cache"),
+                temp_dir: root.join("tmp"),
+            },
+        }
+    }
+
+    pub(crate) fn client(&self) -> crate::core::ImClient {
+        crate::core::ImCore::new_with_options(
+            crate::ImCoreConfig {
+                service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
+                did_domain: "awiki.test".to_owned(),
+                user_service_endpoint: None,
+                message_service_endpoint: None,
+                mail_service_endpoint: None,
+                anp_service_endpoint: None,
+                anp_service_did: None,
+                ca_bundle: None,
+                transport_policy: crate::MessageTransportPolicy::HttpOnly,
+            },
+            Self::paths(self.root.path()),
+            crate::ImCoreOpenOptions::default()
+                .with_identity_secret_vault(
+                    crate::IdentitySecretStoragePolicy::VaultRequired,
+                    crate::ImCoreSecretVaultOptions::new(
+                        DeviceVaultRootKey::from_bytes(Self::VAULT_SEED),
+                        self.root.path().join("vault"),
+                        Self::WORKSPACE_ID,
+                        Self::VAULT_DEVICE_ID,
+                    ),
+                )
+                .with_multi_device_direct_e2ee_enabled(true),
+        )
+        .unwrap()
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            "alice".to_owned(),
+        ))
+        .unwrap()
+    }
+
+    pub(crate) fn sqlite_path(&self) -> PathBuf {
+        Self::paths(self.root.path()).local_state.sqlite_path
+    }
+}
+
+pub(crate) enum RuntimeP5TestBody {
+    Text(&'static str),
+    Attachment(Value),
+}
+
+pub(crate) struct RuntimeP5TestWire {
+    pub(crate) peer_did: &'static str,
+    pub(crate) peer_device_id: &'static str,
+    pub(crate) seed: u8,
+    pub(crate) logical_message_id: &'static str,
+    pub(crate) server_seq: u64,
+    pub(crate) body: RuntimeP5TestBody,
+}
+
+pub(crate) async fn prepare_runtime_p5_test_wires(
+    client: &crate::core::ImClient,
+    requests: Vec<RuntimeP5TestWire>,
+) -> Vec<Value> {
+    let core = client.core_handle();
+    let endpoint = active_local_endpoint_for_client(&core, client).unwrap();
+    let recipient_context = V2DirectProductContext::from_client(&core, client).unwrap();
+    let local_document = client.runtime().key_provider.did_document().unwrap();
+    let signing_private = anp::PrivateKeyMaterial::from_pem(
+        &client
+            .runtime()
+            .key_provider
+            .device_request_signing_private_pem()
+            .unwrap(),
+    )
+    .unwrap();
+    let publication = {
+        let connection = recipient_context.open_connection().unwrap();
+        let store = SqliteV2DirectStateStore::new_with_secret_vault(
+            &connection,
+            recipient_context.vault.clone(),
+            recipient_context.scope.clone(),
+        )
+        .unwrap();
+        crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_publication(
+            &store,
+            crate::internal::secure_direct::v2_prekey_runtime::V2LocalPrekeyIdentity {
+                did: &recipient_context.local_did,
+                device_id: &recipient_context.local_device_id,
+                signing_key_id: &endpoint.signing_key_id,
+                e2ee_key_id: &recipient_context.local_e2ee_key_id,
+                signing_private: &signing_private,
+            },
+            chrono::Utc::now(),
+        )
+        .unwrap()
+    };
+    assert!(publication.one_time_prekeys.len() >= requests.len());
+
+    let mut peer_devices = BTreeMap::<&'static str, Vec<DeviceSpec>>::new();
+    for request in &requests {
+        peer_devices
+            .entry(request.peer_did)
+            .or_default()
+            .push(DeviceSpec {
+                id: request.peer_device_id,
+                signing_seed: request.seed,
+                static_seed: request.seed.wrapping_add(1),
+                signed_prekey_seed: request.seed.wrapping_add(2),
+                one_time_prekey_seed: request.seed.wrapping_add(3),
+            });
+    }
+    let peer_documents = peer_devices
+        .iter()
+        .map(|(did, devices)| ((*did).to_owned(), did_document(did, devices)))
+        .collect::<BTreeMap<_, _>>();
+    let mut receiver_documents = peer_documents.clone();
+    receiver_documents.insert(recipient_context.local_did.clone(), local_document.clone());
+    RUNTIME_WIRE_DOCUMENTS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap()
+        .insert(recipient_context.sqlite_path.clone(), receiver_documents);
+
+    let sender_root = tempfile::tempdir().unwrap();
+    let mut wires = Vec::with_capacity(requests.len());
+    for (index, request) in requests.into_iter().enumerate() {
+        let device = DeviceSpec {
+            id: request.peer_device_id,
+            signing_seed: request.seed,
+            static_seed: request.seed.wrapping_add(1),
+            signed_prekey_seed: request.seed.wrapping_add(2),
+            one_time_prekey_seed: request.seed.wrapping_add(3),
+        };
+        let sender = context(
+            sender_root.path(),
+            &format!("runtime-wire-sender-{index}"),
+            request.peer_did,
+            device,
+            request.seed.wrapping_add(4),
+        );
+        let mut host = FakeHost::default();
+        host.add_document(&recipient_context.local_did, local_document.clone());
+        for (did, document) in &peer_documents {
+            host.add_document(did, document.clone());
+        }
+        host.fetched.insert(
+            (
+                recipient_context.local_did.clone(),
+                recipient_context.local_device_id.clone(),
+            ),
+            V2GetPrekeyBundleResult {
+                target_did: recipient_context.local_did.clone(),
+                target_device_id: recipient_context.local_device_id.clone(),
+                prekey_bundle: publication.bundle.clone(),
+                one_time_prekey: Some(publication.one_time_prekeys[index].clone()),
+            },
+        );
+        let body = match request.body {
+            RuntimeP5TestBody::Text(text) => V2OrdinaryBody::Text {
+                text: text.to_owned(),
+                markdown: false,
+            },
+            RuntimeP5TestBody::Attachment(full_manifest) => {
+                V2OrdinaryBody::AttachmentManifest { full_manifest }
+            }
+        };
+        send_with_host(
+            &sender,
+            &mut host,
+            V2DirectProductSendInput {
+                logical_message_id: request.logical_message_id.to_owned(),
+                target_did: recipient_context.local_did.clone(),
+                conversation_id: Some(format!("conversation-{}", request.logical_message_id)),
+                body,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(host.post_attempts.len(), 1);
+        let prepared = host.post_attempts.pop().unwrap();
+        let direct_request = prepared.direct_request().unwrap();
+        wires.push(json!({
+            "id": prepared.metadata.message_id,
+            "sender_did": prepared.metadata.sender_did,
+            "receiver_did": prepared.metadata.target.did,
+            "content_type": prepared.metadata.content_type,
+            "server_seq": request.server_seq,
+            "meta": direct_request["params"]["meta"].clone(),
+            "body": direct_request["params"]["body"].clone(),
+        }));
+    }
+    wires
+}
+
+pub(crate) async fn receive_registered_runtime_wire(
+    context: &V2DirectProductContext,
+    metadata: V2DirectMetadata,
+    body: V2DirectBody,
+    expected_peer_did: Option<&str>,
+) -> Option<crate::ImResult<V2InboundProductOutcome>> {
+    let documents = RUNTIME_WIRE_DOCUMENTS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap()
+        .get(&context.sqlite_path)
+        .cloned()?;
+    let mut host = FakeHost {
+        documents,
+        ..FakeHost::default()
+    };
+    Some(receive_with_host_scoped(context, &mut host, metadata, body, expected_peer_did).await)
 }
 
 impl FakeHost {
