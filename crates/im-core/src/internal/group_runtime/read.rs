@@ -47,11 +47,33 @@ where
         group: crate::ids::GroupRef,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session()?;
-        let params = crate::internal::wire::group::build_group_get_with_policy_rpc_params(
+        let local_params = crate::internal::wire::group::build_group_get_rpc_params(
             self.client.did().as_str(),
             group.as_str(),
         )?;
-        self.group_rpc("group.get", params)
+        let local =
+            self.transport
+                .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.get", local_params)?;
+        let operation_id = format!(
+            "group-read-{}",
+            crate::internal::wire::common::generate_operation_id()
+        );
+        let info_params = crate::internal::wire::group::build_group_get_info_rpc_params(
+            self.client.did().as_str(),
+            group.as_str(),
+            &operation_id,
+            true,
+        )?;
+        let authoritative = self.transport.authenticated_rpc(
+            MESSAGE_RPC_ENDPOINT,
+            "group.get_info",
+            info_params,
+        )?;
+        let merged = merge_authoritative_group_policy(group.as_str(), local, authoritative)?;
+        Ok(crate::groups::GroupReadResult::from_raw_response(
+            merged,
+            Vec::new(),
+        ))
     }
 
     pub(crate) fn list(
@@ -145,11 +167,33 @@ where
         group: crate::ids::GroupRef,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session_async().await?;
-        let params = crate::internal::wire::group::build_group_get_with_policy_rpc_params(
+        let local_params = crate::internal::wire::group::build_group_get_rpc_params(
             self.client.did().as_str(),
             group.as_str(),
         )?;
-        self.group_rpc_async("group.get", params).await
+        let local = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.get", local_params)
+            .await?;
+        let operation_id = format!(
+            "group-read-{}",
+            crate::internal::wire::common::generate_operation_id()
+        );
+        let info_params = crate::internal::wire::group::build_group_get_info_rpc_params(
+            self.client.did().as_str(),
+            group.as_str(),
+            &operation_id,
+            true,
+        )?;
+        let authoritative = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.get_info", info_params)
+            .await?;
+        let merged = merge_authoritative_group_policy(group.as_str(), local, authoritative)?;
+        Ok(crate::groups::GroupReadResult::from_raw_response(
+            merged,
+            Vec::new(),
+        ))
     }
 
     pub(crate) async fn list_async(
@@ -238,6 +282,67 @@ async fn project_group_e2ee_messages_async(client: &crate::core::ImClient, raw: 
 #[cfg(not(feature = "group-e2ee"))]
 async fn project_group_e2ee_messages_async(_client: &crate::core::ImClient, _raw: &mut Value) {}
 
+fn merge_authoritative_group_policy(
+    expected_group_did: &str,
+    mut local: Value,
+    authoritative: Value,
+) -> crate::ImResult<Value> {
+    let authoritative = authoritative
+        .as_object()
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "P4 group.get_info result must be an object".to_owned(),
+        })?;
+    let returned_group_did = authoritative
+        .get("group_did")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "P4 group.get_info result is missing group_did".to_owned(),
+        })?;
+    if returned_group_did != expected_group_did {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let group_state_version = authoritative
+        .get("group_state_version")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "P4 group.get_info result is missing group_state_version".to_owned(),
+        })?;
+    if !authoritative
+        .get("group_profile")
+        .is_some_and(Value::is_object)
+    {
+        return Err(crate::ImError::Serialization {
+            detail: "P4 group.get_info result is missing or has malformed group_profile".to_owned(),
+        });
+    }
+    let group_policy = authoritative
+        .get("group_policy")
+        .filter(|value| value.is_object())
+        .cloned()
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "P4 group.get_info result is missing group_policy".to_owned(),
+        })?;
+    let local_object = local
+        .as_object_mut()
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "domain-local group.get result must be an object".to_owned(),
+        })?;
+    local_object.insert(
+        "group_did".to_owned(),
+        Value::String(returned_group_did.to_owned()),
+    );
+    local_object.insert(
+        "group_state_version".to_owned(),
+        Value::String(group_state_version.to_owned()),
+    );
+    local_object.insert("group_policy".to_owned(), group_policy);
+    Ok(local)
+}
+
 fn page_limit(limit: crate::ids::PageLimit, fallback: i64) -> i64 {
     if limit.0 == 0 {
         fallback
@@ -253,6 +358,7 @@ mod tests {
     use crate::internal::transport::AuthenticatedRpcTransport;
     use serde_json::{json, Value};
     use std::cell::RefCell;
+    use std::collections::VecDeque;
     use std::fs;
     use std::path::PathBuf;
     use std::rc::Rc;
@@ -419,6 +525,157 @@ mod tests {
         assert_eq!(calls[3].params["body"]["since_seq"], "42");
     }
 
+    #[test]
+    #[cfg(feature = "group-e2ee")]
+    fn get_with_policy_merges_p4_policy_without_losing_local_membership() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let responses = Rc::new(RefCell::new(VecDeque::from([
+            json!({
+                "group_snapshot": {
+                    "group_did": "did:example:group",
+                    "my_role": "owner",
+                    "membership_status": "active",
+                    "required_security_profile": "transport-protected"
+                }
+            }),
+            json!({
+                "group_did": "did:example:group",
+                "group_state_version": "state-2",
+                "group_profile": {"display_name": "Remote group"},
+                "group_policy": {"message_security_profile": "group-e2ee"}
+            }),
+        ])));
+
+        let result = GroupReadRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            SequencedRecordingTransport {
+                calls: Rc::clone(&calls),
+                responses,
+            },
+        )
+        .get_with_policy(crate::ids::GroupRef::parse("did:example:group").unwrap())
+        .unwrap();
+
+        let group = result.group.as_ref().unwrap();
+        assert_eq!(group.my_role.as_deref(), Some("owner"));
+        assert_eq!(group.membership_status.as_deref(), Some("active"));
+        assert_eq!(
+            result.response_json().unwrap()["group_state_version"],
+            "state-2"
+        );
+        assert_eq!(
+            result.response_json().unwrap()["group_policy"]["message_security_profile"],
+            "group-e2ee"
+        );
+        assert!(crate::groups::authoritative_group_e2ee_classification(
+            "did:example:group",
+            &result
+        )
+        .unwrap());
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].method, "group.get");
+        assert!(calls[0].params["body"].get("include_policy").is_none());
+        assert_eq!(calls[1].method, "group.get_info");
+        assert_eq!(calls[1].endpoint, MESSAGE_RPC_ENDPOINT);
+        assert_eq!(calls[1].params["meta"]["profile"], "anp.group.base.v2");
+        assert_eq!(
+            calls[1].params["meta"]["target"],
+            json!({"kind":"group","did":"did:example:group"})
+        );
+        assert_eq!(calls[1].params["body"]["include_policy"], true);
+        assert_eq!(calls[1].params["body"]["include_member_list"], false);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "group-e2ee")]
+    async fn get_with_policy_async_uses_the_same_authoritative_p4_merge() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let responses = Rc::new(RefCell::new(VecDeque::from([
+            json!({
+                "group_snapshot": {
+                    "group_did": "did:example:group",
+                    "my_role": "member",
+                    "membership_status": "active",
+                    "required_security_profile": "transport-protected"
+                }
+            }),
+            json!({
+                "group_did": "did:example:group",
+                "group_state_version": "state-3",
+                "group_profile": {"display_name": "Remote group"},
+                "group_policy": {"message_security_profile": "group-e2ee"}
+            }),
+        ])));
+
+        let result = GroupReadRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            SequencedRecordingTransport {
+                calls: Rc::clone(&calls),
+                responses,
+            },
+        )
+        .get_with_policy_async(crate::ids::GroupRef::parse("did:example:group").unwrap())
+        .await
+        .unwrap();
+
+        let group = result.group.as_ref().unwrap();
+        assert_eq!(group.my_role.as_deref(), Some("member"));
+        assert_eq!(group.membership_status.as_deref(), Some("active"));
+        assert!(crate::groups::authoritative_group_e2ee_classification(
+            "did:example:group",
+            &result
+        )
+        .unwrap());
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].method, "group.get");
+        assert!(calls[0].params["body"].get("include_policy").is_none());
+        assert_eq!(calls[1].method, "group.get_info");
+        assert_eq!(calls[1].params["body"]["include_policy"], true);
+        assert_eq!(calls[1].params["body"]["include_member_list"], false);
+    }
+
+    #[test]
+    fn authoritative_policy_merge_rejects_missing_p4_group_profile() {
+        let error = merge_authoritative_group_policy(
+            "did:example:group",
+            json!({"group": {"group_did": "did:example:group"}}),
+            json!({
+                "group_did": "did:example:group",
+                "group_state_version": "state-2",
+                "group_policy": {"message_security_profile": "group-e2ee"}
+            }),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, crate::ImError::Serialization { .. }));
+    }
+
+    #[test]
+    fn authoritative_policy_merge_rejects_non_object_p4_group_profile() {
+        let error = merge_authoritative_group_policy(
+            "did:example:group",
+            json!({"group": {"group_did": "did:example:group"}}),
+            json!({
+                "group_did": "did:example:group",
+                "group_state_version": "state-2",
+                "group_profile": "malformed",
+                "group_policy": {"message_security_profile": "group-e2ee"}
+            }),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, crate::ImError::Serialization { .. }));
+    }
+
     #[derive(Clone)]
     struct ReadyGroupSessionProvider;
 
@@ -504,6 +761,51 @@ mod tests {
                 params,
             });
             Ok(self.response.clone())
+        }
+    }
+
+    struct SequencedRecordingTransport {
+        calls: Rc<RefCell<Vec<RecordedCall>>>,
+        responses: Rc<RefCell<VecDeque<Value>>>,
+    }
+
+    impl AuthenticatedRpcTransport for SequencedRecordingTransport {
+        fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            self.calls.borrow_mut().push(RecordedCall {
+                endpoint: endpoint.to_string(),
+                method: method.to_string(),
+                params,
+            });
+            Ok(self
+                .responses
+                .borrow_mut()
+                .pop_front()
+                .expect("recording transport response"))
+        }
+    }
+
+    impl crate::internal::transport::AsyncAuthenticatedRpcTransport for SequencedRecordingTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            self.calls.borrow_mut().push(RecordedCall {
+                endpoint: endpoint.to_string(),
+                method: method.to_string(),
+                params,
+            });
+            Ok(self
+                .responses
+                .borrow_mut()
+                .pop_front()
+                .expect("recording transport response"))
         }
     }
 

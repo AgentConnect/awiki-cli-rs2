@@ -581,7 +581,12 @@ fn fetch_current_group_state_ref(
     group_did: &str,
     operation_id: &str,
 ) -> crate::ImResult<anp::group_e2ee::V2GroupStateRef> {
-    let params = group_info_params(client.did().as_str(), group_did, operation_id);
+    let params = crate::internal::wire::group::build_group_get_info_rpc_params(
+        client.did().as_str(),
+        group_did,
+        operation_id,
+        false,
+    )?;
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
     let raw = crate::internal::transport::AuthenticatedRpcTransport::authenticated_rpc(
         &mut transport,
@@ -618,26 +623,6 @@ fn fetch_current_group_state_ref(
         group_state_version: version.to_owned(),
         policy_hash: None,
         roster_hash: None,
-    })
-}
-
-#[cfg(feature = "group-e2ee")]
-fn group_info_params(sender_did: &str, group_did: &str, operation_id: &str) -> Value {
-    serde_json::json!({
-        "meta": {
-            "anp_version": "2.0",
-            "profile": "anp.group.base.v2",
-            "security_profile": "transport-protected",
-            "sender_did": sender_did,
-            "target": { "kind": "group", "did": group_did },
-            "operation_id": format!("p4-group-info-{operation_id}"),
-            "content_type": "application/json",
-            "created_at": crate::internal::wire::common::now_rfc3339()
-        },
-        "body": {
-            "include_policy": false,
-            "include_member_list": false
-        }
     })
 }
 
@@ -968,11 +953,19 @@ mod tests {
     #[test]
     #[cfg(feature = "group-e2ee")]
     fn p4_group_state_lookup_never_adds_device_selectors() {
-        let params = group_info_params("did:example:alice", "did:example:group", "op-group-send");
+        let params = crate::internal::wire::group::build_group_get_info_rpc_params(
+            "did:example:alice",
+            "did:example:group",
+            "op-group-send",
+            false,
+        )
+        .unwrap();
         let encoded = serde_json::to_string(&params).unwrap();
 
         assert_eq!(params["meta"]["profile"], "anp.group.base.v2");
         assert_eq!(params["meta"]["target"]["did"], "did:example:group");
+        assert_eq!(params["body"]["include_policy"], false);
+        assert_eq!(params["body"]["include_member_list"], false);
         assert!(!encoded.contains("device_id"));
         assert!(!encoded.contains("deviceManifest"));
     }

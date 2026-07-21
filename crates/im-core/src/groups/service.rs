@@ -2900,17 +2900,64 @@ pub(crate) fn authoritative_group_e2ee_classification(
                 .to_owned(),
         });
     }
-    let mut profiles = Vec::new();
+    if let Some(value) = raw.get("group_policy") {
+        let Some(policy) = value.as_object() else {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "authoritative group.get returned a malformed group policy".to_owned(),
+            });
+        };
+        let Some(profile) = policy
+            .get("message_security_profile")
+            .and_then(serde_json::Value::as_str)
+        else {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "authoritative group.get returned a malformed group policy".to_owned(),
+            });
+        };
+        return match profile {
+            "group-e2ee" => Ok(true),
+            "transport-protected" => Ok(false),
+            _ => Err(crate::ImError::LocalStateUnavailable {
+                detail: "authoritative group.get did not classify the group security profile"
+                    .to_owned(),
+            }),
+        };
+    }
+
+    let mut policy_profiles = Vec::new();
+    for pointer in ["/group/group_policy", "/group_snapshot/group_policy"] {
+        let Some(value) = raw.pointer(pointer) else {
+            continue;
+        };
+        let Some(policy) = value.as_object() else {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "authoritative group.get returned a malformed group policy".to_owned(),
+            });
+        };
+        let Some(profile) = policy
+            .get("message_security_profile")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|profile| !profile.is_empty())
+        else {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "authoritative group.get returned a malformed group policy".to_owned(),
+            });
+        };
+        policy_profiles.push(profile.to_ascii_lowercase());
+    }
+    if !policy_profiles.is_empty() {
+        return classify_group_security_profiles(&policy_profiles);
+    }
+
+    let mut projected_profiles = Vec::new();
     for pointer in [
         "/message_security_profile",
         "/required_security_profile",
-        "/group_policy/message_security_profile",
         "/group/message_security_profile",
         "/group/required_security_profile",
-        "/group/group_policy/message_security_profile",
         "/group_snapshot/message_security_profile",
         "/group_snapshot/required_security_profile",
-        "/group_snapshot/group_policy/message_security_profile",
     ] {
         let Some(value) = raw.pointer(pointer) else {
             continue;
@@ -2924,27 +2971,33 @@ pub(crate) fn authoritative_group_e2ee_classification(
                 detail: "authoritative group.get returned a malformed security profile".to_owned(),
             });
         };
-        profiles.push(profile.to_ascii_lowercase());
+        projected_profiles.push(profile.to_ascii_lowercase());
     }
-    if profiles.iter().any(|profile| profile == "group-e2ee") {
-        if profiles
-            .iter()
-            .any(|profile| matches!(profile.as_str(), "transport-protected" | "transport"))
-        {
+    classify_group_security_profiles(&projected_profiles)
+}
+
+#[cfg(feature = "group-e2ee")]
+fn classify_group_security_profiles(profiles: &[String]) -> crate::ImResult<bool> {
+    let mut classification = None;
+    for profile in profiles {
+        let current = match profile.as_str() {
+            "group-e2ee" => true,
+            "transport-protected" | "transport" => false,
+            _ => {
+                return Err(crate::ImError::LocalStateUnavailable {
+                    detail: "authoritative group.get did not classify the group security profile"
+                        .to_owned(),
+                });
+            }
+        };
+        if classification.is_some_and(|previous| previous != current) {
             return Err(crate::ImError::LocalStateUnavailable {
                 detail: "authoritative group.get returned conflicting security profiles".to_owned(),
             });
         }
-        return Ok(true);
+        classification = Some(current);
     }
-    if !profiles.is_empty()
-        && profiles
-            .iter()
-            .all(|profile| matches!(profile.as_str(), "transport-protected" | "transport"))
-    {
-        return Ok(false);
-    }
-    Err(crate::ImError::LocalStateUnavailable {
+    classification.ok_or_else(|| crate::ImError::LocalStateUnavailable {
         detail: "authoritative group.get did not classify the group security profile".to_owned(),
     })
 }

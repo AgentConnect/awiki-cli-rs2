@@ -316,31 +316,44 @@ pub(crate) fn build_group_get_rpc_params(
     sender_did: &str,
     group_did: &str,
 ) -> crate::ImResult<Value> {
-    build_group_get_rpc_params_with_policy(sender_did, group_did, false)
+    let group_did = require_group(group_did)?;
+    Ok(json!({
+        "meta": group_local_meta(sender_did, Some(group_did)),
+        "body": {
+            "group_did": group_did,
+        },
+    }))
 }
 
-pub(crate) fn build_group_get_with_policy_rpc_params(
+pub(crate) fn build_group_get_info_rpc_params(
     sender_did: &str,
     group_did: &str,
-) -> crate::ImResult<Value> {
-    build_group_get_rpc_params_with_policy(sender_did, group_did, true)
-}
-
-fn build_group_get_rpc_params_with_policy(
-    sender_did: &str,
-    group_did: &str,
+    operation_id: &str,
     include_policy: bool,
 ) -> crate::ImResult<Value> {
     let group_did = require_group(group_did)?;
-    let mut body = json!({
-        "group_did": group_did,
-    });
-    if include_policy {
-        body["include_policy"] = Value::Bool(true);
+    let operation_id = operation_id.trim();
+    if operation_id.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("operation_id".to_string()),
+            "operation id is required",
+        ));
     }
     Ok(json!({
-        "meta": group_local_meta(sender_did, Some(group_did)),
-        "body": body,
+        "meta": {
+            "anp_version": "2.0",
+            "profile": "anp.group.base.v2",
+            "security_profile": "transport-protected",
+            "sender_did": sender_did,
+            "target": { "kind": "group", "did": group_did },
+            "operation_id": format!("p4-group-info-{operation_id}"),
+            "content_type": "application/json",
+            "created_at": super::common::now_rfc3339()
+        },
+        "body": {
+            "include_policy": include_policy,
+            "include_member_list": false
+        }
     }))
 }
 
@@ -647,18 +660,25 @@ mod handle_identity_tests {
     use super::*;
 
     #[test]
-    fn authoritative_group_get_explicitly_requests_policy_without_changing_legacy_get() {
+    fn authoritative_p4_group_get_info_has_exact_target_and_policy_projection() {
         let legacy = build_group_get_rpc_params("did:example:alice", "did:example:group").unwrap();
         assert!(legacy["body"].get("include_policy").is_none());
 
-        let authoritative =
-            build_group_get_with_policy_rpc_params("did:example:alice", "did:example:group")
-                .unwrap();
-        assert_eq!(authoritative["body"]["include_policy"], true);
+        let p4 = build_group_get_info_rpc_params(
+            "did:example:alice",
+            "did:example:group",
+            "read-1",
+            true,
+        )
+        .unwrap();
+        assert_eq!(p4["meta"]["anp_version"], "2.0");
+        assert_eq!(p4["meta"]["profile"], "anp.group.base.v2");
         assert_eq!(
-            authoritative["meta"]["target"],
+            p4["meta"]["target"],
             json!({"kind": "group", "did": "did:example:group"})
         );
+        assert_eq!(p4["body"]["include_policy"], true);
+        assert_eq!(p4["body"]["include_member_list"], false);
     }
 
     #[test]

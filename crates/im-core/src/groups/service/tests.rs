@@ -410,7 +410,10 @@ fn v2_cold_cache_route_uses_authoritative_policy_even_for_default_call() {
             "group": {
                 "group_did": group,
                 "my_role": "owner",
-                "membership_status": "active"
+                "membership_status": "active",
+                "group_policy": {
+                    "message_security_profile": "future-secure-profile"
+                }
             }
         }),
         Vec::new(),
@@ -426,7 +429,12 @@ fn v2_cold_cache_route_uses_authoritative_policy_even_for_default_call() {
                 "group_did": group,
                 "my_role": "owner",
                 "membership_status": "active",
-                "required_security_profile": "group-e2ee",
+                "group_policy": {
+                    "message_security_profile": "group-e2ee"
+                }
+            },
+            "group_snapshot": {
+                "group_did": group,
                 "group_policy": {
                     "message_security_profile": "transport-protected"
                 }
@@ -445,9 +453,8 @@ fn v2_cold_cache_route_uses_authoritative_policy_even_for_default_call() {
                 "group_did": group,
                 "my_role": "owner",
                 "membership_status": "active",
-                "required_security_profile": 42,
                 "group_policy": {
-                    "message_security_profile": "transport-protected"
+                    "message_security_profile": 42
                 }
             }
         }),
@@ -457,6 +464,53 @@ fn v2_cold_cache_route_uses_authoritative_policy_even_for_default_call() {
         super::v2_member_mutation_route(group, &malformed, false),
         Err(crate::ImError::LocalStateUnavailable { .. })
     ));
+}
+
+#[test]
+fn v2_p4_policy_is_exact_and_overrides_domain_local_projection() {
+    let group = "did:example:group";
+    let result_with_policy = |policy: serde_json::Value| {
+        crate::groups::GroupReadResult::from_raw_response(
+            json!({
+                "group_did": group,
+                "group_policy": policy,
+                "group_snapshot": {
+                    "group_did": group,
+                    "my_role": "owner",
+                    "membership_status": "active",
+                    "required_security_profile": "transport-protected",
+                    "group_policy": {
+                        "message_security_profile": "transport-protected"
+                    }
+                }
+            }),
+            Vec::new(),
+        )
+    };
+
+    let e2ee = result_with_policy(json!({"message_security_profile": "group-e2ee"}));
+    assert!(super::authoritative_group_e2ee_classification(group, &e2ee).unwrap());
+
+    let transport = result_with_policy(json!({
+        "message_security_profile": "transport-protected"
+    }));
+    assert!(!super::authoritative_group_e2ee_classification(group, &transport).unwrap());
+
+    for invalid in [
+        json!({"message_security_profile": "transport"}),
+        json!({"message_security_profile": "Transport-Protected"}),
+        json!({"message_security_profile": " transport-protected"}),
+        json!({"message_security_profile": "GROUP-E2EE"}),
+        json!({"message_security_profile": "future-secure-profile"}),
+        json!({}),
+        json!({"message_security_profile": 42}),
+    ] {
+        let result = result_with_policy(invalid);
+        assert!(matches!(
+            super::authoritative_group_e2ee_classification(group, &result),
+            Err(crate::ImError::LocalStateUnavailable { .. })
+        ));
+    }
 }
 
 #[test]
