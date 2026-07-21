@@ -667,7 +667,7 @@ async fn attachments_service_download_resolves_direct_handle_before_history_look
             "messages": [{
                 "id": "msg-attachment-1",
                 "message_id": "msg-attachment-1",
-                "sender_did": "did:key:z6mk-bob",
+                "sender_did": "did:example:bob",
                 "content": {
                     "attachments": [{
                         "attachment_id": "att-1",
