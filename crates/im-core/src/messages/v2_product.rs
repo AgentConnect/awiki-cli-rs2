@@ -685,6 +685,7 @@ fn group_result(
     add_product_attribute(&mut result, "security", "group-e2ee");
     add_product_attribute(&mut result, "message_security_profile", "group-e2ee");
     add_product_attribute(&mut result, "e2ee_profile", "anp.group.e2ee.v2");
+    add_product_attribute(&mut result, "final_acceptance", "true");
     add_product_attribute(
         &mut result,
         "group_state_version",
@@ -732,26 +733,8 @@ fn persist_group_projection(
 mod tests {
     use super::*;
 
-    #[test]
-    fn product_delivery_preserves_partial_device_acceptance() {
-        assert_eq!(
-            product_delivery(true, 3, 0),
-            crate::messages::DeliveryState::Accepted
-        );
-        assert_eq!(
-            product_delivery(false, 1, 2),
-            crate::messages::DeliveryState::Sent
-        );
-        assert!(matches!(
-            product_delivery(false, 0, 2),
-            crate::messages::DeliveryState::Failed { .. }
-        ));
-    }
-
-    #[test]
     #[cfg(feature = "sqlite")]
-    fn direct_result_projects_aggregate_final_acceptance() {
-        let root = tempfile::tempdir().unwrap();
+    fn projection_client(root: &tempfile::TempDir) -> crate::core::ImClient {
         let identity_root = root.path().join("identities");
         let identity_dir = identity_root.join("alice");
         std::fs::create_dir_all(&identity_dir).unwrap();
@@ -774,7 +757,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(identity_dir.join("did.json"), "{}").unwrap();
-        let client = crate::core::ImCore::new(
+        crate::core::ImCore::new(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
                 did_domain: "example.test".to_owned(),
@@ -805,7 +788,30 @@ mod tests {
         .client(crate::identity::IdentitySelector::LocalAlias(
             "alice".to_owned(),
         ))
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn product_delivery_preserves_partial_device_acceptance() {
+        assert_eq!(
+            product_delivery(true, 3, 0),
+            crate::messages::DeliveryState::Accepted
+        );
+        assert_eq!(
+            product_delivery(false, 1, 2),
+            crate::messages::DeliveryState::Sent
+        );
+        assert!(matches!(
+            product_delivery(false, 0, 2),
+            crate::messages::DeliveryState::Failed { .. }
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "sqlite")]
+    fn direct_result_projects_aggregate_final_acceptance() {
+        let root = tempfile::tempdir().unwrap();
+        let client = projection_client(&root);
         let resolved = ResolvedSendRequest {
             request: crate::messages::SendMessageRequest {
                 target: crate::messages::MessageTarget::Direct(
@@ -887,6 +893,51 @@ mod tests {
             manifest
         );
         assert!(!stored_manifest.contains("object_key"));
+    }
+
+    #[test]
+    #[cfg(feature = "group-e2ee")]
+    fn group_result_projects_typed_host_acceptance_as_final() {
+        let root = tempfile::tempdir().unwrap();
+        let client = projection_client(&root);
+        let request = crate::messages::SendMessageRequest {
+            target: crate::messages::MessageTarget::Group(
+                crate::ids::GroupRef::parse("did:example:group").unwrap(),
+            ),
+            body: crate::messages::MessageBody::Text {
+                text: "hello group".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            security: crate::messages::MessageSecurityMode::GroupE2ee,
+            client_message_id: Some(crate::ids::MessageId::parse("msg-group-final").unwrap()),
+            delivery: crate::messages::MessageDeliveryOptions {
+                idempotency_key: Some("op-group-final".to_owned()),
+                wait_for_final_acceptance: true,
+            },
+            delegated_signing: None,
+        };
+        let accepted = anp::group_e2ee::V2GroupSendResult {
+            accepted: true,
+            group_did: "did:example:group".to_owned(),
+            message_id: "msg-group-final".to_owned(),
+            operation_id: "op-group-final".to_owned(),
+            group_event_seq: "7".to_owned(),
+            group_state_version: "state-2".to_owned(),
+            accepted_at: "2026-07-22T00:00:00Z".to_owned(),
+            epoch: "4".to_owned(),
+            group_receipt: serde_json::json!({}),
+        };
+        accepted.validate().unwrap();
+
+        let result = group_result(&client, &request, &accepted, None).unwrap();
+
+        assert_eq!(result.delivery, crate::messages::DeliveryState::Accepted);
+        assert!(result
+            .message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| { attribute.key == "final_acceptance" && attribute.value == "true" }));
     }
 
     #[test]
