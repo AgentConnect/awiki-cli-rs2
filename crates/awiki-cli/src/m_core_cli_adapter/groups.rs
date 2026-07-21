@@ -1740,18 +1740,42 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
             status_code,
             code,
             message,
-            ..
+            data,
         } => {
+            let status_code = status_code.unwrap_or_default();
+            let public_code = code
+                .as_deref()
+                .filter(|value| super::error::is_public_service_code(value))
+                .map(str::to_owned);
             let rpc_code = code
+                .as_deref()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or_default();
-            if group_e2ee_service_unsupported(rpc_code, &message) {
+            if matches!(status_code, 401 | 403) {
+                return MessageAdapterError::Service(ServiceError {
+                    status_code,
+                    rpc_code,
+                    message: "remote service request failed".to_owned(),
+                    data: None,
+                });
+            }
+            let classification_rpc_code = match public_code.as_deref() {
+                Some("anp.not_supported") => {
+                    service_data_json_rpc_code(data.as_ref()).unwrap_or_default()
+                }
+                Some(_) => 0,
+                None => rpc_code,
+            };
+            if group_e2ee_service_unsupported(classification_rpc_code, &message) {
                 return MessageAdapterError::GroupNotSupported;
             }
+            if let Some(public_code) = public_code {
+                return MessageAdapterError::PublicServiceCode(public_code);
+            }
             MessageAdapterError::Service(ServiceError {
-                status_code: status_code.unwrap_or_default(),
+                status_code,
                 rpc_code,
-                message,
+                message: "remote service request failed".to_owned(),
                 data: None,
             })
         }
@@ -1760,6 +1784,10 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
         }
         err => MessageAdapterError::Internal(err.to_string()),
     }
+}
+
+fn service_data_json_rpc_code(data: Option<&Value>) -> Option<i64> {
+    data?.as_object()?.get("json_rpc_code")?.as_i64()
 }
 
 fn group_e2ee_service_unsupported(rpc_code: i64, message: &str) -> bool {
@@ -1775,21 +1803,173 @@ fn group_e2ee_service_unsupported(rpc_code: i64, message: &str) -> bool {
 mod group_message_projection_tests {
     use serde_json::json;
 
-    use super::is_attachment_manifest_payload;
+    use super::{im_error_to_message_error, is_attachment_manifest_payload};
+    use crate::m_core_cli_adapter::message_result::{MessageAdapterError, ServiceError};
 
     #[test]
     fn group_adapter_preserves_fail_closed_error_categories() {
         assert_eq!(
-            super::im_error_to_message_error(im_core::ImError::PermissionDenied),
-            crate::m_core_cli_adapter::message_result::MessageAdapterError::PermissionDenied
+            im_error_to_message_error(im_core::ImError::PermissionDenied),
+            MessageAdapterError::PermissionDenied
         );
         assert_eq!(
-            super::im_error_to_message_error(im_core::ImError::LocalStateUnavailable {
+            im_error_to_message_error(im_core::ImError::LocalStateUnavailable {
                 detail: "authoritative P4 member roster is incomplete".to_owned(),
             }),
-            crate::m_core_cli_adapter::message_result::MessageAdapterError::LocalStateUnavailable(
+            MessageAdapterError::LocalStateUnavailable(
                 "authoritative P4 member roster is incomplete".to_owned()
             )
+        );
+    }
+
+    #[test]
+    fn group_service_public_code_does_not_preserve_private_payload() {
+        let private_marker = "remote-private-group-error";
+        for service_code in ["anp.group_state_changed", "group.device_not_eligible"] {
+            let mapped = im_error_to_message_error(im_core::ImError::Service {
+                status_code: None,
+                code: Some(service_code.to_owned()),
+                message: private_marker.to_owned(),
+                data: Some(json!({"private": private_marker})),
+            });
+
+            assert_eq!(
+                mapped,
+                MessageAdapterError::PublicServiceCode(service_code.to_owned())
+            );
+            assert!(!format!("{mapped:?}").contains(private_marker));
+            assert!(!mapped.to_string().contains(private_marker));
+        }
+    }
+
+    #[test]
+    fn group_service_private_code_and_payload_are_not_preserved() {
+        let private_marker = "remote-private-group-payload";
+        for private_code in [
+            "secret.token",
+            "anp.token=private",
+            "ANP.group_state_changed",
+            "anp..group_state_changed",
+        ] {
+            let mapped = im_error_to_message_error(im_core::ImError::Service {
+                status_code: None,
+                code: Some(private_code.to_owned()),
+                message: private_marker.to_owned(),
+                data: Some(json!({"private": private_marker})),
+            });
+
+            assert_eq!(
+                mapped,
+                MessageAdapterError::Service(ServiceError {
+                    status_code: 0,
+                    rpc_code: 0,
+                    message: "remote service request failed".to_owned(),
+                    data: None,
+                })
+            );
+            assert!(!format!("{mapped:?}").contains(private_marker));
+            assert!(!mapped.to_string().contains(private_marker));
+        }
+    }
+
+    #[test]
+    fn group_service_auth_status_precedes_public_and_unsupported_codes() {
+        let private_marker = "remote-private-group-auth-error";
+        for status_code in [401, 403] {
+            let mapped = im_error_to_message_error(im_core::ImError::Service {
+                status_code: Some(status_code),
+                code: Some("anp.not_supported".to_owned()),
+                message: "group E2EE P6 APIs are disabled; remote-private-group-auth-error"
+                    .to_owned(),
+                data: Some(json!({
+                    "json_rpc_code": 1405,
+                    "private": private_marker,
+                })),
+            });
+
+            assert_eq!(
+                mapped,
+                MessageAdapterError::Service(ServiceError {
+                    status_code,
+                    rpc_code: 0,
+                    message: "remote service request failed".to_owned(),
+                    data: None,
+                })
+            );
+            assert!(!format!("{mapped:?}").contains(private_marker));
+            assert!(!mapped.to_string().contains(private_marker));
+        }
+    }
+
+    #[test]
+    fn group_service_1405_keeps_e2ee_unsupported_compatibility() {
+        for (code, data) in [
+            ("1405", None),
+            (
+                "anp.not_supported",
+                Some(json!({
+                    "json_rpc_code": 1405,
+                    "private": "must-not-be-preserved",
+                })),
+            ),
+        ] {
+            assert_eq!(
+                im_error_to_message_error(im_core::ImError::Service {
+                    status_code: None,
+                    code: Some(code.to_owned()),
+                    message: "group E2EE P6 APIs are disabled".to_owned(),
+                    data,
+                }),
+                MessageAdapterError::GroupNotSupported
+            );
+        }
+    }
+
+    #[test]
+    fn group_service_invalid_data_rpc_code_does_not_trigger_unsupported() {
+        for json_rpc_code in [
+            json!("1405"),
+            json!(1405.0),
+            json!(u64::MAX),
+            json!(null),
+            json!([1405]),
+        ] {
+            let mapped = im_error_to_message_error(im_core::ImError::Service {
+                status_code: None,
+                code: Some("anp.not_supported".to_owned()),
+                message: "group E2EE P6 APIs are disabled".to_owned(),
+                data: Some(json!({"json_rpc_code": json_rpc_code})),
+            });
+
+            assert_eq!(
+                mapped,
+                MessageAdapterError::PublicServiceCode("anp.not_supported".to_owned())
+            );
+        }
+
+        assert_eq!(
+            im_error_to_message_error(im_core::ImError::Service {
+                status_code: None,
+                code: Some("group.device_not_eligible".to_owned()),
+                message: "group E2EE P6 APIs are disabled".to_owned(),
+                data: Some(json!({"json_rpc_code": 1405})),
+            }),
+            MessageAdapterError::PublicServiceCode("group.device_not_eligible".to_owned())
+        );
+
+        assert_eq!(
+            im_error_to_message_error(im_core::ImError::Service {
+                status_code: None,
+                code: Some("secret.not_supported".to_owned()),
+                message: "group E2EE P6 APIs are disabled".to_owned(),
+                data: Some(json!({"json_rpc_code": 1405})),
+            }),
+            MessageAdapterError::Service(ServiceError {
+                status_code: 0,
+                rpc_code: 0,
+                message: "remote service request failed".to_owned(),
+                data: None,
+            })
         );
     }
 
