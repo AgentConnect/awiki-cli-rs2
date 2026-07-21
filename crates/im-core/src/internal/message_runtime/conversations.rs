@@ -608,6 +608,22 @@ pub(crate) fn message_from_record(
         send_state.as_ref(),
         retry_target,
     );
+    let group = group_ref_from_record(record)?;
+    let mut attributes = metadata_attributes(&record.metadata);
+    if record.is_e2ee
+        && !attributes
+            .iter()
+            .any(|attribute| attribute.key == "security")
+    {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "security".to_owned(),
+            value: if group.is_some() {
+                "group-e2ee".to_owned()
+            } else {
+                "direct-e2ee".to_owned()
+            },
+        });
+    }
     Ok(crate::messages::Message {
         id: crate::ids::MessageId::parse(&record.msg_id)?,
         thread,
@@ -619,7 +635,7 @@ pub(crate) fn message_from_record(
         receiver: non_empty_string(&record.receiver_did)
             .map(|value| crate::ids::PeerRef::parse(value, ""))
             .transpose()?,
-        group: group_ref_from_record(record)?,
+        group,
         body: message_body(record, content_type.as_deref()),
         sent_at: non_empty_string(&record.sent_at),
         received_at: None,
@@ -631,7 +647,7 @@ pub(crate) fn message_from_record(
             retry_plan,
             server_sequence: record.server_seq,
             content_type,
-            attributes: metadata_attributes(&record.metadata),
+            attributes,
         },
     })
 }
@@ -792,6 +808,7 @@ fn metadata_attributes(metadata: &str) -> Vec<crate::messages::MessageMetadataAt
         "senderName",
         "sender_name",
         "sender_peer_persona_id",
+        "security",
     ]
     .into_iter()
     .filter_map(|key| {
@@ -860,6 +877,31 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn message_from_legacy_e2ee_record_restores_direct_security_attribute() {
+        let message = message_from_record(&crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-secure".to_owned(),
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:example:alice".to_owned(),
+            conversation_id: "dm:did:example:bob".to_owned(),
+            thread_id: "dm:did:example:bob".to_owned(),
+            direction: 0,
+            sender_did: "did:example:bob".to_owned(),
+            receiver_did: "did:example:alice".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "secure plaintext".to_owned(),
+            is_e2ee: true,
+            metadata: r#"{"decryption_state":"decrypted"}"#.to_owned(),
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        })
+        .unwrap();
+
+        assert_eq!(
+            metadata_attribute(&message.metadata, "security"),
+            Some("direct-e2ee")
+        );
+    }
 
     #[test]
     fn empty_peer_scope_conversation_keeps_canonical_identity() {

@@ -2149,6 +2149,7 @@ fn read_metadata_json(metadata: &crate::messages::MessageMetadata) -> String {
             | "peer_user_id"
             | "peer_full_handle"
             | "peer_current_did"
+            | "security"
             | "decryption_state"
             | "secure_wire_content_type"
                 if !attribute.value.trim().is_empty() =>
@@ -2253,6 +2254,27 @@ mod tests {
         assert_eq!(value["group_event_seq"], "7");
         assert!(value.get("private_message_b64u").is_none());
         assert!(!encoded.contains("cipher"));
+    }
+
+    #[test]
+    fn read_metadata_keeps_secure_projection_marker() {
+        let metadata = crate::messages::MessageMetadata {
+            attributes: vec![
+                crate::messages::MessageMetadataAttribute {
+                    key: "security".to_owned(),
+                    value: "direct-e2ee".to_owned(),
+                },
+                crate::messages::MessageMetadataAttribute {
+                    key: "ignored".to_owned(),
+                    value: "value".to_owned(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let value: Value = serde_json::from_str(&read_metadata_json(&metadata)).unwrap();
+        assert_eq!(value["security"], "direct-e2ee");
+        assert!(value.get("ignored").is_none());
     }
 
     #[test]
