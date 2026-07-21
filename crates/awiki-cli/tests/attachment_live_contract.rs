@@ -28,7 +28,7 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
             "access_token": "jwt-alice-refreshed"
         }))),
         TestResponse::json(&json_rpc_result(json!({
-            "attachment_id": "att-live-1",
+            "attachment_id": "__REQUEST_ATTACHMENT_ID__",
             "slot_id": "slot-live-1",
             "upload_uri": "__BASE__/objects/upload/slot-live-1",
             "upload_headers": {
@@ -42,7 +42,7 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
         TestResponse::bytes("application/json", b"{}"),
         TestResponse::json(&json_rpc_result(json!({
             "committed": true,
-            "attachment_id": "att-live-1",
+            "attachment_id": "__REQUEST_ATTACHMENT_ID__",
             "object_uri": "__BASE__/objects/att-live-1",
             "committed_at": "2026-04-07T01:08:03Z"
         }))),
@@ -65,7 +65,7 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
         "jwt-alice",
         &server.base_url(),
         "/alice/attachment/rpc",
-        "did:wba:alice-attachment.test",
+        "did:wba:awiki.ai",
     );
     write_msg_config(workspace.path(), &server.base_url());
 
@@ -107,10 +107,11 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
         envelope["data"]["message"]["sent_at"],
         "2026-04-07T01:09:03Z"
     );
-    assert_eq!(
-        envelope["data"]["attachment"]["attachment_id"],
-        "att-live-1"
-    );
+    let response_attachment_id = envelope["data"]["attachment"]["attachment_id"]
+        .as_str()
+        .filter(|value| value.starts_with("att-") && value.len() > 4)
+        .expect("v2 response must echo the caller-generated attachment id")
+        .to_owned();
     assert_eq!(envelope["data"]["attachment"]["filename"], "demo.txt");
     assert_eq!(envelope["data"]["attachment"]["mime_type"], "text/plain");
     assert_eq!(
@@ -156,8 +157,15 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
     assert_eq!(create_body["method"], "attachment.create_slot");
     assert_eq!(
         create_body["params"]["meta"]["profile"],
-        "anp.attachment.v1"
+        "anp.attachment.v2"
     );
+    assert_eq!(create_body["params"]["meta"]["anp_version"], "2.0");
+    let requested_attachment_id = create_body["params"]["body"]["attachment_id"]
+        .as_str()
+        .filter(|value| value.starts_with("att-") && value.len() > 4)
+        .expect("v2 create_slot must carry a caller-generated attachment_id")
+        .to_owned();
+    assert_eq!(response_attachment_id, requested_attachment_id);
     assert_eq!(
         create_body["params"]["meta"]["target"],
         json!({"kind": "service", "did": "did:wba:awiki.ai"})
@@ -201,6 +209,10 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
     let retry_create_body = json_body(&requests[2]);
     assert_eq!(retry_create_body["method"], "attachment.create_slot");
     assert_eq!(
+        retry_create_body["params"]["body"]["attachment_id"],
+        requested_attachment_id
+    );
+    assert_eq!(
         retry_create_body["params"]["body"]["expected_digest"]["value_b64u"],
         digest_b64u(payload)
     );
@@ -226,9 +238,13 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
     assert_eq!(commit_body["method"], "attachment.commit_object");
     assert_eq!(
         commit_body["params"]["meta"]["profile"],
-        "anp.attachment.v1"
+        "anp.attachment.v2"
     );
-    assert_eq!(commit_body["params"]["body"]["attachment_id"], "att-live-1");
+    assert_eq!(commit_body["params"]["meta"]["anp_version"], "2.0");
+    assert_eq!(
+        commit_body["params"]["body"]["attachment_id"],
+        requested_attachment_id
+    );
     assert_eq!(commit_body["params"]["body"]["slot_id"], "slot-live-1");
     assert_eq!(
         commit_body["params"]["body"]["commit_token"],
@@ -269,9 +285,12 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
         "anp-rfc9421-origin-proof-v1"
     );
     let manifest = &send_body["params"]["body"]["payload"];
-    assert_eq!(manifest["primary_attachment_id"], "att-live-1");
+    assert_eq!(manifest["primary_attachment_id"], requested_attachment_id);
     assert_eq!(manifest["caption"], "caption for group");
-    assert_eq!(manifest["attachments"][0]["attachment_id"], "att-live-1");
+    assert_eq!(
+        manifest["attachments"][0]["attachment_id"],
+        requested_attachment_id
+    );
     assert_eq!(manifest["attachments"][0]["filename"], "demo.txt");
     assert_eq!(manifest["attachments"][0]["mime_type"], "text/plain");
     assert_eq!(
@@ -352,7 +371,7 @@ fn msg_group_attachment_download_live_uses_sender_attachment_service_and_writes_
         "jwt-alice",
         &server.base_url(),
         "/alice/attachment/rpc",
-        "did:wba:alice-attachment.test",
+        "did:wba:awiki.ai",
     );
     register_ready_identity(
         workspace.path(),
@@ -462,7 +481,7 @@ fn msg_group_attachment_download_live_uses_sender_attachment_service_and_writes_
 
     let ticket_text = request_text(&requests[1]);
     assert!(
-        ticket_text.starts_with("POST /bob/attachment/rpc HTTP/1.1"),
+        ticket_text.starts_with("POST /im/rpc HTTP/1.1"),
         "{ticket_text}"
     );
     assert_contains_text(&ticket_text, "Authorization: Bearer jwt-alice\r\n");
@@ -470,8 +489,9 @@ fn msg_group_attachment_download_live_uses_sender_attachment_service_and_writes_
     assert_eq!(ticket_body["method"], "attachment.get_download_ticket");
     assert_eq!(
         ticket_body["params"]["meta"]["profile"],
-        "anp.attachment.v1"
+        "anp.attachment.v2"
     );
+    assert_eq!(ticket_body["params"]["meta"]["anp_version"], "2.0");
     assert_eq!(
         ticket_body["params"]["meta"]["target"],
         json!({"kind": "service", "did": "did:wba:bob-attachment.test"})
@@ -484,10 +504,7 @@ fn msg_group_attachment_download_live_uses_sender_attachment_service_and_writes_
         ticket_body["params"]["body"]["object_uri"],
         format!("{}/objects/att-download-1", server.base_url())
     );
-    assert_eq!(
-        ticket_body["params"]["body"]["sender_did"],
-        "did:wba:awiki.ai:bob:e1_bob"
-    );
+    assert_eq!(ticket_body["params"]["body"].get("sender_did"), None);
     assert_eq!(
         ticket_body["params"]["body"]["requester_did"],
         "did:wba:awiki.ai:alice:e1_alice"
@@ -515,7 +532,7 @@ fn msg_direct_attachment_send_live_posts_direct_manifest_like_go() {
 
     let server = TestServer::new(vec![
         TestResponse::json(&json_rpc_result(json!({
-            "attachment_id": "att-direct-1",
+            "attachment_id": "__REQUEST_ATTACHMENT_ID__",
             "slot_id": "slot-direct-1",
             "upload_uri": "__BASE__/objects/upload/slot-direct-1",
             "upload_headers": {
@@ -528,7 +545,7 @@ fn msg_direct_attachment_send_live_posts_direct_manifest_like_go() {
         TestResponse::bytes("application/json", b"{}"),
         TestResponse::json(&json_rpc_result(json!({
             "committed": true,
-            "attachment_id": "att-direct-1",
+            "attachment_id": "__REQUEST_ATTACHMENT_ID__",
             "object_uri": "__BASE__/objects/att-direct-1",
             "committed_at": "2026-04-07T01:08:03Z"
         }))),
@@ -549,7 +566,7 @@ fn msg_direct_attachment_send_live_posts_direct_manifest_like_go() {
         "jwt-alice",
         &server.base_url(),
         "/alice/attachment/rpc",
-        "did:wba:alice-attachment.test",
+        "did:wba:awiki.ai",
     );
     write_msg_config_with_runtime(workspace.path(), &server.base_url(), "websocket");
 
@@ -585,15 +602,20 @@ fn msg_direct_attachment_send_live_posts_direct_manifest_like_go() {
     );
     assert_eq!(envelope["data"]["message"]["id"], "msg-direct-att-1");
     assert_eq!(envelope["data"]["message"]["caption"], "direct caption");
-    assert_eq!(
-        envelope["data"]["attachment"]["attachment_id"],
-        "att-direct-1"
-    );
+    let response_attachment_id = envelope["data"]["attachment"]["attachment_id"]
+        .as_str()
+        .filter(|value| value.starts_with("att-") && value.len() > 4)
+        .expect("v2 response must echo the caller-generated attachment id")
+        .to_owned();
 
     let requests = server.requests();
     assert_eq!(requests.len(), 4);
     let create_body = json_body(&requests[0]);
     assert_eq!(create_body["method"], "attachment.create_slot");
+    assert_eq!(
+        create_body["params"]["body"]["attachment_id"],
+        response_attachment_id
+    );
     assert_eq!(
         create_body["params"]["body"]["intended_target"],
         json!({"kind": "agent", "did": target_did})
@@ -611,7 +633,7 @@ fn msg_direct_attachment_send_live_posts_direct_manifest_like_go() {
     );
     assert_eq!(
         send_body["params"]["body"]["payload"]["attachments"][0]["attachment_id"],
-        "att-direct-1"
+        response_attachment_id
     );
 }
 
@@ -657,7 +679,7 @@ fn msg_attachment_download_error_mapping_matches_go_attachment_codes() {
             "jwt-alice",
             &server.base_url(),
             "/alice/attachment/rpc",
-            "did:wba:alice-attachment.test",
+            "did:wba:awiki.ai",
         );
         write_msg_config(workspace.path(), &server.base_url());
 
@@ -753,9 +775,9 @@ fn register_ready_identity(
         "serviceEndpoint": format!("{service_base_url}{attachment_service_path}"),
         "serviceDid": attachment_service_did,
         "profiles": [
-            "anp.core.binding.v1",
+            "anp.core.binding.v2",
             "anp.direct.base.v1",
-            "anp.attachment.v1"
+            "anp.attachment.v2"
         ],
         "securityProfiles": ["transport-protected"],
         "priority": 1
@@ -1057,6 +1079,24 @@ impl TestResponse {
         self.body = body;
         self
     }
+
+    fn with_request_attachment_id(mut self, request: &[u8]) -> Self {
+        if !self
+            .body
+            .windows("__REQUEST_ATTACHMENT_ID__".len())
+            .any(|window| window == "__REQUEST_ATTACHMENT_ID__".as_bytes())
+        {
+            return self;
+        }
+        let attachment_id = json_body(request)["params"]["body"]["attachment_id"]
+            .as_str()
+            .expect("response marker requires a request attachment_id")
+            .to_owned();
+        self.body = String::from_utf8_lossy(&self.body)
+            .replace("__REQUEST_ATTACHMENT_ID__", &attachment_id)
+            .into_bytes();
+        self
+    }
 }
 
 struct TestServer {
@@ -1138,6 +1178,7 @@ fn handle_connection(
     response: TestResponse,
 ) {
     let request = read_http_request(&mut stream);
+    let response = response.with_request_attachment_id(&request);
     requests.lock().expect("requests mutex").push(request);
     let raw = format!(
         "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

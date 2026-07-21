@@ -28,6 +28,7 @@ pub struct AttachmentSelection {
 pub(crate) struct InternalAttachmentSelection {
     pub public: AttachmentSelection,
     pub(crate) authorization_message_id: String,
+    pub(crate) message_target_did: String,
     pub object_key_b64u: Option<String>,
     pub nonce_b64u: Option<String>,
 }
@@ -121,6 +122,7 @@ pub(crate) fn find_internal_attachment_selection(
             } else {
                 authorization_message_id
             },
+            message_target_did: string_from_value(message_object.get("receiver_did")),
             object_key_b64u: encryption_info
                 .and_then(|value| value.get("object_key_b64u"))
                 .and_then(Value::as_str)

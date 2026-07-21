@@ -74,7 +74,9 @@ fn attachments_download_runtime_memory_fetches_ticket_and_bytes() {
         Some("application/json")
     );
     let ticket = calls[2].rpc("attachment.get_download_ticket");
-    assert_eq!(ticket.endpoint, "https://attachment.example/rpc");
+    assert_eq!(ticket.endpoint, MESSAGE_RPC_ENDPOINT);
+    assert_eq!(ticket.params["meta"]["profile"], "anp.attachment.v2");
+    assert_eq!(ticket.params["meta"]["anp_version"], "2.0");
     assert_eq!(
         ticket.params["meta"]["target"],
         json!({"kind": "service", "did": "did:web:attachment.example"})
@@ -84,10 +86,7 @@ fn attachments_download_runtime_memory_fetches_ticket_and_bytes() {
         ticket.params["body"]["object_uri"],
         "https://objects.example/att-1"
     );
-    assert_eq!(
-        ticket.params["body"]["sender_did"],
-        "did:web:example.com:bob"
-    );
+    assert_eq!(ticket.params["body"].get("sender_did"), None);
     assert_eq!(ticket.params["body"]["requester_did"], "did:example:alice");
     assert_eq!(
         ticket.params["body"]["message_target_did"],
@@ -354,12 +353,14 @@ fn attachments_download_runtime_falls_back_to_local_identity_document_for_sender
     assert_eq!(history.params["body"]["peer_did"], "did:web:example:alice");
     calls[1].get_json("https://example/alice/did.json");
     let ticket = calls[2].rpc("attachment.get_download_ticket");
-    assert_eq!(ticket.endpoint, "https://local-attachment.example/rpc");
+    assert_eq!(ticket.endpoint, MESSAGE_RPC_ENDPOINT);
+    assert_eq!(ticket.params["meta"]["profile"], "anp.attachment.v1");
+    assert_eq!(ticket.params["meta"]["anp_version"], "1.0");
     assert_eq!(
         ticket.params["meta"]["target"],
         json!({"kind": "service", "did": "did:example:local-message-service"})
     );
-    assert_eq!(ticket.params["body"]["sender_did"], "did:web:example:alice");
+    assert_eq!(ticket.params["body"].get("sender_did"), None);
     let object = calls[3].object_get("https://objects.example/att-local");
     assert_eq!(object.ticket, "ticket-local");
 }
@@ -464,6 +465,89 @@ fn attachments_download_runtime_object_e2ee_memory_returns_plaintext_and_redacts
         "download ticket body must not expose nonce"
     );
     calls[3].object_get("https://objects.example/att-e2ee-1");
+}
+
+#[test]
+fn attachments_download_runtime_own_sync_ticket_keeps_original_direct_target() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.root.join("identities/alice/did.json"),
+        serde_json::to_vec_pretty(&json!({
+            "id": "did:example:alice",
+            "service": [{
+                "id": "#attachment",
+                "type": "ANPMessageService",
+                "serviceEndpoint": "https://attachment.example/rpc",
+                "serviceDid": "did:web:attachment.example",
+                "profiles": ["anp.attachment.v2"],
+                "securityProfiles": ["transport-protected"]
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let client = fixture.client();
+    let payload = b"own sync attachment".to_vec();
+    let prepared = crate::attachments::manifest::prepare_attachment_payload(
+        "own-sync.txt",
+        "text/plain",
+        payload.clone(),
+    )
+    .unwrap();
+    let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
+        &prepared,
+        "att-own-sync".to_owned(),
+        "https://objects.example/att-own-sync".to_owned(),
+    );
+    let manifest = crate::attachments::manifest::build_attachment_manifest(&descriptor, "")
+        .expect("own-sync manifest");
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut history = e2ee_history_response(manifest, "direct-e2ee");
+    history["messages"][0]["sender_did"] = json!("did:example:alice");
+    history["messages"][0]["receiver_did"] = json!("did:web:example.com:bob");
+
+    AttachmentDownloadRuntime::new(
+        &client,
+        ReadySessionProvider {
+            scopes: Rc::new(RefCell::new(Vec::new())),
+        },
+        E2eeTransport {
+            calls: Rc::clone(&calls),
+            history,
+            object_body: payload,
+            object_content_type: Some("text/plain".to_owned()),
+        },
+    )
+    .download(AttachmentDownloadInput {
+        request: crate::attachments::DownloadAttachmentRequest {
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:web:example.com:bob", "").unwrap(),
+            ),
+            message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
+            attachment_id: Some("att-own-sync".to_owned()),
+            destination: crate::attachments::AttachmentDestination::Memory,
+            overwrite: false,
+        },
+        resolved_peer_did: Some("did:web:example.com:bob".to_owned()),
+    })
+    .expect("own-sync attachment download");
+
+    let calls = calls.borrow();
+    let ticket = calls
+        .iter()
+        .find_map(|call| match call {
+            RecordedCall::Rpc { method, .. } if method == "attachment.get_download_ticket" => {
+                Some(call.rpc("attachment.get_download_ticket"))
+            }
+            _ => None,
+        })
+        .expect("download ticket RPC");
+    assert_eq!(ticket.endpoint, MESSAGE_RPC_ENDPOINT);
+    assert_eq!(
+        ticket.params["body"]["message_target_did"],
+        "did:web:example.com:bob"
+    );
+    assert_eq!(ticket.params["body"].get("sender_did"), None);
 }
 
 #[tokio::test]
@@ -770,6 +854,7 @@ fn attachments_download_runtime_group_object_e2ee_uses_internal_manifest_cache()
     assert_eq!(calls.len(), 3);
     calls[0].get_json("https://example.com/bob/did.json");
     let ticket = calls[1].rpc("attachment.get_download_ticket");
+    assert_eq!(ticket.params["meta"]["profile"], "anp.attachment.v2");
     assert_eq!(
         ticket.params["body"]["message_security_profile"],
         "group-e2ee"
@@ -861,6 +946,7 @@ fn attachments_download_runtime_direct_object_e2ee_uses_internal_manifest_cache(
     assert_eq!(calls.len(), 3, "cached manifest must avoid history replay");
     calls[0].get_json("https://example.com/bob/did.json");
     let ticket = calls[1].rpc("attachment.get_download_ticket");
+    assert_eq!(ticket.params["meta"]["profile"], "anp.attachment.v2");
     assert_eq!(
         ticket.params["body"]["message_security_profile"],
         "direct-e2ee"
@@ -1198,7 +1284,7 @@ impl RawJsonTransport for RecordingTransport {
                 "type": "ANPMessageService",
                 "serviceEndpoint": "https://attachment.example/rpc",
                 "serviceDid": "did:web:attachment.example",
-                "profiles": ["anp.attachment.v1"],
+                "profiles": ["anp.attachment.v2"],
                 "securityProfiles": ["transport-protected"],
                 "priority": 1
             }]
@@ -1476,7 +1562,7 @@ impl crate::internal::transport::AsyncRawJsonTransport for RuntimeP5AttachmentTr
                 "type": "ANPMessageService",
                 "serviceEndpoint": "https://attachment.example/rpc",
                 "serviceDid": "did:web:attachment.example",
-                "profiles": ["anp.attachment.v1"],
+                "profiles": ["anp.attachment.v2"],
                 "securityProfiles": ["transport-protected"],
                 "priority": 1
             }]
@@ -1573,7 +1659,7 @@ impl RawJsonTransport for E2eeTransport {
                 "type": "ANPMessageService",
                 "serviceEndpoint": "https://attachment.example/rpc",
                 "serviceDid": "did:web:attachment.example",
-                "profiles": ["anp.attachment.v1"],
+                "profiles": ["anp.attachment.v2"],
                 "securityProfiles": ["transport-protected"],
                 "priority": 1
             }]

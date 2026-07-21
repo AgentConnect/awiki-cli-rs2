@@ -211,7 +211,7 @@ where
     fn resolve_attachment_service(
         &mut self,
         sender_did: &str,
-    ) -> crate::ImResult<crate::internal::discovery::attachment::DiscoveredAttachmentService> {
+    ) -> crate::ImResult<crate::internal::discovery::attachment::ProfiledAttachmentService> {
         let document = match crate::internal::discovery::did_document::resolve_did_document(
             &mut self.transport,
             sender_did,
@@ -221,7 +221,7 @@ where
                 local_identity_document(self.client, sender_did)?.ok_or(remote_error)?
             }
         };
-        crate::internal::discovery::attachment::select_attachment_rpc_service_from_document(
+        crate::internal::discovery::attachment::select_profiled_attachment_rpc_service_from_document(
             sender_did, &document,
         )
     }
@@ -230,23 +230,27 @@ where
         &mut self,
         target: &DownloadTarget,
         selection: &crate::attachments::selection::InternalAttachmentSelection,
-        attachment_service: &crate::internal::discovery::attachment::DiscoveredAttachmentService,
+        attachment_service: &crate::internal::discovery::attachment::ProfiledAttachmentService,
     ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentDownloadTicketResult> {
         let group_did = match target {
             DownloadTarget::Direct { .. } => "",
             DownloadTarget::Group { group } => group.as_str(),
         };
+        let message_target_did =
+            original_direct_message_target_did(self.client.did().as_str(), target, selection);
         let params =
-            crate::internal::wire::attachment::build_attachment_download_ticket_rpc_params(
+            crate::internal::wire::attachment::build_attachment_download_ticket_rpc_params_with_profile_and_target(
                 self.client.did().as_str(),
-                &attachment_service.service_did,
+                &attachment_service.service.service_did,
                 &selection.public.sender_did,
                 &selection.authorization_message_id,
+                message_target_did,
                 group_did,
+                &attachment_service.profile,
                 &selection.public,
             )?;
         let raw = self.transport.authenticated_rpc(
-            attachment_service.rpc_endpoint.as_str(),
+            MESSAGE_RPC_ENDPOINT,
             "attachment.get_download_ticket",
             params,
         )?;
@@ -443,7 +447,7 @@ where
     async fn resolve_attachment_service_async(
         &mut self,
         sender_did: &str,
-    ) -> crate::ImResult<crate::internal::discovery::attachment::DiscoveredAttachmentService> {
+    ) -> crate::ImResult<crate::internal::discovery::attachment::ProfiledAttachmentService> {
         let document = match crate::internal::discovery::did_document::resolve_did_document_async(
             &mut self.transport,
             sender_did,
@@ -455,7 +459,7 @@ where
                 .await?
                 .ok_or(remote_error)?,
         };
-        crate::internal::discovery::attachment::select_attachment_rpc_service_from_document(
+        crate::internal::discovery::attachment::select_profiled_attachment_rpc_service_from_document(
             sender_did, &document,
         )
     }
@@ -464,25 +468,29 @@ where
         &mut self,
         target: &DownloadTarget,
         selection: &crate::attachments::selection::InternalAttachmentSelection,
-        attachment_service: &crate::internal::discovery::attachment::DiscoveredAttachmentService,
+        attachment_service: &crate::internal::discovery::attachment::ProfiledAttachmentService,
     ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentDownloadTicketResult> {
         let group_did = match target {
             DownloadTarget::Direct { .. } => "",
             DownloadTarget::Group { group } => group.as_str(),
         };
+        let message_target_did =
+            original_direct_message_target_did(self.client.did().as_str(), target, selection);
         let params =
-            crate::internal::wire::attachment::build_attachment_download_ticket_rpc_params(
+            crate::internal::wire::attachment::build_attachment_download_ticket_rpc_params_with_profile_and_target(
                 self.client.did().as_str(),
-                &attachment_service.service_did,
+                &attachment_service.service.service_did,
                 &selection.public.sender_did,
                 &selection.authorization_message_id,
+                message_target_did,
                 group_did,
+                &attachment_service.profile,
                 &selection.public,
             )?;
         let raw = self
             .transport
             .authenticated_rpc(
-                attachment_service.rpc_endpoint.as_str(),
+                MESSAGE_RPC_ENDPOINT,
                 "attachment.get_download_ticket",
                 params,
             )
@@ -679,6 +687,24 @@ fn effective_message_security_profile(
         }
     } else {
         "transport-protected".to_owned()
+    }
+}
+
+fn original_direct_message_target_did<'a>(
+    requester_did: &'a str,
+    target: &'a DownloadTarget,
+    selection: &'a crate::attachments::selection::InternalAttachmentSelection,
+) -> &'a str {
+    if !selection.message_target_did.trim().is_empty() {
+        return selection.message_target_did.trim();
+    }
+    match target {
+        DownloadTarget::Direct { peer_did }
+            if selection.public.sender_did.trim() == requester_did.trim() =>
+        {
+            peer_did.as_str()
+        }
+        DownloadTarget::Direct { .. } | DownloadTarget::Group { .. } => requester_did,
     }
 }
 
