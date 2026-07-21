@@ -1,6 +1,6 @@
 # 步骤 07：国内环境跨仓库 E2E、灰度和回滚
 
-状态：`in_progress`（AWiki Me `full` 已通过；2 个 secure-direct 回归已修复，待公开 `awiki.info` 最终全量复验）
+状态：`completed`（AWiki Me `full` 与公开 `awiki.info` 最终全量复验均通过）
 实施仓库：`awiki-system-test`，并验证四个功能仓库  
 目标环境：国内 `awiki.info`  
 前置依赖：步骤 02-06 全部完成  
@@ -115,6 +115,8 @@ dart run tests/e2e/runner.dart --case full
 
 ```bash
 cd /home/ecs-user/awiki-space/awiki-system-test
+AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2-skill-token-onboarding \
+AWIKI_CLI_SOURCE_REF=bb5769e40ef1971d58ebe8058402ac28971b408a \
 AWIKI_SYSTEM_TEST_MODE=remote \
 E2E_DID_DOMAIN=awiki.info \
 E2E_USER_SERVICE_URL=https://awiki.info \
@@ -162,11 +164,11 @@ uv run awiki-system-test --show-command
 
 ### 12.1 提交与部署
 
-- CLI/im-core：功能 `a2180bb0`，发布修复至 `911fc51d`，secure projection 修复至 `850c4edf`，`feature/skill-token-onboarding`。
+- CLI/im-core：功能 `a2180bb0`，stable 发布 `911fc51d`，secure projection 修复至 `bb5769e4`，`feature/skill-token-onboarding`，已推送。
 - AWiki Me：功能 `bb96617`，E2E harness 修复 `9708c4c`，`feature/aliyun-emas-android`，已推送。
 - User Service：`57c63ec`，`feature/emas-push-user-service`，已推送并部署到国内服务。
 - Message Service：EMAS 功能 `93b4ce8`、Skill 隔离测试 `2deba55`，`feature/emas-push-message-service`，已推送。
-- 最终联调使用该功能分支 release 二进制和独立临时 PostgreSQL；现网较新 schema 不做降级或回滚，测试后已恢复原 unit。
+- 最终公开复验使用 User Service `57c63ec`、Message Service `2deba55`、CLI `bb5769e4` 和独立临时 MySQL/PostgreSQL；结束后已恢复 9891/9902 原 unit。
 
 ### 12.2 通过结果
 
@@ -179,8 +181,10 @@ uv run awiki-system-test --show-command
 - 正式国内 CLI stable `1.0.23` 已发布：tag `cli-v1.0.23`、commit `911fc51d`、GitHub Actions run `29852384648`；Linux amd64、macOS Intel、macOS arm64、Windows amd64 的 archive、版本 smoke 和 artifact upload 全部通过。
 - `https://awiki.info/cli/stable/manifest.json`、`/cli/onboarding.md` 和 `/onboarding.md` 均可访问；两个 onboarding 入口内容一致，公开 Linux 包 checksum、版本和 commit 已复核。
 - secure-direct 定向 system test 使用功能 worktree 与隔离的 feature User/Message Service，两个原失败用例合并结果为 `2 passed`；未执行中间全量。
+- 最终国内 remote system test：`256 passed, 0 failed, 52 skipped`，耗时 `197.35s`；使用 `AWIKI_SYSTEM_TEST_MODE=remote`、`awiki.info` DID/HTTP/WSS 和上述 CLI 精确 source ref。
+- 52 个 skip 按功能域归因：daemon 18、listener 7、mail 5、MCP 9、multi-tenant 7、message-service local/flag 3、admin-controller 1、已移除 store contract 1、search 1；均由显式 capability、凭据或 local topology 门禁触发。
 
-### 12.3 已确认阻塞
+### 12.3 历史问题与收敛
 
 - CLI workspace 全量测试命中未修改的 message read 基线：`32 passed, 5 failed`；同一用例在 `origin/release/0714@de44ee74` 结果完全相同，另有一个未修改 sync 用例长期不结束。
 - CLI workspace Clippy 被未修改文件中的 `13` 个既有 lint 阻断；未扩大修改范围。
@@ -189,11 +193,12 @@ uv run awiki-system-test --show-command
 - 2026-07-22 首次最终 remote suite：`255 passed, 2 failed, 51 skipped`，耗时 `9m 0s`；失败 2 均属 CLI secure-direct：回复历史解密为 `undecryptable`，Handle history 的明文记录丢失 `secure` 标记。
 - 51 个 skip 按功能域归因：daemon 17、listener 7、mail 5、MCP 9、multi-tenant 7、message-service local/flag 3、admin-controller 1、已移除 store contract 1、search 1；均由显式 capability、凭据或 local topology 门禁触发。
 - 两项失败根因已在 im-core 修复：unresolved Persona backlog 复用已解密明文，local record 保留/恢复 E2EE 安全标记；相关 4 个定向单元测试和 2 个 system test 均通过。
-- 当前公开 `awiki.info` 被并行 multi-device 任务路由到 9891/9902，尚未包含本任务 feature 服务；未覆盖该部署，最终公开 remote 全量留到合并/切回后一次执行。
+- 最终复验在独立 feature 服务和空临时数据库上完成；仅临时 User Service 将 `DEFAULT_MAX_HANDLES` 设为 100，避免 remote 模式不清理固定测试手机号导致误报，不改变生产配额或数据。
+- 一次中间全量暴露固定手机号配额和单次 group proof 波动；两类问题经定向测试收敛后，最终完整套件失败 0。
 
 ### 12.4 清理与安全
 
-- 独立临时 MySQL/PostgreSQL 数据库、9889 proxy、9890 User Service 和 feature Message Service unit 均已删除或卸载。
+- 独立临时 MySQL/PostgreSQL 数据库、授权、feature User/Message Service unit、9903 路由和 Nginx 备份均已删除或卸载。
 - 私密 E2E 配置、临时联调脚本和构建缓存已删除。
-- Message Service 原 unit、三项 hidden rollout/root control 配置均已恢复，国内 health 为 `200`。
+- 公开 User Service 已恢复 9891 multi-device worktree，Message Service 已恢复 9902；两项国内 health 均为 `200`。
 - 实施记录不包含 raw Token、JWT、私钥或数据库凭据。

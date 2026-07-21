@@ -1,11 +1,11 @@
 # 计划：App 一键安装 AWiki Skill 并用一次性 Token 注册 Agent DID
 
-状态：步骤 01-06 已完成；步骤 07 进行中，AWiki Me `full` 已通过，2 个 secure-direct 回归已定向修复，待最终公开 remote 全量复验
+状态：`completed`；步骤 01-07 全部完成，AWiki Me `full` 与国内 remote system test 均通过
 创建日期：2026-07-21  
 文档目录：`plan/20260721-skill-token-onboarding/`  
 主实施分支：`awiki-cli-rs2/feature/skill-token-onboarding`  
 基线：`origin/release/0714@de44ee74`  
-恢复指针：功能分支和 CLI stable artifact 均已提交发布；secure-direct 定向回归已通过，待 feature User/Message Service 重新成为 `awiki.info` 当前路由后执行最终全量。
+恢复指针：功能分支、CLI stable artifact、跨仓库 E2E 和最终发布门禁均已完成；四个 feature 分支已推送。
 行数约束：本文必须少于 500 行。
 
 ## 1. 执行摘要
@@ -378,7 +378,7 @@ uncertain step is required.
 
 ### [步骤 07：跨仓库 E2E 和发布门禁](steps/07-cross-repo-e2e-rollout.md)
 
-- 状态：`in_progress`；依赖步骤 02-06；AWiki Me `full` 和 2 个 secure-direct 定向回归已通过，待最终公开 remote 全量复验。
+- 状态：`completed`；依赖步骤 02-06；AWiki Me `full` 和国内 `awiki.info` remote system test 均通过。
 - E2E：App 签发 -> 解析复制 prompt -> CLI 安装后 claim -> Agent 主动消息到达 App -> 双向 IM。
 - 覆盖过期、撤销、重复兑换、Token 抢占、错误域名和非空 workspace。
 - 在 `../awiki-system-test` 使用 remote `awiki.info` 完整系统测试并记录数量和原因。
