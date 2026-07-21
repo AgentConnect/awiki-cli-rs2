@@ -140,9 +140,11 @@ jobs:
       - name: Verify pinned toolchains
         shell: pwsh
         run: |
-          $flutter = ((& flutter --version --machine) -join "`n") | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or $flutter.frameworkVersion -ne $env:FLUTTER_VERSION) {
-            throw "Flutter must be $env:FLUTTER_VERSION, got $($flutter.frameworkVersion)"
+          $flutterOutput = @(& flutter --version)
+          $flutterVersionLine = $flutterOutput | Where-Object { $_ -match '^Flutter\s+\S+' } | Select-Object -Last 1
+          $flutterVersion = if ($flutterVersionLine -match '^Flutter\s+(\S+)') { $Matches[1] } else { '' }
+          if ($LASTEXITCODE -ne 0 -or $flutterVersion -ne $env:FLUTTER_VERSION) {
+            throw "Flutter must be $env:FLUTTER_VERSION, got $flutterVersion"
           }
           $rust = ((& rustc "+$env:RUST_VERSION" --version) -split '\s+')[1]
           if ($LASTEXITCODE -ne 0 -or $rust -ne $env:RUST_VERSION) {
