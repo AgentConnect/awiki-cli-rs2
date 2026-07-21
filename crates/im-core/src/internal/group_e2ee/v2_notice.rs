@@ -1,9 +1,9 @@
 //! Public P6 v2 `group.e2ee.notice` consumption.
 //!
 //! Notice bytes are control-plane input only. This module parses the standard
-//! wire shape, resolves the current DID documents needed by the SDK, and
-//! advances only the exact local DID/device MLS store. It never produces an
-//! ordinary chat projection.
+//! wire shape, resolves current DID documents through their standard HTTPS
+//! DID URLs, and advances only the exact local DID/device MLS store. It never
+//! produces an ordinary chat projection.
 
 use std::collections::BTreeSet;
 
@@ -12,7 +12,8 @@ use anp::group_e2ee::{V2E2eeNotice, V2GroupNoticeMetadata};
 use serde_json::{json, Value};
 
 use crate::internal::transport::{
-    AsyncAuthenticatedRpcTransport, AsyncRpcTransport, AuthenticatedRpcTransport, RpcTransport,
+    AsyncAuthenticatedRpcTransport, AsyncRawJsonTransport, AuthenticatedRpcTransport,
+    RawJsonTransport,
 };
 
 use super::v2_runtime::GroupE2eeV2Runtime;
@@ -240,7 +241,7 @@ fn collect_member_dids(
 
 pub(super) fn resolve_did_document(
     client: &crate::core::ImClient,
-    transport: &mut impl RpcTransport,
+    transport: &mut impl RawJsonTransport,
     did: &str,
 ) -> crate::ImResult<Value> {
     match resolve_did_document_fresh(client, transport, did) {
@@ -259,44 +260,20 @@ pub(super) fn resolve_did_document(
 /// cache. P6 authorization and Add eligibility must be based on the currently
 /// published P2 Manifest, including when the requested DID is our own.
 pub(super) fn resolve_did_document_fresh(
-    client: &crate::core::ImClient,
-    transport: &mut impl RpcTransport,
+    _client: &crate::core::ImClient,
+    transport: &mut impl RawJsonTransport,
     did: &str,
 ) -> crate::ImResult<Value> {
-    let _ = client;
-    let call = crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(did)?;
-    let document = transport
-        .rpc(call.endpoint, call.method, call.params)
-        .and_then(|raw| {
-            crate::internal::secure_direct::send::did_document_from_resolve(raw).ok_or_else(|| {
-                crate::ImError::PeerNotFound {
-                    peer: did.to_owned(),
-                }
-            })
-        })?;
-    validate_document_id(did, document)
+    crate::internal::discovery::did_document::resolve_did_document(transport, did)
 }
 
 pub(super) async fn resolve_did_document_async(
     client: &crate::core::ImClient,
-    transport: &mut impl AsyncRpcTransport,
+    transport: &mut impl AsyncRawJsonTransport,
     did: &str,
 ) -> crate::ImResult<Value> {
-    if did == client.did().as_str() {
-        return client.runtime().key_provider.did_document();
-    }
-    let call = crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(did)?;
-    match transport
-        .rpc(call.endpoint, call.method, call.params)
-        .await
-        .and_then(|raw| {
-            crate::internal::secure_direct::send::did_document_from_resolve(raw).ok_or_else(|| {
-                crate::ImError::PeerNotFound {
-                    peer: did.to_owned(),
-                }
-            })
-        }) {
-        Ok(document) => validate_document_id(did, document),
+    match resolve_did_document_fresh_async(client, transport, did).await {
+        Ok(document) => Ok(document),
         Err(error) => {
             match crate::internal::identity_document_cache::load_local_did_document_async(
                 &client.core_inner().sdk_paths().identities,
@@ -309,6 +286,16 @@ pub(super) async fn resolve_did_document_async(
             }
         }
     }
+}
+
+/// Resolves the current DID Document without consulting the local document
+/// cache, using the same standard public DID URL as the synchronous path.
+pub(super) async fn resolve_did_document_fresh_async(
+    _client: &crate::core::ImClient,
+    transport: &mut impl AsyncRawJsonTransport,
+    did: &str,
+) -> crate::ImResult<Value> {
+    crate::internal::discovery::did_document::resolve_did_document_async(transport, did).await
 }
 
 fn validate_document_id(did: &str, document: Value) -> crate::ImResult<Value> {
@@ -348,25 +335,56 @@ fn notice_body_value(value: &Value) -> Option<&Value> {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-
     use super::*;
 
-    struct FailingResolveTransport {
-        calls: Cell<usize>,
+    struct RawResolveTransport {
+        calls: Vec<(String, std::collections::BTreeMap<String, String>)>,
+        document: Option<Value>,
     }
 
-    impl crate::internal::transport::RpcTransport for FailingResolveTransport {
-        fn rpc(
+    impl RawResolveTransport {
+        fn failing() -> Self {
+            Self {
+                calls: Vec::new(),
+                document: None,
+            }
+        }
+
+        fn returning(document: Value) -> Self {
+            Self {
+                calls: Vec::new(),
+                document: Some(document),
+            }
+        }
+    }
+
+    impl crate::internal::transport::RawJsonTransport for RawResolveTransport {
+        fn get_json_url(
             &mut self,
-            _endpoint: &str,
-            _method: &str,
-            _params: Value,
+            url: &str,
+            headers: std::collections::BTreeMap<String, String>,
         ) -> crate::ImResult<Value> {
-            self.calls.set(self.calls.get() + 1);
-            Err(crate::ImError::PeerNotFound {
-                peer: "did:example:bob".to_owned(),
-            })
+            self.calls.push((url.to_owned(), headers));
+            self.document
+                .clone()
+                .ok_or_else(|| crate::ImError::TransportUnavailable {
+                    detail: "test DID resolver unavailable".to_owned(),
+                })
+        }
+    }
+
+    impl crate::internal::transport::AsyncRawJsonTransport for RawResolveTransport {
+        async fn get_json_url(
+            &mut self,
+            url: &str,
+            headers: std::collections::BTreeMap<String, String>,
+        ) -> crate::ImResult<Value> {
+            self.calls.push((url.to_owned(), headers));
+            self.document
+                .clone()
+                .ok_or_else(|| crate::ImError::TransportUnavailable {
+                    detail: "test DID resolver unavailable".to_owned(),
+                })
         }
     }
 
@@ -454,10 +472,20 @@ mod tests {
         .is_err());
     }
 
-    #[test]
-    fn fresh_resolution_never_falls_back_to_a_cached_did_document() {
-        let (client, root) = resolver_test_client();
-        let target_did = "did:example:bob";
+    #[tokio::test]
+    async fn fresh_resolution_never_falls_back_to_a_cached_did_document() {
+        let (client, root, _) = resolver_test_client();
+        let target_bundle = anp::authentication::create_did_wba_document(
+            "example.test",
+            anp::authentication::DidDocumentOptions {
+                path_segments: vec!["bob".to_owned()],
+                domain: Some("example.test".to_owned()),
+                challenge: Some("p6-cached-resolve-test".to_owned()),
+                ..anp::authentication::DidDocumentOptions::default()
+            },
+        )
+        .unwrap();
+        let target_did = target_bundle.did().unwrap();
         let identity_paths = &client.core_inner().sdk_paths().identities;
         let target_dir = identity_paths.identity_root_dir.join("bob-cache");
         std::fs::create_dir_all(&target_dir).unwrap();
@@ -475,32 +503,86 @@ mod tests {
         .unwrap();
         std::fs::write(
             target_dir.join("did.json"),
-            serde_json::to_vec(&json!({
-                "id": target_did,
-                "verificationMethod": []
-            }))
-            .unwrap(),
+            serde_json::to_vec(&target_bundle.did_document).unwrap(),
         )
         .unwrap();
 
-        let mut cached_transport = FailingResolveTransport {
-            calls: Cell::new(0),
-        };
+        let mut cached_transport = RawResolveTransport::failing();
         assert!(resolve_did_document(&client, &mut cached_transport, target_did).is_ok());
-        assert_eq!(cached_transport.calls.get(), 1);
+        assert_standard_did_request(target_did, &cached_transport.calls);
 
-        let mut fresh_transport = FailingResolveTransport {
-            calls: Cell::new(0),
-        };
+        let mut fresh_transport = RawResolveTransport::failing();
         assert!(
             resolve_did_document_fresh(&client, &mut fresh_transport, target_did).is_err(),
             "P6 Add must not authorize a stale cached Manifest"
         );
-        assert_eq!(fresh_transport.calls.get(), 1);
+        assert_standard_did_request(target_did, &fresh_transport.calls);
+
+        let mut async_cached_transport = RawResolveTransport::failing();
+        assert!(
+            resolve_did_document_async(&client, &mut async_cached_transport, target_did)
+                .await
+                .is_ok()
+        );
+        assert_standard_did_request(target_did, &async_cached_transport.calls);
+
+        let mut async_fresh_transport = RawResolveTransport::failing();
+        assert!(
+            resolve_did_document_fresh_async(&client, &mut async_fresh_transport, target_did,)
+                .await
+                .is_err(),
+            "async P6 authorization must not authorize a stale cached Manifest"
+        );
+        assert_standard_did_request(target_did, &async_fresh_transport.calls);
         let _ = std::fs::remove_dir_all(root);
     }
 
-    fn resolver_test_client() -> (crate::core::ImClient, std::path::PathBuf) {
+    #[tokio::test]
+    async fn fresh_resolution_uses_standard_did_url_and_accepts_the_public_document() {
+        let (client, root, public_document) = resolver_test_client();
+        let target_did = client.did().as_str();
+
+        let mut sync_transport = RawResolveTransport::returning(public_document.clone());
+        let sync_document =
+            resolve_did_document_fresh(&client, &mut sync_transport, target_did).unwrap();
+        assert_eq!(sync_document, public_document);
+        assert_standard_did_request(target_did, &sync_transport.calls);
+
+        let mut async_fresh_transport = RawResolveTransport::returning(public_document.clone());
+        let async_fresh_document =
+            resolve_did_document_fresh_async(&client, &mut async_fresh_transport, target_did)
+                .await
+                .unwrap();
+        assert_eq!(async_fresh_document, public_document);
+        assert_standard_did_request(target_did, &async_fresh_transport.calls);
+
+        let mut async_transport = RawResolveTransport::returning(public_document.clone());
+        let async_document = resolve_did_document_async(&client, &mut async_transport, target_did)
+            .await
+            .unwrap();
+        assert_eq!(async_document, public_document);
+        assert_standard_did_request(target_did, &async_transport.calls);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn assert_standard_did_request(
+        did: &str,
+        calls: &[(String, std::collections::BTreeMap<String, String>)],
+    ) {
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].0,
+            crate::internal::discovery::did_document::did_document_url(did).unwrap()
+        );
+        assert!(calls[0].0.starts_with("https://example.test/"));
+        assert!(calls[0].0.ends_with("/did.json"));
+        assert_eq!(
+            calls[0].1.get("Accept").map(String::as_str),
+            Some("application/json")
+        );
+    }
+
+    fn resolver_test_client() -> (crate::core::ImClient, std::path::PathBuf, Value) {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -521,6 +603,7 @@ mod tests {
         )
         .unwrap();
         let did = crate::ids::Did::parse(bundle.did().unwrap()).unwrap();
+        let did_document = bundle.did_document.clone();
         let client = crate::core::ImCore::new_with_options(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
@@ -552,7 +635,7 @@ mod tests {
         .unwrap()
         .client(crate::identity::IdentitySelector::Did(did))
         .unwrap();
-        (client, root)
+        (client, root, did_document)
     }
 
     fn test_notice() -> V2E2eeNotice {
