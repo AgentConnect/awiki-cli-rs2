@@ -58,6 +58,24 @@ pub(crate) trait KeyMaterialProvider: Send + Sync {
 
     fn persist_auth_token(&self, token: &str) -> crate::ImResult<()>;
 
+    /// True only for the Vault-backed vNext device-token profile. Those
+    /// identities rotate an access/refresh pair through the internal device
+    /// refresh RPC and must never fall back to legacy DID-auth `get_me`.
+    fn uses_vnext_device_tokens(&self) -> bool {
+        false
+    }
+
+    /// Atomically replaces a vNext device access/refresh pair under the
+    /// provider's current authoritative auth SecretRef.
+    fn persist_vnext_auth_token_pair(
+        &self,
+        _access_token: &str,
+        _refresh_token: &str,
+        _expires_at: &str,
+    ) -> crate::ImResult<()> {
+        Err(crate::ImError::PermissionDenied)
+    }
+
     /// Advances a live Vault-backed provider to the auth SecretRef committed
     /// by the identity index. Non-Vault providers cannot participate in this
     /// local vNext convergence operation.

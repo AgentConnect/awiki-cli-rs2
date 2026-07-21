@@ -21,6 +21,7 @@ use crate::internal::identity_device_state::{
 pub(crate) const DEVICE_GENESIS_METHOD: &str = "device_genesis";
 pub(crate) const DEVICE_GENESIS_PURPOSE: &str = "awiki.device.genesis.v1";
 pub(crate) const DEVICE_TOKEN_ISSUE_METHOD: &str = "device_token_issue";
+pub(crate) const DEVICE_TOKEN_REFRESH_METHOD: &str = "device_token_refresh";
 const DEVICE_PROOF_TYPE: &str = "awiki-device-signature-v1";
 const DEVICE_TOKEN_PROFILE: &str = "awiki-device-token-v1";
 const DEVICE_ACCESS_PURPOSE: &str = "awiki.device.access.v1";
@@ -88,6 +89,46 @@ pub(crate) struct DeviceTokenIssueWireCall {
     pub(crate) endpoint: &'static str,
     pub(crate) method: &'static str,
     pub(crate) params: Value,
+}
+
+pub(crate) struct PreparedDeviceTokenRefresh {
+    operation_id: String,
+    refresh_token: String,
+    expected: StrictDeviceTokenClaims,
+}
+
+impl std::fmt::Debug for PreparedDeviceTokenRefresh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedDeviceTokenRefresh")
+            .field("operation_id", &self.operation_id)
+            .field("refresh_token", &"<redacted-refresh-token>")
+            .field("expected_did", &self.expected.did)
+            .field("expected_device_id", &self.expected.device_id)
+            .field("expected_auth_generation", &self.expected.auth_generation)
+            .finish()
+    }
+}
+
+impl Drop for PreparedDeviceTokenRefresh {
+    fn drop(&mut self) {
+        self.refresh_token.zeroize();
+    }
+}
+
+pub(crate) struct DeviceTokenRefreshWireCall {
+    pub(crate) endpoint: &'static str,
+    pub(crate) method: &'static str,
+    pub(crate) params: Value,
+}
+
+impl std::fmt::Debug for DeviceTokenRefreshWireCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceTokenRefreshWireCall")
+            .field("endpoint", &self.endpoint)
+            .field("method", &self.method)
+            .field("params", &"<redacted-refresh-token-bearing-params>")
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for DeviceTokenIssueWireCall {
@@ -649,6 +690,142 @@ pub(crate) fn parse_device_token_issue_result(
     })
 }
 
+/// Prepares the anonymous internal refresh call from the complete token pair
+/// currently stored in the authoritative Vault auth record. The operation is
+/// deterministic for one refresh token so a lost response retries the exact
+/// server idempotency key without persisting another local side record.
+pub(crate) fn prepare_device_token_refresh(
+    access_token: &str,
+    refresh_token: &str,
+    expected_did: &str,
+    now: OffsetDateTime,
+) -> crate::ImResult<PreparedDeviceTokenRefresh> {
+    let access_token = required(access_token, "access_token")?;
+    let refresh_token = required(refresh_token, "refresh_token")?;
+    if access_token == refresh_token {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let access = decode_strict_device_token_claims(
+        &access_token,
+        "access",
+        DEVICE_ACCESS_PURPOSE,
+        expected_did,
+        now,
+        true,
+    )?;
+    let refresh = decode_strict_device_token_claims(
+        &refresh_token,
+        "refresh",
+        DEVICE_REFRESH_PURPOSE,
+        expected_did,
+        now,
+        false,
+    )?;
+    if !access.same_authorization(&refresh) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let operation_id = format!(
+        "device-refresh-{}",
+        URL_SAFE_NO_PAD.encode(Sha256::digest(refresh_token.as_bytes()))
+    );
+    Ok(PreparedDeviceTokenRefresh {
+        operation_id,
+        refresh_token,
+        expected: refresh,
+    })
+}
+
+pub(crate) fn build_device_token_refresh_call(
+    prepared: &PreparedDeviceTokenRefresh,
+) -> crate::ImResult<DeviceTokenRefreshWireCall> {
+    if prepared.operation_id.trim().is_empty() || prepared.refresh_token.trim().is_empty() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(DeviceTokenRefreshWireCall {
+        endpoint: super::DID_AUTH_RPC_ENDPOINT,
+        method: DEVICE_TOKEN_REFRESH_METHOD,
+        params: json!({
+            "operation_id": prepared.operation_id,
+            "refresh_token": prepared.refresh_token,
+        }),
+    })
+}
+
+pub(crate) fn validate_device_token_refresh_authorization(
+    prepared: &PreparedDeviceTokenRefresh,
+    authorization: &DeviceAuthorizationProjection,
+) -> crate::ImResult<()> {
+    let expected_scopes = expected_token_scopes(
+        authorization.status == DeviceAuthorizationStatus::Active
+            && authorization.role == DeviceAuthorizationRole::Admin
+            && authorization.management_ready,
+    );
+    if authorization.status != DeviceAuthorizationStatus::Active
+        || prepared.expected.device_id != authorization.protocol_device_id.as_str()
+        || prepared.expected.key_id != authorization.signing_key_id
+        || prepared.expected.auth_generation != authorization.auth_generation
+        || prepared.expected.scopes != expected_scopes
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+pub(crate) fn parse_device_token_refresh_result(
+    raw: Value,
+    prepared: &PreparedDeviceTokenRefresh,
+    now: OffsetDateTime,
+) -> crate::ImResult<DeviceTokenIssueResult> {
+    let mut raw: RawDeviceTokenIssueResult = strict_from_value(raw, "device token refresh result")?;
+    if raw.token_type != "bearer"
+        || raw.device_id != prepared.expected.device_id
+        || raw.auth_generation != prepared.expected.auth_generation
+        || raw.scopes != prepared.expected.scopes
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let access_token = required(&raw.access_token, "access_token")?;
+    let refresh_token = required(&raw.refresh_token, "refresh_token")?;
+    if access_token == refresh_token || refresh_token == prepared.refresh_token {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let expires_at = parse_future_time("expires_at", &raw.expires_at, now)?;
+    let access = decode_strict_device_token_claims(
+        &access_token,
+        "access",
+        DEVICE_ACCESS_PURPOSE,
+        &prepared.expected.did,
+        now,
+        false,
+    )?;
+    let refresh = decode_strict_device_token_claims(
+        &refresh_token,
+        "refresh",
+        DEVICE_REFRESH_PURPOSE,
+        &prepared.expected.did,
+        now,
+        false,
+    )?;
+    if !access.same_authorization(&prepared.expected)
+        || !refresh.same_authorization(&prepared.expected)
+        || !access.same_authorization(&refresh)
+        || access.jti == refresh.jti
+        || refresh.jti == prepared.expected.jti
+        || access.expires_at != expires_at
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(DeviceTokenIssueResult {
+        access_token,
+        refresh_token,
+        expires_at: format_time(expires_at)?,
+        user_id: access.user_id,
+        device_id: std::mem::take(&mut raw.device_id),
+        auth_generation: raw.auth_generation,
+        scopes: std::mem::take(&mut raw.scopes),
+    })
+}
+
 pub(crate) fn parse_device_genesis_result(
     raw: Value,
     generated: &crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey,
@@ -899,6 +1076,168 @@ fn device_proof_bytes(
 
 struct ValidatedDeviceTokenClaims {
     user_id: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct StrictDeviceTokenClaims {
+    did: String,
+    user_id: String,
+    device_id: String,
+    key_id: String,
+    auth_generation: u64,
+    scopes: Vec<String>,
+    audiences: Vec<String>,
+    jti: String,
+    expires_at: OffsetDateTime,
+}
+
+impl StrictDeviceTokenClaims {
+    fn same_authorization(&self, other: &Self) -> bool {
+        self.did == other.did
+            && self.user_id == other.user_id
+            && self.device_id == other.device_id
+            && self.key_id == other.key_id
+            && self.auth_generation == other.auth_generation
+            && self.scopes == other.scopes
+            && self.audiences == other.audiences
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_strict_device_token_claims(
+    token: &str,
+    token_type: &str,
+    purpose: &str,
+    expected_did: &str,
+    now: OffsetDateTime,
+    allow_expired: bool,
+) -> crate::ImResult<StrictDeviceTokenClaims> {
+    // This is a structural/binding check, not local JWT signature
+    // verification. The old refresh token comes from the authoritative Vault
+    // record and user-service verifies its signature before returning a pair;
+    // the closed response arrives over the configured TLS transport and each
+    // later service independently verifies the rotated access token. Local
+    // parsing prevents a confused-device/generation/scope pair from being
+    // committed, but must not be described as cryptographic JWT verification.
+    let payload_segment = token
+        .split('.')
+        .nth(1)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let payload: Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(payload_segment)
+            .map_err(|_| crate::ImError::PermissionDenied)?,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?;
+    let object = payload
+        .as_object()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if object.get("profile").and_then(Value::as_str) != Some(DEVICE_TOKEN_PROFILE)
+        || object.get("purpose").and_then(Value::as_str) != Some(purpose)
+        || object.get("type").and_then(Value::as_str) != Some(token_type)
+        || object.get("sub").and_then(Value::as_str) != Some(expected_did)
+        || object.get("did").and_then(Value::as_str) != Some(expected_did)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let required_claim = |name: &str| {
+        object
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .ok_or(crate::ImError::PermissionDenied)
+    };
+    let user_id = required_claim("user_id")?;
+    let device_id = required_claim("device_id")?;
+    let key_id = required_claim("key_id")?;
+    if !key_id.starts_with(&format!("{expected_did}#")) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let auth_generation = object
+        .get("auth_generation")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let scopes = object
+        .get("scopes")
+        .and_then(Value::as_array)
+        .ok_or(crate::ImError::PermissionDenied)?
+        .iter()
+        .map(|scope| {
+            scope
+                .as_str()
+                .map(str::trim)
+                .filter(|scope| !scope.is_empty())
+                .map(ToOwned::to_owned)
+                .ok_or(crate::ImError::PermissionDenied)
+        })
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    let allowed_scopes = ["device:manage", "device:read", "message:connect"]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let scope_set = scopes.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    if scopes.len() != scope_set.len()
+        || scopes.windows(2).any(|pair| pair[0] >= pair[1])
+        || !scope_set.contains("device:read")
+        || !scope_set.contains("message:connect")
+        || !scope_set.is_subset(&allowed_scopes)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let audiences = object
+        .get("aud")
+        .and_then(Value::as_array)
+        .filter(|values| !values.is_empty())
+        .ok_or(crate::ImError::PermissionDenied)?
+        .iter()
+        .map(|audience| {
+            audience
+                .as_str()
+                .map(str::trim)
+                .filter(|audience| !audience.is_empty())
+                .map(ToOwned::to_owned)
+                .ok_or(crate::ImError::PermissionDenied)
+        })
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    if audiences.iter().collect::<BTreeSet<_>>().len() != audiences.len() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let jti = required_claim("jti")?;
+    let issued_at = object
+        .get("iat")
+        .and_then(Value::as_i64)
+        .and_then(|value| OffsetDateTime::from_unix_timestamp(value).ok())
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let not_before = object
+        .get("nbf")
+        .and_then(Value::as_i64)
+        .and_then(|value| OffsetDateTime::from_unix_timestamp(value).ok())
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let expires_at = object
+        .get("exp")
+        .and_then(Value::as_i64)
+        .and_then(|value| OffsetDateTime::from_unix_timestamp(value).ok())
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if not_before != issued_at
+        || issued_at > now + Duration::seconds(60)
+        || expires_at <= issued_at
+        || (!allow_expired && expires_at <= now)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(StrictDeviceTokenClaims {
+        did: expected_did.to_owned(),
+        user_id,
+        device_id,
+        key_id,
+        auth_generation,
+        scopes,
+        audiences,
+        jti,
+        expires_at,
+    })
 }
 
 fn validate_device_token(
@@ -1305,6 +1644,139 @@ mod tests {
         );
     }
 
+    #[test]
+    fn device_refresh_is_stable_and_closes_rotated_pair_claims() {
+        let generated = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "awiki.info", "alice", None, None,
+        ).unwrap();
+        let now = OffsetDateTime::now_utc().replace_nanosecond(0).unwrap();
+        let scopes = ["device:manage", "device:read", "message:connect"];
+        let old_access = fake_strict_device_token(
+            &generated,
+            "user-fixed",
+            "access",
+            DEVICE_ACCESS_PURPOSE,
+            "old-access-jti",
+            now - Duration::minutes(1),
+            &scopes,
+        );
+        let old_refresh = fake_strict_device_token(
+            &generated,
+            "user-fixed",
+            "refresh",
+            DEVICE_REFRESH_PURPOSE,
+            "old-refresh-jti",
+            now + Duration::days(7),
+            &scopes,
+        );
+        let prepared =
+            prepare_device_token_refresh(&old_access, &old_refresh, generated.did.as_str(), now)
+                .unwrap();
+        let first = build_device_token_refresh_call(&prepared).unwrap();
+        let second = build_device_token_refresh_call(&prepared).unwrap();
+        assert_eq!(first.method, DEVICE_TOKEN_REFRESH_METHOD);
+        assert_eq!(first.params["operation_id"], second.params["operation_id"]);
+        assert!(first.params["operation_id"].as_str().unwrap().len() <= 128);
+        let authorization = DeviceAuthorizationProjection {
+            protocol_device_id: generated.protocol_device_id.clone(),
+            signing_key_id: generated.device_signing_key_id.clone(),
+            e2ee_key_id: generated.device_e2ee_key_id.clone(),
+            status: DeviceAuthorizationStatus::Active,
+            role: DeviceAuthorizationRole::Admin,
+            management_ready: true,
+            auth_generation: 1,
+        };
+        validate_device_token_refresh_authorization(&prepared, &authorization).unwrap();
+        assert_eq!(
+            validate_device_token_refresh_authorization(
+                &prepared,
+                &DeviceAuthorizationProjection {
+                    auth_generation: 2,
+                    ..authorization
+                },
+            ),
+            Err(crate::ImError::PermissionDenied)
+        );
+
+        let access_exp = now + Duration::hours(1);
+        let new_access = fake_strict_device_token(
+            &generated,
+            "user-fixed",
+            "access",
+            DEVICE_ACCESS_PURPOSE,
+            "new-access-jti",
+            access_exp,
+            &scopes,
+        );
+        let new_refresh = fake_strict_device_token(
+            &generated,
+            "user-fixed",
+            "refresh",
+            DEVICE_REFRESH_PURPOSE,
+            "new-refresh-jti",
+            now + Duration::days(7),
+            &scopes,
+        );
+        let valid = json!({
+            "access_token": new_access,
+            "refresh_token": new_refresh,
+            "token_type": "bearer",
+            "expires_at": format_time(access_exp).unwrap(),
+            "device_id": generated.protocol_device_id.as_str(),
+            "auth_generation": 1,
+            "scopes": scopes,
+        });
+        let result = parse_device_token_refresh_result(valid.clone(), &prepared, now).unwrap();
+        assert_eq!(result.user_id, "user-fixed");
+
+        let mut wrong_device = valid.clone();
+        wrong_device["access_token"] = json!(mutate_jwt_claim(
+            wrong_device["access_token"].as_str().unwrap(),
+            "device_id",
+            json!("dev-attacker"),
+        ));
+        assert_eq!(
+            parse_device_token_refresh_result(wrong_device, &prepared, now),
+            Err(crate::ImError::PermissionDenied)
+        );
+        let mut wrong_generation = valid.clone();
+        wrong_generation["refresh_token"] = json!(mutate_jwt_claim(
+            wrong_generation["refresh_token"].as_str().unwrap(),
+            "auth_generation",
+            json!(2),
+        ));
+        assert_eq!(
+            parse_device_token_refresh_result(wrong_generation, &prepared, now),
+            Err(crate::ImError::PermissionDenied)
+        );
+        let mut wrong_scope = valid.clone();
+        wrong_scope["access_token"] = json!(mutate_jwt_claim(
+            wrong_scope["access_token"].as_str().unwrap(),
+            "scopes",
+            json!(["device:read", "message:connect"]),
+        ));
+        assert_eq!(
+            parse_device_token_refresh_result(wrong_scope, &prepared, now),
+            Err(crate::ImError::PermissionDenied)
+        );
+        let mut wrong_audience = valid.clone();
+        wrong_audience["refresh_token"] = json!(mutate_jwt_claim(
+            wrong_audience["refresh_token"].as_str().unwrap(),
+            "aud",
+            json!(["attacker.example"]),
+        ));
+        assert_eq!(
+            parse_device_token_refresh_result(wrong_audience, &prepared, now),
+            Err(crate::ImError::PermissionDenied)
+        );
+        let mut replayed = valid;
+        replayed["refresh_token"] = json!(old_refresh);
+        assert_eq!(
+            parse_device_token_refresh_result(replayed, &prepared, now),
+            Err(crate::ImError::PermissionDenied)
+        );
+    }
+
     fn fake_device_token(
         generated: &crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey,
         user_id: &str,
@@ -1332,6 +1804,54 @@ mod tests {
         });
         format!(
             "e30.{}.signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fake_strict_device_token(
+        generated: &crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey,
+        user_id: &str,
+        token_type: &str,
+        purpose: &str,
+        jti: &str,
+        expires_at: OffsetDateTime,
+        scopes: &[&str],
+    ) -> String {
+        let issued_at = OffsetDateTime::now_utc().unix_timestamp() - 120;
+        let payload = json!({
+            "profile": DEVICE_TOKEN_PROFILE,
+            "purpose": purpose,
+            "type": token_type,
+            "sub": generated.did.as_str(),
+            "did": generated.did.as_str(),
+            "user_id": user_id,
+            "device_id": generated.protocol_device_id.as_str(),
+            "key_id": generated.device_signing_key_id,
+            "auth_generation": 1,
+            "aud": ["awiki.info", "message.awiki.info"],
+            "jti": jti,
+            "iat": issued_at,
+            "nbf": issued_at,
+            "scopes": scopes,
+            "exp": expires_at.unix_timestamp(),
+        });
+        format!(
+            "e30.{}.signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+        )
+    }
+
+    fn mutate_jwt_claim(token: &str, claim: &str, value: Value) -> String {
+        let mut parts = token.split('.');
+        let header = parts.next().unwrap();
+        let payload = parts.next().unwrap();
+        let signature = parts.next().unwrap();
+        let mut payload: Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+        payload[claim] = value;
+        format!(
+            "{header}.{}.{signature}",
             URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
         )
     }

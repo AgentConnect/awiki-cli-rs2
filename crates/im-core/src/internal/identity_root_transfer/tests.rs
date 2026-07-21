@@ -2465,7 +2465,24 @@ fn management_ready_projection_exact_retry_and_restart_preserve_auth_commit() {
 #[tokio::test]
 async fn management_ready_projection_normal_refresh_preserves_exact_retry_authority() {
     let scenario = scenario();
-    let (service_base_url, refresh_server) = normal_refresh_server();
+    let now = OffsetDateTime::now_utc().replace_nanosecond(0).unwrap();
+    let expired_access = test_device_jwt(
+        &scenario,
+        "access",
+        "awiki.device.access.v1",
+        "expired-access-jti",
+        now - Duration::minutes(1),
+        2,
+    );
+    let current_refresh = test_device_jwt(
+        &scenario,
+        "refresh",
+        "awiki.device.refresh.v1",
+        "current-refresh-jti",
+        now + Duration::days(7),
+        2,
+    );
+    let (service_base_url, refresh_server, rotated_refresh) = normal_refresh_server(&scenario, now);
     let live_core = receiver_live_core_with_endpoint(&scenario, &service_base_url);
     let live_client = live_core
         .client(crate::identity::IdentitySelector::LocalAlias(
@@ -2489,8 +2506,8 @@ async fn management_ready_projection_normal_refresh_preserves_exact_retry_author
             &imported.completion().ack_for_message_id,
             2,
             &ack_registry.checkpoint,
-            "expired-management-access",
-            "management-refresh-token",
+            &expired_access,
+            &current_refresh,
             "2000-01-01T00:00:00Z",
             &scenario.receiver.storage,
         )
@@ -2556,7 +2573,25 @@ async fn management_ready_projection_normal_refresh_preserves_exact_retry_author
     assert_eq!(requests.len(), 3);
     assert!(requests[0]
         .to_ascii_lowercase()
+        .contains("authorization: bearer "));
+    assert!(!requests[0]
+        .to_ascii_lowercase()
         .contains("signature-input:"));
+    assert_eq!(
+        request_json(&requests[1])["method"],
+        crate::internal::identity_wire::device_genesis::DEVICE_TOKEN_REFRESH_METHOD
+    );
+    assert!(request_json(&requests[1])["params"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("device-refresh-"));
+    let refresh_headers = requests[1]
+        .split("\r\n\r\n")
+        .next()
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(!refresh_headers.contains("authorization:"));
+    assert!(!refresh_headers.contains("signature-input:"));
     assert!(requests[2]
         .to_ascii_lowercase()
         .contains("authorization: bearer "));
@@ -2565,7 +2600,7 @@ async fn management_ready_projection_normal_refresh_preserves_exact_retry_author
     assert!(refreshed_auth.has_valid_token);
     assert_eq!(
         refreshed_auth.refresh_token.as_deref(),
-        Some("management-refresh-token")
+        Some(rotated_refresh.as_str())
     );
     let retry_ref = store
         .committed_root_import_management_auth_ref(
@@ -2635,8 +2670,204 @@ async fn management_ready_projection_normal_refresh_preserves_exact_retry_author
             .unwrap()
             .refresh_token
             .as_deref(),
-        Some("management-refresh-token")
+        Some(rotated_refresh.as_str())
     );
+}
+
+#[tokio::test]
+async fn vnext_device_refresh_401_fails_closed_without_signature_or_token_mutation() {
+    let scenario = scenario();
+    let now = OffsetDateTime::now_utc().replace_nanosecond(0).unwrap();
+    let expired_access = test_device_jwt(
+        &scenario,
+        "access",
+        "awiki.device.access.v1",
+        "unauthorized-access-jti",
+        now - Duration::minutes(1),
+        2,
+    );
+    let current_refresh = test_device_jwt(
+        &scenario,
+        "refresh",
+        "awiki.device.refresh.v1",
+        "unauthorized-refresh-jti",
+        now + Duration::days(7),
+        2,
+    );
+    let (service_base_url, server) = unauthorized_device_refresh_server();
+    let live_core = receiver_live_core_with_endpoint(&scenario, &service_base_url);
+    let live_client = live_core
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            LOCAL_ALIAS.to_owned(),
+        ))
+        .unwrap();
+    let imported = import_receiver_root(&scenario);
+    let store = IdentityStore::new(&scenario.receiver.paths);
+    store
+        .reserve_root_import_management_token_operation(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            || Ok("root-ready-401".to_owned()),
+        )
+        .unwrap();
+    let (_, registry) = management_ready_document(&scenario, "dev-ready-401");
+    let auth_ref = store
+        .converge_root_import_management_ready(
+            LOCAL_ALIAS,
+            &imported.completion().ack_for_message_id,
+            2,
+            &registry.checkpoint,
+            &expired_access,
+            &current_refresh,
+            "2000-01-01T00:00:00Z",
+            &scenario.receiver.storage,
+        )
+        .unwrap();
+    live_client
+        .runtime()
+        .key_provider
+        .advance_vault_auth_ref(&auth_ref)
+        .unwrap();
+    let vault_refs = scenario.receiver.vault.list().unwrap();
+
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(&live_client);
+    let error = transport.refresh_jwt_async().await.unwrap_err();
+    assert!(matches!(
+        error,
+        crate::ImError::Service {
+            status_code: Some(401),
+            ..
+        }
+    ));
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        request_json(&requests[0])["method"],
+        crate::internal::identity_wire::device_genesis::DEVICE_TOKEN_REFRESH_METHOD
+    );
+    let headers = requests[0]
+        .split("\r\n\r\n")
+        .next()
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(!headers.contains("authorization:"));
+    assert!(!headers.contains("signature-input:"));
+
+    let auth = live_client.runtime().key_provider.auth_state().unwrap();
+    assert_eq!(auth.bearer_token.as_deref(), Some(expired_access.as_str()));
+    assert_eq!(
+        auth.refresh_token.as_deref(),
+        Some(current_refresh.as_str())
+    );
+    assert_eq!(scenario.receiver.vault.list().unwrap(), vault_refs);
+    assert_eq!(
+        store
+            .committed_root_import_management_auth_ref(
+                LOCAL_ALIAS,
+                &imported.completion().ack_for_message_id,
+                2,
+                &scenario.receiver.storage,
+            )
+            .unwrap(),
+        auth_ref
+    );
+}
+
+#[derive(Debug, Clone, Copy)]
+enum InvalidRefreshResult {
+    WrongDevice,
+    WrongGeneration,
+    WrongScope,
+    ReplayedRefresh,
+}
+
+#[tokio::test]
+async fn vnext_device_refresh_rejects_mismatched_or_replayed_pair_without_mutation() {
+    for invalid in [
+        InvalidRefreshResult::WrongDevice,
+        InvalidRefreshResult::WrongGeneration,
+        InvalidRefreshResult::WrongScope,
+        InvalidRefreshResult::ReplayedRefresh,
+    ] {
+        let scenario = scenario();
+        let now = OffsetDateTime::now_utc().replace_nanosecond(0).unwrap();
+        let expired_access = test_device_jwt(
+            &scenario,
+            "access",
+            "awiki.device.access.v1",
+            "invalid-result-access-jti",
+            now - Duration::minutes(1),
+            2,
+        );
+        let current_refresh = test_device_jwt(
+            &scenario,
+            "refresh",
+            "awiki.device.refresh.v1",
+            "invalid-result-refresh-jti",
+            now + Duration::days(7),
+            2,
+        );
+        let (service_base_url, server) =
+            invalid_device_refresh_server(&scenario, now, &current_refresh, invalid);
+        let live_core = receiver_live_core_with_endpoint(&scenario, &service_base_url);
+        let live_client = live_core
+            .client(crate::identity::IdentitySelector::LocalAlias(
+                LOCAL_ALIAS.to_owned(),
+            ))
+            .unwrap();
+        let imported = import_receiver_root(&scenario);
+        let store = IdentityStore::new(&scenario.receiver.paths);
+        let (_, registry) = management_ready_document(&scenario, "dev-invalid-refresh");
+        let auth_ref = store
+            .converge_root_import_management_ready(
+                LOCAL_ALIAS,
+                &imported.completion().ack_for_message_id,
+                2,
+                &registry.checkpoint,
+                &expired_access,
+                &current_refresh,
+                "2000-01-01T00:00:00Z",
+                &scenario.receiver.storage,
+            )
+            .unwrap();
+        live_client
+            .runtime()
+            .key_provider
+            .advance_vault_auth_ref(&auth_ref)
+            .unwrap();
+        let vault_refs = scenario.receiver.vault.list().unwrap();
+
+        let mut transport = crate::internal::transport::CoreHttpTransport::new(&live_client);
+        assert_eq!(
+            transport.refresh_jwt_async().await,
+            Err(crate::ImError::PermissionDenied),
+            "invalid response must fail closed: {invalid:?}"
+        );
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            request_json(&requests[0])["method"],
+            crate::internal::identity_wire::device_genesis::DEVICE_TOKEN_REFRESH_METHOD
+        );
+        let auth = live_client.runtime().key_provider.auth_state().unwrap();
+        assert_eq!(auth.bearer_token.as_deref(), Some(expired_access.as_str()));
+        assert_eq!(
+            auth.refresh_token.as_deref(),
+            Some(current_refresh.as_str())
+        );
+        assert_eq!(scenario.receiver.vault.list().unwrap(), vault_refs);
+        assert_eq!(
+            store
+                .committed_root_import_management_auth_ref(
+                    LOCAL_ALIAS,
+                    &imported.completion().ack_for_message_id,
+                    2,
+                    &scenario.receiver.storage,
+                )
+                .unwrap(),
+            auth_ref
+        );
+    }
 }
 
 #[test]
@@ -3400,10 +3631,31 @@ fn receiver_live_core_with_endpoint(scenario: &Scenario, service_base_url: &str)
     .unwrap()
 }
 
-fn normal_refresh_server() -> (String, std::thread::JoinHandle<Vec<String>>) {
+fn normal_refresh_server(
+    scenario: &Scenario,
+    now: OffsetDateTime,
+) -> (String, std::thread::JoinHandle<Vec<String>>, String) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
-    let refreshed_access = test_access_jwt(4_102_444_800);
+    let refreshed_access = test_device_jwt(
+        scenario,
+        "access",
+        "awiki.device.access.v1",
+        "rotated-access-jti",
+        now + Duration::hours(1),
+        2,
+    );
+    let refreshed_refresh = test_device_jwt(
+        scenario,
+        "refresh",
+        "awiki.device.refresh.v1",
+        "rotated-refresh-jti",
+        now + Duration::days(7),
+        2,
+    );
+    let expected_refresh = refreshed_refresh.clone();
+    let expires_at = (now + Duration::hours(1)).format(&Rfc3339).unwrap();
+    let device_id = scenario.recipient_device_id.clone();
     let handle = std::thread::spawn(move || {
         let responses = [
             json!({
@@ -3414,7 +3666,15 @@ fn normal_refresh_server() -> (String, std::thread::JoinHandle<Vec<String>>) {
             json!({
                 "jsonrpc": "2.0",
                 "id": "req-1",
-                "result": {"access_token": refreshed_access},
+                "result": {
+                    "access_token": refreshed_access,
+                    "refresh_token": refreshed_refresh,
+                    "token_type": "bearer",
+                    "expires_at": expires_at,
+                    "device_id": device_id,
+                    "auth_generation": 2,
+                    "scopes": ["device:manage", "device:read", "message:connect"],
+                },
             }),
             json!({
                 "jsonrpc": "2.0",
@@ -3440,7 +3700,107 @@ fn normal_refresh_server() -> (String, std::thread::JoinHandle<Vec<String>>) {
             })
             .collect()
     });
+    (format!("http://{address}"), handle, expected_refresh)
+}
+
+fn unauthorized_device_refresh_server() -> (String, std::thread::JoinHandle<Vec<String>>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let request = read_http_request(&mut stream);
+        stream
+            .write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 2\r\nAuthentication-Info: access_token=poison-token\r\nConnection: close\r\n\r\n{}",
+            )
+            .unwrap();
+        stream.flush().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        let mut requests = vec![request];
+        while std::time::Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut retry, _)) => requests.push(read_http_request(&mut retry)),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept unexpected refresh retry: {error}"),
+            }
+        }
+        requests
+    });
     (format!("http://{address}"), handle)
+}
+
+fn invalid_device_refresh_server(
+    scenario: &Scenario,
+    now: OffsetDateTime,
+    current_refresh: &str,
+    invalid: InvalidRefreshResult,
+) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut access = test_device_jwt(
+        scenario,
+        "access",
+        "awiki.device.access.v1",
+        "invalid-rotated-access-jti",
+        now + Duration::hours(1),
+        2,
+    );
+    let mut refresh = test_device_jwt(
+        scenario,
+        "refresh",
+        "awiki.device.refresh.v1",
+        "invalid-rotated-refresh-jti",
+        now + Duration::days(7),
+        2,
+    );
+    match invalid {
+        InvalidRefreshResult::WrongDevice => {
+            access = mutate_test_jwt_claim(&access, "device_id", json!("dev-attacker"));
+        }
+        InvalidRefreshResult::WrongGeneration => {
+            refresh = mutate_test_jwt_claim(&refresh, "auth_generation", json!(3));
+        }
+        InvalidRefreshResult::WrongScope => {
+            access =
+                mutate_test_jwt_claim(&access, "scopes", json!(["device:read", "message:connect"]));
+        }
+        InvalidRefreshResult::ReplayedRefresh => refresh = current_refresh.to_owned(),
+    }
+    let result = json!({
+        "jsonrpc": "2.0",
+        "id": "req-1",
+        "result": {
+            "access_token": access,
+            "refresh_token": refresh,
+            "token_type": "bearer",
+            "expires_at": (now + Duration::hours(1)).format(&Rfc3339).unwrap(),
+            "device_id": scenario.recipient_device_id,
+            "auth_generation": 2,
+            "scopes": ["device:manage", "device:read", "message:connect"],
+        },
+    });
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let request = read_http_request(&mut stream);
+        let body = serde_json::to_vec(&result).unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        stream.write_all(&body).unwrap();
+        stream.flush().unwrap();
+        vec![request]
+    });
+    (format!("http://{address}"), handle)
+}
+
+fn request_json(request: &str) -> Value {
+    serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap()
 }
 
 fn read_http_request(stream: &mut std::net::TcpStream) -> String {
@@ -3475,17 +3835,51 @@ fn read_http_request(stream: &mut std::net::TcpStream) -> String {
     String::from_utf8_lossy(&request).into_owned()
 }
 
-fn test_access_jwt(expires_at: i64) -> String {
+fn test_device_jwt(
+    scenario: &Scenario,
+    token_type: &str,
+    purpose: &str,
+    jti: &str,
+    expires_at: OffsetDateTime,
+    auth_generation: u64,
+) -> String {
     let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+    let issued_at = OffsetDateTime::now_utc().unix_timestamp() - 120;
     let payload = URL_SAFE_NO_PAD.encode(
         serde_json::to_vec(&json!({
-            "sub": "did:example:alice",
-            "iat": 1_767_225_600_i64,
-            "exp": expires_at,
+            "profile": "awiki-device-token-v1",
+            "purpose": purpose,
+            "type": token_type,
+            "sub": scenario.generated.did.as_str(),
+            "did": scenario.generated.did.as_str(),
+            "user_id": "user-1",
+            "device_id": scenario.recipient_device_id,
+            "key_id": scenario.recipient_signing_key_id,
+            "auth_generation": auth_generation,
+            "aud": ["awiki.test", "message.awiki.test"],
+            "jti": jti,
+            "iat": issued_at,
+            "nbf": issued_at,
+            "scopes": ["device:manage", "device:read", "message:connect"],
+            "exp": expires_at.unix_timestamp(),
         }))
         .unwrap(),
     );
     format!("{header}.{payload}.test-signature")
+}
+
+fn mutate_test_jwt_claim(token: &str, claim: &str, value: Value) -> String {
+    let mut parts = token.split('.');
+    let header = parts.next().unwrap();
+    let payload = parts.next().unwrap();
+    let signature = parts.next().unwrap();
+    let mut payload: Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+    payload[claim] = value;
+    format!(
+        "{header}.{}.{signature}",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+    )
 }
 
 fn add_ready_admin(

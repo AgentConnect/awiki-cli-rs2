@@ -131,10 +131,18 @@ Document projection；投影失败返回固定的 exact-retry 本地错误。重
 也不得改变已提交的 auth ref、operation id 或 authorization generation；同版本不同 hash 拒绝。
 该投影重试本身不刷新 access token；若持久化 token 已过期，先由正常会话刷新路径更新 auth
 state，再以新的当前 bearer 重试投影，避免把 token refresh 隐式混入 root-import 幂等状态机。
-正常刷新在同一个权威 auth `SecretRef`/`key_version` 上原位更新 access token，必须先打开并解析
-既有 token pair、保留 refresh token，并从新 access JWT 重新派生 expiry 元数据；写后重新打开
-核验。该步骤不得改变 root-import operation id、authorization generation 或 Identity index 中的
-auth ref；既有状态包含 expiry 而替换 token 无法派生新 expiry 时 fail closed。
+正常刷新按 identity 模式分流：legacy identity 继续使用 DID-auth `get_me`；vNext identity 必须从
+权威 Vault auth state 读取 rotating refresh token，调用同域内部
+`device_token_refresh(operation_id, refresh_token)`，不得回退设备签名。operation id 由当前 refresh
+token 确定性派生，因此丢响应只会形成服务端 exact replay。客户端在写入前严格核对返回 token pair
+的 profile、access/refresh purpose、DID、user、device、key、auth generation、scopes、audience、
+expiry 与当前授权，并拒绝旧 refresh token 重放。验证通过后，在同一个权威 auth
+`SecretRef`/`key_version` 上一次性替换 access 与 rotated refresh token，再重新打开写后核验；
+401、错误 claims 或写入失败都 fail closed，响应 header token 不得进入 vNext auth state。该步骤
+不得改变 root-import operation id、authorization generation 或 Identity index 中的 auth ref。
+端内 JWT payload 检查只承担结构和授权绑定校验，不声称本地完成 JWT 签名验证：旧 refresh
+来自权威 Vault record，并由 user-service 在 refresh RPC 中验签、消费 JTI 和复核实时 Registry；
+轮换结果来自配置的 TLS endpoint，后续业务服务仍会独立验签 access token。
 同一进程中长期存活的 vNext `KeyMaterialProvider` 还维护可推进的 root/auth `SecretRef`
 指针；推进前严格核对 Vault context、identity、DID、secret kind、key id/version 并成功
 解封目标记录。导入 root ref 只接受 `key_version=1`，并从私钥重算公钥指纹核对已签名的

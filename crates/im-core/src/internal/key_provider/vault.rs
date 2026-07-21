@@ -294,6 +294,59 @@ impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
         Ok(())
     }
 
+    fn uses_vnext_device_tokens(&self) -> bool {
+        matches!(self.refs, VaultKeyRoleRefs::VNext(_))
+    }
+
+    fn persist_vnext_auth_token_pair(
+        &self,
+        access_token: &str,
+        refresh_token: &str,
+        expires_at: &str,
+    ) -> crate::ImResult<()> {
+        if !matches!(self.refs, VaultKeyRoleRefs::VNext(_)) {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        // Hold the read guard across open/seal/verify so a concurrent root
+        // import cannot redirect the write to another auth SecretRef.
+        let auth_ref =
+            self.auth_jwt_ref
+                .read()
+                .map_err(|_| crate::ImError::LocalStateUnavailable {
+                    detail: "vault auth ref lock poisoned".to_owned(),
+                })?;
+        if auth_ref.kind != SecretKind::AuthJwt {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let current = self.vault.open(&auth_ref)?;
+        let current = crate::internal::auth::state::parse_auth_state(current.expose_secret())?;
+        if current.refresh_token.is_none() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let raw = crate::internal::auth::state::auth_state_json_for_token_pair(
+            access_token,
+            Some(refresh_token),
+            Some(expires_at),
+        )?;
+        let candidate = crate::internal::auth::state::parse_auth_state(&raw)?;
+        let sealed = self.vault.seal(SealSecretRequest {
+            metadata: Self::metadata_from_ref(&auth_ref),
+            plaintext: SecretBytes::from_vec(raw),
+        })?;
+        if sealed != *auth_ref {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let opened = self.vault.open(&sealed)?;
+        let persisted = crate::internal::auth::state::parse_auth_state(opened.expose_secret())?;
+        if persisted.bearer_token.as_deref() != Some(access_token.trim())
+            || persisted.refresh_token.as_deref() != Some(refresh_token.trim())
+            || persisted.expires_at != candidate.expires_at
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(())
+    }
+
     fn advance_vault_auth_ref(&self, committed: &SecretRef) -> crate::ImResult<()> {
         let mut current =
             self.auth_jwt_ref
@@ -697,6 +750,76 @@ mod tests {
             Some("2100-01-01T00:00:00Z")
         );
         assert!(refreshed.has_valid_token);
+    }
+
+    #[test]
+    fn vnext_pair_rotation_replaces_both_tokens_under_same_auth_ref() {
+        let root = tempfile::tempdir().unwrap();
+        let identity_dir = root.path().join("identity");
+        std::fs::create_dir_all(&identity_dir).unwrap();
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([19_u8; 32]),
+            FileSecretVaultStore::new(root.path().join("vault")),
+        ));
+        let device_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityDeviceSigningPrivate,
+            "device-sign",
+            b"device-secret",
+        );
+        let agreement_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::IdentityE2eeAgreementPrivate,
+            "device-e2ee",
+            b"agreement-secret",
+        );
+        let auth_ref = seal_test_secret(
+            vault.as_ref(),
+            SecretKind::AuthJwt,
+            "auth.json",
+            &crate::internal::auth::state::auth_state_json_for_token_pair(
+                "old-access",
+                Some("old-refresh"),
+                Some("2000-01-01T00:00:00Z"),
+            )
+            .unwrap(),
+        );
+        let provider = VaultBackedKeyMaterialProvider::new_vnext(
+            identity_dir,
+            vault.clone(),
+            VNextVaultKeyMaterialRefs {
+                device_request_signing_private: device_ref,
+                did_document_root_private: None,
+                e2ee_agreement_private: agreement_ref,
+                auth_jwt: auth_ref.clone(),
+            },
+        );
+
+        assert!(provider.uses_vnext_device_tokens());
+        provider
+            .persist_vnext_auth_token_pair(
+                "rotated-access",
+                "rotated-refresh",
+                "2100-01-01T00:00:00Z",
+            )
+            .unwrap();
+
+        assert_eq!(provider.auth_jwt_ref().unwrap(), auth_ref);
+        let opened = vault.open(&auth_ref).unwrap();
+        let rotated =
+            crate::internal::auth::state::parse_auth_state(opened.expose_secret()).unwrap();
+        assert_eq!(rotated.bearer_token.as_deref(), Some("rotated-access"));
+        assert_eq!(rotated.refresh_token.as_deref(), Some("rotated-refresh"));
+        assert_eq!(rotated.expires_at.as_deref(), Some("2100-01-01T00:00:00Z"));
+        assert_eq!(
+            vault
+                .list()
+                .unwrap()
+                .into_iter()
+                .filter(|secret_ref| secret_ref.kind == SecretKind::AuthJwt)
+                .collect::<Vec<_>>(),
+            vec![auth_ref]
+        );
     }
 
     #[test]

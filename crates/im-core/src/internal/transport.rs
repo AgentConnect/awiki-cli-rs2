@@ -254,6 +254,7 @@ pub(crate) struct CoreHttpTransport<'a> {
     auth: crate::internal::key_provider::ProviderBackedDidAuth,
     jwt_token: Option<String>,
     ephemeral_bearer: bool,
+    vnext_device_tokens: bool,
 }
 
 pub(crate) struct CorePlainTransport<'a> {
@@ -265,7 +266,19 @@ pub(crate) struct CorePlainTransport<'a> {
 impl<'a> CoreHttpTransport<'a> {
     pub(crate) fn new(client: &'a crate::core::ImClient) -> Self {
         let runtime = client.runtime();
-        let jwt_token = runtime.key_provider.valid_auth_token().ok().flatten();
+        let vnext_device_tokens = runtime.key_provider.uses_vnext_device_tokens();
+        let jwt_token = if vnext_device_tokens {
+            // Keep an expired access token available for the first request so
+            // a 401/1401 can select device-token refresh without signature
+            // fallback. Explicit session refresh uses the same pair directly.
+            runtime
+                .key_provider
+                .auth_state()
+                .ok()
+                .and_then(|state| state.bearer_token)
+        } else {
+            runtime.key_provider.valid_auth_token().ok().flatten()
+        };
         let mut auth = crate::internal::key_provider::ProviderBackedDidAuth::new(
             runtime.key_provider.clone(),
             anp::authentication::AuthMode::HttpSignatures,
@@ -282,6 +295,7 @@ impl<'a> CoreHttpTransport<'a> {
             auth,
             jwt_token,
             ephemeral_bearer: false,
+            vnext_device_tokens,
         }
     }
 
@@ -298,6 +312,7 @@ impl<'a> CoreHttpTransport<'a> {
             ),
             jwt_token: None,
             ephemeral_bearer: false,
+            vnext_device_tokens: runtime.key_provider.uses_vnext_device_tokens(),
         }
     }
 
@@ -531,6 +546,9 @@ impl<'a> CoreHttpTransport<'a> {
         body: Vec<u8>,
         force_new_auth: bool,
     ) -> crate::ImResult<crate::internal::http::HttpResponse> {
+        if self.vnext_device_tokens {
+            return self.execute_vnext_json_request(method, url, body);
+        }
         let mut headers = BTreeMap::from([(
             "Content-Type".to_string(),
             crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
@@ -582,6 +600,11 @@ impl<'a> CoreHttpTransport<'a> {
         body: Vec<u8>,
         force_new_auth: bool,
     ) -> crate::ImResult<crate::internal::http::HttpResponse> {
+        if self.vnext_device_tokens {
+            return self
+                .execute_vnext_json_request_async(method, url, body)
+                .await;
+        }
         let mut headers = BTreeMap::from([(
             "Content-Type".to_string(),
             crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
@@ -624,6 +647,84 @@ impl<'a> CoreHttpTransport<'a> {
         }
         self.capture_token(url, &response.headers);
         Ok(response)
+    }
+
+    fn execute_vnext_json_request(
+        &mut self,
+        method: &str,
+        url: &str,
+        body: Vec<u8>,
+    ) -> crate::ImResult<crate::internal::http::HttpResponse> {
+        if self.jwt_token.is_none() && !self.ephemeral_bearer {
+            self.refresh_vnext_device_token()?;
+        }
+        let mut response = self.http.execute(crate::internal::http::HttpRequest {
+            method: method.to_owned(),
+            url: url.to_owned(),
+            headers: self.vnext_bearer_headers()?,
+            body: body.clone(),
+        })?;
+        if response.status_code == 401 && !self.ephemeral_bearer {
+            self.refresh_vnext_device_token()?;
+            response = self.http.execute(crate::internal::http::HttpRequest {
+                method: method.to_owned(),
+                url: url.to_owned(),
+                headers: self.vnext_bearer_headers()?,
+                body,
+            })?;
+        }
+        // vNext never accepts response-header token capture. Only the closed
+        // device_token_refresh result may replace the authoritative pair.
+        Ok(response)
+    }
+
+    async fn execute_vnext_json_request_async(
+        &mut self,
+        method: &str,
+        url: &str,
+        body: Vec<u8>,
+    ) -> crate::ImResult<crate::internal::http::HttpResponse> {
+        if self.jwt_token.is_none() && !self.ephemeral_bearer {
+            self.refresh_vnext_device_token_async().await?;
+        }
+        let mut response = self
+            .http
+            .execute_async(crate::internal::http::HttpRequest {
+                method: method.to_owned(),
+                url: url.to_owned(),
+                headers: self.vnext_bearer_headers()?,
+                body: body.clone(),
+            })
+            .await?;
+        if response.status_code == 401 && !self.ephemeral_bearer {
+            self.refresh_vnext_device_token_async().await?;
+            response = self
+                .http
+                .execute_async(crate::internal::http::HttpRequest {
+                    method: method.to_owned(),
+                    url: url.to_owned(),
+                    headers: self.vnext_bearer_headers()?,
+                    body,
+                })
+                .await?;
+        }
+        Ok(response)
+    }
+
+    fn vnext_bearer_headers(&self) -> crate::ImResult<BTreeMap<String, String>> {
+        let token = self
+            .jwt_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .ok_or(crate::ImError::AuthRequired)?;
+        Ok(BTreeMap::from([
+            (
+                "Content-Type".to_owned(),
+                crate::internal::json_rpc::CONTENT_TYPE_JSON.to_owned(),
+            ),
+            ("Authorization".to_owned(), format!("Bearer {token}")),
+        ]))
     }
 
     fn auth_headers(
@@ -669,6 +770,9 @@ impl<'a> CoreHttpTransport<'a> {
     }
 
     pub(crate) fn refresh_jwt(&mut self) -> crate::ImResult<String> {
+        if self.vnext_device_tokens {
+            return self.refresh_vnext_device_token();
+        }
         let endpoint = crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT;
         let url = self.rpc_url(endpoint);
         self.auth.clear_token(&url);
@@ -709,6 +813,9 @@ impl<'a> CoreHttpTransport<'a> {
     }
 
     pub(crate) async fn refresh_jwt_async(&mut self) -> crate::ImResult<String> {
+        if self.vnext_device_tokens {
+            return self.refresh_vnext_device_token_async().await;
+        }
         let endpoint = crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT;
         let url = self.rpc_url(endpoint);
         self.auth.clear_token(&url);
@@ -748,6 +855,177 @@ impl<'a> CoreHttpTransport<'a> {
             &BTreeMap::from([("Authorization".to_string(), format!("Bearer {token}"))]),
         );
         Ok(token)
+    }
+
+    fn refresh_vnext_device_token(&mut self) -> crate::ImResult<String> {
+        if self.ephemeral_bearer {
+            return Err(crate::ImError::AuthRequired);
+        }
+        let auth = self.client.runtime().key_provider.auth_state()?;
+        let access_token = auth
+            .bearer_token
+            .as_deref()
+            .ok_or(crate::ImError::AuthRequired)?;
+        let refresh_token = auth
+            .refresh_token
+            .as_deref()
+            .ok_or(crate::ImError::AuthRequired)?;
+        let prepared =
+            crate::internal::identity_wire::device_genesis::prepare_device_token_refresh(
+                access_token,
+                refresh_token,
+                self.client.did().as_str(),
+                time::OffsetDateTime::now_utc(),
+            )?;
+        crate::internal::identity_wire::device_genesis::validate_device_token_refresh_authorization(
+            &prepared,
+            &self.current_vnext_device_authorization()?,
+        )?;
+        let call = crate::internal::identity_wire::device_genesis::build_device_token_refresh_call(
+            &prepared,
+        )?;
+        let url = self.rpc_url(call.endpoint);
+        let body = serde_json::to_vec(&crate::internal::json_rpc::build_payload(
+            call.method,
+            call.params,
+        ))
+        .map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })?;
+        let response = self.execute_unsigned_json_request("POST", &url, body)?;
+        if response.status_code >= 400 {
+            return Err(service_error_from_http(
+                response.status_code,
+                &response.body,
+            ));
+        }
+        let raw = crate::internal::json_rpc::decode_response(&response.body)?;
+        let token =
+            crate::internal::identity_wire::device_genesis::parse_device_token_refresh_result(
+                raw,
+                &prepared,
+                time::OffsetDateTime::now_utc(),
+            )?;
+        self.client
+            .runtime()
+            .key_provider
+            .persist_vnext_auth_token_pair(
+                &token.access_token,
+                &token.refresh_token,
+                &token.expires_at,
+            )?;
+        self.jwt_token = Some(token.access_token.clone());
+        self.auth.update_token(
+            &url,
+            &BTreeMap::from([(
+                "Authorization".to_owned(),
+                format!("Bearer {}", token.access_token),
+            )]),
+        );
+        Ok(token.access_token.clone())
+    }
+
+    async fn refresh_vnext_device_token_async(&mut self) -> crate::ImResult<String> {
+        if self.ephemeral_bearer {
+            return Err(crate::ImError::AuthRequired);
+        }
+        let auth = self.client.runtime().key_provider.auth_state()?;
+        let access_token = auth
+            .bearer_token
+            .as_deref()
+            .ok_or(crate::ImError::AuthRequired)?;
+        let refresh_token = auth
+            .refresh_token
+            .as_deref()
+            .ok_or(crate::ImError::AuthRequired)?;
+        let prepared =
+            crate::internal::identity_wire::device_genesis::prepare_device_token_refresh(
+                access_token,
+                refresh_token,
+                self.client.did().as_str(),
+                time::OffsetDateTime::now_utc(),
+            )?;
+        crate::internal::identity_wire::device_genesis::validate_device_token_refresh_authorization(
+            &prepared,
+            &self.current_vnext_device_authorization()?,
+        )?;
+        let call = crate::internal::identity_wire::device_genesis::build_device_token_refresh_call(
+            &prepared,
+        )?;
+        let url = self.rpc_url(call.endpoint);
+        let body = serde_json::to_vec(&crate::internal::json_rpc::build_payload(
+            call.method,
+            call.params,
+        ))
+        .map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })?;
+        let response = self
+            .execute_unsigned_json_request_async("POST", &url, body)
+            .await?;
+        if response.status_code >= 400 {
+            return Err(service_error_from_http(
+                response.status_code,
+                &response.body,
+            ));
+        }
+        let raw = crate::internal::json_rpc::decode_response(&response.body)?;
+        let token =
+            crate::internal::identity_wire::device_genesis::parse_device_token_refresh_result(
+                raw,
+                &prepared,
+                time::OffsetDateTime::now_utc(),
+            )?;
+        self.client
+            .runtime()
+            .key_provider
+            .persist_vnext_auth_token_pair(
+                &token.access_token,
+                &token.refresh_token,
+                &token.expires_at,
+            )?;
+        self.jwt_token = Some(token.access_token.clone());
+        self.auth.update_token(
+            &url,
+            &BTreeMap::from([(
+                "Authorization".to_owned(),
+                format!("Bearer {}", token.access_token),
+            )]),
+        );
+        Ok(token.access_token.clone())
+    }
+
+    fn current_vnext_device_authorization(
+        &self,
+    ) -> crate::ImResult<crate::internal::identity_device_state::DeviceAuthorizationProjection>
+    {
+        let local_alias = self
+            .client
+            .current_identity()
+            .local_alias
+            .as_deref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let store = crate::internal::identity_store::IdentityStore::new(
+            &self.client.core_inner().sdk_paths().identities,
+        );
+        let index = store.load_index()?;
+        let entry = index
+            .credentials
+            .get(local_alias)
+            .filter(|entry| entry.did == self.client.did().as_str())
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let state = entry
+            .device_state
+            .as_ref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        state.validate_for_did(self.client.did())?;
+        if state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        state
+            .authorization
+            .clone()
+            .ok_or(crate::ImError::PermissionDenied)
     }
 
     fn capture_token(&mut self, url: &str, headers: &BTreeMap<String, String>) {
