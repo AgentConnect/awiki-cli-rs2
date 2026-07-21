@@ -1,6 +1,6 @@
 # 步骤 07：国内环境跨仓库 E2E、灰度和回滚
 
-状态：`in_progress`（AWiki Me `full` 已通过；remote system test 尚有 2 个 secure-direct 失败）
+状态：`in_progress`（AWiki Me `full` 已通过；2 个 secure-direct 回归已修复，待公开 `awiki.info` 最终全量复验）
 实施仓库：`awiki-system-test`，并验证四个功能仓库  
 目标环境：国内 `awiki.info`  
 前置依赖：步骤 02-06 全部完成  
@@ -162,7 +162,7 @@ uv run awiki-system-test --show-command
 
 ### 12.1 提交与部署
 
-- CLI/im-core：功能 `a2180bb0`，发布修复至 `911fc51d`，当前计划记录 `ea75e250`，`feature/skill-token-onboarding`，已推送。
+- CLI/im-core：功能 `a2180bb0`，发布修复至 `911fc51d`，secure projection 修复至 `850c4edf`，`feature/skill-token-onboarding`。
 - AWiki Me：功能 `bb96617`，E2E harness 修复 `9708c4c`，`feature/aliyun-emas-android`，已推送。
 - User Service：`57c63ec`，`feature/emas-push-user-service`，已推送并部署到国内服务。
 - Message Service：EMAS 功能 `93b4ce8`、Skill 隔离测试 `2deba55`，`feature/emas-push-message-service`，已推送。
@@ -178,7 +178,7 @@ uv run awiki-system-test --show-command
 - CLI：`im-core-dart` `42 passed`，release staging `2 passed`，fmt 和 diff check 通过。
 - 正式国内 CLI stable `1.0.23` 已发布：tag `cli-v1.0.23`、commit `911fc51d`、GitHub Actions run `29852384648`；Linux amd64、macOS Intel、macOS arm64、Windows amd64 的 archive、版本 smoke 和 artifact upload 全部通过。
 - `https://awiki.info/cli/stable/manifest.json`、`/cli/onboarding.md` 和 `/onboarding.md` 均可访问；两个 onboarding 入口内容一致，公开 Linux 包 checksum、版本和 commit 已复核。
-- system-test CLI selector 使用功能 worktree 和 `AWIKI_CLI_SOURCE_REF=ea75e250...`，定向选择测试 `3 passed`。
+- secure-direct 定向 system test 使用功能 worktree 与隔离的 feature User/Message Service，两个原失败用例合并结果为 `2 passed`；未执行中间全量。
 
 ### 12.3 已确认阻塞
 
@@ -186,13 +186,14 @@ uv run awiki-system-test --show-command
 - CLI workspace Clippy 被未修改文件中的 `13` 个既有 lint 阻断；未扩大修改范围。
 - AWiki Me 历史 `anp.device_binding_required` 已通过正式 hidden-rollout 测试窗口解除；Flutter 3.44 隔离 build-dir 和持续 frame 等待也已修复，最终 `full` 通过。
 - 国内 remote system suite 历史执行结果为 `69 passed, 50 failed, 41 skipped, 148 errors`；当时包含基础 CLI worktree 选择错误、磁盘不足、远端请求超时及 local/provider-only 用例。CLI 源码选择和磁盘问题已解除，但按统一测试节奏不在中间阶段重跑全量。
-- 2026-07-22 最终 remote suite：`255 passed, 2 failed, 51 skipped`，耗时 `9m 0s`；失败 2 均属 CLI secure-direct：回复历史解密为 `undecryptable`，Handle history 的明文记录丢失 `secure` 标记。
+- 2026-07-22 首次最终 remote suite：`255 passed, 2 failed, 51 skipped`，耗时 `9m 0s`；失败 2 均属 CLI secure-direct：回复历史解密为 `undecryptable`，Handle history 的明文记录丢失 `secure` 标记。
 - 51 个 skip 按功能域归因：daemon 17、listener 7、mail 5、MCP 9、multi-tenant 7、message-service local/flag 3、admin-controller 1、已移除 store contract 1、search 1；均由显式 capability、凭据或 local topology 门禁触发。
-- 两项失败不属于 Skill onboarding 改动，未扩大范围修改 secure-direct；但最终 remote suite 未全绿，因此步骤 07 保持 `in_progress`，不得标记完成。
+- 两项失败根因已在 im-core 修复：unresolved Persona backlog 复用已解密明文，local record 保留/恢复 E2EE 安全标记；相关 4 个定向单元测试和 2 个 system test 均通过。
+- 当前公开 `awiki.info` 被并行 multi-device 任务路由到 9891/9902，尚未包含本任务 feature 服务；未覆盖该部署，最终公开 remote 全量留到合并/切回后一次执行。
 
 ### 12.4 清理与安全
 
-- 独立临时 MySQL/PostgreSQL 数据库及账号已删除。
+- 独立临时 MySQL/PostgreSQL 数据库、9889 proxy、9890 User Service 和 feature Message Service unit 均已删除或卸载。
 - 私密 E2E 配置、临时联调脚本和构建缓存已删除。
 - Message Service 原 unit、三项 hidden rollout/root control 配置均已恢复，国内 health 为 `200`。
 - 实施记录不包含 raw Token、JWT、私钥或数据库凭据。

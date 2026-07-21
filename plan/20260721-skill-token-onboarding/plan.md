@@ -1,11 +1,11 @@
 # 计划：App 一键安装 AWiki Skill 并用一次性 Token 注册 Agent DID
 
-状态：步骤 01-06 已完成；步骤 07 进行中，AWiki Me `full` 已通过，remote system test 尚有 2 个既有 secure-direct 失败
+状态：步骤 01-06 已完成；步骤 07 进行中，AWiki Me `full` 已通过，2 个 secure-direct 回归已定向修复，待最终公开 remote 全量复验
 创建日期：2026-07-21  
 文档目录：`plan/20260721-skill-token-onboarding/`  
 主实施分支：`awiki-cli-rs2/feature/skill-token-onboarding`  
 基线：`origin/release/0714@de44ee74`  
-恢复指针：功能分支和 CLI stable artifact 均已提交发布；步骤 07 已解除 device-bound 环境门禁，后续仅处理或确认 remote suite 的 2 个 secure-direct 失败。
+恢复指针：功能分支和 CLI stable artifact 均已提交发布；secure-direct 定向回归已通过，待 feature User/Message Service 重新成为 `awiki.info` 当前路由后执行最终全量。
 行数约束：本文必须少于 500 行。
 
 ## 1. 执行摘要
@@ -317,7 +317,7 @@ uncertain step is required.
 
 | 模块 | Worktree | 分支 | 当前基线/提交 | 计划职责 |
 |---|---|---|---|---|
-| AWiki CLI | `/home/ecs-user/awiki-space/awiki-cli-rs2-skill-token-onboarding` | `feature/skill-token-onboarding` | `911fc51d` | claim 命令、im-core identity transaction、Skill/onboarding 文档、CLI 测试和 stable 发布。 |
+| AWiki CLI | `/home/ecs-user/awiki-space/awiki-cli-rs2-skill-token-onboarding` | `feature/skill-token-onboarding` | `850c4edf` | claim 命令、im-core identity transaction、Skill/onboarding 文档、CLI 测试和 stable 发布。 |
 | Android/App | `/home/ecs-user/awiki-space/awiki-me-emas-android` | `feature/aliyun-emas-android` | `bb96617` | Token 签发、有效期展示、复制提示词和 App 测试；不管理 Skill Agent。 |
 | User Service | `/home/ecs-user/awiki-space/user-service-emas-push` | `feature/emas-push-user-service` | `57c63ec` | `skill` Token scope、原子 exchange、inventory 归属、审计和测试。 |
 | Message Service | `/home/ecs-user/awiki-space/message-service-emas-push` | `feature/emas-push-message-service` | `2deba55` | `agent:skill` 鉴权隔离契约测试；现有生产授权无需 Skill 专用分支。 |
@@ -378,7 +378,7 @@ uncertain step is required.
 
 ### [步骤 07：跨仓库 E2E 和发布门禁](steps/07-cross-repo-e2e-rollout.md)
 
-- 状态：`in_progress`；依赖步骤 02-06；AWiki Me `full` 已通过，remote suite 为 `255 passed, 2 failed, 51 skipped`。
+- 状态：`in_progress`；依赖步骤 02-06；AWiki Me `full` 和 2 个 secure-direct 定向回归已通过，待最终公开 remote 全量复验。
 - E2E：App 签发 -> 解析复制 prompt -> CLI 安装后 claim -> Agent 主动消息到达 App -> 双向 IM。
 - 覆盖过期、撤销、重复兑换、Token 抢占、错误域名和非空 workspace。
 - 在 `../awiki-system-test` 使用 remote `awiki.info` 完整系统测试并记录数量和原因。
