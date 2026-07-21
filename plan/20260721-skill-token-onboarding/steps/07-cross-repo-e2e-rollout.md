@@ -1,6 +1,6 @@
 # 步骤 07：国内环境跨仓库 E2E、灰度和回滚
 
-状态：`completed_with_blockers`
+状态：`in_progress`（等待 device-bound 客户端前置后执行最终全量门禁）
 实施仓库：`awiki-system-test`，并验证四个功能仓库  
 目标环境：国内 `awiki.info`  
 前置依赖：步骤 02-06 全部完成  
@@ -162,7 +162,7 @@ uv run awiki-system-test --show-command
 
 ### 12.1 提交与部署
 
-- CLI/im-core：`a2180bb0`，`feature/skill-token-onboarding`，已推送。
+- CLI/im-core：功能 `a2180bb0`，发布修复至 `911fc51d`，`feature/skill-token-onboarding`，已推送。
 - AWiki Me：`bb96617`，`feature/aliyun-emas-android`，已推送。
 - User Service：`57c63ec`，`feature/emas-push-user-service`，已推送并部署到国内服务。
 - Message Service：`2deba55`，`feature/emas-push-message-service`，已推送；仅测试和边界文档，无生产代码。
@@ -175,14 +175,18 @@ uv run awiki-system-test --show-command
 - Message Service：workspace check、`274` 个测试、Clippy、fmt 全部通过；真实 PostgreSQL Skill greeting 隔离测试 `1 passed`。
 - AWiki Me：`dart analyze` 通过，完整 unit suite `1180 passed`。
 - CLI：`im-core-dart` `42 passed`，release staging `2 passed`，fmt 和 diff check 通过。
+- 正式国内 CLI stable `1.0.23` 已发布：tag `cli-v1.0.23`、commit `911fc51d`、GitHub Actions run `29852384648`；Linux amd64、macOS Intel、macOS arm64、Windows amd64 的 archive、版本 smoke 和 artifact upload 全部通过。
+- `https://awiki.info/cli/stable/manifest.json`、`/cli/onboarding.md` 和 `/onboarding.md` 均可访问；两个 onboarding 入口内容一致，公开 Linux 包 checksum、版本和 commit 已复核。
+- system-test CLI selector 使用 `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2-skill-token-onboarding` 和 `AWIKI_CLI_SOURCE_REF=911fc51d...`，定向选择测试 `3 passed`。
 
 ### 12.3 已确认阻塞
 
 - CLI workspace 全量测试命中未修改的 message read 基线：`32 passed, 5 failed`；同一用例在 `origin/release/0714@de44ee74` 结果完全相同，另有一个未修改 sync 用例长期不结束。
 - CLI workspace Clippy 被未修改文件中的 `13` 个既有 lint 阻断；未扩大修改范围。
 - AWiki Me `full` 在 Flutter 启动前的 CLI ready 检查失败：现网返回 `anp.device_binding_required`；原有 CLI peer 配置同样失败。
-- 国内 remote system suite：`69 passed, 50 failed, 41 skipped, 148 errors`；主要阻塞为基础 CLI worktree 构建空间不足、远端请求超时及 local/provider-only 用例。
-- 正式 `awiki.info/cli/onboarding.md` 和 stable CLI artifact 尚未发布；本次只完成分支提交推送和国内分支二进制联调。
+- 国内 remote system suite 历史执行结果为 `69 passed, 50 failed, 41 skipped, 148 errors`；当时包含基础 CLI worktree 选择错误、磁盘不足、远端请求超时及 local/provider-only 用例。CLI 源码选择和磁盘问题已解除，但按统一测试节奏不在中间阶段重跑全量。
+- 当前唯一跨仓前置阻塞是 device-bound 客户端：现网 Message Service 要求 Inbox/WebSocket 使用当前设备 bearer，而 release/0714 App/CLI 尚无 device genesis、token refresh 和本地持久化实现。仅 mock `device_id` 字符串不能满足真实 DID Manifest/JWT 绑定，且不得放宽服务端鉴权。
+- 设备任务接入后，最后统一运行 AWiki Me `full` E2E 和带上述 CLI repo/source selector 的国内 remote system test；在此之前步骤 07 不标记完成。
 
 ### 12.4 清理与安全
 

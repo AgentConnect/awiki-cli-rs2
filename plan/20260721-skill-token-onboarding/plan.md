@@ -1,11 +1,11 @@
 # 计划：App 一键安装 AWiki Skill 并用一次性 Token 注册 Agent DID
 
-状态：步骤 01-06 已完成；步骤 07 已执行，国内 Skill 主链路通过，全量门禁存在已记录的基线阻塞
+状态：步骤 01-06 已完成；步骤 07 进行中，国内 Skill 主链路和正式 CLI 发布已通过，最终全量门禁等待 device-bound 客户端前置
 创建日期：2026-07-21  
 文档目录：`plan/20260721-skill-token-onboarding/`  
 主实施分支：`awiki-cli-rs2/feature/skill-token-onboarding`  
 基线：`origin/release/0714@de44ee74`  
-恢复指针：功能分支均已提交推送；后续从步骤 07 的 device-bound bearer、remote suite 基线和正式 CLI artifact 发布阻塞继续。
+恢复指针：功能分支和 CLI stable artifact 均已提交发布；后续从步骤 07 的 device-bound bearer 前置继续，接入后只在最终阶段重跑两个全量套件。
 行数约束：本文必须少于 500 行。
 
 ## 1. 执行摘要
@@ -317,10 +317,10 @@ uncertain step is required.
 
 | 模块 | Worktree | 分支 | 当前基线/提交 | 计划职责 |
 |---|---|---|---|---|
-| AWiki CLI | `/home/ecs-user/awiki-space/awiki-cli-rs2-skill-token-onboarding` | `feature/skill-token-onboarding` | `de44ee74` | claim 命令、im-core identity transaction、Skill/onboarding 文档、CLI 测试。 |
-| Android/App | `/home/ecs-user/awiki-space/awiki-me-emas-android` | `feature/aliyun-emas-android` | `698ffac` | Token 签发、有效期展示、复制提示词和 App 测试；不管理 Skill Agent。 |
-| User Service | `/home/ecs-user/awiki-space/user-service-emas-push` | `feature/emas-push-user-service` | `3aeb0e6` | `skill` Token scope、原子 exchange、inventory 归属、审计和测试。 |
-| Message Service | `/home/ecs-user/awiki-space/message-service-emas-push` | `feature/emas-push-message-service` | `93b4ce8` | `agent:skill` 鉴权隔离契约测试；仅在现有 allowlist 阻断时改生产代码。 |
+| AWiki CLI | `/home/ecs-user/awiki-space/awiki-cli-rs2-skill-token-onboarding` | `feature/skill-token-onboarding` | `911fc51d` | claim 命令、im-core identity transaction、Skill/onboarding 文档、CLI 测试和 stable 发布。 |
+| Android/App | `/home/ecs-user/awiki-space/awiki-me-emas-android` | `feature/aliyun-emas-android` | `bb96617` | Token 签发、有效期展示、复制提示词和 App 测试；不管理 Skill Agent。 |
+| User Service | `/home/ecs-user/awiki-space/user-service-emas-push` | `feature/emas-push-user-service` | `57c63ec` | `skill` Token scope、原子 exchange、inventory 归属、审计和测试。 |
+| Message Service | `/home/ecs-user/awiki-space/message-service-emas-push` | `feature/emas-push-message-service` | `2deba55` | `agent:skill` 鉴权隔离契约测试；现有生产授权无需 Skill 专用分支。 |
 
 - 实现前分别同步最新 `origin/release/0714`，处理现有 feature commit 与新基线的冲突。
 - 不把四个仓库压成一个提交；每个仓库保持可独立 Review 和回滚。
@@ -362,7 +362,7 @@ uncertain step is required.
 
 ### [步骤 05：增加 App 复制安装指令](steps/05-awiki-me-copy-instruction.md)
 
-- 状态：`pending`；依赖步骤 02 和步骤 04 契约稳定。
+- 状态：`completed`；依赖步骤 02 和步骤 04 契约稳定。
 - 扩展 App 的 User Service adapter，只签发 Skill Token。
 - 增加独立 UI 入口、确认信息、复制按钮、过期和重新生成状态。
 - raw Token 只存在于当前内存对象和用户主动复制的剪贴板内容。
@@ -370,7 +370,7 @@ uncertain step is required.
 
 ### [步骤 06：验证 Message Service IM 隔离](steps/06-message-service-im-isolation.md)
 
-- 状态：`pending`；依赖步骤 02。
+- 状态：`completed`；依赖步骤 02。
 - 添加 `agent:skill` auth、direct、history、sync 和跨 owner 拒绝测试。
 - 验证 Controller 和 Skill Agent 可以通过标准 direct message 往返。
 - 验证注册后必须主动发送的固定消息只到达 Controller，重复 claim 不产生重复消息。
@@ -378,7 +378,7 @@ uncertain step is required.
 
 ### [步骤 07：跨仓库 E2E 和发布门禁](steps/07-cross-repo-e2e-rollout.md)
 
-- 状态：`pending`；依赖步骤 02-06。
+- 状态：`in_progress`；依赖步骤 02-06；最终全量门禁等待 device-bound 客户端前置。
 - E2E：App 签发 -> 解析复制 prompt -> CLI 安装后 claim -> Agent 主动消息到达 App -> 双向 IM。
 - 覆盖过期、撤销、重复兑换、Token 抢占、错误域名和非空 workspace。
 - 在 `../awiki-system-test` 使用 remote `awiki.info` 完整系统测试并记录数量和原因。
