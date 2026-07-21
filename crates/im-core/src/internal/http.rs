@@ -25,12 +25,41 @@ pub(crate) struct HttpClient {
     init_error: Option<crate::ImError>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct HttpRequest {
     pub(crate) method: String,
     pub(crate) url: String,
     pub(crate) headers: BTreeMap<String, String>,
     pub(crate) body: Vec<u8>,
+}
+
+impl std::fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct RedactedHeaders<'a>(&'a BTreeMap<String, String>);
+
+        impl std::fmt::Debug for RedactedHeaders<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let mut map = f.debug_map();
+                for (name, value) in self.0 {
+                    if name.eq_ignore_ascii_case("authorization")
+                        || name.eq_ignore_ascii_case("proxy-authorization")
+                    {
+                        map.entry(name, &"<redacted>");
+                    } else {
+                        map.entry(name, value);
+                    }
+                }
+                map.finish()
+            }
+        }
+
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("headers", &RedactedHeaders(&self.headers))
+            .field("body", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -531,4 +560,32 @@ fn response_is_complete(raw: &[u8]) -> bool {
         return body.len() == content_length;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_request_debug_redacts_authorization_and_body() {
+        let request = HttpRequest {
+            method: "POST".to_owned(),
+            url: "https://example.test/rpc".to_owned(),
+            headers: BTreeMap::from([
+                (
+                    "Authorization".to_owned(),
+                    "Bearer access-secret".to_owned(),
+                ),
+                ("Content-Type".to_owned(), "application/json".to_owned()),
+            ]),
+            body: br#"{"refresh_token":"refresh-secret"}"#.to_vec(),
+        };
+
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("access-secret"));
+        assert!(!debug.contains("refresh-secret"));
+        assert!(debug.contains("Authorization"));
+        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("Content-Type"));
+    }
 }

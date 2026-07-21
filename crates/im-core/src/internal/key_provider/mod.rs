@@ -69,6 +69,7 @@ pub(crate) trait KeyMaterialProvider: Send + Sync {
     /// provider's current authoritative auth SecretRef.
     fn persist_vnext_auth_token_pair(
         &self,
+        _expected_old_refresh_digest: &[u8; 32],
         _access_token: &str,
         _refresh_token: &str,
         _expires_at: &str,

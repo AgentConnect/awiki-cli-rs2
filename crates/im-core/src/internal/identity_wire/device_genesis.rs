@@ -94,6 +94,7 @@ pub(crate) struct DeviceTokenIssueWireCall {
 pub(crate) struct PreparedDeviceTokenRefresh {
     operation_id: String,
     refresh_token: String,
+    refresh_token_digest: [u8; 32],
     expected: StrictDeviceTokenClaims,
 }
 
@@ -112,6 +113,13 @@ impl std::fmt::Debug for PreparedDeviceTokenRefresh {
 impl Drop for PreparedDeviceTokenRefresh {
     fn drop(&mut self) {
         self.refresh_token.zeroize();
+        self.refresh_token_digest.zeroize();
+    }
+}
+
+impl PreparedDeviceTokenRefresh {
+    pub(crate) fn expected_old_refresh_digest(&self) -> &[u8; 32] {
+        &self.refresh_token_digest
     }
 }
 
@@ -724,13 +732,15 @@ pub(crate) fn prepare_device_token_refresh(
     if !access.same_authorization(&refresh) {
         return Err(crate::ImError::PermissionDenied);
     }
+    let refresh_token_digest = Sha256::digest(refresh_token.as_bytes()).into();
     let operation_id = format!(
         "device-refresh-{}",
-        URL_SAFE_NO_PAD.encode(Sha256::digest(refresh_token.as_bytes()))
+        URL_SAFE_NO_PAD.encode(refresh_token_digest)
     );
     Ok(PreparedDeviceTokenRefresh {
         operation_id,
         refresh_token,
+        refresh_token_digest,
         expected: refresh,
     })
 }

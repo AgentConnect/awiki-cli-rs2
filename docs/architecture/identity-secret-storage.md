@@ -137,7 +137,8 @@ state，再以新的当前 bearer 重试投影，避免把 token refresh 隐式�
 token 确定性派生，因此丢响应只会形成服务端 exact replay。客户端在写入前严格核对返回 token pair
 的 profile、access/refresh purpose、DID、user、device、key、auth generation、scopes、audience、
 expiry 与当前授权，并拒绝旧 refresh token 重放。验证通过后，在同一个权威 auth
-`SecretRef`/`key_version` 上一次性替换 access 与 rotated refresh token，再重新打开写后核验；
+`SecretRef`/`key_version` 的独占边界内按旧 refresh 摘要做 CAS，一次性替换 access 与 rotated
+refresh token；当前已是同一目标 pair 时幂等成功，auth state 已前进时拒绝迟到响应，随后重新打开写后核验；
 401、错误 claims 或写入失败都 fail closed，响应 header token 不得进入 vNext auth state。该步骤
 不得改变 root-import operation id、authorization generation 或 Identity index 中的 auth ref。
 端内 JWT payload 检查只承担结构和授权绑定校验，不声称本地完成 JWT 签名验证：旧 refresh

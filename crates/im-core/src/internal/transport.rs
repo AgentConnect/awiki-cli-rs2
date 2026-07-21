@@ -910,6 +910,7 @@ impl<'a> CoreHttpTransport<'a> {
             .runtime()
             .key_provider
             .persist_vnext_auth_token_pair(
+                prepared.expected_old_refresh_digest(),
                 &token.access_token,
                 &token.refresh_token,
                 &token.expires_at,
@@ -980,6 +981,7 @@ impl<'a> CoreHttpTransport<'a> {
             .runtime()
             .key_provider
             .persist_vnext_auth_token_pair(
+                prepared.expected_old_refresh_digest(),
                 &token.access_token,
                 &token.refresh_token,
                 &token.expires_at,
