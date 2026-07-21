@@ -1,5 +1,7 @@
 //! Reliable holding area for inbound events whose canonical identity is not yet known.
 
+use std::collections::BTreeSet;
+
 use rusqlite::{Connection, OptionalExtension};
 
 const TABLE_SQL: &str = r#"
@@ -282,6 +284,74 @@ WHERE owner_identity_id = ?1 AND resolution_state = 'pending'"#,
     Ok(u64::try_from(count).unwrap_or_default())
 }
 
+pub(crate) fn list_decrypted_secure_messages_for_owner_identity(
+    connection: &Connection,
+    owner_identity_id: &str,
+    message_ids: &[String],
+) -> crate::ImResult<Vec<super::messages::MessageRecord>> {
+    create_schema(connection)?;
+    let owner_identity_id = owner_identity_id.trim();
+    if owner_identity_id.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("owner_identity_id".to_owned()),
+            "owner identity id is required",
+        ));
+    }
+    let message_ids = message_ids
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>();
+    if message_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; message_ids.len()].join(",");
+    let query = format!(
+        r#"SELECT message_record_json
+FROM inbound_resolution_backlog
+WHERE owner_identity_id = ?
+  AND message_id IN ({placeholders})"#
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(message_ids.len() + 1);
+    params.push(&owner_identity_id);
+    for message_id in &message_ids {
+        params.push(message_id);
+    }
+    let mut statement = connection
+        .prepare(&query)
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(params.as_slice(), |row| row.get::<_, String>(0))
+        .map_err(super::local_state_unavailable)?;
+    let mut records = Vec::new();
+    for payload in rows {
+        let payload = payload.map_err(super::local_state_unavailable)?;
+        let record: super::messages::MessageRecord =
+            serde_json::from_str(&payload).map_err(|err| {
+                crate::ImError::LocalStateUnavailable {
+                    detail: format!("failed to decode unresolved inbound message: {err}"),
+                }
+            })?;
+        let decrypted = serde_json::from_str::<serde_json::Value>(&record.metadata)
+            .ok()
+            .and_then(|metadata| {
+                metadata
+                    .get("decryption_state")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|state| state == "decrypted")
+            })
+            .unwrap_or(false);
+        if record.owner_identity_id == owner_identity_id
+            && message_ids.contains(record.msg_id.trim())
+            && record.is_e2ee
+            && decrypted
+        {
+            records.push(record);
+        }
+    }
+    Ok(records)
+}
+
 fn direct_peer_did(record: &super::messages::MessageRecord) -> Option<String> {
     if is_group(record) {
         return None;
@@ -414,6 +484,64 @@ FROM messages WHERE owner_identity_id = 'owner-a' AND msg_id = 'msg-unresolved-1
         );
         assert!(
             crate::internal::local_state::canonical_invariants::check(&db, "owner-a")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn decrypted_secure_backlog_lookup_is_owner_scoped_and_filters_plaintext_messages() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let secure = super::super::messages::MessageRecord {
+            msg_id: "msg-secure".to_owned(),
+            owner_identity_id: "owner-a".to_owned(),
+            owner_did: "did:example:owner-a".to_owned(),
+            sender_did: "did:example:peer".to_owned(),
+            receiver_did: "did:example:owner-a".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "decrypted".to_owned(),
+            is_e2ee: true,
+            metadata: serde_json::json!({"decryption_state": "decrypted"}).to_string(),
+            ..super::super::messages::MessageRecord::default()
+        }
+        .with_resolved_wire_thread("direct", "did:example:peer");
+        store(
+            &db,
+            BacklogSource {
+                event_id: "remote_history:msg-secure",
+                event_seq: "1",
+                event_type: "remote_history",
+            },
+            &secure,
+            &crate::ImError::IdentityUnresolved {
+                detail: "unresolved".to_owned(),
+            },
+        )
+        .unwrap();
+        let mut plaintext = secure.clone();
+        plaintext.msg_id = "msg-plaintext".to_owned();
+        plaintext.is_e2ee = false;
+        store(
+            &db,
+            BacklogSource {
+                event_id: "remote_history:msg-plaintext",
+                event_seq: "2",
+                event_type: "remote_history",
+            },
+            &plaintext,
+            &crate::ImError::IdentityUnresolved {
+                detail: "unresolved".to_owned(),
+            },
+        )
+        .unwrap();
+
+        let ids = vec!["msg-secure".to_owned(), "msg-plaintext".to_owned()];
+        let found =
+            list_decrypted_secure_messages_for_owner_identity(&db, "owner-a", &ids).unwrap();
+        assert_eq!(found, vec![secure]);
+        assert!(
+            list_decrypted_secure_messages_for_owner_identity(&db, "owner-b", &ids)
                 .unwrap()
                 .is_empty()
         );
