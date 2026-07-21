@@ -562,6 +562,10 @@ Reliable sync 补充：
   raw `sync.delta` wire params 或手动 checkpoint advance。
 - Realtime sync hint 只作为只读事件元数据进入 event stream，用于调度 `sync_delta`，
   不推进 checkpoint。
+- Realtime incoming message 尚无 thread-local `server_sequence` 时，Core committed local
+  projection 的时间排序键使用接收侧时间，不使用发送方 `sent_at`；可靠同步补齐 sequence 后，
+  App timeline consumer 在两条消息都具备 sequence 时以 sequence 为权威顺序，时间只作为缺失
+  sequence 时的兼容排序键。
 
 `msg send --to`、`--group`、`--text-file`、`--file`、`--secure` 是 CLI 输入形态，不是 SDK 字段。CLI adapter 负责转换成 `MessageTarget`、`MessageBody`、`MessageSecurityPolicy`。
 

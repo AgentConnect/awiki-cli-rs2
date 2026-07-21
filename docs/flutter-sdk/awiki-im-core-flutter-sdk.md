@@ -443,6 +443,11 @@ Realtime integration:
 - Successfully projecting a realtime incoming message to local SQLite does emit
   committed conversation/thread patches for active subscribers; the hint alone
   is never an authoritative patch source.
+- Before reliable sync supplies a thread-local `serverSequence`, an incoming
+  realtime projection uses the recipient-side receive timestamp rather than the
+  sender-provided `sentAt`. Once two timeline rows both have `serverSequence`,
+  consumers must order them by that sequence and use time only as the fallback
+  for mixed or legacy rows.
 
 The SDK must not add public APIs named `loadGlobalCheckpoint`, `storeGlobalCheckpoint`,
 `setGlobalCheckpoint`, or equivalents. Any checkpoint inspection needed for debugging
@@ -581,6 +586,8 @@ scripts/flutter/build-sdk-native.sh --linux-only
 ```
 
 Full Android builds require `cargo-ndk`. Full Apple builds must run on macOS with Xcode and Rust Apple targets installed. Linux native builds must run on Linux with the Flutter Linux desktop prerequisites available in the consuming app, such as `clang`, `cmake`, `ninja-build`, `pkg-config`, GTK development headers, and Xvfb for headless integration tests. Use `--dry-run` to print the selected build steps without compiling native artifacts.
+
+The iOS XCFramework targets iOS 13+ for physical devices and x86_64 simulators. The arm64 simulator slice targets iOS 14+, matching the platform's availability. `build-apple.sh` passes those minimum versions to C dependencies as well as Cargo and rejects an archive containing a higher minimum OS before packaging. Override them only for an explicit compatibility test with `AWIKI_IOS_DEPLOYMENT_TARGET` and `AWIKI_IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET`.
 
 Linux builds generate:
 
