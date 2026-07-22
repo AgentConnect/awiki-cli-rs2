@@ -10,11 +10,13 @@ BUILD_ANDROID=1
 BUILD_LINUX=0
 BUILD_WINDOWS=0
 APPLE_ARGS=()
+MACOS_ARCH=""
+ANDROID_ABI=""
 DRY_RUN=0
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/flutter/build-sdk-native.sh [--dry-run] [--apple-only|--android-only|--linux-only|--windows-only|--ios-only|--macos-only] [--skip-codegen-check]
+Usage: scripts/flutter/build-sdk-native.sh [--dry-run] [--apple-only|--android-only|--linux-only|--windows-only|--ios-only|--macos-only] [--macos-arch arm64|x86_64] [--android-abi ABI] [--skip-codegen-check]
 
 Build the Flutter SDK native artifacts used by awiki_im_core.
 
@@ -31,6 +33,8 @@ Options:
   --windows-only        Run codegen check and build the Windows x64 artifact only.
   --ios-only            Run codegen check and build iOS artifacts only.
   --macos-only          Run codegen check and build macOS artifacts only.
+  --macos-arch ARCH     Limit --macos-only to arm64 or x86_64.
+  --android-abi ABI     Limit --android-only to one supported Android ABI.
   --skip-codegen-check  Skip generated Rust/Dart bridge consistency check.
 USAGE
 }
@@ -94,6 +98,16 @@ while [[ $# -gt 0 ]]; do
       APPLE_ARGS=(--macos)
       shift
       ;;
+    --macos-arch)
+      [[ "$#" -ge 2 && -n "${2:-}" ]] || die "--macos-arch requires a value"
+      MACOS_ARCH="$2"
+      shift 2
+      ;;
+    --android-abi)
+      [[ "$#" -ge 2 && -n "${2:-}" ]] || die "--android-abi requires a value"
+      ANDROID_ABI="$2"
+      shift 2
+      ;;
     --skip-codegen-check)
       RUN_CODEGEN_CHECK=0
       shift
@@ -111,6 +125,25 @@ done
 if [[ "${BUILD_APPLE}" != "1" && "${BUILD_ANDROID}" != "1" && "${BUILD_LINUX}" != "1" && "${BUILD_WINDOWS}" != "1" ]]; then
   die "at least one platform must be selected"
 fi
+if [[ -n "${MACOS_ARCH}" ]]; then
+  if [[ "${BUILD_APPLE}" != "1" || "${APPLE_ARGS[0]:-}" != "--macos" ]]; then
+    die "--macos-arch requires --macos-only"
+  fi
+  case "${MACOS_ARCH}" in
+    arm64|x86_64) ;;
+    *) die "unsupported macOS architecture: ${MACOS_ARCH}" ;;
+  esac
+  APPLE_ARGS+=(--macos-arch "${MACOS_ARCH}")
+fi
+if [[ -n "${ANDROID_ABI}" ]]; then
+  if [[ "${BUILD_ANDROID}" != "1" || "${BUILD_APPLE}" == "1" || "${BUILD_LINUX}" == "1" || "${BUILD_WINDOWS}" == "1" ]]; then
+    die "--android-abi requires --android-only"
+  fi
+  case "${ANDROID_ABI}" in
+    arm64-v8a|x86_64|armeabi-v7a) ;;
+    *) die "unsupported Android ABI: ${ANDROID_ABI}" ;;
+  esac
+fi
 
 if [[ "${DRY_RUN}" == "1" ]]; then
   echo "sdk native build plan"
@@ -127,7 +160,11 @@ if [[ "${DRY_RUN}" == "1" ]]; then
     fi
   fi
   if [[ "${BUILD_ANDROID}" == "1" ]]; then
-    echo "  would run: scripts/flutter/build-android.sh"
+    if [[ -n "${ANDROID_ABI}" ]]; then
+      echo "  would run: scripts/flutter/build-android.sh --abi ${ANDROID_ABI}"
+    else
+      echo "  would run: scripts/flutter/build-android.sh"
+    fi
   fi
   if [[ "${BUILD_LINUX}" == "1" ]]; then
     echo "  would run: scripts/flutter/build-linux.sh"
@@ -151,7 +188,11 @@ if [[ "${BUILD_APPLE}" == "1" ]]; then
 fi
 
 if [[ "${BUILD_ANDROID}" == "1" ]]; then
-  scripts/flutter/build-android.sh
+  if [[ -n "${ANDROID_ABI}" ]]; then
+    scripts/flutter/build-android.sh --abi "${ANDROID_ABI}"
+  else
+    scripts/flutter/build-android.sh
+  fi
 fi
 
 if [[ "${BUILD_LINUX}" == "1" ]]; then

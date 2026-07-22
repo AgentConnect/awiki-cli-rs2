@@ -585,6 +585,16 @@ scripts/flutter/build-sdk-native.sh --android-only
 scripts/flutter/build-sdk-native.sh --linux-only
 ```
 
+The platform-only commands preserve the complete SDK artifact by default. A
+consumer that intentionally ships one native architecture can request a thin
+artifact without changing that default:
+
+```bash
+scripts/flutter/build-sdk-native.sh --macos-only --macos-arch arm64
+scripts/flutter/build-sdk-native.sh --macos-only --macos-arch x86_64
+scripts/flutter/build-sdk-native.sh --android-only --android-abi arm64-v8a
+```
+
 Full Android builds require `cargo-ndk`. Full Apple builds must run on macOS with Xcode and Rust Apple targets installed. Linux native builds must run on Linux with the Flutter Linux desktop prerequisites available in the consuming app, such as `clang`, `cmake`, `ninja-build`, `pkg-config`, GTK development headers, and Xvfb for headless integration tests. Use `--dry-run` to print the selected build steps without compiling native artifacts.
 
 The iOS XCFramework targets iOS 13+ for physical devices and x86_64 simulators. The arm64 simulator slice targets iOS 14+, matching the platform's availability. `build-apple.sh` passes those minimum versions to C dependencies as well as Cargo and rejects an archive containing a higher minimum OS before packaging. Override them only for an explicit compatibility test with `AWIKI_IOS_DEPLOYMENT_TARGET` and `AWIKI_IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET`.

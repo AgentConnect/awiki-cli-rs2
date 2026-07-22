@@ -58,6 +58,10 @@ scripts/flutter/build-sdk-native.sh --ios-only
 scripts/flutter/build-sdk-native.sh --android-only
 ```
 
+以上命令默认仍生成对应平台的完整产物。明确只发布单一架构时，可以追加
+`--macos-arch arm64|x86_64` 或 `--android-abi arm64-v8a`，避免编译不会进入
+最终安装包的原生架构。
+
 生成 native artifact 不应在没有明确发布策略时随意提交。
 
 ## 4. Workspace 本地状态

@@ -1,0 +1,129 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+const test = require("node:test");
+
+const root = path.resolve(__dirname, "../..");
+
+function runScript(relativePath, args) {
+  return spawnSync("bash", [path.join(root, relativePath), ...args], {
+    cwd: root,
+    encoding: "utf8",
+  });
+}
+
+function expectSuccess(result) {
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
+test(
+  "Apple dry-run limits a macOS XCFramework to the requested architecture",
+  { skip: process.platform === "win32" },
+  () => {
+    const arm64 = runScript("scripts/flutter/build-apple.sh", [
+      "--dry-run",
+      "--macos",
+      "--macos-arch",
+      "arm64",
+    ]);
+    expectSuccess(arm64);
+    assert.match(arm64.stdout, /Would rustup target add: aarch64-apple-darwin/);
+    assert.doesNotMatch(arm64.stdout, /x86_64-apple-darwin/);
+
+    const x64 = runScript("scripts/flutter/build-sdk-native.sh", [
+      "--dry-run",
+      "--macos-only",
+      "--macos-arch",
+      "x86_64",
+      "--skip-codegen-check",
+    ]);
+    expectSuccess(x64);
+    assert.match(
+      x64.stdout,
+      /build-apple\.sh --macos --macos-arch x86_64/,
+    );
+  },
+);
+
+test(
+  "platform build defaults retain every supported native architecture",
+  { skip: process.platform === "win32" },
+  () => {
+    const macOS = runScript("scripts/flutter/build-apple.sh", [
+      "--dry-run",
+      "--macos",
+    ]);
+    expectSuccess(macOS);
+    assert.match(
+      macOS.stdout,
+      /Would rustup target add: aarch64-apple-darwin x86_64-apple-darwin/,
+    );
+
+    const android = runScript("scripts/flutter/build-android.sh", [
+      "--dry-run",
+    ]);
+    expectSuccess(android);
+    assert.match(
+      android.stdout,
+      /Would cargo ndk build arm64-v8a x86_64 armeabi-v7a /,
+    );
+  },
+);
+
+test(
+  "Android dry-run limits native output to arm64-v8a",
+  { skip: process.platform === "win32" },
+  () => {
+    const direct = runScript("scripts/flutter/build-android.sh", [
+      "--dry-run",
+      "--abi",
+      "arm64-v8a",
+    ]);
+    expectSuccess(direct);
+    assert.match(direct.stdout, /Would rustup target add: aarch64-linux-android/);
+    assert.match(direct.stdout, /Would cargo ndk build arm64-v8a /);
+    assert.doesNotMatch(direct.stdout, /x86_64-linux-android/);
+    assert.doesNotMatch(direct.stdout, /armeabi-v7a/);
+
+    const wrapper = runScript("scripts/flutter/build-sdk-native.sh", [
+      "--dry-run",
+      "--android-only",
+      "--android-abi",
+      "arm64-v8a",
+      "--skip-codegen-check",
+    ]);
+    expectSuccess(wrapper);
+    assert.match(wrapper.stdout, /build-android\.sh --abi arm64-v8a/);
+  },
+);
+
+test(
+  "architecture filters require their matching platform-only mode",
+  { skip: process.platform === "win32" },
+  () => {
+    const macOS = runScript("scripts/flutter/build-sdk-native.sh", [
+      "--dry-run",
+      "--macos-arch",
+      "arm64",
+    ]);
+    assert.notEqual(macOS.status, 0);
+    assert.match(macOS.stderr, /requires --macos-only/);
+
+    const android = runScript("scripts/flutter/build-sdk-native.sh", [
+      "--dry-run",
+      "--android-abi",
+      "arm64-v8a",
+    ]);
+    assert.notEqual(android.status, 0);
+    assert.match(android.stderr, /requires --android-only/);
+  },
+);
+
+test("Android builds remove every generated shared library before compiling", () => {
+  const source = fs.readFileSync(
+    path.join(root, "scripts/flutter/build-android.sh"),
+    "utf8",
+  );
+  assert.match(source, /find "\$\{OUT_DIR\}" -type f -name "\*\.so" -delete/);
+});

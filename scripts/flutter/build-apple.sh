@@ -7,13 +7,15 @@ cd "${ROOT_DIR}"
 DRY_RUN=0
 BUILD_IOS=1
 BUILD_MACOS=1
+MACOS_ARCH=""
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/flutter/build-apple.sh [--dry-run] [--ios|--macos]
+Usage: scripts/flutter/build-apple.sh [--dry-run] [--ios|--macos] [--macos-arch arm64|x86_64]
 
 Builds both iOS and macOS Apple native artifacts by default.
 Use --ios or --macos to validate/package only one platform family.
+Use --macos-arch with --macos to build a single-architecture XCFramework.
 USAGE
 }
 
@@ -29,6 +31,14 @@ while [[ $# -gt 0 ]]; do
     --macos)
       BUILD_IOS=0
       BUILD_MACOS=1
+      ;;
+    --macos-arch)
+      if [[ "$#" -lt 2 || -z "${2:-}" ]]; then
+        echo "--macos-arch requires arm64 or x86_64." >&2
+        exit 2
+      fi
+      MACOS_ARCH="$2"
+      shift
       ;;
     -h|--help)
       usage
@@ -62,6 +72,24 @@ MACOS_TARGETS=(
   aarch64-apple-darwin
   x86_64-apple-darwin
 )
+if [[ -n "${MACOS_ARCH}" ]]; then
+  if [[ "${BUILD_IOS}" == "1" || "${BUILD_MACOS}" != "1" ]]; then
+    echo "--macos-arch requires --macos." >&2
+    exit 2
+  fi
+  case "${MACOS_ARCH}" in
+    arm64)
+      MACOS_TARGETS=(aarch64-apple-darwin)
+      ;;
+    x86_64)
+      MACOS_TARGETS=(x86_64-apple-darwin)
+      ;;
+    *)
+      echo "Unsupported macOS architecture: ${MACOS_ARCH}" >&2
+      exit 2
+      ;;
+  esac
+fi
 TARGETS=()
 if [[ "${BUILD_IOS}" == "1" ]]; then
   TARGETS+=("${IOS_TARGETS[@]}")
@@ -75,6 +103,9 @@ if [[ "${DRY_RUN}" == "1" ]]; then
   echo "Would use iOS deployment target: ${IOS_DEPLOYMENT_TARGET}"
   echo "Would use iOS arm64 simulator deployment target: ${IOS_ARM64_SIMULATOR_DEPLOYMENT_TARGET}"
   echo "Would use macOS deployment targets: arm64=${MACOS_ARM64_DEPLOYMENT_TARGET}, x86_64=${MACOS_X86_64_DEPLOYMENT_TARGET}"
+  if [[ "${BUILD_MACOS}" == "1" ]]; then
+    echo "Would build macOS Rust targets: ${MACOS_TARGETS[*]}"
+  fi
   if [[ "${BUILD_IOS}" == "1" && "${BUILD_MACOS}" == "1" ]]; then
     echo "Would build staticlibs and create iOS/macOS XCFrameworks"
   elif [[ "${BUILD_IOS}" == "1" ]]; then
@@ -219,10 +250,16 @@ fi
 
 if [[ "${BUILD_MACOS}" == "1" ]]; then
   MACOS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/awiki-macos.XXXXXX")"
-  lipo -create \
-    "target/aarch64-apple-darwin/release/lib${LIB_NAME}.a" \
-    "target/x86_64-apple-darwin/release/lib${LIB_NAME}.a" \
-    -output "${MACOS_DIR}/lib${LIB_NAME}.a"
+  if [[ "${#MACOS_TARGETS[@]}" -eq 1 ]]; then
+    cp \
+      "target/${MACOS_TARGETS[0]}/release/lib${LIB_NAME}.a" \
+      "${MACOS_DIR}/lib${LIB_NAME}.a"
+  else
+    lipo -create \
+      "target/aarch64-apple-darwin/release/lib${LIB_NAME}.a" \
+      "target/x86_64-apple-darwin/release/lib${LIB_NAME}.a" \
+      -output "${MACOS_DIR}/lib${LIB_NAME}.a"
+  fi
 
   rm -rf "${MACOS_XCFRAMEWORK}"
   xcodebuild -create-xcframework \
