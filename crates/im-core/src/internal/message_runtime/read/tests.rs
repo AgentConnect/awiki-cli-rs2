@@ -2816,6 +2816,23 @@ fn p6_v2_incoming_parser_accepts_flat_fallback() {
     assert_eq!(body.group_did, "did:example:group");
 }
 
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_recipient_device_requires_exact_owner_did() {
+    assert_eq!(
+        p6_recipient_device_id("did:example:alice", "did:example:alice", "alice-device"),
+        Ok("alice-device".to_owned())
+    );
+    assert_eq!(
+        p6_recipient_device_id("did:example:alice", "did:example:other", "alice-device"),
+        Err(crate::ImError::PermissionDenied)
+    );
+    assert_eq!(
+        p6_recipient_device_id("did:example:alice", "did:example:alice", ""),
+        Err(crate::ImError::PermissionDenied)
+    );
+}
+
 #[cfg(feature = "group-e2ee")]
 fn p6_v2_incoming_wire() -> Value {
     json!({

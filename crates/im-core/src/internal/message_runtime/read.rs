@@ -3941,21 +3941,19 @@ pub(crate) async fn project_p6_v2_incoming_message(
 ) -> crate::ImResult<()> {
     let wrapper_shape = message.get("params").is_some();
     let (meta, body, auth) = parse_p6_v2_incoming_notification(message)?;
+    let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(client)?;
+    let scope = runtime.owner_scope()?;
+    let recipient_device_id = p6_recipient_device_id(
+        client.did().as_str(),
+        scope.owner_did.as_str(),
+        scope.device_id.as_str(),
+    )?;
     let sender_document = resolve_direct_sender_document_async(
         client,
         &mut crate::internal::transport::CoreHttpTransport::new(client),
         &meta.sender_did,
     )
     .await?;
-    let recipient_device_id = client
-        .current_identity()
-        .device_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or(crate::ImError::PermissionDenied)?
-        .to_owned();
-    let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(client)?;
     // The Host is not consulted by decrypt_incoming_application; using the
     // production adapter here keeps one product type without adding a second
     // wire implementation.
@@ -4046,6 +4044,19 @@ pub(crate) async fn project_p6_v2_incoming_message(
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(())
+}
+
+#[cfg(feature = "group-e2ee")]
+fn p6_recipient_device_id(
+    expected_owner_did: &str,
+    scope_owner_did: &str,
+    scope_device_id: &str,
+) -> crate::ImResult<String> {
+    if scope_owner_did == expected_owner_did && !scope_device_id.is_empty() {
+        Ok(scope_device_id.to_owned())
+    } else {
+        Err(crate::ImError::PermissionDenied)
+    }
 }
 
 #[cfg(feature = "group-e2ee")]
