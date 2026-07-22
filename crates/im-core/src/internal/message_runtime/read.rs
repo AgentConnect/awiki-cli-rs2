@@ -3971,7 +3971,7 @@ pub(crate) async fn project_p6_v2_incoming_message(
     let group_state_version = body.group_state_version.clone();
     let group_event_seq = body.group_event_seq.clone();
     let accepted_at = body.accepted_at.clone();
-    let message_id = meta.message_id.clone();
+    let raw_message_id = meta.message_id.clone();
     let sender_did = meta.sender_did.clone();
     let sender_device_id = meta.sender_device_id.clone();
     let output = product.decrypt_incoming_application(
@@ -4000,8 +4000,11 @@ pub(crate) async fn project_p6_v2_incoming_message(
     object.remove("meta");
     object.remove("body");
     object.remove("auth");
-    object.insert("id".to_owned(), Value::String(message_id.clone()));
-    object.insert("message_id".to_owned(), Value::String(message_id));
+    object.insert(
+        "id".to_owned(),
+        Value::String(p6_group_message_id(&group_did, &group_event_seq)?),
+    );
+    object.insert("message_id".to_owned(), Value::String(raw_message_id));
     object.insert("sender_did".to_owned(), Value::String(sender_did));
     object.insert(
         "sender_device_id".to_owned(),
@@ -4044,6 +4047,16 @@ pub(crate) async fn project_p6_v2_incoming_message(
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(())
+}
+
+#[cfg(feature = "group-e2ee")]
+fn p6_group_message_id(group_did: &str, group_event_seq: &str) -> crate::ImResult<String> {
+    let group_did = group_did.trim();
+    let group_event_seq = group_event_seq.trim();
+    if group_did.is_empty() || group_event_seq.is_empty() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(format!("{group_did}:{group_event_seq}"))
 }
 
 #[cfg(feature = "group-e2ee")]

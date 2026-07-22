@@ -1014,12 +1014,20 @@ fn is_agent_subject_type(value: &str) -> bool {
 
 fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {
     let object = value.as_object()?;
-    let id = optional_string(object.get("id"))
+    let source_id = optional_string(object.get("id"))
         .or_else(|| optional_string(object.get("message_id")))
         .or_else(|| optional_string(object.get("msg_id")))?;
     let group_did = optional_string(object.get("group_did"))
         .or_else(|| optional_string(object.get("group")))
         .unwrap_or_else(|| "group:unknown".to_string());
+    let group_event_seq = optional_string(object.get("group_event_seq"))
+        .or_else(|| i64_value(object.get("group_event_seq")).map(|value| value.to_string()));
+    let id = group_event_seq
+        .as_ref()
+        .filter(|_| group_did != "group:unknown")
+        .map(|sequence| format!("{}:{}", group_did.trim(), sequence.trim()))
+        .unwrap_or_else(|| source_id.clone());
+    let raw_id = optional_string(object.get("message_id")).unwrap_or(source_id);
     let sender = optional_string(object.get("sender_did"))
         .unwrap_or_else(|| "did:unknown:sender".to_string());
     let content_type = optional_string(object.get("content_type"));
@@ -1055,7 +1063,7 @@ fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {
     };
     let group = crate::ids::GroupRef::parse(&group_did).ok()?;
     Some(crate::messages::Message {
-        id: crate::ids::MessageId::parse(id).ok()?,
+        id: crate::ids::MessageId::parse(&id).ok()?,
         thread: crate::messages::ThreadRef::Group(group.clone()),
         direction: crate::messages::MessageDirection::Unknown,
         sender: crate::ids::PeerRef::parse(sender, "").ok()?,
@@ -1072,7 +1080,13 @@ fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {
                 .or_else(|| i64_value(object.get("sequence")))
                 .or_else(|| i64_value(object.get("group_event_seq"))),
             content_type,
-            attributes: group_message_attributes(object, secure),
+            attributes: group_message_attributes(
+                object,
+                secure,
+                &raw_id,
+                &id,
+                group_event_seq.as_deref(),
+            ),
             ..crate::messages::MessageMetadata::default()
         },
     })
@@ -1081,6 +1095,9 @@ fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {
 fn group_message_attributes(
     object: &serde_json::Map<String, Value>,
     secure: bool,
+    raw_message_id: &str,
+    canonical_message_id: &str,
+    group_event_seq: Option<&str>,
 ) -> Vec<crate::messages::MessageMetadataAttribute> {
     let mut attributes = Vec::new();
     if secure {
@@ -1117,6 +1134,18 @@ fn group_message_attributes(
         attributes.push(crate::messages::MessageMetadataAttribute {
             key: "content_type".to_owned(),
             value: content_type,
+        });
+    }
+    if raw_message_id != canonical_message_id {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "raw_message_id".to_owned(),
+            value: raw_message_id.to_owned(),
+        });
+    }
+    if let Some(group_event_seq) = group_event_seq {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "group_event_seq".to_owned(),
+            value: group_event_seq.to_owned(),
         });
     }
     attributes
@@ -1512,5 +1541,34 @@ mod tests {
                 && attribute.value
                     == crate::attachments::manifest::attachment_manifest_content_type()
         }));
+    }
+
+    #[test]
+    fn group_result_uses_canonical_timeline_id_and_preserves_logical_id() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "messages": [{
+                    "id": "did:example:group:13",
+                    "message_id": "logical-message-13",
+                    "group_did": "did:example:group",
+                    "group_event_seq": "13",
+                    "sender_did": "did:example:alice",
+                    "content_type": "text/plain",
+                    "content": "hello"
+                }]
+            }),
+            Vec::new(),
+        );
+
+        let message = &result.messages.items[0];
+        assert_eq!(message.id.as_str(), "did:example:group:13");
+        assert!(message.metadata.attributes.iter().any(|attribute| {
+            attribute.key == "raw_message_id" && attribute.value == "logical-message-13"
+        }));
+        assert!(message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| { attribute.key == "group_event_seq" && attribute.value == "13" }));
     }
 }

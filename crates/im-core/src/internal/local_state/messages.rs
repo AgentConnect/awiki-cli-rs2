@@ -405,7 +405,22 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
     is_e2ee = CASE WHEN excluded.is_e2ee = 1 OR messages.is_e2ee = 1 THEN 1 ELSE 0 END,
     is_read = CASE WHEN excluded.is_read = 1 OR messages.is_read = 1 THEN 1 ELSE 0 END,
     sender_name = excluded.sender_name,
-    metadata = excluded.metadata,
+    metadata = CASE
+        WHEN excluded.content IS NULL
+         AND messages.is_e2ee = 1
+         AND json_valid(COALESCE(NULLIF(messages.metadata, ''), '{}')) = 1
+         AND json_extract(
+               COALESCE(NULLIF(messages.metadata, ''), '{}'),
+               '$.decryption_state'
+             ) = 'decrypted'
+         AND json_valid(COALESCE(NULLIF(excluded.metadata, ''), '{}')) = 1
+         AND json_extract(
+               COALESCE(NULLIF(excluded.metadata, ''), '{}'),
+               '$.decryption_state'
+             ) = 'failed'
+        THEN messages.metadata
+        ELSE excluded.metadata
+    END,
     mentions_current_user = CASE
         WHEN excluded.content IS NULL THEN messages.mentions_current_user
         ELSE excluded.mentions_current_user
@@ -5805,6 +5820,72 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
         assert_eq!(summary.last_message_id, canonical_id);
         assert!(summary.last_content.contains("2026-07-06"));
         assert_summary_matches_rebuild(&db, owner_identity_id, &conversation_id);
+    }
+
+    #[test]
+    fn local_state_group_redaction_does_not_replace_decrypted_projection_metadata() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let group_did = "did:example:groups:secure";
+        let canonical_id = "did:example:groups:secure:11";
+        let base = MessageRecord {
+            msg_id: canonical_id.to_owned(),
+            owner_identity_id: "owner-id".to_owned(),
+            owner_did: "did:owner".to_owned(),
+            conversation_id: crate::internal::local_state::owner_scope::group_conversation_id(
+                group_did,
+            ),
+            thread_id: crate::internal::local_state::owner_scope::group_conversation_id(group_did),
+            direction: 0,
+            sender_did: "did:example:sender".to_owned(),
+            group_id: group_did.to_owned(),
+            group_did: group_did.to_owned(),
+            server_seq: Some(11),
+            is_e2ee: true,
+            ..MessageRecord::default()
+        };
+
+        upsert_message(
+            &db,
+            &MessageRecord {
+                content_type: "text/plain".to_owned(),
+                content: "decrypted".to_owned(),
+                metadata: serde_json::json!({
+                    "decryption_state": "decrypted",
+                    "group_event_seq": "11"
+                })
+                .to_string(),
+                ..base.clone()
+            },
+        )
+        .unwrap();
+        upsert_message(
+            &db,
+            &MessageRecord {
+                content_type: "application/x-awiki-group-e2ee-redacted".to_owned(),
+                metadata: serde_json::json!({
+                    "decryption_state": "failed",
+                    "group_event_seq": "11"
+                })
+                .to_string(),
+                ..base
+            },
+        )
+        .unwrap();
+
+        let (content_type, content, metadata): (String, String, String) = db
+            .query_row(
+                "SELECT content_type, content, metadata FROM messages WHERE msg_id = ?1",
+                [canonical_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(content_type, "text/plain");
+        assert_eq!(content, "decrypted");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&metadata).unwrap()["decryption_state"],
+            "decrypted"
+        );
     }
 
     #[test]

@@ -166,6 +166,7 @@ fn project_group_incoming(notification: &Value) -> NotificationProjection {
         message_id.as_str(),
         body,
     );
+    add_verified_p6_security_attributes(&mut metadata, params, meta);
     if let Some(attachment) = attachment_projection.as_ref() {
         if let Some(summary) = attachment.summary.as_ref() {
             metadata.attributes.extend(
@@ -198,6 +199,31 @@ fn project_group_incoming(notification: &Value) -> NotificationProjection {
         route: NotificationProjectionRoute::GroupIncoming,
         event: message_received_event(message, attachment_projection, sync_hint(notification)),
     }
+}
+
+fn add_verified_p6_security_attributes(
+    metadata: &mut MessageMetadata,
+    params: &Map<String, Value>,
+    meta: Option<&Map<String, Value>>,
+) {
+    let is_verified_p6 = params.get("secure").and_then(Value::as_bool) == Some(true)
+        && string_from_object(Some(params), "secure_state") == "decrypted"
+        && string_from_object(meta, "profile") == anp::group_e2ee::GROUP_E2EE_PROFILE_V2
+        && string_from_object(meta, "security_profile")
+            == anp::group_e2ee::GROUP_E2EE_SECURITY_PROFILE_V2;
+    if !is_verified_p6 {
+        return;
+    }
+    metadata.attributes.extend([
+        MessageMetadataAttribute {
+            key: "security".to_owned(),
+            value: "group-e2ee".to_owned(),
+        },
+        MessageMetadataAttribute {
+            key: "decryption_state".to_owned(),
+            value: "decrypted".to_owned(),
+        },
+    ]);
 }
 
 fn project_group_state_changed(notification: &Value) -> NotificationProjection {
@@ -559,5 +585,37 @@ fn none_if_empty(value: String) -> Option<String> {
         None
     } else {
         Some(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verified_p6_projection_marks_decrypted_group_security() {
+        let mut metadata = MessageMetadata::default();
+        let params = serde_json::json!({
+            "secure": true,
+            "secure_state": "decrypted"
+        });
+        let meta = serde_json::json!({
+            "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2,
+            "security_profile": anp::group_e2ee::GROUP_E2EE_SECURITY_PROFILE_V2
+        });
+
+        add_verified_p6_security_attributes(
+            &mut metadata,
+            params.as_object().unwrap(),
+            meta.as_object(),
+        );
+
+        assert!(metadata
+            .attributes
+            .iter()
+            .any(|attribute| { attribute.key == "security" && attribute.value == "group-e2ee" }));
+        assert!(metadata.attributes.iter().any(|attribute| {
+            attribute.key == "decryption_state" && attribute.value == "decrypted"
+        }));
     }
 }

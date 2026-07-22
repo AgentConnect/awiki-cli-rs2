@@ -2833,6 +2833,19 @@ fn p6_v2_incoming_recipient_device_requires_exact_owner_did() {
     );
 }
 
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_uses_canonical_group_timeline_id() {
+    assert_eq!(
+        p6_group_message_id("did:example:group", "17"),
+        Ok("did:example:group:17".to_owned())
+    );
+    assert_eq!(
+        p6_group_message_id("did:example:group", ""),
+        Err(crate::ImError::PermissionDenied)
+    );
+}
+
 #[cfg(feature = "group-e2ee")]
 fn p6_v2_incoming_wire() -> Value {
     json!({

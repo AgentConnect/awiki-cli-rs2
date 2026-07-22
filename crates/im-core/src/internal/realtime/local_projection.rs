@@ -83,6 +83,11 @@ pub fn plan_realtime_message_local_projection(
             server_seq: message.metadata.server_sequence,
             sent_at: local_projection_sent_at(message, &received_at),
             stored_at: received_at,
+            is_e2ee: message
+                .metadata
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key == "security" && attribute.value.contains("e2ee")),
             is_read: matches!(
                 message.direction,
                 crate::messages::MessageDirection::Outgoing
@@ -277,6 +282,22 @@ fn message_metadata_value(
                 Value::Array(warnings.iter().cloned().map(Value::String).collect()),
             );
         }
+        for attribute in &message.metadata.attributes {
+            if matches!(
+                attribute.key.as_str(),
+                "raw_message_id"
+                    | "group_event_seq"
+                    | "security"
+                    | "decryption_state"
+                    | "secure_wire_content_type"
+            ) && !attribute.value.trim().is_empty()
+            {
+                object.insert(
+                    attribute.key.clone(),
+                    Value::String(attribute.value.clone()),
+                );
+            }
+        }
     }
     serde_json::to_string(&value).unwrap_or_default()
 }
@@ -421,6 +442,65 @@ mod tests {
 
         assert_eq!(projection.sent_at, "2026-07-17T05:20:31.558059Z");
         assert_eq!(projection.stored_at, "2026-07-17T05:20:32.207005Z");
+    }
+
+    #[test]
+    fn decrypted_group_realtime_projection_is_reusable_secure_cache() {
+        let message = crate::messages::Message {
+            id: crate::ids::MessageId::parse("did:example:group:12").unwrap(),
+            thread: crate::messages::ThreadRef::Group(
+                crate::ids::GroupRef::parse("did:example:group").unwrap(),
+            ),
+            direction: crate::messages::MessageDirection::Incoming,
+            sender: crate::ids::PeerRef::parse("did:example:sender", "").unwrap(),
+            receiver: Some(crate::ids::PeerRef::parse("did:example:owner", "").unwrap()),
+            group: Some(crate::ids::GroupRef::parse("did:example:group").unwrap()),
+            body: crate::messages::MessageBodyView::Text {
+                text: "decrypted".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: crate::messages::MessageMetadata {
+                server_sequence: Some(12),
+                content_type: Some("text/plain".to_owned()),
+                attributes: vec![
+                    crate::messages::MessageMetadataAttribute {
+                        key: "security".to_owned(),
+                        value: "group-e2ee".to_owned(),
+                    },
+                    crate::messages::MessageMetadataAttribute {
+                        key: "decryption_state".to_owned(),
+                        value: "decrypted".to_owned(),
+                    },
+                    crate::messages::MessageMetadataAttribute {
+                        key: "raw_message_id".to_owned(),
+                        value: "logical-message-12".to_owned(),
+                    },
+                ],
+                ..crate::messages::MessageMetadata::default()
+            },
+        };
+
+        let record = plan_realtime_message_local_projection(
+            &RealtimeMessageLocalProjectionContext {
+                owner_identity_id: "owner-a".to_owned(),
+                owner_did: "did:example:owner".to_owned(),
+                credential_name: "owner-a".to_owned(),
+                peer_scope: None,
+            },
+            &message,
+            None,
+            None,
+            &[],
+        )
+        .unwrap()
+        .into_record();
+        let metadata: Value = serde_json::from_str(&record.metadata).unwrap();
+
+        assert!(record.is_e2ee);
+        assert_eq!(metadata["decryption_state"], "decrypted");
+        assert_eq!(metadata["raw_message_id"], "logical-message-12");
     }
 
     #[test]
