@@ -28,7 +28,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Checkout exact CLI / IM Core source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
           path: awiki-cli-rs2
@@ -62,7 +62,7 @@ jobs:
           "anp_ref=$env:ANP_REF" >> $env:GITHUB_OUTPUT
 
       - name: Checkout exact AWiki Me source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: AgentConnect/awiki-me
           ref: ${{ steps.sources.outputs.app_ref }}
@@ -70,7 +70,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout exact ANP source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: agent-network-protocol/anp
           ref: ${{ steps.sources.outputs.anp_ref }}
@@ -129,7 +129,7 @@ jobs:
           targets: ${{ env.WINDOWS_TARGET }}
 
       - name: Restore Rust build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -362,7 +362,7 @@ jobs:
           }
 
       - name: Upload unsigned Windows installer and manifests
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: awiki-me-windows-x64-${{ steps.sources.outputs.app_ref }}-${{ steps.sources.outputs.core_ref }}
           path: package-aggregate/

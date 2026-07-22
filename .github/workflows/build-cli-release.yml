@@ -56,7 +56,7 @@ jobs:
           test "${{ inputs.source_ref }}" = "cli-v${{ inputs.expected_version }}"
 
       - name: Checkout awiki-cli-rs2
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.source_ref }}
           path: awiki-cli-rs2
@@ -72,7 +72,7 @@ jobs:
           echo "anp_commit=$(node scripts/release/cli/config.js release scripts/release/cli/release-config.json anp_commit)" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout pinned ANP SDK
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: agent-network-protocol/anp
           ref: ${{ steps.release.outputs.anp_commit }}
@@ -93,7 +93,7 @@ jobs:
           sudo apt-get install -y musl-tools
 
       - name: Restore Rust build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -121,7 +121,7 @@ jobs:
           node -e 'const p=require("./version.json"); if(p.data.version!==process.argv[1]) process.exit(1)' "${{ inputs.expected_version }}"
 
       - name: Upload release archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: awiki-cli-${{ matrix.target_name }}
           path: awiki-cli-rs2/dist/awiki-cli-${{ inputs.expected_version }}-*
