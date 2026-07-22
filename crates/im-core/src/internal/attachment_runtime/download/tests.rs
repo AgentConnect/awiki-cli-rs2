@@ -859,6 +859,10 @@ fn attachments_download_runtime_group_object_e2ee_uses_internal_manifest_cache()
         ticket.params["body"]["message_security_profile"],
         "group-e2ee"
     );
+    assert_eq!(
+        ticket.params["body"]["message_id"],
+        "did:example:group:e2ee:7"
+    );
     assert_eq!(ticket.params["body"]["group_did"], "did:example:group:e2ee");
     assert_eq!(ticket.params["body"].get("object_key_b64u"), None);
     assert_eq!(ticket.params["body"].get("nonce_b64u"), None);

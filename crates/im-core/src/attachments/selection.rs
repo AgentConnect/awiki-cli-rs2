@@ -81,7 +81,13 @@ pub(crate) fn find_internal_attachment_selection(
             .unwrap_or(crate::attachments::manifest::OBJECT_ENCRYPTION_MODE_NONE)
             .trim()
             .to_string();
-        let authorization_message_id = string_from_value(message_object.get("raw_message_id"));
+        let raw_authorization_message_id = string_from_value(message_object.get("raw_message_id"));
+        let authorization_message_id = attachment_authorization_message_id(
+            &message_security_profile,
+            &view_id,
+            &actual_message_id,
+            &raw_authorization_message_id,
+        );
         return Ok(InternalAttachmentSelection {
             public: AttachmentSelection {
                 message_id: actual_message_id.clone(),
@@ -117,11 +123,7 @@ pub(crate) fn find_internal_attachment_selection(
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned),
             },
-            authorization_message_id: if authorization_message_id.is_empty() {
-                actual_message_id
-            } else {
-                authorization_message_id
-            },
+            authorization_message_id,
             message_target_did: string_from_value(message_object.get("receiver_did")),
             object_key_b64u: encryption_info
                 .and_then(|value| value.get("object_key_b64u"))
@@ -136,6 +138,22 @@ pub(crate) fn find_internal_attachment_selection(
     Err(crate::ImError::MessageNotFound {
         message_id: requested_message_id.to_string(),
     })
+}
+
+fn attachment_authorization_message_id(
+    message_security_profile: &str,
+    view_id: &str,
+    actual_message_id: &str,
+    raw_message_id: &str,
+) -> String {
+    if message_security_profile == "group-e2ee" && !view_id.trim().is_empty() {
+        return view_id.to_owned();
+    }
+    if raw_message_id.trim().is_empty() {
+        actual_message_id.to_owned()
+    } else {
+        raw_message_id.to_owned()
+    }
 }
 
 pub(crate) fn find_attachment_selection_with_paging<F>(
@@ -306,4 +324,35 @@ fn attachment_id_required() -> crate::ImError {
 
 fn attachment_message_invalid() -> crate::ImError {
     crate::ImError::invalid_input(Some("content".to_string()), ERR_ATTACHMENT_MESSAGE_INVALID)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_e2ee_authorizes_with_canonical_timeline_message_id() {
+        assert_eq!(
+            attachment_authorization_message_id(
+                "group-e2ee",
+                "did:example:group:15",
+                "logical-message-15",
+                "logical-message-15",
+            ),
+            "did:example:group:15"
+        );
+    }
+
+    #[test]
+    fn direct_e2ee_authorizes_with_raw_wire_message_id() {
+        assert_eq!(
+            attachment_authorization_message_id(
+                "direct-e2ee",
+                "logical-direct-message",
+                "logical-direct-message",
+                "wire-direct-message",
+            ),
+            "wire-direct-message"
+        );
+    }
 }
