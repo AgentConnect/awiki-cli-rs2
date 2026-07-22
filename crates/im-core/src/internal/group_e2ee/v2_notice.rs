@@ -115,15 +115,23 @@ pub(crate) fn consume_with_runtime(
 pub(crate) fn parse_notice(
     value: &Value,
 ) -> crate::ImResult<(V2GroupNoticeMetadata, V2E2eeNotice)> {
-    let wire = if value.get("method").is_some() {
-        value.clone()
+    let mut value = value.clone();
+    let object = value
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if let Some(jsonrpc) = object.remove("jsonrpc") {
+        if jsonrpc.as_str() != Some("2.0") {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    let wire = if object.get("method").is_some() {
+        value
     } else {
         json!({
-            "jsonrpc": "2.0",
             "method": anp::group_e2ee::METHOD_GROUP_NOTICE_V2,
             "params": {
-                "meta": notice_meta_value(value).cloned().ok_or(crate::ImError::PermissionDenied)?,
-                "body": notice_body_value(value).cloned().ok_or(crate::ImError::PermissionDenied)?,
+                "meta": notice_meta_value(&value).cloned().ok_or(crate::ImError::PermissionDenied)?,
+                "body": notice_body_value(&value).cloned().ok_or(crate::ImError::PermissionDenied)?,
             }
         })
     };
@@ -423,6 +431,55 @@ mod tests {
     }
 
     #[test]
+    fn notice_parser_accepts_json_rpc_notification_envelope() {
+        let mut wire = test_notice_wire();
+        wire.as_object_mut()
+            .unwrap()
+            .insert("jsonrpc".to_owned(), json!("2.0"));
+
+        let (meta, notice) = parse_notice(&wire).unwrap();
+
+        assert_eq!(meta.operation_id, "operation-1");
+        assert_eq!(notice.notice_id.as_deref(), Some("notice-1"));
+    }
+
+    #[test]
+    fn notice_parser_rejects_invalid_json_rpc_version() {
+        for invalid in [json!("1.0"), json!(2.0), Value::Null] {
+            let mut wire = test_notice_wire();
+            wire.as_object_mut()
+                .unwrap()
+                .insert("jsonrpc".to_owned(), invalid);
+
+            assert_eq!(parse_notice(&wire), Err(crate::ImError::PermissionDenied));
+        }
+    }
+
+    #[test]
+    fn notice_parser_rejects_unknown_top_level_field() {
+        let mut wire = test_notice_wire();
+        let object = wire.as_object_mut().unwrap();
+        object.insert("jsonrpc".to_owned(), json!("2.0"));
+        object.insert("unexpected".to_owned(), json!(true));
+
+        assert_eq!(parse_notice(&wire), Err(crate::ImError::PermissionDenied));
+    }
+
+    #[test]
+    fn notice_parser_accepts_flat_fallback() {
+        let wire = test_notice_wire();
+        let flat = json!({
+            "meta": wire.pointer("/params/meta").unwrap(),
+            "body": wire.pointer("/params/body").unwrap(),
+        });
+
+        let (meta, notice) = parse_notice(&flat).unwrap();
+
+        assert_eq!(meta.operation_id, "operation-1");
+        assert_eq!(notice.notice_id.as_deref(), Some("notice-1"));
+    }
+
+    #[test]
     fn member_resolution_requires_complete_group_page_and_exact_anchor() {
         let notice = test_notice();
         let dids = collect_member_dids(
@@ -660,5 +717,25 @@ mod tests {
             epoch_authenticator: None,
             group_receipt: None,
         }
+    }
+
+    fn test_notice_wire() -> Value {
+        anp::group_e2ee::group_notice_notification_v2(
+            V2GroupNoticeMetadata {
+                anp_version: Some("2.0".to_owned()),
+                profile: anp::group_e2ee::GROUP_E2EE_PROFILE_V2.to_owned(),
+                security_profile: anp::group_e2ee::GROUP_E2EE_TRANSPORT_PROFILE_V2.to_owned(),
+                sender_did: "did:example:group".to_owned(),
+                target: anp::group_e2ee::V2Target {
+                    kind: "agent".to_owned(),
+                    did: "did:example:bob".to_owned(),
+                },
+                recipient_device_id: "bob-device".to_owned(),
+                operation_id: "operation-1".to_owned(),
+                created_at: None,
+            },
+            test_notice(),
+        )
+        .unwrap()
     }
 }
