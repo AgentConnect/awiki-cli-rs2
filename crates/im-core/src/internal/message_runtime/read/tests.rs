@@ -2757,6 +2757,111 @@ fn v2_profile_recognition_accepts_json_rpc_notification_shape() {
 }
 
 #[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_parser_accepts_json_rpc_notification_envelope() {
+    let mut wire = p6_v2_incoming_wire();
+    wire.as_object_mut()
+        .unwrap()
+        .insert("jsonrpc".to_owned(), json!("2.0"));
+
+    let (meta, body, _) = parse_p6_v2_incoming_notification(&wire).unwrap();
+
+    assert_eq!(meta.message_id, "message-1");
+    assert_eq!(body.group_did, "did:example:group");
+}
+
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_parser_rejects_invalid_json_rpc_version() {
+    for invalid in [json!("1.0"), json!(2.0), Value::Null] {
+        let mut wire = p6_v2_incoming_wire();
+        wire.as_object_mut()
+            .unwrap()
+            .insert("jsonrpc".to_owned(), invalid);
+
+        assert_eq!(
+            parse_p6_v2_incoming_notification(&wire),
+            Err(crate::ImError::PermissionDenied)
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_parser_rejects_unknown_top_level_field() {
+    let mut wire = p6_v2_incoming_wire();
+    let object = wire.as_object_mut().unwrap();
+    object.insert("jsonrpc".to_owned(), json!("2.0"));
+    object.insert("unexpected".to_owned(), json!(true));
+
+    assert_eq!(
+        parse_p6_v2_incoming_notification(&wire),
+        Err(crate::ImError::PermissionDenied)
+    );
+}
+
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_parser_accepts_flat_fallback() {
+    let wire = p6_v2_incoming_wire();
+    let flat = json!({
+        "meta": wire.pointer("/params/meta").unwrap(),
+        "body": wire.pointer("/params/body").unwrap(),
+        "auth": wire.pointer("/params/auth").unwrap(),
+    });
+
+    let (meta, body, _) = parse_p6_v2_incoming_notification(&flat).unwrap();
+
+    assert_eq!(meta.message_id, "message-1");
+    assert_eq!(body.group_did, "did:example:group");
+}
+
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_wire() -> Value {
+    json!({
+        "method": anp::group_e2ee::METHOD_GROUP_INCOMING_V2,
+        "params": {
+            "meta": {
+                "anp_version": "2.0",
+                "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2,
+                "security_profile": anp::group_e2ee::GROUP_E2EE_SECURITY_PROFILE_V2,
+                "sender_did": "did:example:alice",
+                "sender_device_id": "alice-device",
+                "target": {"kind": "agent", "did": "did:example:bob"},
+                "recipient_device_id": "bob-device",
+                "operation_id": "operation-1",
+                "message_id": "message-1",
+                "content_type": anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE_V2
+            },
+            "body": {
+                "group_did": "did:example:group",
+                "group_state_version": "1",
+                "group_event_seq": "1",
+                "accepted_at": "2026-07-22T00:00:00Z",
+                "group_receipt": {},
+                "group_cipher_object": {
+                    "crypto_group_id_b64u": "AA",
+                    "epoch": "1",
+                    "private_message_b64u": "AA",
+                    "group_state_ref": {
+                        "group_did": "did:example:group",
+                        "group_state_version": "1"
+                    }
+                }
+            },
+            "auth": {
+                "scheme": anp::group_e2ee::RFC9421_ORIGIN_PROOF_SCHEME_V2,
+                "origin_proof": {
+                    "contentDigest": "digest",
+                    "signatureInput": "signature-input",
+                    "signature": "signature"
+                }
+            }
+        }
+    })
+}
+
+#[test]
 fn private_root_control_parser_requires_exact_standard_wire_and_private_sidecar() {
     let message = json!({
         "meta": {

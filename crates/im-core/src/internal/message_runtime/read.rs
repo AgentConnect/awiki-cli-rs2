@@ -3940,21 +3940,7 @@ pub(crate) async fn project_p6_v2_incoming_message(
     message: &mut Value,
 ) -> crate::ImResult<()> {
     let wrapper_shape = message.get("params").is_some();
-    let notification = if wrapper_shape {
-        message.clone()
-    } else {
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": anp::group_e2ee::METHOD_GROUP_INCOMING_V2,
-            "params": {
-                "meta": message.get("meta").cloned().ok_or(crate::ImError::PermissionDenied)?,
-                "body": message.get("body").cloned().ok_or(crate::ImError::PermissionDenied)?,
-                "auth": message.get("auth").cloned().ok_or(crate::ImError::PermissionDenied)?,
-            }
-        })
-    };
-    let (meta, body, auth) = anp::group_e2ee::parse_group_incoming_notification_v2(&notification)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let (meta, body, auth) = parse_p6_v2_incoming_notification(message)?;
     let sender_document = resolve_direct_sender_document_async(
         client,
         &mut crate::internal::transport::CoreHttpTransport::new(client),
@@ -4060,6 +4046,40 @@ pub(crate) async fn project_p6_v2_incoming_message(
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(())
+}
+
+#[cfg(feature = "group-e2ee")]
+fn parse_p6_v2_incoming_notification(
+    message: &Value,
+) -> crate::ImResult<(
+    anp::group_e2ee::V2GroupIncomingMetadata,
+    anp::group_e2ee::V2GroupIncomingBody,
+    anp::group_e2ee::V2OriginAuth,
+)> {
+    let mut message = message.clone();
+    let object = message
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if let Some(jsonrpc) = object.remove("jsonrpc") {
+        if jsonrpc.as_str() != Some("2.0") {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    let wrapper_shape = object.contains_key("params");
+    let notification = if wrapper_shape {
+        message
+    } else {
+        serde_json::json!({
+            "method": anp::group_e2ee::METHOD_GROUP_INCOMING_V2,
+            "params": {
+                "meta": message.get("meta").cloned().ok_or(crate::ImError::PermissionDenied)?,
+                "body": message.get("body").cloned().ok_or(crate::ImError::PermissionDenied)?,
+                "auth": message.get("auth").cloned().ok_or(crate::ImError::PermissionDenied)?,
+            }
+        })
+    };
+    anp::group_e2ee::parse_group_incoming_notification_v2(&notification)
+        .map_err(|_| crate::ImError::PermissionDenied)
 }
 
 #[cfg(feature = "group-e2ee")]
