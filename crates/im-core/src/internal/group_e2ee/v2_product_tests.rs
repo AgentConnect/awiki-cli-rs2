@@ -490,13 +490,16 @@ fn product_orchestrates_device_scoped_mls_and_filters_control_notices() {
         .filter(|call| call.method == "group.e2ee.send")
         .count();
     assert_eq!(send_calls_after, send_calls_before + 1);
-    assert!(!transport
+    let attachment_call = transport
         .calls()
         .last()
         .expect("attachment Host call")
-        .params
-        .to_string()
-        .contains(&object_key));
+        .clone();
+    assert_eq!(
+        attachment_call.params["client"]["attachment_grant_refs"],
+        json!([committed_attachment.grant_ref])
+    );
+    assert!(!attachment_call.params.to_string().contains(&object_key));
     let attachment_decrypted = a2_product
         .decrypt_incoming_application(incoming_input(
             &fixture,

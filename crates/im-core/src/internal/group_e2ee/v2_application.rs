@@ -2,7 +2,8 @@
 //!
 //! Object bytes are uploaded by the attachment runtime before this boundary.
 //! This module only places the already committed object's full manifest inside
-//! one MLS application plaintext and keeps the local/UI projection redacted.
+//! one MLS application plaintext, keeps the local/UI projection redacted, and
+//! exposes only its non-secret grant ref as AWiki-local delivery metadata.
 
 use anp::group_e2ee::V2GroupApplicationPlaintext;
 use serde_json::Value;
@@ -14,6 +15,7 @@ use serde_json::Value;
 pub(crate) struct V2ProductApplication {
     plaintext: V2GroupApplicationPlaintext,
     projection: V2ApplicationProjection,
+    client_context: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +50,7 @@ impl V2ProductApplication {
                 text: Some(text),
                 payload: None,
             },
+            client_context: None,
         })
     }
 
@@ -72,6 +75,7 @@ impl V2ProductApplication {
                 text: None,
                 payload: Some(payload),
             },
+            client_context: None,
         })
     }
 
@@ -138,6 +142,11 @@ impl V2ProductApplication {
                 text: None,
                 payload: Some(committed.redacted_manifest.clone()),
             },
+            client_context: Some(
+                crate::internal::secure_direct::send::attachment_client_context(
+                    committed.grant_ref.clone(),
+                ),
+            ),
         })
     }
 
@@ -147,6 +156,10 @@ impl V2ProductApplication {
 
     pub(crate) fn projection(&self) -> &V2ApplicationProjection {
         &self.projection
+    }
+
+    pub(crate) fn client_context(&self) -> Option<&Value> {
+        self.client_context.as_ref()
     }
 }
 

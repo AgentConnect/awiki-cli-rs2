@@ -78,6 +78,7 @@ pub(crate) trait GroupE2eeV2Host {
         &mut self,
         meta: V2GroupSendMetadata,
         body: V2GroupCipherObject,
+        client_context: Option<Value>,
     ) -> crate::ImResult<V2GroupSendResult>;
 }
 
@@ -198,9 +199,17 @@ where
         &mut self,
         meta: V2GroupSendMetadata,
         body: V2GroupCipherObject,
+        client_context: Option<Value>,
     ) -> crate::ImResult<V2GroupSendResult> {
         let auth = self.origin_auth(METHOD_GROUP_SEND_V2, &meta, &body)?;
-        let request = group_send_request_v2(meta, body, auth).map_err(map_v2_wire_error)?;
+        let mut request = group_send_request_v2(meta, body, auth).map_err(map_v2_wire_error)?;
+        if let Some(client_context) = client_context {
+            request
+                .get_mut("params")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| serialization_error("P6 v2 SDK request params must be an object"))?
+                .insert("client".to_owned(), client_context);
+        }
         self.execute(request, parse_group_send_result_v2)
     }
 }
@@ -233,6 +242,8 @@ pub(crate) struct V2Committed<R> {
 pub(crate) struct V2PreparedApplicationSend {
     pub(crate) meta: V2GroupSendMetadata,
     pub(crate) cipher: V2GroupCipherObject,
+    /// AWiki-local, non-secret delivery metadata outside the MLS ciphertext.
+    pub(crate) client_context: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -596,7 +607,11 @@ where
         self.ensure_current_device(&input.meta.sender_did, &input.meta.sender_device_id)?;
         let meta = input.meta.clone();
         let cipher = self.runtime.encrypt(input)?;
-        Ok(V2PreparedApplicationSend { meta, cipher })
+        Ok(V2PreparedApplicationSend {
+            meta,
+            cipher,
+            client_context: None,
+        })
     }
 
     /// Encrypts one logical application body into exactly one MLS ciphertext.
@@ -616,7 +631,8 @@ where
         request_id: String,
     ) -> crate::ImResult<V2PreparedProductApplicationSend> {
         let projection = application.projection().clone();
-        let encrypted = self.prepare_application_send(V2EncryptInput {
+        let client_context = application.client_context().cloned();
+        let mut encrypted = self.prepare_application_send(V2EncryptInput {
             meta,
             group_state_ref,
             application_plaintext: application.into_plaintext(),
@@ -625,6 +641,7 @@ where
             draft_extension_negotiated,
             request_id,
         })?;
+        encrypted.client_context = client_context;
         Ok(V2PreparedProductApplicationSend {
             encrypted,
             projection,
@@ -642,9 +659,11 @@ where
         &mut self,
         prepared: &V2PreparedApplicationSend,
     ) -> crate::ImResult<V2GroupSendResult> {
-        let result = self
-            .host
-            .send_application(prepared.meta.clone(), prepared.cipher.clone())?;
+        let result = self.host.send_application(
+            prepared.meta.clone(),
+            prepared.cipher.clone(),
+            prepared.client_context.clone(),
+        )?;
         result.validate().map_err(map_v2_wire_error)?;
         if result.group_did != prepared.cipher.group_state_ref.group_did
             || result.message_id != prepared.meta.message_id
