@@ -2158,7 +2158,8 @@ fn group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_red
     let client = fixture.client();
     let mut messages = vec![json!({
         "id": "did:example:group:e2ee:9",
-        "message_id": "did:example:group:e2ee:9",
+        "message_id": "logical-group-message-9",
+        "raw_message_id": "logical-group-message-9",
         "sender_did": "did:example:alice",
         "group_did": "did:example:group:e2ee",
         "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
@@ -2192,6 +2193,7 @@ fn group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_red
         .unwrap()
         .unwrap();
     assert_eq!(cached["message_security_profile"], "group-e2ee");
+    assert_eq!(cached["raw_message_id"], "logical-group-message-9");
     assert_eq!(
         cached["content"]["attachments"][0]["encryption_info"]["object_key_b64u"],
         "OBJECT-KEY-SECRET"

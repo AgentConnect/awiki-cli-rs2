@@ -4004,7 +4004,11 @@ pub(crate) async fn project_p6_v2_incoming_message(
         "id".to_owned(),
         Value::String(p6_group_message_id(&group_did, &group_event_seq)?),
     );
-    object.insert("message_id".to_owned(), Value::String(raw_message_id));
+    object.insert(
+        "message_id".to_owned(),
+        Value::String(raw_message_id.clone()),
+    );
+    object.insert("raw_message_id".to_owned(), Value::String(raw_message_id));
     object.insert("sender_did".to_owned(), Value::String(sender_did));
     object.insert(
         "sender_device_id".to_owned(),
@@ -4121,6 +4125,8 @@ pub(crate) async fn normalize_p6_v2_realtime_incoming(
         "auth": params.get("auth").cloned().ok_or(crate::ImError::PermissionDenied)?,
     });
     project_p6_v2_incoming_message(client, &mut message).await?;
+    cache_attachment_manifests_for_internal_download_async(client, std::slice::from_ref(&message))
+        .await;
     let object = message
         .as_object()
         .ok_or(crate::ImError::PermissionDenied)?;
