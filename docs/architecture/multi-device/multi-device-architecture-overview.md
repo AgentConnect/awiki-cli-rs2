@@ -2,7 +2,7 @@
 
 **版本：第一阶段可信服务基线**
 
-> 本文用于快速理解 AWiki 多设备方案。协议字段、安全细节和异常处理以[完整架构文档](./multi-device-architecter.md)为准。
+> 本文用于快速理解 AWiki 多设备产品方案。产品级实现架构以[完整架构文档](./multi-device-architecter.md)为准；ANP wire 字段、Profile、安全语义和错误码以 [ANP vNext 规范](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/README.md)为准。
 
 ---
 
@@ -13,7 +13,8 @@ V1 只实现一条清晰主路径：
 ```text
 新 AWiki DID 始终包含 deviceManifest
 每台设备拥有独立 device_id、签名密钥和 E2EE 密钥
-Direct 和 MLS 都按设备工作
+普通私聊、群聊和附件只按 DID/Group DID 工作
+Direct E2EE 和 MLS 的密码学端点按设备工作
 普通设备负责通信
 管理设备额外持有根私钥并管理设备
 ```
@@ -70,7 +71,7 @@ AWiki Device Registry 是域内设备授权状态源。远端 ANP 节点只需�
 以下版本只用于 AWiki 域内数据库并发、第一方客户端 pin 和撤销控制，不是 ANP wire 字段。V1 只保留三个域内版本维度：
 
 ```text
-DID Document
+AWiki Identity 的 DID Document 记录
     document_version
     document_hash
 
@@ -102,7 +103,7 @@ management_ready = true | false
 
 服务端通过数据库事务、expected version 和 CAS 防止并发覆盖。V1 不保存前驱链，不提供任意版本间 transition proof，也不实现透明日志或复杂分叉修复。
 
-远端 ANP 实现不读取这些域内版本；它只解析当前根签名 DID Document、验证 `deviceManifest`，并在设备资格可能变化时重新 resolve。
+远端 ANP 实现不读取这些域内版本。普通 Base 消息只解析业务 DID 与公开服务入口；只有 Direct E2EE、MLS 等设备级安全 Profile 才验证当前根签名 DID Document、`deviceManifest`，并在设备资格可能变化时重新 resolve。
 
 ---
 
@@ -111,10 +112,12 @@ management_ready = true | false
 ANP vNext 通过[独立版本化草案](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/README.md)增加以下公开能力：
 
 1. DID Document 顶层 `deviceManifest` 扩展；
-2. Direct 的发送与接收 `device_id`；
+2. Direct E2EE 的发送与接收 `device_id`；
 3. PreKey、Session、Ratchet 和 Mailbox 按 DID + device_id 绑定；
 4. 同一 DID 的不同设备使用独立 MLS KeyPackage 和 Leaf。
-5. Attachment Ticket 的可信设备上下文及 Federation 的设备选择器保留、资格重验证。
+5. Federation 仅对设备级安全 Overlay 保留设备选择器并执行资格重验证。
+
+普通 `direct.send`、`group.send`、非 E2EE 群通知和附件 Manifest/Object/Ticket 继续只按 DID 或 Group DID 表达。AWiki 可以在内部 token、数据库和路由中始终携带登录设备上下文，但这些实现字段不是普通 ANP 消息的必填 wire 字段。
 
 AWiki 域内的 `member/admin`、Registry、token、根私钥传输和 Handle 恢复不属于跨域 ANP 协议。
 
@@ -194,7 +197,7 @@ AWiki 域内的 `member/admin`、Registry、token、根私钥传输和 Handle �
 
 ## 9. 日常通信、MLS 与撤销
 
-Direct 按设备建立独立 PreKey、Session、Ratchet 和 Mailbox。发送方从当前 Manifest 获取接收设备列表，V1 对各设备逐一加密、发送和重试，不定义批量投递协议。
+普通 Direct 只向目标 DID 发送一次，目标域自行完成本地端点投递。Direct E2EE 才按设备建立独立 PreKey、Session、Ratchet 和 Mailbox；发送方从当前 Manifest 获取接收设备列表，V1 对各设备逐一加密、发送和重试，不定义批量密文投递协议。
 
 MLS 中，同一 DID 的每台设备拥有独立 Leaf。设备需要进入某个群时按该群规则执行标准 Add/Commit/Welcome；设备撤销后再通过 Remove/Commit 异步移除。新设备不自动加入全部历史群，也不自动获得历史消息。
 
@@ -257,7 +260,7 @@ V1 不支持暂停、重新激活、管理员降级或 revoked 设备原地恢�
 * transparency log、witness 和强 split-view 检测；
 * 同 DID 换根恢复；
 * Manifest 可选或移除的核心分支；
-* Direct 批量投递和部分成功聚合；
+* Direct E2EE 批量密文投递和部分成功聚合；
 * 根密钥私有 Profile 或双回执；
 * 暂停、重新激活和管理员降级；
 * 全量自有设备业务状态同步；

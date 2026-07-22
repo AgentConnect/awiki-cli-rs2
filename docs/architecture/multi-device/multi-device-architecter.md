@@ -19,6 +19,8 @@
 
 ANP 规范采用最小公开原则：只有不同域为了互操作而必须共同生成、解析或验证的字段才进入规范。仅用于 AWiki 域内数据库并发、缓存、token、设备管理、恢复或本地状态的字段，只在本文等内部架构文档中定义。
 
+消息业务层与密码学端点层必须分离。普通 `transport-protected` 私聊、群聊和附件消息继续只按 Agent DID 或 Group DID 寻址；`sender_device_id`、`recipient_device_id` 等设备选择器只由 Direct E2EE、MLS 及其 PreKey、Mailbox、Leaf、密钥分发流程要求。AWiki 为简化实现而在内部 token、数据库或路由上下文中携带设备信息，不会自动把这些字段升级为公开 ANP wire 语义。
+
 
 本方案只管理：
 
@@ -85,7 +87,8 @@ AWiki 新建用户自持 DID
     始终携带 deviceManifest
     每台设备始终拥有 device_id
     每台设备使用独立签名密钥和 E2EE 密钥
-    Direct 始终按设备建立会话和投递
+    普通 Direct 仍按 DID 寻址并由目标域内部投递
+    Direct E2EE 始终按设备建立会话和密文投递
     普通设备与管理设备只在 AWiki 域内区分
     根私钥只传给用户明确授权的新管理设备
 ```
@@ -119,7 +122,7 @@ AWiki 新建用户自持 DID
 * 同 DID 换根恢复；
 * Manifest 从有到无的核心协议分支；
 * 根私钥传输的私有外层 Profile 和双 ACK；
-* Direct 批量投递与部分成功聚合协议；
+* Direct E2EE 批量密文投递与部分成功聚合协议；
 * 暂停/重新激活、管理员降级等非必要状态机。
 
 ---
@@ -240,10 +243,12 @@ Local Device State
 ANP vNext 需要公开定义：
 
 * DID Document 顶层 `deviceManifest` 扩展及验证规则；
-* Direct 的发送/接收 `device_id` 和设备级投递语义；
+* Direct E2EE 的发送/接收 `device_id` 和设备级密文投递语义；
 * PreKey、Session、Ratchet、AAD 与 Mailbox 的设备绑定；
 * 同一 DID 多个 MLS Client/Leaf 的资格绑定；
-* Federation 对设备寻址、文档刷新和设备资格变化后的重新 resolve 处理。
+* Federation 对设备级安全 Overlay 的设备寻址、文档刷新和设备资格变化后的重新 resolve 处理。
+
+普通 `direct.send`、`group.send`、非 E2EE `group.incoming` 和普通附件控制面仍以 DID/Group DID 为互操作边界。发送方不解析目标设备列表，目标域可以依据自身实现向该 DID 的当前本地端点 fan-out；设备数量、设备投递结果和 AWiki 内部路由键都不进入这些 Base Profile。
 
 AWiki 域内继续负责：
 
@@ -253,7 +258,7 @@ AWiki 域内继续负责：
 * 根私钥控制消息与 imported ACK；
 * Handle 恢复、通知和冷静期。
 
-远端 ANP 实现只需要知道某个 `device_id` 是否是当前合法通信端点，不需要理解 AWiki 管理角色或内部 document version/hash。`document_version` 和 `document_hash` 不进入 DID Document、DID resolve/update 元数据、跨域 `direct.send`、PreKey、MLS 或 Federation schema。对端不支持所需 ANP vNext 能力时，不得静默退化为共享 Ratchet、共享 MLS 私钥或明文；旧版兼容由第 6.2 节的 Legacy Adapter 单独处理。
+远端 ANP 实现只在设备级安全 Overlay 中需要判断某个 `device_id` 是否是当前合法密码学端点，不需要理解 AWiki 管理角色或内部 document version/hash。普通 Base 消息只验证业务 DID 与其公开服务入口，不要求 Manifest 或设备 selector。`document_version` 和 `document_hash` 不进入 DID Document、DID resolve/update 元数据、跨域 `direct.send`、PreKey、MLS 或 Federation schema。对端不支持所需 ANP vNext E2EE 能力时，不得静默退化为共享 Ratchet、共享 MLS 私钥或明文；旧版兼容由第 6.2 节的 Legacy Adapter 单独处理。
 
 ### 2.6 两条授权验证链
 
@@ -301,6 +306,8 @@ AWiki 域内 API：
 10. DID Document 和 Device Registry 只能保存公钥、引用和授权状态，绝不能保存任何设备私钥或 DID 根私钥。
 11. DID 根控制私钥是身份管理授权密钥；设备本地 KEK 只用于加密保护 Root Key Vault 中的根私钥密文，不能替代根私钥签署 DID 更新。
 12. ANP 规范只定义跨域互操作必须理解的字段；AWiki 域内版本、角色、token、恢复和控制消息字段不得进入公开协议。
+13. 普通私聊、群聊和附件 Base Profile 只按 DID/Group DID 寻址；显式设备 selector 只由 E2EE/MLS 等设备级安全 Profile 拥有。
+14. AWiki 内部请求即使始终绑定登录设备，也不得要求外部 ANP Base 实现发送或解释设备 ID。
 
 ---
 
@@ -643,16 +650,18 @@ AWiki 第一阶段需要推动以下公开协议调整：
 
 | 协议部分 | vNext 草案 | 第一阶段调整 |
 | --- | --- | --- |
-| Core / Identity | [`anp.core.binding.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/01-核心绑定.md)、[`anp.identity.discovery.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/02-身份与发现.md) | 注册通用设备绑定与 DID Document 顶层 `deviceManifest` 扩展 |
-| Direct | [`anp.direct.base.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/03-私聊基础语义.md) | 增加发送/接收 `device_id`、`logical_message_id` 和逐设备投递语义 |
-| Group Base | [`anp.group.base.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/04-群组基础语义.md) | 业务成员仍按 DID，发送设备和接收通知按设备绑定 |
+| Core / Identity | [`anp.core.binding.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/01-核心绑定.md)、[`anp.identity.discovery.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/02-身份与发现.md) | 注册 Profile 条件化设备绑定与 DID Document 顶层 `deviceManifest` 扩展；Base Profile 不自动继承设备要求 |
+| Direct Base | [`anp.direct.base.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/03-私聊基础语义.md) | 保留 DID 到 DID 的普通消息语义；不携带发送/接收设备 selector，目标域内部 fan-out |
+| Group Base | [`anp.group.base.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/04-群组基础语义.md) | 成员、发送、通知和治理仍按 DID/Group DID；不公开设备路由字段 |
 | Direct E2EE | [`anp.direct.e2ee.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/05-私聊端到端加密.md) | PreKey、Session、Ratchet 和 Mailbox 绑定 DID + `device_id` |
 | MLS | [`anp.group.e2ee.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/06-群组端到端加密.md) | 允许同一 DID 的不同设备使用独立 KeyPackage/Leaf |
-| Attachment | [`anp.attachment.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/07-附件与对象传输.md) | Ticket 校验可信设备上下文，object key 经设备会话或 MLS 分发 |
-| Federation | [`anp.federation.relay.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/08-联邦与跨域.md) | 保留设备选择器，按当前 DID Document 验证资格，陈旧时重新 resolve |
+| Attachment | [`anp.attachment.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/07-附件与对象传输.md) | Manifest、对象控制和 Bearer Ticket 按 DID/Group DID；object key 经 P5/P6 分发时才继承设备语义 |
+| Federation | [`anp.federation.relay.v2`](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/08-联邦与跨域.md) | Base 消息保持 DID 级；只为 P5/P6 等设备级 Overlay 保留 selector 并重验资格 |
 | Mention | [P9 vNext binding](../../../../anp/AgentNetworkProtocol/chinese/message/vnext/09-消息Mention扩展.md) | 绑定 v2 Group/Core 依赖，Mention 目标仍是 DID/群 selector |
 
-上述公开调整只包含跨域互操作所需的设备标识、公开 key 引用、Profile 和路由/密码学绑定。AWiki 域内版本、角色、token、根密钥导入和同步控制字段不进入 ANP 规范。
+上述公开调整只包含跨域 E2EE/MLS 互操作所需的设备标识、公开 key 引用、Profile 和密码学绑定。AWiki 域内版本、角色、token、根密钥导入、同步控制以及普通消息的本地设备路由字段不进入 ANP 规范。
+
+P6 当前用私用 `0xF0A1` 作为 LeafNode 设备绑定 extension 的草案 code point；它不是 IANA 分配。ANP 对外发布 v2 前必须替换为稳定注册值并同步一致性向量，产品不得把草案值宣告为已发布互操作常量。
 
 ### 6.1 AWiki V1 Core 固定规则
 
@@ -661,7 +670,8 @@ AWiki 新 DID：
 ```text
 始终有 deviceManifest
 始终有 device_id
-始终使用设备级 Direct
+普通 Direct 始终只按 DID
+Direct E2EE 始终使用设备级会话和密文投递
 不允许从有 Manifest 静默降回无 Manifest
 ```
 
@@ -903,7 +913,7 @@ imported ACK：
 
 ACK 首次提交时只要求 importing device 仍具备待就绪资格。原 Envelope 的发送设备在入队和新设备导入检查时必须有效；若它在导入后被撤销，服务端仍可完成 importing device 的状态提交，只是不再向已撤销设备投递通知。
 
-该类别禁止跨域发送、禁止进入 Legacy Adapter、聊天历史、通知预览和普通备份，并使用短 TTL。普通 Direct 的 RPC accepted 响应只表示密文已入队，不表示根私钥已经导入。
+该类别禁止跨域发送、禁止进入 Legacy Adapter、聊天历史、通知预览和普通备份，并使用短 TTL。Direct E2EE 的 RPC accepted 响应只表示密文已入队，不表示根私钥已经导入。
 
 ### 9.2 RootKeyEnvelope
 
@@ -1057,7 +1067,7 @@ scope
 
 ## 11. 设备级 Direct E2EE
 
-私聊采用 Signal/Sesame 风格的多设备模型：逻辑联系人仍是 DID，但密码学会话和密文投递始终落到具体 `device_id`。
+私聊 E2EE 采用 Signal/Sesame 风格的多设备模型：逻辑联系人仍是 DID，但密码学会话和密文投递始终落到具体 `device_id`。
 
 ### 11.1 每个设备对独立会话
 
@@ -1078,7 +1088,7 @@ Alice A1 ↔ Bob B3
 
 Mailbox 是接收设备级资源，可以容纳来自多条会话的密文，不属于某一条 Ratchet State。
 
-设备级 PreKey 必须绑定 DID、`device_id`、设备签名 key 和有效期，并由设备签名。获取方使用当前 DID Document 和 `deviceManifest` 验证设备资格。
+设备级 PreKey 必须绑定 DID、`device_id`、设备签名 key 和有效期，并由设备签名。获取方以当前 DID Document/`deviceManifest` 为公开设备与 key 声明来源，并按 ANP P2 将设备声明、公开服务静态 Profile、当前 runtime capability、key purpose 和本地策略求交集后判断最终资格。
 
 正式会话至少绑定双方 DID、双方 `device_id`、设备 key、Session ID 和 Direct Profile。无关文档更新不要求重建会话；目标设备被移除、key 变化或失去 Direct Profile 时才停止对应会话。不同设备不得共享设备私钥、消息密钥或 Double Ratchet State。
 
@@ -1184,7 +1194,7 @@ Bob DID
 
 每台设备独立持有 KeyPackage 私钥、Leaf 私钥和 MLS 本地状态，禁止在设备间复制。
 
-动态 KeyPackage 不写入 DID Document。它由设备签名密钥认证，并绑定 DID、`device_id` 和设备 key。Group Host 使用 KeyPackage 前，应 resolve 当前 DID Document，确认设备仍在 `deviceManifest` 中、签名 key 有效且允许目标 MLS Profile；跨域验证不依赖 AWiki Device Registry。
+动态 KeyPackage 不写入 DID Document。它由设备签名密钥认证，并通过 ANP P6 定义的 LeafNode extension 绑定 DID、`device_id` 和设备 key。Group Host 使用 KeyPackage 前，应以当前 DID Document/`deviceManifest` 为公开声明来源，并对公开服务静态 Profile、当前 runtime capability、key purpose、群策略和本地策略求交集；跨域验证不依赖 AWiki Device Registry。
 
 新设备需要进入某个群时，由该群按自身授权执行：
 
@@ -1203,6 +1213,8 @@ Remove Device Leaf → Commit → Epoch N+1
 ```
 
 新 epoch 生效后，被撤销 Leaf 才失去未来群消息的密码学访问能力。新设备默认不能解密加入前的历史群消息和附件密钥；历史迁移由独立 E2EE 备份或可信设备迁移负责。
+
+Group Host 一旦确认某个当前 Leaf 必须移除，在 Remove/Commit 推进到不再包含该 Leaf 的 epoch 前，必须暂停新的 `group.e2ee.send`；不能为了可用性继续向仍包含待撤销 Leaf 的 epoch 加密应用消息。
 
 ### 12.2 附件对象与密钥分发
 
@@ -1242,13 +1254,13 @@ A1 ↔ B3：Attachment Manifest + object_key
 
 ```text
 Download Ticket
-    = 允许设备下载附件密文
+    = 授权请求方 DID 取得附件对象
 
 object_key
     = 允许设备在本地解密附件
 ```
 
-多设备继续复用附件专项方案现有的下载授权，不新增多设备专用 Ticket 类型、Ticket epoch 或附件状态机。撤销设备可以阻止其取得未来 Ticket 和新附件密钥，但不能收回它已经下载的密文、密钥或明文。
+多设备继续复用附件专项方案现有的固定 Bearer 下载授权，不新增多设备专用 Ticket 类型、Ticket epoch 或附件状态机。ANP Ticket 绑定请求方 DID、原消息和附件对象，不绑定 `requester_device_id`。AWiki 可以在本域签发策略、token 或审计记录中检查当前登录设备，但该检查不成为跨域 P7 必填字段。撤销设备可以通过 AWiki 域内授权阻止它取得未来 Ticket 和新附件密钥，但不能仅凭设备状态变化收回仍在既有有效期/撤销规则内的已签发 Bearer Ticket，也不能收回它已经下载的密文、密钥或明文。
 
 ## 13. 离线、撤销与设备丢失
 
@@ -1400,7 +1412,7 @@ OTP 必须短时有效且一次消费；Recovery Session 使用覆盖冷静期�
 | Identity Control | Join/Recovery Session、Device Registry、DID 更新、CAS、token 授权 |
 | Message Plane | PreKey、Mailbox、Direct/MLS 密文路由和普通 ACK |
 | Handle/WNS | 当前 Handle → DID 映射、恢复通知和换绑 |
-| Remote Domain/Group Host | 验证公开设备资格和执行 Direct/MLS 规则 |
+| Remote Domain/Group Host | 对普通 Base 执行 DID 级路由，对 Direct E2EE/MLS 验证公开设备资格并执行安全规则 |
 
 Identity 和 Message 可以共享数据库或通过普通内部 API/事件同步。无论物理部署方式如何：
 
@@ -1490,10 +1502,14 @@ Identity 和 Message 可以共享数据库或通过普通内部 API/事件同步
     新设备安全落库并返回一个签名 imported ACK
     ACK 删除原密文并把设备标为管理就绪
 
-日常消息：
+普通消息：
+    只按目标 DID 或 Group DID 发送
+    目标域依据自身实现完成本地设备投递
+
+E2EE 消息：
     resolve 当前 deviceManifest
-    为每台设备建立独立 Direct Session
-    第一阶段逐设备独立发送和重试
+    为每台设备建立独立 Direct Session 或使用对应 MLS Leaf
+    第一阶段逐设备独立加密、发送和重试
 
 自有设备同步：
     复用设备间 Direct E2EE 传递结构化 JSON
