@@ -656,19 +656,25 @@ fn parse_register_outcome(
             "state",
             "did",
             "user_id",
+            "message",
             "access_token",
             "handle",
+            "domain",
             "full_handle",
         ],
     )?;
     let did = required_string(&raw, "did")?;
     let user_id = required_string(&raw, "user_id")?;
+    let message = required_string(&raw, "message")?;
     let access_token = required_string(&raw, "access_token")?;
     let handle = required_string(&raw, "handle")?;
+    let domain = required_string(&raw, "domain")?;
     let full_handle = required_string(&raw, "full_handle")?;
     if did != pending.generated.did.as_str()
         || handle != pending.target_handle
+        || domain != pending.target_domain
         || full_handle != format!("{}.{}", pending.target_handle, pending.target_domain)
+        || message != "Registration successful"
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -1236,6 +1242,33 @@ mod tests {
             pending.remote_result.as_ref().unwrap().access_token,
             access_token(&pending, &pending.generated.device_signing_key_id)
         );
+    }
+
+    #[test]
+    fn registered_response_accepts_the_existing_closed_user_service_shape() {
+        let pending = pending();
+        let token = access_token(&pending, &pending.generated.device_signing_key_id);
+        let outcome = parse_register_outcome(
+            &pending,
+            serde_json::json!({
+                "state": "registered",
+                "did": pending.generated.did.as_str(),
+                "user_id": "user-1",
+                "message": "Registration successful",
+                "handle": "alice",
+                "domain": "example.test",
+                "full_handle": "alice.example.test",
+                "access_token": token,
+            }),
+        )
+        .unwrap();
+
+        let RegistrationRemoteOutcome::Registered(result) = outcome else {
+            panic!("new registration must not be projected as Join-required");
+        };
+        assert_eq!(result.did, pending.generated.did.as_str());
+        assert_eq!(result.handle, "alice");
+        assert_eq!(result.full_handle, "alice.example.test");
     }
 
     #[test]
