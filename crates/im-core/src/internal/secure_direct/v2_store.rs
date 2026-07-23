@@ -123,15 +123,21 @@ pub(crate) fn ensure_v2_schema(connection: &Connection) -> crate::ImResult<()> {
         .execute_batch(DIRECT_E2EE_V2_SCHEMA)
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     ensure_pending_session_revision_column(connection)?;
-    drop_legacy_private_delivery_state(connection)?;
     ensure_opk_bundle_id_column(connection)
 }
 
-fn drop_legacy_private_delivery_state(connection: &Connection) -> crate::ImResult<()> {
-    let transaction = connection
-        .unchecked_transaction()
+/// Applies the destructive P5-v2 retirement step owned by the versioned
+/// local-state v30 -> v31 migration. Ordinary store opens must never call this
+/// function after `user_version` has advanced to v31.
+pub(crate) fn migrate_legacy_private_delivery_state_v31(
+    connection: &Connection,
+) -> crate::ImResult<()> {
+    connection
+        .execute_batch(DIRECT_E2EE_V2_SCHEMA)
         .map_err(crate::internal::local_state::local_state_unavailable)?;
-    let private_table_exists: bool = transaction
+    ensure_pending_session_revision_column(connection)?;
+    ensure_opk_bundle_id_column(connection)?;
+    let private_table_exists: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
             ["direct_e2ee_v2_private_outbound"],
@@ -142,7 +148,7 @@ fn drop_legacy_private_delivery_state(connection: &Connection) -> crate::ImResul
     // operation prefix was never used by ordinary P5 application messages.
     // Remove its still-pending session before removing the pending row so a
     // restart cannot select that session as a permanent confirmation conflict.
-    transaction
+    connection
         .execute(
             r#"DELETE FROM direct_e2ee_v2_sessions
 WHERE EXISTS (
@@ -156,7 +162,7 @@ WHERE EXISTS (
             [],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
-    transaction
+    connection
         .execute(
             r#"DELETE FROM direct_e2ee_v2_pending
 WHERE substr(operation_id, 1, length('p5-v2-session-init:'))
@@ -165,7 +171,7 @@ WHERE substr(operation_id, 1, length('p5-v2-session-init:'))
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     if private_table_exists {
-        transaction
+        connection
             .execute(
                 r#"DELETE FROM direct_e2ee_v2_pending
 WHERE EXISTS (
@@ -178,16 +184,13 @@ WHERE EXISTS (
             )
             .map_err(crate::internal::local_state::local_state_unavailable)?;
     }
-    transaction
+    connection
         .execute_batch(
             r#"
 DROP TABLE IF EXISTS direct_e2ee_v2_private_outbound;
 DROP TABLE IF EXISTS direct_e2ee_v2_private_outbound_tombstones;
 "#,
         )
-        .map_err(crate::internal::local_state::local_state_unavailable)?;
-    transaction
-        .commit()
         .map_err(crate::internal::local_state::local_state_unavailable)
 }
 
@@ -2399,7 +2402,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_schema_drops_legacy_private_delivery_tables() {
+    fn v31_forward_migration_drops_only_legacy_private_delivery_state() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(DIRECT_E2EE_V2_SCHEMA).unwrap();
         connection
@@ -2464,7 +2467,12 @@ INSERT INTO direct_e2ee_v2_prekey_bundles (
             )
             .unwrap();
 
-        ensure_v2_schema(&connection).unwrap();
+        connection.pragma_update(None, "user_version", 30).unwrap();
+        crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
+        assert_eq!(
+            crate::internal::local_state::schema::current_schema_version(&connection).unwrap(),
+            31
+        );
 
         for table in [
             "direct_e2ee_v2_private_outbound",
@@ -2558,7 +2566,12 @@ INSERT INTO direct_e2ee_v2_prekey_bundles (
         );
         drop(store);
 
-        ensure_v2_schema(&connection).unwrap();
+        connection.pragma_update(None, "user_version", 30).unwrap();
+        crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
+        assert_eq!(
+            crate::internal::local_state::schema::current_schema_version(&connection).unwrap(),
+            31
+        );
         assert_eq!(
             connection
                 .query_row("SELECT COUNT(*) FROM direct_e2ee_v2_sessions", [], |row| {
@@ -2586,6 +2599,57 @@ INSERT INTO direct_e2ee_v2_prekey_bundles (
         assert_eq!(
             count_kind(&vault, SecretKind::DirectE2eeV2PendingOutbound),
             0
+        );
+    }
+
+    #[test]
+    fn v31_store_reopen_does_not_replay_destructive_migration() {
+        let root = tempfile::tempdir().unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        let vault = vault(root.path());
+        let store = SqliteV2DirectStateStore::new_with_secret_vault(
+            &connection,
+            vault.clone(),
+            owner_scope(),
+        )
+        .unwrap();
+        drop(store);
+        assert_eq!(
+            crate::internal::local_state::schema::current_schema_version(&connection).unwrap(),
+            31
+        );
+
+        // This sentinel has the retired table name but was created after the
+        // version boundary advanced. A normal store reopen must not replay the
+        // v30 -> v31 DELETE/DROP migration.
+        connection
+            .execute_batch(
+                r#"
+CREATE TABLE direct_e2ee_v2_private_outbound (
+    owner_identity_id TEXT NOT NULL,
+    local_device_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, local_device_id, operation_id)
+);
+INSERT INTO direct_e2ee_v2_private_outbound
+    (owner_identity_id, local_device_id, operation_id)
+VALUES ('post-v31-sentinel', 'device', 'operation');
+"#,
+            )
+            .unwrap();
+        let _restarted =
+            SqliteV2DirectStateStore::new_with_secret_vault(&connection, vault, owner_scope())
+                .unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM direct_e2ee_v2_private_outbound",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1,
+            "ordinary v31 reopen must not replay destructive migration SQL"
         );
     }
 

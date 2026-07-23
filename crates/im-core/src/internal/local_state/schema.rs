@@ -2,12 +2,13 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 30;
+pub(crate) const SCHEMA_VERSION: i64 = 31;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
 const CONVERSATION_REGISTRY_SCHEMA_VERSION: i64 = 26;
 const SYSTEM_NOTIFICATION_SCHEMA_VERSION: i64 = 29;
 const ROOT_IMPORT_COORDINATOR_SCHEMA_VERSION: i64 = 30;
+const LEGACY_PRIVATE_DELIVERY_RETIREMENT_SCHEMA_VERSION: i64 = 31;
 
 pub(crate) const ROOT_IMPORT_COORDINATOR_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS identity_root_import_completion_v1 (
@@ -984,11 +985,14 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
+    if version == LEGACY_PRIVATE_DELIVERY_RETIREMENT_SCHEMA_VERSION - 1 {
+        return migrate_v30_to_v31(connection);
+    }
     if version == ROOT_IMPORT_COORDINATOR_SCHEMA_VERSION - 1 {
-        return migrate_v29_to_v30(connection);
+        return migrate_v29_to_v31(connection);
     }
     if version == SYSTEM_NOTIFICATION_SCHEMA_VERSION - 1 {
-        return migrate_v28_to_v30(connection);
+        return migrate_v28_to_v31(connection);
     }
     if version < SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUpgradeRequired {
@@ -999,7 +1003,7 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
     create_schema(connection, false)
 }
 
-fn migrate_v28_to_v30(connection: &Connection) -> crate::ImResult<()> {
+fn migrate_v28_to_v31(connection: &Connection) -> crate::ImResult<()> {
     let transaction = connection
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
@@ -1007,17 +1011,34 @@ fn migrate_v28_to_v30(connection: &Connection) -> crate::ImResult<()> {
     transaction
         .execute_batch(ROOT_IMPORT_COORDINATOR_SQL)
         .map_err(super::local_state_unavailable)?;
+    crate::internal::secure_direct::v2_store::migrate_legacy_private_delivery_state_v31(
+        &transaction,
+    )?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
-fn migrate_v29_to_v30(connection: &Connection) -> crate::ImResult<()> {
+fn migrate_v29_to_v31(connection: &Connection) -> crate::ImResult<()> {
     let transaction = connection
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
     transaction
         .execute_batch(ROOT_IMPORT_COORDINATOR_SQL)
         .map_err(super::local_state_unavailable)?;
+    crate::internal::secure_direct::v2_store::migrate_legacy_private_delivery_state_v31(
+        &transaction,
+    )?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn migrate_v30_to_v31(connection: &Connection) -> crate::ImResult<()> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    crate::internal::secure_direct::v2_store::migrate_legacy_private_delivery_state_v31(
+        &transaction,
+    )?;
     set_schema_version(&transaction, SCHEMA_VERSION)?;
     transaction.commit().map_err(super::local_state_unavailable)
 }
