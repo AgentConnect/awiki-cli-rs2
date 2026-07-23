@@ -30,7 +30,6 @@ class AwikiImCoreOpenOptions {
   const AwikiImCoreOpenOptions({
     this.identitySecretStoragePolicy = IdentitySecretStoragePolicy.fileCompat,
     this.identitySecretVault,
-    this.multiDeviceJoinEnabled = false,
     this.multiDeviceRootTransferEnabled = false,
     this.multiDeviceDeviceRevokeEnabled = false,
     this.multiDeviceDirectE2eeEnabled = false,
@@ -40,7 +39,6 @@ class AwikiImCoreOpenOptions {
   const AwikiImCoreOpenOptions.fileCompat()
     : identitySecretStoragePolicy = IdentitySecretStoragePolicy.fileCompat,
       identitySecretVault = null,
-      multiDeviceJoinEnabled = false,
       multiDeviceRootTransferEnabled = false,
       multiDeviceDeviceRevokeEnabled = false,
       multiDeviceDirectE2eeEnabled = false,
@@ -48,7 +46,6 @@ class AwikiImCoreOpenOptions {
 
   const AwikiImCoreOpenOptions.vaultPreferred({
     required ImCoreSecretVaultOptions this.identitySecretVault,
-    this.multiDeviceJoinEnabled = false,
     this.multiDeviceRootTransferEnabled = false,
     this.multiDeviceDeviceRevokeEnabled = false,
     this.multiDeviceDirectE2eeEnabled = false,
@@ -57,7 +54,6 @@ class AwikiImCoreOpenOptions {
 
   const AwikiImCoreOpenOptions.vaultRequired({
     required ImCoreSecretVaultOptions this.identitySecretVault,
-    this.multiDeviceJoinEnabled = false,
     this.multiDeviceRootTransferEnabled = false,
     this.multiDeviceDeviceRevokeEnabled = false,
     this.multiDeviceDirectE2eeEnabled = false,
@@ -66,7 +62,6 @@ class AwikiImCoreOpenOptions {
 
   final IdentitySecretStoragePolicy identitySecretStoragePolicy;
   final ImCoreSecretVaultOptions? identitySecretVault;
-  final bool multiDeviceJoinEnabled;
   final bool multiDeviceRootTransferEnabled;
   final bool multiDeviceDeviceRevokeEnabled;
   final bool multiDeviceDirectE2eeEnabled;

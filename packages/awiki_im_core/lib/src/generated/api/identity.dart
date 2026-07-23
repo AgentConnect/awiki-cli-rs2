@@ -102,13 +102,31 @@ Future<DartDeviceJoinRegistrySnapshot> identityDeviceRegistry({
   selector: selector,
 );
 
-Future<DartDeviceJoinProgress> claimDeviceJoin({
+Future<List<DartDeviceJoinRequestNotice>> localDeviceJoinRequests({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityLocalDeviceJoinRequests(
+  core: core,
+  selector: selector,
+);
+
+Future<DartDeviceJoinProgress> localDeviceJoinVerificationProgress({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String joinSessionId,
+}) => RustLib.instance.api.crateApiIdentityLocalDeviceJoinVerificationProgress(
+  core: core,
+  selector: selector,
+  joinSessionId: joinSessionId,
+);
+
+Future<DartDeviceJoinProgress> startDeviceJoinVerification({
   required ArcDartImCore core,
   required DartIdentitySelector selector,
   required String joinSessionId,
   required String operationId,
   required BigInt challengeTtlSeconds,
-}) => RustLib.instance.api.crateApiIdentityClaimDeviceJoin(
+}) => RustLib.instance.api.crateApiIdentityStartDeviceJoinVerification(
   core: core,
   selector: selector,
   joinSessionId: joinSessionId,
@@ -116,27 +134,15 @@ Future<DartDeviceJoinProgress> claimDeviceJoin({
   challengeTtlSeconds: challengeTtlSeconds,
 );
 
-Future<DartDeviceJoinProgress> pollAdminDeviceJoin({
-  required ArcDartImCore core,
-  required DartIdentitySelector selector,
-  required String joinSessionId,
-}) => RustLib.instance.api.crateApiIdentityPollAdminDeviceJoin(
-  core: core,
-  selector: selector,
-  joinSessionId: joinSessionId,
-);
-
 Future<DartDeviceJoinApprovalPrompt> prepareDeviceJoinApproval({
   required ArcDartImCore core,
   required DartIdentitySelector selector,
   required String joinSessionId,
-  required DartDeviceJoinRole role,
   required bool sasConfirmed,
 }) => RustLib.instance.api.crateApiIdentityPrepareDeviceJoinApproval(
   core: core,
   selector: selector,
   joinSessionId: joinSessionId,
-  role: role,
   sasConfirmed: sasConfirmed,
 );
 
@@ -150,14 +156,16 @@ Future<DartDeviceJoinProgress> confirmDeviceJoinApproval({
   userPresenceConfirmed: userPresenceConfirmed,
 );
 
-Future<DartDeviceJoinSessionSummary> cancelAdminDeviceJoin({
+Future<DartDeviceJoinProgress> rejectDeviceJoin({
   required ArcDartImCore core,
   required DartIdentitySelector selector,
   required String joinSessionId,
-}) => RustLib.instance.api.crateApiIdentityCancelAdminDeviceJoin(
+  required DartDeviceJoinRejectReason reason,
+}) => RustLib.instance.api.crateApiIdentityRejectDeviceJoin(
   core: core,
   selector: selector,
   joinSessionId: joinSessionId,
+  reason: reason,
 );
 
 Future<List<DartIdentitySummary>> listIdentities({

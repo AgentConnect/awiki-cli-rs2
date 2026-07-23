@@ -19,8 +19,8 @@ use crate::dto::{
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
         DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt,
         DartDeviceJoinAuthorizationStatus, DartDeviceJoinAuthorizedDeviceSummary,
-        DartDeviceJoinPendingSummary, DartDeviceJoinPhase, DartDeviceJoinProgress,
-        DartDeviceJoinRegistrySnapshot, DartDeviceJoinRemoteState, DartDeviceJoinRole,
+        DartDeviceJoinPhase, DartDeviceJoinProgress, DartDeviceJoinRegistrySnapshot,
+        DartDeviceJoinRemoteState, DartDeviceJoinRequestNotice, DartDeviceJoinRole,
         DartDeviceJoinSessionSummary, DartDeviceJoinSide, DartDeviceRevokeResult,
         DartDeviceRevokeStatus, DartHandleRegistrationJoinRequired, DartHandleRegistrationResult,
         DartIdentityDeviceMode, DartIdentityDeviceReadiness, DartIdentityDeviceRole,
@@ -167,16 +167,19 @@ impl From<im_core::identity::DeviceJoinAuthorizedDeviceSummary>
     }
 }
 
-impl From<im_core::identity::DeviceJoinPendingSummary> for DartDeviceJoinPendingSummary {
-    fn from(value: im_core::identity::DeviceJoinPendingSummary) -> Self {
+impl From<im_core::identity::DeviceJoinRequestNotice> for DartDeviceJoinRequestNotice {
+    fn from(value: im_core::identity::DeviceJoinRequestNotice) -> Self {
         Self {
+            event_id: value.event_id,
             join_session_id: value.join_session_id,
+            did: value.did.as_str().to_owned(),
             protocol_device_id: value.protocol_device_id.as_str().to_owned(),
-            signing_key_id: value.signing_key_id,
-            e2ee_key_id: value.e2ee_key_id,
-            requested_role: dart_device_join_role(value.requested_role),
+            candidate_key_fingerprint: value.candidate_key_fingerprint,
             issued_at: value.issued_at,
             expires_at: value.expires_at,
+            state: dart_device_join_remote_state(value.state),
+            claimed_by_current_device: value.claimed_by_current_device,
+            can_start_verification: value.can_start_verification,
         }
     }
 }
@@ -186,11 +189,6 @@ impl From<im_core::identity::DeviceJoinRegistrySnapshot> for DartDeviceJoinRegis
         Self {
             did: value.did.as_str().to_owned(),
             devices: value.devices.into_iter().map(Into::into).collect(),
-            pending_join_requests: value
-                .pending_join_requests
-                .into_iter()
-                .map(Into::into)
-                .collect(),
         }
     }
 }
@@ -199,26 +197,7 @@ impl From<im_core::identity::DeviceJoinProgress> for DartDeviceJoinProgress {
     fn from(value: im_core::identity::DeviceJoinProgress) -> Self {
         Self {
             session: value.session.into(),
-            remote_state: match value.remote_state {
-                im_core::identity::DeviceJoinRemoteState::Pending => {
-                    DartDeviceJoinRemoteState::Pending
-                }
-                im_core::identity::DeviceJoinRemoteState::Claimed => {
-                    DartDeviceJoinRemoteState::Claimed
-                }
-                im_core::identity::DeviceJoinRemoteState::ChallengeSent => {
-                    DartDeviceJoinRemoteState::ChallengeSent
-                }
-                im_core::identity::DeviceJoinRemoteState::ResponseVerified => {
-                    DartDeviceJoinRemoteState::ResponseVerified
-                }
-                im_core::identity::DeviceJoinRemoteState::Consumed => {
-                    DartDeviceJoinRemoteState::Consumed
-                }
-                im_core::identity::DeviceJoinRemoteState::Expired => {
-                    DartDeviceJoinRemoteState::Expired
-                }
-            },
+            remote_state: dart_device_join_remote_state(value.remote_state),
             sas: value.sas,
             authorized_device: value.authorized_device.map(Into::into),
         }
@@ -230,10 +209,27 @@ impl From<im_core::identity::DeviceJoinApprovalPrompt> for DartDeviceJoinApprova
         Self {
             approval_handle: value.approval_handle,
             join_session_id: value.join_session_id,
-            role: dart_device_join_role(value.role),
             sas: value.sas,
             expires_at: value.expires_at,
         }
+    }
+}
+
+fn dart_device_join_remote_state(
+    value: im_core::identity::DeviceJoinRemoteState,
+) -> DartDeviceJoinRemoteState {
+    match value {
+        im_core::identity::DeviceJoinRemoteState::Pending => DartDeviceJoinRemoteState::Pending,
+        im_core::identity::DeviceJoinRemoteState::ChallengeSent => {
+            DartDeviceJoinRemoteState::ChallengeSent
+        }
+        im_core::identity::DeviceJoinRemoteState::ResponseVerified => {
+            DartDeviceJoinRemoteState::ResponseVerified
+        }
+        im_core::identity::DeviceJoinRemoteState::Consumed => DartDeviceJoinRemoteState::Consumed,
+        im_core::identity::DeviceJoinRemoteState::Cancelled => DartDeviceJoinRemoteState::Cancelled,
+        im_core::identity::DeviceJoinRemoteState::Rejected => DartDeviceJoinRemoteState::Rejected,
+        im_core::identity::DeviceJoinRemoteState::Expired => DartDeviceJoinRemoteState::Expired,
     }
 }
 
@@ -1804,6 +1800,39 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
             out.sync = event.sync.map(Into::into);
             out
         }
+        ImEvent::SystemNotificationChanged(event) => {
+            let mut out = empty();
+            out.kind = "system_notification_changed".to_string();
+            out.notification_id = Some(event.notification.event_id);
+            out.notification_type = Some(
+                match event.notification.kind {
+                    im_core::system_notifications::SystemNotificationKind::JoinRequested => {
+                        "awiki.device.join-requested.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinClaimed => {
+                        "awiki.device.join-claimed.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinResponseVerified => {
+                        "awiki.device.join-response-verified.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinCompleted => {
+                        "awiki.device.join-completed.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinCancelled => {
+                        "awiki.device.join-cancelled.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinRejected => {
+                        "awiki.device.join-rejected.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinExpired => {
+                        "awiki.device.join-expired.v1"
+                    }
+                }
+                .to_owned(),
+            );
+            out.sync = event.sync.map(Into::into);
+            out
+        }
         ImEvent::LocalNotification(event) => {
             let mut out = empty();
             out.kind = "local_notification".to_string();
@@ -1897,7 +1926,10 @@ mod tests {
             ConnectionStateChanged, GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent,
             HostNotificationKind, ImEvent, LocalNotificationEvent, MessageReceivedEvent,
             MessageUpdateKind, MessageUpdatedEvent, RealtimeConnectionState, RealtimeSyncHint,
-            UnknownNotificationEvent,
+            SystemNotificationChangedEvent, UnknownNotificationEvent,
+        },
+        system_notifications::{
+            SystemNotificationKind, SystemNotificationSnapshot, SystemNotificationState,
         },
     };
 
@@ -2063,6 +2095,47 @@ mod tests {
         assert_eq!(unknown.content_type.as_deref(), Some("application/json"));
         assert_eq!(unknown.notification_type.as_deref(), Some("custom.event"));
         assert_eq!(unknown.reason.as_deref(), Some("unsupported notification"));
+    }
+
+    #[test]
+    fn realtime_event_mapping_exposes_only_trusted_system_notification_signal() {
+        let event = realtime_event_to_dart(ImEvent::SystemNotificationChanged(
+            SystemNotificationChangedEvent {
+                notification: SystemNotificationSnapshot {
+                    event_id: "event-join-1".to_owned(),
+                    did: "did:wba:example.test:alice".to_owned(),
+                    join_session_id: "join-session-secret-adjacent".to_owned(),
+                    kind: SystemNotificationKind::JoinRequested,
+                    state: SystemNotificationState::Pending,
+                    session_revision: 1,
+                    issued_at: "2026-07-23T10:00:00Z".to_owned(),
+                    expires_at: "2026-07-23T10:10:00Z".to_owned(),
+                    first_seen_at: "2026-07-23T10:00:01Z".to_owned(),
+                    terminal: false,
+                },
+                sync: Some(RealtimeSyncHint {
+                    event_id: Some("sync-event-join-1".to_owned()),
+                    event_seq: Some("42".to_owned()),
+                    event_type: Some("system.notification".to_owned()),
+                    sync_dirty: false,
+                    gap_detected: false,
+                }),
+            },
+        ));
+
+        assert_eq!(event.kind, "system_notification_changed");
+        assert_eq!(event.notification_id.as_deref(), Some("event-join-1"));
+        assert_eq!(
+            event.notification_type.as_deref(),
+            Some("awiki.device.join-requested.v1")
+        );
+        assert!(event.message.is_none());
+        assert!(event.body.is_none());
+        assert!(event.content_type.is_none());
+        assert!(event.reason.is_none());
+        let sync = event.sync.expect("reliable sync hint");
+        assert_eq!(sync.event_seq.as_deref(), Some("42"));
+        assert_eq!(sync.event_type.as_deref(), Some("system.notification"));
     }
 
     #[test]

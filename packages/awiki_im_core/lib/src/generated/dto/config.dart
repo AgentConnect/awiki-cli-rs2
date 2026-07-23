@@ -78,7 +78,6 @@ class DartImCoreConfig {
 class DartImCoreOpenOptions {
   final DartIdentitySecretStoragePolicy identitySecretStoragePolicy;
   final DartImCoreSecretVaultOptions? identitySecretVault;
-  final bool multiDeviceJoinEnabled;
   final bool multiDeviceRootTransferEnabled;
   final bool multiDeviceDeviceRevokeEnabled;
   final bool multiDeviceDirectE2EeEnabled;
@@ -87,7 +86,6 @@ class DartImCoreOpenOptions {
   const DartImCoreOpenOptions({
     required this.identitySecretStoragePolicy,
     this.identitySecretVault,
-    required this.multiDeviceJoinEnabled,
     required this.multiDeviceRootTransferEnabled,
     required this.multiDeviceDeviceRevokeEnabled,
     required this.multiDeviceDirectE2EeEnabled,
@@ -98,7 +96,6 @@ class DartImCoreOpenOptions {
   int get hashCode =>
       identitySecretStoragePolicy.hashCode ^
       identitySecretVault.hashCode ^
-      multiDeviceJoinEnabled.hashCode ^
       multiDeviceRootTransferEnabled.hashCode ^
       multiDeviceDeviceRevokeEnabled.hashCode ^
       multiDeviceDirectE2EeEnabled.hashCode ^
@@ -111,7 +108,6 @@ class DartImCoreOpenOptions {
           runtimeType == other.runtimeType &&
           identitySecretStoragePolicy == other.identitySecretStoragePolicy &&
           identitySecretVault == other.identitySecretVault &&
-          multiDeviceJoinEnabled == other.multiDeviceJoinEnabled &&
           multiDeviceRootTransferEnabled ==
               other.multiDeviceRootTransferEnabled &&
           multiDeviceDeviceRevokeEnabled ==

@@ -347,10 +347,11 @@ enum DeviceJoinAuthorizationStatus { active, revoked }
 
 enum DeviceJoinRemoteState {
   pending,
-  claimed,
   challengeSent,
   responseVerified,
   consumed,
+  cancelled,
+  rejected,
   expired,
 }
 
@@ -392,37 +393,48 @@ class DeviceJoinAuthorizedDeviceSummary {
   final bool isCurrent;
 }
 
-class DeviceJoinPendingSummary {
-  const DeviceJoinPendingSummary({
+class DeviceJoinRequestNotice {
+  const DeviceJoinRequestNotice({
+    required this.eventId,
     required this.joinSessionId,
+    required this.did,
     required this.protocolDeviceId,
-    required this.signingKeyId,
-    required this.e2eeKeyId,
-    required this.requestedRole,
+    required this.candidateKeyFingerprint,
     required this.issuedAt,
     required this.expiresAt,
+    required this.state,
+    required this.claimedByCurrentDevice,
+    required this.canStartVerification,
   });
 
+  final String eventId;
   final String joinSessionId;
+  final String did;
   final String protocolDeviceId;
-  final String signingKeyId;
-  final String e2eeKeyId;
-  final DeviceJoinRole requestedRole;
+  final String candidateKeyFingerprint;
   final String issuedAt;
   final String expiresAt;
+  final DeviceJoinRemoteState state;
+  final bool claimedByCurrentDevice;
+  final bool canStartVerification;
+
+  @override
+  String toString() =>
+      'DeviceJoinRequestNotice(eventId: $eventId, '
+      'joinSessionId: $joinSessionId, did: $did, '
+      'protocolDeviceId: $protocolDeviceId, state: $state, '
+      'claimedByCurrentDevice: $claimedByCurrentDevice, '
+      'canStartVerification: $canStartVerification)';
 }
 
 class DeviceJoinRegistrySnapshot {
-  const DeviceJoinRegistrySnapshot({
-    required this.did,
-    required this.devices,
-    required this.pendingJoinRequests,
-  });
+  const DeviceJoinRegistrySnapshot({required this.did, required this.devices});
 
   final String did;
   final List<DeviceJoinAuthorizedDeviceSummary> devices;
-  final List<DeviceJoinPendingSummary> pendingJoinRequests;
 }
+
+enum DeviceJoinRejectReason { userRejected, sasMismatch }
 
 class DeviceJoinProgress {
   const DeviceJoinProgress({
@@ -436,26 +448,30 @@ class DeviceJoinProgress {
   final DeviceJoinRemoteState remoteState;
   final String? sas;
   final DeviceJoinAuthorizedDeviceSummary? authorizedDevice;
+
+  @override
+  String toString() =>
+      'DeviceJoinProgress(joinSessionId: ${session.joinSessionId}, '
+      'remoteState: $remoteState, '
+      'sas: ${sas == null ? 'null' : '<redacted>'})';
 }
 
 class DeviceJoinApprovalPrompt {
   const DeviceJoinApprovalPrompt({
     required this.approvalHandle,
     required this.joinSessionId,
-    required this.role,
     required this.sas,
     required this.expiresAt,
   });
 
   final String approvalHandle;
   final String joinSessionId;
-  final DeviceJoinRole role;
   final String sas;
   final String expiresAt;
 
   @override
   String toString() =>
-      'DeviceJoinApprovalPrompt(joinSessionId: $joinSessionId, role: $role, '
+      'DeviceJoinApprovalPrompt(joinSessionId: $joinSessionId, '
       'approvalHandle: <redacted>, sas: <redacted>)';
 }
 

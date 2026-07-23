@@ -399,6 +399,15 @@ void main() {
     expect(event.isConnectionState, isTrue);
     expect(event.sync?.eventSeq, '42');
     expect(event.sync?.syncDirty, isTrue);
+
+    const systemEvent = RealtimeEvent(
+      kind: 'system_notification_changed',
+      notificationId: 'event-join-1',
+      notificationType: 'awiki.device.join-requested.v1',
+    );
+    expect(systemEvent.isSystemNotificationChanged, isTrue);
+    expect(systemEvent.message, isNull);
+    expect(systemEvent.body, isNull);
   });
 
   test('email models can be constructed without CLI-only fields', () {

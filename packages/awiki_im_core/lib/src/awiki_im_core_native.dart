@@ -314,7 +314,35 @@ class AwikiImCore {
     return snapshot._toModel();
   }
 
-  Future<DeviceJoinProgress> claimDeviceJoin({
+  Future<List<DeviceJoinRequestNotice>> localDeviceJoinRequests(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final requests = await _mapNativeErrors(
+      () => gen_identity_api.localDeviceJoinRequests(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return requests.map((request) => request._toModel()).toList();
+  }
+
+  Future<DeviceJoinProgress> localDeviceJoinVerificationProgress({
+    required IdentitySelector selector,
+    required String joinSessionId,
+  }) async {
+    _ensureNotDisposed();
+    final progress = await _mapNativeErrors(
+      () => gen_identity_api.localDeviceJoinVerificationProgress(
+        core: _inner,
+        selector: selector._toGen(),
+        joinSessionId: joinSessionId,
+      ),
+    );
+    return progress._toModel();
+  }
+
+  Future<DeviceJoinProgress> startDeviceJoinVerification({
     required IdentitySelector selector,
     required String joinSessionId,
     required String operationId,
@@ -322,7 +350,7 @@ class AwikiImCore {
   }) async {
     _ensureNotDisposed();
     final progress = await _mapNativeErrors(
-      () => gen_identity_api.claimDeviceJoin(
+      () => gen_identity_api.startDeviceJoinVerification(
         core: _inner,
         selector: selector._toGen(),
         joinSessionId: joinSessionId,
@@ -333,16 +361,18 @@ class AwikiImCore {
     return progress._toModel();
   }
 
-  Future<DeviceJoinProgress> pollAdminDeviceJoin({
+  Future<DeviceJoinProgress> rejectDeviceJoin({
     required IdentitySelector selector,
     required String joinSessionId,
+    required DeviceJoinRejectReason reason,
   }) async {
     _ensureNotDisposed();
     final progress = await _mapNativeErrors(
-      () => gen_identity_api.pollAdminDeviceJoin(
+      () => gen_identity_api.rejectDeviceJoin(
         core: _inner,
         selector: selector._toGen(),
         joinSessionId: joinSessionId,
+        reason: reason._toGen(),
       ),
     );
     return progress._toModel();
@@ -351,7 +381,6 @@ class AwikiImCore {
   Future<DeviceJoinApprovalPrompt> prepareDeviceJoinApproval({
     required IdentitySelector selector,
     required String joinSessionId,
-    DeviceJoinRole role = DeviceJoinRole.member,
     required bool sasConfirmed,
   }) async {
     _ensureNotDisposed();
@@ -360,7 +389,6 @@ class AwikiImCore {
         core: _inner,
         selector: selector._toGen(),
         joinSessionId: joinSessionId,
-        role: role._toGen(),
         sasConfirmed: sasConfirmed,
       ),
     );
@@ -380,21 +408,6 @@ class AwikiImCore {
       ),
     );
     return progress._toModel();
-  }
-
-  Future<DeviceJoinSessionSummary> cancelAdminDeviceJoin({
-    required IdentitySelector selector,
-    required String joinSessionId,
-  }) async {
-    _ensureNotDisposed();
-    final session = await _mapNativeErrors(
-      () => gen_identity_api.cancelAdminDeviceJoin(
-        core: _inner,
-        selector: selector._toGen(),
-        joinSessionId: joinSessionId,
-      ),
-    );
-    return session._toModel();
   }
 
   Future<IdentityVaultStatus> identityVaultStatus(
@@ -1790,7 +1803,6 @@ extension on AwikiImCoreOpenOptions {
   gen_config.DartImCoreOpenOptions _toGen() => gen_config.DartImCoreOpenOptions(
     identitySecretStoragePolicy: identitySecretStoragePolicy._toGen(),
     identitySecretVault: identitySecretVault?._toGen(),
-    multiDeviceJoinEnabled: multiDeviceJoinEnabled,
     multiDeviceRootTransferEnabled: multiDeviceRootTransferEnabled,
     multiDeviceDeviceRevokeEnabled: multiDeviceDeviceRevokeEnabled,
     multiDeviceDirectE2EeEnabled: multiDeviceDirectE2eeEnabled,
@@ -1974,13 +1986,6 @@ extension on gen_identity.DartIdentityDeviceSummary {
   );
 }
 
-extension on DeviceJoinRole {
-  gen_identity.DartDeviceJoinRole _toGen() => switch (this) {
-    DeviceJoinRole.member => gen_identity.DartDeviceJoinRole.member,
-    DeviceJoinRole.admin => gen_identity.DartDeviceJoinRole.admin,
-  };
-}
-
 extension on gen_identity.DartDeviceJoinRole {
   DeviceJoinRole _toModel() => switch (this) {
     gen_identity.DartDeviceJoinRole.member => DeviceJoinRole.member,
@@ -2033,15 +2038,18 @@ extension on gen_identity.DartDeviceJoinAuthorizedDeviceSummary {
       );
 }
 
-extension on gen_identity.DartDeviceJoinPendingSummary {
-  DeviceJoinPendingSummary _toModel() => DeviceJoinPendingSummary(
+extension on gen_identity.DartDeviceJoinRequestNotice {
+  DeviceJoinRequestNotice _toModel() => DeviceJoinRequestNotice(
+    eventId: eventId,
     joinSessionId: joinSessionId,
+    did: did,
     protocolDeviceId: protocolDeviceId,
-    signingKeyId: signingKeyId,
-    e2eeKeyId: e2EeKeyId,
-    requestedRole: requestedRole._toModel(),
+    candidateKeyFingerprint: candidateKeyFingerprint,
     issuedAt: issuedAt,
     expiresAt: expiresAt,
+    state: state._toModel(),
+    claimedByCurrentDevice: claimedByCurrentDevice,
+    canStartVerification: canStartVerification,
   );
 }
 
@@ -2049,39 +2057,50 @@ extension on gen_identity.DartDeviceJoinRegistrySnapshot {
   DeviceJoinRegistrySnapshot _toModel() => DeviceJoinRegistrySnapshot(
     did: did,
     devices: devices.map((device) => device._toModel()).toList(),
-    pendingJoinRequests: pendingJoinRequests
-        .map((pending) => pending._toModel())
-        .toList(),
   );
+}
+
+extension on gen_identity.DartDeviceJoinRemoteState {
+  DeviceJoinRemoteState _toModel() => switch (this) {
+    gen_identity.DartDeviceJoinRemoteState.pending =>
+      DeviceJoinRemoteState.pending,
+    gen_identity.DartDeviceJoinRemoteState.challengeSent =>
+      DeviceJoinRemoteState.challengeSent,
+    gen_identity.DartDeviceJoinRemoteState.responseVerified =>
+      DeviceJoinRemoteState.responseVerified,
+    gen_identity.DartDeviceJoinRemoteState.consumed =>
+      DeviceJoinRemoteState.consumed,
+    gen_identity.DartDeviceJoinRemoteState.cancelled =>
+      DeviceJoinRemoteState.cancelled,
+    gen_identity.DartDeviceJoinRemoteState.rejected =>
+      DeviceJoinRemoteState.rejected,
+    gen_identity.DartDeviceJoinRemoteState.expired =>
+      DeviceJoinRemoteState.expired,
+  };
 }
 
 extension on gen_identity.DartDeviceJoinProgress {
   DeviceJoinProgress _toModel() => DeviceJoinProgress(
     session: session._toModel(),
-    remoteState: switch (remoteState) {
-      gen_identity.DartDeviceJoinRemoteState.pending =>
-        DeviceJoinRemoteState.pending,
-      gen_identity.DartDeviceJoinRemoteState.claimed =>
-        DeviceJoinRemoteState.claimed,
-      gen_identity.DartDeviceJoinRemoteState.challengeSent =>
-        DeviceJoinRemoteState.challengeSent,
-      gen_identity.DartDeviceJoinRemoteState.responseVerified =>
-        DeviceJoinRemoteState.responseVerified,
-      gen_identity.DartDeviceJoinRemoteState.consumed =>
-        DeviceJoinRemoteState.consumed,
-      gen_identity.DartDeviceJoinRemoteState.expired =>
-        DeviceJoinRemoteState.expired,
-    },
+    remoteState: remoteState._toModel(),
     sas: sas,
     authorizedDevice: authorizedDevice?._toModel(),
   );
+}
+
+extension on DeviceJoinRejectReason {
+  gen_identity.DartDeviceJoinRejectReason _toGen() => switch (this) {
+    DeviceJoinRejectReason.userRejected =>
+      gen_identity.DartDeviceJoinRejectReason.userRejected,
+    DeviceJoinRejectReason.sasMismatch =>
+      gen_identity.DartDeviceJoinRejectReason.sasMismatch,
+  };
 }
 
 extension on gen_identity.DartDeviceJoinApprovalPrompt {
   DeviceJoinApprovalPrompt _toModel() => DeviceJoinApprovalPrompt(
     approvalHandle: approvalHandle,
     joinSessionId: joinSessionId,
-    role: role._toModel(),
     sas: sas,
     expiresAt: expiresAt,
   );

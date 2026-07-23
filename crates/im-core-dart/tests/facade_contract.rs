@@ -95,7 +95,7 @@ fn local_state_upgrade_inspection_is_available_before_core_open() {
         awiki_im_core::dto::local_state_upgrade::DartLocalStateUpgradeEligibility::NotRequired
     );
     assert_eq!(inspection.source_schema_version, 0);
-    assert_eq!(inspection.target_schema_version, 28);
+    assert_eq!(inspection.target_schema_version, 29);
 }
 
 #[test]
@@ -836,7 +836,6 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
             workspace_id: "workspace-a".to_string(),
             device_id: "device-a".to_string(),
         }),
-        multi_device_join_enabled: true,
         multi_device_root_transfer_enabled: true,
         multi_device_device_revoke_enabled: true,
         multi_device_direct_e2ee_enabled: true,
@@ -848,7 +847,6 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
         mapped.identity_secret_storage_policy,
         im_core::IdentitySecretStoragePolicy::VaultRequired
     ));
-    assert!(mapped.multi_device_join_enabled);
     assert!(mapped.multi_device_root_transfer_enabled);
     assert!(mapped.multi_device_device_revoke_enabled);
     assert!(mapped.multi_device_direct_e2ee_enabled);
@@ -878,7 +876,6 @@ fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
             workspace_id: "workspace-a".to_string(),
             device_id: "device-a".to_string(),
         }),
-        multi_device_join_enabled: false,
         multi_device_root_transfer_enabled: false,
         multi_device_device_revoke_enabled: false,
         multi_device_direct_e2ee_enabled: false,
@@ -1144,13 +1141,70 @@ fn device_join_bridge_projection_excludes_internal_state_and_redacts_prompt() {
     let prompt = awiki_im_core::dto::identity::DartDeviceJoinApprovalPrompt {
         approval_handle: "approval-secret-handle".to_owned(),
         join_session_id: "join-safe-id".to_owned(),
-        role: awiki_im_core::dto::identity::DartDeviceJoinRole::Member,
         sas: "123456".to_owned(),
         expires_at: "2026-07-19T12:00:00Z".to_owned(),
     };
     let debug = format!("{prompt:?}");
     assert!(!debug.contains("approval-secret-handle"));
     assert!(!debug.contains("123456"));
+}
+
+#[test]
+fn device_join_progress_debug_redacts_short_lived_sas() {
+    let progress = awiki_im_core::dto::identity::DartDeviceJoinProgress {
+        session: awiki_im_core::dto::identity::DartDeviceJoinSessionSummary {
+            join_session_id: "join-safe-id".to_owned(),
+            did: "did:wba:example.test:alice".to_owned(),
+            protocol_device_id: "device-new".to_owned(),
+            side: awiki_im_core::dto::identity::DartDeviceJoinSide::Admin,
+            phase: awiki_im_core::dto::identity::DartDeviceJoinPhase::ResponseVerified,
+            expires_at: "2026-07-23T12:10:00Z".to_owned(),
+        },
+        remote_state: awiki_im_core::dto::identity::DartDeviceJoinRemoteState::ResponseVerified,
+        sas: Some("123456".to_owned()),
+        authorized_device: None,
+    };
+
+    let debug = format!("{progress:?}");
+    assert!(debug.contains("join-safe-id"));
+    assert!(debug.contains("<redacted-sas>"));
+    assert!(!debug.contains("123456"));
+}
+
+#[test]
+fn device_join_request_notice_is_closed_and_secret_free() {
+    let notice = im_core::identity::DeviceJoinRequestNotice {
+        event_id: "join-event-1".to_owned(),
+        join_session_id: "join-safe-id".to_owned(),
+        did: im_core::ids::Did::parse("did:wba:example.test:alice").unwrap(),
+        protocol_device_id: im_core::ids::ProtocolDeviceId::parse("device-new").unwrap(),
+        candidate_key_fingerprint: "fingerprint-safe".to_owned(),
+        issued_at: "2026-07-23T12:00:00Z".to_owned(),
+        expires_at: "2026-07-23T12:10:00Z".to_owned(),
+        state: im_core::identity::DeviceJoinRemoteState::Pending,
+        claimed_by_current_device: false,
+        can_start_verification: true,
+    };
+    let dart: awiki_im_core::dto::identity::DartDeviceJoinRequestNotice = notice.into();
+
+    assert_eq!(dart.event_id, "join-event-1");
+    assert_eq!(
+        dart.state,
+        awiki_im_core::dto::identity::DartDeviceJoinRemoteState::Pending
+    );
+    assert!(dart.can_start_verification);
+    let debug = format!("{dart:?}");
+    for forbidden in [
+        "join_request_proof",
+        "admin_proof",
+        "challenge_ciphertext",
+        "pairing_private_key",
+        "shared_secret",
+        "token",
+        "sas",
+    ] {
+        assert!(!debug.contains(forbidden));
+    }
 }
 
 #[test]

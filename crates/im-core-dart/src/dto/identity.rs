@@ -87,10 +87,11 @@ pub enum DartDeviceJoinAuthorizationStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DartDeviceJoinRemoteState {
     Pending,
-    Claimed,
     ChallengeSent,
     ResponseVerified,
     Consumed,
+    Cancelled,
+    Rejected,
     Expired,
 }
 
@@ -116,21 +117,29 @@ pub struct DartDeviceJoinAuthorizedDeviceSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartDeviceJoinPendingSummary {
+pub struct DartDeviceJoinRequestNotice {
+    pub event_id: String,
     pub join_session_id: String,
+    pub did: String,
     pub protocol_device_id: String,
-    pub signing_key_id: String,
-    pub e2ee_key_id: String,
-    pub requested_role: DartDeviceJoinRole,
+    pub candidate_key_fingerprint: String,
     pub issued_at: String,
     pub expires_at: String,
+    pub state: DartDeviceJoinRemoteState,
+    pub claimed_by_current_device: bool,
+    pub can_start_verification: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinRegistrySnapshot {
     pub did: String,
     pub devices: Vec<DartDeviceJoinAuthorizedDeviceSummary>,
-    pub pending_join_requests: Vec<DartDeviceJoinPendingSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartDeviceJoinRejectReason {
+    UserRejected,
+    SasMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,7 +190,7 @@ pub struct DartRootKeyTransferSummary {
     pub retryable: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinProgress {
     pub session: DartDeviceJoinSessionSummary,
     pub remote_state: DartDeviceJoinRemoteState,
@@ -189,11 +198,21 @@ pub struct DartDeviceJoinProgress {
     pub authorized_device: Option<DartDeviceJoinAuthorizedDeviceSummary>,
 }
 
+impl std::fmt::Debug for DartDeviceJoinProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DartDeviceJoinProgress")
+            .field("session", &self.session)
+            .field("remote_state", &self.remote_state)
+            .field("sas", &self.sas.as_ref().map(|_| "<redacted-sas>"))
+            .field("authorized_device", &self.authorized_device)
+            .finish()
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinApprovalPrompt {
     pub approval_handle: String,
     pub join_session_id: String,
-    pub role: DartDeviceJoinRole,
     pub sas: String,
     pub expires_at: String,
 }
@@ -203,7 +222,6 @@ impl std::fmt::Debug for DartDeviceJoinApprovalPrompt {
         f.debug_struct("DartDeviceJoinApprovalPrompt")
             .field("approval_handle", &"<redacted-approval-handle>")
             .field("join_session_id", &self.join_session_id)
-            .field("role", &self.role)
             .field("sas", &"<redacted-sas>")
             .field("expires_at", &self.expires_at)
             .finish()

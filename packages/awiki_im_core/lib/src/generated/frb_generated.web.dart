@@ -499,11 +499,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_dart_device_join_authorized_device_summary(dynamic raw);
 
   @protected
-  DartDeviceJoinPendingSummary dco_decode_dart_device_join_pending_summary(
-    dynamic raw,
-  );
-
-  @protected
   DartDeviceJoinPhase dco_decode_dart_device_join_phase(dynamic raw);
 
   @protected
@@ -515,7 +510,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeviceJoinRejectReason dco_decode_dart_device_join_reject_reason(
+    dynamic raw,
+  );
+
+  @protected
   DartDeviceJoinRemoteState dco_decode_dart_device_join_remote_state(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceJoinRequestNotice dco_decode_dart_device_join_request_notice(
     dynamic raw,
   );
 
@@ -974,8 +979,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_dart_device_join_authorized_device_summary(dynamic raw);
 
   @protected
-  List<DartDeviceJoinPendingSummary>
-  dco_decode_list_dart_device_join_pending_summary(dynamic raw);
+  List<DartDeviceJoinRequestNotice>
+  dco_decode_list_dart_device_join_request_notice(dynamic raw);
 
   @protected
   List<DartDeviceJoinSessionSummary>
@@ -1688,11 +1693,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  DartDeviceJoinPendingSummary sse_decode_dart_device_join_pending_summary(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   DartDeviceJoinPhase sse_decode_dart_device_join_phase(
     SseDeserializer deserializer,
   );
@@ -1708,7 +1708,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeviceJoinRejectReason sse_decode_dart_device_join_reject_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartDeviceJoinRemoteState sse_decode_dart_device_join_remote_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceJoinRequestNotice sse_decode_dart_device_join_request_notice(
     SseDeserializer deserializer,
   );
 
@@ -2309,10 +2319,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<DartDeviceJoinPendingSummary>
-  sse_decode_list_dart_device_join_pending_summary(
-    SseDeserializer deserializer,
-  );
+  List<DartDeviceJoinRequestNotice>
+  sse_decode_list_dart_device_join_request_notice(SseDeserializer deserializer);
 
   @protected
   List<DartDeviceJoinSessionSummary>
@@ -3145,12 +3153,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_dart_device_join_pending_summary(
-    DartDeviceJoinPendingSummary self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_dart_device_join_phase(
     DartDeviceJoinPhase self,
     SseSerializer serializer,
@@ -3169,8 +3171,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_device_join_reject_reason(
+    DartDeviceJoinRejectReason self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_device_join_remote_state(
     DartDeviceJoinRemoteState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_join_request_notice(
+    DartDeviceJoinRequestNotice self,
     SseSerializer serializer,
   );
 
@@ -3910,8 +3924,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_dart_device_join_pending_summary(
-    List<DartDeviceJoinPendingSummary> self,
+  void sse_encode_list_dart_device_join_request_notice(
+    List<DartDeviceJoinRequestNotice> self,
     SseSerializer serializer,
   );
 

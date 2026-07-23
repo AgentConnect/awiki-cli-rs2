@@ -115,7 +115,20 @@ class AwikiImCore {
     throw _unsupported();
   }
 
-  Future<DeviceJoinProgress> claimDeviceJoin({
+  Future<List<DeviceJoinRequestNotice>> localDeviceJoinRequests(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> localDeviceJoinVerificationProgress({
+    required IdentitySelector selector,
+    required String joinSessionId,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> startDeviceJoinVerification({
     required IdentitySelector selector,
     required String joinSessionId,
     required String operationId,
@@ -124,9 +137,10 @@ class AwikiImCore {
     throw _unsupported();
   }
 
-  Future<DeviceJoinProgress> pollAdminDeviceJoin({
+  Future<DeviceJoinProgress> rejectDeviceJoin({
     required IdentitySelector selector,
     required String joinSessionId,
+    required DeviceJoinRejectReason reason,
   }) async {
     throw _unsupported();
   }
@@ -134,7 +148,6 @@ class AwikiImCore {
   Future<DeviceJoinApprovalPrompt> prepareDeviceJoinApproval({
     required IdentitySelector selector,
     required String joinSessionId,
-    DeviceJoinRole role = DeviceJoinRole.member,
     required bool sasConfirmed,
   }) async {
     throw _unsupported();
@@ -143,13 +156,6 @@ class AwikiImCore {
   Future<DeviceJoinProgress> confirmDeviceJoinApproval({
     required String approvalHandle,
     required bool userPresenceConfirmed,
-  }) async {
-    throw _unsupported();
-  }
-
-  Future<DeviceJoinSessionSummary> cancelAdminDeviceJoin({
-    required IdentitySelector selector,
-    required String joinSessionId,
   }) async {
     throw _unsupported();
   }

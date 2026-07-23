@@ -145,26 +145,38 @@ root-key presence flags, and internal Document/Registry/auth checkpoints.
 
 ## Multi-device Join
 
-Native hosts opt in explicitly with
-`AwikiImCoreOpenOptions(multiDeviceJoinEnabled: true)`; the default remains
-fail closed. The new device immediately wraps its short-lived account
-verification result with `DeviceJoinAccountVerificationGrant.fromToken(...)`.
-The grant has no getter, copy/JSON API, or revealing `toString`, and
-`beginDeviceJoin` consumes it once. Resume uses `localDeviceJoinSessions`,
-`pollNewDeviceJoin`, and `cancelNewDeviceJoin`.
+Device Join 是 native SDK 的正式产品能力，不再受 Join host-local rollout gate 控制。新设备立即用
+`DeviceJoinAccountVerificationGrant.fromToken(...)` 包装短期账号验证结果；
+该 grant 没有 getter、copy/JSON API 或泄露内容的 `toString`，并由
+`beginDeviceJoin` 一次性消费。重启恢复与候选设备侧收敛继续使用
+`localDeviceJoinSessions`、`pollNewDeviceJoin` 和 `cancelNewDeviceJoin`。
 
-An existing management device uses `identityDeviceRegistry`,
-`claimDeviceJoin`, and `pollAdminDeviceJoin`. After comparing the locally
-derived six-digit SAS on both devices and obtaining local user presence, the
-host calls `prepareDeviceJoinApproval` followed by
-`confirmDeviceJoinApproval`. The approval handle stays in memory and must not
-be logged or persisted.
+现有管理设备不通过 Registry pending 列表或 admin HTTP polling 发现请求。Core 在完成系统通知
+验证、durable dedupe 和本地 reducer commit 后，才发出可信
+`system_notification_changed` 事件；host 收到该信号后调用
+`localDeviceJoinRequests(selector)` 读取已验证、secret-free 的本地请求投影。打开页面或读取请求
+不得自动占有 Session。用户明确点击“开始验证”后，host 才调用
+`startDeviceJoinVerification(...)`，将 claim 与 Challenge 提交合并为一个操作；拒绝请求使用
+带 `DeviceJoinRejectReason.userRejected` 或 `DeviceJoinRejectReason.sasMismatch` 的
+`rejectDeviceJoin(...)`。
 
-Join models expose only safe session, device, role/status, expiry, and
-short-lived SAS facts. They do not expose OTP/Join tokens, pairing or private
-key material, root material, challenge ciphertext, or AWiki-internal
-Document/Registry/auth versions and hashes. Flutter Web keeps this native flow
-unsupported.
+只有响应已经验证后，两端才显示本地推导的六位 SAS。管理设备收到可信通知并刷新本地请求后，
+调用 `localDeviceJoinVerificationProgress(selector:, joinSessionId:)` 读取短期 SAS。该接口是
+纯本地读取，只接受已经进入 `ResponseVerified` 或 `ApprovalPrepared` 的本地管理端 Session；
+它不发起 HTTP/RPC、不轮询远端、不写通知，也不推进 Join 状态。
+
+用户确认 SAS 一致后，host 调用 `prepareDeviceJoinApproval`，再在真实本地 user presence 后调用
+`confirmDeviceJoinApproval`。approval API 不接受 role，Join 结果固定为 rootless
+`member`；Registry 中既有设备的 member/admin role 仍可用于授权设备展示。approval handle
+只保留在进程内，不得记录或持久化。
+
+Join model 只暴露安全的 Session、设备、Registry role/status、expiry、请求生命周期和短期 SAS
+事实，不暴露 OTP/Join token、完整 Join Request/proof、pairing/private key、shared secret、
+root material、Challenge/ciphertext 或 AWiki 内部 Document/Registry/auth 版本与 hash。
+SAS 只允许短暂存在于 `DeviceJoinProgress`，不得进入 `DeviceJoinRequestNotice`、realtime event、
+持久化 DTO 或日志；相关模型的字符串与 Debug 输出必须保持脱敏。
+`system_notification_changed` 只携带 event ID、闭合 notification type 和可靠同步 hint，不透传
+raw P3 payload。Flutter Web 保留同形 API，但该 native 流程仍返回 unsupported。
 
 ## Multi-device Handle Recovery
 
@@ -178,7 +190,7 @@ repair, or other operational repair APIs.
 ## Management-device root-key transfer
 
 Native hosts must explicitly set `multiDeviceRootTransferEnabled: true`; it is
-independent from the Join gate and defaults to false. After real local user
+independent from the Join flow and defaults to false. After real local user
 presence, the host may call `sendRootKeyTransfer` with the selected identity,
 exact recipient device ID, and message ID. The returned
 `RootKeyTransferSendResult` contains delivery metadata only. `acceptedAt` means
@@ -237,7 +249,7 @@ JSON, or internal delivery ledgers to Dart.
 
 Native hosts opt in with
 `AwikiImCoreOpenOptions(multiDeviceGroupE2eeEnabled: true)`; the option defaults
-to false and is independent from the Join and root-transfer gates. It is local
+to false and is independent from the Join flow and root-transfer gate. It is local
 configuration and is not sent as an ANP, DID Document, or cross-domain field.
 When enabled, `client.secure.group(groupDid).status()` and `repair()` read the
 device-scoped P6 v2 state and return only redacted readiness and repair facts.
