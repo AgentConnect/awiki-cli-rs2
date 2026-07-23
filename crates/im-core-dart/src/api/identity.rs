@@ -10,7 +10,7 @@ use crate::dto::{
         DartIdentityDeviceSummary, DartIdentitySelector, DartIdentitySummary,
         DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
         DartIdentityVaultVerificationReport, DartInitialProfile, DartLegacyUpgradeStatus,
-        DartRootKeyTransferSendResult, DartRootKeyTransferSummary,
+        DartRootKeyTransferError, DartRootKeyTransferPreparation, DartRootKeyTransferSendResult,
     },
 };
 
@@ -34,62 +34,45 @@ pub async fn revoke_device(
         .map_err(DartImError::from)
 }
 
-pub async fn send_root_key_transfer(
-    core: &Arc<crate::api::core::DartImCore>,
-    selector: DartIdentitySelector,
+pub async fn prepare_root_key_transfer(
+    client: &Arc<crate::api::client::DartImClient>,
     recipient_device_id: String,
-    message_id: String,
-    user_presence_confirmed: bool,
-) -> Result<DartRootKeyTransferSendResult, DartImError> {
-    let inner = core.clone_inner()?;
+) -> Result<DartRootKeyTransferPreparation, DartRootKeyTransferError> {
+    let inner = client
+        .clone_inner()
+        .map_err(|_| DartRootKeyTransferError::temporarily_unavailable())?;
+    let recipient_device_id = im_core::ids::ProtocolDeviceId::parse(recipient_device_id)
+        .map_err(|_| DartRootKeyTransferError::invalid_request())?;
     inner
         .root_key_transfer()
-        .send(im_core::identity::RootKeyTransferSendRequest {
-            identity: selector.try_into()?,
-            recipient_device_id: im_core::ids::ProtocolDeviceId::parse(recipient_device_id)
-                .map_err(DartImError::from)?,
-            message_id: im_core::ids::MessageId::parse(message_id).map_err(DartImError::from)?,
+        .prepare(im_core::identity::RootKeyTransferPrepareRequest {
+            recipient_device_id,
+        })
+        .await
+        .map(Into::into)
+        .map_err(Into::into)
+}
+
+pub async fn confirm_and_send_root_key_transfer(
+    client: &Arc<crate::api::client::DartImClient>,
+    authorization_handle: String,
+    user_presence_confirmed: bool,
+) -> Result<DartRootKeyTransferSendResult, DartRootKeyTransferError> {
+    let inner = client
+        .clone_inner()
+        .map_err(|_| DartRootKeyTransferError::temporarily_unavailable())?;
+    let authorization_handle =
+        serde_json::from_value(serde_json::Value::String(authorization_handle))
+            .map_err(|_| DartRootKeyTransferError::authorization_invalid())?;
+    inner
+        .root_key_transfer()
+        .confirm_and_send(im_core::identity::RootKeyTransferSendRequest {
+            authorization_handle,
             user_presence_confirmed,
         })
         .await
         .map(Into::into)
-        .map_err(DartImError::from)
-}
-
-pub async fn list_root_key_transfers(
-    core: &Arc<crate::api::core::DartImCore>,
-    selector: DartIdentitySelector,
-    include_completed: bool,
-) -> Result<Vec<DartRootKeyTransferSummary>, DartImError> {
-    let inner = core.clone_inner()?;
-    inner
-        .root_key_transfer()
-        .list(im_core::identity::RootKeyTransferListRequest {
-            identity: selector.try_into()?,
-            include_completed,
-        })
-        .await
-        .map(|items| items.into_iter().map(Into::into).collect())
-        .map_err(DartImError::from)
-}
-
-pub async fn retry_root_key_transfer(
-    core: &Arc<crate::api::core::DartImCore>,
-    selector: DartIdentitySelector,
-    message_id: String,
-    user_presence_confirmed: bool,
-) -> Result<DartRootKeyTransferSummary, DartImError> {
-    let inner = core.clone_inner()?;
-    inner
-        .root_key_transfer()
-        .retry(im_core::identity::RootKeyTransferRetryRequest {
-            identity: selector.try_into()?,
-            message_id: im_core::ids::MessageId::parse(message_id).map_err(DartImError::from)?,
-            user_presence_confirmed,
-        })
-        .await
-        .map(Into::into)
-        .map_err(DartImError::from)
+        .map_err(Into::into)
 }
 
 pub async fn local_device_join_sessions(

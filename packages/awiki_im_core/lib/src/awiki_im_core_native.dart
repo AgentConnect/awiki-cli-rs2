@@ -177,25 +177,6 @@ class AwikiImCore {
     return summary._toModel();
   }
 
-  Future<RootKeyTransferSendResult> sendRootKeyTransfer({
-    required IdentitySelector selector,
-    required String recipientDeviceId,
-    required String messageId,
-    required bool userPresenceConfirmed,
-  }) async {
-    _ensureNotDisposed();
-    final result = await _mapNativeErrors(
-      () => gen_identity_api.sendRootKeyTransfer(
-        core: _inner,
-        selector: selector._toGen(),
-        recipientDeviceId: recipientDeviceId,
-        messageId: messageId,
-        userPresenceConfirmed: userPresenceConfirmed,
-      ),
-    );
-    return result._toModel();
-  }
-
   Future<DeviceRevokeResult> revokeDevice({
     required IdentitySelector selector,
     required String targetDeviceId,
@@ -211,38 +192,6 @@ class AwikiImCore {
       ),
     );
     return result._toModel();
-  }
-
-  Future<List<RootKeyTransferSummary>> listRootKeyTransfers({
-    required IdentitySelector selector,
-    bool includeCompleted = false,
-  }) async {
-    _ensureNotDisposed();
-    final summaries = await _mapNativeErrors(
-      () => gen_identity_api.listRootKeyTransfers(
-        core: _inner,
-        selector: selector._toGen(),
-        includeCompleted: includeCompleted,
-      ),
-    );
-    return summaries.map((summary) => summary._toModel()).toList();
-  }
-
-  Future<RootKeyTransferSummary> retryRootKeyTransfer({
-    required IdentitySelector selector,
-    required String messageId,
-    required bool userPresenceConfirmed,
-  }) async {
-    _ensureNotDisposed();
-    final summary = await _mapNativeErrors(
-      () => gen_identity_api.retryRootKeyTransfer(
-        core: _inner,
-        selector: selector._toGen(),
-        messageId: messageId,
-        userPresenceConfirmed: userPresenceConfirmed,
-      ),
-    );
-    return summary._toModel();
   }
 
   Future<List<DeviceJoinSessionSummary>> localDeviceJoinSessions() async {
@@ -636,6 +585,7 @@ class AwikiImClient {
   GroupApi get groups => GroupApi._(this);
   RealtimeApi get realtime => RealtimeApi._(this);
   SecureApi get secure => SecureApi._(this);
+  RootKeyTransferApi get rootKeyTransfer => RootKeyTransferApi._(this);
 
   Stream<RealtimeEvent> get events => _eventsController.stream;
 
@@ -656,6 +606,67 @@ class AwikiImClient {
       throw const AwikiImCoreException(
         code: 'object_closed',
         message: 'client disposed',
+      );
+    }
+  }
+}
+
+class _NativeRootKeyTransferAuthorizationHandle
+    implements RootKeyTransferAuthorizationHandle {
+  const _NativeRootKeyTransferAuthorizationHandle(this.value);
+
+  final String value;
+
+  @override
+  String toString() => 'RootKeyTransferAuthorizationHandle(<redacted>)';
+}
+
+class RootKeyTransferApi {
+  RootKeyTransferApi._(this._client);
+
+  final AwikiImClient _client;
+
+  Future<RootKeyTransferPreparation> prepare({
+    required String recipientDeviceId,
+  }) async {
+    _ensureAvailable();
+    final preparation = await _mapRootKeyTransferErrors(
+      () => gen_identity_api.prepareRootKeyTransfer(
+        client: _client._inner,
+        recipientDeviceId: recipientDeviceId,
+      ),
+    );
+    return preparation._toModel();
+  }
+
+  Future<RootKeyTransferSendResult> confirmAndSend({
+    required RootKeyTransferAuthorizationHandle authorizationHandle,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureAvailable();
+    if (authorizationHandle case _NativeRootKeyTransferAuthorizationHandle(
+      :final value,
+    )) {
+      final result = await _mapRootKeyTransferErrors(
+        () => gen_identity_api.confirmAndSendRootKeyTransfer(
+          client: _client._inner,
+          authorizationHandle: value,
+          userPresenceConfirmed: userPresenceConfirmed,
+        ),
+      );
+      return result._toModel();
+    }
+    throw const RootKeyTransferException(
+      code: 'root_transfer.authorization_invalid',
+      retryable: false,
+    );
+  }
+
+  void _ensureAvailable() {
+    if (_client._disposed) {
+      throw const RootKeyTransferException(
+        code: 'root_transfer.temporarily_unavailable',
+        retryable: true,
       );
     }
   }
@@ -1803,7 +1814,6 @@ extension on AwikiImCoreOpenOptions {
   gen_config.DartImCoreOpenOptions _toGen() => gen_config.DartImCoreOpenOptions(
     identitySecretStoragePolicy: identitySecretStoragePolicy._toGen(),
     identitySecretVault: identitySecretVault?._toGen(),
-    multiDeviceRootTransferEnabled: multiDeviceRootTransferEnabled,
     multiDeviceDeviceRevokeEnabled: multiDeviceDeviceRevokeEnabled,
     multiDeviceDirectE2EeEnabled: multiDeviceDirectE2eeEnabled,
     multiDeviceGroupE2EeEnabled: multiDeviceGroupE2eeEnabled,
@@ -3463,6 +3473,26 @@ extension on gen_message.DartMessageTarget {
   );
 }
 
+extension on gen_identity.DartRootKeyTransferPreparation {
+  RootKeyTransferPreparation _toModel() => RootKeyTransferPreparation(
+    authorizationHandle: _NativeRootKeyTransferAuthorizationHandle(
+      authorizationHandle,
+    ),
+    recipient: recipient._toModel(),
+    expiresAt: expiresAt,
+  );
+}
+
+extension on gen_identity.DartRootKeyTransferRecipientSummary {
+  RootKeyTransferRecipientSummary _toModel() => RootKeyTransferRecipientSummary(
+    did: did,
+    deviceId: deviceId,
+    signingKeyId: signingKeyId,
+    e2eeKeyId: e2EeKeyId,
+    registryVersion: registryVersion.toInt(),
+  );
+}
+
 extension on gen_identity.DartRootKeyTransferSendResult {
   RootKeyTransferSendResult _toModel() => RootKeyTransferSendResult(
     did: did,
@@ -3483,27 +3513,13 @@ extension on gen_identity.DartDeviceRevokeResult {
   );
 }
 
-extension on gen_identity.DartRootKeyTransferSummary {
-  RootKeyTransferSummary _toModel() => RootKeyTransferSummary(
-    did: did,
-    messageId: messageId,
-    senderDeviceId: senderDeviceId,
-    recipientDeviceId: recipientDeviceId,
-    status: switch (status) {
-      gen_identity.DartRootKeyTransferStatus.pendingDelivery =>
-        RootKeyTransferStatus.pendingDelivery,
-      gen_identity.DartRootKeyTransferStatus.awaitingImport =>
-        RootKeyTransferStatus.awaitingImport,
-      gen_identity.DartRootKeyTransferStatus.importing =>
-        RootKeyTransferStatus.importing,
-      gen_identity.DartRootKeyTransferStatus.failed =>
-        RootKeyTransferStatus.failed,
-      gen_identity.DartRootKeyTransferStatus.completed =>
-        RootKeyTransferStatus.completed,
-    },
-    createdAt: createdAt,
-    acceptedAt: acceptedAt,
-    completedAt: completedAt,
-    retryable: retryable,
-  );
+Future<T> _mapRootKeyTransferErrors<T>(Future<T> Function() action) async {
+  try {
+    return await action();
+  } on gen_identity.DartRootKeyTransferError catch (error) {
+    throw RootKeyTransferException(
+      code: error.code,
+      retryable: error.retryable,
+    );
+  }
 }

@@ -33,7 +33,6 @@ pub struct DartImCorePaths {
 pub struct DartImCoreOpenOptions {
     pub identity_secret_storage_policy: DartIdentitySecretStoragePolicy,
     pub identity_secret_vault: Option<DartImCoreSecretVaultOptions>,
-    pub multi_device_root_transfer_enabled: bool,
     pub multi_device_device_revoke_enabled: bool,
     pub multi_device_direct_e2ee_enabled: bool,
     pub multi_device_group_e2ee_enabled: bool,

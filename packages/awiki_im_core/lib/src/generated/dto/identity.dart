@@ -781,8 +781,90 @@ sealed class DartLegacyUpgradeStatus with _$DartLegacyUpgradeStatus {
       DartLegacyUpgradeStatus_Completed;
 }
 
-/// Safe host projection for one accepted root-key control delivery. It never
-/// contains the private key, decrypted envelope, completion, or checkpoints.
+/// Closed, secret-free public error returned by root-transfer host APIs.
+class DartRootKeyTransferError implements FrbException {
+  final String code;
+  final bool retryable;
+
+  const DartRootKeyTransferError({required this.code, required this.retryable});
+
+  @override
+  int get hashCode => code.hashCode ^ retryable.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartRootKeyTransferError &&
+          runtimeType == other.runtimeType &&
+          code == other.code &&
+          retryable == other.retryable;
+}
+
+/// Opaque, short-lived authorization returned by root-transfer preparation.
+///
+/// Its debug projection must never reveal the handle.
+class DartRootKeyTransferPreparation {
+  final String authorizationHandle;
+  final DartRootKeyTransferRecipientSummary recipient;
+  final String expiresAt;
+
+  const DartRootKeyTransferPreparation({
+    required this.authorizationHandle,
+    required this.recipient,
+    required this.expiresAt,
+  });
+
+  @override
+  int get hashCode =>
+      authorizationHandle.hashCode ^ recipient.hashCode ^ expiresAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartRootKeyTransferPreparation &&
+          runtimeType == other.runtimeType &&
+          authorizationHandle == other.authorizationHandle &&
+          recipient == other.recipient &&
+          expiresAt == other.expiresAt;
+}
+
+/// Secret-free exact-device summary verified by Core during preparation.
+class DartRootKeyTransferRecipientSummary {
+  final String did;
+  final String deviceId;
+  final String signingKeyId;
+  final String e2EeKeyId;
+  final BigInt registryVersion;
+
+  const DartRootKeyTransferRecipientSummary({
+    required this.did,
+    required this.deviceId,
+    required this.signingKeyId,
+    required this.e2EeKeyId,
+    required this.registryVersion,
+  });
+
+  @override
+  int get hashCode =>
+      did.hashCode ^
+      deviceId.hashCode ^
+      signingKeyId.hashCode ^
+      e2EeKeyId.hashCode ^
+      registryVersion.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartRootKeyTransferRecipientSummary &&
+          runtimeType == other.runtimeType &&
+          did == other.did &&
+          deviceId == other.deviceId &&
+          signingKeyId == other.signingKeyId &&
+          e2EeKeyId == other.e2EeKeyId &&
+          registryVersion == other.registryVersion;
+}
+
+/// Safe host projection for one accepted root-key control delivery.
 class DartRootKeyTransferSendResult {
   final String did;
   final String senderDeviceId;
@@ -816,64 +898,4 @@ class DartRootKeyTransferSendResult {
           recipientDeviceId == other.recipientDeviceId &&
           messageId == other.messageId &&
           acceptedAt == other.acceptedAt;
-}
-
-enum DartRootKeyTransferStatus {
-  pendingDelivery,
-  awaitingImport,
-  importing,
-  failed,
-  completed,
-}
-
-/// Restart-safe, non-secret projection of one local root-control operation.
-class DartRootKeyTransferSummary {
-  final String did;
-  final String messageId;
-  final String senderDeviceId;
-  final String recipientDeviceId;
-  final DartRootKeyTransferStatus status;
-  final String createdAt;
-  final String? acceptedAt;
-  final String? completedAt;
-  final bool retryable;
-
-  const DartRootKeyTransferSummary({
-    required this.did,
-    required this.messageId,
-    required this.senderDeviceId,
-    required this.recipientDeviceId,
-    required this.status,
-    required this.createdAt,
-    this.acceptedAt,
-    this.completedAt,
-    required this.retryable,
-  });
-
-  @override
-  int get hashCode =>
-      did.hashCode ^
-      messageId.hashCode ^
-      senderDeviceId.hashCode ^
-      recipientDeviceId.hashCode ^
-      status.hashCode ^
-      createdAt.hashCode ^
-      acceptedAt.hashCode ^
-      completedAt.hashCode ^
-      retryable.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartRootKeyTransferSummary &&
-          runtimeType == other.runtimeType &&
-          did == other.did &&
-          messageId == other.messageId &&
-          senderDeviceId == other.senderDeviceId &&
-          recipientDeviceId == other.recipientDeviceId &&
-          status == other.status &&
-          createdAt == other.createdAt &&
-          acceptedAt == other.acceptedAt &&
-          completedAt == other.completedAt &&
-          retryable == other.retryable;
 }

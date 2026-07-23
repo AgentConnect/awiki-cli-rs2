@@ -15,12 +15,12 @@ fn root_key_transfer_result_mapping_exposes_delivery_metadata_only() {
             did: im_core::ids::Did::parse("did:example:alice").unwrap(),
             sender_device_id: im_core::ids::ProtocolDeviceId::parse("device-admin").unwrap(),
             recipient_device_id: im_core::ids::ProtocolDeviceId::parse("device-member").unwrap(),
-            message_id: im_core::ids::MessageId::parse("root-control-message-1").unwrap(),
+            message_id: im_core::ids::MessageId::parse("root-transfer-message-1").unwrap(),
             accepted_at: "2026-07-20T01:00:00Z".to_owned(),
         },
     );
 
-    assert_eq!(mapped.message_id, "root-control-message-1");
+    assert_eq!(mapped.message_id, "root-transfer-message-1");
     let debug = format!("{mapped:?}");
     assert!(!debug.contains("root_private_key"));
     assert!(!debug.contains("transport_context"));
@@ -28,31 +28,48 @@ fn root_key_transfer_result_mapping_exposes_delivery_metadata_only() {
 }
 
 #[test]
-fn root_key_transfer_summary_mapping_exposes_restart_safe_status_only() {
-    let mapped = awiki_im_core::dto::identity::DartRootKeyTransferSummary::from(
-        im_core::identity::RootKeyTransferSummary {
-            did: im_core::ids::Did::parse("did:example:alice").unwrap(),
-            message_id: im_core::ids::MessageId::parse("root-control-message-1").unwrap(),
-            sender_device_id: im_core::ids::ProtocolDeviceId::parse("device-admin").unwrap(),
-            recipient_device_id: im_core::ids::ProtocolDeviceId::parse("device-member").unwrap(),
-            status: im_core::identity::RootKeyTransferStatus::AwaitingImport,
-            created_at: "2026-07-20T00:59:00Z".to_owned(),
-            accepted_at: Some("2026-07-20T01:00:00Z".to_owned()),
-            completed_at: None,
+fn root_key_transfer_preparation_mapping_redacts_opaque_handle() {
+    let handle = serde_json::from_value(serde_json::Value::String(
+        "iIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIg".to_owned(),
+    ))
+    .unwrap();
+    let mapped = awiki_im_core::dto::identity::DartRootKeyTransferPreparation::from(
+        im_core::identity::RootKeyTransferPreparation {
+            authorization_handle: handle,
+            recipient: im_core::identity::RootKeyTransferRecipientSummary {
+                did: im_core::ids::Did::parse("did:example:alice").unwrap(),
+                device_id: im_core::ids::ProtocolDeviceId::parse("device-member").unwrap(),
+                signing_key_id: "did:example:alice#device-member-signing".to_owned(),
+                e2ee_key_id: "did:example:alice#device-member-e2ee".to_owned(),
+                registry_version: 7,
+            },
+            expires_at: "2026-07-20T01:00:00Z".to_owned(),
+        },
+    );
+
+    assert_eq!(mapped.recipient.device_id, "device-member");
+    assert_eq!(mapped.recipient.registry_version, 7);
+    let debug = format!("{mapped:?}");
+    assert!(debug.contains("<redacted-authorization-handle>"));
+    assert!(!debug.contains("iIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIg"));
+    assert!(!debug.contains("root_private_key"));
+}
+
+#[test]
+fn root_key_transfer_error_mapping_is_closed_and_secret_free() {
+    let mapped = awiki_im_core::dto::identity::DartRootKeyTransferError::from(
+        im_core::identity::RootKeyTransferError {
+            code: im_core::identity::RootKeyTransferErrorCode::PrekeyUnavailable,
             retryable: true,
         },
     );
 
-    assert_eq!(
-        mapped.status,
-        awiki_im_core::dto::identity::DartRootKeyTransferStatus::AwaitingImport
-    );
+    assert_eq!(mapped.code, "root_transfer.prekey_unavailable");
     assert!(mapped.retryable);
-    assert_eq!(mapped.accepted_at.as_deref(), Some("2026-07-20T01:00:00Z"));
-    let debug = format!("{mapped:?}");
-    assert!(!debug.contains("root_private_key"));
-    assert!(!debug.contains("transport_context"));
-    assert!(!debug.contains("completion"));
+    assert_eq!(
+        format!("{mapped:?}"),
+        "DartRootKeyTransferError { code: \"root_transfer.prekey_unavailable\", retryable: true }"
+    );
 }
 
 #[test]
@@ -95,7 +112,7 @@ fn local_state_upgrade_inspection_is_available_before_core_open() {
         awiki_im_core::dto::local_state_upgrade::DartLocalStateUpgradeEligibility::NotRequired
     );
     assert_eq!(inspection.source_schema_version, 0);
-    assert_eq!(inspection.target_schema_version, 29);
+    assert_eq!(inspection.target_schema_version, 30);
 }
 
 #[test]
@@ -836,7 +853,6 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
             workspace_id: "workspace-a".to_string(),
             device_id: "device-a".to_string(),
         }),
-        multi_device_root_transfer_enabled: true,
         multi_device_device_revoke_enabled: true,
         multi_device_direct_e2ee_enabled: true,
         multi_device_group_e2ee_enabled: true,
@@ -847,7 +863,6 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
         mapped.identity_secret_storage_policy,
         im_core::IdentitySecretStoragePolicy::VaultRequired
     ));
-    assert!(mapped.multi_device_root_transfer_enabled);
     assert!(mapped.multi_device_device_revoke_enabled);
     assert!(mapped.multi_device_direct_e2ee_enabled);
     assert!(mapped.multi_device_group_e2ee_enabled);
@@ -876,7 +891,6 @@ fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
             workspace_id: "workspace-a".to_string(),
             device_id: "device-a".to_string(),
         }),
-        multi_device_root_transfer_enabled: false,
         multi_device_device_revoke_enabled: false,
         multi_device_direct_e2ee_enabled: false,
         multi_device_group_e2ee_enabled: false,

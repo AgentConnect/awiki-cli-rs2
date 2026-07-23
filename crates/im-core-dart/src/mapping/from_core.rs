@@ -26,8 +26,9 @@ use crate::dto::{
         DartIdentityDeviceMode, DartIdentityDeviceReadiness, DartIdentityDeviceRole,
         DartIdentityDeviceSummary, DartIdentitySecretStorageBackend, DartIdentitySummary,
         DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
-        DartIdentityVaultVerificationReport, DartLegacyUpgradeStatus,
-        DartRootKeyTransferSendResult, DartRootKeyTransferStatus, DartRootKeyTransferSummary,
+        DartIdentityVaultVerificationReport, DartLegacyUpgradeStatus, DartRootKeyTransferError,
+        DartRootKeyTransferPreparation, DartRootKeyTransferRecipientSummary,
+        DartRootKeyTransferSendResult,
     },
     message::{
         DartConversation, DartConversationAlias, DartConversationAliasSource,
@@ -75,34 +76,64 @@ impl From<im_core::identity::RootKeyTransferSendResult> for DartRootKeyTransferS
     }
 }
 
-impl From<im_core::identity::RootKeyTransferSummary> for DartRootKeyTransferSummary {
-    fn from(value: im_core::identity::RootKeyTransferSummary) -> Self {
+impl From<im_core::identity::RootKeyTransferPreparation> for DartRootKeyTransferPreparation {
+    fn from(value: im_core::identity::RootKeyTransferPreparation) -> Self {
+        let serde_json::Value::String(authorization_handle) =
+            serde_json::to_value(value.authorization_handle)
+                .expect("root transfer authorization handle serialization is infallible")
+        else {
+            unreachable!("root transfer authorization handle must serialize as a string")
+        };
+        Self {
+            authorization_handle,
+            recipient: value.recipient.into(),
+            expires_at: value.expires_at,
+        }
+    }
+}
+
+impl From<im_core::identity::RootKeyTransferRecipientSummary>
+    for DartRootKeyTransferRecipientSummary
+{
+    fn from(value: im_core::identity::RootKeyTransferRecipientSummary) -> Self {
         Self {
             did: value.did.as_str().to_owned(),
-            message_id: value.message_id.as_str().to_owned(),
-            sender_device_id: value.sender_device_id.as_str().to_owned(),
-            recipient_device_id: value.recipient_device_id.as_str().to_owned(),
-            status: match value.status {
-                im_core::identity::RootKeyTransferStatus::PendingDelivery => {
-                    DartRootKeyTransferStatus::PendingDelivery
-                }
-                im_core::identity::RootKeyTransferStatus::AwaitingImport => {
-                    DartRootKeyTransferStatus::AwaitingImport
-                }
-                im_core::identity::RootKeyTransferStatus::Importing => {
-                    DartRootKeyTransferStatus::Importing
-                }
-                im_core::identity::RootKeyTransferStatus::Failed => {
-                    DartRootKeyTransferStatus::Failed
-                }
-                im_core::identity::RootKeyTransferStatus::Completed => {
-                    DartRootKeyTransferStatus::Completed
-                }
-            },
-            created_at: value.created_at,
-            accepted_at: value.accepted_at,
-            completed_at: value.completed_at,
+            device_id: value.device_id.as_str().to_owned(),
+            signing_key_id: value.signing_key_id,
+            e2ee_key_id: value.e2ee_key_id,
+            registry_version: value.registry_version,
+        }
+    }
+}
+
+impl From<im_core::identity::RootKeyTransferError> for DartRootKeyTransferError {
+    fn from(value: im_core::identity::RootKeyTransferError) -> Self {
+        Self {
+            code: value.to_string(),
             retryable: value.retryable,
+        }
+    }
+}
+
+impl DartRootKeyTransferError {
+    pub(crate) fn invalid_request() -> Self {
+        Self {
+            code: "root_transfer.invalid_request".to_owned(),
+            retryable: false,
+        }
+    }
+
+    pub(crate) fn authorization_invalid() -> Self {
+        Self {
+            code: "root_transfer.authorization_invalid".to_owned(),
+            retryable: false,
+        }
+    }
+
+    pub(crate) fn temporarily_unavailable() -> Self {
+        Self {
+            code: "root_transfer.temporarily_unavailable".to_owned(),
+            retryable: true,
         }
     }
 }

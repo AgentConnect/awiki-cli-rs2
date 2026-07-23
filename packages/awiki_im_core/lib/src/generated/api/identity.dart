@@ -7,6 +7,7 @@ import '../dto/config.dart';
 import '../dto/error.dart';
 import '../dto/identity.dart';
 import '../frb_generated.dart';
+import 'attachments.dart';
 import 'client.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
@@ -24,39 +25,21 @@ Future<DartDeviceRevokeResult> revokeDevice({
   userPresenceConfirmed: userPresenceConfirmed,
 );
 
-Future<DartRootKeyTransferSendResult> sendRootKeyTransfer({
-  required ArcDartImCore core,
-  required DartIdentitySelector selector,
+Future<DartRootKeyTransferPreparation> prepareRootKeyTransfer({
+  required ArcDartImClient client,
   required String recipientDeviceId,
-  required String messageId,
-  required bool userPresenceConfirmed,
-}) => RustLib.instance.api.crateApiIdentitySendRootKeyTransfer(
-  core: core,
-  selector: selector,
+}) => RustLib.instance.api.crateApiIdentityPrepareRootKeyTransfer(
+  client: client,
   recipientDeviceId: recipientDeviceId,
-  messageId: messageId,
-  userPresenceConfirmed: userPresenceConfirmed,
 );
 
-Future<List<DartRootKeyTransferSummary>> listRootKeyTransfers({
-  required ArcDartImCore core,
-  required DartIdentitySelector selector,
-  required bool includeCompleted,
-}) => RustLib.instance.api.crateApiIdentityListRootKeyTransfers(
-  core: core,
-  selector: selector,
-  includeCompleted: includeCompleted,
-);
-
-Future<DartRootKeyTransferSummary> retryRootKeyTransfer({
-  required ArcDartImCore core,
-  required DartIdentitySelector selector,
-  required String messageId,
+Future<DartRootKeyTransferSendResult> confirmAndSendRootKeyTransfer({
+  required ArcDartImClient client,
+  required String authorizationHandle,
   required bool userPresenceConfirmed,
-}) => RustLib.instance.api.crateApiIdentityRetryRootKeyTransfer(
-  core: core,
-  selector: selector,
-  messageId: messageId,
+}) => RustLib.instance.api.crateApiIdentityConfirmAndSendRootKeyTransfer(
+  client: client,
+  authorizationHandle: authorizationHandle,
   userPresenceConfirmed: userPresenceConfirmed,
 );
 

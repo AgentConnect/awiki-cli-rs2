@@ -193,37 +193,36 @@ repair, or other operational repair APIs.
 
 ## Management-device root-key transfer
 
-Native hosts must explicitly set `multiDeviceRootTransferEnabled: true`; it is
-independent from the Join flow and defaults to false. After real local user
-presence, the host may call `sendRootKeyTransfer` with the selected identity,
-exact recipient device ID, and message ID. The returned
-`RootKeyTransferSendResult` contains delivery metadata only. `acceptedAt` means
-the encrypted control was accepted for device delivery, not that import is
-complete.
+Root transfer is the single native V1 path and has no separate rollout option.
+The host first obtains an identity-scoped `AwikiImClient`, then calls:
 
-RootKeyEnvelope and its imported ACK stay inside an established P5 v2 Direct
-session and are consumed automatically by the native async inbox. Dart never
-receives root bytes, inner control JSON, private transport context, completion
-proofs, or ratchet state, and the control is never rendered as chat content.
-Flutter Web keeps this native Vault-backed operation unsupported.
+```dart
+final prepared = await client.rootKeyTransfer.prepare(
+  recipientDeviceId: justJoinedDeviceId,
+);
+// Verify and display prepared.recipient before prompting the user.
+final accepted = await client.rootKeyTransfer.confirmAndSend(
+  authorizationHandle: prepared.authorizationHandle,
+  userPresenceConfirmed: confirmedByOperatingSystem,
+);
+```
 
-If this device pair has no P5 v2 session yet, the first send establishes only
-that session and throws an `unsupported_capability` whose capability is
-`p5-v2-session-establishment-pending`. No root Envelope has been created at
-that point. After both devices sync the Init/reply, repeat
-`sendRootKeyTransfer` with the same recipient/message ID and fresh user
-presence; do not report that the root key was sent while the session is still
-pending.
+`prepare` returns an opaque, short-lived authorization handle plus the exact
+secret-free recipient summary and expiry. The handle must only be passed back
+to the same client's `confirmAndSend`; its string projection is redacted.
+Core generates the message ID. The host cannot provide a root key, PreKey,
+session, checkpoint, proof, nonce, ciphertext, completion proof, or timeout.
 
-`listRootKeyTransfers(selector:, includeCompleted:)` returns only the local,
-restart-safe `RootKeyTransferSummary` fields. A retryable stored operation may
-be resumed with `retryRootKeyTransfer(selector:, messageId:,
-userPresenceConfirmed:)`. Retry never accepts a recipient or secret override
-and reuses the exact persisted ciphertext. The app must use
-`IdentityDeviceSummary.readiness`, not transport status alone, as the final
-management-ready source of truth.
-After signed completion, native Core scrubs the retained retry ciphertext and
-pending Vault state; Dart can observe only the resulting non-retryable status.
+`RootKeyTransferSendResult` contains only DID, sender/recipient device IDs,
+Core-generated message ID, and accepted time. Acceptance means that encrypted
+delivery was accepted; it does not claim that recipient import or management
+readiness completed. Sender-side list, import status, and retry APIs are not
+public.
+
+RootKeyEnvelope, P5 state, imported completion, Vault state, and transport
+recovery remain entirely inside native Core. Public failures are the typed
+`RootKeyTransferException(code:, retryable:)` closed union. Flutter Web returns
+`root_transfer.unsupported` and has no plaintext or JavaScript fallback.
 
 ## Permanent device revocation
 

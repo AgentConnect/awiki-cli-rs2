@@ -54,33 +54,9 @@ class AwikiImCore {
     throw _unsupported();
   }
 
-  Future<RootKeyTransferSendResult> sendRootKeyTransfer({
-    required IdentitySelector selector,
-    required String recipientDeviceId,
-    required String messageId,
-    required bool userPresenceConfirmed,
-  }) async {
-    throw _unsupported();
-  }
-
   Future<DeviceRevokeResult> revokeDevice({
     required IdentitySelector selector,
     required String targetDeviceId,
-    required bool userPresenceConfirmed,
-  }) async {
-    throw _unsupported();
-  }
-
-  Future<List<RootKeyTransferSummary>> listRootKeyTransfers({
-    required IdentitySelector selector,
-    bool includeCompleted = false,
-  }) async {
-    throw _unsupported();
-  }
-
-  Future<RootKeyTransferSummary> retryRootKeyTransfer({
-    required IdentitySelector selector,
-    required String messageId,
     required bool userPresenceConfirmed,
   }) async {
     throw _unsupported();
@@ -222,7 +198,32 @@ class AwikiImClient {
 
   SecureApi get secure => SecureApi._();
 
+  RootKeyTransferApi get rootKeyTransfer => RootKeyTransferApi._();
+
   Future<void> dispose() async {}
+}
+
+class RootKeyTransferApi {
+  RootKeyTransferApi._();
+
+  Future<RootKeyTransferPreparation> prepare({
+    required String recipientDeviceId,
+  }) async {
+    throw const RootKeyTransferException(
+      code: 'root_transfer.unsupported',
+      retryable: false,
+    );
+  }
+
+  Future<RootKeyTransferSendResult> confirmAndSend({
+    required RootKeyTransferAuthorizationHandle authorizationHandle,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw const RootKeyTransferException(
+      code: 'root_transfer.unsupported',
+      retryable: false,
+    );
+  }
 }
 
 class MessageApi {

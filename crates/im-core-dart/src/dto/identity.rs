@@ -156,8 +156,37 @@ pub struct DartDeviceRevokeResult {
     pub status: DartDeviceRevokeStatus,
 }
 
-/// Safe host projection for one accepted root-key control delivery. It never
-/// contains the private key, decrypted envelope, completion, or checkpoints.
+/// Opaque, short-lived authorization returned by root-transfer preparation.
+///
+/// Its debug projection must never reveal the handle.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DartRootKeyTransferPreparation {
+    pub authorization_handle: String,
+    pub recipient: DartRootKeyTransferRecipientSummary,
+    pub expires_at: String,
+}
+
+impl std::fmt::Debug for DartRootKeyTransferPreparation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DartRootKeyTransferPreparation")
+            .field("authorization_handle", &"<redacted-authorization-handle>")
+            .field("recipient", &self.recipient)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+/// Secret-free exact-device summary verified by Core during preparation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartRootKeyTransferRecipientSummary {
+    pub did: String,
+    pub device_id: String,
+    pub signing_key_id: String,
+    pub e2ee_key_id: String,
+    pub registry_version: u64,
+}
+
+/// Safe host projection for one accepted root-key control delivery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartRootKeyTransferSendResult {
     pub did: String,
@@ -167,26 +196,10 @@ pub struct DartRootKeyTransferSendResult {
     pub accepted_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DartRootKeyTransferStatus {
-    PendingDelivery,
-    AwaitingImport,
-    Importing,
-    Failed,
-    Completed,
-}
-
-/// Restart-safe, non-secret projection of one local root-control operation.
+/// Closed, secret-free public error returned by root-transfer host APIs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartRootKeyTransferSummary {
-    pub did: String,
-    pub message_id: String,
-    pub sender_device_id: String,
-    pub recipient_device_id: String,
-    pub status: DartRootKeyTransferStatus,
-    pub created_at: String,
-    pub accepted_at: Option<String>,
-    pub completed_at: Option<String>,
+pub struct DartRootKeyTransferError {
+    pub code: String,
     pub retryable: bool,
 }
 

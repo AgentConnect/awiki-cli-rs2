@@ -10,7 +10,6 @@ void main() {
 
     expect(defaults.multiDeviceDirectE2eeEnabled, isFalse);
     expect(directOnly.multiDeviceDirectE2eeEnabled, isTrue);
-    expect(directOnly.multiDeviceRootTransferEnabled, isFalse);
     expect(directOnly.multiDeviceDeviceRevokeEnabled, isFalse);
     expect(directOnly.multiDeviceGroupE2eeEnabled, isFalse);
   });

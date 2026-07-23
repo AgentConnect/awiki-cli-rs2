@@ -475,10 +475,47 @@ class DeviceJoinApprovalPrompt {
       'approvalHandle: <redacted>, sas: <redacted>)';
 }
 
-/// Safe result for an accepted management-device root-key control delivery.
+/// Opaque authorization returned by [RootKeyTransferApi.prepare].
 ///
-/// Acceptance means the encrypted Envelope reached the recipient device
-/// mailbox; it does not mean the recipient has imported the root key yet.
+/// Applications may only pass it back to the same client's confirm operation.
+abstract interface class RootKeyTransferAuthorizationHandle {}
+
+/// Secret-free exact-device summary returned by Core before confirmation.
+class RootKeyTransferRecipientSummary {
+  const RootKeyTransferRecipientSummary({
+    required this.did,
+    required this.deviceId,
+    required this.signingKeyId,
+    required this.e2eeKeyId,
+    required this.registryVersion,
+  });
+
+  final String did;
+  final String deviceId;
+  final String signingKeyId;
+  final String e2eeKeyId;
+  final int registryVersion;
+}
+
+/// Prepared, short-lived authorization for one exact recipient device.
+class RootKeyTransferPreparation {
+  const RootKeyTransferPreparation({
+    required this.authorizationHandle,
+    required this.recipient,
+    required this.expiresAt,
+  });
+
+  final RootKeyTransferAuthorizationHandle authorizationHandle;
+  final RootKeyTransferRecipientSummary recipient;
+  final String expiresAt;
+
+  @override
+  String toString() =>
+      'RootKeyTransferPreparation(authorizationHandle: <redacted>, '
+      'recipientDeviceId: ${recipient.deviceId}, expiresAt: $expiresAt)';
+}
+
+/// Safe result for an accepted management-device root-key control delivery.
 class RootKeyTransferSendResult {
   const RootKeyTransferSendResult({
     required this.did,
@@ -495,37 +532,16 @@ class RootKeyTransferSendResult {
   final String acceptedAt;
 }
 
-enum RootKeyTransferStatus {
-  pendingDelivery,
-  awaitingImport,
-  importing,
-  failed,
-  completed,
-}
+/// Closed, secret-free root-transfer failure exposed to the host.
+class RootKeyTransferException implements Exception {
+  const RootKeyTransferException({required this.code, required this.retryable});
 
-/// Restart-safe, non-secret Core projection for a root-key transfer.
-class RootKeyTransferSummary {
-  const RootKeyTransferSummary({
-    required this.did,
-    required this.messageId,
-    required this.senderDeviceId,
-    required this.recipientDeviceId,
-    required this.status,
-    required this.createdAt,
-    this.acceptedAt,
-    this.completedAt,
-    required this.retryable,
-  });
-
-  final String did;
-  final String messageId;
-  final String senderDeviceId;
-  final String recipientDeviceId;
-  final RootKeyTransferStatus status;
-  final String createdAt;
-  final String? acceptedAt;
-  final String? completedAt;
+  final String code;
   final bool retryable;
+
+  @override
+  String toString() =>
+      'RootKeyTransferException(code: $code, retryable: $retryable)';
 }
 
 enum DeviceRevokeStatus { revoked }
