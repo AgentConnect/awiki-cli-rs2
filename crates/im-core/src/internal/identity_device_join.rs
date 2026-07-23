@@ -1452,6 +1452,15 @@ pub(crate) fn prepare_new_device_activation(
         signing_ref,
         SecretKind::IdentityDeviceSigningPrivate,
     )?;
+    let e2ee_ref = stored
+        .e2ee_private_ref
+        .as_ref()
+        .ok_or_else(|| invalid_state("new-device E2EE private key is missing"))?;
+    let e2ee_private = open_private_key(
+        &*required_vault(core)?,
+        e2ee_ref,
+        SecretKind::IdentityE2eeAgreementPrivate,
+    )?;
     let domain = crate::internal::identity_join_activation_pending::service_domain_from_did(&did)?;
     if domain
         != core
@@ -1463,30 +1472,22 @@ pub(crate) fn prepare_new_device_activation(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let prepared = crate::internal::identity_wire::device_genesis::prepare_device_token_issue(
-        random_id("join-token", JOIN_RANDOM_ID_LEN)?,
-        resolved_document,
-        &authorization.device.device_id,
-        &authorization.device.signing_key_id,
-        vec!["device:read".to_owned(), "message:connect".to_owned()],
-        &signing_private,
-        &domain,
-    )?;
     let pending = crate::internal::identity_join_activation_pending::PendingJoinActivation::new(
         join_session_id,
         did,
         resolved_document.clone(),
         authorization.clone(),
-        prepared,
+        signing_private.to_pem(),
+        e2ee_private.to_pem(),
     )?;
     pending_store.save(&pending)?;
     Ok(pending)
 }
 
-pub(crate) fn record_new_device_token_result(
+pub(crate) fn record_new_device_access_result(
     core: &crate::core::ImCore,
     join_session_id: &str,
-    result: crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult,
+    result: crate::internal::identity_device_join_runtime::DeviceJoinAccessResult,
 ) -> crate::ImResult<crate::internal::identity_join_activation_pending::PendingJoinActivation> {
     let _guard = lock_join_state(core)?;
     let join_session_id = required("join_session_id", join_session_id)?;
@@ -1507,69 +1508,14 @@ pub(crate) fn record_new_device_token_result(
     let (_, mut pending) = pending_store
         .load(&join_session_id, &did)?
         .ok_or_else(|| invalid_state("new-device activation record is missing"))?;
-    if let Some(existing) = pending.token_result.as_ref() {
+    if let Some(existing) = pending.access_result.as_ref() {
         if existing != &result {
-            return Err(idempotency_conflict("record_new_device_token_result"));
+            return Err(idempotency_conflict("record_new_device_access_result"));
         }
         return Ok(pending);
     }
-    if result.device_id != pending.authorization.device.device_id
-        || result.auth_generation != pending.authorization.device.auth_generation
-        || result.scopes != pending.prepared_token_issue.expected_scopes
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    pending.token_result = Some(result);
-    pending_store.save(&pending)?;
-    Ok(pending)
-}
-
-pub(crate) fn refresh_new_device_token_authorization(
-    core: &crate::core::ImCore,
-    join_session_id: &str,
-) -> crate::ImResult<crate::internal::identity_join_activation_pending::PendingJoinActivation> {
-    let _guard = lock_join_state(core)?;
-    let join_session_id = required("join_session_id", join_session_id)?;
-    let state_store = JoinStateStore::new(core);
-    let stored = state_store
-        .load(&join_session_id, DeviceJoinSide::NewDevice)?
-        .ok_or_else(|| crate::ImError::IdentityNotFound {
-            selector: join_session_id.clone(),
-        })?;
-    if !stored.activation_pending || stored.phase != DeviceJoinLocalPhase::ResponsePrepared {
-        return Err(invalid_state("new-device activation is not pending"));
-    }
-    let did = crate::ids::Did::parse(&stored.join_request.did)?;
-    let pending_store =
-        crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(
-            core,
-        )?;
-    let (_, mut pending) = pending_store
-        .load(&join_session_id, &did)?
-        .ok_or_else(|| invalid_state("new-device activation record is missing"))?;
-    if pending.token_result.is_some() {
-        return Ok(pending);
-    }
-    let signing_ref = stored
-        .signing_private_ref
-        .as_ref()
-        .ok_or_else(|| invalid_state("new-device signing private key is missing"))?;
-    let signing_private = open_private_key(
-        &*required_vault(core)?,
-        signing_ref,
-        SecretKind::IdentityDeviceSigningPrivate,
-    )?;
-    let domain = crate::internal::identity_join_activation_pending::service_domain_from_did(&did)?;
-    let refreshed = crate::internal::identity_wire::device_genesis::prepare_device_token_issue(
-        pending.prepared_token_issue.operation_id.clone(),
-        &pending.resolved_document,
-        &pending.authorization.device.device_id,
-        &pending.authorization.device.signing_key_id,
-        pending.prepared_token_issue.expected_scopes.clone(),
-        &signing_private,
-        &domain,
-    )?;
-    pending.prepared_token_issue = refreshed;
+    pending.access_result = Some(result);
+    pending.validate()?;
     pending_store.save(&pending)?;
     Ok(pending)
 }
@@ -1601,12 +1547,12 @@ pub(crate) fn finalize_new_device_activation(
     let (_, pending) = pending_store
         .load(&join_session_id, &did)?
         .ok_or_else(|| invalid_state("new-device activation record is missing"))?;
-    let token = pending
-        .token_result
+    let access = pending
+        .access_result
         .as_ref()
-        .ok_or_else(|| invalid_state("new-device token result is missing"))?;
+        .ok_or_else(|| invalid_state("new-device access result is missing"))?;
     validate_remote_authorization(&stored, &pending.authorization, &pending.resolved_document)?;
-    promote_join_identity(core, &stored, &pending, token)?;
+    promote_join_identity(core, &stored, &pending, access)?;
 
     stored.phase = DeviceJoinLocalPhase::Authorized;
     state_store.save(&stored)?;
@@ -1657,7 +1603,7 @@ fn promote_join_identity(
     core: &crate::core::ImCore,
     stored: &StoredJoinSession,
     pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
-    token: &crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult,
+    access: &crate::internal::identity_device_join_runtime::DeviceJoinAccessResult,
 ) -> crate::ImResult<()> {
     use crate::internal::identity_device_state::{
         DeviceAuthorizationProjection, IdentityDeviceMode, IdentityDeviceState,
@@ -1743,11 +1689,11 @@ fn promote_join_identity(
             local_alias: local_alias.clone(),
             did: did.clone(),
             unique_id,
-            user_id: token.user_id.clone(),
+            user_id: access.user_id.clone(),
             display_name: handle.clone(),
             handle,
             full_handle,
-            jwt_token: token.access_token.clone(),
+            jwt_token: access.access_token.clone(),
             did_document: Some(pending.resolved_document.clone()),
             key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
                 root_key_id,
@@ -1779,14 +1725,6 @@ fn promote_join_identity(
         },
         secret_storage.clone(),
     )?;
-    identity_store.persist_vnext_auth_token_pair(
-        &local_alias,
-        &token.access_token,
-        &token.refresh_token,
-        &token.expires_at,
-        &secret_storage,
-    )?;
-
     let committed = identity_store.load_index()?;
     ensure_existing_join_identity_is_rootless(
         &committed,

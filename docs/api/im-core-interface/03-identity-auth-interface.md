@@ -143,17 +143,17 @@ impl IdentityRegistry<'_> {
 
 `load_runtime` 只能是 `pub(crate)`，供 `ImCore::client` 使用。
 
-当 Core 显式启用 multi-device gate 时，`register_handle` 保持同一公共 DTO，
-但内部只接受同域 Phone OTP：发送验证码走 `/auth/sms-codes`，随后兑换绑定
-Handle/domain/purpose/idempotency scope 的 account-verification grant，并提交
-`device_genesis`。该路径要求 `VaultRequired`，验证完整 DID Document、单设备
-Manifest、bootstrap device proof、active/admin/management-ready/generation=1、
-内部 checkpoint 和设备 token claims 后才保存身份。refresh token 与失败恢复
-记录只保存在 Vault；返回 DTO 不包含 refresh token 或内部 checkpoint。gate 关闭时
-仍执行原 legacy 注册流程，不能由 vNext 失败分支自动降级。
-若 Genesis 响应不确定且 account grant/proof 已过期，新的 Phone OTP 只刷新 grant
-和短期设备证明；Pending Genesis 中已经生成的 DID、设备密钥、operation ID 与
-idempotency scope 必须保持不变，避免为同一 Handle 生成冲突身份。
+`register_handle` 是新旧客户端共用的唯一注册入口。新注册在本地生成带 bootstrap
+Manifest 的 DID 和独立设备 signing/E2EE key，通过同一个 `register` RPC 原子创建
+用户、DID checkpoint 和首设备 Registry。Phone OTP 使用闭合参数
+`{phone,purpose:"awiki.identity.register.v1",handle,domain,full_handle}`；Phone、Email、
+AlreadyVerified 和 Invite 的既有验证能力继续保留。
+
+如果 Handle 已存在，注册正常返回 typed `join_required`，其中包含现有 DID 和一次性
+account verification grant；Core 不创建第二个 DID、不提交本地身份，也不发布 P5。
+新注册本地提交成功后必须生成并发布 exact-device P5 PreKey Bundle，发布失败保留同一
+PendingRegistration 供精确重试，不重放 `register`。V1 只保存 access token，不保存设备
+refresh token，也没有 Genesis 或独立设备 Token RPC。
 
 Vault DTO boundary:
 
@@ -176,7 +176,7 @@ Vault DTO boundary:
 - These DTOs do not expose root keys, JWTs, private PEM, full `SecretRef` JSON,
   ciphertext internals, or local auth/token file contents.
 
-`VaultRequired` registration, recovery, daemon subkey package persistence, and
+`VaultRequired` registration, Legacy upgrade, daemon subkey package persistence, and
 JWT/token refresh must persist secret material through SecretVault. Existing
 legacy PEM/auth.json files are a compatibility bridge until explicit cleanup is
 available; migration failure must not delete them.
@@ -196,12 +196,11 @@ Those values remain server/local concurrency state and are not cross-domain ANP
 or public host fields.
 
 新设备侧只有在服务端 Join 状态为 `consumed`、重新解析并验证最终 DID
-Document/Manifest 后，才使用候选设备签名密钥调用 `device_token_issue`。Core 严格
-校验 access/refresh token pair，将候选签名与 E2EE 私钥提升为不含根私钥的 vNext
-身份，并保存内部 checkpoint；身份与 token pair 都落盘后才对 host 报告
-`Authorized`，随后清理 Join 临时密钥。响应丢失时复用同一 operation ID，并可用
-同一候选密钥刷新过期的短期授权。Member 进入 `MemberReady`；Admin 在根密钥导入
-完成前保持 `AdminAwaitingRoot`。
+Document/Manifest 后，才使用候选设备 signing key 发起新的 DID-WBA `get_me` 请求。
+Core 从标准 `Authentication-Info` 或 `Authorization: Bearer` 响应头取得 access token，
+严格校验 DID/user/device/key/generation/scopes 后，将候选 signing/E2EE 私钥提升为不含
+根私钥的 rootless vNext 身份。身份、checkpoint 和 access token 都落盘后才对 host 报告
+`Authorized`；V1 不调用 `device_token_issue`，不保存 refresh token。
 
 ## 3.2 Root-key transfer control plane
 

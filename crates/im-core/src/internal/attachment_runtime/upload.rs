@@ -996,12 +996,6 @@ fn local_attachment_control_context(
     let configured_service_did = message_service_did(client)?;
     let key_provider = &client.runtime().key_provider;
     let Some(document) = key_provider.optional_did_document()? else {
-        if key_provider.uses_vnext_device_tokens() {
-            return Err(crate::ImError::invalid_input(
-                Some("did_document".to_owned()),
-                "vNext attachment control requires the local DID document",
-            ));
-        }
         return Ok(attachment_control_context(
             configured_service_did,
             crate::internal::discovery::attachment::LEGACY_ATTACHMENT_PROFILE,
@@ -1024,11 +1018,10 @@ fn local_attachment_control_context(
             ))
         }
         Err(_)
-            if !key_provider.uses_vnext_device_tokens()
-                && crate::internal::discovery::attachment::declared_attachment_profile_from_document(
-                    &document,
-                )
-                .is_none() => Ok(attachment_control_context(
+            if crate::internal::discovery::attachment::declared_attachment_profile_from_document(
+                &document,
+            )
+            .is_none() => Ok(attachment_control_context(
                     configured_service_did,
                     crate::internal::discovery::attachment::LEGACY_ATTACHMENT_PROFILE,
                 )),

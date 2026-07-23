@@ -13,7 +13,6 @@ void main() {
     expect(directOnly.multiDeviceJoinEnabled, isFalse);
     expect(directOnly.multiDeviceRootTransferEnabled, isFalse);
     expect(directOnly.multiDeviceDeviceRevokeEnabled, isFalse);
-    expect(directOnly.multiDeviceHandleRecoveryEnabled, isFalse);
     expect(directOnly.multiDeviceGroupE2eeEnabled, isFalse);
   });
 }

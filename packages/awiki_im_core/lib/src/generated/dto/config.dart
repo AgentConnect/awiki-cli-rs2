@@ -82,7 +82,6 @@ class DartImCoreOpenOptions {
   final bool multiDeviceRootTransferEnabled;
   final bool multiDeviceDeviceRevokeEnabled;
   final bool multiDeviceDirectE2EeEnabled;
-  final bool multiDeviceHandleRecoveryEnabled;
   final bool multiDeviceGroupE2EeEnabled;
 
   const DartImCoreOpenOptions({
@@ -92,7 +91,6 @@ class DartImCoreOpenOptions {
     required this.multiDeviceRootTransferEnabled,
     required this.multiDeviceDeviceRevokeEnabled,
     required this.multiDeviceDirectE2EeEnabled,
-    required this.multiDeviceHandleRecoveryEnabled,
     required this.multiDeviceGroupE2EeEnabled,
   });
 
@@ -104,7 +102,6 @@ class DartImCoreOpenOptions {
       multiDeviceRootTransferEnabled.hashCode ^
       multiDeviceDeviceRevokeEnabled.hashCode ^
       multiDeviceDirectE2EeEnabled.hashCode ^
-      multiDeviceHandleRecoveryEnabled.hashCode ^
       multiDeviceGroupE2EeEnabled.hashCode;
 
   @override
@@ -120,8 +117,6 @@ class DartImCoreOpenOptions {
           multiDeviceDeviceRevokeEnabled ==
               other.multiDeviceDeviceRevokeEnabled &&
           multiDeviceDirectE2EeEnabled == other.multiDeviceDirectE2EeEnabled &&
-          multiDeviceHandleRecoveryEnabled ==
-              other.multiDeviceHandleRecoveryEnabled &&
           multiDeviceGroupE2EeEnabled == other.multiDeviceGroupE2EeEnabled;
 }
 

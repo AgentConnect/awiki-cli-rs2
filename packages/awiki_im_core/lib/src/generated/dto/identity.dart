@@ -417,114 +417,33 @@ class DartDeviceRevokeResult {
 
 enum DartDeviceRevokeStatus { revoked }
 
-class DartHandleRecoveryCancelResult {
-  final String recoverySessionId;
-  final DartHandleRecoveryPhase phase;
+class DartHandleRegistrationJoinRequired {
+  final String did;
+  final String accountVerificationToken;
 
-  const DartHandleRecoveryCancelResult({
-    required this.recoverySessionId,
-    required this.phase,
+  const DartHandleRegistrationJoinRequired({
+    required this.did,
+    required this.accountVerificationToken,
   });
 
   @override
-  int get hashCode => recoverySessionId.hashCode ^ phase.hashCode;
+  int get hashCode => did.hashCode ^ accountVerificationToken.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is DartHandleRecoveryCancelResult &&
+      other is DartHandleRegistrationJoinRequired &&
           runtimeType == other.runtimeType &&
-          recoverySessionId == other.recoverySessionId &&
-          phase == other.phase;
+          did == other.did &&
+          accountVerificationToken == other.accountVerificationToken;
 }
-
-class DartHandleRecoveryFinalizeResult {
-  final DartHandleRecoveryProgress progress;
-  final DartIdentitySummary identity;
-
-  const DartHandleRecoveryFinalizeResult({
-    required this.progress,
-    required this.identity,
-  });
-
-  @override
-  int get hashCode => progress.hashCode ^ identity.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartHandleRecoveryFinalizeResult &&
-          runtimeType == other.runtimeType &&
-          progress == other.progress &&
-          identity == other.identity;
-}
-
-enum DartHandleRecoveryPhase { cooling, ready, cancelled, expired, consumed }
-
-/// Safe local Recovery projection. Credentials, documents, key material, and
-/// AWiki-internal checkpoints never cross the Dart facade.
-class DartHandleRecoveryProgress {
-  final String recoverySessionId;
-  final String handle;
-  final String oldDid;
-  final DartHandleRecoverySide side;
-  final DartHandleRecoveryPhase phase;
-  final String coolingUntil;
-  final String expiresAt;
-  final bool canCancelFromThisDevice;
-  final String? newDid;
-  final bool localActivationPending;
-
-  const DartHandleRecoveryProgress({
-    required this.recoverySessionId,
-    required this.handle,
-    required this.oldDid,
-    required this.side,
-    required this.phase,
-    required this.coolingUntil,
-    required this.expiresAt,
-    required this.canCancelFromThisDevice,
-    this.newDid,
-    required this.localActivationPending,
-  });
-
-  @override
-  int get hashCode =>
-      recoverySessionId.hashCode ^
-      handle.hashCode ^
-      oldDid.hashCode ^
-      side.hashCode ^
-      phase.hashCode ^
-      coolingUntil.hashCode ^
-      expiresAt.hashCode ^
-      canCancelFromThisDevice.hashCode ^
-      newDid.hashCode ^
-      localActivationPending.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartHandleRecoveryProgress &&
-          runtimeType == other.runtimeType &&
-          recoverySessionId == other.recoverySessionId &&
-          handle == other.handle &&
-          oldDid == other.oldDid &&
-          side == other.side &&
-          phase == other.phase &&
-          coolingUntil == other.coolingUntil &&
-          expiresAt == other.expiresAt &&
-          canCancelFromThisDevice == other.canCancelFromThisDevice &&
-          newDid == other.newDid &&
-          localActivationPending == other.localActivationPending;
-}
-
-enum DartHandleRecoverySide { requester, oldAdmin }
 
 class DartHandleRegistrationResult {
   final DartIdentitySummary? identity;
   final String handle;
   final String method;
   final String state;
+  final DartHandleRegistrationJoinRequired? joinRequired;
   final DartDefaultIdentityChange? defaultIdentityChange;
   final List<String> warnings;
 
@@ -533,6 +452,7 @@ class DartHandleRegistrationResult {
     required this.handle,
     required this.method,
     required this.state,
+    this.joinRequired,
     this.defaultIdentityChange,
     required this.warnings,
   });
@@ -543,6 +463,7 @@ class DartHandleRegistrationResult {
       handle.hashCode ^
       method.hashCode ^
       state.hashCode ^
+      joinRequired.hashCode ^
       defaultIdentityChange.hashCode ^
       warnings.hashCode;
 
@@ -555,6 +476,7 @@ class DartHandleRegistrationResult {
           handle == other.handle &&
           method == other.method &&
           state == other.state &&
+          joinRequired == other.joinRequired &&
           defaultIdentityChange == other.defaultIdentityChange &&
           warnings == other.warnings;
 }
@@ -837,108 +759,19 @@ class DartInitialProfile {
           avatarUrl == other.avatarUrl;
 }
 
-/// Secret-free, device-local discovery record for an old management device.
-class DartOldAdminRecoveryNotice {
-  final String eventId;
-  final String recoverySessionId;
-  final String handle;
-  final String oldDid;
-  final String requestedAt;
-  final String cancellableUntil;
+@freezed
+sealed class DartLegacyUpgradeStatus with _$DartLegacyUpgradeStatus {
+  const DartLegacyUpgradeStatus._();
 
-  const DartOldAdminRecoveryNotice({
-    required this.eventId,
-    required this.recoverySessionId,
-    required this.handle,
-    required this.oldDid,
-    required this.requestedAt,
-    required this.cancellableUntil,
-  });
-
-  @override
-  int get hashCode =>
-      eventId.hashCode ^
-      recoverySessionId.hashCode ^
-      handle.hashCode ^
-      oldDid.hashCode ^
-      requestedAt.hashCode ^
-      cancellableUntil.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartOldAdminRecoveryNotice &&
-          runtimeType == other.runtimeType &&
-          eventId == other.eventId &&
-          recoverySessionId == other.recoverySessionId &&
-          handle == other.handle &&
-          oldDid == other.oldDid &&
-          requestedAt == other.requestedAt &&
-          cancellableUntil == other.cancellableUntil;
-}
-
-class DartOldAdminRecoveryNoticeDismissResult {
-  final String eventId;
-  final bool dismissed;
-
-  const DartOldAdminRecoveryNoticeDismissResult({
-    required this.eventId,
-    required this.dismissed,
-  });
-
-  @override
-  int get hashCode => eventId.hashCode ^ dismissed.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartOldAdminRecoveryNoticeDismissResult &&
-          runtimeType == other.runtimeType &&
-          eventId == other.eventId &&
-          dismissed == other.dismissed;
-}
-
-class DartRecoverHandleResult {
-  final String handle;
-  final String phone;
-  final String state;
-  final DartIdentitySummary? recoveredIdentity;
-  final String? userId;
-  final bool accessTokenPresent;
-  final List<String> warnings;
-
-  const DartRecoverHandleResult({
-    required this.handle,
-    required this.phone,
-    required this.state,
-    this.recoveredIdentity,
-    this.userId,
-    required this.accessTokenPresent,
-    required this.warnings,
-  });
-
-  @override
-  int get hashCode =>
-      handle.hashCode ^
-      phone.hashCode ^
-      state.hashCode ^
-      recoveredIdentity.hashCode ^
-      userId.hashCode ^
-      accessTokenPresent.hashCode ^
-      warnings.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartRecoverHandleResult &&
-          runtimeType == other.runtimeType &&
-          handle == other.handle &&
-          phone == other.phone &&
-          state == other.state &&
-          recoveredIdentity == other.recoveredIdentity &&
-          userId == other.userId &&
-          accessTokenPresent == other.accessTokenPresent &&
-          warnings == other.warnings;
+  const factory DartLegacyUpgradeStatus.idle() = DartLegacyUpgradeStatus_Idle;
+  const factory DartLegacyUpgradeStatus.running() =
+      DartLegacyUpgradeStatus_Running;
+  const factory DartLegacyUpgradeStatus.retryRequired({
+    required String identityId,
+    required String code,
+  }) = DartLegacyUpgradeStatus_RetryRequired;
+  const factory DartLegacyUpgradeStatus.completed() =
+      DartLegacyUpgradeStatus_Completed;
 }
 
 /// Safe host projection for one accepted root-key control delivery. It never

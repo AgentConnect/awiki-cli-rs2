@@ -35,15 +35,6 @@ struct PublicHandleBinding {
     binding_generation: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct RecoveryHandleBinding {
-    pub(crate) handle: crate::ids::Handle,
-    pub(crate) local_part: String,
-    pub(crate) domain: String,
-    pub(crate) did: crate::ids::Did,
-    pub(crate) mapping_generation: u64,
-}
-
 pub(crate) fn resolve_direct_handle(
     client: &crate::core::ImClient,
     raw_handle: &str,
@@ -106,59 +97,6 @@ pub(crate) async fn resolve_authoritative_handle_binding_async(
     )
     .await?;
     authoritative_lookup_from_public_document(&normalized.full_handle, &raw)
-}
-
-/// Resolves the current same-domain Handle mapping without requiring an
-/// existing identity. Recovery uses this value only for AWiki-internal CAS;
-/// the generation is not an ANP or DID Document field.
-pub(crate) async fn resolve_recovery_handle_binding_async(
-    core: &crate::core::ImCore,
-    raw_handle: &str,
-) -> crate::ImResult<RecoveryHandleBinding> {
-    let normalized = normalize_handle_with_default_domain(
-        raw_handle,
-        core.inner().sdk_config().did_domain.as_str(),
-    )?;
-    let configured_domain = normalize_domain(core.inner().sdk_config().did_domain.as_str());
-    if normalized.domain != configured_domain {
-        return Err(crate::ImError::unsupported(
-            "handle_recovery_same_domain_only",
-        ));
-    }
-    let url = authoritative_discovery_url_for_core(core, &normalized);
-    let mut transport = crate::internal::transport::CorePlainTransport::new(core);
-    let raw = crate::internal::transport::AsyncRawJsonTransport::get_json_url(
-        &mut transport,
-        &url,
-        BTreeMap::new(),
-    )
-    .await?;
-    recovery_handle_binding_from_value(&normalized.full_handle, &raw)
-}
-
-pub(crate) fn recovery_handle_binding_from_value(
-    expected_handle: &str,
-    raw: &Value,
-) -> crate::ImResult<RecoveryHandleBinding> {
-    let normalized = normalize_handle(expected_handle)?;
-    let status = string_field(raw, "status")?;
-    validate_active_status(&normalized.full_handle, &status)?;
-    let full_handle = first_string_field(raw, &["full_handle", "handle"])?;
-    validate_handle_match(&normalized.full_handle, &full_handle)?;
-    let did = crate::ids::Did::parse(&string_field(raw, "did")?)?;
-    validate_did_matches_handle_domain(&full_handle, did.as_str())?;
-    let generation = raw
-        .get("binding_generation")
-        .and_then(Value::as_str)
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let mapping_generation = canonical_positive_generation(generation)?;
-    Ok(RecoveryHandleBinding {
-        handle: crate::ids::Handle::parse(&full_handle, "")?,
-        local_part: normalized.local_part,
-        domain: normalized.domain,
-        did,
-        mapping_generation,
-    })
 }
 
 fn resolution_from_lookup(
@@ -367,27 +305,6 @@ fn authoritative_discovery_url_for_client(
     discovery_url(&handle.domain, &handle.local_part)
 }
 
-fn authoritative_discovery_url_for_core(
-    core: &crate::core::ImCore,
-    handle: &NormalizedHandle,
-) -> String {
-    let configured_base = core
-        .inner()
-        .sdk_config()
-        .user_service_endpoint
-        .as_ref()
-        .unwrap_or(&core.inner().sdk_config().service_base_url)
-        .as_str()
-        .trim_end_matches('/');
-    if is_loopback_http_base(configured_base) {
-        return format!(
-            "{configured_base}/.well-known/handle/{}",
-            percent_encode_path_segment(&handle.local_part)
-        );
-    }
-    discovery_url(&handle.domain, &handle.local_part)
-}
-
 fn is_loopback_http_base(base: &str) -> bool {
     let Some(rest) = base.strip_prefix("http://") else {
         return false;
@@ -455,17 +372,6 @@ fn did_wba_domain(did: &str) -> Option<String> {
         .filter(|domain| !domain.is_empty())
 }
 
-fn canonical_positive_generation(value: &str) -> crate::ImResult<u64> {
-    let trimmed = value.trim();
-    let parsed = value
-        .parse::<u64>()
-        .ok()
-        .filter(|generation| *generation > 0)
-        .filter(|generation| value == trimmed && generation.to_string() == value)
-        .ok_or(crate::ImError::PermissionDenied)?;
-    Ok(parsed)
-}
-
 fn string_field(value: &Value, key: &str) -> crate::ImResult<String> {
     value
         .get(key)
@@ -518,48 +424,6 @@ mod tests {
         assert_eq!(handle.full_handle, "alice.awiki.info");
         assert_eq!(handle.local_part, "alice");
         assert_eq!(handle.domain, "awiki.info");
-    }
-
-    #[test]
-    fn recovery_binding_requires_canonical_positive_generation() {
-        let base = json!({
-            "did": "did:wba:awiki.info:user:alice:e1_current",
-            "full_handle": "alice.awiki.info",
-            "status": "active",
-            "binding_generation": "3"
-        });
-        let binding = super::recovery_handle_binding_from_value("alice.awiki.info", &base).unwrap();
-        assert_eq!(binding.mapping_generation, 3);
-
-        for invalid in ["0", "03", "+3", "-1", "", " 3"] {
-            let mut raw = base.clone();
-            raw["binding_generation"] = Value::String(invalid.to_owned());
-            assert!(super::recovery_handle_binding_from_value("alice.awiki.info", &raw).is_err());
-        }
-    }
-
-    #[test]
-    fn recovery_binding_uses_only_public_wns_authority_fields() {
-        let base = json!({
-            "did": "did:wba:awiki.info:user:alice:e1_current",
-            "handle": "alice.awiki.info",
-            "status": "active",
-            "binding_generation": "3"
-        });
-        let without_internal_subject =
-            super::recovery_handle_binding_from_value("alice.awiki.info", &base).unwrap();
-
-        let mut with_untrusted_internal_subject = base;
-        with_untrusted_internal_subject["user_id"] = Value::String("untrusted-user".to_owned());
-        with_untrusted_internal_subject["subject_id"] =
-            Value::String("untrusted-subject".to_owned());
-        let ignored_internal_subject = super::recovery_handle_binding_from_value(
-            "alice.awiki.info",
-            &with_untrusted_internal_subject,
-        )
-        .unwrap();
-
-        assert_eq!(without_internal_subject, ignored_internal_subject);
     }
 
     #[test]

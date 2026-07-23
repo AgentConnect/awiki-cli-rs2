@@ -636,8 +636,7 @@ fn scenario(
     .unwrap();
     let checkpoint = IdentityInternalCheckpoint {
         document_version: 9,
-        document_hash: crate::internal::identity_wire::device_genesis::document_hash(&document)
-            .unwrap(),
+        document_hash: crate::internal::identity_wire::document::document_hash(&document).unwrap(),
         registry_version: 5,
     };
     let authorizing = DeviceJoinRemoteDeviceSummary {

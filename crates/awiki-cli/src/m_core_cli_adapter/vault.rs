@@ -38,7 +38,6 @@ pub fn build_im_core_open_options(
     let multi_device_root_transfer_enabled = multi_device_root_transfer_enabled()?;
     let multi_device_device_revoke_enabled = multi_device_device_revoke_enabled()?;
     let multi_device_direct_e2ee_enabled = multi_device_direct_e2ee_enabled()?;
-    let multi_device_handle_recovery_enabled = multi_device_handle_recovery_enabled()?;
     let multi_device_group_e2ee_enabled = multi_device_group_e2ee_enabled()?;
     let plan = cli_vault_open_plan(resolved)?;
     if !plan.vault_enabled {
@@ -47,7 +46,6 @@ pub fn build_im_core_open_options(
             .with_multi_device_root_transfer_enabled(multi_device_root_transfer_enabled)
             .with_multi_device_device_revoke_enabled(multi_device_device_revoke_enabled)
             .with_multi_device_direct_e2ee_enabled(multi_device_direct_e2ee_enabled)
-            .with_multi_device_handle_recovery_enabled(multi_device_handle_recovery_enabled)
             .with_multi_device_group_e2ee_enabled(multi_device_group_e2ee_enabled));
     }
     if !plan.root_key_available {
@@ -69,7 +67,6 @@ pub fn build_im_core_open_options(
         .with_multi_device_root_transfer_enabled(multi_device_root_transfer_enabled)
         .with_multi_device_device_revoke_enabled(multi_device_device_revoke_enabled)
         .with_multi_device_direct_e2ee_enabled(multi_device_direct_e2ee_enabled)
-        .with_multi_device_handle_recovery_enabled(multi_device_handle_recovery_enabled)
         .with_multi_device_group_e2ee_enabled(multi_device_group_e2ee_enabled))
 }
 
@@ -124,20 +121,6 @@ pub(crate) fn multi_device_direct_e2ee_enabled() -> Result<bool, ExitError> {
             "invalid_config",
             2,
             "AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED must be 0 or 1.",
-            "Leave it unset for the fail-closed default, or set it explicitly to 0 or 1.",
-        )),
-    }
-}
-
-pub(crate) fn multi_device_handle_recovery_enabled() -> Result<bool, ExitError> {
-    match std::env::var("AWIKI_MULTI_DEVICE_HANDLE_RECOVERY_ENABLED") {
-        Err(std::env::VarError::NotPresent) => Ok(false),
-        Ok(value) if value.trim() == "1" => Ok(true),
-        Ok(value) if value.trim() == "0" => Ok(false),
-        Ok(_) | Err(std::env::VarError::NotUnicode(_)) => Err(ExitError::new(
-            "invalid_config",
-            2,
-            "AWIKI_MULTI_DEVICE_HANDLE_RECOVERY_ENABLED must be 0 or 1.",
             "Leave it unset for the fail-closed default, or set it explicitly to 0 or 1.",
         )),
     }
@@ -566,7 +549,7 @@ fn unsupported_vault_mutation_result(
             "id vault {action}: im-core does not expose a CLI-safe mutation API in this build."
         ),
         format!(
-            "Current status is {}; use `awiki-cli id register` or `awiki-cli id recover` with secret_storage.mode=vault_required for new vault-backed identities.",
+            "Current status is {}; use `awiki-cli id register` with secret_storage.mode=vault_required for new vault-backed identities.",
             status["selected_backend"].as_str().unwrap_or("unknown")
         ),
     ))

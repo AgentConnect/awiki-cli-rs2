@@ -80,11 +80,6 @@ pub struct ImCoreOpenOptions {
     /// root transfer, and is never serialized into ANP, a DID Document, or a
     /// cross-domain request.
     pub multi_device_direct_e2ee_enabled: bool,
-    /// Enables AWiki same-domain Handle Recovery that creates a new vNext DID.
-    ///
-    /// This rollout gate defaults to `false`. It is local configuration and is
-    /// never serialized into ANP, a DID Document or a cross-domain request.
-    pub multi_device_handle_recovery_enabled: bool,
     /// Enables the device-scoped P6 v2 group E2EE product path.
     ///
     /// This rollout gate defaults to `false`, is independent from Join and is
@@ -124,11 +119,6 @@ impl ImCoreOpenOptions {
 
     pub fn with_multi_device_direct_e2ee_enabled(mut self, enabled: bool) -> Self {
         self.multi_device_direct_e2ee_enabled = enabled;
-        self
-    }
-
-    pub fn with_multi_device_handle_recovery_enabled(mut self, enabled: bool) -> Self {
-        self.multi_device_handle_recovery_enabled = enabled;
         self
     }
 

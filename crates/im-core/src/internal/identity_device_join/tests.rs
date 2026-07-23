@@ -7,6 +7,41 @@ use std::sync::{Arc, Mutex};
 const FIXED_DOCUMENT_HASH: &str = "sha256:UD5TmycQ6gS539AFNjM5cGoQUmeq2fQGPpwD00lMPlg";
 const FIXED_CHALLENGE_HASH: &str = "sha256:CNkA2F600Hf0nbZLaSSALDLOq6wK2OC7fXmxIhYAbzs";
 
+fn member_access_result(
+    did: &str,
+    user_id: &str,
+    device_id: &str,
+    key_id: &str,
+    auth_generation: u64,
+) -> crate::internal::identity_device_join_runtime::DeviceJoinAccessResult {
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+    let issued_at = OffsetDateTime::now_utc().unix_timestamp() - 1;
+    let payload = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&serde_json::json!({
+            "iss": "user-service",
+            "type": "access",
+            "purpose": "awiki.device.access.v1",
+            "sub": did,
+            "did": did,
+            "user_id": user_id,
+            "device_id": device_id,
+            "key_id": key_id,
+            "auth_generation": auth_generation,
+            "aud": "awiki-user-service",
+            "jti": format!("join-{device_id}"),
+            "iat": issued_at,
+            "nbf": issued_at,
+            "exp": issued_at + 3600,
+            "scopes": ["device:read", "device:root-import-complete", "message:connect"]
+        }))
+        .unwrap(),
+    );
+    crate::internal::identity_device_join_runtime::DeviceJoinAccessResult {
+        user_id: user_id.to_owned(),
+        access_token: format!("{header}.{payload}.test-signature"),
+    }
+}
+
 fn test_config() -> crate::ImCoreConfig {
     crate::ImCoreConfig {
         service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
@@ -108,12 +143,12 @@ fn open_vault_core_with_messaging_flags(
 
 #[derive(Clone)]
 struct ActivationTokenRemote {
-    calls: Arc<Mutex<Vec<(String, String, u64)>>>,
+    calls: Arc<Mutex<Vec<String>>>,
     results: Arc<
         Mutex<
             VecDeque<
                 crate::ImResult<
-                    crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult,
+                    crate::internal::identity_device_join_runtime::DeviceJoinAccessResult,
                 >,
             >,
         >,
@@ -152,17 +187,15 @@ impl crate::internal::identity_device_join_runtime::DeviceJoinNewDeviceRemote
         panic!("pending activation must not resubmit the Join response")
     }
 
-    async fn issue_device_token(
+    async fn refresh_device_access(
         &mut self,
-        prepared: &crate::internal::identity_wire::device_genesis::PreparedDeviceTokenIssue,
-        expected_auth_generation: u64,
-    ) -> crate::ImResult<crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult>
+        pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    ) -> crate::ImResult<crate::internal::identity_device_join_runtime::DeviceJoinAccessResult>
     {
-        self.calls.lock().unwrap().push((
-            prepared.operation_id.clone(),
-            prepared.authorization.clone(),
-            expected_auth_generation,
-        ));
+        self.calls
+            .lock()
+            .unwrap()
+            .push(pending.authorization.device.device_id.clone());
         self.results
             .lock()
             .unwrap()
@@ -1471,22 +1504,20 @@ fn new_device_activation_survives_local_commit_failure_and_promotes_rootless_mem
         &final_document,
     )
     .unwrap();
-    assert_eq!(pending.prepared_token_issue.device_id, device.device_id);
-    let pending = record_new_device_token_result(
+    assert_eq!(pending.authorization.device.device_id, device.device_id);
+    let pending = record_new_device_access_result(
         &core,
         &started.session.join_session_id,
-        crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult {
-            access_token: "member-access-token".to_owned(),
-            refresh_token: "member-refresh-token".to_owned(),
-            expires_at: format_time(OffsetDateTime::now_utc() + Duration::hours(1)).unwrap(),
-            user_id: "user-member".to_owned(),
-            device_id: device.device_id.clone(),
-            auth_generation: 1,
-            scopes: vec!["device:read".to_owned(), "message:connect".to_owned()],
-        },
+        member_access_result(
+            generated.did.as_str(),
+            "user-member",
+            &device.device_id,
+            &device.signing_key_id,
+            1,
+        ),
     )
     .unwrap();
-    assert!(pending.token_result.is_some());
+    assert!(pending.access_result.is_some());
 
     let identity_dir = root
         .path()
@@ -1498,7 +1529,7 @@ fn new_device_activation_survives_local_commit_failure_and_promotes_rootless_mem
         load_pending_new_device_activation(&core, &started.session.join_session_id)
             .unwrap()
             .unwrap()
-            .token_result
+            .access_result
             .is_some()
     );
     std::fs::remove_file(&identity_dir).unwrap();
@@ -1552,7 +1583,7 @@ fn new_device_activation_survives_local_commit_failure_and_promotes_rootless_mem
         .unwrap();
     let auth = crate::internal::auth::state::parse_auth_state(auth.expose_secret()).unwrap();
     assert_eq!(auth.bearer_token.as_deref(), Some("member-access-token"));
-    assert_eq!(auth.refresh_token.as_deref(), Some("member-refresh-token"));
+    assert!(auth.refresh_token.is_none());
     let vault_refs = restarted
         .inner()
         .identity_vault()
@@ -1652,18 +1683,16 @@ async fn admin_join_activation_remains_not_ready_without_root_import() {
         &document,
     )
     .unwrap();
-    record_new_device_token_result(
+    record_new_device_access_result(
         &core,
         &started.session.join_session_id,
-        crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult {
-            access_token: "admin-awaiting-access".to_owned(),
-            refresh_token: "admin-awaiting-refresh".to_owned(),
-            expires_at: format_time(OffsetDateTime::now_utc() + Duration::hours(1)).unwrap(),
-            user_id: "user-admin".to_owned(),
-            device_id: device.device_id,
-            auth_generation: 1,
-            scopes: vec!["device:read".to_owned(), "message:connect".to_owned()],
-        },
+        member_access_result(
+            generated.did.as_str(),
+            "user-admin",
+            &device.device_id,
+            &authorization.device.signing_key_id,
+            1,
+        ),
     )
     .unwrap();
     let session = finalize_new_device_activation(&core, &started.session.join_session_id).unwrap();
@@ -1705,7 +1734,7 @@ async fn admin_join_activation_remains_not_ready_without_root_import() {
 }
 
 #[tokio::test]
-async fn token_response_loss_retries_same_operation_with_fresh_device_authorization() {
+async fn access_response_loss_retries_same_pending_device_after_restart() {
     use crate::internal::identity_device_join_runtime::{
         DeviceJoinDidResolver, DeviceJoinNewDeviceRuntime, DeviceJoinRemoteAuthorization,
         DeviceJoinRemoteDeviceSummary, DeviceJoinRuntimeGate,
@@ -1776,15 +1805,13 @@ async fn token_response_loss_retries_same_operation_with_fresh_device_authorizat
             auth_generation: 1,
         },
     };
-    let pending = prepare_new_device_activation(
+    prepare_new_device_activation(
         &core,
         &started.session.join_session_id,
         &authorization,
         &document,
     )
     .unwrap();
-    let operation_id = pending.prepared_token_issue.operation_id.clone();
-    let initial_authorization = pending.prepared_token_issue.authorization.clone();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let results = Arc::new(Mutex::new(VecDeque::from([Err(
         crate::ImError::TransportUnavailable {
@@ -1814,20 +1841,13 @@ async fn token_response_loss_retries_same_operation_with_fresh_device_authorizat
     drop(runtime);
     drop(core);
 
-    results.lock().unwrap().extend([
-        Err(crate::ImError::AuthRequired),
-        Ok(
-            crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult {
-                access_token: "response-loss-access".to_owned(),
-                refresh_token: "response-loss-refresh".to_owned(),
-                expires_at: format_time(OffsetDateTime::now_utc() + Duration::hours(1)).unwrap(),
-                user_id: "user-response-loss".to_owned(),
-                device_id: device.device_id,
-                auth_generation: 1,
-                scopes: vec!["device:read".to_owned(), "message:connect".to_owned()],
-            },
-        ),
-    ]);
+    results.lock().unwrap().push_back(Ok(member_access_result(
+        generated.did.as_str(),
+        "user-response-loss",
+        &device.device_id,
+        &authorization.device.signing_key_id,
+        1,
+    )));
     let restarted = open_vault_core(root.path());
     let remote = ActivationTokenRemote {
         calls: calls.clone(),
@@ -1846,12 +1866,7 @@ async fn token_response_loss_retries_same_operation_with_fresh_device_authorizat
     assert_eq!(completed.session.phase, DeviceJoinLocalPhase::Authorized);
 
     let calls = calls.lock().unwrap().clone();
-    assert_eq!(calls.len(), 3);
-    assert!(calls.iter().all(|call| call.0 == operation_id));
-    assert!(calls.iter().all(|call| call.2 == 1));
-    assert_eq!(calls[0].1, initial_authorization);
-    assert_eq!(calls[1].1, initial_authorization);
-    assert_ne!(calls[2].1, initial_authorization);
+    assert_eq!(calls, vec![device.device_id.clone(), device.device_id]);
     assert!(
         load_pending_new_device_activation(&restarted, &started.session.join_session_id,)
             .unwrap()

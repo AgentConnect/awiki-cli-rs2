@@ -55,6 +55,15 @@ impl super::KeyMaterialProvider for HostedKeyMaterialProvider {
             .device_request_signing_private_pem())
     }
 
+    fn device_request_signing_material(
+        &self,
+    ) -> crate::ImResult<super::DeviceRequestSigningMaterial> {
+        Ok(super::DeviceRequestSigningMaterial {
+            key_id: super::file::request_signing_key_id(&self.did_document)?,
+            private_key_pem: self.device_request_signing_private_pem()?,
+        })
+    }
+
     fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
         Ok(self
             .legacy_key1_role_adapter()

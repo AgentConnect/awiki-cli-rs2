@@ -1,17 +1,20 @@
 # Identity Secret Storage And SecretVault
 
-Status: active  
+Status: active；多设备 V1 目标待 Review
 Authority: authoritative for `awiki-cli-rs2` client-side identity secret storage
 
-本文档记录当前端侧私钥和相关 secret 的本地持久化方案。它覆盖
-`im-core`、CLI、Dart/Flutter SDK、AWiki Me 和 `awiki-deamon` 的当前实现边界。
-一次性执行计划和历史 plan 只作为背景；如果与本文档或当前代码冲突，以本文档和当前代码为准。
+本文档记录端侧私钥和相关 secret 的本地持久化架构。它覆盖
+`im-core`、CLI、Dart/Flutter SDK、AWiki Me 和 `awiki-deamon`。除第 4.1 节外，各节主要记录
+当前实现边界；第 4.1 节固定待落地的多设备 V1 目标。当前代码若与第 4.1 节冲突，应视为实施差距，
+不能反向把旧 ACK、sidecar 或 refresh-token 状态机解释为目标架构。
 
 ## 1. 快速结论
 
-当前安全结论：
+当前基础与 V1 目标结论：
 
-- `im-core` identity private material 已有 `SecretVault` contract；host 使用 `VaultRequired` 时，新注册、恢复、daemon subkey package persistence 和 JWT/token refresh 不写新明文私钥/JWT 文件。
+- `im-core` identity private material 已有 `SecretVault` contract；V1 要求 host 使用
+  `VaultRequired` 时，新注册、Legacy 升级、设备 Join/管理员升级、daemon subkey package
+  persistence 和 access-token 替换都不写新明文私钥/JWT 文件。
 - CLI 新 workspace 默认使用 `secret_storage.mode=vault_required`。root key 优先来自 `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64`，否则来自 `vault_dir/root-key.b64u` 本地私有文件；root key 不进入 workspace config、doctor 或 JSON/human 输出。
 - AWiki Me 生产路径使用 Dart SDK `VaultRequired`，App-local root key 存在平台 secure storage；只有显式 E2E state root 使用私有 JSON test provider。
 - daemon 的 agent identity 私钥、Personal Agent delegated 私钥和 `agent_auth_state.jwt_token` 已按 sentinel + `SecretRef` 方式保存，真实 secret seal 到 daemon SecretVault。
@@ -41,7 +44,7 @@ App 侧的具体接入说明放在 `awiki-me/docs/identity-secret-storage.md`。
 | 范围 | Secret | 当前 owner | 当前持久化 |
 |---|---|---|---|
 | Identity | DID auth/signing private key、E2EE static signing/agreement key、identity auth/JWT state | `im-core` | `SecretVault`；host 使用 `VaultRequired` 时不写新明文 PEM/JWT |
-| CLI identity | CLI 注册/恢复得到的 identity 私钥和 auth state | `crates/awiki-cli` + `im-core` | 默认 `secret_storage.mode=vault_required`；root key 来自 env 或本地私有 root-key 文件 |
+| CLI identity | CLI 注册、Legacy 升级及既有兼容命令得到的 identity 私钥和 auth state | `crates/awiki-cli` + `im-core` | 默认 `secret_storage.mode=vault_required`；root key 来自 env 或本地私有 root-key 文件 |
 | App identity | AWiki Me 当前账号 identity 私钥和 auth state | `awiki-me` host + `im-core` | App 使用 Dart SDK `VaultRequired`，root key 放在平台 secure storage；E2E 才使用私有 JSON test provider |
 | Daemon agent | daemon/runtime agent DID 私钥 | `crates/awiki-deamon` | `daemon.db` 只保存 `<awiki-secret-vault-ref>` sentinel 和 `SecretRef` JSON；真实私钥 seal 到 daemon SecretVault |
 | Personal Agent delegated key | `user_delegated_identity.private_key_material` | `crates/awiki-deamon` | sentinel + `private_key_ref_json`；真实 delegated private key seal 到 daemon SecretVault |
@@ -70,7 +73,7 @@ App 侧的具体接入说明放在 `awiki-me/docs/identity-secret-storage.md`。
 - `KeyMaterialProvider` 明确区分 `device_request_signing_private_pem` 与 `did_document_root_private_pem`：前者只服务登录、HTTP auth、Direct、Group 和 Attachment 等日常设备请求；后者只服务 DID Document 创建、重签和更新。调用方不得用其中一个 accessor 代替另一个。
 - legacy File/Hosted/Vault 身份仍只有同一把 `key-1`，只能经内部 `LegacyKey1RoleAdapter` 显式映射为上述两个角色；这是兼容语义，不得用于创建新的多设备身份。
 - vNext Vault 使用 `IdentityDeviceSigningPrivate` 保存设备签名密钥，并采用 side-by-side `VNextVaultKeyMaterialRefs`：设备签名 ref 必需，DID root ref 可空。普通 member 没有 root ref 时仍可进行日常签名，调用 DID root accessor 必须 fail closed。root/device signing 的 `SecretKind` 不可互换。
-- 现有 `vault_migration` metadata 保持 legacy schema 不变；vNext refs 的正式 metadata 持久化与迁移由后续 genesis/Join 切片接入。本切片的 key role、ref 和 provider 类型均为 im-core 内部边界，不进入 ANP wire、DID Document 或 App 公共 DTO。
+- 现有 `vault_migration` metadata 保持 legacy schema 不变；vNext refs 的正式 metadata 持久化与迁移由统一 `register`、Legacy 升级、Join 和管理员升级流程接入。key role、ref 和 provider 类型均为 im-core 内部边界，不进入 ANP wire、DID Document 或 App 公共 DTO。
 - identity vault status/migrate/verify 只返回 backend、metadata、warning、missing items 和兼容文件保留状态，不返回 root key、private PEM、JWT、完整 `SecretRef` 或 ciphertext。
 
 三种 identity secret storage policy：
@@ -81,96 +84,106 @@ App 侧的具体接入说明放在 `awiki-me/docs/identity-secret-storage.md`。
 | `VaultPreferred` | 迁移期检查/过渡 | 有 vault context 时使用 vault；缺失时可能暴露 legacy 状态，不能作为最终安全闭环 |
 | `VaultRequired` | 新工作区和生产 App/CLI | 缺 root key、缺 vault context、metadata 不匹配、metadata 损坏或 verify 失败时 fail closed，不回退新明文持久化 |
 
-`VaultRequired` 下注册、恢复、daemon subkey package persistence 和 JWT/token refresh 都必须走 vault-backed persistence，不写新的明文私钥/JWT 文件。
+`VaultRequired` 下新注册、Legacy 升级、设备 Join/管理员升级、daemon subkey package persistence
+和 access-token 替换都必须走 vault-backed persistence，不写新的明文私钥/JWT 文件。
 
 ### 4.1 多设备管理设备的 DID root 导入
 
-AWiki 的 root 导入是域内、默认关闭的能力，边界停在现有设备级 Direct E2EE
-结构化 JSON 的加解密 hook，不扩展 ANP P5、AAD 或跨域协议。DID root private key
-与用于打开本地 Vault 的 `DeviceVaultRootKey` / KEK 是两种不同密钥：前者只作为
-`IdentityRootPrivate` secret seal 到接收设备的 `SecretVault`，Identity Registry 只保存
-`SecretRef`，Vault record 由本地 KEK 加密。Core 自己拥有的 RootKeyEnvelope 字符串、
-`SecretBytes` 和序列化缓冲区使用 zeroizing secret 类型，并尽量缩短第三方密钥解析对象的
-作用域；这里不宣称第三方解析库内部的所有临时分配都具备 zeroize 保证。根密钥明文只允许
-短暂存在于 Direct AEAD 边界，不进入普通消息、日志、通知、崩溃报告或常规备份。
+AWiki 的 root 导入是 V1 域内能力，复用普通设备级 P5 Direct E2EE，不扩展 ANP P5、AAD
+或跨域协议。DID root private key 与用于打开本地 Vault 的
+`DeviceVaultRootKey` / KEK 是两种不同密钥：
 
-root 导入的本地非秘密状态包括：
+- DID root private key 是用户身份管理能力；
+- DeviceVaultRootKey/KEK 是当前宿主的本地加密根；
+- 接收设备只把 DID root 作为 `IdentityRootPrivate` seal 到自己的 SecretVault；
+- Identity index 只保存 `SecretRef` 和无秘密状态，不保存 root 明文。
 
-- Identity index schema v5 的可选 `root_key_import`：保存已消费的 Direct `message_id`、
-  DID/root key id、内部 Document version/hash、两端 device、expiry，以及唯一的设备签名
-  imported completion；不保存 root private key。
-- identity 目录中的短生命周期 pending reservation：只用于 Vault seal 与 index commit
-  之间的崩溃恢复，不包含私钥或 Direct 明文。完全相同 reservation 可恢复；未过期冲突
-  fail closed；旧 reservation 过期后，若当前接收设备仍是 not-ready admin，新的合法
-  `message_id` 可在确认 Vault 中是同一 root 后原子替换 ACK reservation，且不重新 seal。
-- imported completion 是唯一业务 ACK。相同 Envelope/ACK 重放复用首次持久化的完整签名
-  声明，不重新 seal 或覆盖 root；同一 `message_id` 的不同 Envelope 被拒绝。
-- `root_key_import.management_token_operation_id` 是端内保存的 token-issue 幂等状态，不是
-  ANP、DID Document 或跨域字段。首次签发前仅在确认尚无持久化值时生成，并在远端调用前
-  原子落盘；精确重试复用原值，只有服务端明确返回该 operation 已过期时才通过 CAS 轮换。
-- management-ready 响应丢失时，旧 generation bearer 只通过不刷新、不签名降级、不持久化
-  响应 token 的临时 transport 探测。仅精确 JSON-RPC 码 `device.auth_generation_stale` 可证明
-  generation 已推进；`device.unauthenticated`、HTTP 401 和其他错误都 fail closed。
-- V1 不猜测“服务端已 ready、端内尚未 commit”这一不确定状态。如果此时旧 generation bearer
-  已过期且服务端不能返回上述精确 stale code，流程保持 fail closed，用户必须先重新认证或进入
-  显式恢复流程；扩大服务端幂等查询/恢复时间窗留待后续版本。
+发送端只有在当前 Registry 确认为 ready admin、目标仍为 member、Manifest/key 绑定有效且
+普通 P5 Session 或 PreKey 已经准备好后，才允许请求用户对本次 exact-device 传输确认一次。
+V1 不为根传输增加系统 PIN/生物识别步骤。
+已有 Session 时发送标准 Cipher；没有 Session 时，标准 Init 的第一个业务明文直接携带
+RootKeyEnvelope。V1 不发送空 Init、不要求第二次确认，也不建立 root 专用
+`delivery_class`、sidecar、Mailbox 或 Ratchet。
 
-一致性顺序为：在共享 IdentityIndex mutation lock 内验证当前 Document/Registry 和设备资格，
-写入非秘密 pending reservation，以 seal-if-absent 发布 root Vault record，再原子写入同一份 index image（root
-`SecretRef` + consumed reservation + signed completion + checkpoint），最后尽力删除 pending。
-index image 是本地导入线性化点。若进程在 Vault seal 后、index commit 前退出，后续只能在
-重新验证后的 root 与既有 Vault record 完全相同时复用该 record，绝不覆盖不同 root。
-通过 Registry checkpoint 校验的当前 DID Document 会在 index commit 后原子更新到本地
-projection；若 projection 写入失败，导入仍按已提交状态处理，并由同一 Envelope 的精确重放
-重试投影。文件型 provider 每次读取该 projection，因此当前已打开的 client 无需重建即可看到
-最新文档。
-management-ready ACK 可能对应比 Envelope 更新的 Document checkpoint。端内先验证解析到的
-Document 与 Registry hash、当前设备 key/role/generation，再提交 auth/checkpoint，最后原子更新
-Document projection；投影失败返回固定的 exact-retry 本地错误。重试进入 AlreadyConverged 时
-仍须重新解析并校验当前 Document/Registry 后修复 projection，但不得再次签发 management token，
-也不得改变已提交的 auth ref、operation id 或 authorization generation；同版本不同 hash 拒绝。
-该投影重试本身不刷新 access token；若持久化 token 已过期，先由正常会话刷新路径更新 auth
-state，再以新的当前 bearer 重试投影，避免把 token refresh 隐式混入 root-import 幂等状态机。
-正常刷新按 identity 模式分流：legacy identity 继续使用 DID-auth `get_me`；vNext identity 必须从
-权威 Vault auth state 读取 rotating refresh token，调用同域内部
-`device_token_refresh(operation_id, refresh_token)`，不得回退设备签名。operation id 由当前 refresh
-token 确定性派生，因此丢响应只会形成服务端 exact replay。客户端在写入前严格核对返回 token pair
-的 profile、access/refresh purpose、DID、user、device、key、auth generation、scopes、audience、
-expiry 与当前授权，并拒绝旧 refresh token 重放。验证通过后，在同一个权威 auth
-`SecretRef`/`key_version` 的实例锁及 identity 目录专用 0600 文件锁（跨 provider/进程）边界内
-按旧 refresh 摘要做 CAS，一次性替换 access 与 rotated
-refresh token；当前已是同一目标 pair 时幂等成功，auth state 已前进时拒绝迟到响应，随后重新打开写后核验；
-401、错误 claims 或写入失败都 fail closed，响应 header token 不得进入 vNext auth state。该步骤
-不得改变 root-import operation id、authorization generation 或 Identity index 中的 auth ref。
-端内 JWT payload 检查只承担结构和授权绑定校验，不声称本地完成 JWT 签名验证：旧 refresh
-来自权威 Vault record，并由 user-service 在 refresh RPC 中验签、消费 JTI 和复核实时 Registry；
-轮换结果来自配置的 TLS endpoint，后续业务服务仍会独立验签 access token。
-同一进程中长期存活的 vNext `KeyMaterialProvider` 还维护可推进的 root/auth `SecretRef`
-指针；推进前严格核对 Vault context、identity、DID、secret kind、key id/version 并成功
-解封目标记录。导入 root ref 只接受 `key_version=1`，并从私钥重算公钥指纹核对已签名的
-imported completion。fresh import、Envelope replay 和精确恢复都从 Identity index 的权威 ref
-修复当前 provider，因此导入后不要求重建 client。被替代记录不会在推进时立即删除，避免
-破坏仍引用旧 ref 的其他 live provider，后续由单独的 Vault compaction 处理。
-V1 明确约束每个本地 identity 只有一个活动 runtime。多个同时存活的 client/provider 不保证
-内存 `SecretRef` 广播收敛；非当前执行 runtime 需在重开或自身 exact-retry 时修复。跨 runtime
-主动广播留作后续版本，不在本期增加全局协调器。
-本流程只面向使用 canonical `did_document.json` 的新建 vNext identity；同时保留 legacy
-`did.json` 的旧身份仍由兼容 adapter 处理，不进入本期 root-import 核心状态机，避免双文件
-读取优先级造成 projection 分歧。
+Core 自己拥有的 RootKeyEnvelope、`SecretBytes` 和序列化缓冲区使用 zeroizing secret 类型，
+并尽量缩短第三方密钥解析对象的作用域。这里不宣称第三方解析库内部的所有临时分配都具备
+zeroize 保证。root 明文只允许短暂存在于发送端 Vault → P5 AEAD 和接收端 P5 AEAD → Vault
+边界，不进入普通消息、History、通知预览、搜索、日志、崩溃报告、Dart/CLI DTO 或常规备份。
 
-所有 IdentityStore index 的 load-modify-save，以及本地 identity 删除路径，共享同一 OS
-mutation lock；index 本身通过 private temp file、`fsync` 和跨平台 atomic replace 替换
-（Unix rename；Windows `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`）。前者防止
-并发 stale writer 丢失 root `SecretRef`、completion、token/device state 等字段，后者防止
-崩溃留下截断 JSON。上述 schema、lock、pending 和 Document version/hash 都是端内实现状态，
-不进入 DID Document、ANP SDK model 或跨域 wire。
+接收端在普通消息投影前截获合法 RootKeyEnvelope，重新验证当前 DID Document、Registry、
+两端设备/key、P5 AAD、expiry 和 root public fingerprint。验证完成后的本地状态为：
 
-已有 `root_key_import` 的 identity 只能以同 alias、DID、unique id、Vault context 和同一组
-设备密钥做 rootless vNext 重存。重存前会验证现有 Vault root 与 DID public 一致，并逐字节
-验证设备私钥；auth state 按当前 bearer 语义验证，而不是把可能包含 refresh token/expiry 的
-版本化 JSON 与 access-only JSON 逐字节比较。重存原样保留全部 Vault refs、refresh token 和
-import record；普通 save 不允许借同一 key id 覆盖设备私钥，token 轮换继续使用专用 mutation
-路径。
+```text
+root capability = pending
+Registry         = active member
+```
+
+pending root 必须与 active root 使用不同的 capability/ref 状态。普通
+`did_document_root_private_pem` accessor 不得向一般 DID 管理流程返回 pending root；只有本次
+`device_root_import_complete` proof builder 可以在严格绑定的操作范围内读取它。
+
+root 导入的本地逻辑事务至少提交：
+
+- seal-if-absent 的 pending root Vault record；
+- 已消费的 P5 `message_id` 和 exact-device 绑定；
+- Document/Registry checkpoint；
+- 完整且可精确重试的 completion params/proofs 或其受保护记录；
+- completion 状态和 expiry；
+- 指向 pending record 的 `SecretRef`。
+
+文件型 Vault 与 Identity index 不能依赖“两个 rename 天然原子”。实现必须在共享
+IdentityIndex mutation lock 内使用短生命周期 reservation、幂等 seal-if-absent、原子 index
+replace 和写后校验形成明确线性化点。进程在 Vault seal 后、index commit 前退出时，只能在重新
+验证后复用内容和 context 完全相同的 record，绝不能覆盖不同 root、重新消费 P5 ratchet key 或
+生成另一份 completion。
+
+本地事务成功后，新设备通过 HTTPS 提交一次
+`device_root_import_complete`：
+
+- 外层使用当前 importing-device signing key 的 ANP Object Proof；
+- 内层使用 pending DID root 的 ANP Object Proof；
+- `operation_id` 固定为 RootKeyEnvelope 的 P5 `message_id`；
+- 网络失败或响应不确定时，重发完全相同的 params 和 proofs。
+
+User Service 只有在重新验证当前 Manifest/Registry、两层 proof 和普通 P5 可信路由 tuple 后，
+才能在一个事务中把 member 直接改为 `admin + management_ready=true` 并递增
+`auth_generation`。V1 不产生 `admin + management_ready=false`，不发送 E2EE imported ACK，
+也不以 P5 Reply、HTTP accepted 或系统通知作为 readiness 事实。
+
+completion 返回后，Core 必须重新读取 Registry：
+
+- 远端仍是 member：保持 pending，不开放管理能力；
+- 远端成为 ready admin 且 active root 可重新打开：在本地事务中把 pending ref 提升为 active；
+- completion 终态失败或过期：删除本次 pending root 和待完成状态，设备继续作为 member；
+- 响应不确定：按同一 operation 精确重试，并以 Registry 事实收敛。
+
+只有“Registry ready admin + 本地 active root 可读”同时成立，host 才能看到 ready admin。
+密文删除和可选的 `root-key-imported` 系统通知在远端事务后幂等收敛，不参与本地 root 激活的
+授权判断。
+
+管理员升级后，Core 使用明确的本机 device signing key 发起 fresh DID-WBA User Service
+请求，从标准认证响应头取得新的管理 access token。`get_me` 只是没有其他业务 RPC 时的
+bootstrap。Bearer 请求不续期，V1 不保存 rotating refresh token，也不调用
+`device_token_issue` 或 `device_token_refresh`。
+
+access auth state 只保存一个当前 access token。替换前必须核对返回 token 的 profile/purpose、
+DID、user、device、key、`auth_generation`、scopes、audience 和 expiry，并在 identity mutation
+lock 下以当前 auth ref/version 做 CAS。写入后重新打开核验；错误 claims、迟到响应或写入失败都
+fail closed。JWT payload 的端内解析只承担结构和授权绑定检查，不宣称替代业务服务的 JWT
+签名验证。
+
+所有 IdentityStore index 的 load-modify-save、root promotion、access-token 替换和本地
+identity 删除路径共享同一 OS mutation lock；index 使用 private temp file、`fsync` 和跨平台
+atomic replace。schema、lock、pending、Document/Registry checkpoint 和 `SecretRef` 都是端内
+实现状态，不进入 DID Document、ANP wire 或 App 公共 DTO。
+
+普通 identity save 不得借相同 key id 覆盖设备私钥、root ref、pending completion 或 auth
+state。对已有 vNext identity 的重存必须核对 alias、DID、unique id、Vault context、全部 key
+material 和当前权威 refs，并原样保留未被本次专用 mutation 改变的状态。
+
+旧实现中的 `root_key_import` imported-completion/ACK、management-token issue operation、
+refresh-token pair 和 completion sidecar 不是目标 schema。实现切换对应模块时必须迁移或删除
+这些旧字段、DTO、恢复分支和测试，不能让它们继续成为第二套运行时状态机。
 
 ## 5. CLI 当前方案
 
@@ -188,13 +201,15 @@ secret_storage:
 
 - 新写入的 workspace config 默认 `mode: vault_required`。
 - `file_compat` 只作为显式 legacy plaintext storage 兼容开关；`id create` / `id import-v1` 这类 legacy 明文身份写入入口需要显式 `file_compat`。
-- 新身份应使用 `id register` 或 `id recover`，并通过 `VaultRequired` 进入 `im-core`。
+- V1 多设备新身份使用 `id register` 并通过 `VaultRequired` 进入 `im-core`。
+- 旧 `id recover` / Handle Recovery 入口已从 V1 CLI 和 Core facade 删除；未来 Recovery
+  必须作为独立安全方案重新设计，不能复用 Join 或 Legacy 升级。
 
 CLI root key 来源：
 
 1. 优先读取环境变量 `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64`，值必须是 base64/base64url 编码的 32-byte root key。
 2. 如果环境变量不存在，读取 `secret_storage.vault_dir/root-key.b64u`。
-3. 如果普通 SDK open、注册或恢复等 live 路径需要 root key 且本地文件不存在，CLI 会创建本地私有 root-key 文件。
+3. 如果普通 SDK open、注册等 live 路径需要 root key 且本地文件不存在，CLI 会创建本地私有 root-key 文件。
 4. `id vault status` 和 dry-run mutation 只报告计划，不创建 root-key 文件。
 
 重要事项：

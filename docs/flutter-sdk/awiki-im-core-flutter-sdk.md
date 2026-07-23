@@ -168,56 +168,12 @@ unsupported.
 
 ## Multi-device Handle Recovery
 
-Native hosts opt in with
-`AwikiImCoreOpenOptions(multiDeviceHandleRecoveryEnabled: true)`; the default
-is false and the gate is independent from Join, root transfer, and group E2EE.
-V1 restores the same AWiki Handle by creating a completely new DID and new
-root/device keys locally. It does not recover the old root private key or copy
-old Direct/MLS state.
-
-Begin and finalize accept different one-shot write-only types:
-`HandleRecoveryBeginVerificationGrant` and
-`HandleRecoveryFinalizeVerificationGrant`. Neither type has a token getter,
-copy/JSON API, or revealing `toString`; the native call consumes its bytes once
-and the Dart wrapper overwrites the temporary buffer. A begin grant cannot be
-passed to finalize.
-
-The lifecycle facade is `localHandleRecoverySessions`,
-`beginHandleRecovery`, `pollHandleRecovery`, `cancelHandleRecovery`,
-`finalizeHandleRecovery`, `resumeHandleRecoveryActivation`, and
-`markHandleRecoveryActivationComplete`. Its DTOs contain only the Recovery
-session ID, Handle, old/new DID, phase, times, side, cancellability, and local
-activation-pending state. Tokens, proofs, generated documents, private keys,
-and AWiki-internal versions/hashes remain below Core. Flutter Web exposes the
-same typed surface but keeps the native operation unsupported.
-
-Old management devices discover a pending request through the separate
-secret-free `OldAdminRecoveryNotice` surface:
-
-```dart
-final notices = await core.listOldAdminRecoveryNotices(
-  oldIdentity: IdentitySelector.did(oldDid),
-);
-final fresh = await core.getOldAdminRecoveryNotice(
-  oldIdentity: IdentitySelector.did(oldDid),
-  eventId: notices.first.eventId,
-);
-await core.dismissOldAdminRecoveryNotice(
-  oldIdentity: IdentitySelector.did(oldDid),
-  eventId: notices.first.eventId,
-);
-```
-
-The notice contains only event/session ID, Handle, old DID, requested time,
-and cancellation deadline. It never exposes the raw control payload, sync
-checkpoint, tokens, proofs, email, secrets, or internal versions/hashes.
-`dismissOldAdminRecoveryNotice` hides the warning on this local device only;
-it does not cancel the server Recovery Session. Actual cancellation continues
-to use `cancelHandleRecovery`, whose minimal result is
-`recoverySessionId + phase` and whose Core path revalidates current
-management-ready authorization. Sync/realtime persistence remains Core-owned,
-and Recovery control notifications never become chat messages or notification
-preview content. Flutter Web retains the typed methods as unsupported stubs.
+V1 does not expose a Handle Recovery lifecycle, rollout flag, old-admin notice
+API, or native/Web stub. Recovery is a future, independently designed security
+capability; it must not be implemented by reusing Device Join or the
+single-original-device Legacy-to-Manifest upgrade. Applications must not infer
+Recovery support from identity registration, Join, root transfer, group rebind
+repair, or other operational repair APIs.
 
 ## Management-device root-key transfer
 

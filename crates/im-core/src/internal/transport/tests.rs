@@ -253,3 +253,59 @@ fn write_unauthorized_with_token(stream: &mut std::net::TcpStream) {
         .unwrap();
     stream.flush().unwrap();
 }
+
+#[test]
+fn registration_reconciliation_registry_requires_the_exact_single_device() {
+    let generated =
+        crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "example.test",
+            "alice",
+            None,
+            None,
+        )
+        .unwrap();
+    let pending = crate::internal::identity_registration_pending::PendingRegistration::new(
+        "alice".to_owned(),
+        "example.test".to_owned(),
+        "alice".to_owned(),
+        "Alice".to_owned(),
+        true,
+        "already_verified".to_owned(),
+        None,
+        None,
+        generated,
+    )
+    .unwrap();
+    let registry = |e2ee_key_id: &str| {
+        json!({
+            "did": pending.generated.did.as_str(),
+            "checkpoint": {
+                "document_version": 1,
+                "document_hash": pending.document_hash,
+                "registry_version": 1
+            },
+            "devices": [{
+                "device_id": pending.generated.protocol_device_id.as_str(),
+                "signing_key_id": pending.generated.device_signing_key_id,
+                "e2ee_key_id": e2ee_key_id,
+                "status": "active",
+                "role": "admin",
+                "management_ready": true,
+                "auth_generation": 1
+            }]
+        })
+    };
+
+    validate_pending_registration_registry_value(
+        &pending,
+        registry(&pending.generated.device_e2ee_key_id),
+    )
+    .unwrap();
+    assert_eq!(
+        validate_pending_registration_registry_value(
+            &pending,
+            registry(&format!("{}#wrong-e2ee", pending.generated.did.as_str()))
+        ),
+        Err(crate::ImError::PermissionDenied)
+    );
+}

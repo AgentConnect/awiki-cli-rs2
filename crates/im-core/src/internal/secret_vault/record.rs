@@ -22,14 +22,14 @@ pub enum SecretKind {
     /// Encrypted, local-only crash recovery state for promotion after Join.
     /// This label is never serialized into ANP or first-party wire requests.
     IdentityJoinActivationPending,
-    /// Encrypted, local-only crash recovery state for an in-flight Genesis.
+    /// Encrypted, local-only crash recovery state for an in-flight register.
     /// This label is never serialized into ANP or first-party wire requests.
-    IdentityGenesisPending,
-    /// Encrypted, local-only state for an in-flight Handle Recovery.
-    /// This label is never serialized into ANP or first-party wire requests.
-    IdentityRecoveryPending,
-    /// Encrypted exact-retry intent for a ready admin cancelling Recovery.
-    IdentityRecoveryCancelPending,
+    #[serde(alias = "identity_genesis_pending")]
+    IdentityRegistrationPending,
+    /// Encrypted exact-retry state for the one-device Legacy promotion.
+    IdentityLegacyUpgradePending,
+    /// Encrypted access token awaiting local-only auth-state convergence.
+    IdentityAuthCommitPending,
     /// Encrypted exact-retry intent for one permanent device revocation.
     /// This is AWiki-local state and never appears in ANP or DID Documents.
     IdentityDeviceRevokePending,
@@ -60,9 +60,9 @@ impl SecretKind {
             Self::IdentityJoinPairingPrivate => "identity.join.pairing.private",
             Self::IdentityJoinSessionToken => "identity.join.session.token",
             Self::IdentityJoinActivationPending => "identity.join.activation.pending",
-            Self::IdentityGenesisPending => "identity.genesis.pending",
-            Self::IdentityRecoveryPending => "identity.recovery.pending",
-            Self::IdentityRecoveryCancelPending => "identity.recovery.cancel.pending",
+            Self::IdentityRegistrationPending => "identity.registration.pending",
+            Self::IdentityLegacyUpgradePending => "identity.legacy_upgrade.pending",
+            Self::IdentityAuthCommitPending => "identity.auth_commit.pending",
             Self::IdentityDeviceRevokePending => "identity.device.revoke.pending",
             Self::IdentityDaemonPrivate => "identity.daemon.private",
             Self::AuthJwt => "auth.jwt",

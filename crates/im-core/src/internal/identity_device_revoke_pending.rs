@@ -84,7 +84,7 @@ impl PendingDeviceRevoke {
                 .document_version
                 .checked_add(1)
                 .ok_or(crate::ImError::PermissionDenied)?,
-            document_hash: crate::internal::identity_wire::device_genesis::document_hash(
+            document_hash: crate::internal::identity_wire::document::document_hash(
                 &self.new_document,
             )?,
             registry_version: self

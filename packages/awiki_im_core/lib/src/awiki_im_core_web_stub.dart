@@ -9,43 +9,6 @@ UnsupportedError _unsupported() => UnsupportedError(
   'awiki_im_core native Rust backend is not supported on Flutter Web.',
 );
 
-class DeviceJoinAccountVerificationGrant {
-  DeviceJoinAccountVerificationGrant.fromToken(String token) {
-    if (token.trim().isEmpty) {
-      throw ArgumentError('account verification grant must not be empty');
-    }
-  }
-
-  @override
-  String toString() => 'DeviceJoinAccountVerificationGrant(<redacted>)';
-}
-
-class HandleRecoveryBeginVerificationGrant {
-  HandleRecoveryBeginVerificationGrant.fromToken(String token) {
-    if (token.trim().isEmpty) {
-      throw ArgumentError(
-        'recovery begin verification grant must not be empty',
-      );
-    }
-  }
-
-  @override
-  String toString() => 'HandleRecoveryBeginVerificationGrant(<redacted>)';
-}
-
-class HandleRecoveryFinalizeVerificationGrant {
-  HandleRecoveryFinalizeVerificationGrant.fromToken(String token) {
-    if (token.trim().isEmpty) {
-      throw ArgumentError(
-        'recovery finalize verification grant must not be empty',
-      );
-    }
-  }
-
-  @override
-  String toString() => 'HandleRecoveryFinalizeVerificationGrant(<redacted>)';
-}
-
 class AwikiImCore {
   static Future<LocalStateUpgradeInspection> inspectLocalStateUpgrade({
     required AwikiImCorePaths paths,
@@ -123,71 +86,6 @@ class AwikiImCore {
     throw _unsupported();
   }
 
-  Future<List<HandleRecoveryProgress>> localHandleRecoverySessions() async {
-    throw _unsupported();
-  }
-
-  Future<List<OldAdminRecoveryNotice>> listOldAdminRecoveryNotices({
-    required IdentitySelector oldIdentity,
-  }) async {
-    throw _unsupported();
-  }
-
-  Future<OldAdminRecoveryNotice?> getOldAdminRecoveryNotice({
-    required IdentitySelector oldIdentity,
-    required String eventId,
-  }) async {
-    throw _unsupported();
-  }
-
-  Future<OldAdminRecoveryNoticeDismissResult> dismissOldAdminRecoveryNotice({
-    required IdentitySelector oldIdentity,
-    required String eventId,
-  }) async {
-    throw _unsupported();
-  }
-
-  Future<HandleRecoveryProgress> beginHandleRecovery({
-    required String handle,
-    required HandleRecoveryBeginVerificationGrant verificationGrant,
-  }) async {
-    throw _unsupported();
-  }
-
-  Future<HandleRecoveryProgress> pollHandleRecovery(
-    String recoverySessionId,
-  ) async {
-    throw _unsupported();
-  }
-
-  Future<HandleRecoveryCancelResult> cancelHandleRecovery({
-    required IdentitySelector oldIdentity,
-    required String recoverySessionId,
-    required bool userPresenceConfirmed,
-  }) async {
-    throw _unsupported();
-  }
-
-  Future<HandleRecoveryFinalizeResult> finalizeHandleRecovery({
-    required String recoverySessionId,
-    required HandleRecoveryFinalizeVerificationGrant verificationGrant,
-    required bool userPresenceConfirmed,
-  }) async {
-    throw _unsupported();
-  }
-
-  Future<IdentitySummary> resumeHandleRecoveryActivation(
-    String recoverySessionId,
-  ) async {
-    throw _unsupported();
-  }
-
-  Future<void> markHandleRecoveryActivationComplete(
-    String recoverySessionId,
-  ) async {
-    throw _unsupported();
-  }
-
   Future<List<DeviceJoinSessionSummary>> localDeviceJoinSessions() async {
     throw _unsupported();
   }
@@ -257,6 +155,18 @@ class AwikiImCore {
   }
 
   Future<IdentityVaultStatus> identityVaultStatus(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<LegacyUpgradeStatus> legacyUpgradeStatus(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<LegacyUpgradeStatus> upgradeLegacyIdentity(
     IdentitySelector selector,
   ) async {
     throw _unsupported();

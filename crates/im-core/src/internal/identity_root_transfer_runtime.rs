@@ -8,8 +8,6 @@ use anp::direct_e2ee::{
     V2DirectBody, V2DirectMetadata, V2SecretJsonPayload, V2SessionBinding, DIRECT_E2EE_PROFILE_V2,
     MTI_DIRECT_E2EE_SUITE_V2,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
@@ -35,7 +33,6 @@ use crate::internal::secure_direct::v2_store::{
     SqliteV2DirectStateStore, V2OwnerScope, V2PrivateOutboundSidecar, V2PrivateOutboundStatus,
 };
 use crate::internal::transport::AsyncAuthenticatedRestTransport;
-use crate::internal::transport::AsyncRpcTransport;
 
 pub(crate) const ROOT_CONTROL_ENDPOINT: &str = "/im/private/root-control";
 const ROOT_CONTROL_TTL_SECONDS: i64 = 300;
@@ -944,37 +941,34 @@ async fn complete_local_management_ready(
     let (mut registry_remote, fresh_token) = match transition {
         LocalManagementReadyTransition::Fresh => {
             // Root-import completion advances auth_generation before this
-            // process can persist its replacement token. Neither the old
-            // bearer nor signature fallback is valid, so issue once and use
-            // the uncommitted access token for the verification read.
-            let signing_private = anp::PrivateKeyMaterial::from_pem(
-                &client
-                    .runtime()
-                    .key_provider
-                    .device_request_signing_private_pem()?,
+            // process can persist its replacement token. Re-authenticate with
+            // the exact current device signing key, then use the returned
+            // access token for the verification read.
+            let user_id = identity_store
+                .load_index()?
+                .credentials
+                .get(local_alias)
+                .map(|entry| entry.user_id.clone())
+                .filter(|value| !value.trim().is_empty())
+                .ok_or(crate::ImError::PermissionDenied)?;
+            let mut transport = crate::internal::transport::CoreHttpTransport::new_pending_device(
+                client,
+                client.runtime().key_provider.clone(),
+                crate::internal::transport::ExpectedDeviceAccessOwned {
+                    did: client.did().as_str().to_owned(),
+                    user_id,
+                    device_id: ready.device_id.clone(),
+                    key_id: authorization.signing_key_id.clone(),
+                    auth_generation: ready.auth_generation,
+                    role: crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
+                    management_ready: true,
+                },
+            );
+            let access_token = transport.refresh_jwt_async().await?;
+            (
+                DeviceJoinAdminHttpAdapter::new(transport),
+                Some(access_token),
             )
-            .map_err(|_| crate::ImError::PermissionDenied)?;
-            let service_domain =
-                crate::internal::identity_join_activation_pending::service_domain_from_did(
-                    client.did(),
-                )?;
-            let token = issue_root_import_management_token(
-                core,
-                &identity_store,
-                local_alias,
-                ready,
-                &did_document,
-                &authorization.signing_key_id,
-                &signing_private,
-                &service_domain,
-            )
-            .await?;
-            let transport =
-                crate::internal::transport::CoreHttpTransport::new_with_ephemeral_bearer(
-                    client,
-                    &token.access_token,
-                )?;
-            (DeviceJoinAdminHttpAdapter::new(transport), Some(token))
         }
         LocalManagementReadyTransition::AlreadyConverged => {
             // Exact projection repair must not issue another token or mutate
@@ -1000,7 +994,7 @@ async fn complete_local_management_ready(
         completion,
         ready,
         &registry.checkpoint,
-        &crate::internal::identity_wire::device_genesis::document_hash(&did_document)?,
+        &crate::internal::identity_wire::document::document_hash(&did_document)?,
     )?;
     let local = registry_device(&registry.devices, &ready.device_id)?;
     if local.status != crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
@@ -1012,7 +1006,7 @@ async fn complete_local_management_ready(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let committed_auth_ref = if let Some(token) = fresh_token {
+    let committed_auth_ref = if let Some(access_token) = fresh_token {
         let secret_storage =
             crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
         Some(identity_store.converge_root_import_management_ready(
@@ -1020,9 +1014,7 @@ async fn complete_local_management_ready(
             &ready.completed_message_id,
             ready.auth_generation,
             &registry.checkpoint,
-            &token.access_token,
-            &token.refresh_token,
-            &token.expires_at,
+            &access_token,
             &secret_storage,
         )?)
     } else {
@@ -1139,66 +1131,6 @@ fn is_stale_auth_generation_service(error: &crate::ImError) -> bool {
         crate::ImError::Service { code: Some(code), .. }
             if code == "device.auth_generation_stale"
     )
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn issue_root_import_management_token(
-    core: &crate::core::ImCore,
-    store: &crate::internal::identity_store::IdentityStore<'_>,
-    local_alias: &str,
-    ready: &RootManagementReadyResult,
-    did_document: &Value,
-    signing_key_id: &str,
-    signing_private: &anp::PrivateKeyMaterial,
-    service_domain: &str,
-) -> crate::ImResult<crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult> {
-    for attempt in 0..2 {
-        let operation_id = store.reserve_root_import_management_token_operation(
-            local_alias,
-            &ready.completed_message_id,
-            random_root_import_token_operation_id,
-        )?;
-        let prepared = crate::internal::identity_wire::device_genesis::prepare_management_ready_device_token_issue(
-            operation_id.clone(),
-            did_document,
-            &ready.device_id,
-            signing_key_id,
-            signing_private,
-            service_domain,
-        )?;
-        let call = crate::internal::identity_wire::device_genesis::build_device_token_issue_call(
-            &prepared,
-        )?;
-        let raw = crate::internal::transport::CorePlainTransport::new(core)
-            .rpc(call.endpoint, call.method, call.params)
-            .await?;
-        match crate::internal::identity_wire::device_genesis::parse_device_token_issue_result(
-            raw,
-            &prepared,
-            ready.auth_generation,
-            OffsetDateTime::now_utc(),
-        ) {
-            Ok(token) => return Ok(token),
-            Err(crate::ImError::SessionExpired) if attempt == 0 => {
-                store.rotate_root_import_management_token_operation(
-                    local_alias,
-                    &ready.completed_message_id,
-                    &operation_id,
-                    &random_root_import_token_operation_id()?,
-                )?;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    Err(crate::ImError::SessionExpired)
-}
-
-fn random_root_import_token_operation_id() -> crate::ImResult<String> {
-    let mut bytes = [0_u8; 24];
-    rand::rngs::OsRng
-        .try_fill_bytes(&mut bytes)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
-    Ok(format!("root-ready-{}", URL_SAFE_NO_PAD.encode(bytes)))
 }
 
 fn validate_management_ready_registry_checkpoint(
@@ -2035,18 +1967,5 @@ mod tests {
             &advanced.document_hash,
         )
         .unwrap();
-    }
-
-    #[test]
-    fn root_import_token_operation_is_fixed_length_and_within_wire_limit() {
-        for message_id_len in [112, 128] {
-            let _maximum_length_root_message_id = "m".repeat(message_id_len);
-            let operation_id = random_root_import_token_operation_id().unwrap();
-
-            assert!(operation_id.starts_with("root-ready-"));
-            assert_eq!(operation_id.len(), "root-ready-".len() + 32);
-            assert!(operation_id.len() <= 128);
-            assert!(operation_id.is_ascii());
-        }
     }
 }

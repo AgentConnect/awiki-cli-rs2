@@ -181,66 +181,6 @@ pub struct DartRootKeyTransferSummary {
     pub retryable: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DartHandleRecoverySide {
-    Requester,
-    OldAdmin,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DartHandleRecoveryPhase {
-    Cooling,
-    Ready,
-    Cancelled,
-    Expired,
-    Consumed,
-}
-
-/// Safe local Recovery projection. Credentials, documents, key material, and
-/// AWiki-internal checkpoints never cross the Dart facade.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartHandleRecoveryProgress {
-    pub recovery_session_id: String,
-    pub handle: String,
-    pub old_did: String,
-    pub side: DartHandleRecoverySide,
-    pub phase: DartHandleRecoveryPhase,
-    pub cooling_until: String,
-    pub expires_at: String,
-    pub can_cancel_from_this_device: bool,
-    pub new_did: Option<String>,
-    pub local_activation_pending: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartHandleRecoveryCancelResult {
-    pub recovery_session_id: String,
-    pub phase: DartHandleRecoveryPhase,
-}
-
-/// Secret-free, device-local discovery record for an old management device.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartOldAdminRecoveryNotice {
-    pub event_id: String,
-    pub recovery_session_id: String,
-    pub handle: String,
-    pub old_did: String,
-    pub requested_at: String,
-    pub cancellable_until: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartOldAdminRecoveryNoticeDismissResult {
-    pub event_id: String,
-    pub dismissed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartHandleRecoveryFinalizeResult {
-    pub progress: DartHandleRecoveryProgress,
-    pub identity: DartIdentitySummary,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinProgress {
     pub session: DartDeviceJoinSessionSummary,
@@ -310,6 +250,14 @@ pub struct DartIdentityVaultVerificationReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DartLegacyUpgradeStatus {
+    Idle,
+    Running,
+    RetryRequired { identity_id: String, code: String },
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartInitialProfile {
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
@@ -357,17 +305,22 @@ pub struct DartHandleRegistrationResult {
     pub handle: String,
     pub method: String,
     pub state: String,
+    pub join_required: Option<DartHandleRegistrationJoinRequired>,
     pub default_identity_change: Option<DartDefaultIdentityChange>,
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DartRecoverHandleResult {
-    pub handle: String,
-    pub phone: String,
-    pub state: String,
-    pub recovered_identity: Option<DartIdentitySummary>,
-    pub user_id: Option<String>,
-    pub access_token_present: bool,
-    pub warnings: Vec<String>,
+#[derive(Clone, PartialEq, Eq)]
+pub struct DartHandleRegistrationJoinRequired {
+    pub did: String,
+    pub account_verification_token: String,
+}
+
+impl std::fmt::Debug for DartHandleRegistrationJoinRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DartHandleRegistrationJoinRequired")
+            .field("did", &self.did)
+            .field("account_verification_token", &"<redacted>")
+            .finish()
+    }
 }

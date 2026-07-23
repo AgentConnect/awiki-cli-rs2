@@ -2,7 +2,6 @@ mod device_revoke;
 mod dto;
 mod join;
 mod profile;
-mod recovery;
 mod registry;
 mod root_key_transfer;
 mod service;
@@ -13,15 +12,13 @@ pub use self::device_revoke::{
 pub use self::dto::{
     ContactBindingMethod, ContactBindingMethodKind, ContactBindingRequest, ContactBindingResult,
     ContactBindingState, DaemonSubkeyAuthorizationRevokeResult, DaemonSubkeyPrivatePackage,
-    DefaultIdentityChange, DeleteLocalIdentityResult, HandleRegistrationResult,
-    HandleRegistrationState, HostedIdentityMaterial, IdentityDeviceMode, IdentityDeviceReadiness,
-    IdentityDeviceRole, IdentityDeviceSummary, IdentityMissingItem, IdentityReadiness,
-    IdentitySecretStorageBackend, IdentitySelector, IdentitySummary, IdentityVaultMigrationReport,
-    IdentityVaultStatus, IdentityVaultVerificationReport, InitialProfile, Profile,
-    ProfileAttribute, ProfilePatch, RecoverGeneratedIdentity, RecoverHandleLocalFinalizeRequest,
-    RecoverHandleLocalResult, RecoverHandlePlan, RecoverHandlePlanRequest, RecoverHandleRequest,
-    RecoverHandleResult, RecoverHandleState, RecoverLocalIdentitySummary, RecoverLocalUserState,
-    RecoveredIdentity, RegisterHandleRequest, RegistrationMethod, ReplaceDidAffectedLocalState,
+    DefaultIdentityChange, DeleteLocalIdentityResult, HandleRegistrationJoinRequired,
+    HandleRegistrationResult, HandleRegistrationState, HostedIdentityMaterial, IdentityDeviceMode,
+    IdentityDeviceReadiness, IdentityDeviceRole, IdentityDeviceSummary, IdentityMissingItem,
+    IdentityReadiness, IdentitySecretStorageBackend, IdentitySelector, IdentitySummary,
+    IdentityVaultMigrationReport, IdentityVaultStatus, IdentityVaultVerificationReport,
+    InitialProfile, LegacyUpgradeStatus, Profile, ProfileAttribute, ProfilePatch,
+    RegisterHandleRequest, RegistrationMethod, ReplaceDidAffectedLocalState,
     ReplaceDidBackupManifestPreview, ReplaceDidBackupPlan, ReplaceDidExecutionRequest,
     ReplaceDidExecutionResult, ReplaceDidGeneratedIdentity, ReplaceDidLocalRebindPlan,
     ReplaceDidPlan, ReplaceDidPlanRequest, ReplaceDidRemoteCallPreview, VerificationInput,
@@ -43,13 +40,6 @@ pub(crate) use self::join::{
     EncryptedJoinChallenge, DEVICE_JOIN_CHALLENGE_ALGORITHM, DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS,
     DEVICE_JOIN_MAX_TTL_SECONDS, DEVICE_JOIN_REQUEST_TYPE, DEVICE_JOIN_VNEXT_PROFILES,
     DEVICE_PROOF_TYPE,
-};
-pub use self::recovery::{
-    HandleRecoveryBeginGrant, HandleRecoveryBeginRequest, HandleRecoveryCancelRequest,
-    HandleRecoveryCancelResult, HandleRecoveryFinalizeRequest, HandleRecoveryFinalizeResult,
-    HandleRecoveryPhase, HandleRecoveryProgress, HandleRecoveryReconfirmationGrant,
-    HandleRecoveryService, HandleRecoverySide, OldAdminRecoveryNotice,
-    OldAdminRecoveryNoticeDismissRequest, OldAdminRecoveryNoticeDismissResult,
 };
 pub use self::registry::IdentityRegistry;
 pub use self::root_key_transfer::{

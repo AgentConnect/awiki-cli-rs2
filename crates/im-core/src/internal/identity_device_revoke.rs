@@ -306,7 +306,7 @@ fn prepare_initial_intent(
     let did = client.did();
     if registry.did != *did
         || registry.checkpoint.document_hash
-            != crate::internal::identity_wire::device_genesis::document_hash(&document)?
+            != crate::internal::identity_wire::document::document_hash(&document)?
         || document.get("id").and_then(Value::as_str) != Some(did.as_str())
         || !anp::authentication::validate_did_document_binding(&document, true)
     {

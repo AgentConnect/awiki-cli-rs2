@@ -311,8 +311,7 @@ enum RecordedCall {
         join_session_id: String,
         join_session_token: &'static str,
     },
-    TokenIssue {
-        operation_id: String,
+    AccessRefresh {
         device_id: String,
     },
 }
@@ -321,7 +320,7 @@ enum QueuedResult {
     Create(DeviceJoinRemoteCreateResult),
     StatusNew(DeviceJoinRemoteNewDeviceStatus),
     Transition(DeviceJoinRemoteTransitionResult),
-    TokenIssue(crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult),
+    AccessRefresh(DeviceJoinAccessResult),
 }
 
 #[derive(Default)]
@@ -381,18 +380,15 @@ impl DeviceJoinNewDeviceRemote for RecordingRemote {
         Ok(result)
     }
 
-    async fn issue_device_token(
+    async fn refresh_device_access(
         &mut self,
-        prepared: &crate::internal::identity_wire::device_genesis::PreparedDeviceTokenIssue,
-        _expected_auth_generation: u64,
-    ) -> crate::ImResult<crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult>
-    {
-        self.calls.push(RecordedCall::TokenIssue {
-            operation_id: prepared.operation_id.clone(),
-            device_id: prepared.device_id.clone(),
+        pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    ) -> crate::ImResult<DeviceJoinAccessResult> {
+        self.calls.push(RecordedCall::AccessRefresh {
+            device_id: pending.authorization.device.device_id.clone(),
         });
-        let QueuedResult::TokenIssue(result) = self.next() else {
-            panic!("expected device token result")
+        let QueuedResult::AccessRefresh(result) = self.next() else {
+            panic!("expected device access result")
         };
         Ok(result)
     }

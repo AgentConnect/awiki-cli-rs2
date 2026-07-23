@@ -58,6 +58,16 @@ impl super::KeyMaterialProvider for FileBackedKeyMaterialProvider {
             .device_request_signing_private_pem())
     }
 
+    fn device_request_signing_material(
+        &self,
+    ) -> crate::ImResult<super::DeviceRequestSigningMaterial> {
+        let did_document = self.did_document()?;
+        Ok(super::DeviceRequestSigningMaterial {
+            key_id: request_signing_key_id(&did_document)?,
+            private_key_pem: self.device_request_signing_private_pem()?,
+        })
+    }
+
     fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
         Ok(self
             .legacy_key1_role_adapter()?
@@ -82,6 +92,29 @@ impl super::KeyMaterialProvider for FileBackedKeyMaterialProvider {
     fn persist_auth_token(&self, token: &str) -> crate::ImResult<()> {
         crate::internal::auth::state::persist_jwt_token(&self.auth_state_path(), token)
     }
+}
+
+pub(crate) fn request_signing_key_id(document: &Value) -> crate::ImResult<String> {
+    let key_id = document
+        .get("authentication")
+        .and_then(Value::as_array)
+        .and_then(|entries| entries.first())
+        .and_then(|entry| {
+            entry
+                .as_str()
+                .or_else(|| entry.get("id").and_then(Value::as_str))
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| crate::ImError::IdentityNotReady {
+            identity: document
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_owned(),
+            missing: vec!["device_request_signing_key_id".to_owned()],
+        })?;
+    Ok(key_id.to_owned())
 }
 
 impl FileBackedKeyMaterialProvider {

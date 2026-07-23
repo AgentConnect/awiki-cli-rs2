@@ -321,15 +321,12 @@ P5/P6 需要精确设备端点时，Core 从持久化 identity index 的当前 a
 authorization 读取 `ProtocolDeviceId`；host 如需展示设备摘要，应调用
 `IdentityRegistry::device_summary`，不得从缺失值推导 `default` 或 sibling 设备。
 
-`register_handle` 的 vNext 行为由同一个默认关闭的 multi-device gate 控制。启用后
-首设备注册只支持同域 Phone OTP，并要求 `VaultRequired`；Core 通过 account
-verification exchange 和 `device_genesis` 创建带 Manifest 的 DID，成功后返回原有
-`HandleRegistrationResult`。Bootstrap proof、account grant、refresh token、Vault
-pending record 和内部 checkpoint 均不进入公共返回值。Email、
-`AlreadyVerified`、跨域或 Vault 不可用时 fail closed；gate 关闭时旧注册语义不变。
-Genesis 响应不确定且短期 grant/proof 已过期时，host 重新提交 Phone OTP 即可继续；
-Core 会保留原 DID、设备密钥、operation ID 与 idempotency scope，仅刷新 grant 和
-设备证明，不生成第二个身份。
+`register_handle` 是唯一注册入口。新注册生成带 bootstrap Manifest 的 DID 和独立设备
+keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest 的旧客户端仍走 Legacy
+兼容。Handle 已存在时返回 typed `join_required`，不创建第二个身份，host 使用其中的一次性
+account verification grant 进入 Device Join。新注册本地提交后必须发布 exact-device P5
+PreKey Bundle；失败保留同一 PendingRegistration 精确重试。公共 DTO 不暴露私钥、pending、
+内部 checkpoint 或 refresh token。
 
 ### 5.1 Device Join host facade
 
@@ -354,12 +351,11 @@ keys, root material, challenge/ciphertext details, `document_version`,
 hash fields are AWiki domain-internal concurrency state, not cross-domain ANP
 fields and not host-facing Join DTOs.
 
-Host 观察到服务端 `consumed` 并不代表本地已经可用。Core 会在内部完成最终 DID
-Document/Manifest 校验、候选设备签名的 `device_token_issue`、access/refresh pair
-Vault 落盘以及 rootless vNext 身份提升；全部成功后 session 才变为 `Authorized`。
-重启或网络响应丢失会从加密的 pending activation 继续，不向 host 暴露 token、
-临时授权或内部 checkpoint。普通设备此时为 `MemberReady`；被授予 Admin 的设备在
-根密钥导入前仍为 `AdminAwaitingRoot`。
+Host 观察到服务端 `consumed` 并不代表本地已经可用。Core 会验证最终 DID
+Document/Manifest，使用候选设备 signing key 发起新的 DID-WBA `get_me` 请求，并从标准
+`Authentication-Info` 或 `Authorization: Bearer` 响应头取得 access token。只有 exact
+device principal、rootless vNext 身份和 checkpoint 原子落盘后，session 才变为
+`Authorized`。V1 没有 `device_token_issue` 或设备 refresh token。
 
 ### 5.2 Management-device root-key transfer
 
@@ -438,13 +434,6 @@ authentication failure 均归一为 `RecordOpenFailed`。
 P2+ API：
 
 ```rust
-impl IdentityRegistry<'_> {
-    pub fn recover_handle(
-        &self,
-        request: RecoverHandleRequest,
-    ) -> ImResult<RecoveredIdentity>;
-}
-
 pub struct IdentityService<'a> {
     client: &'a ImClient,
 }
@@ -459,16 +448,8 @@ impl IdentityService<'_> {
 }
 ```
 
-`IdentityRegistry::recover_handle` 的 OTP 完成阶段默认执行 canonical
-`local-finalize`。当 SDK 生成新的 DID 时，调用方不能绕过该阶段：同一完整 Handle
-的本地身份继续使用原有稳定 `IdentityId`，旧/新 DID 写入
-`identity_did_history`，同一 owner 下的 `owner_did` snapshot 被刷新，并为仍绑定旧 DID
-的 Handle-backed 群成员写入幂等 `group_rebind_outbox` 任务。CLI 与 Dart facade
-共享这一语义；host 不得自行把恢复结果保存成新的 owner identity。
-
-`generated_identity` 仅保留给显式提供密钥材料且本地不存在同 Handle 身份的低层调用者。
-若本地已有同 Handle 状态却未请求 `local-finalize`，SDK 必须 fail closed。普通 CLI、
-App 和 Dart 调用必须保持为 `None`，由 `im-core` 生成密钥并完成本地 finalize。
+V1 不公开 Handle Recovery API。未来 Recovery 必须作为独立安全方案重新设计，不复用
+Device Join 或 Legacy→Manifest 升级，也不能恢复性复制 Ratchet/MLS 私有状态。
 
 `plan_default_identity_change` 返回计划，CLI/App 负责是否写入 default identity 文件。若未来 SDK 需要直接写入，必须只写显式传入的 `default_identity_path`。
 

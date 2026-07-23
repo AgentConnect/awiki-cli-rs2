@@ -105,25 +105,6 @@ fn register_handle_command_request_uses_cli_identity_alias() {
 }
 
 #[test]
-fn recover_handle_request_builds_sdk_request() {
-    let request = identity::recover_handle_request(
-        "Alice".to_string(),
-        "13800138000".to_string(),
-        Some("12 34 56".to_string()),
-        None,
-        "awiki.test",
-    )
-    .unwrap();
-
-    assert_eq!(request.handle.as_str(), "alice.awiki.test");
-    assert_eq!(request.raw_handle.as_deref(), Some("Alice"));
-    assert_eq!(request.phone, "13800138000");
-    assert_eq!(request.otp.as_deref(), Some("12 34 56"));
-    assert!(request.generated_identity.is_none());
-    assert!(request.local_finalize.is_none());
-}
-
-#[test]
 fn replace_did_plan_command_request_builds_sdk_plan_request() {
     let workspace = TempDir::new("replace-did-plan-command").expect("workspace");
     let paths = crate::workspace_config::Paths {

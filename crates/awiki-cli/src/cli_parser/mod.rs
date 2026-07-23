@@ -146,7 +146,6 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "id.bind" => app.run_id_bind(command),
         "id.refresh-token" => app.run_id_refresh_token(),
         "id.resolve" => app.run_id_resolve(command),
-        "id.recover" => app.run_id_recover(command),
         "id.replace-did" => app.run_id_replace_did(command),
         "id.profile.get" => app.run_id_profile_get(command),
         "id.profile.set" => app.run_id_profile_set(command),
@@ -157,13 +156,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         | "id.device.join.claim"
         | "id.device.join.approve"
         | "id.device.join.cancel"
-        | "id.device.revoke"
-        | "id.recovery.sessions"
-        | "id.recovery.begin"
-        | "id.recovery.status"
-        | "id.recovery.cancel"
-        | "id.recovery.finalize"
-        | "id.recovery.activate" => Err(async_only_error(&command.name)),
+        | "id.device.revoke" => Err(async_only_error(&command.name)),
         "msg.send" => app.run_msg_send(command),
         "msg.attachment.download" => app.run_msg_attachment_download(command),
         "msg.inbox" => app.run_msg_inbox(command),
@@ -304,7 +297,6 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "id.bind" => app.run_id_bind_async(command).await,
         "id.refresh-token" => app.run_id_refresh_token_async().await,
         "id.resolve" => app.run_id_resolve_async(command).await,
-        "id.recover" => app.run_id_recover_async(command).await,
         "id.profile.get" => app.run_id_profile_get_async(command).await,
         "id.profile.set" => app.run_id_profile_set_async(command).await,
         "id.device.list" => app.run_id_device_list_async().await,
@@ -315,12 +307,6 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "id.device.join.approve" => app.run_id_device_join_approve_async(command).await,
         "id.device.join.cancel" => app.run_id_device_join_cancel_async(command).await,
         "id.device.revoke" => app.run_id_device_revoke_async(command).await,
-        "id.recovery.sessions" => app.run_id_recovery_sessions_async().await,
-        "id.recovery.begin" => app.run_id_recovery_begin_async(command).await,
-        "id.recovery.status" => app.run_id_recovery_status_async(command).await,
-        "id.recovery.cancel" => app.run_id_recovery_cancel_async(command).await,
-        "id.recovery.finalize" => app.run_id_recovery_finalize_async(command).await,
-        "id.recovery.activate" => app.run_id_recovery_activate_async(command).await,
         "id.device.root-key.send" => app.run_id_device_root_key_send_async(command).await,
         "id.device.root-key.list" => app.run_id_device_root_key_list_async(command).await,
         "id.device.root-key.retry" => app.run_id_device_root_key_retry_async(command).await,

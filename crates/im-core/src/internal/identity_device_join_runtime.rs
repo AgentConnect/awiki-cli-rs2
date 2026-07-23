@@ -386,6 +386,13 @@ pub(crate) struct DeviceJoinRemoteApproveResult {
     pub(crate) device: DeviceJoinRemoteDeviceSummary,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeviceJoinAccessResult {
+    pub(crate) user_id: String,
+    pub(crate) access_token: String,
+}
+
 /// New-device RPC seam. This intentionally cannot issue authenticated admin
 /// calls, so a pending device never gains an ambient device credential.
 pub(crate) trait DeviceJoinNewDeviceRemote {
@@ -405,11 +412,10 @@ pub(crate) trait DeviceJoinNewDeviceRemote {
         request: DeviceJoinRemoteResponseRequest<'_>,
     ) -> crate::ImResult<DeviceJoinRemoteTransitionResult>;
 
-    async fn issue_device_token(
+    async fn refresh_device_access(
         &mut self,
-        prepared: &crate::internal::identity_wire::device_genesis::PreparedDeviceTokenIssue,
-        expected_auth_generation: u64,
-    ) -> crate::ImResult<crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult>;
+        pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    ) -> crate::ImResult<DeviceJoinAccessResult>;
 }
 
 /// Ready-admin RPC seam. This intentionally cannot send token-authenticated
@@ -463,23 +469,27 @@ impl DeviceJoinRuntimeGate {
     }
 }
 
-pub(crate) struct DeviceJoinNewDeviceHttpAdapter<P> {
+pub(crate) struct DeviceJoinNewDeviceHttpAdapter<'a, P> {
     plain: P,
+    core: Option<&'a crate::core::ImCore>,
 }
 
-impl<P> DeviceJoinNewDeviceHttpAdapter<P> {
+impl<P> DeviceJoinNewDeviceHttpAdapter<'static, P> {
     pub(crate) fn new(plain: P) -> Self {
-        Self { plain }
+        Self { plain, core: None }
     }
 }
 
-impl<'a> DeviceJoinNewDeviceHttpAdapter<crate::internal::transport::CorePlainTransport<'a>> {
+impl<'a> DeviceJoinNewDeviceHttpAdapter<'a, crate::internal::transport::CorePlainTransport<'a>> {
     pub(crate) fn production(core: &'a crate::core::ImCore) -> Self {
-        Self::new(crate::internal::transport::CorePlainTransport::new(core))
+        Self {
+            plain: crate::internal::transport::CorePlainTransport::new(core),
+            core: Some(core),
+        }
     }
 }
 
-impl<P> DeviceJoinNewDeviceRemote for DeviceJoinNewDeviceHttpAdapter<P>
+impl<P> DeviceJoinNewDeviceRemote for DeviceJoinNewDeviceHttpAdapter<'_, P>
 where
     P: AsyncRpcTransport,
 {
@@ -538,27 +548,16 @@ where
             .map_err(redact_new_device_remote_error)
     }
 
-    async fn issue_device_token(
+    async fn refresh_device_access(
         &mut self,
-        prepared: &crate::internal::identity_wire::device_genesis::PreparedDeviceTokenIssue,
-        expected_auth_generation: u64,
-    ) -> crate::ImResult<crate::internal::identity_wire::device_genesis::DeviceTokenIssueResult>
-    {
-        let call =
-            crate::internal::identity_wire::device_genesis::build_device_token_issue_call(prepared)
-                .map_err(redact_new_device_remote_error)?;
-        let raw = self
-            .plain
-            .rpc(call.endpoint, call.method, call.params)
+        pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    ) -> crate::ImResult<DeviceJoinAccessResult> {
+        let core = self.core.ok_or_else(|| {
+            crate::ImError::unsupported("pending-device-signed-get-me-not-configured")
+        })?;
+        refresh_join_device_access(core, pending)
             .await
-            .map_err(redact_new_device_remote_error)?;
-        crate::internal::identity_wire::device_genesis::parse_device_token_issue_result(
-            raw,
-            prepared,
-            expected_auth_generation,
-            time::OffsetDateTime::now_utc(),
-        )
-        .map_err(redact_new_device_remote_error)
+            .map_err(redact_new_device_remote_error)
     }
 }
 
@@ -585,17 +584,69 @@ fn redact_new_device_remote_error(error: crate::ImError) -> crate::ImError {
     }
 }
 
-fn token_authorization_refreshable(error: &crate::ImError) -> bool {
-    matches!(
-        error,
-        crate::ImError::AuthRequired | crate::ImError::PermissionDenied
-    ) || matches!(
-        error,
-        crate::ImError::Service {
-            status_code: Some(401),
-            ..
-        }
-    )
+async fn refresh_join_device_access(
+    core: &crate::core::ImCore,
+    pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+) -> crate::ImResult<DeviceJoinAccessResult> {
+    pending.validate()?;
+    let client = core.client_with_identity_material(crate::identity::HostedIdentityMaterial {
+        identity_id: crate::internal::identity_join_activation_pending::identity_suffix(
+            &pending.did,
+        ),
+        did: pending.did.as_str().to_owned(),
+        handle: None,
+        display_name: None,
+        did_document: pending.resolved_document.clone(),
+        default_signing_private_key_pem: pending.signing_private_pem.clone(),
+        e2ee_agreement_private_key_pem: Some(pending.e2ee_private_pem.clone()),
+        auth_token: None,
+    })?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new_pending_device(
+        &client,
+        client.runtime().key_provider.clone(),
+        crate::internal::transport::ExpectedDeviceAccessOwned {
+            did: pending.did.as_str().to_owned(),
+            user_id: String::new(),
+            device_id: pending.authorization.device.device_id.clone(),
+            key_id: pending.authorization.device.signing_key_id.clone(),
+            auth_generation: pending.authorization.device.auth_generation,
+            role: pending.authorization.device.role,
+            management_ready: false,
+        },
+    );
+    let access_token = transport.refresh_jwt_async().await?;
+    let call =
+        crate::internal::identity_wire::device_join::build_registry_call(&pending.did, false);
+    let raw = transport
+        .authenticated_rpc(call.endpoint, call.method, call.params)
+        .await?;
+    let registry = crate::internal::identity_wire::device_join::parse_registry_result(
+        raw,
+        &pending.did,
+        false,
+    )?;
+    if registry.checkpoint != pending.authorization.checkpoint
+        || registry
+            .devices
+            .iter()
+            .filter(|device| {
+                device.device_id == pending.authorization.device.device_id
+                    || device.signing_key_id == pending.authorization.device.signing_key_id
+                    || device.e2ee_key_id == pending.authorization.device.e2ee_key_id
+            })
+            .count()
+            != 1
+        || !registry
+            .devices
+            .iter()
+            .any(|device| device == &pending.authorization.device)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(DeviceJoinAccessResult {
+        user_id: transport.pending_device_user_id()?,
+        access_token,
+    })
 }
 
 pub(crate) struct DeviceJoinAdminHttpAdapter<A> {
@@ -764,7 +815,7 @@ impl<'a, R, D> DeviceJoinNewDeviceRuntime<'a, R, D> {
 impl<'a>
     DeviceJoinNewDeviceRuntime<
         'a,
-        DeviceJoinNewDeviceHttpAdapter<crate::internal::transport::CorePlainTransport<'a>>,
+        DeviceJoinNewDeviceHttpAdapter<'a, crate::internal::transport::CorePlainTransport<'a>>,
         crate::internal::transport::CorePlainTransport<'a>,
     >
 {
@@ -953,40 +1004,9 @@ where
         &mut self,
         mut pending: crate::internal::identity_join_activation_pending::PendingJoinActivation,
     ) -> crate::ImResult<DeviceJoinAdvanceResult> {
-        if pending.token_result.is_none() {
-            if crate::internal::identity_wire::device_genesis::device_token_authorization_needs_refresh(
-                &pending.prepared_token_issue,
-                time::OffsetDateTime::now_utc(),
-            )? {
-                pending = crate::internal::identity_device_join::refresh_new_device_token_authorization(
-                    self.core,
-                    &pending.join_session_id,
-                )?;
-            }
-            let first = self
-                .remote
-                .issue_device_token(
-                    &pending.prepared_token_issue,
-                    pending.authorization.device.auth_generation,
-                )
-                .await;
-            let result = match first {
-                Ok(result) => result,
-                Err(error) if token_authorization_refreshable(&error) => {
-                    pending = crate::internal::identity_device_join::refresh_new_device_token_authorization(
-                        self.core,
-                        &pending.join_session_id,
-                    )?;
-                    self.remote
-                        .issue_device_token(
-                            &pending.prepared_token_issue,
-                            pending.authorization.device.auth_generation,
-                        )
-                        .await?
-                }
-                Err(error) => return Err(error),
-            };
-            pending = crate::internal::identity_device_join::record_new_device_token_result(
+        if pending.access_result.is_none() {
+            let result = self.remote.refresh_device_access(&pending).await?;
+            pending = crate::internal::identity_device_join::record_new_device_access_result(
                 self.core,
                 &pending.join_session_id,
                 result,

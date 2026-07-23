@@ -21,7 +21,6 @@ pub mod device_revoke;
 pub mod email;
 pub mod error;
 pub mod groups;
-pub mod handle_recovery;
 pub mod identity;
 pub mod identity_replace_did_plan;
 pub mod message_result;

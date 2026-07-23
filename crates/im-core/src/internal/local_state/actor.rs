@@ -38,10 +38,6 @@ enum LocalStateCommand {
         input: super::sync_state::SyncDeltaApplyInput,
         reply: oneshot::Sender<crate::ImResult<super::sync_state::SyncDeltaApplyOutcome>>,
     },
-    UpsertOldAdminRecoveryNotice {
-        record: super::old_admin_recovery_notices::OldAdminRecoveryNoticeRecord,
-        reply: oneshot::Sender<crate::ImResult<()>>,
-    },
     UpsertContact {
         record: crate::internal::contact_store::records::ContactRecord,
         reply: oneshot::Sender<crate::ImResult<()>>,
@@ -347,18 +343,6 @@ enum LocalStateCommand {
             crate::ImResult<Option<crate::internal::store::e2ee_outbox::E2eeOutboxRecord>>,
         >,
     },
-    MergeRecoveredHandleLocalState {
-        old_owner_dids: Vec<String>,
-        new_owner_did: String,
-        final_owner_identity_id: String,
-        final_credential_name: String,
-        reply: oneshot::Sender<
-            crate::ImResult<(
-                std::collections::BTreeMap<String, i64>,
-                std::collections::BTreeMap<String, i64>,
-            )>,
-        >,
-    },
     BackfillOwnerIdentityIds {
         identities: Vec<super::schema::OwnerIdentityBackfill>,
         reply: oneshot::Sender<crate::ImResult<usize>>,
@@ -450,16 +434,6 @@ impl LocalStateDb {
     ) -> crate::ImResult<super::sync_state::SyncDeltaApplyOutcome> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::ApplySyncDelta { input, reply })
-            .await?;
-        receiver.await.map_err(|_| actor_closed())?
-    }
-
-    pub(crate) async fn upsert_old_admin_recovery_notice(
-        &self,
-        record: super::old_admin_recovery_notices::OldAdminRecoveryNoticeRecord,
-    ) -> crate::ImResult<()> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(LocalStateCommand::UpsertOldAdminRecoveryNotice { record, reply })
             .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
@@ -1195,28 +1169,6 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
-    pub(crate) async fn merge_recovered_handle_local_state(
-        &self,
-        old_owner_dids: Vec<String>,
-        new_owner_did: impl Into<String>,
-        final_owner_identity_id: impl Into<String>,
-        final_credential_name: impl Into<String>,
-    ) -> crate::ImResult<(
-        std::collections::BTreeMap<String, i64>,
-        std::collections::BTreeMap<String, i64>,
-    )> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(LocalStateCommand::MergeRecoveredHandleLocalState {
-            old_owner_dids,
-            new_owner_did: new_owner_did.into(),
-            final_owner_identity_id: final_owner_identity_id.into(),
-            final_credential_name: final_credential_name.into(),
-            reply,
-        })
-        .await?;
-        receiver.await.map_err(|_| actor_closed())?
-    }
-
     pub(crate) async fn backfill_owner_identity_ids(
         &self,
         identities: Vec<super::schema::OwnerIdentityBackfill>,
@@ -1309,10 +1261,6 @@ fn run_actor(
             }
             LocalStateCommand::ApplySyncDelta { input, reply } => {
                 let result = apply_sync_delta(&mut connection, input);
-                let _ = reply.send(result);
-            }
-            LocalStateCommand::UpsertOldAdminRecoveryNotice { record, reply } => {
-                let result = super::old_admin_recovery_notices::upsert(&mut connection, &record);
                 let _ = reply.send(result);
             }
             LocalStateCommand::UpsertContact { record, reply } => {
@@ -1903,23 +1851,6 @@ fn run_actor(
                     &scope,
                     &outbox_id,
                 );
-                let _ = reply.send(result);
-            }
-            LocalStateCommand::MergeRecoveredHandleLocalState {
-                old_owner_dids,
-                new_owner_did,
-                final_owner_identity_id,
-                final_credential_name,
-                reply,
-            } => {
-                let result =
-                    crate::internal::identity_recover_local_state::merge_recovered_handle_local_state_for_connection(
-                        &mut connection,
-                        &old_owner_dids,
-                        &new_owner_did,
-                        &final_owner_identity_id,
-                        &final_credential_name,
-                    );
                 let _ = reply.send(result);
             }
             LocalStateCommand::BackfillOwnerIdentityIds { identities, reply } => {

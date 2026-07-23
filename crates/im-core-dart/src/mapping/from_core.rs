@@ -22,13 +22,11 @@ use crate::dto::{
         DartDeviceJoinPendingSummary, DartDeviceJoinPhase, DartDeviceJoinProgress,
         DartDeviceJoinRegistrySnapshot, DartDeviceJoinRemoteState, DartDeviceJoinRole,
         DartDeviceJoinSessionSummary, DartDeviceJoinSide, DartDeviceRevokeResult,
-        DartDeviceRevokeStatus, DartHandleRecoveryCancelResult, DartHandleRecoveryFinalizeResult,
-        DartHandleRecoveryPhase, DartHandleRecoveryProgress, DartHandleRecoverySide,
-        DartHandleRegistrationResult, DartIdentityDeviceMode, DartIdentityDeviceReadiness,
-        DartIdentityDeviceRole, DartIdentityDeviceSummary, DartIdentitySecretStorageBackend,
-        DartIdentitySummary, DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
-        DartIdentityVaultVerificationReport, DartOldAdminRecoveryNotice,
-        DartOldAdminRecoveryNoticeDismissResult, DartRecoverHandleResult,
+        DartDeviceRevokeStatus, DartHandleRegistrationJoinRequired, DartHandleRegistrationResult,
+        DartIdentityDeviceMode, DartIdentityDeviceReadiness, DartIdentityDeviceRole,
+        DartIdentityDeviceSummary, DartIdentitySecretStorageBackend, DartIdentitySummary,
+        DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
+        DartIdentityVaultVerificationReport, DartLegacyUpgradeStatus,
         DartRootKeyTransferSendResult, DartRootKeyTransferStatus, DartRootKeyTransferSummary,
     },
     message::{
@@ -53,30 +51,6 @@ use crate::dto::{
     },
 };
 
-impl From<im_core::identity::OldAdminRecoveryNotice> for DartOldAdminRecoveryNotice {
-    fn from(value: im_core::identity::OldAdminRecoveryNotice) -> Self {
-        Self {
-            event_id: value.event_id,
-            recovery_session_id: value.recovery_session_id,
-            handle: value.handle.as_str().to_owned(),
-            old_did: value.old_did.as_str().to_owned(),
-            requested_at: value.requested_at,
-            cancellable_until: value.cancellable_until,
-        }
-    }
-}
-
-impl From<im_core::identity::OldAdminRecoveryNoticeDismissResult>
-    for DartOldAdminRecoveryNoticeDismissResult
-{
-    fn from(value: im_core::identity::OldAdminRecoveryNoticeDismissResult) -> Self {
-        Self {
-            event_id: value.event_id,
-            dismissed: value.dismissed,
-        }
-    }
-}
-
 impl From<im_core::identity::DeviceRevokeResult> for DartDeviceRevokeResult {
     fn from(value: im_core::identity::DeviceRevokeResult) -> Self {
         Self {
@@ -86,58 +60,6 @@ impl From<im_core::identity::DeviceRevokeResult> for DartDeviceRevokeResult {
                 im_core::identity::DeviceRevokeStatus::Revoked => DartDeviceRevokeStatus::Revoked,
             },
         }
-    }
-}
-
-impl From<im_core::identity::HandleRecoveryProgress> for DartHandleRecoveryProgress {
-    fn from(value: im_core::identity::HandleRecoveryProgress) -> Self {
-        Self {
-            recovery_session_id: value.recovery_session_id,
-            handle: value.handle.as_str().to_owned(),
-            old_did: value.old_did.as_str().to_owned(),
-            side: match value.side {
-                im_core::identity::HandleRecoverySide::Requester => {
-                    DartHandleRecoverySide::Requester
-                }
-                im_core::identity::HandleRecoverySide::OldAdmin => DartHandleRecoverySide::OldAdmin,
-            },
-            phase: dart_handle_recovery_phase(value.phase),
-            cooling_until: value.cooling_until,
-            expires_at: value.expires_at,
-            can_cancel_from_this_device: value.can_cancel_from_this_device,
-            new_did: value.new_did.map(|did| did.as_str().to_owned()),
-            local_activation_pending: value.local_activation_pending,
-        }
-    }
-}
-
-impl From<im_core::identity::HandleRecoveryCancelResult> for DartHandleRecoveryCancelResult {
-    fn from(value: im_core::identity::HandleRecoveryCancelResult) -> Self {
-        Self {
-            recovery_session_id: value.recovery_session_id,
-            phase: dart_handle_recovery_phase(value.phase),
-        }
-    }
-}
-
-impl From<im_core::identity::HandleRecoveryFinalizeResult> for DartHandleRecoveryFinalizeResult {
-    fn from(value: im_core::identity::HandleRecoveryFinalizeResult) -> Self {
-        Self {
-            progress: value.progress.into(),
-            identity: value.identity.into(),
-        }
-    }
-}
-
-fn dart_handle_recovery_phase(
-    value: im_core::identity::HandleRecoveryPhase,
-) -> DartHandleRecoveryPhase {
-    match value {
-        im_core::identity::HandleRecoveryPhase::Cooling => DartHandleRecoveryPhase::Cooling,
-        im_core::identity::HandleRecoveryPhase::Ready => DartHandleRecoveryPhase::Ready,
-        im_core::identity::HandleRecoveryPhase::Cancelled => DartHandleRecoveryPhase::Cancelled,
-        im_core::identity::HandleRecoveryPhase::Expired => DartHandleRecoveryPhase::Expired,
-        im_core::identity::HandleRecoveryPhase::Consumed => DartHandleRecoveryPhase::Consumed,
     }
 }
 
@@ -422,6 +344,19 @@ impl From<im_core::identity::IdentityVaultStatus> for DartIdentityVaultStatus {
     }
 }
 
+impl From<im_core::identity::LegacyUpgradeStatus> for DartLegacyUpgradeStatus {
+    fn from(value: im_core::identity::LegacyUpgradeStatus) -> Self {
+        match value {
+            im_core::identity::LegacyUpgradeStatus::Idle => Self::Idle,
+            im_core::identity::LegacyUpgradeStatus::Running => Self::Running,
+            im_core::identity::LegacyUpgradeStatus::RetryRequired { identity_id, code } => {
+                Self::RetryRequired { identity_id, code }
+            }
+            im_core::identity::LegacyUpgradeStatus::Completed => Self::Completed,
+        }
+    }
+}
+
 impl From<im_core::identity::IdentityVaultMigrationReport> for DartIdentityVaultMigrationReport {
     fn from(value: im_core::identity::IdentityVaultMigrationReport) -> Self {
         Self {
@@ -649,6 +584,7 @@ impl From<im_core::identity::HandleRegistrationResult> for DartHandleRegistratio
             handle: value.handle.as_str().to_string(),
             method: registration_method_to_string(value.method),
             state: registration_state_to_string(value.state),
+            join_required: value.join_required.map(Into::into),
             default_identity_change: value.default_identity_change.map(Into::into),
             warnings: value.warnings,
         }
@@ -669,37 +605,18 @@ fn registration_state_to_string(value: im_core::identity::HandleRegistrationStat
         im_core::identity::HandleRegistrationState::EmailSent => "email_sent".to_string(),
         im_core::identity::HandleRegistrationState::EmailPending => "email_pending".to_string(),
         im_core::identity::HandleRegistrationState::Registered => "registered".to_string(),
+        im_core::identity::HandleRegistrationState::JoinRequired => "join_required".to_string(),
     }
 }
 
-impl From<im_core::identity::RecoverHandleResult> for DartRecoverHandleResult {
-    fn from(value: im_core::identity::RecoverHandleResult) -> Self {
-        let (recovered_identity, user_id, access_token_present) = value
-            .recovered_identity
-            .map(|recovered| {
-                (
-                    Some(recovered.identity.into()),
-                    recovered.user_id,
-                    recovered.access_token_present,
-                )
-            })
-            .unwrap_or((None, None, false));
+impl From<im_core::identity::HandleRegistrationJoinRequired>
+    for DartHandleRegistrationJoinRequired
+{
+    fn from(value: im_core::identity::HandleRegistrationJoinRequired) -> Self {
         Self {
-            handle: value.handle.as_str().to_string(),
-            phone: value.phone,
-            state: recover_state_to_string(value.state),
-            recovered_identity,
-            user_id,
-            access_token_present,
-            warnings: value.warnings,
+            did: value.did.as_str().to_owned(),
+            account_verification_token: value.account_verification_token,
         }
-    }
-}
-
-fn recover_state_to_string(value: im_core::identity::RecoverHandleState) -> String {
-    match value {
-        im_core::identity::RecoverHandleState::OtpSent => "otp_sent".to_string(),
-        im_core::identity::RecoverHandleState::Recovered => "recovered".to_string(),
     }
 }
 
@@ -1967,7 +1884,9 @@ fn realtime_subscription_to_string(value: im_core::realtime::RealtimeSubscriptio
 
 #[cfg(test)]
 mod tests {
-    use super::{realtime_event_to_dart, DartGroupSummary, DartRelationStatus};
+    use super::{
+        realtime_event_to_dart, DartGroupSummary, DartHandleRegistrationResult, DartRelationStatus,
+    };
     use im_core::{
         directory::RelationshipStatus,
         ids::{Did, GroupRef, MessageId, PeerRef, ThreadId},
@@ -1981,6 +1900,32 @@ mod tests {
             UnknownNotificationEvent,
         },
     };
+
+    #[test]
+    fn registration_join_required_maps_to_typed_dart_result() {
+        let mapped =
+            DartHandleRegistrationResult::from(im_core::identity::HandleRegistrationResult {
+                identity: None,
+                handle: im_core::ids::Handle::parse("alice.example.test", "").unwrap(),
+                method: im_core::identity::RegistrationMethod::Phone,
+                state: im_core::identity::HandleRegistrationState::JoinRequired,
+                join_required: Some(im_core::identity::HandleRegistrationJoinRequired {
+                    did: im_core::ids::Did::parse("did:wba:example.test:existing").unwrap(),
+                    account_verification_token: "single-use-account-verification".to_owned(),
+                }),
+                default_identity_change: None,
+                warnings: Vec::new(),
+            });
+
+        assert_eq!(mapped.state, "join_required");
+        assert!(mapped.identity.is_none());
+        let join_required = mapped.join_required.expect("typed Join result");
+        assert_eq!(join_required.did, "did:wba:example.test:existing");
+        assert_eq!(
+            join_required.account_verification_token,
+            "single-use-account-verification"
+        );
+    }
 
     #[test]
     fn relationship_status_mapping_preserves_directional_truth() {

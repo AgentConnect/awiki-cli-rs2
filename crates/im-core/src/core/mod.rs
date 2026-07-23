@@ -24,8 +24,6 @@ pub(crate) struct ImCoreInner {
     pub(crate) device_revoke_enabled: bool,
     pub(crate) direct_e2ee_v2_enabled: bool,
     pub(crate) device_revoke_lock: tokio::sync::Mutex<()>,
-    pub(crate) handle_recovery_enabled: bool,
-    pub(crate) handle_recovery_lock: tokio::sync::Mutex<()>,
     pub(crate) group_e2ee_v2_enabled: bool,
     pub(crate) device_join_approvals:
         crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleStore,
@@ -98,8 +96,6 @@ impl ImCore {
                 device_revoke_enabled: options.multi_device_device_revoke_enabled,
                 direct_e2ee_v2_enabled: options.multi_device_direct_e2ee_enabled,
                 device_revoke_lock: tokio::sync::Mutex::new(()),
-                handle_recovery_enabled: options.multi_device_handle_recovery_enabled,
-                handle_recovery_lock: tokio::sync::Mutex::new(()),
                 group_e2ee_v2_enabled: options.multi_device_group_e2ee_enabled,
                 device_join_approvals: Default::default(),
                 #[cfg(feature = "sqlite")]
@@ -122,10 +118,6 @@ impl ImCore {
 
     pub fn device_revoke(&self) -> crate::identity::DeviceRevokeService<'_> {
         crate::identity::DeviceRevokeService::new(self)
-    }
-
-    pub fn handle_recovery(&self) -> crate::identity::HandleRecoveryService<'_> {
-        crate::identity::HandleRecoveryService::new(self)
     }
 
     pub fn bootstrap(&self) -> CoreBootstrap<'_> {
@@ -223,10 +215,6 @@ impl ImCoreInner {
 
     pub(crate) fn direct_e2ee_v2_enabled(&self) -> bool {
         self.direct_e2ee_v2_enabled
-    }
-
-    pub(crate) fn handle_recovery_enabled(&self) -> bool {
-        self.handle_recovery_enabled
     }
 
     pub(crate) fn group_e2ee_v2_enabled(&self) -> bool {

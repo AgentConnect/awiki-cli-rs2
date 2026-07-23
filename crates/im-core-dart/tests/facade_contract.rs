@@ -76,60 +76,6 @@ fn group_secure_repair_mapping_preserves_device_reconciliation_counts() {
 }
 
 #[test]
-fn handle_recovery_progress_mapping_exposes_safe_local_status_only() {
-    let mapped = awiki_im_core::dto::identity::DartHandleRecoveryProgress::from(
-        im_core::identity::HandleRecoveryProgress {
-            recovery_session_id: "recovery-safe-id".to_owned(),
-            handle: im_core::ids::Handle::parse("alice.awiki.info", "").unwrap(),
-            old_did: im_core::ids::Did::parse("did:wba:awiki.info:user:alice:e1_old").unwrap(),
-            side: im_core::identity::HandleRecoverySide::Requester,
-            phase: im_core::identity::HandleRecoveryPhase::Cooling,
-            cooling_until: "2026-07-21T00:00:00Z".to_owned(),
-            expires_at: "2026-07-22T00:00:00Z".to_owned(),
-            can_cancel_from_this_device: false,
-            new_did: None,
-            local_activation_pending: false,
-        },
-    );
-
-    assert_eq!(mapped.recovery_session_id, "recovery-safe-id");
-    assert_eq!(mapped.handle, "alice.awiki.info");
-    assert_eq!(
-        mapped.phase,
-        awiki_im_core::dto::identity::DartHandleRecoveryPhase::Cooling
-    );
-    let debug = format!("{mapped:?}");
-    for forbidden in [
-        "account_verification_token",
-        "account_user_id",
-        "reconfirmation_token",
-        "recovery_session_token",
-        "root_private_key",
-        "new_did_document",
-        "document_hash",
-        "registry_version",
-    ] {
-        assert!(!debug.contains(forbidden), "unexpected field {forbidden}");
-    }
-}
-
-#[test]
-fn handle_recovery_cancel_mapping_preserves_only_session_and_phase() {
-    let mapped = awiki_im_core::dto::identity::DartHandleRecoveryCancelResult::from(
-        im_core::identity::HandleRecoveryCancelResult {
-            recovery_session_id: "recovery-safe-id".to_owned(),
-            phase: im_core::identity::HandleRecoveryPhase::Cancelled,
-        },
-    );
-
-    assert_eq!(mapped.recovery_session_id, "recovery-safe-id");
-    assert_eq!(
-        mapped.phase,
-        awiki_im_core::dto::identity::DartHandleRecoveryPhase::Cancelled
-    );
-}
-
-#[test]
 fn local_state_upgrade_inspection_is_available_before_core_open() {
     let directory = tempfile::tempdir().unwrap();
     let inspection = awiki_im_core::api::local_state_upgrade::inspect_local_state_upgrade(
@@ -894,7 +840,6 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
         multi_device_root_transfer_enabled: true,
         multi_device_device_revoke_enabled: true,
         multi_device_direct_e2ee_enabled: true,
-        multi_device_handle_recovery_enabled: true,
         multi_device_group_e2ee_enabled: true,
     };
 
@@ -907,7 +852,6 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
     assert!(mapped.multi_device_root_transfer_enabled);
     assert!(mapped.multi_device_device_revoke_enabled);
     assert!(mapped.multi_device_direct_e2ee_enabled);
-    assert!(mapped.multi_device_handle_recovery_enabled);
     assert!(mapped.multi_device_group_e2ee_enabled);
     let vault = mapped.identity_secret_vault.expect("vault options");
     assert_eq!(
@@ -938,7 +882,6 @@ fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
         multi_device_root_transfer_enabled: false,
         multi_device_device_revoke_enabled: false,
         multi_device_direct_e2ee_enabled: false,
-        multi_device_handle_recovery_enabled: false,
         multi_device_group_e2ee_enabled: false,
     };
 
@@ -975,45 +918,6 @@ fn device_revoke_result_maps_only_safe_product_state() {
     ] {
         assert!(!debug.contains(forbidden));
     }
-}
-
-#[test]
-fn old_admin_recovery_notice_maps_only_secret_free_discovery_state() {
-    let notice = im_core::identity::OldAdminRecoveryNotice {
-        event_id: "recovery-event-1".to_owned(),
-        recovery_session_id: "recovery-session-1".to_owned(),
-        handle: im_core::ids::Handle::parse("alice.awiki.info", "").expect("handle"),
-        old_did: im_core::ids::Did::parse("did:wba:awiki.info:user:alice:e1_old").expect("did"),
-        requested_at: "2026-07-20T00:00:00Z".to_owned(),
-        cancellable_until: "2026-07-21T00:00:00Z".to_owned(),
-    };
-    let dart: awiki_im_core::dto::identity::DartOldAdminRecoveryNotice = notice.into();
-
-    assert_eq!(dart.event_id, "recovery-event-1");
-    assert_eq!(dart.recovery_session_id, "recovery-session-1");
-    assert_eq!(dart.handle, "alice.awiki.info");
-    assert_eq!(dart.old_did, "did:wba:awiki.info:user:alice:e1_old");
-    let debug = format!("{dart:?}");
-    for forbidden in [
-        "sync_checkpoint",
-        "token",
-        "proof",
-        "email",
-        "secret",
-        "document_hash",
-        "registry_version",
-    ] {
-        assert!(!debug.to_lowercase().contains(forbidden));
-    }
-
-    let dismissed: awiki_im_core::dto::identity::DartOldAdminRecoveryNoticeDismissResult =
-        im_core::identity::OldAdminRecoveryNoticeDismissResult {
-            event_id: "recovery-event-1".to_owned(),
-            dismissed: true,
-        }
-        .into();
-    assert_eq!(dismissed.event_id, "recovery-event-1");
-    assert!(dismissed.dismissed);
 }
 
 #[test]

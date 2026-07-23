@@ -1,6 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdentitySelector {
@@ -345,8 +344,24 @@ pub struct HandleRegistrationResult {
     pub handle: crate::ids::Handle,
     pub method: RegistrationMethod,
     pub state: HandleRegistrationState,
+    pub join_required: Option<HandleRegistrationJoinRequired>,
     pub default_identity_change: Option<DefaultIdentityChange>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandleRegistrationJoinRequired {
+    pub did: crate::ids::Did,
+    pub account_verification_token: String,
+}
+
+impl std::fmt::Debug for HandleRegistrationJoinRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HandleRegistrationJoinRequired")
+            .field("did", &self.did)
+            .field("account_verification_token", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -362,6 +377,16 @@ pub enum HandleRegistrationState {
     EmailSent,
     EmailPending,
     Registered,
+    JoinRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "state")]
+pub enum LegacyUpgradeStatus {
+    Idle,
+    Running,
+    RetryRequired { identity_id: String, code: String },
+    Completed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -621,159 +646,6 @@ pub enum ContactBindingState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecoverHandleRequest {
-    pub handle: crate::ids::Handle,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_handle: Option<String>,
-    pub phone: String,
-    pub otp: Option<String>,
-    pub generated_identity: Option<RecoverGeneratedIdentity>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local_finalize: Option<RecoverHandleLocalFinalizeRequest>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecoverGeneratedIdentity {
-    pub did: crate::ids::Did,
-    pub unique_id: String,
-    pub did_document: serde_json::Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct RecoverHandleLocalFinalizeRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_handle: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_identity_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config_file_path: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecoverHandlePlanRequest {
-    pub handle: crate::ids::Handle,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_handle: Option<String>,
-    pub phone: String,
-    pub otp: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecoverHandlePlan {
-    pub action: String,
-    pub target_handle: String,
-    pub identity_name: String,
-    pub final_identity_name: String,
-    pub temp_identity_name: String,
-    pub same_handle_candidates: Vec<RecoverLocalIdentitySummary>,
-    pub excluded_identities: Vec<RecoverLocalIdentitySummary>,
-    pub backup_path: String,
-    pub phone: String,
-    pub remote_calls: Vec<String>,
-    pub local_writes: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecoverHandleResult {
-    pub handle: crate::ids::Handle,
-    pub phone: String,
-    pub state: RecoverHandleState,
-    pub recovered_identity: Option<RecoveredIdentity>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local_recovery: Option<RecoverHandleLocalResult>,
-    #[serde(skip)]
-    raw_response: Option<serde_json::Value>,
-    pub warnings: Vec<String>,
-}
-
-impl RecoverHandleResult {
-    pub(crate) fn with_raw_response(
-        handle: crate::ids::Handle,
-        phone: String,
-        state: RecoverHandleState,
-        recovered_identity: Option<RecoveredIdentity>,
-        local_recovery: Option<RecoverHandleLocalResult>,
-        raw_response: Option<serde_json::Value>,
-        warnings: Vec<String>,
-    ) -> Self {
-        Self {
-            handle,
-            phone,
-            state,
-            recovered_identity,
-            local_recovery,
-            raw_response,
-            warnings,
-        }
-    }
-
-    pub fn response_json(&self) -> Option<&serde_json::Value> {
-        self.raw_response.as_ref()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RecoverHandleState {
-    OtpSent,
-    Recovered,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecoveredIdentity {
-    pub identity: IdentitySummary,
-    pub user_id: Option<String>,
-    pub access_token_present: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecoverHandleLocalResult {
-    pub identity: RecoverLocalIdentitySummary,
-    pub backup_path: String,
-    pub archived_identities: Vec<String>,
-    pub archived_dids: Vec<String>,
-    pub full_handle: String,
-    pub final_identity_name: String,
-    pub store_merge_counts: BTreeMap<String, i64>,
-    pub e2ee_cleanup_counts: BTreeMap<String, i64>,
-    pub default_updated: bool,
-    pub active_config_updated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct RecoverLocalIdentitySummary {
-    pub identity_name: String,
-    pub did: String,
-    pub unique_id: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub display_name: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub handle: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub full_handle: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub created_at: String,
-    pub dir_name: String,
-    pub is_default: bool,
-    pub has_jwt: bool,
-    pub has_did_document: bool,
-    pub has_key1_private: bool,
-    pub has_key1_public: bool,
-    pub has_e2ee_signing_private: bool,
-    pub has_e2ee_agreement_private: bool,
-    pub user_state: RecoverLocalUserState,
-    #[serde(skip)]
-    pub user_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct RecoverLocalUserState {
-    pub registration_state: String,
-    pub ready_for_messaging: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub missing: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReplaceDidPlanRequest {
     pub identity: IdentitySummary,
     pub linked_identity_names: Vec<String>,
@@ -895,24 +767,6 @@ mod tests {
         assert!(binding_json.get("raw_response").is_none());
         assert!(binding_json.get("raw_response").is_none());
         assert!(binding_json.get("raw").is_none());
-
-        let recover = RecoverHandleResult::with_raw_response(
-            crate::ids::Handle::parse("alice", "example.test").expect("handle"),
-            "+15551234567".to_string(),
-            RecoverHandleState::OtpSent,
-            None,
-            None,
-            Some(json!({ "sent": true })),
-            Vec::new(),
-        );
-        let recover_json = serde_json::to_value(&recover).expect("serialize recover result");
-        assert_eq!(
-            recover.response_json().and_then(|raw| raw.get("sent")),
-            Some(&json!(true))
-        );
-        assert!(recover_json.get("raw_response").is_none());
-        assert!(recover_json.get("raw_response").is_none());
-        assert!(recover_json.get("raw").is_none());
     }
 
     #[test]

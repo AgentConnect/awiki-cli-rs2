@@ -1,16 +1,12 @@
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
-use std::path::PathBuf;
+use std::fs::{self, File};
 use std::sync::{Arc, RwLock};
-
-use fs2::FileExt as _;
-use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::internal::platform_secret::SecretBytes;
 use crate::internal::secret_vault::policy::SecretAccessPolicy;
 use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
 use crate::internal::secret_vault::{SealSecretRequest, SecretVault};
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LegacyVaultKeyMaterialRefs {
@@ -48,38 +44,12 @@ enum VaultKeyRoleRefs {
     VNext(VNextVaultKeyMaterialRefs),
 }
 
-const VNEXT_AUTH_PAIR_LOCK_FILE: &str = ".awiki-vnext-auth-pair.lock";
-
-struct VNextAuthPairFileLock(File);
-
-impl Drop for VNextAuthPairFileLock {
-    fn drop(&mut self) {
-        let _ = fs2::FileExt::unlock(&self.0);
-    }
-}
-
-fn secret_value_eq(left: &str, right: &str) -> bool {
-    let left_digest: [u8; 32] = Sha256::digest(left.as_bytes()).into();
-    let right_digest: [u8; 32] = Sha256::digest(right.as_bytes()).into();
-    fixed_digest_eq(&left_digest, &right_digest)
-}
-
-fn fixed_digest_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
-    left.iter()
-        .zip(right)
-        .fold(0_u8, |difference, (left, right)| {
-            difference | (left ^ right)
-        })
-        == 0
-}
-
 pub(crate) struct VaultBackedKeyMaterialProvider {
     file_provider: super::FileBackedKeyMaterialProvider,
     vault: Arc<dyn SecretVault + Send + Sync>,
     refs: VaultKeyRoleRefs,
     did_document_root_private_ref: RwLock<Option<SecretRef>>,
     auth_jwt_ref: RwLock<SecretRef>,
-    vnext_auth_pair_lock_path: PathBuf,
 }
 
 impl VaultBackedKeyMaterialProvider {
@@ -89,14 +59,12 @@ impl VaultBackedKeyMaterialProvider {
         refs: LegacyVaultKeyMaterialRefs,
     ) -> Self {
         let auth_jwt_ref = refs.auth_jwt.clone();
-        let vnext_auth_pair_lock_path = identity_dir.join(VNEXT_AUTH_PAIR_LOCK_FILE);
         Self {
             file_provider: super::FileBackedKeyMaterialProvider::new(identity_dir),
             vault,
             refs: VaultKeyRoleRefs::Legacy(refs),
             did_document_root_private_ref: RwLock::new(None),
             auth_jwt_ref: RwLock::new(auth_jwt_ref),
-            vnext_auth_pair_lock_path,
         }
     }
 
@@ -107,36 +75,13 @@ impl VaultBackedKeyMaterialProvider {
     ) -> Self {
         let auth_jwt_ref = refs.auth_jwt.clone();
         let did_document_root_private_ref = refs.did_document_root_private.clone();
-        let vnext_auth_pair_lock_path = identity_dir.join(VNEXT_AUTH_PAIR_LOCK_FILE);
         Self {
             file_provider: super::FileBackedKeyMaterialProvider::new(identity_dir),
             vault,
             refs: VaultKeyRoleRefs::VNext(refs),
             did_document_root_private_ref: RwLock::new(did_document_root_private_ref),
             auth_jwt_ref: RwLock::new(auth_jwt_ref),
-            vnext_auth_pair_lock_path,
         }
-    }
-
-    fn lock_vnext_auth_pair(&self) -> crate::ImResult<VNextAuthPairFileLock> {
-        let parent = self.vnext_auth_pair_lock_path.parent().ok_or_else(|| {
-            crate::ImError::PathUnavailable {
-                path_kind: "vnext_auth_pair_lock".to_owned(),
-                detail: "lock path has no parent directory".to_owned(),
-            }
-        })?;
-        fs::create_dir_all(parent)?;
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let file = options.open(&self.vnext_auth_pair_lock_path)?;
-        set_private_lock_file_mode(&file)?;
-        file.lock_exclusive().map_err(crate::ImError::from)?;
-        Ok(VNextAuthPairFileLock(file))
     }
 
     fn open_utf8_secret(&self, secret_ref: &SecretRef, path_kind: &str) -> crate::ImResult<String> {
@@ -249,6 +194,21 @@ impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
         }
     }
 
+    fn device_request_signing_material(
+        &self,
+    ) -> crate::ImResult<super::DeviceRequestSigningMaterial> {
+        match &self.refs {
+            VaultKeyRoleRefs::Legacy(_) => Ok(super::DeviceRequestSigningMaterial {
+                key_id: super::file::request_signing_key_id(&self.did_document()?)?,
+                private_key_pem: self.device_request_signing_private_pem()?,
+            }),
+            VaultKeyRoleRefs::VNext(refs) => Ok(super::DeviceRequestSigningMaterial {
+                key_id: refs.device_request_signing_private.key_id.clone(),
+                private_key_pem: self.device_request_signing_private_pem()?,
+            }),
+        }
+    }
+
     fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
         match &self.refs {
             VaultKeyRoleRefs::Legacy(refs) => Ok(self
@@ -316,21 +276,8 @@ impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
         if auth_ref.kind != SecretKind::AuthJwt {
             return Err(crate::ImError::PermissionDenied);
         }
-        let current = self.vault.open(&auth_ref)?;
-        let current = crate::internal::auth::state::parse_auth_state(current.expose_secret())?;
-        let refresh_token = current.refresh_token.clone();
-        let raw = crate::internal::auth::state::auth_state_json_for_token_pair(
-            token,
-            refresh_token.as_deref(),
-            None,
-        )?;
+        let raw = crate::internal::auth::state::auth_state_json_for_token(token)?;
         let candidate = crate::internal::auth::state::parse_auth_state(&raw)?;
-        if current.expires_at.is_some() && candidate.expires_at.is_none() {
-            // Never silently drop explicit access-token expiry metadata. A
-            // normal refresh for versioned vNext auth must return a JWT whose
-            // replacement expiry can be derived locally.
-            return Err(crate::ImError::PermissionDenied);
-        }
         let sealed = self.vault.seal(SealSecretRequest {
             metadata: Self::metadata_from_ref(&auth_ref),
             plaintext: SecretBytes::from_vec(raw),
@@ -341,75 +288,6 @@ impl super::KeyMaterialProvider for VaultBackedKeyMaterialProvider {
         let opened = self.vault.open(&sealed)?;
         let persisted = crate::internal::auth::state::parse_auth_state(opened.expose_secret())?;
         if persisted.bearer_token.as_deref() != Some(token.trim())
-            || persisted.refresh_token != refresh_token
-            || persisted.expires_at != candidate.expires_at
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        Ok(())
-    }
-
-    fn uses_vnext_device_tokens(&self) -> bool {
-        matches!(self.refs, VaultKeyRoleRefs::VNext(_))
-    }
-
-    fn persist_vnext_auth_token_pair(
-        &self,
-        expected_old_refresh_digest: &[u8; 32],
-        access_token: &str,
-        refresh_token: &str,
-        expires_at: &str,
-    ) -> crate::ImResult<()> {
-        if !matches!(self.refs, VaultKeyRoleRefs::VNext(_)) {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let raw = crate::internal::auth::state::auth_state_json_for_token_pair(
-            access_token,
-            Some(refresh_token),
-            Some(expires_at),
-        )?;
-        let candidate = crate::internal::auth::state::parse_auth_state(&raw)?;
-        // Hold the exclusive guard across compare/seal/verify. It serializes
-        // pair rotation with both another refresh and auth SecretRef advance.
-        let auth_ref =
-            self.auth_jwt_ref
-                .write()
-                .map_err(|_| crate::ImError::LocalStateUnavailable {
-                    detail: "vault auth ref lock poisoned".to_owned(),
-                })?;
-        let _file_lock = self.lock_vnext_auth_pair()?;
-        if auth_ref.kind != SecretKind::AuthJwt {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let current = self.vault.open(&auth_ref)?;
-        let current = crate::internal::auth::state::parse_auth_state(current.expose_secret())?;
-        let Some(current_access) = current.bearer_token.as_deref() else {
-            return Err(crate::ImError::PermissionDenied);
-        };
-        let Some(current_refresh) = current.refresh_token.as_deref() else {
-            return Err(crate::ImError::PermissionDenied);
-        };
-        if secret_value_eq(current_access, access_token.trim())
-            && secret_value_eq(current_refresh, refresh_token.trim())
-            && current.expires_at == candidate.expires_at
-        {
-            return Ok(());
-        }
-        let current_refresh_digest: [u8; 32] = Sha256::digest(current_refresh.as_bytes()).into();
-        if !fixed_digest_eq(&current_refresh_digest, expected_old_refresh_digest) {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let sealed = self.vault.seal(SealSecretRequest {
-            metadata: Self::metadata_from_ref(&auth_ref),
-            plaintext: SecretBytes::from_vec(raw),
-        })?;
-        if sealed != *auth_ref {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let opened = self.vault.open(&sealed)?;
-        let persisted = crate::internal::auth::state::parse_auth_state(opened.expose_secret())?;
-        if persisted.bearer_token.as_deref() != Some(access_token.trim())
-            || persisted.refresh_token.as_deref() != Some(refresh_token.trim())
             || persisted.expires_at != candidate.expires_at
         {
             return Err(crate::ImError::PermissionDenied);
@@ -686,6 +564,7 @@ mod tests {
             .unwrap();
         assert!(headers.contains_key("Signature-Input"));
         assert!(headers.contains_key("Signature"));
+        assert!(headers["Signature-Input"].contains("keyid=\"member-sign\""));
         let debug = format!("{provider:?}");
         assert!(!debug.contains(&device_signing_pem));
         assert!(!debug.contains("agreement-secret"));
@@ -760,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn vnext_access_refresh_preserves_committed_token_pair_in_place() {
+    fn vnext_access_token_refresh_preserves_committed_auth_ref() {
         let root = tempfile::tempdir().unwrap();
         let identity_dir = root.path().join("identity");
         std::fs::create_dir_all(&identity_dir).unwrap();
@@ -784,12 +663,8 @@ mod tests {
             vault.as_ref(),
             SecretKind::AuthJwt,
             "auth.json",
-            &crate::internal::auth::state::auth_state_json_for_token_pair(
-                "expired-access-token",
-                Some("committed-refresh-token"),
-                Some("2000-01-01T00:00:00Z"),
-            )
-            .unwrap(),
+            &crate::internal::auth::state::auth_state_json_for_token("expired-access-token")
+                .unwrap(),
         );
         let provider = VaultBackedKeyMaterialProvider::new_vnext(
             identity_dir,
@@ -823,278 +698,10 @@ mod tests {
             Some(refreshed_access.as_str())
         );
         assert_eq!(
-            refreshed.refresh_token.as_deref(),
-            Some("committed-refresh-token")
-        );
-        assert_eq!(
             refreshed.expires_at.as_deref(),
             Some("2100-01-01T00:00:00Z")
         );
         assert!(refreshed.has_valid_token);
-    }
-
-    #[test]
-    fn vnext_pair_rotation_replaces_both_tokens_under_same_auth_ref() {
-        let root = tempfile::tempdir().unwrap();
-        let identity_dir = root.path().join("identity");
-        std::fs::create_dir_all(&identity_dir).unwrap();
-        let vault = Arc::new(FileSecretVault::new(
-            DeviceVaultRootKey::from_bytes([19_u8; 32]),
-            FileSecretVaultStore::new(root.path().join("vault")),
-        ));
-        let device_ref = seal_test_secret(
-            vault.as_ref(),
-            SecretKind::IdentityDeviceSigningPrivate,
-            "device-sign",
-            b"device-secret",
-        );
-        let agreement_ref = seal_test_secret(
-            vault.as_ref(),
-            SecretKind::IdentityE2eeAgreementPrivate,
-            "device-e2ee",
-            b"agreement-secret",
-        );
-        let auth_ref = seal_test_secret(
-            vault.as_ref(),
-            SecretKind::AuthJwt,
-            "auth.json",
-            &crate::internal::auth::state::auth_state_json_for_token_pair(
-                "old-access",
-                Some("old-refresh"),
-                Some("2000-01-01T00:00:00Z"),
-            )
-            .unwrap(),
-        );
-        let provider = VaultBackedKeyMaterialProvider::new_vnext(
-            identity_dir,
-            vault.clone(),
-            VNextVaultKeyMaterialRefs {
-                device_request_signing_private: device_ref,
-                did_document_root_private: None,
-                e2ee_agreement_private: agreement_ref,
-                auth_jwt: auth_ref.clone(),
-            },
-        );
-
-        assert!(provider.uses_vnext_device_tokens());
-        let old_refresh_digest = Sha256::digest(b"old-refresh").into();
-        provider
-            .persist_vnext_auth_token_pair(
-                &old_refresh_digest,
-                "rotated-access",
-                "rotated-refresh",
-                "2100-01-01T00:00:00Z",
-            )
-            .unwrap();
-
-        assert_eq!(provider.auth_jwt_ref().unwrap(), auth_ref);
-        let opened = vault.open(&auth_ref).unwrap();
-        let rotated =
-            crate::internal::auth::state::parse_auth_state(opened.expose_secret()).unwrap();
-        assert_eq!(rotated.bearer_token.as_deref(), Some("rotated-access"));
-        assert_eq!(rotated.refresh_token.as_deref(), Some("rotated-refresh"));
-        assert_eq!(rotated.expires_at.as_deref(), Some("2100-01-01T00:00:00Z"));
-        assert_eq!(
-            vault
-                .list()
-                .unwrap()
-                .into_iter()
-                .filter(|secret_ref| secret_ref.kind == SecretKind::AuthJwt)
-                .collect::<Vec<_>>(),
-            vec![auth_ref]
-        );
-    }
-
-    struct PausingSecretVault {
-        inner: Arc<FileSecretVault>,
-        pause_next_seal: std::sync::atomic::AtomicBool,
-        seal_entered: std::sync::Barrier,
-        seal_release: std::sync::Barrier,
-    }
-
-    impl PausingSecretVault {
-        fn new(inner: Arc<FileSecretVault>) -> Self {
-            Self {
-                inner,
-                pause_next_seal: std::sync::atomic::AtomicBool::new(false),
-                seal_entered: std::sync::Barrier::new(2),
-                seal_release: std::sync::Barrier::new(2),
-            }
-        }
-
-        fn pause_next_seal(&self) {
-            self.pause_next_seal
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
-    impl SecretVault for PausingSecretVault {
-        fn seal(&self, request: SealSecretRequest) -> crate::ImResult<SecretRef> {
-            if self
-                .pause_next_seal
-                .swap(false, std::sync::atomic::Ordering::SeqCst)
-            {
-                self.seal_entered.wait();
-                self.seal_release.wait();
-            }
-            self.inner.seal(request)
-        }
-
-        fn seal_if_absent(
-            &self,
-            request: SealSecretRequest,
-        ) -> crate::ImResult<crate::internal::secret_vault::SealIfAbsentResult> {
-            self.inner.seal_if_absent(request)
-        }
-
-        fn open(&self, secret_ref: &SecretRef) -> crate::ImResult<SecretBytes> {
-            self.inner.open(secret_ref)
-        }
-
-        fn delete(&self, secret_ref: &SecretRef) -> crate::ImResult<()> {
-            self.inner.delete(secret_ref)
-        }
-
-        fn list(&self) -> crate::ImResult<Vec<SecretRef>> {
-            self.inner.list()
-        }
-    }
-
-    #[test]
-    fn vnext_pair_file_lock_prevents_cross_provider_stale_rollback() {
-        let root = tempfile::tempdir().unwrap();
-        let identity_dir = root.path().join("identity");
-        std::fs::create_dir_all(&identity_dir).unwrap();
-        let inner = Arc::new(FileSecretVault::new(
-            DeviceVaultRootKey::from_bytes([29_u8; 32]),
-            FileSecretVaultStore::new(root.path().join("vault")),
-        ));
-        let device_ref = seal_test_secret(
-            inner.as_ref(),
-            SecretKind::IdentityDeviceSigningPrivate,
-            "device-sign-cas",
-            b"device-secret",
-        );
-        let agreement_ref = seal_test_secret(
-            inner.as_ref(),
-            SecretKind::IdentityE2eeAgreementPrivate,
-            "device-e2ee-cas",
-            b"agreement-secret",
-        );
-        let auth_ref = seal_test_secret(
-            inner.as_ref(),
-            SecretKind::AuthJwt,
-            "auth-cas.json",
-            &crate::internal::auth::state::auth_state_json_for_token_pair(
-                "access-0",
-                Some("refresh-0"),
-                Some("2099-01-01T00:00:00Z"),
-            )
-            .unwrap(),
-        );
-        let controlled = Arc::new(PausingSecretVault::new(inner.clone()));
-        let refs = VNextVaultKeyMaterialRefs {
-            device_request_signing_private: device_ref,
-            did_document_root_private: None,
-            e2ee_agreement_private: agreement_ref,
-            auth_jwt: auth_ref.clone(),
-        };
-        let provider_a = Arc::new(VaultBackedKeyMaterialProvider::new_vnext(
-            identity_dir.clone(),
-            controlled.clone(),
-            refs.clone(),
-        ));
-        let provider_b = Arc::new(VaultBackedKeyMaterialProvider::new_vnext(
-            identity_dir.clone(),
-            controlled.clone(),
-            refs,
-        ));
-        let refresh_0_digest = Sha256::digest(b"refresh-0").into();
-
-        controlled.pause_next_seal();
-        let first_provider = provider_a.clone();
-        let first = std::thread::spawn(move || {
-            first_provider.persist_vnext_auth_token_pair(
-                &refresh_0_digest,
-                "access-1",
-                "refresh-1",
-                "2099-02-01T00:00:00Z",
-            )
-        });
-        controlled.seal_entered.wait();
-
-        let lock_path = identity_dir.join(VNEXT_AUTH_PAIR_LOCK_FILE);
-        let lock_probe = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-            .unwrap();
-        assert!(lock_probe.try_lock_exclusive().is_err());
-        let second_provider = provider_b.clone();
-        let (second_started_tx, second_started_rx) = std::sync::mpsc::sync_channel(0);
-        let (second_done_tx, second_done_rx) = std::sync::mpsc::sync_channel(0);
-        let second = std::thread::spawn(move || {
-            second_started_tx.send(()).unwrap();
-            let result = second_provider.persist_vnext_auth_token_pair(
-                &refresh_0_digest,
-                "stale-access",
-                "stale-refresh",
-                "2099-02-15T00:00:00Z",
-            );
-            second_done_tx.send(result).unwrap();
-        });
-        second_started_rx.recv().unwrap();
-        assert!(second_done_rx
-            .recv_timeout(std::time::Duration::from_millis(100))
-            .is_err());
-
-        controlled.seal_release.wait();
-        first.join().unwrap().unwrap();
-        assert_eq!(
-            second_done_rx.recv().unwrap(),
-            Err(crate::ImError::PermissionDenied)
-        );
-        second.join().unwrap();
-
-        let refresh_1_digest = Sha256::digest(b"refresh-1").into();
-        provider_b
-            .persist_vnext_auth_token_pair(
-                &refresh_1_digest,
-                "access-2",
-                "refresh-2",
-                "2099-03-01T00:00:00Z",
-            )
-            .unwrap();
-        assert_eq!(
-            provider_a.persist_vnext_auth_token_pair(
-                &refresh_0_digest,
-                "access-1",
-                "refresh-1",
-                "2099-02-01T00:00:00Z",
-            ),
-            Err(crate::ImError::PermissionDenied)
-        );
-
-        let opened = inner.open(&auth_ref).unwrap();
-        let current =
-            crate::internal::auth::state::parse_auth_state(opened.expose_secret()).unwrap();
-        assert!(secret_value_eq(
-            current.bearer_token.as_deref().unwrap_or_default(),
-            "access-2"
-        ));
-        assert!(secret_value_eq(
-            current.refresh_token.as_deref().unwrap_or_default(),
-            "refresh-2"
-        ));
-        assert_eq!(current.expires_at.as_deref(), Some("2099-03-01T00:00:00Z"));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            assert_eq!(
-                std::fs::metadata(lock_path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
     }
 
     #[test]

@@ -29,15 +29,6 @@ pub(crate) fn build_get_me_profile_rpc_call() -> super::RpcCall {
     )
 }
 
-pub(crate) fn build_refresh_token_rpc_call() -> super::RpcCall {
-    super::rpc_call(
-        super::DID_AUTH_RPC_ENDPOINT,
-        "get_me",
-        super::TransportProfile::AuthRefresh,
-        json!({}),
-    )
-}
-
 pub(crate) fn build_update_me_profile_rpc_call(
     params: super::UpdateProfileParams,
 ) -> crate::ImResult<super::ProfileUpdateCall> {

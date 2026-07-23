@@ -10,7 +10,6 @@ import '../frb_generated.dart';
 import 'client.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `recover_handle_request`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
 
 Future<DartDeviceRevokeResult> revokeDevice({
@@ -23,98 +22,6 @@ Future<DartDeviceRevokeResult> revokeDevice({
   selector: selector,
   targetDeviceId: targetDeviceId,
   userPresenceConfirmed: userPresenceConfirmed,
-);
-
-Future<List<DartHandleRecoveryProgress>> localHandleRecoverySessions({
-  required ArcDartImCore core,
-}) => RustLib.instance.api.crateApiIdentityLocalHandleRecoverySessions(
-  core: core,
-);
-
-Future<List<DartOldAdminRecoveryNotice>> listOldAdminRecoveryNotices({
-  required ArcDartImCore core,
-  required DartIdentitySelector oldIdentity,
-}) => RustLib.instance.api.crateApiIdentityListOldAdminRecoveryNotices(
-  core: core,
-  oldIdentity: oldIdentity,
-);
-
-Future<DartOldAdminRecoveryNotice?> getOldAdminRecoveryNotice({
-  required ArcDartImCore core,
-  required DartIdentitySelector oldIdentity,
-  required String eventId,
-}) => RustLib.instance.api.crateApiIdentityGetOldAdminRecoveryNotice(
-  core: core,
-  oldIdentity: oldIdentity,
-  eventId: eventId,
-);
-
-Future<DartOldAdminRecoveryNoticeDismissResult> dismissOldAdminRecoveryNotice({
-  required ArcDartImCore core,
-  required DartIdentitySelector oldIdentity,
-  required String eventId,
-}) => RustLib.instance.api.crateApiIdentityDismissOldAdminRecoveryNotice(
-  core: core,
-  oldIdentity: oldIdentity,
-  eventId: eventId,
-);
-
-Future<DartHandleRecoveryProgress> beginHandleRecovery({
-  required ArcDartImCore core,
-  required String handle,
-  required List<int> beginVerificationGrant,
-}) => RustLib.instance.api.crateApiIdentityBeginHandleRecovery(
-  core: core,
-  handle: handle,
-  beginVerificationGrant: beginVerificationGrant,
-);
-
-Future<DartHandleRecoveryProgress> pollHandleRecovery({
-  required ArcDartImCore core,
-  required String recoverySessionId,
-}) => RustLib.instance.api.crateApiIdentityPollHandleRecovery(
-  core: core,
-  recoverySessionId: recoverySessionId,
-);
-
-Future<DartHandleRecoveryCancelResult> cancelHandleRecovery({
-  required ArcDartImCore core,
-  required DartIdentitySelector oldIdentity,
-  required String recoverySessionId,
-  required bool userPresenceConfirmed,
-}) => RustLib.instance.api.crateApiIdentityCancelHandleRecovery(
-  core: core,
-  oldIdentity: oldIdentity,
-  recoverySessionId: recoverySessionId,
-  userPresenceConfirmed: userPresenceConfirmed,
-);
-
-Future<DartHandleRecoveryFinalizeResult> finalizeHandleRecovery({
-  required ArcDartImCore core,
-  required String recoverySessionId,
-  required List<int> finalizeVerificationGrant,
-  required bool userPresenceConfirmed,
-}) => RustLib.instance.api.crateApiIdentityFinalizeHandleRecovery(
-  core: core,
-  recoverySessionId: recoverySessionId,
-  finalizeVerificationGrant: finalizeVerificationGrant,
-  userPresenceConfirmed: userPresenceConfirmed,
-);
-
-Future<DartIdentitySummary> resumeHandleRecoveryActivation({
-  required ArcDartImCore core,
-  required String recoverySessionId,
-}) => RustLib.instance.api.crateApiIdentityResumeHandleRecoveryActivation(
-  core: core,
-  recoverySessionId: recoverySessionId,
-);
-
-Future<void> markHandleRecoveryActivationComplete({
-  required ArcDartImCore core,
-  required String recoverySessionId,
-}) => RustLib.instance.api.crateApiIdentityMarkHandleRecoveryActivationComplete(
-  core: core,
-  recoverySessionId: recoverySessionId,
 );
 
 Future<DartRootKeyTransferSendResult> sendRootKeyTransfer({
@@ -284,6 +191,22 @@ Future<DartIdentityVaultStatus> identityVaultStatus({
   selector: selector,
 );
 
+Future<DartLegacyUpgradeStatus> legacyUpgradeStatus({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityLegacyUpgradeStatus(
+  core: core,
+  selector: selector,
+);
+
+Future<DartLegacyUpgradeStatus> upgradeLegacyIdentity({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityUpgradeLegacyIdentity(
+  core: core,
+  selector: selector,
+);
+
 Future<DartIdentityVaultMigrationReport> migrateIdentityVault({
   required ArcDartImCore core,
   required DartIdentitySelector selector,
@@ -389,15 +312,3 @@ Future<DartHandleRegistrationResult> registerHandleWithoutContactVerification({
       profile: profile,
       makeDefault: makeDefault,
     );
-
-Future<DartRecoverHandleResult> recoverHandle({
-  required ArcDartImCore core,
-  required String handle,
-  required String phone,
-  String? otp,
-}) => RustLib.instance.api.crateApiIdentityRecoverHandle(
-  core: core,
-  handle: handle,
-  phone: phone,
-  otp: otp,
-);

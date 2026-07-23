@@ -1301,7 +1301,7 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
                 "auth_required",
                 3,
                 err.message,
-                "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
+                "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` first.",
             ),
             IdentityErrorKind::Internal => ExitError::new(
                 "internal_error",

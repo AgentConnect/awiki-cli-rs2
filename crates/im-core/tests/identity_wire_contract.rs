@@ -146,12 +146,6 @@ fn identity_json_rpc_builders_match_go_methods_profiles_and_params() {
     assert_eq!(get_me.profile, identity::TransportProfile::RpcReadHeavy);
     assert_eq!(get_me.params, json!({}));
 
-    let refresh = identity::build_refresh_token_rpc_call();
-    assert_eq!(refresh.endpoint, identity::DID_AUTH_RPC_ENDPOINT);
-    assert_eq!(refresh.method, "get_me");
-    assert_eq!(refresh.profile, identity::TransportProfile::AuthRefresh);
-    assert_eq!(refresh.params, json!({}));
-
     let send_otp = directory::build_send_otp_rpc_call("13800138000").unwrap();
     assert_eq!(send_otp.endpoint, directory::HANDLE_RPC_ENDPOINT);
     assert_eq!(send_otp.method, "send_otp");
@@ -195,25 +189,6 @@ fn identity_register_recover_and_replace_rpc_params_match_go_service() {
             "did_document": did_document(),
             "handle": "alice",
             "email": "alice@example.com",
-        })
-    );
-
-    let recover = identity::build_recover_handle_rpc_call(identity::RecoverHandleRpcParams {
-        did_document: did_document(),
-        handle: " alice.tenant.example ".to_string(),
-        phone: "+15551234567".to_string(),
-        otp_code: " 65 43 21 ".to_string(),
-    })
-    .unwrap();
-    assert_eq!(recover.endpoint, identity::DID_AUTH_RPC_ENDPOINT);
-    assert_eq!(recover.method, "recover_handle");
-    assert_eq!(
-        recover.params,
-        json!({
-            "did_document": did_document(),
-            "handle": "alice.tenant.example",
-            "phone": "+15551234567",
-            "otp_code": "654321",
         })
     );
 

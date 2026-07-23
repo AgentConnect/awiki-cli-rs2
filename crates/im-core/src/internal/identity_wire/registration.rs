@@ -1,5 +1,3 @@
-use serde_json::json;
-
 pub(crate) fn build_register_rpc_call(
     params: super::RegisterRpcParams,
 ) -> crate::ImResult<super::RpcCall> {
@@ -38,22 +36,5 @@ pub(crate) fn build_register_rpc_call(
         "register",
         super::TransportProfile::RpcDefault,
         serde_json::Value::Object(payload),
-    ))
-}
-
-pub(crate) fn build_recover_handle_rpc_call(
-    params: super::RecoverHandleRpcParams,
-) -> crate::ImResult<super::RpcCall> {
-    let handle = super::required_trimmed(&params.handle, "handle")?;
-    Ok(super::rpc_call(
-        super::DID_AUTH_RPC_ENDPOINT,
-        "recover_handle",
-        super::TransportProfile::RpcDefault,
-        json!({
-            "did_document": params.did_document,
-            "handle": handle,
-            "phone": super::normalize_phone(&params.phone)?,
-            "otp_code": super::sanitize_otp(&params.otp_code),
-        }),
     ))
 }

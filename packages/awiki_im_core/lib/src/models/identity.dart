@@ -1,4 +1,38 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'config.dart';
+
+/// Single-use, write-only account-verification grant for device Join.
+class DeviceJoinAccountVerificationGrant {
+  factory DeviceJoinAccountVerificationGrant.fromToken(String token) {
+    if (token.trim().isEmpty) {
+      throw ArgumentError('account verification grant must not be empty');
+    }
+    return DeviceJoinAccountVerificationGrant._(
+      Uint8List.fromList(utf8.encode(token)),
+    );
+  }
+
+  DeviceJoinAccountVerificationGrant._(this._bytes);
+
+  Uint8List? _bytes;
+
+  /// Consumed by the native Join boundary. A second call always fails.
+  Uint8List takeBytes() {
+    final bytes = _bytes;
+    if (bytes == null) {
+      throw StateError(
+        'DeviceJoinAccountVerificationGrant was already consumed',
+      );
+    }
+    _bytes = null;
+    return bytes;
+  }
+
+  @override
+  String toString() => 'DeviceJoinAccountVerificationGrant(<redacted>)';
+}
 
 sealed class IdentitySelector {
   const IdentitySelector();
@@ -93,6 +127,40 @@ class IdentityDeviceSummary {
   final String? e2eeKeyId;
   final IdentityDeviceReadiness readiness;
   final String? blockedReason;
+}
+
+sealed class LegacyUpgradeStatus {
+  const LegacyUpgradeStatus();
+
+  const factory LegacyUpgradeStatus.idle() = LegacyUpgradeIdle;
+  const factory LegacyUpgradeStatus.running() = LegacyUpgradeRunning;
+  const factory LegacyUpgradeStatus.retryRequired({
+    required String identityId,
+    required String code,
+  }) = LegacyUpgradeRetryRequired;
+  const factory LegacyUpgradeStatus.completed() = LegacyUpgradeCompleted;
+}
+
+final class LegacyUpgradeIdle extends LegacyUpgradeStatus {
+  const LegacyUpgradeIdle();
+}
+
+final class LegacyUpgradeRunning extends LegacyUpgradeStatus {
+  const LegacyUpgradeRunning();
+}
+
+final class LegacyUpgradeRetryRequired extends LegacyUpgradeStatus {
+  const LegacyUpgradeRetryRequired({
+    required this.identityId,
+    required this.code,
+  });
+
+  final String identityId;
+  final String code;
+}
+
+final class LegacyUpgradeCompleted extends LegacyUpgradeStatus {
+  const LegacyUpgradeCompleted();
 }
 
 enum IdentitySecretStorageBackend { fileCompat, vault }
@@ -236,6 +304,7 @@ class HandleRegistrationResult {
     required this.handle,
     required this.method,
     required this.state,
+    this.joinRequired,
     this.defaultIdentityChange,
     this.warnings = const [],
   });
@@ -244,108 +313,19 @@ class HandleRegistrationResult {
   final String handle;
   final String method;
   final String state;
+  final HandleRegistrationJoinRequired? joinRequired;
   final DefaultIdentityChange? defaultIdentityChange;
   final List<String> warnings;
 }
 
-class RecoverHandleResult {
-  const RecoverHandleResult({
-    required this.handle,
-    required this.phone,
-    required this.state,
-    this.recoveredIdentity,
-    this.userId,
-    required this.accessTokenPresent,
-    this.warnings = const [],
+class HandleRegistrationJoinRequired {
+  const HandleRegistrationJoinRequired({
+    required this.did,
+    required this.accountVerificationGrant,
   });
 
-  final String handle;
-  final String phone;
-  final String state;
-  final IdentitySummary? recoveredIdentity;
-  final String? userId;
-  final bool accessTokenPresent;
-  final List<String> warnings;
-}
-
-enum HandleRecoverySide { requester, oldAdmin }
-
-enum HandleRecoveryPhase { cooling, ready, cancelled, expired, consumed }
-
-/// Secret-free local projection of one Handle Recovery session.
-class HandleRecoveryProgress {
-  const HandleRecoveryProgress({
-    required this.recoverySessionId,
-    required this.handle,
-    required this.oldDid,
-    required this.side,
-    required this.phase,
-    required this.coolingUntil,
-    required this.expiresAt,
-    required this.canCancelFromThisDevice,
-    this.newDid,
-    required this.localActivationPending,
-  });
-
-  final String recoverySessionId;
-  final String handle;
-  final String oldDid;
-  final HandleRecoverySide side;
-  final HandleRecoveryPhase phase;
-  final String coolingUntil;
-  final String expiresAt;
-  final bool canCancelFromThisDevice;
-  final String? newDid;
-  final bool localActivationPending;
-}
-
-class HandleRecoveryCancelResult {
-  const HandleRecoveryCancelResult({
-    required this.recoverySessionId,
-    required this.phase,
-  });
-
-  final String recoverySessionId;
-  final HandleRecoveryPhase phase;
-}
-
-/// Secret-free recovery warning persisted for one old management device.
-class OldAdminRecoveryNotice {
-  const OldAdminRecoveryNotice({
-    required this.eventId,
-    required this.recoverySessionId,
-    required this.handle,
-    required this.oldDid,
-    required this.requestedAt,
-    required this.cancellableUntil,
-  });
-
-  final String eventId;
-  final String recoverySessionId;
-  final String handle;
-  final String oldDid;
-  final String requestedAt;
-  final String cancellableUntil;
-}
-
-class OldAdminRecoveryNoticeDismissResult {
-  const OldAdminRecoveryNoticeDismissResult({
-    required this.eventId,
-    required this.dismissed,
-  });
-
-  final String eventId;
-  final bool dismissed;
-}
-
-class HandleRecoveryFinalizeResult {
-  const HandleRecoveryFinalizeResult({
-    required this.progress,
-    required this.identity,
-  });
-
-  final HandleRecoveryProgress progress;
-  final IdentitySummary identity;
+  final String did;
+  final DeviceJoinAccountVerificationGrant accountVerificationGrant;
 }
 
 enum DeviceJoinSide { newDevice, admin }

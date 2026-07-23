@@ -161,6 +161,79 @@ impl<'a> IdentityRegistry<'a> {
         self.device_summary_for_entry(entry)
     }
 
+    pub async fn upgrade_legacy_identity_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::LegacyUpgradeStatus> {
+        let identity = self.resolve_async(selector.clone()).await?;
+        match crate::internal::identity_legacy_upgrade_runtime::upgrade(self.core, selector).await {
+            Ok(status) => Ok(status),
+            Err(_) => Ok(super::LegacyUpgradeStatus::RetryRequired {
+                identity_id: identity.id.as_str().to_owned(),
+                code: self
+                    .legacy_upgrade_failure_code(&identity)
+                    .unwrap_or_else(|| "legacy_upgrade_failed".to_owned()),
+            }),
+        }
+    }
+
+    pub fn legacy_upgrade_status(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::LegacyUpgradeStatus> {
+        let identity = self.resolve(selector)?;
+        let alias = identity
+            .local_alias
+            .as_deref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let index = crate::internal::identity_store::IdentityStore::new(
+            &self.core.inner().sdk_paths().identities,
+        )
+        .load_index()?;
+        if index
+            .credentials
+            .get(alias)
+            .and_then(|entry| entry.device_state.as_ref())
+            .is_some_and(|state| {
+                state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
+            })
+        {
+            return Ok(super::LegacyUpgradeStatus::Completed);
+        }
+        let pending =
+            crate::internal::identity_legacy_upgrade_pending::PendingLegacyUpgradeStore::from_core(
+                self.core,
+            )?
+            .load(alias)?;
+        Ok(match pending {
+            Some((_, pending))
+                if pending.attempt
+                    == crate::internal::identity_legacy_upgrade_pending::PendingLegacyUpgradeAttempt::RetryRequired =>
+            {
+                super::LegacyUpgradeStatus::RetryRequired {
+                    identity_id: identity.id.as_str().to_owned(),
+                    code: pending
+                        .failure_code
+                        .unwrap_or_else(|| "legacy_upgrade_failed".to_owned()),
+                }
+            }
+            Some(_) => super::LegacyUpgradeStatus::Running,
+            None => super::LegacyUpgradeStatus::Idle,
+        })
+    }
+
+    fn legacy_upgrade_failure_code(&self, identity: &super::IdentitySummary) -> Option<String> {
+        let alias = identity.local_alias.as_deref()?;
+        crate::internal::identity_legacy_upgrade_pending::PendingLegacyUpgradeStore::from_core(
+            self.core,
+        )
+        .ok()?
+        .load(alias)
+        .ok()??
+        .1
+        .failure_code
+    }
+
     pub fn vault_status(
         &self,
         selector: super::IdentitySelector,
@@ -978,58 +1051,6 @@ impl<'a> IdentityRegistry<'a> {
 }
 
 impl IdentityRegistry<'_> {
-    pub fn recover_handle(
-        &self,
-        request: super::RecoverHandleRequest,
-    ) -> crate::ImResult<super::RecoverHandleResult> {
-        let prepared = crate::internal::identity_recovery_runtime::prepare_recover_handle_request(
-            self.core, request,
-        )?;
-        crate::internal::identity_recovery_runtime::IdentityRecoveryRuntime::new_with_core(
-            self.core,
-            crate::internal::transport::CorePlainTransport::new(self.core),
-        )
-        .recover_handle(prepared.request)
-        .map(|result| result.sdk_result)
-    }
-
-    pub async fn recover_handle_async(
-        &self,
-        request: super::RecoverHandleRequest,
-    ) -> crate::ImResult<super::RecoverHandleResult> {
-        let prepared = crate::internal::identity_recovery_runtime::prepare_recover_handle_request(
-            self.core, request,
-        )?;
-        crate::internal::identity_recovery_runtime::IdentityRecoveryRuntime::new_with_core(
-            self.core,
-            crate::internal::transport::CorePlainTransport::new(self.core),
-        )
-        .recover_handle_async(prepared.request)
-        .await
-        .map(|result| result.sdk_result)
-    }
-
-    pub fn recover_handle_plan(
-        &self,
-        request: super::RecoverHandlePlanRequest,
-    ) -> crate::ImResult<super::RecoverHandlePlan> {
-        let phone = crate::internal::identity_wire::normalize_phone(&request.phone)?;
-        let plan = crate::internal::identity_recovery_local::plan_recover_handle(
-            &self.core.inner().sdk_paths().identities,
-            &request.handle,
-            request.raw_handle.as_deref(),
-            &self.core.inner().sdk_config().did_domain,
-        )?;
-        Ok(plan.public_plan(&phone, request.otp.as_deref()))
-    }
-
-    pub async fn recover_handle_plan_async(
-        &self,
-        request: super::RecoverHandlePlanRequest,
-    ) -> crate::ImResult<super::RecoverHandlePlan> {
-        self.recover_handle_plan(request)
-    }
-
     pub fn plan_default_identity_change(
         &self,
         selector: super::IdentitySelector,
@@ -2800,7 +2821,6 @@ mod tests {
                 multi_device_root_transfer_enabled: false,
                 multi_device_device_revoke_enabled: false,
                 multi_device_direct_e2ee_enabled: false,
-                multi_device_handle_recovery_enabled: false,
                 multi_device_group_e2ee_enabled: false,
             },
         )
@@ -2944,7 +2964,6 @@ mod tests {
                 multi_device_root_transfer_enabled: false,
                 multi_device_device_revoke_enabled: false,
                 multi_device_direct_e2ee_enabled: false,
-                multi_device_handle_recovery_enabled: false,
                 multi_device_group_e2ee_enabled: false,
             },
         ) {

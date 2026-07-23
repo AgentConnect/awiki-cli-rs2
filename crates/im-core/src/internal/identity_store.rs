@@ -152,6 +152,30 @@ pub(crate) struct IdentityVaultMigrationResult {
     pub(crate) metadata: IdentityVaultMigrationMetadata,
 }
 
+#[derive(Clone)]
+pub(crate) struct PromoteLegacyIdentityInput {
+    pub(crate) local_alias: String,
+    pub(crate) generated: crate::internal::identity_legacy_upgrade::GeneratedLegacyUpgrade,
+    pub(crate) checkpoint: crate::internal::identity_device_state::IdentityInternalCheckpoint,
+    pub(crate) access_token: String,
+    pub(crate) workspace_id: String,
+    pub(crate) local_vault_device_id: String,
+    pub(crate) vault: Arc<dyn crate::internal::secret_vault::SecretVault>,
+}
+
+impl std::fmt::Debug for PromoteLegacyIdentityInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PromoteLegacyIdentityInput")
+            .field("local_alias", &self.local_alias)
+            .field("generated", &self.generated)
+            .field("checkpoint", &self.checkpoint)
+            .field("access_token", &"<redacted>")
+            .field("workspace_id", &self.workspace_id)
+            .field("local_vault_device_id", &self.local_vault_device_id)
+            .finish()
+    }
+}
+
 /// Process-wide/repository-wide serialization token for identity-index
 /// load-modify-save operations. Atomic rename protects crash integrity only;
 /// this lock additionally prevents a stale writer from replacing a newer
@@ -469,155 +493,6 @@ impl<'a> IdentityStore<'a> {
         })?
     }
 
-    /// Replaces the Vault auth record with the complete rotating device token
-    /// pair. The refresh token is never projected into ordinary identity files.
-    pub(crate) fn persist_vnext_auth_token_pair(
-        &self,
-        local_alias: &str,
-        access_token: &str,
-        refresh_token: &str,
-        token_expires_at: &str,
-        secret_storage: &SaveIdentitySecretStorage,
-    ) -> crate::ImResult<()> {
-        let SaveIdentitySecretStorage::Vault {
-            workspace_id,
-            device_id,
-            vault,
-        } = secret_storage
-        else {
-            return Err(crate::ImError::LocalStateUnavailable {
-                detail: "vNext device refresh tokens require Vault storage".to_owned(),
-            });
-        };
-        let alias = sanitize_identity_name(local_alias);
-        let index = self.load_index()?;
-        let entry =
-            index
-                .credentials
-                .get(&alias)
-                .ok_or_else(|| crate::ImError::IdentityNotFound {
-                    selector: alias.clone(),
-                })?;
-        if entry.device_state.as_ref().is_none_or(|state| {
-            state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
-        }) {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let metadata = entry
-            .vault_migration
-            .as_ref()
-            .filter(|metadata| {
-                metadata.workspace_id == *workspace_id
-                    && metadata.device_id == *device_id
-                    && metadata.status == IdentityVaultMigrationStatus::Verified
-            })
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let auth_ref = metadata
-            .vnext_refs
-            .as_ref()
-            .map(|refs| &refs.auth_jwt)
-            .filter(|secret_ref| {
-                secret_ref.workspace_id == *workspace_id
-                    && secret_ref.device_id == *device_id
-                    && secret_ref.kind == crate::internal::secret_vault::record::SecretKind::AuthJwt
-            })
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let raw = crate::internal::auth::state::auth_state_json_for_token_pair(
-            access_token,
-            Some(refresh_token),
-            Some(token_expires_at),
-        )?;
-        let sealed = vault.seal(crate::internal::secret_vault::SealSecretRequest {
-            metadata: crate::internal::secret_vault::record::SecretMetadata {
-                workspace_id: auth_ref.workspace_id.clone(),
-                device_id: auth_ref.device_id.clone(),
-                identity_id: auth_ref.identity_id.clone(),
-                did: auth_ref.did.clone(),
-                kind: auth_ref.kind.clone(),
-                key_id: auth_ref.key_id.clone(),
-                key_version: auth_ref.key_version,
-                policy: crate::internal::secret_vault::policy::SecretAccessPolicy::no_prompt_local_secret(),
-            },
-            plaintext: crate::internal::platform_secret::SecretBytes::from_vec(raw),
-        })?;
-        let opened = vault.open(&sealed)?;
-        let snapshot = crate::internal::auth::state::parse_auth_state(opened.expose_secret())?;
-        if snapshot.bearer_token.as_deref() != Some(access_token.trim())
-            || snapshot.refresh_token.as_deref() != Some(refresh_token.trim())
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        Ok(())
-    }
-
-    /// Returns the stable token-issue operation for one imported-root ACK.
-    /// The candidate is generated only after the locked state confirms that no
-    /// operation has already been persisted, then is committed before use.
-    pub(crate) fn reserve_root_import_management_token_operation<F>(
-        &self,
-        local_alias: &str,
-        completed_message_id: &str,
-        candidate: F,
-    ) -> crate::ImResult<String>
-    where
-        F: FnOnce() -> crate::ImResult<String>,
-    {
-        let alias = sanitize_identity_name(local_alias);
-        let lock = self.lock_index_mutation()?;
-        let mut index = self.load_index()?;
-        let record = index
-            .credentials
-            .get_mut(&alias)
-            .and_then(|entry| entry.root_key_import.as_mut())
-            .filter(|record| record.message_id() == completed_message_id)
-            .ok_or(crate::ImError::PermissionDenied)?;
-        if let Some(existing) = record.management_token_operation_id.as_deref() {
-            validate_root_import_token_operation(existing)?;
-            return Ok(existing.to_owned());
-        }
-        let candidate = candidate()?;
-        validate_root_import_token_operation(&candidate)?;
-        record.management_token_operation_id = Some(candidate.clone());
-        self.save_index_locked(&lock, index)?;
-        Ok(candidate)
-    }
-
-    /// Rotates an expired token-issue operation with compare-and-swap. If a
-    /// concurrent retry already rotated it, that winning operation is reused.
-    pub(crate) fn rotate_root_import_management_token_operation(
-        &self,
-        local_alias: &str,
-        completed_message_id: &str,
-        expected: &str,
-        replacement: &str,
-    ) -> crate::ImResult<String> {
-        validate_root_import_token_operation(expected)?;
-        validate_root_import_token_operation(replacement)?;
-        if expected == replacement {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let alias = sanitize_identity_name(local_alias);
-        let lock = self.lock_index_mutation()?;
-        let mut index = self.load_index()?;
-        let record = index
-            .credentials
-            .get_mut(&alias)
-            .and_then(|entry| entry.root_key_import.as_mut())
-            .filter(|record| record.message_id() == completed_message_id)
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let current = record
-            .management_token_operation_id
-            .as_deref()
-            .ok_or(crate::ImError::PermissionDenied)?;
-        validate_root_import_token_operation(current)?;
-        if current != expected {
-            return Ok(current.to_owned());
-        }
-        record.management_token_operation_id = Some(replacement.to_owned());
-        self.save_index_locked(&lock, index)?;
-        Ok(replacement.to_owned())
-    }
-
     /// Loads the auth ref from an already committed imported-root transition.
     /// Exact ACK retries use this to repair a live provider whose first ref
     /// advance failed after the index commit.
@@ -700,11 +575,7 @@ impl<'a> IdentityStore<'a> {
             .ok_or(crate::ImError::PermissionDenied)?;
         let opened = vault.open(&auth_ref)?;
         let snapshot = crate::internal::auth::state::parse_auth_state(opened.expose_secret())?;
-        // The access token may expire between the index commit and an exact
-        // retry that repairs this process's live provider. The committed
-        // generation remains recoverable as long as the token pair is intact;
-        // the session layer can refresh it after the provider advances.
-        if !snapshot.has_token || snapshot.refresh_token.is_none() {
+        if !snapshot.has_token {
             return Err(crate::ImError::PermissionDenied);
         }
         Ok(auth_ref)
@@ -841,7 +712,7 @@ impl<'a> IdentityStore<'a> {
                 && checkpoint.document_hash != imported.completion.document_hash)
             || did_document.get("id").and_then(Value::as_str) != Some(entry.did.as_str())
             || !anp::authentication::validate_did_document_binding(did_document, true)
-            || crate::internal::identity_wire::device_genesis::document_hash(did_document)?
+            || crate::internal::identity_wire::document::document_hash(did_document)?
                 != checkpoint.document_hash
         {
             return Err(crate::ImError::PermissionDenied);
@@ -904,7 +775,6 @@ impl<'a> IdentityStore<'a> {
     /// that ref, authorization generation and checkpoint in one atomic index
     /// image. A crash before the index rename leaves the old ref/state active;
     /// a crash after it leaves the complete new ref/state active.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn converge_root_import_management_ready(
         &self,
         local_alias: &str,
@@ -912,8 +782,6 @@ impl<'a> IdentityStore<'a> {
         auth_generation: u64,
         checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
         access_token: &str,
-        refresh_token: &str,
-        token_expires_at: &str,
         secret_storage: &SaveIdentitySecretStorage,
     ) -> crate::ImResult<crate::internal::secret_vault::record::SecretRef> {
         if completed_message_id.trim().is_empty() || auth_generation == 0 {
@@ -929,7 +797,7 @@ impl<'a> IdentityStore<'a> {
         } = secret_storage
         else {
             return Err(crate::ImError::LocalStateUnavailable {
-                detail: "vNext device refresh tokens require Vault storage".to_owned(),
+                detail: "vNext device access tokens require Vault storage".to_owned(),
             });
         };
         let entry =
@@ -1017,11 +885,7 @@ impl<'a> IdentityStore<'a> {
             .key_version
             .checked_add(1)
             .ok_or(crate::ImError::PermissionDenied)?;
-        let raw = crate::internal::auth::state::auth_state_json_for_token_pair(
-            access_token,
-            Some(refresh_token),
-            Some(token_expires_at),
-        )?;
+        let raw = crate::internal::auth::state::auth_state_json_for_token(access_token)?;
         let staged_auth_ref = vault.seal(crate::internal::secret_vault::SealSecretRequest {
             metadata: crate::internal::secret_vault::record::SecretMetadata {
                 workspace_id: current_auth_ref.workspace_id.clone(),
@@ -1050,9 +914,7 @@ impl<'a> IdentityStore<'a> {
                 return Err(error);
             }
         };
-        if snapshot.bearer_token.as_deref() != Some(access_token.trim())
-            || snapshot.refresh_token.as_deref() != Some(refresh_token.trim())
-        {
+        if snapshot.bearer_token.as_deref() != Some(access_token.trim()) {
             let _ = vault.delete(&staged_auth_ref);
             return Err(crate::ImError::PermissionDenied);
         }
@@ -1073,29 +935,6 @@ impl<'a> IdentityStore<'a> {
         // advanced to the committed ref. It is no longer authoritative and a
         // later Vault compaction may remove it safely.
         Ok(staged_auth_ref)
-    }
-
-    pub(crate) async fn persist_vnext_auth_token_pair_async(
-        paths: crate::paths::IdentityRegistryPaths,
-        local_alias: String,
-        access_token: String,
-        refresh_token: String,
-        token_expires_at: String,
-        secret_storage: SaveIdentitySecretStorage,
-    ) -> crate::ImResult<()> {
-        crate::internal::runtime::worker::run_blocking(move || {
-            IdentityStore::new(&paths).persist_vnext_auth_token_pair(
-                &local_alias,
-                &access_token,
-                &refresh_token,
-                &token_expires_at,
-                &secret_storage,
-            )
-        })
-        .await
-        .map_err(|err| crate::ImError::Internal {
-            message: err.to_string(),
-        })?
     }
 
     pub(crate) fn load_daemon_subkey_package(
@@ -1550,6 +1389,7 @@ impl<'a> IdentityStore<'a> {
                 auth_jwt,
             },
             vnext_refs: None,
+            legacy_history: None,
         };
         let index_entry = index.credentials.get_mut(local_alias).ok_or_else(|| {
             crate::ImError::IdentityNotFound {
@@ -1564,6 +1404,199 @@ impl<'a> IdentityStore<'a> {
             dir_name: entry.dir_name,
             metadata,
         })
+    }
+
+    /// Promotes exactly one Vault-backed Legacy identity without replacing its
+    /// migration metadata or deleting any historical crypto state.
+    pub(crate) fn promote_legacy_identity_to_vnext(
+        &self,
+        input: PromoteLegacyIdentityInput,
+    ) -> crate::ImResult<()> {
+        let alias = sanitize_identity_name(&input.local_alias);
+        let lock = self.lock_index_mutation()?;
+        let mut index = self.load_index()?;
+        let entry =
+            index
+                .credentials
+                .get_mut(&alias)
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: alias.clone(),
+                })?;
+        if entry.did != input.generated.did.as_str()
+            || input.checkpoint.document_hash != input.generated.target_document_hash
+            || input.checkpoint.document_version == 0
+            || input.checkpoint.registry_version == 0
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if entry.device_state.as_ref().is_some_and(|state| {
+            state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
+        }) {
+            let state = entry.device_state.as_ref().unwrap();
+            state.validate_for_did(&input.generated.did)?;
+            if state.checkpoint.as_ref() != Some(&input.checkpoint) {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            return self.save_did_document(&entry.dir_name, &input.generated.target_document);
+        }
+        if entry.device_state.as_ref().is_some_and(|state| {
+            state.mode != crate::internal::identity_device_state::IdentityDeviceMode::Legacy
+                || state.authorization.is_some()
+                || state.checkpoint.is_some()
+        }) {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let metadata = entry
+            .vault_migration
+            .as_mut()
+            .filter(|metadata| {
+                metadata.status == IdentityVaultMigrationStatus::Verified
+                    && metadata.workspace_id == input.workspace_id
+                    && metadata.device_id == input.local_vault_device_id
+                    && metadata.vnext_refs.is_none()
+                    && metadata.legacy_history.is_none()
+            })
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let key1 = metadata.refs.default_signing_private.clone();
+        let key2 = metadata
+            .refs
+            .e2ee_signing_private
+            .clone()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let key3 = metadata.refs.e2ee_agreement_private.clone();
+        for historical_ref in [&key1, &key2, &key3] {
+            let opened = input.vault.open(historical_ref)?;
+            if opened.expose_secret().is_empty() {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+        if key1.kind != crate::internal::secret_vault::record::SecretKind::IdentityRootPrivate
+            || key2.kind
+                != crate::internal::secret_vault::record::SecretKind::IdentityE2eeSigningPrivate
+            || key3.kind
+                != crate::internal::secret_vault::record::SecretKind::IdentityE2eeAgreementPrivate
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+
+        crate::internal::access_token::validate_device_access_token(
+            &input.access_token,
+            &crate::internal::access_token::ExpectedDeviceAccess {
+                did: input.generated.did.as_str(),
+                user_id: &entry.user_id,
+                device_id: input.generated.protocol_device_id.as_str(),
+                key_id: &input.generated.signing_key_id,
+                auth_generation: 1,
+                role: crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
+                management_ready: true,
+            },
+        )?;
+        let signing_ref = seal_utf8_secret(
+            input.vault.as_ref(),
+            vault_secret_metadata(
+                &input.workspace_id,
+                &input.local_vault_device_id,
+                &entry.unique_id,
+                &entry.did,
+                crate::internal::secret_vault::record::SecretKind::IdentityDeviceSigningPrivate,
+                &input.generated.signing_key_id,
+            ),
+            &input.generated.signing_private_pem,
+        )?;
+        let e2ee_ref = seal_utf8_secret(
+            input.vault.as_ref(),
+            vault_secret_metadata(
+                &input.workspace_id,
+                &input.local_vault_device_id,
+                &entry.unique_id,
+                &entry.did,
+                crate::internal::secret_vault::record::SecretKind::IdentityE2eeAgreementPrivate,
+                &input.generated.e2ee_key_id,
+            ),
+            &input.generated.e2ee_private_pem,
+        )?;
+        let auth_raw =
+            crate::internal::auth::state::auth_state_json_for_token(&input.access_token)?;
+        let auth_ref = input
+            .vault
+            .seal(crate::internal::secret_vault::SealSecretRequest {
+                metadata: vault_secret_metadata(
+                    &input.workspace_id,
+                    &input.local_vault_device_id,
+                    &entry.unique_id,
+                    &entry.did,
+                    crate::internal::secret_vault::record::SecretKind::AuthJwt,
+                    AUTH_FILE_NAME,
+                ),
+                plaintext: crate::internal::platform_secret::SecretBytes::from_vec(auth_raw),
+            })?;
+        for active_ref in [&signing_ref, &e2ee_ref, &auth_ref] {
+            input.vault.open(active_ref)?;
+        }
+        metadata.vnext_refs = Some(
+            crate::internal::key_provider::vault::VNextVaultKeyMaterialRefs {
+                device_request_signing_private: signing_ref,
+                did_document_root_private: Some(key1.clone()),
+                e2ee_agreement_private: e2ee_ref,
+                auth_jwt: auth_ref,
+            },
+        );
+        let all_secret_refs = input.vault.list()?;
+        let pinned_p5_secret_refs = all_secret_refs
+            .iter()
+            .filter(|secret_ref| {
+                secret_ref.identity_id.as_deref() == Some(entry.unique_id.as_str())
+                    && matches!(
+                        secret_ref.kind,
+                        crate::internal::secret_vault::record::SecretKind::DirectE2eeSignedPrekeyPrivate
+                            | crate::internal::secret_vault::record::SecretKind::DirectE2eeOneTimePrekeyPrivate
+                            | crate::internal::secret_vault::record::SecretKind::DirectE2eeSessionState
+                    )
+            })
+            .cloned()
+            .collect();
+        let pinned_p6_secret_refs = all_secret_refs
+            .iter()
+            .filter(|secret_ref| {
+                secret_ref.identity_id.as_deref() == Some(entry.unique_id.as_str())
+                    && secret_ref.kind
+                        == crate::internal::secret_vault::record::SecretKind::GroupMlsState
+            })
+            .cloned()
+            .collect();
+        metadata.legacy_history = Some(LegacyIdentityHistory {
+            root_key1: key1,
+            signing_key2: Some(key2),
+            agreement_key3: key3,
+            p5_owner_scope: entry.unique_id.clone(),
+            pinned_p5_secret_refs,
+            p6_device_scope: "default".to_owned(),
+            pinned_p6_secret_refs,
+            retained_until_explicit_cleanup_policy: true,
+        });
+        entry.device_state = Some(
+            crate::internal::identity_device_state::IdentityDeviceState {
+                schema_version:
+                    crate::internal::identity_device_state::IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                mode: crate::internal::identity_device_state::IdentityDeviceMode::VNext,
+                authorization: Some(
+                    crate::internal::identity_device_state::DeviceAuthorizationProjection {
+                        protocol_device_id: input.generated.protocol_device_id.clone(),
+                        signing_key_id: input.generated.signing_key_id.clone(),
+                        e2ee_key_id: input.generated.e2ee_key_id.clone(),
+                        status: crate::internal::identity_device_state::DeviceAuthorizationStatus::Active,
+                        role: crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
+                        management_ready: true,
+                        auth_generation: 1,
+                    },
+                ),
+                checkpoint: Some(input.checkpoint),
+            },
+        );
+        let dir_name = entry.dir_name.clone();
+        index.schema_version = INDEX_SCHEMA_VERSION;
+        self.save_index_locked(&lock, index)?;
+        self.save_did_document(&dir_name, &input.generated.target_document)
     }
 
     pub(crate) fn save_daemon_subkey_package(
@@ -1917,6 +1950,27 @@ pub(crate) struct IdentityVaultMigrationMetadata {
     pub(crate) refs: IdentityVaultSecretRefs,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) vnext_refs: Option<crate::internal::key_provider::vault::VNextVaultKeyMaterialRefs>,
+    /// Immutable compatibility anchors retained by the one-device Legacy
+    /// promotion. They are not active vNext signing/encryption refs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) legacy_history: Option<LegacyIdentityHistory>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LegacyIdentityHistory {
+    pub(crate) root_key1: crate::internal::secret_vault::record::SecretRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) signing_key2: Option<crate::internal::secret_vault::record::SecretRef>,
+    pub(crate) agreement_key3: crate::internal::secret_vault::record::SecretRef,
+    /// Legacy P5 uses the pre-v2 SecretKinds and the identity owner scope.
+    pub(crate) p5_owner_scope: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) pinned_p5_secret_refs: Vec<crate::internal::secret_vault::record::SecretRef>,
+    /// Legacy P6 state historically used the default device scope.
+    pub(crate) p6_device_scope: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) pinned_p6_secret_refs: Vec<crate::internal::secret_vault::record::SecretRef>,
+    pub(crate) retained_until_explicit_cleanup_policy: bool,
 }
 
 impl IdentityVaultMigrationMetadata {
@@ -2422,19 +2476,6 @@ fn nullable_string(value: &str) -> Value {
     }
 }
 
-fn validate_root_import_token_operation(value: &str) -> crate::ImResult<()> {
-    if value.is_empty()
-        || value != value.trim()
-        || value.len() > 128
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    Ok(())
-}
-
 fn write_secure_json(path: &Path, payload: &impl Serialize) -> crate::ImResult<()> {
     let raw = serde_json::to_vec_pretty(payload).map_err(|err| crate::ImError::Serialization {
         detail: err.to_string(),
@@ -2766,6 +2807,7 @@ fn seal_identity_input_to_vault(
             auth_jwt,
         },
         vnext_refs,
+        legacy_history: None,
     })
 }
 
@@ -3840,6 +3882,358 @@ mod tests {
             registry_path: root.join("identities").join("registry.json"),
             default_identity_path: Some(root.join("identities").join("default")),
         }
+    }
+
+    #[test]
+    fn legacy_promotion_preserves_key_refs_and_legacy_p5_p6_state() {
+        #[cfg(feature = "group-e2ee")]
+        use crate::internal::group_e2ee::provider::GroupMlsProvider;
+        use crate::internal::secure_direct::secret_store::DirectSecretVault;
+        use crate::internal::secure_direct::sqlite_store::{
+            direct_session_from_blob, direct_session_metadata_json, direct_session_to_blob,
+            DirectOneTimePrekeyRecord, DirectPrekeyStatus, DirectSessionRecord,
+            DirectSignedPrekeyRecord, SqliteDirectSecureStateStore,
+        };
+        #[cfg(feature = "group-e2ee")]
+        use anp::group_e2ee::operations::{CreateGroupInput, FinalizeCommitInput, StatusInput};
+        #[cfg(feature = "group-e2ee")]
+        use anp::group_e2ee::storage::ImCoreSqliteGroupMlsStore;
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([73_u8; 32]),
+            FileSecretVaultStore::new(root.path().join("vault")),
+        ));
+        let generated =
+            crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
+                "example.test",
+                "alice",
+                None,
+                None,
+            )
+            .unwrap();
+        let legacy = generated.identity;
+        store
+            .save_identity_with_secret_storage(
+                SaveIdentityInput {
+                    local_alias: "alice".to_owned(),
+                    did: legacy.did.clone(),
+                    unique_id: legacy.unique_id.clone(),
+                    user_id: "user-1".to_owned(),
+                    display_name: "Alice".to_owned(),
+                    handle: "alice".to_owned(),
+                    full_handle: "alice.example.test".to_owned(),
+                    jwt_token: "legacy-token".to_owned(),
+                    did_document: Some(legacy.did_document.clone()),
+                    key_mode: SaveIdentityKeyMode::LegacyKey1,
+                    device_state: Some(
+                        crate::internal::identity_device_state::IdentityDeviceState::legacy(),
+                    ),
+                    key1_private_pem: legacy.key1_private_pem.clone(),
+                    key1_public_pem: legacy.key1_public_pem,
+                    e2ee_signing_private_pem: legacy.e2ee_signing_private_pem,
+                    e2ee_agreement_private_pem: legacy.e2ee_agreement_private_pem.clone(),
+                    daemon_subkey_package: Some(generated.daemon_subkey_package),
+                    make_default: true,
+                },
+                SaveIdentitySecretStorage::Vault {
+                    workspace_id: "workspace-1".to_owned(),
+                    device_id: "vault-device-1".to_owned(),
+                    vault: vault.clone(),
+                },
+            )
+            .unwrap();
+        let before = store.load_index().unwrap();
+        let legacy_refs = before.credentials["alice"]
+            .vault_migration
+            .as_ref()
+            .unwrap()
+            .refs
+            .clone();
+        let upgrade = crate::internal::identity_legacy_upgrade::build_legacy_upgrade(
+            &legacy.did_document,
+            &legacy.key1_private_pem,
+        )
+        .unwrap();
+        let historical_state_refs = [
+            (
+                crate::internal::secret_vault::record::SecretKind::DirectE2eeSignedPrekeyPrivate,
+                "legacy-prekey",
+            ),
+            (
+                crate::internal::secret_vault::record::SecretKind::DirectE2eeSessionState,
+                "legacy-ratchet",
+            ),
+            (
+                crate::internal::secret_vault::record::SecretKind::GroupMlsState,
+                "legacy-mls-default",
+            ),
+        ]
+        .map(|(kind, key_id)| {
+            vault
+                .seal(crate::internal::secret_vault::SealSecretRequest {
+                    metadata: vault_secret_metadata(
+                        "workspace-1",
+                        "vault-device-1",
+                        &legacy.unique_id,
+                        legacy.did.as_str(),
+                        kind,
+                        key_id,
+                    ),
+                    plaintext: crate::internal::platform_secret::SecretBytes::from_vec(
+                        key_id.as_bytes().to_vec(),
+                    ),
+                })
+                .unwrap()
+        });
+
+        // Seed the actual legacy P5 SQLite rows and their Vault-backed
+        // private material. The ratchet fields live inside the stored ANP
+        // session state, so reading the session below also proves ratchet
+        // history remains decryptable after promotion.
+        let local_state_path = root.path().join("local").join("im.sqlite");
+        std::fs::create_dir_all(local_state_path.parent().unwrap()).unwrap();
+        let direct_connection = rusqlite::Connection::open(&local_state_path).unwrap();
+        let direct_vault: DirectSecretVault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([74_u8; 32]),
+            FileSecretVaultStore::new(root.path().join("direct-vault")),
+        ));
+        let direct_store = SqliteDirectSecureStateStore::new_with_secret_vault(
+            &direct_connection,
+            direct_vault.clone(),
+        )
+        .unwrap();
+        let legacy_private_pem = legacy.e2ee_agreement_private_pem.as_bytes().to_vec();
+        direct_store
+            .upsert_signed_prekey(&DirectSignedPrekeyRecord {
+                owner_identity_id: legacy.unique_id.clone(),
+                owner_did: legacy.did.as_str().to_owned(),
+                key_id: "legacy-spk-1".to_owned(),
+                private_key_blob: legacy_private_pem.clone(),
+                public_key_blob: b"legacy-spk-public".to_vec(),
+                status: DirectPrekeyStatus::Active,
+                metadata_json: String::new(),
+                created_at: "2026-07-01T00:00:00Z".to_owned(),
+                updated_at: "2026-07-01T00:00:00Z".to_owned(),
+            })
+            .unwrap();
+        direct_store
+            .upsert_one_time_prekey(&DirectOneTimePrekeyRecord {
+                owner_identity_id: legacy.unique_id.clone(),
+                owner_did: legacy.did.as_str().to_owned(),
+                key_id: "legacy-opk-1".to_owned(),
+                private_key_blob: legacy_private_pem.clone(),
+                public_key_blob: b"legacy-opk-public".to_vec(),
+                status: DirectPrekeyStatus::Available,
+                metadata_json: String::new(),
+                created_at: "2026-07-01T00:00:00Z".to_owned(),
+                consumed_at: String::new(),
+            })
+            .unwrap();
+        let legacy_session = anp::direct_e2ee::DirectSessionState {
+            session_id: "legacy-session-1".to_owned(),
+            suite: "ANP-DIRECT-E2EE-X3DH-25519-CHACHA20POLY1305-SHA256-V1".to_owned(),
+            peer_did: "did:wba:example.test:bob".to_owned(),
+            local_key_agreement_id: format!("{}#key-3", legacy.did.as_str()),
+            peer_key_agreement_id: "did:wba:example.test:bob#key-3".to_owned(),
+            root_key_b64u: "legacy-root".to_owned(),
+            send_chain_key_b64u: Some("legacy-send-chain".to_owned()),
+            recv_chain_key_b64u: Some("legacy-recv-chain".to_owned()),
+            ratchet_private_key_b64u: "legacy-ratchet-private".to_owned(),
+            ratchet_public_key_b64u: "legacy-ratchet-public".to_owned(),
+            peer_ratchet_public_key_b64u: Some("legacy-peer-ratchet".to_owned()),
+            send_n: 7,
+            recv_n: 9,
+            previous_send_chain_length: 3,
+            skipped_message_keys: Vec::new(),
+            is_initiator: true,
+            status: "established".to_owned(),
+        };
+        direct_store
+            .upsert_session(&DirectSessionRecord {
+                owner_identity_id: legacy.unique_id.clone(),
+                owner_did: legacy.did.as_str().to_owned(),
+                peer_did: legacy_session.peer_did.clone(),
+                session_id: legacy_session.session_id.clone(),
+                state_blob: direct_session_to_blob(&legacy_session).unwrap(),
+                metadata_json: direct_session_metadata_json(&legacy_session).unwrap(),
+                revision: 0,
+                created_at: "2026-07-01T00:00:00Z".to_owned(),
+                updated_at: "2026-07-01T00:00:00Z".to_owned(),
+            })
+            .unwrap();
+
+        #[cfg(feature = "group-e2ee")]
+        {
+            // Seed an actual P6 MLS group in the historical default device
+            // scope. This block runs in the focused group-e2ee test job.
+            let group_did = "did:wba:example.test:groups:legacy-history:e1";
+            let mls_provider =
+                crate::internal::group_e2ee::native_provider::NativeAnpMlsProvider::new(
+                    ImCoreSqliteGroupMlsStore::from_local_state_sqlite_path(
+                        &local_state_path,
+                        &legacy.unique_id,
+                        legacy.did.as_str(),
+                        crate::internal::group_e2ee::DEFAULT_GROUP_MLS_DEVICE_ID,
+                    )
+                    .unwrap(),
+                );
+            let prepared = mls_provider
+                .create_group_prepare(CreateGroupInput {
+                    creator_did: legacy.did.as_str().to_owned(),
+                    device_id: crate::internal::group_e2ee::DEFAULT_GROUP_MLS_DEVICE_ID.to_owned(),
+                    group_did: group_did.to_owned(),
+                    operation_id: "legacy-mls-create".to_owned(),
+                    request_id: "legacy-mls-create-request".to_owned(),
+                    pending_commit_id: Some("legacy-mls-pending".to_owned()),
+                })
+                .unwrap();
+            mls_provider
+                .finalize_commit(FinalizeCommitInput {
+                    pending_commit_id: prepared.pending_commit_id,
+                    request_id: "legacy-mls-finalize-request".to_owned(),
+                })
+                .unwrap();
+            drop(mls_provider);
+        }
+
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let claims = json!({
+            "iss": "user-service",
+            "aud": ["awiki-user-service", "awiki-message-service"],
+            "sub": legacy.did.as_str(),
+            "type": "access",
+            "purpose": "awiki.device.access.v1",
+            "did": legacy.did.as_str(),
+            "user_id": "user-1",
+            "device_id": upgrade.protocol_device_id.as_str(),
+            "key_id": upgrade.signing_key_id,
+            "auth_generation": 1,
+            "scopes": ["device:manage", "device:read", "message:connect"],
+            "iat": now,
+            "nbf": now,
+            "exp": now + 300,
+            "jti": "upgrade-token"
+        });
+        let access_token = format!(
+            "e30.{}.signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+        );
+        let checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+            document_version: 2,
+            document_hash: upgrade.target_document_hash.clone(),
+            registry_version: 2,
+        };
+        let promotion = PromoteLegacyIdentityInput {
+            local_alias: "alice".to_owned(),
+            generated: upgrade,
+            checkpoint,
+            access_token,
+            workspace_id: "workspace-1".to_owned(),
+            local_vault_device_id: "vault-device-1".to_owned(),
+            vault: vault.clone(),
+        };
+        store
+            .promote_legacy_identity_to_vnext(promotion.clone())
+            .unwrap();
+
+        let after = store.load_index().unwrap();
+        let metadata = after.credentials["alice"].vault_migration.as_ref().unwrap();
+        assert_eq!(metadata.refs, legacy_refs);
+        let history = metadata.legacy_history.as_ref().unwrap();
+        assert_eq!(history.root_key1, legacy_refs.default_signing_private);
+        assert_eq!(history.signing_key2, legacy_refs.e2ee_signing_private);
+        assert_eq!(history.agreement_key3, legacy_refs.e2ee_agreement_private);
+        assert_eq!(history.p5_owner_scope, legacy.unique_id);
+        assert_eq!(history.p6_device_scope, "default");
+        assert_eq!(history.pinned_p5_secret_refs.len(), 2);
+        assert_eq!(history.pinned_p6_secret_refs.len(), 1);
+        for secret_ref in historical_state_refs {
+            assert!(vault.open(&secret_ref).is_ok());
+        }
+        assert!(vault.open(&history.root_key1).is_ok());
+        assert!(vault.open(history.signing_key2.as_ref().unwrap()).is_ok());
+        assert!(vault.open(&history.agreement_key3).is_ok());
+        assert_eq!(
+            direct_store
+                .load_signed_prekey_material(&legacy.unique_id, "legacy-spk-1")
+                .unwrap()
+                .unwrap()
+                .to_pem(),
+            legacy.e2ee_agreement_private_pem
+        );
+        assert_eq!(
+            direct_store
+                .load_one_time_prekey_material(&legacy.unique_id, "legacy-opk-1")
+                .unwrap()
+                .unwrap()
+                .private_key
+                .to_pem(),
+            legacy.e2ee_agreement_private_pem
+        );
+        let persisted_session = direct_store
+            .get_session(&legacy.unique_id, &legacy_session.peer_did)
+            .unwrap()
+            .unwrap();
+        let persisted_session = direct_session_from_blob(&persisted_session.state_blob).unwrap();
+        assert_eq!(persisted_session.session_id, legacy_session.session_id);
+        assert_eq!(
+            persisted_session.ratchet_private_key_b64u,
+            "legacy-ratchet-private"
+        );
+        assert_eq!(
+            persisted_session.peer_ratchet_public_key_b64u.as_deref(),
+            Some("legacy-peer-ratchet")
+        );
+        #[cfg(feature = "group-e2ee")]
+        {
+            let group_did = "did:wba:example.test:groups:legacy-history:e1";
+            let reopened_mls =
+                crate::internal::group_e2ee::native_provider::NativeAnpMlsProvider::new(
+                    ImCoreSqliteGroupMlsStore::from_local_state_sqlite_path(
+                        &local_state_path,
+                        &legacy.unique_id,
+                        legacy.did.as_str(),
+                        crate::internal::group_e2ee::DEFAULT_GROUP_MLS_DEVICE_ID,
+                    )
+                    .unwrap(),
+                );
+            let mls_status = reopened_mls
+                .status(StatusInput {
+                    request_id: "legacy-mls-status-after-promotion".to_owned(),
+                    device_id: crate::internal::group_e2ee::DEFAULT_GROUP_MLS_DEVICE_ID.to_owned(),
+                    agent_did: Some(legacy.did.as_str().to_owned()),
+                    group_did: Some(group_did.to_owned()),
+                })
+                .unwrap();
+            assert_eq!(mls_status.status, "active");
+            assert_eq!(mls_status.local_epoch.as_deref(), Some("0"));
+        }
+
+        // Simulate the only cross-file crash window: the Index rename
+        // succeeded but the DID projection did not. Exact retry must repair
+        // the projection without resealing or replacing historical refs.
+        store
+            .save_did_document(&after.credentials["alice"].dir_name, &legacy.did_document)
+            .unwrap();
+        store.promote_legacy_identity_to_vnext(promotion).unwrap();
+        let repaired = store
+            .load_did_document(&after.credentials["alice"].dir_name)
+            .unwrap();
+        assert_eq!(
+            crate::internal::identity_wire::document::document_hash(&repaired).unwrap(),
+            after.credentials["alice"]
+                .device_state
+                .as_ref()
+                .unwrap()
+                .checkpoint
+                .as_ref()
+                .unwrap()
+                .document_hash
+        );
     }
 
     fn open_utf8(vault: &dyn SecretVault, secret_ref: &SecretRef) -> String {

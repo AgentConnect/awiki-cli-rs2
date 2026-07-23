@@ -8,6 +8,21 @@ pub(crate) use self::file::FileBackedKeyMaterialProvider;
 pub(crate) use self::hosted::HostedKeyMaterialProvider;
 pub(crate) use self::vault::LegacyVaultKeyMaterialRefs;
 
+#[derive(Clone)]
+pub(crate) struct DeviceRequestSigningMaterial {
+    pub(crate) key_id: String,
+    pub(crate) private_key_pem: String,
+}
+
+impl std::fmt::Debug for DeviceRequestSigningMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceRequestSigningMaterial")
+            .field("key_id", &self.key_id)
+            .field("private_key_pem", &"<redacted-private-key>")
+            .finish()
+    }
+}
+
 /// Explicit compatibility adapter for identities where legacy `key-1` has both
 /// request-signing and DID Document root-control semantics.
 ///
@@ -47,6 +62,11 @@ pub(crate) trait KeyMaterialProvider: Send + Sync {
     /// Returns the device key used for login, HTTP auth, and daily requests.
     fn device_request_signing_private_pem(&self) -> crate::ImResult<String>;
 
+    /// Returns the exact verification method and matching private key used for
+    /// DID-WBA requests. Callers must not infer `keyid` from relationship
+    /// ordering independently of the selected private key.
+    fn device_request_signing_material(&self) -> crate::ImResult<DeviceRequestSigningMaterial>;
+
     /// Returns the DID root key used only to create or update a DID Document.
     fn did_document_root_private_pem(&self) -> crate::ImResult<String>;
 
@@ -57,25 +77,6 @@ pub(crate) trait KeyMaterialProvider: Send + Sync {
     fn valid_auth_token(&self) -> crate::ImResult<Option<String>>;
 
     fn persist_auth_token(&self, token: &str) -> crate::ImResult<()>;
-
-    /// True only for the Vault-backed vNext device-token profile. Those
-    /// identities rotate an access/refresh pair through the internal device
-    /// refresh RPC and must never fall back to legacy DID-auth `get_me`.
-    fn uses_vnext_device_tokens(&self) -> bool {
-        false
-    }
-
-    /// Atomically replaces a vNext device access/refresh pair under the
-    /// provider's current authoritative auth SecretRef.
-    fn persist_vnext_auth_token_pair(
-        &self,
-        _expected_old_refresh_digest: &[u8; 32],
-        _access_token: &str,
-        _refresh_token: &str,
-        _expires_at: &str,
-    ) -> crate::ImResult<()> {
-        Err(crate::ImError::PermissionDenied)
-    }
 
     /// Advances a live Vault-backed provider to the auth SecretRef committed
     /// by the identity index. Non-Vault providers cannot participate in this

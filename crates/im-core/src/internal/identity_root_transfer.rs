@@ -323,7 +323,6 @@ impl<'a> RootKeyTransferCore<'a> {
                 schema_version: ROOT_KEY_IMPORT_SCHEMA_VERSION,
                 reservation: reservation.clone(),
                 completion: completion.clone(),
-                management_token_operation_id: None,
             });
             index.schema_version = 5;
             // No Vault write occurs in this retry path. The index replacement
@@ -400,7 +399,6 @@ impl<'a> RootKeyTransferCore<'a> {
             schema_version: ROOT_KEY_IMPORT_SCHEMA_VERSION,
             reservation: reservation.clone(),
             completion: completion.clone(),
-            management_token_operation_id: None,
         });
         index.schema_version = 5;
         // The atomic index image is the linearization point: it contains the
@@ -959,10 +957,6 @@ pub(crate) struct PersistedRootKeyImport {
     pub(crate) schema_version: u32,
     pub(crate) reservation: RootKeyImportReservation,
     pub(crate) completion: RootKeyImportedCompletion,
-    /// Stable, local-only idempotency key for the post-import token issue.
-    /// It is rotated only after an exact replay returns an expired token.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) management_token_operation_id: Option<String>,
 }
 
 impl PersistedRootKeyImport {
@@ -1245,7 +1239,7 @@ fn validate_current_document(
         || registry.checkpoint.document_version > MAX_DOCUMENT_VERSION
         || registry.checkpoint.registry_version == 0
         || document.get("id").and_then(Value::as_str) != Some(did.as_str())
-        || crate::internal::identity_wire::device_genesis::document_hash(document)?
+        || crate::internal::identity_wire::document::document_hash(document)?
             != registry.checkpoint.document_hash
         || !anp::authentication::validate_did_document_binding(document, true)
     {

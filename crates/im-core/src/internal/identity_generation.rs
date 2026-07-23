@@ -93,9 +93,8 @@ impl std::fmt::Debug for GeneratedVNextIdentityWithDaemonSubkey {
 
 /// Generates a root-signed vNext DID Document for the bootstrap device.
 ///
-/// This is intentionally not wired into legacy registration yet. The caller
-/// must complete `device_genesis` and persist its Registry authorization before
-/// exposing the identity as ready.
+/// The caller submits this document through the single `register` RPC and must
+/// commit the returned Registry authorization before exposing the identity.
 pub(crate) fn generate_vnext_handle_identity_with_default_daemon_subkey(
     hostname: &str,
     local_part: &str,
@@ -620,7 +619,7 @@ fn required_verification_method(
         })
 }
 
-fn public_key_multibase(public_key: &anp::PublicKeyMaterial) -> crate::ImResult<String> {
+pub(crate) fn public_key_multibase(public_key: &anp::PublicKeyMaterial) -> crate::ImResult<String> {
     let (codec, bytes): ([u8; 2], Vec<u8>) = match public_key {
         anp::PublicKeyMaterial::Ed25519(key) => ([0xed, 0x01], key.to_bytes().to_vec()),
         anp::PublicKeyMaterial::X25519(key) => ([0xec, 0x01], key.to_vec()),

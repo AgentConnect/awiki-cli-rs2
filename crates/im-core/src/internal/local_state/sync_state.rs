@@ -24,9 +24,6 @@ pub(crate) struct SyncDeltaApplyEvent {
     pub(crate) event_type: String,
     pub(crate) messages: Vec<super::messages::MessageRecord>,
     pub(crate) groups: Vec<super::groups::GroupRecord>,
-    #[cfg(feature = "sqlite")]
-    pub(crate) old_admin_recovery_notices:
-        Vec<super::old_admin_recovery_notices::OldAdminRecoveryNoticeRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,14 +209,6 @@ pub(crate) fn apply_sync_delta_tx(
     let mut groups = Vec::new();
     let mut backlogged_messages = 0usize;
     for (_, event_seq, event) in new_events {
-        for notice in event.old_admin_recovery_notices {
-            if notice.owner_identity_id != owner_identity_id || notice.owner_did != owner_did {
-                return Err(invalid_page(
-                    "recovery notice owner scope does not match sync owner",
-                ));
-            }
-            super::old_admin_recovery_notices::upsert_tx(transaction, &notice)?;
-        }
         for message in event.messages {
             match super::inbound_resolution_backlog::canonicalize_inbound_message(
                 transaction,
@@ -546,7 +535,6 @@ mod tests {
                 event_type: "message.created".to_owned(),
                 messages: vec![message],
                 groups: Vec::new(),
-                old_admin_recovery_notices: Vec::new(),
             }],
             next_event_seq: "1".to_owned(),
             metadata_json: None,
@@ -574,87 +562,5 @@ mod tests {
                 .unwrap(),
             0
         );
-    }
-
-    fn recovery_notice(
-        event_id: &str,
-        handle: &str,
-    ) -> super::super::old_admin_recovery_notices::OldAdminRecoveryNoticeRecord {
-        super::super::old_admin_recovery_notices::OldAdminRecoveryNoticeRecord {
-            owner_identity_id: "alice-id".to_owned(),
-            owner_did: "did:example:alice".to_owned(),
-            owner_device_id: "dev-old-admin".to_owned(),
-            event_id: event_id.to_owned(),
-            source_event_id: event_id
-                .strip_prefix("identity-recovery-started:")
-                .unwrap_or(event_id)
-                .to_owned(),
-            recovery_session_id: "recovery-session-1".to_owned(),
-            handle: handle.to_owned(),
-            requested_at: "2030-01-01T00:00:00Z".to_owned(),
-            cancellable_until: "2030-01-02T00:00:00Z".to_owned(),
-        }
-    }
-
-    #[test]
-    fn recovery_notice_and_checkpoint_commit_or_rollback_together() {
-        let mut db = Connection::open_in_memory().unwrap();
-        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
-        let durable_event_id = "identity-recovery-started:event-1";
-        let input = |notice| SyncDeltaApplyInput {
-            owner_identity_id: "alice-id".to_owned(),
-            owner_did: "did:example:alice".to_owned(),
-            events: vec![SyncDeltaApplyEvent {
-                event_id: durable_event_id.to_owned(),
-                event_seq: "1".to_owned(),
-                event_type: "identity.recovery_started".to_owned(),
-                old_admin_recovery_notices: vec![notice],
-                ..SyncDeltaApplyEvent::default()
-            }],
-            next_event_seq: "1".to_owned(),
-            metadata_json: None,
-        };
-
-        {
-            let tx = db.transaction().unwrap();
-            apply_sync_delta_tx(
-                &tx,
-                input(recovery_notice(durable_event_id, "alice.example")),
-            )
-            .unwrap();
-            tx.commit().unwrap();
-        }
-        assert_eq!(
-            load_global_checkpoint(&db, "alice-id")
-                .unwrap()
-                .unwrap()
-                .event_seq,
-            "1"
-        );
-        let count: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM old_admin_recovery_notices",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
-
-        db.execute("DELETE FROM sync_state", []).unwrap();
-        let tx = db.transaction().unwrap();
-        let error = apply_sync_delta_tx(
-            &tx,
-            input(recovery_notice(durable_event_id, "mallory.example")),
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("conflict"));
-        tx.rollback().unwrap();
-        assert!(load_global_checkpoint(&db, "alice-id").unwrap().is_none());
-        let stored_handle: String = db
-            .query_row("SELECT handle FROM old_admin_recovery_notices", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(stored_handle, "alice.example");
     }
 }

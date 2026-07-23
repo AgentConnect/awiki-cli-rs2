@@ -1,3 +1,4 @@
+pub(crate) mod access_token;
 pub(crate) mod atomic_file;
 pub(crate) mod attachment_runtime;
 pub(crate) mod auth;
@@ -26,15 +27,11 @@ pub(crate) mod identity_device_revoke_pending;
 pub(crate) mod identity_device_state;
 pub(crate) mod identity_document_cache;
 pub(crate) mod identity_generation;
-pub(crate) mod identity_genesis_pending;
 pub(crate) mod identity_join_activation_pending;
-pub(crate) mod identity_recover_local_state;
-pub(crate) mod identity_recovery_local;
-#[cfg(feature = "sqlite")]
-pub(crate) mod identity_recovery_notice;
-pub(crate) mod identity_recovery_pending;
-pub(crate) mod identity_recovery_runtime;
-pub(crate) mod identity_recovery_vnext;
+pub(crate) mod identity_legacy_upgrade;
+pub(crate) mod identity_legacy_upgrade_pending;
+pub(crate) mod identity_legacy_upgrade_runtime;
+pub(crate) mod identity_registration_pending;
 pub(crate) mod identity_registration_runtime;
 pub(crate) mod identity_replace_did_execution;
 pub(crate) mod identity_replace_did_plan;
