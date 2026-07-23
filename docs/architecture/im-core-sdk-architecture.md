@@ -155,10 +155,13 @@ refresh RPC and stores no device refresh token.
 Device Join keeps unauthenticated new-device and authenticated ready-admin
 transports separate. The new device may create, poll, respond, cancel, and
 observe its own HTTP Join session. Existing ready admins discover work only
-through the generic Message Service DID System Notification path; they do not
+through the generic P3 System Notification path; they do not
 poll Join lists or status in the background.
 
-Core verifies the notification's Message Service DID origin proof and the
+Core uses the target DID's unique `ANPMessageService.serviceDid` only as the Home Service domain
+trust anchor. The P3 Business Origin must be a separately resolved
+`did:wba:<home-domain>:agents:system-notification:e1_*` Agent DID with a valid E1-bound document
+proof and Origin Proof; it must not equal or impersonate `serviceDid`. Core also verifies the
 candidate Join Request before exposing it. The admin's first explicit action
 submits claim and encrypted Challenge in one RPC/CAS. The two devices derive
 their six-digit SAS locally. Only the short-lived display value may cross the
@@ -607,9 +610,11 @@ route. Exact-device routing is Message Service storage/delivery metadata and aut
 scope; it is not a P3 field and must not add `device_id`, `recipient_device_id`, or another
 device-targeting extension to P3 `meta`. P3 keeps the standard agent-DID target only. Full
 deliveries are verified against the target user's freshly resolved, root-bound DID
-Document and its unique compatible `ANPMessageService.serviceDid`, then against the service DID's
-RFC 9421 Origin Proof. Join Request self-proof and the closed type-specific payload are verified
-separately.
+Document and its unique compatible `ANPMessageService.serviceDid`. That service DID anchors only
+the trusted Home Service domain. `meta.sender_did` must instead use the reserved independent
+`did:wba:<home-domain>:agents:system-notification:e1_*` Business Origin Agent path; Core resolves
+that exact DID, verifies its E1-bound DID Document proof, and verifies its RFC 9421 Origin Proof.
+Join Request self-proof and the closed type-specific payload are verified separately.
 
 Schema version 29 stores an event receipt and one current reducer projection per
 `(owner_identity_id, owner_did, did, join_session_id)`. The reducer uses

@@ -46,11 +46,10 @@ where
     validate_shape_and_payload(local_did, &envelope, received_at)?;
     let local_document = resolve_did_document(transport, local_did)?;
     let service_did = select_unique_service_did(&local_document)?;
-    if envelope.meta.sender_did != service_did {
-        return Err(service_mismatch());
-    }
-    let service_document = resolve_did_document(transport, &service_did)?;
-    verify_origin_proof(&envelope, &service_did, service_document)?;
+    validate_system_notification_origin_did(&envelope.meta.sender_did, &service_did)?;
+    let origin_document = resolve_did_document(transport, &envelope.meta.sender_did)?;
+    validate_e1_origin_key_binding(&envelope.meta.sender_did, &origin_document)?;
+    verify_origin_proof(&envelope, &envelope.meta.sender_did, origin_document)?;
     verified(envelope)
 }
 
@@ -67,11 +66,10 @@ where
     validate_shape_and_payload(local_did, &envelope, received_at)?;
     let local_document = resolve_did_document_async(transport, local_did).await?;
     let service_did = select_unique_service_did(&local_document)?;
-    if envelope.meta.sender_did != service_did {
-        return Err(service_mismatch());
-    }
-    let service_document = resolve_did_document_async(transport, &service_did).await?;
-    verify_origin_proof(&envelope, &service_did, service_document)?;
+    validate_system_notification_origin_did(&envelope.meta.sender_did, &service_did)?;
+    let origin_document = resolve_did_document_async(transport, &envelope.meta.sender_did).await?;
+    validate_e1_origin_key_binding(&envelope.meta.sender_did, &origin_document)?;
+    verify_origin_proof(&envelope, &envelope.meta.sender_did, origin_document)?;
     verified(envelope)
 }
 
@@ -377,18 +375,18 @@ fn validate_key(
 
 fn verify_origin_proof(
     envelope: &SystemNotificationEnvelope,
-    service_did: &str,
-    mut service_document: Value,
+    origin_did: &str,
+    mut origin_document: Value,
 ) -> crate::ImResult<()> {
-    normalize_ed25519_jwk_methods(&mut service_document);
+    normalize_ed25519_jwk_methods(&mut origin_document);
     anp::proof::verify_rfc9421_origin_proof(
         &envelope.auth.origin_proof,
         "direct.send",
         &envelope.signed_meta,
         &envelope.signed_body,
         anp::proof::Rfc9421OriginProofVerificationOptions {
-            did_document: Some(service_document),
-            expected_signer_did: Some(service_did.to_owned()),
+            did_document: Some(origin_document),
+            expected_signer_did: Some(origin_did.to_owned()),
             ..anp::proof::Rfc9421OriginProofVerificationOptions::default()
         },
     )
@@ -399,6 +397,62 @@ fn verify_origin_proof(
             "system notification origin proof is invalid",
         )
     })
+}
+
+fn validate_system_notification_origin_did(
+    origin_did: &str,
+    home_service_did: &str,
+) -> crate::ImResult<()> {
+    let home_domain = did_wba_domain(home_service_did).ok_or_else(service_mismatch)?;
+    let prefix = format!("did:wba:{home_domain}:agents:system-notification:e1_");
+    let Some(fingerprint) = origin_did.strip_prefix(&prefix) else {
+        return Err(service_mismatch());
+    };
+    if fingerprint.len() != 43
+        || !fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(service_mismatch());
+    }
+    Ok(())
+}
+
+fn validate_e1_origin_key_binding(origin_did: &str, document: &Value) -> crate::ImResult<()> {
+    if document.get("id").and_then(Value::as_str) != Some(origin_did)
+        || !anp::authentication::validate_did_document_binding(document, true)
+    {
+        return Err(service_mismatch());
+    }
+    let authentication = document
+        .get("authentication")
+        .and_then(Value::as_array)
+        .ok_or_else(service_mismatch)?;
+    let Some(authentication_id) = (authentication.len() == 1)
+        .then(|| authentication[0].as_str())
+        .flatten()
+    else {
+        return Err(service_mismatch());
+    };
+    let matching_keys = document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .filter(|method| method.get("controller").and_then(Value::as_str) == Some(origin_did))
+        .filter(|method| method.get("id").and_then(Value::as_str) == Some(authentication_id))
+        .count();
+    if matching_keys != 1 {
+        return Err(service_mismatch());
+    }
+    Ok(())
+}
+
+fn did_wba_domain(did: &str) -> Option<&str> {
+    did.strip_prefix("did:wba:")
+        .and_then(|value| value.split(':').next())
+        .filter(|value| !value.is_empty())
 }
 
 fn normalize_ed25519_jwk_methods(document: &mut Value) {
@@ -546,7 +600,7 @@ fn invalid_join_request() -> crate::ImError {
 fn service_mismatch() -> crate::ImError {
     system_error(
         "system.notification.service_mismatch",
-        "system notification Message Service trust anchor is unavailable",
+        "system notification origin is not anchored to the target Home Service",
     )
 }
 
@@ -570,18 +624,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_fixture_validates_closed_payload_join_proof_and_p3_origin() {
+    fn canonical_payload_accepts_independent_agent_origin_anchored_to_home_service() {
         let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
             "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/system-notification-v1.json",
         );
         let fixture: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
         assert_eq!(
             fixture["file_digest"]["sha256_b64u"],
-            "oF8GqcrUD7zG_Fl4XmCqsvwbbRAFaRX4zUjuVHQTTeI"
+            "ard6V0xyos_GlNuSNfjeLicFUd3jac-enpdgQmXcrX0"
         );
         let mut incoming = fixture["p3_vector"]["request"].clone();
         incoming["method"] = Value::String("direct.incoming".to_owned());
         incoming.as_object_mut().unwrap().remove("id");
+        let origin_did = incoming["params"]["meta"]["sender_did"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let origin_document = fixture["p3_vector"]["origin_did_document"].clone();
         let envelope = super::super::wire::parse_envelope(&incoming).unwrap();
         validate_shape_and_payload(
             "did:wba:example.com:agents:alice:e1_alice",
@@ -591,13 +650,29 @@ mod tests {
                 .with_timezone(&Utc),
         )
         .unwrap();
-        let verification_method = fixture["p3_vector"]["service_verification_method"].clone();
-        let service_document = json!({
-            "id": "did:wba:example.com",
-            "verificationMethod": [verification_method.clone()],
-            "authentication": [verification_method["id"].clone()],
-        });
-        verify_origin_proof(&envelope, "did:wba:example.com", service_document).unwrap();
+        assert_ne!(envelope.meta.sender_did, "did:wba:example.com");
+        validate_system_notification_origin_did(&envelope.meta.sender_did, "did:wba:example.com")
+            .unwrap();
+        validate_e1_origin_key_binding(&origin_did, &origin_document).unwrap();
+        verify_origin_proof(&envelope, &origin_did, origin_document.clone()).unwrap();
+
+        assert!(
+            validate_system_notification_origin_did(&origin_did, "did:wba:other.example").is_err()
+        );
+        assert!(validate_system_notification_origin_did(
+            &origin_did.replace(":agents:system-notification:", ":services:message:"),
+            "did:wba:example.com"
+        )
+        .is_err());
+        let mut mismatched_document = origin_document.clone();
+        mismatched_document["id"] = Value::String(origin_did.replace("e1_", "e1_A"));
+        assert!(validate_e1_origin_key_binding(&origin_did, &mismatched_document).is_err());
+
+        let mut bad_proof_value = incoming;
+        bad_proof_value["params"]["auth"]["origin_proof"]["signature"] =
+            Value::String("sig1=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:".to_owned());
+        let bad_envelope = super::super::wire::parse_envelope(&bad_proof_value).unwrap();
+        assert!(verify_origin_proof(&bad_envelope, &origin_did, origin_document).is_err());
     }
 
     #[test]

@@ -160,6 +160,10 @@ Device Join 是 native SDK 的正式产品能力，不再受 Join host-local rol
 带 `DeviceJoinRejectReason.userRejected` 或 `DeviceJoinRejectReason.sasMismatch` 的
 `rejectDeviceJoin(...)`。
 
+该验证把目标 DID 的 `ANPMessageService.serviceDid` 仅作为 Home Service 域信任锚；P3
+Business Origin 是同域保留 path 下独立、E1 绑定的 System Notification Agent DID。Flutter
+host 不接收该身份的动态配置，也不需要处理自定义 profile。
+
 只有响应已经验证后，两端才显示本地推导的六位 SAS。管理设备收到可信通知并刷新本地请求后，
 调用 `localDeviceJoinVerificationProgress(selector:, joinSessionId:)` 读取短期 SAS。该接口是
 纯本地读取，只接受已经进入 `ResponseVerified` 或 `ApprovalPrepared` 的本地管理端 Session；

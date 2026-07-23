@@ -1077,6 +1077,10 @@ durable dedupe 和单调 revision reducer 后的本地投影。公开
 标志；不暴露原始 P3 envelope、Origin Proof、Join Request、Challenge Response、token、SAS、
 私钥或其他 Join secret。
 
+系统通知的 P3 `meta.sender_did` 是独立、可解析且 E1 绑定的 System Notification Agent DID；
+目标 DID 的 `ANPMessageService.serviceDid` 只用于锚定 Home Service 域，不能作为 Business
+Origin。该信任校验是 Core 内部固定策略，不增加自定义 P3 profile 或公开配置字段。
+
 System Notification 不进入 `Message`、conversation/history/search、unread/read watermark 或
 attachment projection。`watch()` 只在 durable reducer commit 后发送
 `SystemNotificationChange`；订阅 lag 返回 `RepairRequired`，由调用方重新 `list()`。
