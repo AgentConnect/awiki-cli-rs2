@@ -132,6 +132,11 @@ SAS, or internal Document/Registry/auth versions and hashes.
 operation. It rejects dry-run and keeps the selected identity in the
 identity-scoped `ImClient`; the CLI does not accept a message ID, PreKey,
 session, proof, checkpoint, payload, retry selector, or user-presence override.
+This is a low-level, explicit single-target operation used by the current Join
+handoff and focused verification. It does not discover or list eligible
+devices, choose a target on the user's behalf, support batch transfer, or create
+a general resend workflow. AWiki Me exposes it only for the exact device held by
+the still-open admin-side Join context.
 
 The command performs one foreground flow:
 
