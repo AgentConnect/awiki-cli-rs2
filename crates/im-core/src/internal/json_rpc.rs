@@ -64,20 +64,20 @@ pub(crate) fn decode_response(raw: &[u8]) -> crate::ImResult<Value> {
 
 fn select_public_service_code(data: Option<&Value>) -> Option<String> {
     let data = data?.as_object()?;
-    let awiki_code = parse_public_service_code_field(data.get("awiki_code"));
-    let anp_code = parse_public_service_code_field(data.get("anp_code"));
-
-    match (awiki_code, anp_code) {
-        (PublicCodeField::Absent, PublicCodeField::Absent)
-        | (PublicCodeField::Invalid, _)
-        | (_, PublicCodeField::Invalid) => None,
-        (PublicCodeField::Valid(code), PublicCodeField::Absent)
-        | (PublicCodeField::Absent, PublicCodeField::Valid(code)) => Some(code.to_owned()),
-        (PublicCodeField::Valid(awiki), PublicCodeField::Valid(anp)) if awiki == anp => {
-            Some(awiki.to_owned())
+    let mut selected = None;
+    for field in ["awiki_code", "anp_code", "code"] {
+        match parse_public_service_code_field(data.get(field)) {
+            PublicCodeField::Absent => {}
+            PublicCodeField::Invalid => return None,
+            PublicCodeField::Valid(code) => {
+                if selected.is_some_and(|selected| selected != code) {
+                    return None;
+                }
+                selected = Some(code);
+            }
         }
-        (PublicCodeField::Valid(_), PublicCodeField::Valid(_)) => None,
     }
+    selected.map(str::to_owned)
 }
 
 #[derive(Clone, Copy)]
@@ -333,6 +333,35 @@ mod tests {
     }
 
     #[test]
+    fn json_rpc_error_accepts_frozen_join_contract_code() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "error": {
+                "code": 409,
+                "message": "Join request is invalid",
+                "data": {
+                    "code": "device.join.invalid_request",
+                    "retryable": false
+                }
+            }
+        });
+
+        let err = decode_response(&serde_json::to_vec(&response).expect("encode"))
+            .expect_err("must reject JSON-RPC error");
+        match err {
+            crate::ImError::Service { code, data, .. } => {
+                assert_eq!(code.as_deref(), Some("device.join.invalid_request"));
+                assert_eq!(
+                    data.and_then(|value| value.get("json_rpc_code").cloned()),
+                    Some(json!(409))
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn json_rpc_error_accepts_stable_anp_code_and_preserves_numeric_code() {
         let raw = serde_json::to_vec(&json!({
             "jsonrpc": "2.0",
@@ -367,7 +396,8 @@ mod tests {
                 "message": "root control expired",
                 "data": {
                     "awiki_code": "awiki.root_control_expired",
-                    "anp_code": "awiki.root_control_expired"
+                    "anp_code": "awiki.root_control_expired",
+                    "code": "awiki.root_control_expired"
                 }
             }
         }))
@@ -390,7 +420,8 @@ mod tests {
                 "message": "ambiguous public error",
                 "data": {
                     "awiki_code": "device.join.expired",
-                    "anp_code": "anp.device_state_changed"
+                    "anp_code": "anp.device_state_changed",
+                    "code": "device.join.expired"
                 }
             }
         }))
@@ -415,6 +446,8 @@ mod tests {
             json!({"anp_code": " anp.device_state_changed"}),
             json!({"anp_code": "anp..device_state_changed"}),
             json!({"anp_code": overlong}),
+            json!({"code": "device.join.Invalid"}),
+            json!({"code": 42}),
             json!({
                 "awiki_code": "device.join.expired",
                 "anp_code": 42

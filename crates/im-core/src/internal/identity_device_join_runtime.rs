@@ -568,18 +568,21 @@ async fn refresh_join_device_access(
     pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
 ) -> crate::ImResult<DeviceJoinAccessResult> {
     pending.validate()?;
-    let client = core.client_with_identity_material(crate::identity::HostedIdentityMaterial {
-        identity_id: crate::internal::identity_join_activation_pending::identity_suffix(
-            &pending.did,
-        ),
-        did: pending.did.as_str().to_owned(),
-        handle: None,
-        display_name: None,
-        did_document: pending.resolved_document.clone(),
-        default_signing_private_key_pem: pending.signing_private_pem.clone(),
-        e2ee_agreement_private_key_pem: Some(pending.e2ee_private_pem.clone()),
-        auth_token: None,
-    })?;
+    let client = core.client_with_identity_material_and_signing_key_id(
+        crate::identity::HostedIdentityMaterial {
+            identity_id: crate::internal::identity_join_activation_pending::identity_suffix(
+                &pending.did,
+            ),
+            did: pending.did.as_str().to_owned(),
+            handle: None,
+            display_name: None,
+            did_document: pending.resolved_document.clone(),
+            default_signing_private_key_pem: pending.signing_private_pem.clone(),
+            e2ee_agreement_private_key_pem: Some(pending.e2ee_private_pem.clone()),
+            auth_token: None,
+        },
+        &pending.authorization.device.signing_key_id,
+    )?;
     let mut transport = crate::internal::transport::CoreHttpTransport::new_pending_device(
         &client,
         client.runtime().key_provider.clone(),
@@ -1236,14 +1239,8 @@ where
         &mut self,
     ) -> crate::ImResult<Vec<crate::identity::DeviceJoinRequestNotice>> {
         let client = self.core.client(self.admin_identity.clone())?;
-        let current_device_id = client
-            .current_identity()
-            .device_id
-            .as_ref()
-            .map(ToString::to_string);
-        let notifications = client
-            .list_verified_device_join_notifications(false)
-            .await?;
+        let current_device_id = client.exact_protocol_device_id()?;
+        let notifications = client.list_verified_device_join_notifications(true).await?;
         let requests_by_session = notifications
             .iter()
             .filter_map(|notification| {
@@ -1255,6 +1252,7 @@ where
             .collect::<std::collections::HashMap<_, _>>();
         let mut notices = Vec::with_capacity(notifications.len());
         for notification in notifications {
+            let local = local_admin_session(self.core, &notification.join_session_id)?;
             let claimed_by = match &notification.payload {
                 crate::internal::system_notification::wire::JoinPayload::Claimed(payload) => {
                     Some(payload.claimed_by_device_id.as_str())
@@ -1264,12 +1262,13 @@ where
                 ) => Some(payload.claimed_by_device_id.as_str()),
                 _ => None,
             };
-            let claimed_by_current_device = claimed_by.is_some_and(|claimed| {
-                current_device_id
-                    .as_deref()
-                    .is_some_and(|current| current == claimed)
-            });
-            if claimed_by_current_device {
+            let claimed_by_current_device =
+                claimed_by.is_some_and(|claimed| current_device_id == claimed);
+            if claimed_by_current_device
+                && should_verify_response_from_notification(
+                    local.as_ref().map(|session| session.phase),
+                )
+            {
                 if let crate::internal::system_notification::wire::JoinPayload::ResponseVerified(
                     payload,
                 ) = &notification.payload
@@ -1297,7 +1296,6 @@ where
                     )?;
                 }
             }
-            let local = local_admin_session(self.core, &notification.join_session_id)?;
             let request = match &notification.payload {
                 crate::internal::system_notification::wire::JoinPayload::Requested(payload) => {
                     Some(&payload.join_request)
@@ -1597,6 +1595,12 @@ fn notification_state(
             crate::identity::DeviceJoinRemoteState::Expired
         }
     }
+}
+
+fn should_verify_response_from_notification(
+    local_phase: Option<crate::identity::DeviceJoinLocalPhase>,
+) -> bool {
+    local_phase == Some(crate::identity::DeviceJoinLocalPhase::ChallengePrepared)
 }
 
 fn local_admin_session(

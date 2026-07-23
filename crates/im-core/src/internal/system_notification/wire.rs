@@ -237,6 +237,7 @@ pub(crate) fn is_trusted_delivery_marker(value: &Value) -> bool {
 
 pub(crate) fn is_system_notification_hint(value: &Value) -> bool {
     value.get("event_type").and_then(Value::as_str) == Some(SYSTEM_EVENT_TYPE)
+        || value.pointer("/sync/event_type").and_then(Value::as_str) == Some(SYSTEM_EVENT_TYPE)
 }
 
 pub(crate) fn parse_envelope(value: &Value) -> crate::ImResult<SystemNotificationEnvelope> {

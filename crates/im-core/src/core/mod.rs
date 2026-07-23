@@ -139,6 +139,22 @@ impl ImCore {
         &self,
         material: crate::identity::HostedIdentityMaterial,
     ) -> crate::ImResult<ImClient> {
+        self.client_with_identity_material_inner(material, None)
+    }
+
+    pub(crate) fn client_with_identity_material_and_signing_key_id(
+        &self,
+        material: crate::identity::HostedIdentityMaterial,
+        request_signing_key_id: &str,
+    ) -> crate::ImResult<ImClient> {
+        self.client_with_identity_material_inner(material, Some(request_signing_key_id))
+    }
+
+    fn client_with_identity_material_inner(
+        &self,
+        material: crate::identity::HostedIdentityMaterial,
+        request_signing_key_id: Option<&str>,
+    ) -> crate::ImResult<ImClient> {
         let identity_id = crate::ids::IdentityId::parse(&material.identity_id)?;
         let did = crate::ids::Did::parse(&material.did)?;
         let handle = material
@@ -146,9 +162,15 @@ impl ImCore {
             .as_deref()
             .map(|handle| crate::ids::Handle::parse(handle, &self.inner.sdk_config().did_domain))
             .transpose()?;
-        let key_provider = std::sync::Arc::new(
-            crate::internal::key_provider::HostedKeyMaterialProvider::new(&material)?,
-        );
+        let key_provider = std::sync::Arc::new(match request_signing_key_id {
+            Some(key_id) => {
+                crate::internal::key_provider::HostedKeyMaterialProvider::new_for_request_signing_key(
+                    &material,
+                    key_id,
+                )?
+            }
+            None => crate::internal::key_provider::HostedKeyMaterialProvider::new(&material)?,
+        });
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {
                 id: identity_id.clone(),

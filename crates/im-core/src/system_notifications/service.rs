@@ -78,17 +78,10 @@ impl<'a> SystemNotificationService<'a> {
 }
 
 fn exact_device_id(client: &crate::core::ImClient) -> crate::ImResult<String> {
-    client
-        .current_identity()
-        .device_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| {
-            crate::ImError::invalid_input(
-                Some("identity.device_id".to_owned()),
-                "system notifications require an exact-device identity",
-            )
-        })
+    client.exact_protocol_device_id().map_err(|_| {
+        crate::ImError::invalid_input(
+            Some("identity.protocol_device_id".to_owned()),
+            "system notifications require an exact-device identity",
+        )
+    })
 }

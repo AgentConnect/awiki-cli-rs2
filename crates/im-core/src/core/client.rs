@@ -35,9 +35,19 @@ impl ImClient {
         &self.identity
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_protocol_device_id_for_test(&mut self, device_id: &str) {
-        self.identity.device_id = Some(device_id.to_owned());
+    pub(crate) fn exact_protocol_device_id(&self) -> crate::ImResult<String> {
+        let summary = self.core_handle().identities().device_summary(
+            crate::identity::IdentitySelector::Id(self.current_identity().id.clone()),
+        )?;
+        if summary.mode != crate::identity::IdentityDeviceMode::VNext
+            || summary.readiness == crate::identity::IdentityDeviceReadiness::Blocked
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        summary
+            .protocol_device_id
+            .map(|device_id| device_id.as_str().to_owned())
+            .ok_or(crate::ImError::PermissionDenied)
     }
 
     pub fn did(&self) -> &crate::ids::Did {
@@ -194,19 +204,12 @@ impl ImClient {
     ) -> crate::ImResult<Vec<crate::internal::system_notification::wire::JoinNotification>> {
         #[cfg(feature = "sqlite")]
         {
-            let protocol_device_id = self
-                .current_identity()
-                .device_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    crate::ImError::invalid_input(
-                        Some("identity.device_id".to_owned()),
-                        "verified Join notifications require an exact-device identity",
-                    )
-                })?
-                .to_owned();
+            let protocol_device_id = self.exact_protocol_device_id().map_err(|_| {
+                crate::ImError::invalid_input(
+                    Some("identity.protocol_device_id".to_owned()),
+                    "verified Join notifications require an exact-device identity",
+                )
+            })?;
             self.core_inner()
                 .local_state_db()
                 .await?
@@ -234,19 +237,12 @@ impl ImClient {
     ) -> crate::ImResult<Option<crate::internal::system_notification::wire::JoinNotification>> {
         #[cfg(feature = "sqlite")]
         {
-            let protocol_device_id = self
-                .current_identity()
-                .device_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    crate::ImError::invalid_input(
-                        Some("identity.device_id".to_owned()),
-                        "verified Join notifications require an exact-device identity",
-                    )
-                })?
-                .to_owned();
+            let protocol_device_id = self.exact_protocol_device_id().map_err(|_| {
+                crate::ImError::invalid_input(
+                    Some("identity.protocol_device_id".to_owned()),
+                    "verified Join notifications require an exact-device identity",
+                )
+            })?;
             self.core_inner()
                 .local_state_db()
                 .await?

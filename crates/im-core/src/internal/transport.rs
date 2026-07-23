@@ -1963,22 +1963,25 @@ fn pending_registration_client(
     core: &crate::core::ImCore,
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
 ) -> crate::ImResult<crate::core::ImClient> {
-    core.client_with_identity_material(crate::identity::HostedIdentityMaterial {
-        identity_id: pending.generated.unique_id.clone(),
-        did: pending.generated.did.as_str().to_owned(),
-        handle: Some(format!(
-            "{}.{}",
-            pending.target_handle, pending.target_domain
-        )),
-        display_name: Some(pending.display_name.clone()),
-        did_document: pending.generated.did_document.clone(),
-        // The pending hosted client is used only for device-signed probing.
-        // Give the hosted provider the exact Manifest device private key; the
-        // root private key remains solely in PendingRegistration.
-        default_signing_private_key_pem: pending.generated.device_signing_private_pem.clone(),
-        e2ee_agreement_private_key_pem: Some(pending.generated.device_e2ee_private_pem.clone()),
-        auth_token: None,
-    })
+    core.client_with_identity_material_and_signing_key_id(
+        crate::identity::HostedIdentityMaterial {
+            identity_id: pending.generated.unique_id.clone(),
+            did: pending.generated.did.as_str().to_owned(),
+            handle: Some(format!(
+                "{}.{}",
+                pending.target_handle, pending.target_domain
+            )),
+            display_name: Some(pending.display_name.clone()),
+            did_document: pending.generated.did_document.clone(),
+            // The pending hosted client is used only for device-signed probing.
+            // Give the hosted provider the exact Manifest device private key; the
+            // root private key remains solely in PendingRegistration.
+            default_signing_private_key_pem: pending.generated.device_signing_private_pem.clone(),
+            e2ee_agreement_private_key_pem: Some(pending.generated.device_e2ee_private_pem.clone()),
+            auth_token: None,
+        },
+        &pending.generated.device_signing_key_id,
+    )
 }
 
 fn pending_registration_transport<'a>(

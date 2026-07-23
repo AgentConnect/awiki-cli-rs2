@@ -6,6 +6,7 @@ use serde_json::Value;
 pub(crate) struct HostedKeyMaterialProvider {
     did_document: Value,
     legacy_key1_private_pem: String,
+    request_signing_key_id: Option<String>,
     e2ee_agreement_private_pem: Option<String>,
     auth_state: Mutex<crate::internal::auth::state::AuthStateSnapshot>,
 }
@@ -18,6 +19,7 @@ impl HostedKeyMaterialProvider {
                 "default_signing_private_key_pem",
                 &material.default_signing_private_key_pem,
             )?,
+            request_signing_key_id: None,
             e2ee_agreement_private_pem: material
                 .e2ee_agreement_private_key_pem
                 .as_deref()
@@ -25,6 +27,18 @@ impl HostedKeyMaterialProvider {
                 .transpose()?,
             auth_state: Mutex::new(auth_state_from_token(material.auth_token.as_deref())?),
         })
+    }
+
+    pub(crate) fn new_for_request_signing_key(
+        material: &crate::identity::HostedIdentityMaterial,
+        request_signing_key_id: &str,
+    ) -> crate::ImResult<Self> {
+        let mut provider = Self::new(material)?;
+        provider.request_signing_key_id = Some(validate_request_signing_key(
+            material,
+            request_signing_key_id,
+        )?);
+        Ok(provider)
     }
 }
 
@@ -59,7 +73,11 @@ impl super::KeyMaterialProvider for HostedKeyMaterialProvider {
         &self,
     ) -> crate::ImResult<super::DeviceRequestSigningMaterial> {
         Ok(super::DeviceRequestSigningMaterial {
-            key_id: super::file::request_signing_key_id(&self.did_document)?,
+            key_id: self
+                .request_signing_key_id
+                .clone()
+                .map(Ok)
+                .unwrap_or_else(|| super::file::request_signing_key_id(&self.did_document))?,
             private_key_pem: self.device_request_signing_private_pem()?,
         })
     }
@@ -103,6 +121,46 @@ impl super::KeyMaterialProvider for HostedKeyMaterialProvider {
         *guard = next;
         Ok(())
     }
+}
+
+fn validate_request_signing_key(
+    material: &crate::identity::HostedIdentityMaterial,
+    request_signing_key_id: &str,
+) -> crate::ImResult<String> {
+    let request_signing_key_id = request_signing_key_id.trim();
+    if request_signing_key_id.is_empty()
+        || material.did_document.get("id").and_then(Value::as_str) != Some(material.did.as_str())
+        || !material
+            .did_document
+            .get("authentication")
+            .and_then(Value::as_array)
+            .is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    entry.as_str() == Some(request_signing_key_id)
+                        || entry.get("id").and_then(Value::as_str) == Some(request_signing_key_id)
+                })
+            })
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let method = material
+        .did_document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .and_then(|methods| {
+            methods.iter().find(|method| {
+                method.get("id").and_then(Value::as_str) == Some(request_signing_key_id)
+            })
+        })
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let private_key = anp::PrivateKeyMaterial::from_pem(&material.default_signing_private_key_pem)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let public_key = anp::authentication::extract_public_key(method)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    if private_key.public_key().to_pem() != public_key.to_pem() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(request_signing_key_id.to_owned())
 }
 
 impl HostedKeyMaterialProvider {
@@ -205,6 +263,67 @@ mod tests {
             provider.e2ee_agreement_private_pem(),
             Err(crate::ImError::IdentityNotReady { missing, .. })
                 if missing == vec!["e2ee_agreement_private_key"]
+        ));
+    }
+
+    #[test]
+    fn explicit_request_signing_key_binds_the_matching_hosted_private_key() {
+        let generated =
+            crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+                "awiki.test",
+                "hosted",
+                None,
+                None,
+            )
+            .unwrap();
+        let material = crate::identity::HostedIdentityMaterial {
+            identity_id: generated.unique_id,
+            did: generated.did.as_str().to_owned(),
+            handle: None,
+            display_name: None,
+            did_document: generated.did_document,
+            default_signing_private_key_pem: generated.device_signing_private_pem,
+            e2ee_agreement_private_key_pem: Some(generated.device_e2ee_private_pem),
+            auth_token: None,
+        };
+
+        let provider = HostedKeyMaterialProvider::new_for_request_signing_key(
+            &material,
+            &generated.device_signing_key_id,
+        )
+        .unwrap();
+        let signing = provider.device_request_signing_material().unwrap();
+
+        assert_eq!(signing.key_id, generated.device_signing_key_id);
+    }
+
+    #[test]
+    fn explicit_request_signing_key_rejects_a_different_hosted_private_key() {
+        let generated =
+            crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+                "awiki.test",
+                "hosted-mismatch",
+                None,
+                None,
+            )
+            .unwrap();
+        let material = crate::identity::HostedIdentityMaterial {
+            identity_id: generated.unique_id,
+            did: generated.did.as_str().to_owned(),
+            handle: None,
+            display_name: None,
+            did_document: generated.did_document,
+            default_signing_private_key_pem: generated.root_private_pem,
+            e2ee_agreement_private_key_pem: Some(generated.device_e2ee_private_pem),
+            auth_token: None,
+        };
+
+        assert!(matches!(
+            HostedKeyMaterialProvider::new_for_request_signing_key(
+                &material,
+                &generated.device_signing_key_id,
+            ),
+            Err(crate::ImError::PermissionDenied)
         ));
     }
 }

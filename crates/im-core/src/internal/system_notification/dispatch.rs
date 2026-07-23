@@ -64,15 +64,18 @@ where
             }
         }
     };
-    let Some(protocol_device_id) = client.current_identity().device_id.as_deref() else {
-        return SystemNotificationDispatchOutcome::Rejected {
-            warning: "system.notification.exact_device_required".to_owned(),
-        };
+    let protocol_device_id = match client.exact_protocol_device_id() {
+        Ok(device_id) => device_id,
+        Err(_) => {
+            return SystemNotificationDispatchOutcome::Rejected {
+                warning: "system.notification.exact_device_required".to_owned(),
+            }
+        }
     };
     let input = super::store::SystemNotificationApplyInput {
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
-        protocol_device_id: protocol_device_id.to_owned(),
+        protocol_device_id,
         verified,
         received_at: Utc::now(),
     };
@@ -123,15 +126,18 @@ where
             }
         }
     };
-    let Some(protocol_device_id) = client.current_identity().device_id.as_deref() else {
-        return SystemNotificationDispatchOutcome::Rejected {
-            warning: "system.notification.exact_device_required".to_owned(),
-        };
+    let protocol_device_id = match client.exact_protocol_device_id() {
+        Ok(device_id) => device_id,
+        Err(_) => {
+            return SystemNotificationDispatchOutcome::Rejected {
+                warning: "system.notification.exact_device_required".to_owned(),
+            }
+        }
     };
     let input = super::store::SystemNotificationApplyInput {
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
-        protocol_device_id: protocol_device_id.to_owned(),
+        protocol_device_id,
         verified,
         received_at: Utc::now(),
     };
@@ -156,8 +162,8 @@ fn classify(original: &Value, normalized: &Value) -> Candidate {
     let system_namespace = super::wire::is_system_namespace(normalized);
     match (trusted_marker, trusted_hint, system_namespace) {
         (true, _, true) => Candidate::Full,
-        (false, _, true) => Candidate::Untrusted,
-        (true, _, false) | (false, true, false) => Candidate::Hint,
+        (false, true, _) | (true, _, false) => Candidate::Hint,
+        (false, false, true) => Candidate::Untrusted,
         (false, false, false) => Candidate::No,
     }
 }
@@ -212,8 +218,23 @@ mod tests {
             Candidate::No
         );
 
-        let hint = json!({"event_type": "system.notification"});
-        assert_eq!(classify(&hint, &normalize_delivery(&hint)), Candidate::Hint);
+        let legacy_hint = json!({"event_type": "system.notification"});
+        assert_eq!(
+            classify(&legacy_hint, &normalize_delivery(&legacy_hint)),
+            Candidate::Hint
+        );
+
+        let websocket_hint = json!({
+            "sync": {
+                "event_id": "system.notification:evt-system-1:dev-a",
+                "event_seq": "41",
+                "event_type": "system.notification"
+            }
+        });
+        assert_eq!(
+            classify(&websocket_hint, &normalize_delivery(&websocket_hint)),
+            Candidate::Hint
+        );
 
         let untrusted = json!({
             "method": "direct.incoming",
@@ -230,10 +251,13 @@ mod tests {
             Candidate::Untrusted
         );
         let hint_cannot_authorize_full_payload = json!({
-            "event_type": "system.notification",
+            "sync": {
+                "event_id": "system.notification:evt-system-1:dev-a",
+                "event_seq": "41",
+                "event_type": "system.notification"
+            },
             "method": "direct.incoming",
             "params": {
-                "projection_kind": "system_notification",
                 "body": {
                     "payload": {
                         "type": "awiki.device.join-requested.v1"
@@ -246,7 +270,7 @@ mod tests {
                 &hint_cannot_authorize_full_payload,
                 &normalize_delivery(&hint_cannot_authorize_full_payload),
             ),
-            Candidate::Untrusted
+            Candidate::Hint
         );
 
         let trusted = json!({

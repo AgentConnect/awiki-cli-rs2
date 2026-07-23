@@ -58,6 +58,7 @@ impl App {
         let result = crate::m_core_cli_adapter::device_join::poll_new_device_via_im_core_async(
             &resolved,
             flag(command, "session"),
+            display_poll_sas_if_interactive,
         )
         .await?;
         self.render_identity_result("awiki-cli id device join poll", &resolved, result)
@@ -207,6 +208,19 @@ fn confirm_sas_and_user_presence(sas: &str) -> Result<(), ExitError> {
     Ok(())
 }
 
+fn display_poll_sas_if_interactive(sas: &str) -> Result<(), ExitError> {
+    let interactive = io::stderr().is_terminal();
+    let mut stderr = io::stderr().lock();
+    write_poll_sas(&mut stderr, interactive, sas)
+}
+
+fn write_poll_sas(writer: &mut impl Write, interactive: bool, sas: &str) -> Result<(), ExitError> {
+    if interactive {
+        writeln!(writer, "This device's one-time SAS: {sas}").map_err(io_error)?;
+    }
+    Ok(())
+}
+
 fn read_confirmation_line() -> Result<String, ExitError> {
     let mut line = String::new();
     io::stdin().read_line(&mut line).map_err(io_error)?;
@@ -220,4 +234,27 @@ fn io_error(err: io::Error) -> ExitError {
         format!("read device Join confirmation: {err}"),
         "Retry in an interactive foreground terminal.",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interactive_poll_writes_fixed_sas_prompt() {
+        let mut output = Vec::new();
+
+        write_poll_sas(&mut output, true, "012345").unwrap();
+
+        assert_eq!(output, b"This device's one-time SAS: 012345\n");
+    }
+
+    #[test]
+    fn non_interactive_poll_does_not_write_sas_or_fail() {
+        let mut output = Vec::new();
+
+        write_poll_sas(&mut output, false, "012345").unwrap();
+
+        assert!(output.is_empty());
+    }
 }

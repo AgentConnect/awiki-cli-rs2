@@ -18,7 +18,7 @@ impl SystemNotificationStore {
         Arc::new(Self {
             owner_identity_id: client.current_identity().id.as_str().to_owned(),
             owner_did: client.did().as_str().to_owned(),
-            protocol_device_id: client.current_identity().device_id.clone(),
+            protocol_device_id: client.exact_protocol_device_id().ok(),
             sender,
         })
     }
@@ -63,7 +63,8 @@ impl SystemNotificationStore {
     fn ensure_owner(&self, client: &crate::core::ImClient) -> crate::ImResult<()> {
         if client.current_identity().id.as_str() != self.owner_identity_id
             || client.did().as_str() != self.owner_did
-            || client.current_identity().device_id.as_deref() != self.protocol_device_id.as_deref()
+            || client.exact_protocol_device_id().ok().as_deref()
+                != self.protocol_device_id.as_deref()
         {
             return Err(crate::ImError::invalid_input(
                 Some("client".to_owned()),

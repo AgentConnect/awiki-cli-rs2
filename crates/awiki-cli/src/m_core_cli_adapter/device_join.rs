@@ -53,10 +53,14 @@ pub async fn begin_via_im_core_async(
     progress_result("device_join_start", progress, "Device Join request created")
 }
 
-pub async fn poll_new_device_via_im_core_async(
+pub async fn poll_new_device_via_im_core_async<F>(
     resolved: &crate::workspace_config::Resolved,
     join_session_id: &str,
-) -> Result<CommandResult, ExitError> {
+    display_sas: F,
+) -> Result<CommandResult, ExitError>
+where
+    F: FnOnce(&str) -> Result<(), ExitError>,
+{
     let join_session_id = required_value(join_session_id, "--session")?;
     let core = super::build_im_core_async(resolved).await?;
     let progress = core
@@ -64,7 +68,7 @@ pub async fn poll_new_device_via_im_core_async(
         .poll_new_device_join(&join_session_id)
         .await
         .map_err(|err| super::map_im_error(err, "id device join poll"))?;
-    progress_result("device_join_poll", progress, "Device Join state refreshed")
+    poll_progress_result(progress, display_sas)
 }
 
 pub async fn registry_via_im_core_async(
@@ -252,6 +256,19 @@ fn progress_result(
     command_value_result(action, value, summary.to_owned())
 }
 
+fn poll_progress_result<F>(
+    progress: DeviceJoinProgress,
+    display_sas: F,
+) -> Result<CommandResult, ExitError>
+where
+    F: FnOnce(&str) -> Result<(), ExitError>,
+{
+    if let Some(sas) = progress.sas.as_deref() {
+        display_sas(sas)?;
+    }
+    progress_result("device_join_poll", progress, "Device Join state refreshed")
+}
+
 fn remove_sas(mut value: serde_json::Value) -> serde_json::Value {
     if let Some(object) = value.as_object_mut() {
         object.remove("sas");
@@ -296,6 +313,23 @@ fn serialization_error(err: serde_json::Error) -> ExitError {
 mod tests {
     use super::*;
 
+    fn progress_with_sas() -> DeviceJoinProgress {
+        serde_json::from_value(serde_json::json!({
+            "session": {
+                "join_session_id": "join-1",
+                "did": "did:wba:example.test:alice",
+                "protocol_device_id": "device-1",
+                "side": "new_device",
+                "phase": "response_prepared",
+                "expires_at": "2026-07-24T00:00:00Z"
+            },
+            "remote_state": "response_verified",
+            "sas": "012345",
+            "authorized_device": null
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn progress_projection_never_emits_sas() {
         let value = remove_sas(serde_json::json!({
@@ -309,6 +343,35 @@ mod tests {
             command_value_result("device_join_poll", value, "refreshed".to_owned()).unwrap();
         let encoded = serde_json::to_string(&result.data).unwrap();
         assert!(!encoded.contains("012345"));
+        assert!(result.data["result"].get("sas").is_none());
+    }
+
+    #[test]
+    fn poll_displays_sas_through_callback_but_not_command_result() {
+        let mut displayed = String::new();
+
+        let result = poll_progress_result(progress_with_sas(), |sas| {
+            displayed.push_str(sas);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(displayed, "012345");
+        let encoded = serde_json::to_string(&result.data).unwrap();
+        assert!(!encoded.contains("012345"));
+        assert!(result.data["result"].get("sas").is_none());
+    }
+
+    #[test]
+    fn poll_without_sas_does_not_invoke_callback() {
+        let mut progress = progress_with_sas();
+        progress.sas = None;
+
+        let result = poll_progress_result(progress, |_| {
+            panic!("callback must not run when Core returned no SAS");
+        })
+        .unwrap();
+
         assert!(result.data["result"].get("sas").is_none());
     }
 }

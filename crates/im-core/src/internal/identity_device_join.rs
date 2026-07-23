@@ -1200,8 +1200,6 @@ pub(crate) fn prepare_new_device_activation(
             return Err(invalid_state("new-device response is not prepared"));
         }
         validate_remote_authorization(&stored, authorization, resolved_document)?;
-        stored.activation_pending = true;
-        state_store.save(&stored)?;
     }
 
     let did = crate::ids::Did::parse(&stored.join_request.did)?;
@@ -1214,6 +1212,10 @@ pub(crate) fn prepare_new_device_activation(
             || pending.resolved_document != *resolved_document
         {
             return Err(crate::ImError::PermissionDenied);
+        }
+        if !stored.activation_pending {
+            stored.activation_pending = true;
+            state_store.save(&stored)?;
         }
         return Ok(pending);
     }
@@ -1256,6 +1258,10 @@ pub(crate) fn prepare_new_device_activation(
         e2ee_private.to_pem(),
     )?;
     pending_store.save(&pending)?;
+    if !stored.activation_pending {
+        stored.activation_pending = true;
+        state_store.save(&stored)?;
+    }
     Ok(pending)
 }
 
