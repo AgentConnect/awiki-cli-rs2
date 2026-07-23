@@ -23,6 +23,7 @@ use std::time::Duration;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
+use im_core::identity::{IdentityDeviceReadiness, IdentityDeviceRole};
 use rand::RngCore;
 use reqwest::header::{
     HeaderValue as ReqwestHeaderValue, AUTHORIZATION as REQWEST_AUTHORIZATION, CONTENT_TYPE,
@@ -71,6 +72,7 @@ struct ProbeRequest {
 }
 
 enum Action {
+    DeviceReadiness,
     OpenWs,
     WaitWsClosed { timeout_ms: u64 },
     CloseWs,
@@ -127,6 +129,9 @@ struct Probe {
     ca_bundle: Option<String>,
     local_did: String,
     local_device_id: String,
+    device_role: &'static str,
+    device_readiness: &'static str,
+    local_root_state: &'static str,
     service_did: String,
     ws: Option<WsStream>,
     held_ticket: Option<HeldTicket>,
@@ -216,14 +221,36 @@ impl Probe {
         let core = awiki_cli::m_core_cli_adapter::build_im_core_async(&resolved)
             .await
             .map_err(|_| ProbeFailure::Runtime)?;
-        let local_device_id = core
+        let device_summary = core
             .identities()
             .device_summary_async(im_core::IdentitySelector::Default)
             .await
-            .map_err(|_| ProbeFailure::Runtime)?
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let local_device_id = device_summary
             .protocol_device_id
+            .as_ref()
             .map(|value| value.as_str().to_owned())
             .ok_or(ProbeFailure::Runtime)?;
+        let device_role = match device_summary.role {
+            Some(IdentityDeviceRole::Member) => "member",
+            Some(IdentityDeviceRole::Admin) => "admin",
+            None => "none",
+        };
+        let device_readiness = match device_summary.readiness {
+            IdentityDeviceReadiness::Legacy => "legacy",
+            IdentityDeviceReadiness::MemberReady => "member_ready",
+            IdentityDeviceReadiness::AdminAwaitingRoot => "admin_awaiting_root",
+            IdentityDeviceReadiness::AdminReady => "admin_ready",
+            IdentityDeviceReadiness::Blocked => "blocked",
+        };
+        let local_root_state = if matches!(
+            device_summary.readiness,
+            IdentityDeviceReadiness::AdminReady
+        ) {
+            "active"
+        } else {
+            "not_active"
+        };
         let client = core
             .client_async(im_core::IdentitySelector::Default)
             .await
@@ -268,6 +295,9 @@ impl Probe {
             ca_bundle,
             local_did,
             local_device_id,
+            device_role,
+            device_readiness,
+            local_root_state,
             service_did,
             ws: None,
             held_ticket: None,
@@ -276,6 +306,15 @@ impl Probe {
 
     async fn execute(&mut self, action: Action) -> Result<(Value, bool), ProbeFailure> {
         match action {
+            Action::DeviceReadiness => Ok((
+                json!({
+                    "protocol_device_id_matches_current": true,
+                    "role": self.device_role,
+                    "readiness": self.device_readiness,
+                    "local_root_state": self.local_root_state,
+                }),
+                false,
+            )),
             Action::OpenWs => {
                 if self.ws.is_some() {
                     return Err(ProbeFailure::InvalidState);
@@ -725,6 +764,10 @@ fn parse_request(raw: &str) -> Result<ProbeRequest, ProbeFailure> {
         .and_then(Value::as_object)
         .ok_or(ProbeFailure::InvalidRequest)?;
     let action = match action_name {
+        "device_readiness" => {
+            require_exact_keys(params, &[])?;
+            Action::DeviceReadiness
+        }
         "open_ws" => {
             require_exact_keys(params, &[])?;
             Action::OpenWs
@@ -1036,6 +1079,12 @@ mod tests {
 
     #[test]
     fn protocol_rejects_unknown_actions_and_extra_fields() {
+        let readiness = match parse_request(r#"{"id":1,"action":"device_readiness","params":{}}"#) {
+            Ok(request) => request,
+            Err(_) => panic!("closed readiness request"),
+        };
+        assert!(matches!(readiness.action, Action::DeviceReadiness));
+
         let unknown = match parse_request(r#"{"id":7,"action":"raw_rpc","params":{}}"#) {
             Err(error) => error,
             Ok(_) => panic!("raw RPC must be rejected"),
@@ -1054,6 +1103,26 @@ mod tests {
         assert_eq!(
             response,
             json!({"id": 7, "ok": false, "error": {"code": INVALID_REQUEST}})
+        );
+    }
+
+    #[tokio::test]
+    async fn readiness_result_is_closed_and_secret_free() {
+        let mut probe = test_probe("http://127.0.0.1:9");
+        let request = r#"{"id":2,"action":"device_readiness","params":{}}"#;
+        let response = execute_line(&mut probe, request).await;
+        assert_eq!(
+            response,
+            json!({
+                "id": 2,
+                "ok": true,
+                "result": {
+                    "protocol_device_id_matches_current": true,
+                    "role": "admin",
+                    "readiness": "admin_ready",
+                    "local_root_state": "active",
+                }
+            })
         );
     }
 
@@ -1149,6 +1218,9 @@ mod tests {
             ca_bundle: None,
             local_did: LOCAL_DID.to_owned(),
             local_device_id: "dev-local-1".to_owned(),
+            device_role: "admin",
+            device_readiness: "admin_ready",
+            local_root_state: "active",
             service_did: SERVICE_DID.to_owned(),
             ws: None,
             held_ticket: None,
