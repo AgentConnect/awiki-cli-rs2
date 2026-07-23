@@ -54,7 +54,16 @@ pub(crate) fn ensure_local_prekey_publication(
         let expires_at = DateTime::parse_from_rfc3339(&local.bundle.signed_prekey.expires_at)
             .map_err(|_| crate::ImError::PermissionDenied)?
             .with_timezone(&Utc);
-        if expires_at > now && !available.is_empty() {
+        let proof_signing_key_id = local
+            .bundle
+            .proof
+            .get("verificationMethod")
+            .and_then(serde_json::Value::as_str);
+        if expires_at > now
+            && !available.is_empty()
+            && proof_signing_key_id == Some(identity.signing_key_id)
+            && local.bundle.static_key_agreement_id == identity.e2ee_key_id
+        {
             if let Some(published) = local.published_one_time_prekeys {
                 if !available
                     .iter()
@@ -325,9 +334,7 @@ pub(crate) async fn fetch_verified_prekey(
     operation_seed: &str,
 ) -> crate::ImResult<V2GetPrekeyBundleResult> {
     require_exact("operation_seed", operation_seed)?;
-    let local_document = client.runtime().key_provider.did_document()?;
-    let service_did = anp::direct_e2ee::message_service_did_from_document(&local_document)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let service_did = target_prekey_service_did(target_did, target_did_document)?;
     let local_state = local_authorization(client)?;
     for require_opk in [true, false] {
         let operation_id = format!(
@@ -369,6 +376,22 @@ pub(crate) async fn fetch_verified_prekey(
         }
     }
     Err(crate::ImError::PermissionDenied)
+}
+
+fn target_prekey_service_did(
+    target_did: &str,
+    target_did_document: &serde_json::Value,
+) -> crate::ImResult<String> {
+    let target_did = require_exact("target_did", target_did)?;
+    if target_did_document
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        != Some(target_did)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    anp::direct_e2ee::message_service_did_from_document(target_did_document)
+        .map_err(|_| crate::ImError::PermissionDenied)
 }
 
 pub(crate) async fn post_standard_direct(
@@ -605,6 +628,43 @@ mod tests {
     }
 
     #[test]
+    fn prekey_get_targets_the_target_agents_message_service() {
+        let target_did = "did:wba:remote.example:agents:bob:e1";
+        let target_document = serde_json::json!({
+            "id": target_did,
+            "service": [{
+                "id": format!("{target_did}#messages"),
+                "type": "ANPMessageService",
+                "serviceEndpoint": "https://remote.example/im/rpc",
+                "serviceDid": "did:wba:remote.example",
+                "profiles": ["anp.direct.e2ee.v2"],
+                "securityProfiles": ["direct-e2ee"]
+            }]
+        });
+
+        let service_did = target_prekey_service_did(target_did, &target_document).unwrap();
+        assert_eq!(service_did, "did:wba:remote.example");
+        let request = get_request(
+            "did:wba:local.example:agents:alice:e1",
+            "dev-a",
+            &service_did,
+            "get-remote-bob",
+            target_did,
+            "dev-b",
+            true,
+        )
+        .unwrap();
+        let (meta, body) = anp::direct_e2ee::parse_get_prekey_bundle_request_v2(&request).unwrap();
+        assert_eq!(meta.target.did, "did:wba:remote.example");
+        assert_eq!(body.target_did, target_did);
+        assert_eq!(body.target_device_id, "dev-b");
+        assert!(
+            target_prekey_service_did("did:wba:other.example:agents:bob:e1", &target_document)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn local_material_precedes_strict_publish_and_get_requests() {
         let temp = tempfile::tempdir().unwrap();
         let connection = Connection::open(temp.path().join("prekeys.sqlite")).unwrap();
@@ -756,5 +816,27 @@ WHERE owner_identity_id = ?1 AND local_device_id = ?2 AND key_id = ?3"#,
         let (_, get_body) = anp::direct_e2ee::parse_get_prekey_bundle_request_v2(&get).unwrap();
         assert_eq!(get_body.target_device_id, "bob-laptop");
         assert_eq!(get_body.require_opk, Some(true));
+
+        let rotated = ensure_local_prekey_publication(
+            &store,
+            V2LocalPrekeyIdentity {
+                did: did.as_str(),
+                device_id: "alice-phone",
+                signing_key_id: "did:example:alice#phone-sign-rotated",
+                e2ee_key_id: "did:example:alice#phone-e2ee-rotated",
+                signing_private: &signing,
+            },
+            now,
+        )
+        .unwrap();
+        assert_ne!(rotated.bundle.bundle_id, publication.bundle.bundle_id);
+        assert_eq!(
+            rotated.bundle.static_key_agreement_id,
+            "did:example:alice#phone-e2ee-rotated"
+        );
+        assert_eq!(
+            rotated.bundle.proof["verificationMethod"],
+            "did:example:alice#phone-sign-rotated"
+        );
     }
 }
