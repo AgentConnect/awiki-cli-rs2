@@ -183,11 +183,13 @@ available; migration failure must not delete them.
 
 ## 3.1 Device Join control plane
 
-`ImCore::device_join()` exposes the rollout-gated host operations for
-new-device begin/resume/poll/cancel and management-device Registry,
-claim/poll/approval/cancel. The account verification grant is a write-only
-input. Approval is split into a locally confirmed SAS preparation call and a
-one-time handle confirmation call after host user presence.
+`ImCore::device_join()` has no host-local rollout gate. It exposes local
+sessions plus new-device begin/poll/cancel and management-device Registry,
+notification-driven request listing, start-verification, reject and approval.
+Management devices do not poll Join state and do not have an admin-side cancel
+operation. The account verification grant is a write-only input. Approval is
+split into a locally confirmed SAS preparation call and a one-time handle
+confirmation call after host user presence.
 
 The host session projection intentionally omits internal transcript hashes and
 challenge IDs. Registry/progress DTOs likewise omit AWiki domain-internal

@@ -70,11 +70,8 @@ available and which source would be used.
   cannot be created/read. `id vault status` may use a redacted
   `checked_without_vault_context` mode for diagnostics.
 
-The adapter also maps the local rollout environment
-`AWIKI_MULTI_DEVICE_JOIN_ENABLED` to
-`ImCoreOpenOptions.multi_device_join_enabled`. Unset/`0` is disabled; only `1`
-enables the path, and malformed values fail closed. This is a host rollout
-switch, not an ANP field.
+Device Join has no host-local rollout environment or
+`ImCoreOpenOptions.multi_device_join_enabled` gate.
 
 ## 3. Paths Adapter
 
@@ -115,18 +112,19 @@ CLI 继续负责 OTP 输入、alias 文本校验和危险操作确认。
 
 ### 4.1 Device Join adapter
 
-The advanced `id device ...` commands are gated before workspace/Core open.
 `id device join start` reads the short-lived account verification grant only
 from `AWIKI_ACCOUNT_VERIFICATION_TOKEN`; it is never accepted in argv or
-rendered in output. Session list/start/poll/cancel call the corresponding Core
-facade, while `id device list` and admin claim/poll use the selected identity.
+rendered in output. Session list/start/new-device poll/new-device cancel call
+the corresponding Core facade, while `id device list`, notification-driven
+request listing, start-verification, reject and approval use the selected
+management identity. There is no management-device Join poll or cancel path.
 
 `id device join approve` requires a foreground TTY. The user types the locally
 derived SAS and an explicit approval word; the adapter then prepares and
 consumes the one-time approval handle in the same process. The handle is never
 returned by the CLI. JSON/pretty output uses only the safe host projections and
 must not contain tokens, pairing/private/root material, challenge ciphertext,
-or internal Document/Registry/auth versions and hashes.
+SAS, or internal Document/Registry/auth versions and hashes.
 
 ### 4.2 Root-key transfer adapter
 

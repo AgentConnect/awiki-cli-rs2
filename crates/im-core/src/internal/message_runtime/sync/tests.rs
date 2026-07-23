@@ -10,6 +10,66 @@ use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+#[test]
+fn system_notification_delta_is_checkpoint_only_and_never_projects_chat_state() {
+    let fixture = Fixture::new("sync-delta-system-notification");
+    let client = fixture.client();
+    let raw = delta_page(
+        vec![json!({
+            "event_id": "sev-system-1",
+            "event_seq": "1",
+            "event_type": "system.notification",
+            "aggregate_kind": "device",
+            "aggregate_id": "dev-local",
+            "owner_subject_id": "did:example:alice",
+            "created_at": "2026-07-23T02:00:00Z",
+            "payload": {
+                "projection_kind": "system_notification"
+            }
+        })],
+        "1",
+        false,
+    );
+    let page = crate::internal::wire::sync::parse_sync_delta_page(&raw).unwrap();
+    let apply = sync_delta_apply_event(&client, &page.events[0]).unwrap();
+
+    assert_eq!(apply.event_type, "system.notification");
+    assert!(apply.messages.is_empty());
+    assert!(apply.groups.is_empty());
+}
+
+#[test]
+fn chat_shaped_delta_with_system_marker_is_also_checkpoint_only() {
+    let fixture = Fixture::new("sync-delta-system-marker");
+    let client = fixture.client();
+    let raw = delta_page(
+        vec![json!({
+            "event_id": "sev-system-2",
+            "event_seq": "2",
+            "event_type": "message.created",
+            "aggregate_kind": "direct_message",
+            "aggregate_id": "must-not-be-chat",
+            "owner_subject_id": "did:example:alice",
+            "created_at": "2026-07-23T02:00:00Z",
+            "payload": {
+                "message": {
+                    "projection_kind": "system_notification",
+                    "content": {
+                        "type": "awiki.device.join-requested.v1"
+                    }
+                }
+            }
+        })],
+        "2",
+        false,
+    );
+    let page = crate::internal::wire::sync::parse_sync_delta_page(&raw).unwrap();
+    let apply = sync_delta_apply_event(&client, &page.events[0]).unwrap();
+
+    assert!(apply.messages.is_empty());
+    assert!(apply.groups.is_empty());
+}
+
 #[tokio::test]
 async fn sync_delta_reads_checkpoint_calls_wire_and_advances_checkpoint() {
     let fixture = Fixture::new("sync-delta-basic");

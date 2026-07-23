@@ -90,6 +90,20 @@ where
             result.last_applied_event_seq = Some(outcome.last_applied_event_seq);
             append_backlog_warning(&mut result.warnings, outcome.backlogged_messages);
             emit_committed_sync_invalidation(self.client, &outcome.invalidation);
+            #[cfg(feature = "sqlite")]
+            if page_contains_system_notification(&page) {
+                match crate::internal::message_runtime::read::hydrate_system_notifications(
+                    self.client,
+                    &mut self.transport,
+                    &mut self.directory_transport,
+                    i64::from(limit),
+                ) {
+                    Ok(hydration) => result.warnings.extend(hydration.warnings),
+                    Err(_) => result
+                        .warnings
+                        .push("system.notification.hydration_deferred".to_owned()),
+                }
+            }
             result.retention_floor_event_seq = page.retention_floor_event_seq;
             result.has_more = page.has_more;
             reject_has_more_without_checkpoint_progress(
@@ -285,6 +299,22 @@ where
             result.last_applied_event_seq = Some(outcome.last_applied_event_seq);
             append_backlog_warning(&mut result.warnings, outcome.backlogged_messages);
             emit_committed_sync_invalidation(self.client, &outcome.invalidation);
+            #[cfg(feature = "sqlite")]
+            if page_contains_system_notification(&page) {
+                match crate::internal::message_runtime::read::hydrate_system_notifications_async(
+                    self.client,
+                    &mut self.transport,
+                    &mut self.directory_transport,
+                    i64::from(limit),
+                )
+                .await
+                {
+                    Ok(hydration) => result.warnings.extend(hydration.warnings),
+                    Err(_) => result
+                        .warnings
+                        .push("system.notification.hydration_deferred".to_owned()),
+                }
+            }
             result.retention_floor_event_seq = page.retention_floor_event_seq;
             result.has_more = page.has_more;
             reject_has_more_without_checkpoint_progress(
@@ -484,6 +514,12 @@ fn reject_invalid_delta_page_shape(
     Ok(())
 }
 
+fn page_contains_system_notification(page: &crate::internal::wire::sync::SyncDeltaPage) -> bool {
+    page.events
+        .iter()
+        .any(|event| event.event_type == "system.notification")
+}
+
 fn reject_has_more_without_checkpoint_progress(
     has_more: bool,
     since_event_seq: &str,
@@ -650,12 +686,18 @@ fn sync_delta_apply_event(
     if matches!(
         event.event_type.as_str(),
         "message.created" | "conversation.updated"
-    ) && sync_delta_contains_v2_e2ee_message(event)
+    ) && (sync_delta_contains_v2_e2ee_message(event)
+        || sync_delta_contains_system_notification_message(event))
     {
         return Ok(apply);
     }
 
     match event.event_type.as_str() {
+        // Device-targeted System Notification events are reliable hydration
+        // hints only. Advance the global checkpoint without creating any
+        // chat/conversation/read projection; exact-device Inbox supplies the
+        // full P3 envelope to the shared verifier.
+        "system.notification" => {}
         "message.created" => {
             let message = sync_delta_message_from_payload(client, event, true)?;
             apply.messages.push(
@@ -693,6 +735,30 @@ fn sync_delta_apply_event(
     }
 
     Ok(apply)
+}
+
+#[cfg(feature = "sqlite")]
+fn sync_delta_contains_system_notification_message(
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> bool {
+    let Some(payload) = event.payload.as_object() else {
+        return false;
+    };
+    let Some(message) = ["message", "latest_message", "last_message", "body"]
+        .into_iter()
+        .find_map(|key| payload.get(key).filter(|value| value.is_object()))
+    else {
+        return false;
+    };
+    if crate::internal::system_notification::wire::is_trusted_delivery_marker(message) {
+        return true;
+    }
+    message
+        .get("content")
+        .and_then(Value::as_object)
+        .and_then(|content| content.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.starts_with("awiki.device.join-"))
 }
 
 #[cfg(feature = "sqlite")]

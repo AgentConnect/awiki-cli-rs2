@@ -2,10 +2,11 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 28;
+pub(crate) const SCHEMA_VERSION: i64 = 29;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
 const CONVERSATION_REGISTRY_SCHEMA_VERSION: i64 = 26;
+const SYSTEM_NOTIFICATION_SCHEMA_VERSION: i64 = 29;
 
 const V6_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS contacts (
@@ -932,6 +933,9 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
+    if version == SYSTEM_NOTIFICATION_SCHEMA_VERSION - 1 {
+        return migrate_v28_to_v29(connection);
+    }
     if version < SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUpgradeRequired {
             from_version: version,
@@ -939,6 +943,15 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
         });
     }
     create_schema(connection, false)
+}
+
+fn migrate_v28_to_v29(connection: &Connection) -> crate::ImResult<()> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    crate::internal::system_notification::store::create_schema(&transaction)?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
+    transaction.commit().map_err(super::local_state_unavailable)
 }
 
 pub(crate) fn current_schema_version(connection: &Connection) -> crate::ImResult<i64> {
@@ -978,6 +991,7 @@ pub(super) fn create_schema(
     connection
         .execute_batch(DIRECT_PEER_ROUTES_SQL)
         .map_err(super::local_state_unavailable)?;
+    crate::internal::system_notification::store::create_schema(connection)?;
     ensure_column(connection, "direct_peer_routes", "peer_persona_id", "TEXT")?;
     ensure_column(
         connection,

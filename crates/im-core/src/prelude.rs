@@ -40,8 +40,8 @@ pub use crate::identity::{
     DefaultIdentityChange, DeleteLocalIdentityResult, DeviceJoinAccountVerificationGrant,
     DeviceJoinApprovalPrompt, DeviceJoinAuthorizationStatus, DeviceJoinAuthorizedDeviceSummary,
     DeviceJoinBeginRequest, DeviceJoinConfirmApprovalRequest, DeviceJoinLocalPhase,
-    DeviceJoinPendingSummary, DeviceJoinProgress, DeviceJoinRegistrySnapshot,
-    DeviceJoinRemoteState, DeviceJoinRole, DeviceJoinSessionView, DeviceJoinSide,
+    DeviceJoinProgress, DeviceJoinRegistrySnapshot, DeviceJoinRejectReason, DeviceJoinRemoteState,
+    DeviceJoinRequestNotice, DeviceJoinRole, DeviceJoinSessionView, DeviceJoinSide,
     DeviceRevokeRequest, DeviceRevokeResult, DeviceRevokeService, DeviceRevokeStatus,
     HandleRegistrationJoinRequired, HandleRegistrationResult, HandleRegistrationState,
     HostedIdentityMaterial, IdentityMissingItem, IdentityReadiness, IdentityRegistry,
@@ -79,7 +79,8 @@ pub use crate::realtime::{
     LocalNotificationEvent, MessageReceivedEvent, MessageUpdateKind, MessageUpdatedEvent,
     RealtimeConnectionState, RealtimeControl, RealtimeEventStream, RealtimeExit,
     RealtimeExitReason, RealtimeOptions, RealtimeService, RealtimeSession, RealtimeStatus,
-    RealtimeSubscription, ReconnectPolicy, ShutdownSignal, UnknownNotificationEvent,
+    RealtimeSubscription, ReconnectPolicy, ShutdownSignal, SystemNotificationChangedEvent,
+    UnknownNotificationEvent,
 };
 pub use crate::secure::{
     DirectSecureConversation, DirectSecurePrepareResult, DirectSecureRepairResult,
@@ -91,5 +92,10 @@ pub use crate::secure::{
 pub use crate::site::{
     SiteDomain, SitePageDocument, SitePageDraft, SitePageQuery, SitePageRef, SitePageUpdate,
     SiteRootDocument, SiteRootDraft, SiteService,
+};
+pub use crate::system_notifications::{
+    SystemNotificationChange, SystemNotificationChangeSession, SystemNotificationKind,
+    SystemNotificationListQuery, SystemNotificationService, SystemNotificationSnapshot,
+    SystemNotificationState,
 };
 pub use crate::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};

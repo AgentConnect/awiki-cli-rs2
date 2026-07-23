@@ -22,6 +22,7 @@ pub mod prelude;
 pub mod realtime;
 pub mod secure;
 pub mod site;
+pub mod system_notifications;
 pub mod vault;
 
 #[doc(hidden)]
@@ -55,3 +56,4 @@ pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, Runt
 pub use crate::realtime::RealtimeService;
 pub use crate::secure::SecureService;
 pub use crate::site::SiteService;
+pub use crate::system_notifications::SystemNotificationService;

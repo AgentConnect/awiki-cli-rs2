@@ -129,6 +129,11 @@ where
         let mut raw =
             self.transport
                 .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)?;
+        #[cfg(feature = "sqlite")]
+        if delegated.is_none() {
+            let _ =
+                consume_system_notifications(self.client, &mut raw, &mut self.directory_transport);
+        }
         let mut p5_provenance = if delegated.is_some() {
             filter_delegated_e2ee_messages(&mut raw);
             DirectP5ProjectionProvenance::default()
@@ -414,6 +419,15 @@ where
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)
             .await?;
+        #[cfg(feature = "sqlite")]
+        if delegated.is_none() {
+            let _ = consume_system_notifications_async(
+                self.client,
+                &mut raw,
+                &mut self.directory_transport,
+            )
+            .await;
+        }
         let mut p5_provenance = if delegated.is_some() {
             filter_delegated_e2ee_messages(&mut raw);
             DirectP5ProjectionProvenance::default()
@@ -1384,6 +1398,184 @@ pub(crate) fn page_from_raw(
     page_from_raw_with_group(client, raw, requested_limit, None)
 }
 
+#[cfg(feature = "sqlite")]
+fn consume_system_notifications<R>(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut R,
+) -> Vec<crate::realtime::ImEvent>
+where
+    R: RpcTransport,
+{
+    let drained = {
+        let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+            return Vec::new();
+        };
+        std::mem::take(messages)
+    };
+    let mut retained = Vec::with_capacity(drained.len());
+    let mut warnings = Vec::new();
+    let mut events = Vec::new();
+    for message in drained {
+        match crate::internal::system_notification::dispatch::dispatch_with_transport(
+            client,
+            &message,
+            directory_transport,
+        ) {
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NotSystem => {
+                retained.push(message);
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NeedsHydration => {
+                warnings.push("system.notification.hydration_incomplete".to_owned());
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Consumed { event } => {
+                events.extend(event);
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Rejected { warning } => {
+                warnings.push(warning);
+            }
+        }
+    }
+    *raw.get_mut("messages")
+        .and_then(Value::as_array_mut)
+        .expect("messages array was checked above") = retained;
+    append_raw_warnings(raw, warnings);
+    events
+}
+
+#[cfg(feature = "sqlite")]
+async fn consume_system_notifications_async<R>(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut R,
+) -> Vec<crate::realtime::ImEvent>
+where
+    R: AsyncRpcTransport,
+{
+    let drained = {
+        let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+            return Vec::new();
+        };
+        std::mem::take(messages)
+    };
+    let mut retained = Vec::with_capacity(drained.len());
+    let mut warnings = Vec::new();
+    let mut events = Vec::new();
+    for message in drained {
+        match crate::internal::system_notification::dispatch::dispatch_with_transport_async(
+            client,
+            &message,
+            directory_transport,
+        )
+        .await
+        {
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NotSystem => {
+                retained.push(message);
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NeedsHydration => {
+                warnings.push("system.notification.hydration_incomplete".to_owned());
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Consumed { event } => {
+                events.extend(event);
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Rejected { warning } => {
+                warnings.push(warning);
+            }
+        }
+    }
+    *raw.get_mut("messages")
+        .and_then(Value::as_array_mut)
+        .expect("messages array was checked above") = retained;
+    append_raw_warnings(raw, warnings);
+    events
+}
+
+#[cfg(feature = "sqlite")]
+fn append_raw_warnings(raw: &mut Value, warnings: Vec<String>) {
+    if warnings.is_empty() {
+        return;
+    }
+    let Some(object) = raw.as_object_mut() else {
+        return;
+    };
+    let entry = object
+        .entry("warnings".to_owned())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(existing) = entry.as_array_mut() else {
+        return;
+    };
+    existing.extend(warnings.into_iter().map(Value::String));
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) struct SystemNotificationHydration {
+    pub(crate) events: Vec<crate::realtime::ImEvent>,
+    pub(crate) warnings: Vec<String>,
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn hydrate_system_notifications<T, R>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    directory_transport: &mut R,
+    limit: i64,
+) -> crate::ImResult<SystemNotificationHydration>
+where
+    T: AuthenticatedRpcTransport,
+    R: RpcTransport,
+{
+    let params = crate::internal::wire::inbox::build_inbox_rpc_params(
+        &crate::internal::wire::common::WireIdentity {
+            did: client.did().as_str().to_owned(),
+        },
+        crate::internal::wire::inbox::InboxWireRequest { limit, auth: None },
+    );
+    let mut raw = transport.authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)?;
+    let events = consume_system_notifications(client, &mut raw, directory_transport);
+    Ok(SystemNotificationHydration {
+        events,
+        warnings: raw_warnings(&raw),
+    })
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn hydrate_system_notifications_async<T, R>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    directory_transport: &mut R,
+    limit: i64,
+) -> crate::ImResult<SystemNotificationHydration>
+where
+    T: AsyncAuthenticatedRpcTransport,
+    R: AsyncRpcTransport,
+{
+    let params = crate::internal::wire::inbox::build_inbox_rpc_params(
+        &crate::internal::wire::common::WireIdentity {
+            did: client.did().as_str().to_owned(),
+        },
+        crate::internal::wire::inbox::InboxWireRequest { limit, auth: None },
+    );
+    let mut raw = transport
+        .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)
+        .await?;
+    let events = consume_system_notifications_async(client, &mut raw, directory_transport).await;
+    Ok(SystemNotificationHydration {
+        events,
+        warnings: raw_warnings(&raw),
+    })
+}
+
+#[cfg(feature = "sqlite")]
+fn raw_warnings(raw: &Value) -> Vec<String> {
+    raw.get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 pub(crate) fn page_from_raw_with_group(
     client: &crate::core::ImClient,
     raw: &Value,
@@ -1396,6 +1588,14 @@ pub(crate) fn page_from_raw_with_group(
         .map(|items| {
             items
                 .iter()
+                .filter(|item| {
+                    let normalized =
+                        crate::internal::system_notification::dispatch::normalize_delivery(item);
+                    !crate::internal::system_notification::wire::is_trusted_delivery_marker(item)
+                        && !crate::internal::system_notification::wire::is_system_namespace(
+                            &normalized,
+                        )
+                })
                 .filter_map(|item| message_from_value(client, item, group).transpose())
                 .collect::<crate::ImResult<Vec<_>>>()
         })

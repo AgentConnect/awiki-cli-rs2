@@ -11,7 +11,13 @@ use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 
 pub const DEVICE_JOIN_REQUEST_TYPE: &str = "awiki.device.join.v1";
-pub const DEVICE_PROOF_TYPE: &str = "awiki-device-signature-v1";
+pub const DEVICE_JOIN_REQUEST_PROOF_TYPE: &str = "awiki.device.join-request-proof.v1";
+pub const DEVICE_JOIN_REQUEST_PROOF_INPUT_TYPE: &str = "awiki.device.join-request-proof-input.v1";
+pub const DEVICE_JOIN_RESPONSE_SIGNATURE_INPUT_TYPE: &str =
+    "awiki.device.join-response-signature-input.v1";
+// Used by the independent device-revoke control path. Device Join v1 itself
+// does not write this legacy proof profile.
+pub(crate) const DEVICE_PROOF_TYPE: &str = "awiki-device-signature-v1";
 pub const DEVICE_JOIN_CHALLENGE_ALGORITHM: &str = "X25519-HKDF-SHA256-CHACHA20POLY1305";
 pub const DEVICE_JOIN_MAX_TTL_SECONDS: u64 = 600;
 pub const DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS: u64 = 300;
@@ -79,7 +85,7 @@ pub struct DeviceJoinRequest {
     pub requested_role: String,
     pub issued_at: String,
     pub expires_at: String,
-    pub signature: String,
+    pub join_request_proof: DeviceJoinRequestProof,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -90,7 +96,30 @@ pub struct DeviceJoinStartResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DeviceProof {
+pub struct DeviceJoinRequestProof {
+    #[serde(rename = "type")]
+    pub proof_type: String,
+    pub algorithm: String,
+    pub verification_method: String,
+    pub created_at: String,
+    pub proof_value_b64u: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DeviceJoinObjectProof {
+    #[serde(rename = "type")]
+    pub proof_type: String,
+    pub cryptosuite: String,
+    pub verification_method: String,
+    pub proof_purpose: String,
+    pub created: String,
+    pub proof_value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeviceProof {
     #[serde(rename = "type")]
     pub proof_type: String,
     pub key_id: String,
@@ -118,7 +147,7 @@ pub struct DeviceJoinChallenge {
     pub admin_pairing_public_key: String,
     pub ciphertext: EncryptedJoinChallenge,
     pub challenge_expires_at: String,
-    pub authorizing_device_proof: DeviceProof,
+    pub proof: DeviceJoinObjectProof,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,7 +159,7 @@ pub struct DeviceJoinChallengeResponse {
     pub challenge_hash: String,
     pub join_request_hash: String,
     pub pairing_transcript_hash: String,
-    pub new_device_proof: DeviceProof,
+    pub response_signature_b64u: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -269,12 +298,29 @@ pub enum DeviceJoinAuthorizationStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum DeviceJoinRejectReason {
+    UserRejected,
+    SasMismatch,
+}
+
+impl DeviceJoinRejectReason {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::UserRejected => "user_rejected",
+            Self::SasMismatch => "sas_mismatch",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DeviceJoinRemoteState {
     Pending,
-    Claimed,
     ChallengeSent,
     ResponseVerified,
     Consumed,
+    Cancelled,
+    Rejected,
     Expired,
 }
 
@@ -302,21 +348,23 @@ pub struct DeviceJoinAuthorizedDeviceSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceJoinPendingSummary {
+pub struct DeviceJoinRequestNotice {
+    pub event_id: String,
     pub join_session_id: String,
+    pub did: crate::ids::Did,
     pub protocol_device_id: crate::ids::ProtocolDeviceId,
-    pub signing_key_id: String,
-    pub e2ee_key_id: String,
-    pub requested_role: DeviceJoinRole,
+    pub candidate_key_fingerprint: String,
     pub issued_at: String,
     pub expires_at: String,
+    pub state: DeviceJoinRemoteState,
+    pub claimed_by_current_device: bool,
+    pub can_start_verification: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceJoinRegistrySnapshot {
     pub did: crate::ids::Did,
     pub devices: Vec<DeviceJoinAuthorizedDeviceSummary>,
-    pub pending_join_requests: Vec<DeviceJoinPendingSummary>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,7 +390,6 @@ impl std::fmt::Debug for DeviceJoinProgress {
 pub struct DeviceJoinApprovalPrompt {
     pub approval_handle: String,
     pub join_session_id: String,
-    pub role: DeviceJoinRole,
     pub sas: String,
     pub expires_at: String,
 }
@@ -352,7 +399,6 @@ impl std::fmt::Debug for DeviceJoinApprovalPrompt {
         f.debug_struct("DeviceJoinApprovalPrompt")
             .field("approval_handle", &"<redacted-approval-handle>")
             .field("join_session_id", &self.join_session_id)
-            .field("role", &self.role)
             .field("sas", &"<redacted-sas>")
             .field("expires_at", &self.expires_at)
             .finish()
@@ -430,7 +476,6 @@ impl<'a> DeviceJoinService<'a> {
     }
 
     pub fn local_sessions(&self) -> crate::ImResult<Vec<DeviceJoinSessionView>> {
-        self.require_enabled()?;
         crate::internal::identity_device_join::list_sessions(self.core)
             .map(|sessions| sessions.into_iter().map(Into::into).collect())
     }
@@ -439,7 +484,6 @@ impl<'a> DeviceJoinService<'a> {
         &self,
         request: DeviceJoinBeginRequest,
     ) -> crate::ImResult<DeviceJoinProgress> {
-        self.require_enabled()?;
         let DeviceJoinBeginRequest {
             operation_id,
             did,
@@ -448,9 +492,8 @@ impl<'a> DeviceJoinService<'a> {
         } = request;
         let token = account_verification_grant.into_secret();
         let mut runtime =
-            crate::internal::identity_device_join_runtime::DeviceJoinNewDeviceRuntime::production_for_rollout(
+            crate::internal::identity_device_join_runtime::DeviceJoinNewDeviceRuntime::production(
                 self.core,
-                true,
             );
         let session = runtime
             .begin(
@@ -474,11 +517,9 @@ impl<'a> DeviceJoinService<'a> {
         &self,
         join_session_id: &str,
     ) -> crate::ImResult<DeviceJoinProgress> {
-        self.require_enabled()?;
         let mut runtime =
-            crate::internal::identity_device_join_runtime::DeviceJoinNewDeviceRuntime::production_for_rollout(
+            crate::internal::identity_device_join_runtime::DeviceJoinNewDeviceRuntime::production(
                 self.core,
-                true,
             );
         let mut progress = public_progress(runtime.advance(join_session_id).await?)?;
         if progress.remote_state == DeviceJoinRemoteState::Consumed
@@ -498,90 +539,99 @@ impl<'a> DeviceJoinService<'a> {
         Ok(progress)
     }
 
-    pub fn cancel_new_device_join(
+    pub async fn cancel_new_device_join(
         &self,
         join_session_id: &str,
     ) -> crate::ImResult<DeviceJoinSessionView> {
-        self.require_enabled()?;
-        let runtime =
-            crate::internal::identity_device_join_runtime::DeviceJoinNewDeviceRuntime::production_for_rollout(
+        let mut runtime =
+            crate::internal::identity_device_join_runtime::DeviceJoinNewDeviceRuntime::production(
                 self.core,
-                true,
             );
-        runtime.cancel(join_session_id).map(Into::into)
+        runtime.cancel(join_session_id).await.map(Into::into)
     }
 
     pub async fn registry(
         &self,
         admin_identity: super::IdentitySelector,
     ) -> crate::ImResult<DeviceJoinRegistrySnapshot> {
-        self.require_enabled()?;
         let admin_client = self.core.client_async(admin_identity.clone()).await?;
         let current_device = self
             .core
             .identities()
             .device_summary_async(admin_identity)
             .await?;
-        let include_pending_join_requests =
-            may_read_pending_join_requests(&current_device.readiness);
         let current = current_device.protocol_device_id;
         let mut runtime =
-            crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production_for_rollout(
+            crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production(
                 self.core,
                 &admin_client,
-                true,
             );
-        public_registry(
-            runtime.registry(include_pending_join_requests).await?,
-            current.as_ref(),
-        )
+        public_registry(runtime.registry().await?, current.as_ref())
     }
 
-    pub async fn claim_device_join(
+    pub async fn local_device_join_requests(
+        &self,
+        admin_identity: super::IdentitySelector,
+    ) -> crate::ImResult<Vec<DeviceJoinRequestNotice>> {
+        let admin_client = self.core.client_async(admin_identity).await?;
+        let mut runtime =
+            crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production(
+                self.core,
+                &admin_client,
+            );
+        runtime.local_device_join_requests().await
+    }
+
+    /// Reads the short-lived SAS for an already verified local admin session.
+    ///
+    /// This method performs no RPC, does not update the durable notification
+    /// projection, and does not advance the Join state machine. The SAS is
+    /// available only while the local phase is `ResponseVerified` or
+    /// `ApprovalPrepared`.
+    pub fn local_device_join_verification_progress(
+        &self,
+        admin_identity: super::IdentitySelector,
+        join_session_id: &str,
+    ) -> crate::ImResult<DeviceJoinProgress> {
+        let (session, sas) =
+            crate::internal::identity_device_join::local_admin_verification_progress(
+                self.core,
+                &admin_identity,
+                join_session_id,
+            )?;
+        Ok(DeviceJoinProgress {
+            session: session.into(),
+            remote_state: DeviceJoinRemoteState::ResponseVerified,
+            sas: Some(sas),
+            authorized_device: None,
+        })
+    }
+
+    pub async fn start_device_join_verification(
         &self,
         admin_identity: super::IdentitySelector,
         join_session_id: &str,
         operation_id: &str,
         challenge_ttl_seconds: u64,
     ) -> crate::ImResult<DeviceJoinProgress> {
-        self.require_enabled()?;
         let admin_client = self.core.client_async(admin_identity).await?;
         let mut runtime =
-            crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production_for_rollout(
+            crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production(
                 self.core,
                 &admin_client,
-                true,
             );
         runtime
-            .claim_and_challenge(join_session_id, operation_id, challenge_ttl_seconds)
+            .start_verification(join_session_id, operation_id, challenge_ttl_seconds)
             .await
             .and_then(public_progress)
-    }
-
-    pub async fn poll_admin_device_join(
-        &self,
-        admin_identity: super::IdentitySelector,
-        join_session_id: &str,
-    ) -> crate::ImResult<DeviceJoinProgress> {
-        self.require_enabled()?;
-        let admin_client = self.core.client_async(admin_identity).await?;
-        let mut runtime =
-            crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production_for_rollout(
-                self.core,
-                &admin_client,
-                true,
-            );
-        public_progress(runtime.advance(join_session_id).await?)
     }
 
     pub fn prepare_device_join_approval(
         &self,
         admin_identity: super::IdentitySelector,
         join_session_id: &str,
-        role: DeviceJoinRole,
         sas_confirmed: bool,
     ) -> crate::ImResult<DeviceJoinApprovalPrompt> {
-        self.require_enabled()?;
         if !sas_confirmed {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -590,31 +640,14 @@ impl<'a> DeviceJoinService<'a> {
                 self.core,
                 join_session_id,
             )?;
-        let internal_role = internal_role(role);
-        if existing
-            .as_ref()
-            .is_some_and(|approval| approval.role != internal_role)
-        {
-            return Err(crate::ImError::invalid_input(
-                Some("role".to_owned()),
-                "device Join approval role is already bound",
-            ));
-        }
         let now = OffsetDateTime::now_utc();
         let session_expires_at = parse_approval_expiry(&session.expires_at)?;
         let (operation_id, user_presence_at, approval_expires_at) = match existing {
-            Some(approval) => {
-                let proof_expires_at =
-                    parse_approval_expiry(&approval.authorizing_device_proof.expires_at)?;
-                if proof_expires_at <= now {
-                    return Err(crate::ImError::SessionExpired);
-                }
-                (
-                    approval.operation_id,
-                    Some(approval.pairing_confirmation.user_presence_at),
-                    std::cmp::min(session_expires_at, proof_expires_at),
-                )
-            }
+            Some(approval) => (
+                approval.operation_id,
+                Some(approval.pairing_confirmation.user_presence_at),
+                session_expires_at,
+            ),
             None => (
                 random_public_operation_id("join-approve"),
                 None,
@@ -637,7 +670,6 @@ impl<'a> DeviceJoinService<'a> {
                 admin_identity,
                 join_session_id: session.join_session_id.clone(),
                 operation_id,
-                role: internal_role,
                 expires_at: approval_expires_at.clone(),
                 user_presence_at,
             },
@@ -645,7 +677,6 @@ impl<'a> DeviceJoinService<'a> {
         Ok(DeviceJoinApprovalPrompt {
             approval_handle: handle,
             join_session_id: session.join_session_id,
-            role,
             sas,
             expires_at: approval_expires_at,
         })
@@ -655,7 +686,6 @@ impl<'a> DeviceJoinService<'a> {
         &self,
         request: DeviceJoinConfirmApprovalRequest,
     ) -> crate::ImResult<DeviceJoinProgress> {
-        self.require_enabled()?;
         if !request.user_presence_confirmed {
             self.core
                 .inner()
@@ -681,17 +711,8 @@ impl<'a> DeviceJoinService<'a> {
             crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleClaim::Expired(
                 state,
             ) => {
-                let admin_client = self.core.client_async(state.admin_identity).await?;
-                let mut runtime = crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production_for_rollout(
-                    self.core,
-                    &admin_client,
-                    true,
-                );
-                return public_progress(
-                    runtime
-                        .reconcile_expired_approval(&state.join_session_id)
-                        .await?,
-                );
+                let _ = state;
+                return Err(crate::ImError::SessionExpired);
             }
         };
         let confirmed_at = state
@@ -701,16 +722,14 @@ impl<'a> DeviceJoinService<'a> {
         let result = async {
             let admin_client = self.core.client_async(state.admin_identity.clone()).await?;
             let mut runtime =
-                crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production_for_rollout(
+                crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production(
                     self.core,
                     &admin_client,
-                    true,
                 );
             runtime
                 .approve(
                     &state.join_session_id,
                     &state.operation_id,
-                    state.role,
                     &confirmed_at,
                     true,
                 )
@@ -724,19 +743,10 @@ impl<'a> DeviceJoinService<'a> {
                 .device_join_approvals
                 .consume(&request.approval_handle)?,
             Err(error) if approval_error_is_retryable(error) => {
-                let proof_expires_at =
-                    crate::internal::identity_device_join::load_prepared_admin_approval(
-                        self.core,
-                        &state.join_session_id,
-                    )
-                    .ok()
-                    .flatten()
-                    .filter(|approval| approval.operation_id == state.operation_id)
-                    .map(|approval| approval.authorizing_device_proof.expires_at);
                 self.core
                     .inner()
                     .device_join_approvals
-                    .release_with_expiry(&request.approval_handle, proof_expires_at.as_deref())?;
+                    .release(&request.approval_handle)?;
             }
             Err(_) => self
                 .core
@@ -747,35 +757,23 @@ impl<'a> DeviceJoinService<'a> {
         public_progress(result?)
     }
 
-    pub fn cancel_admin_device_join(
+    pub async fn reject_device_join(
         &self,
         admin_identity: super::IdentitySelector,
         join_session_id: &str,
-    ) -> crate::ImResult<DeviceJoinSessionView> {
-        self.require_enabled()?;
-        let admin_client = self.core.client(admin_identity)?;
-        let runtime =
-            crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production_for_rollout(
+        reason: DeviceJoinRejectReason,
+    ) -> crate::ImResult<DeviceJoinProgress> {
+        let admin_client = self.core.client_async(admin_identity).await?;
+        let mut runtime =
+            crate::internal::identity_device_join_runtime::DeviceJoinAdminRuntime::production(
                 self.core,
                 &admin_client,
-                true,
             );
-        runtime.cancel(join_session_id).map(Into::into)
+        runtime
+            .reject(join_session_id, reason)
+            .await
+            .and_then(public_progress)
     }
-
-    fn require_enabled(&self) -> crate::ImResult<()> {
-        if self.core.inner().device_join_enabled() {
-            Ok(())
-        } else {
-            Err(crate::ImError::unsupported(
-                "awiki-multi-device-join-disabled",
-            ))
-        }
-    }
-}
-
-fn may_read_pending_join_requests(readiness: &super::IdentityDeviceReadiness) -> bool {
-    matches!(readiness, super::IdentityDeviceReadiness::AdminReady)
 }
 
 fn public_current_authorized_device(
@@ -805,13 +803,6 @@ fn public_current_authorized_device(
     let (role, management_ready) = match (summary.role, summary.readiness) {
         (Some(super::IdentityDeviceRole::Member), super::IdentityDeviceReadiness::MemberReady) => {
             (DeviceJoinRole::Member, false)
-        }
-        (
-            Some(super::IdentityDeviceRole::Admin),
-            super::IdentityDeviceReadiness::AdminAwaitingRoot,
-        ) => (DeviceJoinRole::Admin, false),
-        (Some(super::IdentityDeviceRole::Admin), super::IdentityDeviceReadiness::AdminReady) => {
-            (DeviceJoinRole::Admin, true)
         }
         _ => return Err(crate::ImError::PermissionDenied),
     };
@@ -886,21 +877,6 @@ fn public_registry(
             .into_iter()
             .map(|device| public_device(device, current))
             .collect::<crate::ImResult<Vec<_>>>()?,
-        pending_join_requests: value
-            .pending_join_requests
-            .into_iter()
-            .map(|pending| {
-                Ok(DeviceJoinPendingSummary {
-                    join_session_id: pending.join_session_id,
-                    protocol_device_id: crate::ids::ProtocolDeviceId::parse(pending.device_id)?,
-                    signing_key_id: pending.signing_key_id,
-                    e2ee_key_id: pending.e2ee_key_id,
-                    requested_role: public_role(pending.requested_role),
-                    issued_at: pending.issued_at,
-                    expires_at: pending.expires_at,
-                })
-            })
-            .collect::<crate::ImResult<Vec<_>>>()?,
     })
 }
 
@@ -940,28 +916,12 @@ fn public_role(
     }
 }
 
-fn internal_role(
-    value: DeviceJoinRole,
-) -> crate::internal::identity_device_state::DeviceAuthorizationRole {
-    match value {
-        DeviceJoinRole::Member => {
-            crate::internal::identity_device_state::DeviceAuthorizationRole::Member
-        }
-        DeviceJoinRole::Admin => {
-            crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
-        }
-    }
-}
-
 fn public_remote_state(
     value: crate::internal::identity_device_join_runtime::DeviceJoinRemoteState,
 ) -> DeviceJoinRemoteState {
     match value {
         crate::internal::identity_device_join_runtime::DeviceJoinRemoteState::Pending => {
             DeviceJoinRemoteState::Pending
-        }
-        crate::internal::identity_device_join_runtime::DeviceJoinRemoteState::Claimed => {
-            DeviceJoinRemoteState::Claimed
         }
         crate::internal::identity_device_join_runtime::DeviceJoinRemoteState::ChallengeSent => {
             DeviceJoinRemoteState::ChallengeSent
@@ -971,6 +931,12 @@ fn public_remote_state(
         }
         crate::internal::identity_device_join_runtime::DeviceJoinRemoteState::Consumed => {
             DeviceJoinRemoteState::Consumed
+        }
+        crate::internal::identity_device_join_runtime::DeviceJoinRemoteState::Cancelled => {
+            DeviceJoinRemoteState::Cancelled
+        }
+        crate::internal::identity_device_join_runtime::DeviceJoinRemoteState::Rejected => {
+            DeviceJoinRemoteState::Rejected
         }
         crate::internal::identity_device_join_runtime::DeviceJoinRemoteState::Expired => {
             DeviceJoinRemoteState::Expired
@@ -1004,22 +970,6 @@ fn approval_error_is_retryable(error: &crate::ImError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pending_join_requests_are_visible_only_to_ready_admins() {
-        for (readiness, expected) in [
-            (crate::identity::IdentityDeviceReadiness::Legacy, false),
-            (crate::identity::IdentityDeviceReadiness::MemberReady, false),
-            (
-                crate::identity::IdentityDeviceReadiness::AdminAwaitingRoot,
-                false,
-            ),
-            (crate::identity::IdentityDeviceReadiness::AdminReady, true),
-            (crate::identity::IdentityDeviceReadiness::Blocked, false),
-        ] {
-            assert_eq!(may_read_pending_join_requests(&readiness), expected);
-        }
-    }
 
     #[test]
     fn consumed_join_replay_projects_current_member_from_local_identity() {

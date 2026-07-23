@@ -67,8 +67,8 @@ pub struct ImCorePaths {
 pub struct ImCoreOpenOptions {
     pub identity_secret_storage_policy: IdentitySecretStoragePolicy,
     pub identity_secret_vault: Option<ImCoreSecretVaultOptions>,
-    pub multi_device_join_enabled: bool, // default false
     pub multi_device_root_transfer_enabled: bool, // default false
+    pub multi_device_device_revoke_enabled: bool, // default false
     pub multi_device_direct_e2ee_enabled: bool, // default false
     pub multi_device_group_e2ee_enabled: bool, // default false
 }
@@ -330,10 +330,17 @@ PreKey Bundle；失败保留同一 PendingRegistration 精确重试。公共 DTO
 
 ### 5.1 Device Join host facade
 
-Device Join is an AWiki-local control-plane API and is disabled unless the host
-opens Core with `with_multi_device_join_enabled(true)`. The host facade provides
-new-device begin/resume/poll/cancel plus management-device Registry,
-claim/poll/approval/cancel operations through `core.device_join()`.
+Device Join is an AWiki-local control-plane API and has no host-local rollout
+gate. The host facade provides new-device begin/poll/cancel plus
+management-device Registry, local notification-driven request listing,
+start-verification, reject, and approval operations through
+`core.device_join()`. Management devices do not poll Join status and do not
+have an admin-side cancel API.
+
+`local_device_join_verification_progress(admin_identity, join_session_id)` 是
+ResponseVerified/ApprovalPrepared 阶段的纯本地短期读取入口。它只从已验证的 admin session
+与 Vault 读取 SAS，不发 RPC、不写 System Notification projection，也不推进 Join state。SAS
+不进入 `DeviceJoinRequestNotice`、realtime event、CLI JSON 或 durable notice。
 
 `DeviceJoinAccountVerificationGrant` is a write-only input consumed by
 `begin_new_device_join`; it is not serializable and its `Debug` output is
@@ -1055,3 +1062,26 @@ client.secure().group(group).repair()
 ```
 
 KeyPackage、prekey、MLS provider、ciphertext processing、direct session id、ratchet counter、raw attachment manifest 不进入默认 public API。
+
+## 15. system_notifications：V1 control-plane projection
+
+```rust
+client.system_notifications().list(query).await
+client.system_notifications().get(event_id).await
+client.system_notifications().watch(query).await
+```
+
+该 API 只读取 Core 已完成 P3 Origin Proof、目标 DID、closed payload、Join Request Proof、
+durable dedupe 和单调 revision reducer 后的本地投影。公开
+`SystemNotificationSnapshot` 只包含事件/session 标识、通知 kind/state/revision、时间和 terminal
+标志；不暴露原始 P3 envelope、Origin Proof、Join Request、Challenge Response、token、SAS、
+私钥或其他 Join secret。
+
+System Notification 不进入 `Message`、conversation/history/search、unread/read watermark 或
+attachment projection。`watch()` 只在 durable reducer commit 后发送
+`SystemNotificationChange`；订阅 lag 返回 `RepairRequired`，由调用方重新 `list()`。
+Realtime committed dispatch 同时发送 `ImEvent::SystemNotificationChanged`；其中可选
+`sync: RealtimeSyncHint` 只用于调度可靠同步，不是 checkpoint，不能据此推进本地游标。
+设备定向由 Message Service 的投递元数据和已认证的 exact-device Inbox scope 完成，不是 P3
+协议字段；Core 不接受在 P3 `meta` 中增加 `device_id`、`recipient_device_id` 等自定义设备
+目标字段，标准 P3 `target` 仍然只绑定目标 agent DID。

@@ -80,6 +80,8 @@ impl PendingJoinActivation {
                 .and_then(serde_json::Value::as_str)
                 != Some(self.did.as_str())
             || self.authorization.device.management_ready
+            || self.authorization.device.role
+                != crate::internal::identity_device_state::DeviceAuthorizationRole::Member
             || self.authorization.device.auth_generation == 0
             || crate::internal::identity_wire::document::document_hash(&self.resolved_document)?
                 != self.authorization.checkpoint.document_hash

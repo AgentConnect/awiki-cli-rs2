@@ -727,6 +727,35 @@ fn local_state_schema_rejects_unsupported_versions() {
 }
 
 #[test]
+fn local_state_schema_atomically_upgrades_v28_with_system_notification_tables() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute_batch(
+        "DROP TABLE system_notification_receipts;
+         DROP TABLE system_notification_join_state;",
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 28).unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    for table in [
+        "system_notification_receipts",
+        "system_notification_join_state",
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[test]
 fn local_state_schema_rejects_v6_handle_backfill_until_workspace_migration() {
     let db = Connection::open_in_memory().unwrap();
     db.pragma_update(None, "user_version", 6).unwrap();

@@ -284,6 +284,18 @@ struct PlainRealtimeNotificationProjector;
 
 impl RealtimeNotificationProjector for PlainRealtimeNotificationProjector {
     fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        if crate::internal::system_notification::wire::is_trusted_delivery_marker(&notification)
+            || crate::internal::system_notification::wire::is_system_notification_hint(
+                &notification,
+            )
+            || crate::internal::system_notification::wire::is_system_namespace(&notification)
+        {
+            return RealtimeProjectionOutcome {
+                event: None,
+                additional_events: Vec::new(),
+                warnings: vec!["system.notification.secure_projector_required".to_owned()],
+            };
+        }
         RealtimeProjectionOutcome {
             event: Some(
                 crate::internal::realtime::projection::project_notification(&notification).event,
@@ -306,6 +318,31 @@ where
     R: RpcTransport,
 {
     fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        #[cfg(feature = "sqlite")]
+        match crate::internal::system_notification::dispatch::dispatch_with_transport(
+            self.client,
+            &notification,
+            &mut self.directory_transport,
+        ) {
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NotSystem => {}
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NeedsHydration => {
+                return hydrate_realtime_system_notifications(self.client);
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Consumed { event } => {
+                return RealtimeProjectionOutcome {
+                    event,
+                    additional_events: Vec::new(),
+                    warnings: Vec::new(),
+                };
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Rejected { warning } => {
+                return RealtimeProjectionOutcome {
+                    event: None,
+                    additional_events: Vec::new(),
+                    warnings: vec![warning],
+                };
+            }
+        }
         let (notification, mut warnings) = normalize_direct_e2ee_realtime_notification(
             self.client,
             notification,
@@ -366,6 +403,35 @@ impl<'a> AsyncFirstSecureRealtimeNotificationProjector<'a> {
 #[cfg(all(feature = "blocking", feature = "sqlite"))]
 impl RealtimeNotificationProjector for AsyncFirstSecureRealtimeNotificationProjector<'_> {
     fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        #[cfg(feature = "sqlite")]
+        {
+            let mut directory_transport =
+                crate::internal::transport::CoreHttpTransport::new(self.client);
+            match crate::internal::system_notification::dispatch::dispatch_with_transport(
+            self.client,
+            &notification,
+            &mut directory_transport,
+        ) {
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NotSystem => {}
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NeedsHydration => {
+                return hydrate_realtime_system_notifications(self.client);
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Consumed { event } => {
+                return RealtimeProjectionOutcome {
+                    event,
+                    additional_events: Vec::new(),
+                    warnings: Vec::new(),
+                };
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Rejected { warning } => {
+                return RealtimeProjectionOutcome {
+                    event: None,
+                    additional_events: Vec::new(),
+                    warnings: vec![warning],
+                };
+            }
+        }
+        }
         let projection = normalize_direct_e2ee_realtime_notification_async_first(
             self.client,
             self.runtime.as_ref(),
@@ -455,6 +521,37 @@ impl<'a> AsyncSecureRealtimeNotificationProjector<'a> {
 #[cfg(feature = "sqlite")]
 impl AsyncRealtimeNotificationProjector for AsyncSecureRealtimeNotificationProjector<'_> {
     async fn project_async(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        #[cfg(feature = "sqlite")]
+        {
+            let mut directory_transport =
+                crate::internal::transport::CoreHttpTransport::new(self.client);
+            match crate::internal::system_notification::dispatch::dispatch_with_transport_async(
+            self.client,
+            &notification,
+            &mut directory_transport,
+        )
+        .await
+        {
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NotSystem => {}
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NeedsHydration => {
+                return hydrate_realtime_system_notifications_async(self.client).await;
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Consumed { event } => {
+                return RealtimeProjectionOutcome {
+                    event,
+                    additional_events: Vec::new(),
+                    warnings: Vec::new(),
+                };
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Rejected { warning } => {
+                return RealtimeProjectionOutcome {
+                    event: None,
+                    additional_events: Vec::new(),
+                    warnings: vec![warning],
+                };
+            }
+        }
+        }
         let projection = normalize_direct_e2ee_realtime_notification_async(
             self.client,
             &self.direct_processor,
@@ -568,6 +665,57 @@ struct AsyncLocalStateRealtimeNotificationProjector<P> {
     inner: P,
 }
 
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
+fn hydrate_realtime_system_notifications(
+    client: &crate::core::ImClient,
+) -> RealtimeProjectionOutcome {
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let mut directory_transport = crate::internal::transport::CoreHttpTransport::new(client);
+    hydration_projection(
+        crate::internal::message_runtime::read::hydrate_system_notifications(
+            client,
+            &mut transport,
+            &mut directory_transport,
+            100,
+        ),
+    )
+}
+
+#[cfg(feature = "sqlite")]
+async fn hydrate_realtime_system_notifications_async(
+    client: &crate::core::ImClient,
+) -> RealtimeProjectionOutcome {
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let mut directory_transport = crate::internal::transport::CoreHttpTransport::new(client);
+    hydration_projection(
+        crate::internal::message_runtime::read::hydrate_system_notifications_async(
+            client,
+            &mut transport,
+            &mut directory_transport,
+            100,
+        )
+        .await,
+    )
+}
+
+#[cfg(feature = "sqlite")]
+fn hydration_projection(
+    result: crate::ImResult<crate::internal::message_runtime::read::SystemNotificationHydration>,
+) -> RealtimeProjectionOutcome {
+    match result {
+        Ok(mut hydration) => RealtimeProjectionOutcome {
+            event: (!hydration.events.is_empty()).then(|| hydration.events.remove(0)),
+            additional_events: hydration.events,
+            warnings: hydration.warnings,
+        },
+        Err(_) => RealtimeProjectionOutcome {
+            event: None,
+            additional_events: Vec::new(),
+            warnings: vec!["system.notification.hydration_deferred".to_owned()],
+        },
+    }
+}
+
 #[cfg(feature = "sqlite")]
 impl<P> AsyncRealtimeNotificationProjector for AsyncLocalStateRealtimeNotificationProjector<P>
 where
@@ -608,6 +756,7 @@ fn project_realtime_event_to_local_state(
         super::ImEvent::GroupUpdated(event) => project_realtime_group_updated(client, event),
         super::ImEvent::ConnectionStateChanged(_)
         | super::ImEvent::MessageUpdated(_)
+        | super::ImEvent::SystemNotificationChanged(_)
         | super::ImEvent::LocalNotification(_)
         | super::ImEvent::HostNotification(_)
         | super::ImEvent::UnknownNotification(_) => Ok(()),
@@ -628,6 +777,7 @@ async fn project_realtime_event_to_local_state_async(
         }
         super::ImEvent::ConnectionStateChanged(_)
         | super::ImEvent::MessageUpdated(_)
+        | super::ImEvent::SystemNotificationChanged(_)
         | super::ImEvent::LocalNotification(_)
         | super::ImEvent::HostNotification(_)
         | super::ImEvent::UnknownNotification(_) => Ok(()),

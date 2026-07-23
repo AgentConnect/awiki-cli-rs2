@@ -2817,7 +2817,6 @@ mod tests {
             crate::ImCoreOpenOptions {
                 identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultPreferred,
                 identity_secret_vault: None,
-                multi_device_join_enabled: false,
                 multi_device_root_transfer_enabled: false,
                 multi_device_device_revoke_enabled: false,
                 multi_device_direct_e2ee_enabled: false,
@@ -2960,7 +2959,6 @@ mod tests {
             crate::ImCoreOpenOptions {
                 identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultRequired,
                 identity_secret_vault: None,
-                multi_device_join_enabled: false,
                 multi_device_root_transfer_enabled: false,
                 multi_device_device_revoke_enabled: false,
                 multi_device_direct_e2ee_enabled: false,

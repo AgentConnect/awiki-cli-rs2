@@ -19,7 +19,6 @@ pub(crate) struct ImCoreInner {
     pub(crate) identity_secret_storage_policy: IdentitySecretStoragePolicy,
     pub(crate) identity_vault: Option<options::IdentityVaultContext>,
     pub(crate) device_join_lock: std::sync::Mutex<()>,
-    pub(crate) device_join_enabled: bool,
     pub(crate) root_key_transfer_enabled: bool,
     pub(crate) device_revoke_enabled: bool,
     pub(crate) direct_e2ee_v2_enabled: bool,
@@ -91,7 +90,6 @@ impl ImCore {
                 identity_secret_storage_policy: options.identity_secret_storage_policy,
                 identity_vault,
                 device_join_lock: std::sync::Mutex::new(()),
-                device_join_enabled: options.multi_device_join_enabled,
                 root_key_transfer_enabled: options.multi_device_root_transfer_enabled,
                 device_revoke_enabled: options.multi_device_device_revoke_enabled,
                 direct_e2ee_v2_enabled: options.multi_device_direct_e2ee_enabled,
@@ -199,10 +197,6 @@ impl ImCoreInner {
 
     pub(crate) fn identity_vault(&self) -> Option<&options::IdentityVaultContext> {
         self.identity_vault.as_ref()
-    }
-
-    pub(crate) fn device_join_enabled(&self) -> bool {
-        self.device_join_enabled
     }
 
     pub(crate) fn root_key_transfer_enabled(&self) -> bool {

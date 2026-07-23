@@ -1,22 +1,19 @@
-//! Strict AWiki-local wire contract for device Registry and Join JSON-RPC.
-//!
-//! This module maps only the frozen first-party methods. It rejects unknown
-//! response fields and invalid state/field combinations before they reach the
-//! local Join state machine. Token-bearing calls redact their params in Debug.
+//! Closed AWiki-local wire contract for the frozen v1 device Join RPCs.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
-use crate::identity::{DeviceJoinChallenge, DeviceJoinChallengeResponse, DeviceJoinRequest};
+use crate::identity::{DeviceJoinChallenge, DeviceJoinChallengeResponse};
 use crate::internal::identity_device_join_runtime::{
-    DeviceJoinRemoteAdminStatus, DeviceJoinRemoteApproveRequest, DeviceJoinRemoteApproveResult,
-    DeviceJoinRemoteAuthorization, DeviceJoinRemoteChallengeResult, DeviceJoinRemoteClaimRequest,
-    DeviceJoinRemoteClaimResult, DeviceJoinRemoteCreateRequest, DeviceJoinRemoteCreateResult,
-    DeviceJoinRemoteDeviceSummary, DeviceJoinRemoteNewDeviceStatus, DeviceJoinRemotePendingSummary,
-    DeviceJoinRemoteRegistry, DeviceJoinRemoteResponseRequest, DeviceJoinRemoteState,
-    DeviceJoinRemoteTransitionResult,
+    DeviceJoinRemoteApproveRequest, DeviceJoinRemoteApproveResult, DeviceJoinRemoteAuthorization,
+    DeviceJoinRemoteCancelRequest, DeviceJoinRemoteChallengeResult, DeviceJoinRemoteCreateRequest,
+    DeviceJoinRemoteCreateResult, DeviceJoinRemoteDeviceSummary, DeviceJoinRemoteNewDeviceStatus,
+    DeviceJoinRemoteRegistry, DeviceJoinRemoteRejectRequest, DeviceJoinRemoteResponseRequest,
+    DeviceJoinRemoteState, DeviceJoinRemoteTransitionResult,
 };
 use crate::internal::identity_device_state::{
     DeviceAuthorizationRole, DeviceAuthorizationStatus, IdentityInternalCheckpoint,
@@ -26,10 +23,11 @@ use crate::internal::platform_secret::SecretBytes;
 pub(crate) const DEVICE_REGISTRY_GET_METHOD: &str = "device_registry_get";
 pub(crate) const DEVICE_JOIN_CREATE_METHOD: &str = "device_join_create";
 pub(crate) const DEVICE_JOIN_STATUS_METHOD: &str = "device_join_status";
-pub(crate) const DEVICE_JOIN_CLAIM_METHOD: &str = "device_join_claim";
-pub(crate) const DEVICE_JOIN_CHALLENGE_METHOD: &str = "device_join_challenge";
+pub(crate) const DEVICE_JOIN_SUBMIT_CHALLENGE_METHOD: &str = "device_join_submit_challenge";
 pub(crate) const DEVICE_JOIN_CHALLENGE_RESPONSE_METHOD: &str = "device_join_challenge_response";
 pub(crate) const DEVICE_JOIN_APPROVE_METHOD: &str = "device_join_approve";
+pub(crate) const DEVICE_JOIN_REJECT_METHOD: &str = "device_join_reject";
+pub(crate) const DEVICE_JOIN_CANCEL_METHOD: &str = "device_join_cancel";
 
 pub(crate) struct DeviceJoinWireCall {
     pub(crate) endpoint: &'static str,
@@ -55,14 +53,11 @@ impl std::fmt::Debug for DeviceJoinWireCall {
 
 pub(crate) fn build_registry_call(
     did: &crate::ids::Did,
-    include_pending_join_requests: bool,
+    _compatibility_flag: bool,
 ) -> DeviceJoinWireCall {
     call(
         DEVICE_REGISTRY_GET_METHOD,
-        json!({
-            "did": did.as_str(),
-            "include_pending_join_requests": include_pending_join_requests,
-        }),
+        json!({"did": did.as_str()}),
         false,
     )
 }
@@ -73,7 +68,7 @@ pub(crate) fn build_create_call(
     Ok(call(
         DEVICE_JOIN_CREATE_METHOD,
         json!({
-            "operation_id": request.operation_id,
+            "operation_id": required("operation_id", request.operation_id)?,
             "account_verification_token": secret_token(
                 request.account_verification_token,
                 "account_verification_token",
@@ -96,39 +91,11 @@ pub(crate) fn build_new_status_call(
     ))
 }
 
-pub(crate) fn build_admin_status_call(
-    join_session_id: &str,
-) -> crate::ImResult<DeviceJoinWireCall> {
-    Ok(call(
-        DEVICE_JOIN_STATUS_METHOD,
-        json!({"join_session_id": required("join_session_id", join_session_id)?}),
-        false,
-    ))
-}
-
-pub(crate) fn build_claim_call(
-    request: DeviceJoinRemoteClaimRequest<'_>,
-) -> crate::ImResult<DeviceJoinWireCall> {
-    Ok(call(
-        DEVICE_JOIN_CLAIM_METHOD,
-        json!({
-            "operation_id": required("operation_id", request.operation_id)?,
-            "join_session_id": required("join_session_id", request.join_session_id)?,
-            "authorizing_device_id": required(
-                "authorizing_device_id",
-                request.authorizing_device_id,
-            )?,
-            "authorizing_device_proof": request.authorizing_device_proof,
-        }),
-        false,
-    ))
-}
-
-pub(crate) fn build_challenge_call(
+pub(crate) fn build_submit_challenge_call(
     challenge: &DeviceJoinChallenge,
 ) -> crate::ImResult<DeviceJoinWireCall> {
     Ok(call(
-        DEVICE_JOIN_CHALLENGE_METHOD,
+        DEVICE_JOIN_SUBMIT_CHALLENGE_METHOD,
         serde_json::to_value(challenge).map_err(serialization_error)?,
         false,
     ))
@@ -141,17 +108,26 @@ pub(crate) fn build_response_call(
     Ok(call(
         DEVICE_JOIN_CHALLENGE_RESPONSE_METHOD,
         json!({
-            "operation_id": response.operation_id,
+            "operation_id": required("operation_id", &response.operation_id)?,
             "join_session_token": secret_token(
                 request.join_session_token,
                 "join_session_token",
             )?,
-            "join_session_id": response.join_session_id,
-            "challenge_id": response.challenge_id,
-            "challenge_hash": response.challenge_hash,
-            "join_request_hash": response.join_request_hash,
-            "pairing_transcript_hash": response.pairing_transcript_hash,
-            "new_device_proof": response.new_device_proof,
+            "join_session_id": required("join_session_id", &response.join_session_id)?,
+            "challenge_id": required("challenge_id", &response.challenge_id)?,
+            "challenge_hash": required("challenge_hash", &response.challenge_hash)?,
+            "join_request_hash": required(
+                "join_request_hash",
+                &response.join_request_hash,
+            )?,
+            "pairing_transcript_hash": required(
+                "pairing_transcript_hash",
+                &response.pairing_transcript_hash,
+            )?,
+            "response_signature_b64u": required(
+                "response_signature_b64u",
+                &response.response_signature_b64u,
+            )?,
         }),
         true,
     ))
@@ -168,50 +144,78 @@ pub(crate) fn build_approve_call(
             "expected_document_version": request.expected_checkpoint.document_version,
             "expected_document_hash": request.expected_checkpoint.document_hash,
             "expected_registry_version": request.expected_checkpoint.registry_version,
-            "role": request.role,
             "new_document": request.new_document,
             "pairing_confirmation": request.pairing_confirmation,
             "authorizing_device_id": required(
                 "authorizing_device_id",
                 request.authorizing_device_id,
             )?,
-            "authorizing_device_proof": request.authorizing_device_proof,
+            "proof": request.proof,
         }),
         false,
+    ))
+}
+
+pub(crate) fn build_reject_call(
+    request: DeviceJoinRemoteRejectRequest<'_>,
+) -> crate::ImResult<DeviceJoinWireCall> {
+    Ok(call(
+        DEVICE_JOIN_REJECT_METHOD,
+        json!({
+            "operation_id": required("operation_id", request.operation_id)?,
+            "join_session_id": required("join_session_id", request.join_session_id)?,
+            "rejecting_device_id": required(
+                "rejecting_device_id",
+                request.rejecting_device_id,
+            )?,
+            "reason": match request.reason {
+                "user_rejected" | "sas_mismatch" => request.reason,
+                _ => return Err(invalid_wire("invalid device Join reject reason")),
+            },
+            "proof": request.proof,
+        }),
+        false,
+    ))
+}
+
+pub(crate) fn build_cancel_call(
+    request: DeviceJoinRemoteCancelRequest<'_>,
+) -> crate::ImResult<DeviceJoinWireCall> {
+    if request.reason != "user_cancelled" {
+        return Err(invalid_wire("invalid device Join cancel reason"));
+    }
+    Ok(call(
+        DEVICE_JOIN_CANCEL_METHOD,
+        json!({
+            "operation_id": required("operation_id", request.operation_id)?,
+            "join_session_token": secret_token(
+                request.join_session_token,
+                "join_session_token",
+            )?,
+            "join_session_id": required("join_session_id", request.join_session_id)?,
+            "reason": request.reason,
+        }),
+        true,
     ))
 }
 
 pub(crate) fn parse_registry_result(
     raw: Value,
     expected_did: &crate::ids::Did,
-    include_pending_join_requests: bool,
+    _compatibility_flag: bool,
 ) -> crate::ImResult<DeviceJoinRemoteRegistry> {
     let raw: RawRegistry = parse(raw, "device_registry_get result")?;
     if raw.did != expected_did.as_str() {
         return Err(invalid_wire("Registry DID does not match the request"));
     }
-    if !include_pending_join_requests && raw.pending_join_requests.is_some() {
-        return Err(invalid_wire(
-            "Registry unexpectedly returned pending Join requests",
-        ));
-    }
-    let checkpoint = raw.checkpoint.try_into()?;
-    let devices = raw
-        .devices
-        .into_iter()
-        .map(|device| device.into_validated(expected_did))
-        .collect::<crate::ImResult<Vec<_>>>()?;
-    let pending_join_requests = raw
-        .pending_join_requests
-        .unwrap_or_default()
-        .into_iter()
-        .map(|pending| pending.into_validated(expected_did))
-        .collect::<crate::ImResult<Vec<_>>>()?;
     Ok(DeviceJoinRemoteRegistry {
         did: expected_did.clone(),
-        checkpoint,
-        devices,
-        pending_join_requests,
+        checkpoint: raw.checkpoint.try_into()?,
+        devices: raw
+            .devices
+            .into_iter()
+            .map(|device| device.into_validated(Some(expected_did)))
+            .collect::<crate::ImResult<Vec<_>>>()?,
     })
 }
 
@@ -222,10 +226,13 @@ pub(crate) fn parse_create_result(
     let raw: RawCreateResult = parse(raw, "device_join_create result")?;
     require_session(&raw.join_session_id, expected_join_session_id)?;
     require_state(raw.state, DeviceJoinRemoteState::Pending, "create")?;
+    require_revision_for_state(raw.state, raw.session_revision)?;
+    validate_utc_time("expires_at", &raw.expires_at)?;
     Ok(DeviceJoinRemoteCreateResult {
         join_session_id: raw.join_session_id,
         join_session_token: nonempty_secret(raw.join_session_token, "join_session_token")?,
         state: raw.state,
+        session_revision: raw.session_revision,
         expires_at: required("expires_at", &raw.expires_at)?,
     })
 }
@@ -234,69 +241,31 @@ pub(crate) fn parse_new_status_result(
     raw: Value,
     expected_join_session_id: &str,
 ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus> {
-    let raw: RawNewStatus = parse(raw, "new-device device_join_status result")?;
-    require_session(&raw.join_session_id, expected_join_session_id)?;
-    validate_status(
-        raw.state,
-        raw.challenge.as_ref(),
-        None,
-        raw.authorization.as_ref(),
-        false,
+    reject_explicit_nulls(
+        &raw,
+        &[
+            "challenge",
+            "authorization",
+            "claimed_by_device_id",
+            "challenge_id",
+            "pairing_transcript_hash",
+            "reason",
+            "rejected_by_device_id",
+            "occurred_at",
+        ],
     )?;
-    validate_status_bindings(&raw.join_session_id, raw.challenge.as_ref(), None)?;
+    let raw: RawStatus = parse(raw, "new-device device_join_status result")?;
+    require_session(&raw.join_session_id, expected_join_session_id)?;
+    require_revision_for_state(raw.state, raw.session_revision)?;
+    validate_utc_time("expires_at", &raw.expires_at)?;
+    validate_status(&raw)?;
     Ok(DeviceJoinRemoteNewDeviceStatus {
-        join_session_id: required("join_session_id", &raw.join_session_id)?,
+        join_session_id: raw.join_session_id,
         state: raw.state,
+        session_revision: raw.session_revision,
         expires_at: required("expires_at", &raw.expires_at)?,
         challenge: raw.challenge,
         authorization: raw.authorization.map(TryInto::try_into).transpose()?,
-    })
-}
-
-pub(crate) fn parse_admin_status_result(
-    raw: Value,
-    expected_join_session_id: &str,
-) -> crate::ImResult<DeviceJoinRemoteAdminStatus> {
-    let raw: RawAdminStatus = parse(raw, "admin device_join_status result")?;
-    require_session(&raw.join_session_id, expected_join_session_id)?;
-    validate_status(
-        raw.state,
-        raw.challenge.as_ref(),
-        raw.challenge_response.as_ref(),
-        raw.authorization.as_ref(),
-        true,
-    )?;
-    validate_status_bindings(
-        &raw.join_session_id,
-        raw.challenge.as_ref(),
-        raw.challenge_response.as_ref(),
-    )?;
-    Ok(DeviceJoinRemoteAdminStatus {
-        join_session_id: raw.join_session_id,
-        state: raw.state,
-        expires_at: required("expires_at", &raw.expires_at)?,
-        challenge: raw.challenge,
-        challenge_response: raw.challenge_response,
-        authorization: raw.authorization.map(TryInto::try_into).transpose()?,
-    })
-}
-
-pub(crate) fn parse_claim_result(
-    raw: Value,
-    expected_join_session_id: &str,
-) -> crate::ImResult<DeviceJoinRemoteClaimResult> {
-    let raw: RawClaimResult = parse(raw, "device_join_claim result")?;
-    require_session(&raw.join_session_id, expected_join_session_id)?;
-    require_state(raw.state, DeviceJoinRemoteState::Claimed, "claim")?;
-    if raw.join_request.join_session_id != raw.join_session_id {
-        return Err(invalid_wire("claimed Join Request session does not match"));
-    }
-    Ok(DeviceJoinRemoteClaimResult {
-        join_session_id: raw.join_session_id,
-        state: raw.state,
-        claimed_by_device_id: required("claimed_by_device_id", &raw.claimed_by_device_id)?,
-        claim_expires_at: required("claim_expires_at", &raw.claim_expires_at)?,
-        join_request: raw.join_request,
     })
 }
 
@@ -304,16 +273,27 @@ pub(crate) fn parse_challenge_result(
     raw: Value,
     challenge: &DeviceJoinChallenge,
 ) -> crate::ImResult<DeviceJoinRemoteChallengeResult> {
-    let raw: RawChallengeResult = parse(raw, "device_join_challenge result")?;
+    let raw: RawSubmitChallengeResult = parse(raw, "device_join_submit_challenge result")?;
     require_session(&raw.join_session_id, &challenge.join_session_id)?;
-    require_state(raw.state, DeviceJoinRemoteState::ChallengeSent, "challenge")?;
-    if raw.challenge_id != challenge.challenge_id {
-        return Err(invalid_wire("challenge result id does not match"));
+    require_state(
+        raw.state,
+        DeviceJoinRemoteState::ChallengeSent,
+        "submit challenge",
+    )?;
+    require_revision_for_state(raw.state, raw.session_revision)?;
+    if raw.challenge_id != challenge.challenge_id
+        || raw.challenge_expires_at != challenge.challenge_expires_at
+        || raw.claimed_by_device_id != challenge.admin_device_id
+    {
+        return Err(invalid_wire("submit challenge result binding mismatch"));
     }
     Ok(DeviceJoinRemoteChallengeResult {
         join_session_id: raw.join_session_id,
         state: raw.state,
+        session_revision: raw.session_revision,
+        claimed_by_device_id: raw.claimed_by_device_id,
         challenge_id: raw.challenge_id,
+        challenge_expires_at: raw.challenge_expires_at,
     })
 }
 
@@ -321,17 +301,36 @@ pub(crate) fn parse_response_result(
     raw: Value,
     response: &DeviceJoinChallengeResponse,
 ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
-    let raw: RawTransitionResult = parse(raw, "device_join_challenge_response result")?;
-    require_session(&raw.join_session_id, &response.join_session_id)?;
-    require_state(
-        raw.state,
+    parse_transition(
+        raw,
+        &response.join_session_id,
         DeviceJoinRemoteState::ResponseVerified,
-        "challenge response",
-    )?;
-    Ok(DeviceJoinRemoteTransitionResult {
-        join_session_id: raw.join_session_id,
-        state: raw.state,
-    })
+        "device_join_challenge_response result",
+    )
+}
+
+pub(crate) fn parse_reject_result(
+    raw: Value,
+    expected_join_session_id: &str,
+) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+    parse_transition(
+        raw,
+        expected_join_session_id,
+        DeviceJoinRemoteState::Rejected,
+        "device_join_reject result",
+    )
+}
+
+pub(crate) fn parse_cancel_result(
+    raw: Value,
+    expected_join_session_id: &str,
+) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+    parse_transition(
+        raw,
+        expected_join_session_id,
+        DeviceJoinRemoteState::Cancelled,
+        "device_join_cancel result",
+    )
 }
 
 pub(crate) fn parse_approve_result(
@@ -341,12 +340,186 @@ pub(crate) fn parse_approve_result(
     let raw: RawApproveResult = parse(raw, "device_join_approve result")?;
     require_session(&raw.join_session_id, expected_join_session_id)?;
     require_state(raw.state, DeviceJoinRemoteState::Consumed, "approve")?;
+    require_revision_for_state(raw.state, raw.session_revision)?;
+    let device = raw.device.into_validated(None)?;
+    validate_join_authorization_device(&device)?;
     Ok(DeviceJoinRemoteApproveResult {
         join_session_id: raw.join_session_id,
         state: raw.state,
+        session_revision: raw.session_revision,
         checkpoint: raw.checkpoint.try_into()?,
-        device: raw.device.into_unbound_validated()?,
+        device,
     })
+}
+
+fn parse_transition(
+    raw: Value,
+    expected_join_session_id: &str,
+    expected_state: DeviceJoinRemoteState,
+    context: &str,
+) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+    let raw: RawTransitionResult = parse(raw, context)?;
+    require_session(&raw.join_session_id, expected_join_session_id)?;
+    require_state(raw.state, expected_state, context)?;
+    require_revision_for_state(raw.state, raw.session_revision)?;
+    Ok(DeviceJoinRemoteTransitionResult {
+        join_session_id: raw.join_session_id,
+        state: raw.state,
+        session_revision: raw.session_revision,
+    })
+}
+
+fn validate_status(raw: &RawStatus) -> crate::ImResult<()> {
+    let no_terminal_fields =
+        raw.reason.is_none() && raw.occurred_at.is_none() && raw.rejected_by_device_id.is_none();
+    let valid = match raw.state {
+        DeviceJoinRemoteState::Pending => {
+            raw.challenge.is_none()
+                && raw.authorization.is_none()
+                && raw.claimed_by_device_id.is_none()
+                && raw.challenge_id.is_none()
+                && raw.pairing_transcript_hash.is_none()
+                && no_terminal_fields
+        }
+        DeviceJoinRemoteState::ChallengeSent => {
+            raw.challenge.is_some()
+                && raw.authorization.is_none()
+                && raw.claimed_by_device_id.is_none()
+                && raw.challenge_id.is_none()
+                && raw.pairing_transcript_hash.is_none()
+                && no_terminal_fields
+        }
+        DeviceJoinRemoteState::ResponseVerified => {
+            raw.challenge.is_none()
+                && raw.authorization.is_none()
+                && raw.claimed_by_device_id.is_some()
+                && raw.challenge_id.is_some()
+                && raw.pairing_transcript_hash.is_some()
+                && no_terminal_fields
+        }
+        DeviceJoinRemoteState::Consumed => {
+            raw.authorization.is_some()
+                && raw.challenge.is_none()
+                && raw.claimed_by_device_id.is_none()
+                && raw.challenge_id.is_none()
+                && raw.pairing_transcript_hash.is_none()
+                && no_terminal_fields
+        }
+        DeviceJoinRemoteState::Cancelled | DeviceJoinRemoteState::Expired => {
+            raw.challenge.is_none()
+                && raw.authorization.is_none()
+                && raw.claimed_by_device_id.is_none()
+                && raw.challenge_id.is_none()
+                && raw.pairing_transcript_hash.is_none()
+                && raw.reason.is_some()
+                && raw.occurred_at.is_some()
+                && raw.rejected_by_device_id.is_none()
+        }
+        DeviceJoinRemoteState::Rejected => {
+            raw.challenge.is_none()
+                && raw.authorization.is_none()
+                && raw.claimed_by_device_id.is_none()
+                && raw.challenge_id.is_none()
+                && raw.pairing_transcript_hash.is_none()
+                && raw.reason.is_some()
+                && raw.occurred_at.is_some()
+                && raw.rejected_by_device_id.is_some()
+        }
+    };
+    if !valid {
+        return Err(invalid_wire("Join status state/field invariant failed"));
+    }
+    if let Some(challenge) = raw.challenge.as_ref() {
+        if challenge.join_session_id != raw.join_session_id {
+            return Err(invalid_wire("status challenge session does not match"));
+        }
+        validate_status_challenge(challenge, &raw.expires_at)?;
+    }
+    if let Some(authorization) = raw.authorization.as_ref() {
+        let device = authorization.device.clone().into_validated(None)?;
+        validate_join_authorization_device(&device)?;
+    }
+    match raw.state {
+        DeviceJoinRemoteState::Cancelled => {
+            if raw.reason.as_deref() != Some("user_cancelled") {
+                return Err(invalid_wire("cancelled status reason is invalid"));
+            }
+        }
+        DeviceJoinRemoteState::Rejected => {
+            if !matches!(
+                raw.reason.as_deref(),
+                Some("user_rejected" | "sas_mismatch")
+            ) {
+                return Err(invalid_wire("rejected status reason is invalid"));
+            }
+            crate::ids::ProtocolDeviceId::parse(
+                raw.rejected_by_device_id.as_deref().unwrap_or_default(),
+            )
+            .map_err(|_| invalid_wire("rejected_by_device_id is invalid"))?;
+        }
+        DeviceJoinRemoteState::Expired => {
+            if !matches!(
+                raw.reason.as_deref(),
+                Some("session_expired" | "challenge_expired")
+            ) {
+                return Err(invalid_wire("expired status reason is invalid"));
+            }
+        }
+        _ => {}
+    }
+    if let Some(occurred_at) = raw.occurred_at.as_deref() {
+        validate_utc_time("occurred_at", occurred_at)?;
+    }
+    if raw.state == DeviceJoinRemoteState::ResponseVerified {
+        crate::ids::ProtocolDeviceId::parse(
+            raw.claimed_by_device_id.as_deref().unwrap_or_default(),
+        )
+        .map_err(|_| invalid_wire("claimed_by_device_id is invalid"))?;
+        required(
+            "challenge_id",
+            raw.challenge_id.as_deref().unwrap_or_default(),
+        )?;
+        validate_sha256(
+            "pairing_transcript_hash",
+            raw.pairing_transcript_hash.as_deref().unwrap_or_default(),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_status_challenge(
+    challenge: &DeviceJoinChallenge,
+    session_expires_at: &str,
+) -> crate::ImResult<()> {
+    required("challenge.operation_id", &challenge.operation_id)?;
+    required("challenge.challenge_id", &challenge.challenge_id)?;
+    crate::ids::ProtocolDeviceId::parse(&challenge.admin_device_id)
+        .map_err(|_| invalid_wire("challenge.admin_device_id is invalid"))?;
+    validate_utc_time(
+        "challenge.challenge_expires_at",
+        &challenge.challenge_expires_at,
+    )?;
+    if OffsetDateTime::parse(&challenge.challenge_expires_at, &Rfc3339)
+        .map_err(|_| invalid_wire("challenge.challenge_expires_at is invalid"))?
+        > OffsetDateTime::parse(session_expires_at, &Rfc3339)
+            .map_err(|_| invalid_wire("expires_at is invalid"))?
+    {
+        return Err(invalid_wire(
+            "challenge expiry exceeds the Join session expiry",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_join_authorization_device(
+    device: &DeviceJoinRemoteDeviceSummary,
+) -> crate::ImResult<()> {
+    if device.role != DeviceAuthorizationRole::Member || device.management_ready {
+        return Err(invalid_wire(
+            "device Join authorization must be a rootless member",
+        ));
+    }
+    Ok(())
 }
 
 fn call(method: &'static str, params: Value, sensitive: bool) -> DeviceJoinWireCall {
@@ -421,59 +594,20 @@ fn require_state(
     Ok(())
 }
 
-fn validate_status(
-    state: DeviceJoinRemoteState,
-    challenge: Option<&DeviceJoinChallenge>,
-    response: Option<&DeviceJoinChallengeResponse>,
-    authorization: Option<&RawAuthorization>,
-    admin_view: bool,
-) -> crate::ImResult<()> {
-    let challenge_expected = matches!(
-        state,
-        DeviceJoinRemoteState::ChallengeSent | DeviceJoinRemoteState::ResponseVerified
-    );
-    if challenge.is_some() != challenge_expected {
-        return Err(invalid_wire("Join status challenge/state invariant failed"));
-    }
-    let authorization_expected = state == DeviceJoinRemoteState::Consumed;
-    if authorization.is_some() != authorization_expected {
-        return Err(invalid_wire(
-            "Join status authorization/state invariant failed",
-        ));
-    }
-    if !admin_view && response.is_some() {
-        return Err(invalid_wire(
-            "new-device Join status exposed a challenge response",
-        ));
-    }
-    let response_valid = match state {
-        DeviceJoinRemoteState::ResponseVerified if admin_view => response.is_some(),
-        DeviceJoinRemoteState::ResponseVerified => response.is_none(),
-        DeviceJoinRemoteState::Consumed if admin_view => true,
-        _ => response.is_none(),
+fn require_revision_for_state(state: DeviceJoinRemoteState, revision: u64) -> crate::ImResult<()> {
+    let valid = match state {
+        DeviceJoinRemoteState::Pending => revision == 1,
+        DeviceJoinRemoteState::ChallengeSent => revision == 2,
+        DeviceJoinRemoteState::ResponseVerified => revision == 3,
+        DeviceJoinRemoteState::Consumed => revision == 4,
+        DeviceJoinRemoteState::Cancelled
+        | DeviceJoinRemoteState::Rejected
+        | DeviceJoinRemoteState::Expired => (2..=4).contains(&revision),
     };
-    if !response_valid {
-        return Err(invalid_wire("Join status response/state invariant failed"));
-    }
-    Ok(())
-}
-
-fn validate_status_bindings(
-    join_session_id: &str,
-    challenge: Option<&DeviceJoinChallenge>,
-    response: Option<&DeviceJoinChallengeResponse>,
-) -> crate::ImResult<()> {
-    required("join_session_id", join_session_id)?;
-    if challenge.is_some_and(|challenge| challenge.join_session_id != join_session_id) {
-        return Err(invalid_wire("status challenge session does not match"));
-    }
-    if response.is_some_and(|response| response.join_session_id != join_session_id) {
-        return Err(invalid_wire("status response session does not match"));
-    }
-    if let (Some(challenge), Some(response)) = (challenge, response) {
-        if challenge.challenge_id != response.challenge_id {
-            return Err(invalid_wire("status challenge/response ids do not match"));
-        }
+    if !valid {
+        return Err(invalid_wire(
+            "session_revision does not match the Join state",
+        ));
     }
     Ok(())
 }
@@ -484,16 +618,42 @@ fn validate_checkpoint(checkpoint: &IdentityInternalCheckpoint) -> crate::ImResu
             "identity checkpoint versions must be positive",
         ));
     }
-    let encoded = checkpoint
-        .document_hash
+    validate_sha256("document_hash", &checkpoint.document_hash)
+}
+
+fn validate_sha256(field: &str, value: &str) -> crate::ImResult<()> {
+    let encoded = value
         .strip_prefix("sha256:")
-        .ok_or_else(|| invalid_wire("document hash must use sha256:base64url-no-padding"))?;
+        .ok_or_else(|| invalid_wire(format!("{field} must use sha256:base64url-no-padding")))?;
     let decoded = URL_SAFE_NO_PAD
         .decode(encoded.as_bytes())
-        .map_err(|_| invalid_wire("document hash is not valid base64url"))?;
+        .map_err(|_| invalid_wire(format!("{field} is not valid base64url")))?;
     if decoded.len() != 32 || URL_SAFE_NO_PAD.encode(&decoded) != encoded {
+        return Err(invalid_wire(format!(
+            "{field} must encode exactly 32 SHA-256 bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_utc_time(field: &str, value: &str) -> crate::ImResult<()> {
+    required(field, value)?;
+    if !value.ends_with('Z') || OffsetDateTime::parse(value, &Rfc3339).is_err() {
+        return Err(invalid_wire(format!("{field} must be UTC RFC 3339")));
+    }
+    Ok(())
+}
+
+fn reject_explicit_nulls(raw: &Value, optional_fields: &[&str]) -> crate::ImResult<()> {
+    let object = raw
+        .as_object()
+        .ok_or_else(|| invalid_wire("Join result must be an object"))?;
+    if optional_fields
+        .iter()
+        .any(|field| object.get(*field).is_some_and(Value::is_null))
+    {
         return Err(invalid_wire(
-            "document hash must encode exactly 32 SHA-256 bytes",
+            "Join result optional fields must be omitted instead of null",
         ));
     }
     Ok(())
@@ -545,7 +705,7 @@ impl TryFrom<RawCheckpoint> for IdentityInternalCheckpoint {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawDeviceSummary {
     device_id: String,
@@ -559,17 +719,6 @@ struct RawDeviceSummary {
 
 impl RawDeviceSummary {
     fn into_validated(
-        self,
-        did: &crate::ids::Did,
-    ) -> crate::ImResult<DeviceJoinRemoteDeviceSummary> {
-        self.into_summary(Some(did))
-    }
-
-    fn into_unbound_validated(self) -> crate::ImResult<DeviceJoinRemoteDeviceSummary> {
-        self.into_summary(None)
-    }
-
-    fn into_summary(
         self,
         did: Option<&crate::ids::Did>,
     ) -> crate::ImResult<DeviceJoinRemoteDeviceSummary> {
@@ -589,53 +738,10 @@ impl RawDeviceSummary {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawPendingSummary {
-    join_session_id: String,
-    device_id: String,
-    signing_key_id: String,
-    e2ee_key_id: String,
-    requested_role: DeviceAuthorizationRole,
-    issued_at: String,
-    expires_at: String,
-}
-
-impl RawPendingSummary {
-    fn into_validated(
-        self,
-        did: &crate::ids::Did,
-    ) -> crate::ImResult<DeviceJoinRemotePendingSummary> {
-        if self.requested_role != DeviceAuthorizationRole::Member {
-            return Err(invalid_wire("pending Join role must be member"));
-        }
-        crate::ids::ProtocolDeviceId::parse(&self.device_id)
-            .map_err(|_| invalid_wire("invalid pending protocol device id"))?;
-        let prefix = format!("{}#", did.as_str());
-        if self.signing_key_id == self.e2ee_key_id
-            || !self.signing_key_id.starts_with(&prefix)
-            || !self.e2ee_key_id.starts_with(&prefix)
-        {
-            return Err(invalid_wire("invalid pending Join key ids"));
-        }
-        Ok(DeviceJoinRemotePendingSummary {
-            join_session_id: required("join_session_id", &self.join_session_id)?,
-            device_id: self.device_id,
-            signing_key_id: self.signing_key_id,
-            e2ee_key_id: self.e2ee_key_id,
-            requested_role: self.requested_role,
-            issued_at: required("issued_at", &self.issued_at)?,
-            expires_at: required("expires_at", &self.expires_at)?,
-        })
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawRegistry {
     did: String,
     checkpoint: RawCheckpoint,
     devices: Vec<RawDeviceSummary>,
-    #[serde(default)]
-    pending_join_requests: Option<Vec<RawPendingSummary>>,
 }
 
 #[derive(Deserialize)]
@@ -644,6 +750,7 @@ struct RawCreateResult {
     join_session_id: String,
     join_session_token: String,
     state: DeviceJoinRemoteState,
+    session_revision: u64,
     expires_at: String,
 }
 
@@ -658,55 +765,49 @@ impl TryFrom<RawAuthorization> for DeviceJoinRemoteAuthorization {
     type Error = crate::ImError;
 
     fn try_from(value: RawAuthorization) -> Result<Self, Self::Error> {
+        let device = value.device.into_validated(None)?;
+        validate_join_authorization_device(&device)?;
         Ok(Self {
             checkpoint: value.checkpoint.try_into()?,
-            device: value.device.into_unbound_validated()?,
+            device,
         })
     }
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawNewStatus {
+struct RawStatus {
     join_session_id: String,
     state: DeviceJoinRemoteState,
+    session_revision: u64,
     expires_at: String,
     #[serde(default)]
     challenge: Option<DeviceJoinChallenge>,
     #[serde(default)]
     authorization: Option<RawAuthorization>,
+    #[serde(default)]
+    claimed_by_device_id: Option<String>,
+    #[serde(default)]
+    challenge_id: Option<String>,
+    #[serde(default)]
+    pairing_transcript_hash: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    rejected_by_device_id: Option<String>,
+    #[serde(default)]
+    occurred_at: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawAdminStatus {
+struct RawSubmitChallengeResult {
     join_session_id: String,
     state: DeviceJoinRemoteState,
-    expires_at: String,
-    #[serde(default)]
-    challenge: Option<DeviceJoinChallenge>,
-    #[serde(default)]
-    challenge_response: Option<DeviceJoinChallengeResponse>,
-    #[serde(default)]
-    authorization: Option<RawAuthorization>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawClaimResult {
-    join_session_id: String,
-    state: DeviceJoinRemoteState,
+    session_revision: u64,
     claimed_by_device_id: String,
-    claim_expires_at: String,
-    join_request: DeviceJoinRequest,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawChallengeResult {
-    join_session_id: String,
-    state: DeviceJoinRemoteState,
     challenge_id: String,
+    challenge_expires_at: String,
 }
 
 #[derive(Deserialize)]
@@ -714,6 +815,7 @@ struct RawChallengeResult {
 struct RawTransitionResult {
     join_session_id: String,
     state: DeviceJoinRemoteState,
+    session_revision: u64,
 }
 
 #[derive(Deserialize)]
@@ -721,6 +823,7 @@ struct RawTransitionResult {
 struct RawApproveResult {
     join_session_id: String,
     state: DeviceJoinRemoteState,
+    session_revision: u64,
     checkpoint: RawCheckpoint,
     device: RawDeviceSummary,
 }

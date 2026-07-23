@@ -6,7 +6,6 @@ use crate::cli_parser::ParsedCommand;
 
 impl App {
     pub async fn run_id_device_list_async(&self) -> Result<(), ExitError> {
-        require_rollout_enabled()?;
         let resolved = self.resolve_config_for_workspace()?;
         let result = crate::m_core_cli_adapter::device_join::registry_via_im_core_async(
             &resolved,
@@ -17,7 +16,6 @@ impl App {
     }
 
     pub async fn run_id_device_join_sessions_async(&self) -> Result<(), ExitError> {
-        require_rollout_enabled()?;
         let resolved = self.resolve_config_for_workspace()?;
         let result =
             crate::m_core_cli_adapter::device_join::local_sessions_via_im_core_async(&resolved)
@@ -25,11 +23,20 @@ impl App {
         self.render_identity_result("awiki-cli id device join sessions", &resolved, result)
     }
 
+    pub async fn run_id_device_join_requests_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let result = crate::m_core_cli_adapter::device_join::local_requests_via_im_core_async(
+            &resolved,
+            identity_selector(self),
+        )
+        .await?;
+        self.render_identity_result("awiki-cli id device join requests", &resolved, result)
+    }
+
     pub async fn run_id_device_join_start_async(
         &self,
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
-        require_rollout_enabled()?;
         reject_dry_run(self, "id device join start")?;
         let resolved = self.resolve_config_for_workspace()?;
         let result = crate::m_core_cli_adapter::device_join::begin_via_im_core_async(
@@ -46,35 +53,23 @@ impl App {
         &self,
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
-        require_rollout_enabled()?;
         reject_dry_run(self, "id device join poll")?;
         let resolved = self.resolve_config_for_workspace()?;
-        let admin_side = bool_flag(command, "admin")?;
-        let result = if admin_side {
-            crate::m_core_cli_adapter::device_join::poll_admin_via_im_core_async(
-                &resolved,
-                identity_selector(self),
-                flag(command, "session"),
-            )
-            .await?
-        } else {
-            crate::m_core_cli_adapter::device_join::poll_new_device_via_im_core_async(
-                &resolved,
-                flag(command, "session"),
-            )
-            .await?
-        };
+        let result = crate::m_core_cli_adapter::device_join::poll_new_device_via_im_core_async(
+            &resolved,
+            flag(command, "session"),
+        )
+        .await?;
         self.render_identity_result("awiki-cli id device join poll", &resolved, result)
     }
 
-    pub async fn run_id_device_join_claim_async(
+    pub async fn run_id_device_join_verify_async(
         &self,
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
-        require_rollout_enabled()?;
-        reject_dry_run(self, "id device join claim")?;
+        reject_dry_run(self, "id device join verify")?;
         let resolved = self.resolve_config_for_workspace()?;
-        let result = crate::m_core_cli_adapter::device_join::claim_via_im_core_async(
+        let result = crate::m_core_cli_adapter::device_join::start_verification_via_im_core_async(
             &resolved,
             identity_selector(self),
             flag(command, "session"),
@@ -82,40 +77,50 @@ impl App {
             u64_flag(command, "challenge-ttl-seconds", 300)?,
         )
         .await?;
-        self.render_identity_result("awiki-cli id device join claim", &resolved, result)
+        self.render_identity_result("awiki-cli id device join verify", &resolved, result)
     }
 
     pub async fn run_id_device_join_approve_async(
         &self,
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
-        require_rollout_enabled()?;
         reject_dry_run(self, "id device join approve")?;
-        let role = crate::m_core_cli_adapter::device_join::role_from_cli(flag(command, "role"))?;
         let resolved = self.resolve_config_for_workspace()?;
         let result = crate::m_core_cli_adapter::device_join::approve_via_im_core_async(
             &resolved,
             identity_selector(self),
             flag(command, "session"),
-            role,
             confirm_sas_and_user_presence,
         )
         .await?;
         self.render_identity_result("awiki-cli id device join approve", &resolved, result)
     }
 
+    pub async fn run_id_device_join_reject_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        reject_dry_run(self, "id device join reject")?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let result = crate::m_core_cli_adapter::device_join::reject_via_im_core_async(
+            &resolved,
+            identity_selector(self),
+            flag(command, "session"),
+            flag(command, "reason"),
+        )
+        .await?;
+        self.render_identity_result("awiki-cli id device join reject", &resolved, result)
+    }
+
     pub async fn run_id_device_join_cancel_async(
         &self,
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
-        require_rollout_enabled()?;
         reject_dry_run(self, "id device join cancel")?;
         let resolved = self.resolve_config_for_workspace()?;
         let result = crate::m_core_cli_adapter::device_join::cancel_via_im_core_async(
             &resolved,
-            identity_selector(self),
             flag(command, "session"),
-            bool_flag(command, "admin")?,
         )
         .await?;
         self.render_identity_result("awiki-cli id device join cancel", &resolved, result)
@@ -126,25 +131,8 @@ fn identity_selector(app: &App) -> im_core::IdentitySelector {
     crate::m_core_cli_adapter::cli_identity_selector(&app.globals.identity)
 }
 
-fn require_rollout_enabled() -> Result<(), ExitError> {
-    crate::m_core_cli_adapter::device_join::require_rollout_enabled()
-}
-
 fn flag<'a>(command: &'a ParsedCommand, name: &str) -> &'a str {
     command.flags.get(name).map(String::as_str).unwrap_or("")
-}
-
-fn bool_flag(command: &ParsedCommand, name: &str) -> Result<bool, ExitError> {
-    match flag(command, name) {
-        "" | "false" => Ok(false),
-        "true" => Ok(true),
-        _ => Err(ExitError::new(
-            "invalid_argument",
-            2,
-            format!("--{name} must be a boolean flag."),
-            format!("Pass --{name} without a value to enable it."),
-        )),
-    }
 }
 
 fn u64_flag(command: &ParsedCommand, name: &str, default: u64) -> Result<u64, ExitError> {

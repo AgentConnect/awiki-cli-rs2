@@ -661,7 +661,6 @@ fn scenario(
         did: generated.did.clone(),
         checkpoint: checkpoint.clone(),
         devices: vec![authorizing.clone(), target.clone()],
-        pending_join_requests: Vec::new(),
     };
     let vault = std::sync::Arc::new(crate::vault::FileSecretVault::new(
         crate::vault::DeviceVaultRootKey::from_bytes(VAULT_KEY),

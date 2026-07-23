@@ -29,10 +29,12 @@ use crate::identity::{
     DeviceJoinAdminPrepareRequest, DeviceJoinAdminPrepareResult, DeviceJoinAdminVerifyRequest,
     DeviceJoinAdminVerifyResult, DeviceJoinChallenge, DeviceJoinChallengeResponse,
     DeviceJoinLocalPhase, DeviceJoinNewDeviceRespondRequest, DeviceJoinNewDeviceRespondResult,
-    DeviceJoinRequest, DeviceJoinSessionSummary, DeviceJoinSide, DeviceJoinStartRequest,
-    DeviceJoinStartResult, DeviceProof, EncryptedJoinChallenge, DEVICE_JOIN_CHALLENGE_ALGORITHM,
-    DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS, DEVICE_JOIN_MAX_TTL_SECONDS, DEVICE_JOIN_REQUEST_TYPE,
-    DEVICE_JOIN_VNEXT_PROFILES, DEVICE_PROOF_TYPE,
+    DeviceJoinObjectProof, DeviceJoinRequest, DeviceJoinRequestProof, DeviceJoinSessionSummary,
+    DeviceJoinSide, DeviceJoinStartRequest, DeviceJoinStartResult, EncryptedJoinChallenge,
+    DEVICE_JOIN_CHALLENGE_ALGORITHM, DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS,
+    DEVICE_JOIN_MAX_TTL_SECONDS, DEVICE_JOIN_REQUEST_PROOF_INPUT_TYPE,
+    DEVICE_JOIN_REQUEST_PROOF_TYPE, DEVICE_JOIN_REQUEST_TYPE,
+    DEVICE_JOIN_RESPONSE_SIGNATURE_INPUT_TYPE, DEVICE_JOIN_VNEXT_PROFILES,
 };
 use crate::internal::platform_secret::SecretBytes;
 use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
@@ -44,18 +46,9 @@ const JOIN_STATE_LOCK_FILE: &str = ".awiki-device-join-state.lock";
 const JOIN_CHALLENGE_LEN: usize = 32;
 const JOIN_NONCE_LEN: usize = 12;
 const JOIN_RANDOM_ID_LEN: usize = 16;
-const JOIN_PROOF_NONCE_LEN: usize = 24;
 const CHALLENGE_KDF_INFO: &[u8] = b"awiki-device-join-challenge-v1";
 const SAS_KDF_INFO: &[u8] = b"awiki-device-join-sas-v1";
-const JOIN_REQUEST_PURPOSE: &str = "awiki.device.join.v1";
-const JOIN_CHALLENGE_PURPOSE: &str = "awiki.device.join.challenge.v1";
-const JOIN_RESPONSE_PURPOSE: &str = "awiki.device.join.challenge-response.v1";
-const JOIN_CLAIM_PURPOSE: &str = "awiki.device.join.claim.v1";
-const JOIN_APPROVE_PURPOSE: &str = "awiki.device.join.approve.v1";
-const JOIN_CLAIM_METHOD: &str = "device_join_claim";
-const JOIN_CHALLENGE_METHOD: &str = "device_join_challenge";
-const JOIN_RESPONSE_METHOD: &str = "device_join_challenge_response";
-const JOIN_APPROVE_METHOD: &str = "device_join_approve";
+const JOIN_PROOF_ALGORITHM: &str = "Ed25519";
 const JOIN_CHALLENGE_PLAINTEXT_TYPE: &str = "awiki.device.join.challenge-plaintext.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,32 +83,11 @@ struct StoredAdminApproval {
     operation_id: String,
     input_hash: String,
     expected_checkpoint: crate::internal::identity_device_state::IdentityInternalCheckpoint,
-    role: crate::internal::identity_device_state::DeviceAuthorizationRole,
     new_document: Value,
     pairing_confirmation:
         crate::internal::identity_device_join_runtime::DeviceJoinRemotePairingConfirmation,
     authorizing_device_id: String,
-    authorizing_device_proof: DeviceProof,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct StoredAdminClaimIntent {
-    schema_version: u32,
-    operation_id: String,
-    input_hash: String,
-    join_session_id: String,
-    admin_identity: crate::identity::IdentitySelector,
-    authorizing_device_id: String,
-    authorizing_device_proof: DeviceProof,
-    expires_at: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PreparedAdminClaim {
-    pub(crate) operation_id: String,
-    pub(crate) join_session_id: String,
-    pub(crate) authorizing_device_id: String,
-    pub(crate) authorizing_device_proof: DeviceProof,
+    proof: DeviceJoinObjectProof,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,12 +96,18 @@ pub(crate) struct PreparedAdminApproval {
     pub(crate) join_session_id: String,
     pub(crate) expected_checkpoint:
         crate::internal::identity_device_state::IdentityInternalCheckpoint,
-    pub(crate) role: crate::internal::identity_device_state::DeviceAuthorizationRole,
     pub(crate) new_document: Value,
     pub(crate) pairing_confirmation:
         crate::internal::identity_device_join_runtime::DeviceJoinRemotePairingConfirmation,
     pub(crate) authorizing_device_id: String,
-    pub(crate) authorizing_device_proof: DeviceProof,
+    pub(crate) proof: DeviceJoinObjectProof,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PreparedAdminRejection {
+    pub(crate) operation_id: String,
+    pub(crate) rejecting_device_id: String,
+    pub(crate) proof: DeviceJoinObjectProof,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -200,8 +178,7 @@ pub(crate) fn start(
         "ttl_seconds": request.ttl_seconds,
     }))?;
     let store = JoinStateStore::new(core);
-    if let Some(mut stored) = store.find_new_device_by_create_operation(&request.operation_id)? {
-        normalize_expiry(core, &store, &mut stored)?;
+    if let Some(stored) = store.find_new_device_by_create_operation(&request.operation_id)? {
         if stored.create_input_hash.as_deref() != Some(input_hash.as_str()) {
             return Err(idempotency_conflict("start"));
         }
@@ -238,13 +215,11 @@ pub(crate) fn start(
     let signing_method = verification_method(
         request.did.as_str(),
         &signing_key_id,
-        "Multikey",
         &signing_private.public_key(),
     )?;
     let e2ee_method = verification_method(
         request.did.as_str(),
         &e2ee_key_id,
-        "X25519KeyAgreementKey2019",
         &e2ee_private.public_key(),
     )?;
     let pairing_public_key = x25519_public_b64u(&pairing_private.public_key())?;
@@ -263,9 +238,16 @@ pub(crate) fn start(
         requested_role: "member".to_owned(),
         issued_at: format_time(now)?,
         expires_at: format_time(expires_at)?,
-        signature: String::new(),
+        join_request_proof: DeviceJoinRequestProof {
+            proof_type: DEVICE_JOIN_REQUEST_PROOF_TYPE.to_owned(),
+            algorithm: JOIN_PROOF_ALGORITHM.to_owned(),
+            verification_method: signing_key_id.clone(),
+            created_at: format_time(now)?,
+            proof_value_b64u: String::new(),
+        },
     };
-    join_request.signature = sign_join_request(&join_request, &signing_private)?;
+    join_request.join_request_proof.proof_value_b64u =
+        sign_join_request(&join_request, &signing_private)?;
     validate_join_request(&join_request, now)?;
     let join_request_hash =
         canonical_hash(&serde_json::to_value(&join_request).map_err(|err| {
@@ -366,7 +348,6 @@ pub(crate) fn bind_new_device_remote_session(
         .ok_or_else(|| crate::ImError::IdentityNotFound {
             selector: join_session_id.clone(),
         })?;
-    normalize_expiry(core, &store, &mut stored)?;
     ensure_not_expired(&stored)?;
     if remote_expires_at != stored.join_request.expires_at {
         return Err(crate::ImError::PermissionDenied);
@@ -413,129 +394,20 @@ pub(crate) fn open_new_device_remote_session_token(
     let _guard = lock_join_state(core)?;
     let join_session_id = required("join_session_id", join_session_id)?;
     let store = JoinStateStore::new(core);
-    let mut stored = store
+    let stored = store
         .load(&join_session_id, DeviceJoinSide::NewDevice)?
         .ok_or_else(|| crate::ImError::IdentityNotFound {
             selector: join_session_id.clone(),
         })?;
-    normalize_expiry(core, &store, &mut stored)?;
-    ensure_not_expired(&stored)?;
+    // The remote terminal state is authoritative. Keep the token available
+    // after a local-clock expiry so status/cancel can converge with the
+    // server before candidate secrets are deleted.
     let secret_ref = stored
         .join_session_token_ref
         .as_ref()
         .filter(|value| value.kind == SecretKind::IdentityJoinSessionToken)
         .ok_or_else(|| invalid_state("Join session token is missing"))?;
     required_vault(core)?.open(secret_ref)
-}
-
-pub(crate) fn prepare_admin_claim_intent(
-    core: &crate::core::ImCore,
-    admin_identity: crate::identity::IdentitySelector,
-    operation_id: &str,
-    join_session_id: &str,
-    session_expires_at: &str,
-) -> crate::ImResult<PreparedAdminClaim> {
-    let _guard = lock_join_state(core)?;
-    let operation_id = required("operation_id", operation_id)?;
-    let join_session_id = required("join_session_id", join_session_id)?;
-    let session_expires = parse_time("session_expires_at", session_expires_at)?;
-    let now = OffsetDateTime::now_utc();
-    if session_expires <= now {
-        return Err(crate::ImError::SessionExpired);
-    }
-    let store = JoinStateStore::new(core);
-    let input_hash = canonical_hash(&json!({
-        "operation_id": operation_id,
-        "join_session_id": join_session_id,
-        "admin_identity": admin_identity,
-        "session_expires_at": session_expires_at,
-    }))?;
-    if let Some(stored) = store.load_claim_intent(&join_session_id)? {
-        if stored.operation_id != operation_id || stored.input_hash != input_hash {
-            return Err(idempotency_conflict("prepare_admin_claim_intent"));
-        }
-        return Ok(PreparedAdminClaim {
-            operation_id: stored.operation_id,
-            join_session_id: stored.join_session_id,
-            authorizing_device_id: stored.authorizing_device_id,
-            authorizing_device_proof: stored.authorizing_device_proof,
-        });
-    }
-
-    let (client, admin_device_id, admin_signing_key_id) =
-        ready_admin_context(core, &admin_identity, None)?;
-    let proof_expires = std::cmp::min(
-        session_expires,
-        now + Duration::seconds(DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS as i64),
-    );
-    let created_at = format_time(now)?;
-    let expires_at = format_time(proof_expires)?;
-    let params = json!({
-        "operation_id": operation_id,
-        "join_session_id": join_session_id,
-        "authorizing_device_id": admin_device_id,
-    });
-    let signing_pem = Zeroizing::new(
-        client
-            .runtime()
-            .key_provider
-            .device_request_signing_private_pem()?,
-    );
-    let signing_private = private_key_from_pem(
-        signing_pem.as_bytes(),
-        SecretKind::IdentityDeviceSigningPrivate,
-    )?;
-    let proof = sign_device_proof(
-        &signing_private,
-        &admin_signing_key_id,
-        JOIN_CLAIM_PURPOSE,
-        JOIN_CLAIM_METHOD,
-        &params,
-        &created_at,
-        &expires_at,
-    )?;
-    let stored = StoredAdminClaimIntent {
-        schema_version: JOIN_STATE_SCHEMA_VERSION,
-        operation_id: operation_id.clone(),
-        input_hash,
-        join_session_id: join_session_id.clone(),
-        admin_identity,
-        authorizing_device_id: admin_device_id.clone(),
-        authorizing_device_proof: proof.clone(),
-        expires_at,
-    };
-    store.save_claim_intent(&stored)?;
-    Ok(PreparedAdminClaim {
-        operation_id,
-        join_session_id,
-        authorizing_device_id: admin_device_id,
-        authorizing_device_proof: proof,
-    })
-}
-
-pub(crate) fn load_prepared_admin_claim(
-    core: &crate::core::ImCore,
-    join_session_id: &str,
-) -> crate::ImResult<Option<(PreparedAdminClaim, String)>> {
-    let _guard = lock_join_state(core)?;
-    let join_session_id = required("join_session_id", join_session_id)?;
-    let store = JoinStateStore::new(core);
-    let Some(stored) = store.load_claim_intent(&join_session_id)? else {
-        return Ok(None);
-    };
-    if parse_time("claim_intent.expires_at", &stored.expires_at)? <= OffsetDateTime::now_utc() {
-        store.delete_claim_intent(&join_session_id)?;
-        return Err(crate::ImError::SessionExpired);
-    }
-    Ok(Some((
-        PreparedAdminClaim {
-            operation_id: stored.operation_id,
-            join_session_id: stored.join_session_id,
-            authorizing_device_id: stored.authorizing_device_id,
-            authorizing_device_proof: stored.authorizing_device_proof,
-        },
-        stored.expires_at,
-    )))
 }
 
 pub(crate) fn load_prepared_admin_challenge(
@@ -547,10 +419,9 @@ pub(crate) fn load_prepared_admin_challenge(
     let join_session_id = required("join_session_id", join_session_id)?;
     let operation_id = required("operation_id", operation_id)?;
     let store = JoinStateStore::new(core);
-    let Some(mut stored) = store.load(&join_session_id, DeviceJoinSide::Admin)? else {
+    let Some(stored) = store.load(&join_session_id, DeviceJoinSide::Admin)? else {
         return Ok(None);
     };
-    normalize_expiry(core, &store, &mut stored)?;
     ensure_not_expired(&stored)?;
     if stored.transition_operation_id.as_deref() != Some(operation_id.as_str()) {
         return Err(idempotency_conflict("load_prepared_admin_challenge"));
@@ -571,14 +442,6 @@ pub(crate) fn load_prepared_admin_challenge(
             .ok_or_else(|| invalid_state("challenge missing"))?,
         sas: derive_stored_sas(core, &stored)?,
     }))
-}
-
-pub(crate) fn clear_admin_claim_intent(
-    core: &crate::core::ImCore,
-    join_session_id: &str,
-) -> crate::ImResult<()> {
-    let _guard = lock_join_state(core)?;
-    JoinStateStore::new(core).delete_claim_intent(&required("join_session_id", join_session_id)?)
 }
 
 pub(crate) fn prepare_admin_challenge(
@@ -606,10 +469,9 @@ pub(crate) fn prepare_admin_challenge(
         "document_hash": request.document_hash,
     }))?;
     let store = JoinStateStore::new(core);
-    if let Some(mut stored) =
+    if let Some(stored) =
         store.load(&request.join_request.join_session_id, DeviceJoinSide::Admin)?
     {
-        normalize_expiry(core, &store, &mut stored)?;
         if stored.transition_operation_id.as_deref() != Some(request.operation_id.as_str())
             || stored.transition_input_hash.as_deref() != Some(input_hash.as_str())
         {
@@ -687,14 +549,11 @@ pub(crate) fn prepare_admin_challenge(
         signing_pem.as_bytes(),
         SecretKind::IdentityDeviceSigningPrivate,
     )?;
-    let proof = sign_device_proof(
+    let proof = sign_object_proof(
         &signing_private,
         &admin_signing_key_id,
-        JOIN_CHALLENGE_PURPOSE,
-        JOIN_CHALLENGE_METHOD,
         &params,
         &created_at,
-        &challenge_expires_at,
     )?;
     let challenge = DeviceJoinChallenge {
         operation_id: request.operation_id.clone(),
@@ -704,7 +563,7 @@ pub(crate) fn prepare_admin_challenge(
         admin_pairing_public_key,
         ciphertext,
         challenge_expires_at,
-        authorizing_device_proof: proof,
+        proof,
     };
 
     let vault = required_vault(core)?;
@@ -792,7 +651,6 @@ fn respond_as_new_device_inner(
         .ok_or_else(|| crate::ImError::IdentityNotFound {
             selector: challenge.join_session_id.clone(),
         })?;
-    normalize_expiry(core, &store, &mut stored)?;
     ensure_not_expired(&stored)?;
     if !matches!(
         stored.phase,
@@ -813,7 +671,7 @@ fn respond_as_new_device_inner(
     let admin_signing_method = admin_signing_method(
         &admin_did_document,
         &challenge.admin_device_id,
-        &challenge.authorizing_device_proof.key_id,
+        &challenge.proof.verification_method,
     )?;
     let challenge_params = challenge_params_value(
         &challenge.operation_id,
@@ -824,13 +682,12 @@ fn respond_as_new_device_inner(
         &challenge.ciphertext,
         &challenge.challenge_expires_at,
     );
-    verify_device_proof(
-        &challenge.authorizing_device_proof,
-        JOIN_CHALLENGE_PURPOSE,
-        JOIN_CHALLENGE_METHOD,
+    verify_object_proof(
+        &challenge.proof,
         &challenge_params,
+        &stored.join_request.did,
+        &admin_did_document,
         &admin_signing_method,
-        OffsetDateTime::now_utc(),
     )?;
 
     let vault = required_vault(core)?;
@@ -885,7 +742,6 @@ fn respond_as_new_device_inner(
         &decrypted_challenge.checkpoint,
     )?;
     let pairing_transcript_hash = canonical_hash(&transcript)?;
-    let created_at = format_time(OffsetDateTime::now_utc())?;
     let signing_ref = stored
         .signing_private_ref
         .as_ref()
@@ -895,10 +751,6 @@ fn respond_as_new_device_inner(
         signing_ref,
         SecretKind::IdentityDeviceSigningPrivate,
     )?;
-    let signing_key_id = method_id(
-        &stored.join_request.signing_public_key,
-        "signing_public_key",
-    )?;
     let response_params = response_params_value(
         &operation_id,
         &stored.join_request.join_session_id,
@@ -907,15 +759,8 @@ fn respond_as_new_device_inner(
         &stored.join_request_hash,
         &pairing_transcript_hash,
     );
-    let proof = sign_device_proof(
-        &signing_private,
-        signing_key_id,
-        JOIN_RESPONSE_PURPOSE,
-        JOIN_RESPONSE_METHOD,
-        &response_params,
-        &created_at,
-        &challenge.challenge_expires_at,
-    )?;
+    let response_signature_b64u =
+        sign_bytes(&signing_private, &canonical_bytes(&response_params)?)?;
     let response = DeviceJoinChallengeResponse {
         operation_id: operation_id.clone(),
         join_session_id: stored.join_request.join_session_id.clone(),
@@ -923,7 +768,7 @@ fn respond_as_new_device_inner(
         challenge_hash: challenge_hash.clone(),
         join_request_hash: stored.join_request_hash.clone(),
         pairing_transcript_hash,
-        new_device_proof: proof,
+        response_signature_b64u,
     };
     stored.phase = DeviceJoinLocalPhase::ResponsePrepared;
     stored.transition_operation_id = Some(operation_id);
@@ -952,7 +797,6 @@ pub(crate) fn verify_response_as_admin(
         .ok_or_else(|| crate::ImError::IdentityNotFound {
             selector: request.join_session_id.clone(),
         })?;
-    normalize_expiry(core, &store, &mut stored)?;
     ensure_not_expired(&stored)?;
     let input_hash = canonical_hash(&json!({
         "operation_id": request.operation_id,
@@ -1008,14 +852,14 @@ pub(crate) fn verify_response_as_admin(
         &request.response.join_request_hash,
         &request.response.pairing_transcript_hash,
     );
-    verify_device_proof(
-        &request.response.new_device_proof,
-        JOIN_RESPONSE_PURPOSE,
-        JOIN_RESPONSE_METHOD,
-        &response_params,
-        &stored.join_request.signing_public_key,
-        OffsetDateTime::now_utc(),
-    )?;
+    let verification_method =
+        create_join_verification_method(&stored.join_request.signing_public_key)?;
+    verification_method
+        .verify_signature(
+            &canonical_bytes(&response_params)?,
+            &request.response.response_signature_b64u,
+        )
+        .map_err(|_| crate::ImError::PermissionDenied)?;
     stored.phase = DeviceJoinLocalPhase::ResponseVerified;
     stored.verification_operation_id = Some(request.operation_id);
     stored.verification_input_hash = Some(input_hash);
@@ -1029,7 +873,6 @@ pub(crate) fn prepare_admin_approval(
     operation_id: &str,
     join_session_id: &str,
     expected_checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
-    role: crate::internal::identity_device_state::DeviceAuthorizationRole,
     user_presence_at: &str,
     sas_confirmed: bool,
 ) -> crate::ImResult<PreparedAdminApproval> {
@@ -1047,7 +890,6 @@ pub(crate) fn prepare_admin_approval(
         .ok_or_else(|| crate::ImError::IdentityNotFound {
             selector: join_session_id.clone(),
         })?;
-    normalize_expiry(core, &store, &mut stored)?;
     ensure_not_expired(&stored)?;
     let checkpoint = stored
         .checkpoint
@@ -1065,7 +907,6 @@ pub(crate) fn prepare_admin_approval(
         "expected_document_version": expected_checkpoint.document_version,
         "expected_document_hash": expected_checkpoint.document_hash,
         "expected_registry_version": expected_checkpoint.registry_version,
-        "role": role,
         "user_presence_at": user_presence_at,
         "sas_confirmed": sas_confirmed,
     }))?;
@@ -1147,22 +988,13 @@ pub(crate) fn prepare_admin_approval(
             user_presence_at,
         };
     let now = OffsetDateTime::now_utc();
-    let proof_expires = std::cmp::min(
-        parse_time("join_request.expires_at", &stored.join_request.expires_at)?,
-        now + Duration::seconds(DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS as i64),
-    );
-    if proof_expires <= now {
-        return Err(crate::ImError::SessionExpired);
-    }
     let created_at = format_time(now)?;
-    let expires_at = format_time(proof_expires)?;
     let params = json!({
         "operation_id": operation_id,
         "join_session_id": join_session_id,
         "expected_document_version": expected_checkpoint.document_version,
         "expected_document_hash": expected_checkpoint.document_hash,
         "expected_registry_version": expected_checkpoint.registry_version,
-        "role": role,
         "new_document": new_document,
         "pairing_confirmation": pairing_confirmation,
         "authorizing_device_id": admin_device_id,
@@ -1177,29 +1009,75 @@ pub(crate) fn prepare_admin_approval(
         signing_pem.as_bytes(),
         SecretKind::IdentityDeviceSigningPrivate,
     )?;
-    let proof = sign_device_proof(
+    let proof = sign_object_proof(
         &signing_private,
         &admin_signing_key_id,
-        JOIN_APPROVE_PURPOSE,
-        JOIN_APPROVE_METHOD,
         &params,
         &created_at,
-        &expires_at,
     )?;
     let approval = StoredAdminApproval {
         operation_id,
         input_hash,
         expected_checkpoint: expected_checkpoint.clone(),
-        role,
         new_document,
         pairing_confirmation,
         authorizing_device_id: admin_device_id,
-        authorizing_device_proof: proof,
+        proof,
     };
     stored.phase = DeviceJoinLocalPhase::ApprovalPrepared;
     stored.approval = Some(approval.clone());
     store.save(&stored)?;
     prepared_approval_result(&stored, &approval)
+}
+
+pub(crate) fn prepare_admin_rejection(
+    core: &crate::core::ImCore,
+    admin_identity: crate::identity::IdentitySelector,
+    join_session_id: &str,
+    reason: crate::identity::DeviceJoinRejectReason,
+) -> crate::ImResult<PreparedAdminRejection> {
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let (client, rejecting_device_id, signing_key_id) =
+        ready_admin_context(core, &admin_identity, None)?;
+    let mut digest = Sha256::new();
+    for value in [
+        "awiki.device.join.reject.operation.v1",
+        client.did().as_str(),
+        join_session_id.as_str(),
+        reason.as_str(),
+        rejecting_device_id.as_str(),
+    ] {
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    let operation_id = format!("join-reject-{}", URL_SAFE_NO_PAD.encode(digest.finalize()));
+    let params = json!({
+        "operation_id": operation_id,
+        "join_session_id": join_session_id,
+        "rejecting_device_id": rejecting_device_id,
+        "reason": reason.as_str(),
+    });
+    let signing_pem = Zeroizing::new(
+        client
+            .runtime()
+            .key_provider
+            .device_request_signing_private_pem()?,
+    );
+    let signing_private = private_key_from_pem(
+        signing_pem.as_bytes(),
+        SecretKind::IdentityDeviceSigningPrivate,
+    )?;
+    let proof = sign_object_proof(
+        &signing_private,
+        &signing_key_id,
+        &params,
+        &format_time(OffsetDateTime::now_utc())?,
+    )?;
+    Ok(PreparedAdminRejection {
+        operation_id,
+        rejecting_device_id,
+        proof,
+    })
 }
 
 pub(crate) fn load_prepared_admin_approval(
@@ -1209,117 +1087,16 @@ pub(crate) fn load_prepared_admin_approval(
     let _guard = lock_join_state(core)?;
     let join_session_id = required("join_session_id", join_session_id)?;
     let store = JoinStateStore::new(core);
-    let mut stored = match store.load(&join_session_id, DeviceJoinSide::Admin)? {
+    let stored = match store.load(&join_session_id, DeviceJoinSide::Admin)? {
         Some(value) => value,
         None => return Ok(None),
     };
-    normalize_expiry(core, &store, &mut stored)?;
     ensure_not_expired(&stored)?;
     stored
         .approval
         .as_ref()
         .map(|approval| prepared_approval_result(&stored, approval))
         .transpose()
-}
-
-/// Clears an expired approval proof only after the caller has observed a
-/// non-consumed remote status. This preserves exact retry bytes while a proof
-/// is valid and prevents an already accepted approval from being regenerated
-/// before remote reconciliation.
-pub(crate) fn reset_expired_admin_approval_after_remote_poll(
-    core: &crate::core::ImCore,
-    join_session_id: &str,
-    remote_expires_at: &str,
-    now: OffsetDateTime,
-) -> crate::ImResult<bool> {
-    let _guard = lock_join_state(core)?;
-    let join_session_id = required("join_session_id", join_session_id)?;
-    let store = JoinStateStore::new(core);
-    let mut stored = store
-        .load(&join_session_id, DeviceJoinSide::Admin)?
-        .ok_or_else(|| crate::ImError::IdentityNotFound {
-            selector: join_session_id.clone(),
-        })?;
-    if stored.join_request.expires_at != remote_expires_at {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    normalize_expiry(core, &store, &mut stored)?;
-    ensure_not_expired(&stored)?;
-    if stored.phase != DeviceJoinLocalPhase::ApprovalPrepared {
-        return Ok(false);
-    }
-    let proof_expires_at = stored
-        .approval
-        .as_ref()
-        .ok_or_else(|| invalid_state("prepared approval missing"))?
-        .authorizing_device_proof
-        .expires_at
-        .clone();
-    if parse_time(
-        "approval.authorizing_device_proof.expires_at",
-        &proof_expires_at,
-    )? > now
-    {
-        return Ok(false);
-    }
-    stored.approval = None;
-    stored.phase = DeviceJoinLocalPhase::ResponseVerified;
-    store.save(&stored)?;
-    Ok(true)
-}
-
-/// Finalizes an approval that the authenticated remote status reports as
-/// consumed. This deliberately reads the persisted approval before local
-/// expiry normalization, allowing a response accepted just before expiry to
-/// converge without generating a replacement proof.
-pub(crate) fn mark_admin_approval_consumed_after_remote_poll(
-    core: &crate::core::ImCore,
-    join_session_id: &str,
-    remote_expires_at: &str,
-    authorization: &crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization,
-) -> crate::ImResult<DeviceJoinSessionSummary> {
-    let _guard = lock_join_state(core)?;
-    let join_session_id = required("join_session_id", join_session_id)?;
-    let store = JoinStateStore::new(core);
-    let mut stored = store
-        .load(&join_session_id, DeviceJoinSide::Admin)?
-        .ok_or_else(|| crate::ImError::IdentityNotFound {
-            selector: join_session_id.clone(),
-        })?;
-    if stored.join_request.expires_at != remote_expires_at
-        || !matches!(
-            stored.phase,
-            DeviceJoinLocalPhase::ApprovalPrepared
-                | DeviceJoinLocalPhase::Expired
-                | DeviceJoinLocalPhase::Authorized
-        )
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let new_document = stored
-        .approval
-        .as_ref()
-        .ok_or_else(|| invalid_state("prepared approval missing"))?
-        .new_document
-        .clone();
-    validate_remote_authorization(&stored, authorization, &new_document)?;
-    if stored.phase != DeviceJoinLocalPhase::Authorized {
-        let admin_identity = stored
-            .admin_identity
-            .as_ref()
-            .ok_or_else(|| invalid_state("admin identity missing"))?;
-        let client = core.client(admin_identity.clone())?;
-        let raw = serde_json::to_vec_pretty(&new_document).map_err(|error| {
-            crate::ImError::Serialization {
-                detail: error.to_string(),
-            }
-        })?;
-        write_private_atomic(&client.runtime().did_document_path, &raw)?;
-        stored.phase = DeviceJoinLocalPhase::Authorized;
-        store.save(&stored)?;
-    }
-    cleanup_consumed_join_secrets(core, &stored)?;
-    summary(&stored)
 }
 
 pub(crate) fn mark_join_authorized(
@@ -1348,7 +1125,6 @@ pub(crate) fn mark_join_authorized(
         cleanup_consumed_join_secrets(core, &stored)?;
         return summary(&stored);
     }
-    normalize_expiry(core, &store, &mut stored)?;
     ensure_not_expired(&stored)?;
     match side {
         DeviceJoinSide::NewDevice if stored.phase != DeviceJoinLocalPhase::ResponsePrepared => {
@@ -1419,7 +1195,6 @@ pub(crate) fn prepare_new_device_activation(
         return Err(invalid_state("new-device Join is already activated"));
     }
     if !stored.activation_pending {
-        normalize_expiry(core, &state_store, &mut stored)?;
         ensure_not_expired(&stored)?;
         if stored.phase != DeviceJoinLocalPhase::ResponsePrepared {
             return Err(invalid_state("new-device response is not prepared"));
@@ -1605,6 +1380,12 @@ fn promote_join_identity(
     pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
     access: &crate::internal::identity_device_join_runtime::DeviceJoinAccessResult,
 ) -> crate::ImResult<()> {
+    if pending.authorization.device.role
+        != crate::internal::identity_device_state::DeviceAuthorizationRole::Member
+        || pending.authorization.device.management_ready
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
     use crate::internal::identity_device_state::{
         DeviceAuthorizationProjection, IdentityDeviceMode, IdentityDeviceState,
         IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
@@ -1643,12 +1424,8 @@ fn promote_join_identity(
     )?;
     let e2ee_private =
         open_private_key(&*vault, e2ee_ref, SecretKind::IdentityE2eeAgreementPrivate)?;
-    let expected_signing_public =
-        anp::authentication::extract_public_key(&stored.join_request.signing_public_key)
-            .map_err(|_| crate::ImError::PermissionDenied)?;
-    let expected_e2ee_public =
-        anp::authentication::extract_public_key(&stored.join_request.e2ee_public_key)
-            .map_err(|_| crate::ImError::PermissionDenied)?;
+    let expected_signing_public = extract_join_public_key(&stored.join_request.signing_public_key)?;
+    let expected_e2ee_public = extract_join_public_key(&stored.join_request.e2ee_public_key)?;
     let signing_public = signing_private.public_key();
     let e2ee_public = e2ee_private.public_key();
     if signing_public.to_pem() != expected_signing_public.to_pem()
@@ -1883,13 +1660,11 @@ pub(crate) fn session(
     let _guard = lock_join_state(core)?;
     let join_session_id = required("join_session_id", join_session_id)?;
     let store = JoinStateStore::new(core);
-    let mut stored =
-        store
-            .load(&join_session_id, side)?
-            .ok_or(crate::ImError::IdentityNotFound {
-                selector: join_session_id,
-            })?;
-    normalize_expiry(core, &store, &mut stored)?;
+    let stored = store
+        .load(&join_session_id, side)?
+        .ok_or(crate::ImError::IdentityNotFound {
+            selector: join_session_id,
+        })?;
     summary(&stored)
 }
 
@@ -1899,8 +1674,7 @@ pub(crate) fn list_sessions(
     let _guard = lock_join_state(core)?;
     let store = JoinStateStore::new(core);
     let mut sessions = Vec::new();
-    for mut stored in store.list()? {
-        normalize_expiry(core, &store, &mut stored)?;
+    for stored in store.list()? {
         sessions.push(summary(&stored)?);
     }
     sessions.sort_by(|left, right| {
@@ -1922,12 +1696,11 @@ pub(crate) fn admin_approval_context(
     let _guard = lock_join_state(core)?;
     let join_session_id = required("join_session_id", join_session_id)?;
     let store = JoinStateStore::new(core);
-    let mut stored = store
+    let stored = store
         .load(&join_session_id, DeviceJoinSide::Admin)?
         .ok_or_else(|| crate::ImError::IdentityNotFound {
             selector: join_session_id.clone(),
         })?;
-    normalize_expiry(core, &store, &mut stored)?;
     ensure_not_expired(&stored)?;
     if !matches!(
         stored.phase,
@@ -1945,6 +1718,43 @@ pub(crate) fn admin_approval_context(
         derive_stored_sas(core, &stored)?,
         approval,
     ))
+}
+
+pub(crate) fn local_admin_verification_progress(
+    core: &crate::core::ImCore,
+    admin_identity: &crate::identity::IdentitySelector,
+    join_session_id: &str,
+) -> crate::ImResult<(DeviceJoinSessionSummary, String)> {
+    let _guard = lock_join_state(core)?;
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let store = JoinStateStore::new(core);
+    let stored = store
+        .load(&join_session_id, DeviceJoinSide::Admin)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.clone(),
+        })?;
+    ensure_not_expired(&stored)?;
+    if !matches!(
+        stored.phase,
+        DeviceJoinLocalPhase::ResponseVerified | DeviceJoinLocalPhase::ApprovalPrepared
+    ) {
+        return Err(invalid_state(
+            "admin Join verification progress is not available",
+        ));
+    }
+
+    // This is a local read, but it still has to bind the caller-selected
+    // identity to the exact Vault owner that created this admin session.
+    let (client, _, _) =
+        ready_admin_context(core, admin_identity, Some(stored.join_request.did.as_str()))?;
+    if stored.pairing_private_ref.identity_id.as_deref()
+        != Some(client.current_identity().id.as_str())
+        || stored.pairing_private_ref.did.as_deref() != Some(stored.join_request.did.as_str())
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    Ok((summary(&stored)?, derive_stored_sas(core, &stored)?))
 }
 
 fn verified_result(
@@ -1971,11 +1781,10 @@ fn prepared_approval_result(
         operation_id: approval.operation_id.clone(),
         join_session_id: stored.join_request.join_session_id.clone(),
         expected_checkpoint: approval.expected_checkpoint.clone(),
-        role: approval.role,
         new_document: approval.new_document.clone(),
         pairing_confirmation: approval.pairing_confirmation.clone(),
         authorizing_device_id: approval.authorizing_device_id.clone(),
-        authorizing_device_proof: approval.authorizing_device_proof.clone(),
+        proof: approval.proof.clone(),
     })
 }
 
@@ -2011,6 +1820,12 @@ fn validate_remote_authorization(
     authorization: &crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization,
     resolved_document: &Value,
 ) -> crate::ImResult<()> {
+    if authorization.device.role
+        != crate::internal::identity_device_state::DeviceAuthorizationRole::Member
+        || authorization.device.management_ready
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
     use crate::internal::identity_device_state::DeviceAuthorizationStatus;
 
     let signing_key_id = method_id(
@@ -2033,8 +1848,7 @@ fn validate_remote_authorization(
         return Err(crate::ImError::PermissionDenied);
     }
     if let Some(approval) = stored.approval.as_ref() {
-        if authorization.device.role != approval.role || &approval.new_document != resolved_document
-        {
+        if &approval.new_document != resolved_document {
             return Err(crate::ImError::PermissionDenied);
         }
     }
@@ -2280,7 +2094,7 @@ fn sign_join_request(
     request: &DeviceJoinRequest,
     private_key: &anp::PrivateKeyMaterial,
 ) -> crate::ImResult<String> {
-    let content = unsigned_join_request_bytes(request)?;
+    let content = join_request_proof_input_bytes(request)?;
     sign_bytes(private_key, &content)
 }
 
@@ -2354,10 +2168,20 @@ fn validate_join_request(request: &DeviceJoinRequest, now: OffsetDateTime) -> cr
         "join_request.pairing_public_key",
         &request.pairing_public_key,
     )?;
-    let method = anp::authentication::create_verification_method(&request.signing_public_key)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let method = create_join_verification_method(&request.signing_public_key)?;
+    if request.join_request_proof.proof_type != DEVICE_JOIN_REQUEST_PROOF_TYPE
+        || request.join_request_proof.algorithm != JOIN_PROOF_ALGORITHM
+        || request.join_request_proof.verification_method
+            != method_id(&request.signing_public_key, "signing_public_key")?
+        || request.join_request_proof.created_at != request.issued_at
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
     method
-        .verify_signature(&unsigned_join_request_bytes(request)?, &request.signature)
+        .verify_signature(
+            &join_request_proof_input_bytes(request)?,
+            &request.join_request_proof.proof_value_b64u,
+        )
         .map_err(|_| crate::ImError::PermissionDenied)
 }
 
@@ -2384,8 +2208,7 @@ fn validate_method_binding(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let material = anp::authentication::extract_public_key(method)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let material = extract_join_public_key(method)?;
     if signing && !matches!(material, anp::PublicKeyMaterial::Ed25519(_)) {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -2395,15 +2218,28 @@ fn validate_method_binding(
     Ok(())
 }
 
-fn unsigned_join_request_bytes(request: &DeviceJoinRequest) -> crate::ImResult<Vec<u8>> {
+fn unsigned_join_request_value(request: &DeviceJoinRequest) -> crate::ImResult<Value> {
     let mut value = serde_json::to_value(request).map_err(|err| crate::ImError::Serialization {
         detail: err.to_string(),
     })?;
     value
         .as_object_mut()
         .ok_or_else(|| invalid_state("Join Request serialization is not an object"))?
-        .remove("signature");
-    canonical_bytes(&value)
+        .remove("join_request_proof");
+    Ok(value)
+}
+
+fn join_request_proof_input_bytes(request: &DeviceJoinRequest) -> crate::ImResult<Vec<u8>> {
+    canonical_bytes(&json!({
+        "type": DEVICE_JOIN_REQUEST_PROOF_INPUT_TYPE,
+        "join_request": unsigned_join_request_value(request)?,
+        "proof_options": {
+            "type": request.join_request_proof.proof_type,
+            "algorithm": request.join_request_proof.algorithm,
+            "verification_method": request.join_request_proof.verification_method,
+            "created_at": request.join_request_proof.created_at,
+        }
+    }))
 }
 
 fn challenge_params_value(
@@ -2435,6 +2271,7 @@ fn response_params_value(
     pairing_transcript_hash: &str,
 ) -> Value {
     json!({
+        "type": DEVICE_JOIN_RESPONSE_SIGNATURE_INPUT_TYPE,
         "operation_id": operation_id,
         "join_session_id": join_session_id,
         "challenge_id": challenge_id,
@@ -2444,83 +2281,52 @@ fn response_params_value(
     })
 }
 
-fn device_proof_bytes(
-    proof: &DeviceProof,
-    purpose: &str,
-    method: &str,
-    params: &Value,
-) -> crate::ImResult<Vec<u8>> {
-    canonical_bytes(&json!({
-        "type": proof.proof_type,
-        "purpose": purpose,
-        "method": method,
-        "key_id": proof.key_id,
-        "created_at": proof.created_at,
-        "expires_at": proof.expires_at,
-        "nonce": proof.nonce,
-        "params": params,
-    }))
-}
-
-fn sign_device_proof(
+fn sign_object_proof(
     private_key: &anp::PrivateKeyMaterial,
     key_id: &str,
-    purpose: &str,
-    method: &str,
     params: &Value,
     created_at: &str,
-    expires_at: &str,
-) -> crate::ImResult<DeviceProof> {
-    let mut proof = DeviceProof {
-        proof_type: DEVICE_PROOF_TYPE.to_owned(),
-        key_id: key_id.to_owned(),
-        created_at: created_at.to_owned(),
-        expires_at: expires_at.to_owned(),
-        nonce: random_b64u(JOIN_PROOF_NONCE_LEN)?,
-        signature: String::new(),
-    };
-    proof.signature = sign_bytes(
+) -> crate::ImResult<DeviceJoinObjectProof> {
+    let issuer_did = key_id
+        .split_once('#')
+        .map(|(did, _)| did)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let signed = anp::proof::generate_object_proof(
+        params,
         private_key,
-        &device_proof_bytes(&proof, purpose, method, params)?,
-    )?;
-    Ok(proof)
+        key_id,
+        issuer_did,
+        Some(created_at.to_owned()),
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?;
+    serde_json::from_value(
+        signed
+            .get("proof")
+            .cloned()
+            .ok_or(crate::ImError::PermissionDenied)?,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)
 }
 
-fn verify_device_proof(
-    proof: &DeviceProof,
-    purpose: &str,
-    method: &str,
+fn verify_object_proof(
+    proof: &DeviceJoinObjectProof,
     params: &Value,
-    public_method: &Value,
-    now: OffsetDateTime,
+    issuer_did: &str,
+    issuer_document: &Value,
+    expected_method: &Value,
 ) -> crate::ImResult<()> {
-    if proof.proof_type != DEVICE_PROOF_TYPE
-        || method_id(public_method, "proof.public_method")? != proof.key_id
-    {
+    if method_id(expected_method, "proof.public_method")? != proof.verification_method {
         return Err(crate::ImError::PermissionDenied);
     }
-    let created = parse_time("proof.created_at", &proof.created_at)?;
-    let expires = parse_time("proof.expires_at", &proof.expires_at)?;
-    if expires <= created
-        || expires <= now
-        || created > now + Duration::seconds(30)
-        || (expires - created).whole_seconds() > DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS as i64
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let verification_method = anp::authentication::create_verification_method(public_method)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
-    if !matches!(
-        verification_method.public_key,
-        anp::PublicKeyMaterial::Ed25519(_)
-    ) {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    verification_method
-        .verify_signature(
-            &device_proof_bytes(proof, purpose, method, params)?,
-            &proof.signature,
-        )
+    let mut signed = params.clone();
+    signed
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?
+        .insert(
+            "proof".to_owned(),
+            serde_json::to_value(proof).map_err(|_| crate::ImError::PermissionDenied)?,
+        );
+    anp::proof::verify_object_proof(&signed, issuer_did, issuer_document)
         .map_err(|_| crate::ImError::PermissionDenied)
 }
 
@@ -2872,12 +2678,61 @@ fn x25519_shared(
 }
 
 fn x25519_public_from_method(method: &Value) -> crate::ImResult<[u8; 32]> {
-    match anp::authentication::extract_public_key(method)
-        .map_err(|_| crate::ImError::PermissionDenied)?
-    {
+    match extract_join_public_key(method)? {
         anp::PublicKeyMaterial::X25519(value) => Ok(value),
         _ => Err(crate::ImError::PermissionDenied),
     }
+}
+
+fn create_join_verification_method(
+    method: &Value,
+) -> crate::ImResult<anp::authentication::VerificationMethod> {
+    let normalized = normalize_join_okp_method(method)?;
+    anp::authentication::create_verification_method(&normalized)
+        .map_err(|_| crate::ImError::PermissionDenied)
+}
+
+fn extract_join_public_key(method: &Value) -> crate::ImResult<anp::PublicKeyMaterial> {
+    if method.get("type").and_then(Value::as_str) == Some("JsonWebKey2020")
+        && method.pointer("/publicKeyJwk/kty").and_then(Value::as_str) == Some("OKP")
+        && method.pointer("/publicKeyJwk/crv").and_then(Value::as_str) == Some("X25519")
+    {
+        let bytes = URL_SAFE_NO_PAD
+            .decode(
+                method
+                    .pointer("/publicKeyJwk/x")
+                    .and_then(Value::as_str)
+                    .ok_or(crate::ImError::PermissionDenied)?,
+            )
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        return Ok(anp::PublicKeyMaterial::X25519(bytes));
+    }
+    let normalized = normalize_join_okp_method(method)?;
+    anp::authentication::extract_public_key(&normalized)
+        .map_err(|_| crate::ImError::PermissionDenied)
+}
+
+fn normalize_join_okp_method(method: &Value) -> crate::ImResult<Value> {
+    let mut normalized = method.clone();
+    let object = normalized
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if object.get("type").and_then(Value::as_str) != Some("JsonWebKey2020") {
+        return Ok(normalized);
+    }
+    let method_type = match object
+        .get("publicKeyJwk")
+        .and_then(|jwk| jwk.get("crv"))
+        .and_then(Value::as_str)
+    {
+        Some("Ed25519") => "Ed25519VerificationKey2020",
+        _ => return Ok(normalized),
+    };
+    object.insert("type".to_owned(), Value::String(method_type.to_owned()));
+    Ok(normalized)
 }
 
 fn x25519_public_b64u(public_key: &anp::PublicKeyMaterial) -> crate::ImResult<String> {
@@ -2899,27 +2754,23 @@ fn decode_x25519_b64u(field: &str, value: &str) -> crate::ImResult<[u8; 32]> {
 fn verification_method(
     did: &str,
     key_id: &str,
-    method_type: &str,
     public_key: &anp::PublicKeyMaterial,
 ) -> crate::ImResult<Value> {
-    Ok(json!({
-        "id": key_id,
-        "type": method_type,
-        "controller": did,
-        "publicKeyMultibase": public_key_multibase(public_key)?,
-    }))
-}
-
-fn public_key_multibase(public_key: &anp::PublicKeyMaterial) -> crate::ImResult<String> {
-    let (codec, bytes): ([u8; 2], Vec<u8>) = match public_key {
-        anp::PublicKeyMaterial::Ed25519(key) => ([0xed, 0x01], key.to_bytes().to_vec()),
-        anp::PublicKeyMaterial::X25519(key) => ([0xec, 0x01], key.to_vec()),
+    let (crv, x) = match public_key {
+        anp::PublicKeyMaterial::Ed25519(key) => ("Ed25519", URL_SAFE_NO_PAD.encode(key.to_bytes())),
+        anp::PublicKeyMaterial::X25519(key) => ("X25519", URL_SAFE_NO_PAD.encode(key)),
         _ => return Err(crate::ImError::PermissionDenied),
     };
-    let mut encoded = Vec::with_capacity(codec.len() + bytes.len());
-    encoded.extend_from_slice(&codec);
-    encoded.extend_from_slice(&bytes);
-    Ok(format!("z{}", bs58::encode(encoded).into_string()))
+    Ok(json!({
+        "id": key_id,
+        "type": "JsonWebKey2020",
+        "controller": did,
+        "publicKeyJwk": {
+            "kty": "OKP",
+            "crv": crv,
+            "x": x,
+        },
+    }))
 }
 
 fn sign_bytes(private_key: &anp::PrivateKeyMaterial, content: &[u8]) -> crate::ImResult<String> {
@@ -3049,19 +2900,14 @@ fn summary(stored: &StoredJoinSession) -> crate::ImResult<DeviceJoinSessionSumma
     })
 }
 
-fn normalize_expiry(
-    core: &crate::core::ImCore,
-    store: &JoinStateStore<'_>,
-    stored: &mut StoredJoinSession,
-) -> crate::ImResult<()> {
-    if matches!(
-        stored.phase,
-        DeviceJoinLocalPhase::Authorized | DeviceJoinLocalPhase::Cancelled
-    ) || stored.activation_pending
-    {
-        return Ok(());
+fn ensure_not_expired(stored: &StoredJoinSession) -> crate::ImResult<()> {
+    match stored.phase {
+        DeviceJoinLocalPhase::Expired => return Err(crate::ImError::SessionExpired),
+        DeviceJoinLocalPhase::Cancelled => return Err(invalid_state("Join is cancelled")),
+        DeviceJoinLocalPhase::Authorized if !stored.activation_pending => return Ok(()),
+        _ if stored.activation_pending => return Ok(()),
+        _ => {}
     }
-
     let join_expires_at = parse_time("join_request.expires_at", &stored.join_request.expires_at)?;
     let effective_expires_at = match stored.challenge.as_ref() {
         Some(challenge) => std::cmp::min(
@@ -3073,53 +2919,10 @@ fn normalize_expiry(
         ),
         None => join_expires_at,
     };
-    if stored.phase == DeviceJoinLocalPhase::Expired
-        || effective_expires_at <= OffsetDateTime::now_utc()
-    {
-        stored.phase = DeviceJoinLocalPhase::Expired;
-        store.save(stored)?;
-        cleanup_expired_session_secrets(core, stored)?;
-    }
-    Ok(())
-}
-
-fn cleanup_expired_session_secrets(
-    core: &crate::core::ImCore,
-    stored: &StoredJoinSession,
-) -> crate::ImResult<()> {
-    let vault = required_vault(core)?;
-    let mut refs = vec![&stored.pairing_private_ref];
-    if let Some(secret_ref) = stored.join_session_token_ref.as_ref() {
-        refs.push(secret_ref);
-    }
-    if stored.side == DeviceJoinSide::NewDevice {
-        if let Some(secret_ref) = stored.signing_private_ref.as_ref() {
-            refs.push(secret_ref);
-        }
-        if let Some(secret_ref) = stored.e2ee_private_ref.as_ref() {
-            refs.push(secret_ref);
-        }
-    }
-
-    let mut first_error = None;
-    for secret_ref in refs {
-        if let Err(error) = vault.delete(secret_ref) {
-            if first_error.is_none() {
-                first_error = Some(error);
-            }
-        }
-    }
-    match first_error {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
-}
-
-fn ensure_not_expired(stored: &StoredJoinSession) -> crate::ImResult<()> {
-    match stored.phase {
-        DeviceJoinLocalPhase::Expired => Err(crate::ImError::SessionExpired),
-        DeviceJoinLocalPhase::Cancelled => Err(invalid_state("Join is cancelled")),
-        _ => Ok(()),
+    if effective_expires_at <= OffsetDateTime::now_utc() {
+        Err(crate::ImError::SessionExpired)
+    } else {
+        Ok(())
     }
 }
 
@@ -3165,52 +2968,6 @@ impl<'a> JoinStateStore<'a> {
         Ok(None)
     }
 
-    fn load_claim_intent(
-        &self,
-        join_session_id: &str,
-    ) -> crate::ImResult<Option<StoredAdminClaimIntent>> {
-        let raw = match fs::read(self.claim_intent_path(join_session_id)) {
-            Ok(value) => value,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(crate::ImError::from(error)),
-        };
-        let stored: StoredAdminClaimIntent = serde_json::from_slice(&raw)
-            .map_err(|_| invalid_state("admin claim intent JSON unreadable"))?;
-        if stored.schema_version != JOIN_STATE_SCHEMA_VERSION
-            || stored.join_session_id != join_session_id
-            || stored.operation_id.trim().is_empty()
-            || stored.authorizing_device_id.trim().is_empty()
-            || stored.authorizing_device_proof.proof_type != DEVICE_PROOF_TYPE
-        {
-            return Err(invalid_state("admin claim intent binding mismatch"));
-        }
-        Ok(Some(stored))
-    }
-
-    fn save_claim_intent(&self, stored: &StoredAdminClaimIntent) -> crate::ImResult<()> {
-        if stored.schema_version != JOIN_STATE_SCHEMA_VERSION
-            || stored.join_session_id.trim().is_empty()
-            || stored.operation_id.trim().is_empty()
-            || stored.authorizing_device_id.trim().is_empty()
-            || stored.authorizing_device_proof.proof_type != DEVICE_PROOF_TYPE
-        {
-            return Err(invalid_state("admin claim intent binding mismatch"));
-        }
-        let raw =
-            serde_json::to_vec_pretty(stored).map_err(|error| crate::ImError::Serialization {
-                detail: error.to_string(),
-            })?;
-        write_private_atomic(&self.claim_intent_path(&stored.join_session_id), &raw)
-    }
-
-    fn delete_claim_intent(&self, join_session_id: &str) -> crate::ImResult<()> {
-        match fs::remove_file(self.claim_intent_path(join_session_id)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(crate::ImError::from(error)),
-        }
-    }
-
     fn load(
         &self,
         join_session_id: &str,
@@ -3238,12 +2995,7 @@ impl<'a> JoinStateStore<'a> {
         for entry in entries {
             let entry = entry.map_err(crate::ImError::from)?;
             let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("json")
-                || path
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|value| value.ends_with(".claim.json"))
-            {
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
                 continue;
             }
             let raw = fs::read(path)?;
@@ -3358,17 +3110,6 @@ impl<'a> JoinStateStore<'a> {
         hasher.update(join_session_id.as_bytes());
         self.dir().join(format!(
             "{}.json",
-            URL_SAFE_NO_PAD.encode(hasher.finalize())
-        ))
-    }
-
-    fn claim_intent_path(&self, join_session_id: &str) -> PathBuf {
-        let mut hasher = Sha256::new();
-        hasher.update(b"admin-claim");
-        hasher.update([0]);
-        hasher.update(join_session_id.as_bytes());
-        self.dir().join(format!(
-            "{}.claim.json",
             URL_SAFE_NO_PAD.encode(hasher.finalize())
         ))
     }

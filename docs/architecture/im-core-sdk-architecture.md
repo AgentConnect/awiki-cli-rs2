@@ -388,7 +388,7 @@ These files describe the SDK public surface and interface-level contracts. They 
 
 ## 11. Durable Conversation Registry And Summary Projection
 
-The SQLite local state keeps `messages` as the durable message projection truth, while target schema version 28 uses `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
+The SQLite local state keeps `messages` as the durable message projection truth, while target schema version 29 uses `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
 
 - primary key: `(owner_identity_id, conversation_id)`;
 - hot index: `idx_conversation_summaries_owner_last(owner_identity_id, last_message_at DESC, conversation_id)`;
@@ -598,7 +598,31 @@ Schema version 20 adds `sync_state` with owner-scoped checkpoint rows:
 durations, redacted owner/thread identifiers, and checkpoint age rather than raw
 message payloads or sensitive E2EE material.
 
-## 15. Conversation Read State
+## 15. System Notification Projection
+
+Exact-device System Notification ingress is separated before ordinary Direct chat projection.
+Core accepts only delivery rows/hints carrying the trusted server-side
+`system_notification`/`system.notification` marker; a payload type alone never grants the system
+route. Exact-device routing is Message Service storage/delivery metadata and authenticated Inbox
+scope; it is not a P3 field and must not add `device_id`, `recipient_device_id`, or another
+device-targeting extension to P3 `meta`. P3 keeps the standard agent-DID target only. Full
+deliveries are verified against the target user's freshly resolved, root-bound DID
+Document and its unique compatible `ANPMessageService.serviceDid`, then against the service DID's
+RFC 9421 Origin Proof. Join Request self-proof and the closed type-specific payload are verified
+separately.
+
+Schema version 29 stores an event receipt and one current reducer projection per
+`(owner_identity_id, owner_did, did, join_session_id)`. The reducer uses
+`none/revision=0`, ignores older revisions, treats identical same-revision content as a no-op,
+rejects same-revision conflicts, and never reopens a terminal state. Terminal tombstones carry a
+minimum 30-day retention boundary. The durable verified business payload is private Core state for
+the Join orchestrator; the public snapshot and change stream remain secret-free.
+
+`system.notification` sync events advance only the reliable account checkpoint and schedule
+exact-device Inbox hydration. Neither sync hints nor full notifications produce message,
+conversation, history, search, unread/read-watermark, attachment, or chat realtime projection.
+
+## 16. Conversation Read State
 
 Conversation-level read state is separate from reliable sync checkpoints:
 

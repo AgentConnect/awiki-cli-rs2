@@ -2232,7 +2232,6 @@ fn scenario() -> Scenario {
                 auth_generation: 1,
             },
         ],
-        pending_join_requests: Vec::new(),
     };
     let sender = local_identity(
         "sender-identity",

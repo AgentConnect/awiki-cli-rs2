@@ -1742,7 +1742,6 @@ mod tests {
                 registry_version: 7,
             },
             devices: Vec::new(),
-            pending_join_requests: Vec::new(),
         };
         match classify_root_ready_retry_probe(Ok(registry.clone())).unwrap() {
             RootReadyRetryProbe::ContinueAck(actual) => assert_eq!(actual, registry),

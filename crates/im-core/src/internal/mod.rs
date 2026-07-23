@@ -56,5 +56,6 @@ pub(crate) mod secret_vault;
 pub(crate) mod secure_direct;
 pub(crate) mod snapshot;
 pub(crate) mod store;
+pub(crate) mod system_notification;
 pub(crate) mod transport;
 pub(crate) mod wire;

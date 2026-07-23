@@ -786,6 +786,29 @@ async fn realtime_async_runner_uses_tokio_channels_and_status_watch() {
     );
 }
 
+#[test]
+fn plain_realtime_projector_never_falls_system_notifications_back_to_chat() {
+    let mut projector = PlainRealtimeNotificationProjector;
+    let outcome = projector.project(json!({
+        "projection_kind": "system_notification",
+        "method": "direct.incoming",
+        "params": {
+            "body": {
+                "payload": {
+                    "type": "awiki.device.join-requested.v1"
+                }
+            }
+        }
+    }));
+
+    assert!(outcome.event.is_none());
+    assert!(outcome.additional_events.is_empty());
+    assert_eq!(
+        outcome.warnings,
+        vec!["system.notification.secure_projector_required".to_owned()]
+    );
+}
+
 #[tokio::test]
 async fn realtime_async_runner_stops_on_shutdown_signal() {
     let options = super::super::RealtimeOptions::default();

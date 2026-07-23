@@ -6,9 +6,8 @@
 
 use im_core::prelude::{
     DeviceJoinAccountVerificationGrant, DeviceJoinBeginRequest, DeviceJoinConfirmApprovalRequest,
-    DeviceJoinProgress, DeviceJoinRole, Did, IdentitySelector,
+    DeviceJoinProgress, DeviceJoinRejectReason, Did, IdentitySelector,
 };
-use im_core::ImCore;
 use serde::Serialize;
 
 use crate::cli_output::ExitError;
@@ -19,7 +18,6 @@ const ACCOUNT_VERIFICATION_TOKEN_ENV: &str = "AWIKI_ACCOUNT_VERIFICATION_TOKEN";
 pub async fn local_sessions_via_im_core_async(
     resolved: &crate::workspace_config::Resolved,
 ) -> Result<CommandResult, ExitError> {
-    require_rollout_enabled()?;
     let core = super::build_im_core_async(resolved).await?;
     let sessions = core
         .device_join()
@@ -38,7 +36,6 @@ pub async fn begin_via_im_core_async(
     operation_id: &str,
     ttl_seconds: u64,
 ) -> Result<CommandResult, ExitError> {
-    require_rollout_enabled()?;
     let did = parse_did(did)?;
     let operation_id = required_value(operation_id, "--operation-id")?;
     let grant = account_verification_grant()?;
@@ -60,7 +57,6 @@ pub async fn poll_new_device_via_im_core_async(
     resolved: &crate::workspace_config::Resolved,
     join_session_id: &str,
 ) -> Result<CommandResult, ExitError> {
-    require_rollout_enabled()?;
     let join_session_id = required_value(join_session_id, "--session")?;
     let core = super::build_im_core_async(resolved).await?;
     let progress = core
@@ -75,7 +71,6 @@ pub async fn registry_via_im_core_async(
     resolved: &crate::workspace_config::Resolved,
     selector: IdentitySelector,
 ) -> Result<CommandResult, ExitError> {
-    require_rollout_enabled()?;
     let core = super::build_im_core_async(resolved).await?;
     let registry = core
         .device_join()
@@ -90,78 +85,83 @@ pub async fn registry_via_im_core_async(
     )
 }
 
-pub async fn claim_via_im_core_async(
+pub async fn local_requests_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    selector: IdentitySelector,
+) -> Result<CommandResult, ExitError> {
+    let core = super::build_im_core_async(resolved).await?;
+    let requests = core
+        .device_join()
+        .local_device_join_requests(selector)
+        .await
+        .map_err(|err| super::map_im_error(err, "id device join requests"))?;
+    command_result(
+        "device_join_requests",
+        &requests,
+        format!("Loaded {} local device Join request(s)", requests.len()),
+    )
+}
+
+pub async fn start_verification_via_im_core_async(
     resolved: &crate::workspace_config::Resolved,
     selector: IdentitySelector,
     join_session_id: &str,
     operation_id: &str,
     challenge_ttl_seconds: u64,
 ) -> Result<CommandResult, ExitError> {
-    require_rollout_enabled()?;
     let join_session_id = required_value(join_session_id, "--session")?;
     let operation_id = required_value(operation_id, "--operation-id")?;
     let core = super::build_im_core_async(resolved).await?;
     let progress = core
         .device_join()
-        .claim_device_join(
+        .start_device_join_verification(
             selector,
             &join_session_id,
             &operation_id,
             challenge_ttl_seconds,
         )
         .await
-        .map_err(|err| super::map_im_error(err, "id device join claim"))?;
+        .map_err(|err| super::map_im_error(err, "id device join verify"))?;
     progress_result(
-        "device_join_claim",
+        "device_join_verify",
         progress,
-        "Device Join claimed and local challenge prepared",
+        "Device Join verification started",
     )
 }
 
-pub async fn poll_admin_via_im_core_async(
+pub async fn reject_via_im_core_async(
     resolved: &crate::workspace_config::Resolved,
     selector: IdentitySelector,
     join_session_id: &str,
+    reason: &str,
 ) -> Result<CommandResult, ExitError> {
-    require_rollout_enabled()?;
     let join_session_id = required_value(join_session_id, "--session")?;
+    let reason = reject_reason_from_cli(reason)?;
     let core = super::build_im_core_async(resolved).await?;
-    let progress = poll_admin(&core, selector, &join_session_id).await?;
-    progress_result(
-        "device_join_admin_poll",
-        progress,
-        "Administrative Device Join state refreshed",
-    )
+    let progress = core
+        .device_join()
+        .reject_device_join(selector, &join_session_id, reason)
+        .await
+        .map_err(|err| super::map_im_error(err, "id device join reject"))?;
+    progress_result("device_join_reject", progress, "Device Join rejected")
 }
 
 pub(crate) async fn approve_via_im_core_async<F>(
     resolved: &crate::workspace_config::Resolved,
     selector: IdentitySelector,
     join_session_id: &str,
-    role: DeviceJoinRole,
     confirm: F,
 ) -> Result<CommandResult, ExitError>
 where
     F: FnOnce(&str) -> Result<(), ExitError>,
 {
-    require_rollout_enabled()?;
     let join_session_id = required_value(join_session_id, "--session")?;
     let core = super::build_im_core_async(resolved).await?;
-    let progress = poll_admin(&core, selector.clone(), &join_session_id).await?;
-    let sas = progress.sas.as_deref().ok_or_else(|| {
-        ExitError::new(
-            "join_not_ready",
-            3,
-            "The new device response is not ready for SAS confirmation.",
-            "Run `awiki-cli id device join poll --session <SESSION> --admin` and retry after both devices show a SAS.",
-        )
-    })?;
-    confirm(sas)?;
-
     let prompt = core
         .device_join()
-        .prepare_device_join_approval(selector, &join_session_id, role, true)
+        .prepare_device_join_approval(selector, &join_session_id, true)
         .map_err(|err| super::map_im_error(err, "id device join approve"))?;
+    confirm(&prompt.sas)?;
     let approved = core
         .device_join()
         .confirm_device_join_approval(DeviceJoinConfirmApprovalRequest {
@@ -175,20 +175,15 @@ where
 
 pub async fn cancel_via_im_core_async(
     resolved: &crate::workspace_config::Resolved,
-    selector: IdentitySelector,
     join_session_id: &str,
-    admin_side: bool,
 ) -> Result<CommandResult, ExitError> {
-    require_rollout_enabled()?;
     let join_session_id = required_value(join_session_id, "--session")?;
     let core = super::build_im_core_async(resolved).await?;
-    let session = if admin_side {
-        core.device_join()
-            .cancel_admin_device_join(selector, &join_session_id)
-    } else {
-        core.device_join().cancel_new_device_join(&join_session_id)
-    }
-    .map_err(|err| super::map_im_error(err, "id device join cancel"))?;
+    let session = core
+        .device_join()
+        .cancel_new_device_join(&join_session_id)
+        .await
+        .map_err(|err| super::map_im_error(err, "id device join cancel"))?;
     command_result(
         "device_join_cancel",
         &session,
@@ -196,29 +191,17 @@ pub async fn cancel_via_im_core_async(
     )
 }
 
-pub fn role_from_cli(value: &str) -> Result<DeviceJoinRole, ExitError> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "member" => Ok(DeviceJoinRole::Member),
-        "admin" => Ok(DeviceJoinRole::Admin),
+fn reject_reason_from_cli(value: &str) -> Result<DeviceJoinRejectReason, ExitError> {
+    match value.trim() {
+        "" | "user-rejected" => Ok(DeviceJoinRejectReason::UserRejected),
+        "sas-mismatch" => Ok(DeviceJoinRejectReason::SasMismatch),
         _ => Err(ExitError::new(
             "invalid_argument",
             2,
-            "--role must be member or admin.",
-            "Use member for the default communication-only role, or admin to authorize device management.",
+            "--reason must be user-rejected or sas-mismatch.",
+            "Use user-rejected for an explicit refusal, or sas-mismatch when the displayed codes differ.",
         )),
     }
-}
-
-pub(crate) fn require_rollout_enabled() -> Result<(), ExitError> {
-    if super::vault::multi_device_join_enabled()? {
-        return Ok(());
-    }
-    Err(ExitError::new(
-        "unsupported_capability",
-        2,
-        "Multi-device Join is disabled by the local rollout gate.",
-        "Set AWIKI_MULTI_DEVICE_JOIN_ENABLED=1 only in an environment prepared for the multi-device rollout.",
-    ))
 }
 
 fn account_verification_grant() -> Result<DeviceJoinAccountVerificationGrant, ExitError> {
@@ -234,17 +217,6 @@ fn account_verification_grant() -> Result<DeviceJoinAccountVerificationGrant, Ex
     })?;
     DeviceJoinAccountVerificationGrant::from_token(token)
         .map_err(|err| super::map_im_error(err, "id device join start"))
-}
-
-async fn poll_admin(
-    core: &ImCore,
-    selector: IdentitySelector,
-    join_session_id: &str,
-) -> Result<DeviceJoinProgress, ExitError> {
-    core.device_join()
-        .poll_admin_device_join(selector, join_session_id)
-        .await
-        .map_err(|err| super::map_im_error(err, "id device join poll"))
 }
 
 fn parse_did(value: &str) -> Result<Did, ExitError> {
@@ -276,7 +248,15 @@ fn progress_result(
     progress: DeviceJoinProgress,
     summary: &str,
 ) -> Result<CommandResult, ExitError> {
-    command_result(action, &progress, summary.to_owned())
+    let value = remove_sas(serde_json::to_value(progress).map_err(serialization_error)?);
+    command_value_result(action, value, summary.to_owned())
+}
+
+fn remove_sas(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(object) = value.as_object_mut() {
+        object.remove("sas");
+    }
+    value
 }
 
 fn command_result(
@@ -284,14 +264,15 @@ fn command_result(
     value: &impl Serialize,
     summary: String,
 ) -> Result<CommandResult, ExitError> {
-    let value = serde_json::to_value(value).map_err(|err| {
-        ExitError::new(
-            "serialization_error",
-            1,
-            format!("serialize device Join result: {err}"),
-            "Report this issue without including verification grants or private key material.",
-        )
-    })?;
+    let value = serde_json::to_value(value).map_err(serialization_error)?;
+    command_value_result(action, value, summary)
+}
+
+fn command_value_result(
+    action: &str,
+    value: serde_json::Value,
+    summary: String,
+) -> Result<CommandResult, ExitError> {
     Ok(CommandResult {
         data: serde_json::json!({
             "action": action,
@@ -300,4 +281,34 @@ fn command_result(
         summary,
         warnings: Vec::new(),
     })
+}
+
+fn serialization_error(err: serde_json::Error) -> ExitError {
+    ExitError::new(
+        "serialization_error",
+        1,
+        format!("serialize device Join result: {err}"),
+        "Report this issue without including verification grants or private key material.",
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_projection_never_emits_sas() {
+        let value = remove_sas(serde_json::json!({
+            "session": {"join_session_id": "join-1"},
+            "remote_state": "response_verified",
+            "sas": "012345",
+            "authorized_device": null
+        }));
+
+        let result =
+            command_value_result("device_join_poll", value, "refreshed".to_owned()).unwrap();
+        let encoded = serde_json::to_string(&result.data).unwrap();
+        assert!(!encoded.contains("012345"));
+        assert!(result.data["result"].get("sas").is_none());
+    }
 }

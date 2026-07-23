@@ -1,10 +1,9 @@
 use awiki_im_core::identity::{
-    DeviceJoinAccountVerificationGrant, DeviceJoinBeginRequest, DeviceJoinLocalPhase,
-    DeviceJoinRole, DeviceJoinSessionView, DeviceJoinSide,
+    DeviceJoinAccountVerificationGrant, DeviceJoinLocalPhase, DeviceJoinSessionView, DeviceJoinSide,
 };
 use awiki_im_core::{
-    IdentityRegistryPaths, ImCore, ImCoreConfig, ImCoreOpenOptions, ImCorePaths, LocalStatePaths,
-    RuntimePaths, ServiceEndpoint,
+    IdentityRegistryPaths, ImCore, ImCoreConfig, ImCorePaths, LocalStatePaths, RuntimePaths,
+    ServiceEndpoint,
 };
 
 fn paths(root: &std::path::Path) -> ImCorePaths {
@@ -33,46 +32,9 @@ fn config() -> ImCoreConfig {
 }
 
 #[tokio::test]
-async fn device_join_rollout_gate_defaults_off_before_state_or_network_side_effects() {
+async fn join_surface_can_resume_an_empty_local_store() {
     let root = tempfile::tempdir().unwrap();
     let core = ImCore::open(config(), paths(root.path())).await.unwrap();
-    let grant = DeviceJoinAccountVerificationGrant::from_token(
-        "account-verification-token-must-never-appear",
-    )
-    .unwrap();
-
-    let error = core
-        .device_join()
-        .begin_new_device_join(DeviceJoinBeginRequest {
-            operation_id: "join-start-gate-test".to_owned(),
-            did: awiki_im_core::ids::Did::parse(
-                "did:wba:awiki.info:user:alice:e1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            )
-            .unwrap(),
-            ttl_seconds: 300,
-            account_verification_grant: grant,
-        })
-        .await
-        .unwrap_err();
-
-    assert!(matches!(
-        error,
-        awiki_im_core::ImError::UnsupportedCapability { ref capability }
-            if capability == "awiki-multi-device-join-disabled"
-    ));
-    assert!(!root.path().join("identities/.device-join").exists());
-}
-
-#[tokio::test]
-async fn explicitly_enabled_join_surface_can_resume_an_empty_local_store() {
-    let root = tempfile::tempdir().unwrap();
-    let core = ImCore::open_with_options(
-        config(),
-        paths(root.path()),
-        ImCoreOpenOptions::default().with_multi_device_join_enabled(true),
-    )
-    .await
-    .unwrap();
 
     assert!(core.device_join().local_sessions().unwrap().is_empty());
 }
@@ -88,7 +50,6 @@ fn join_grant_and_approval_prompt_debug_are_redacted() {
     let prompt = awiki_im_core::identity::DeviceJoinApprovalPrompt {
         approval_handle: "approval-handle-must-not-appear".to_owned(),
         join_session_id: "join-safe-id".to_owned(),
-        role: DeviceJoinRole::Member,
         sas: "123456".to_owned(),
         expires_at: "2026-07-19T12:00:00Z".to_owned(),
     };

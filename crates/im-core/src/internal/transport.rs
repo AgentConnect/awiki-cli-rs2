@@ -185,6 +185,14 @@ pub(crate) trait AsyncRawJsonTransport {
 pub(crate) trait RpcTransport {
     fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value>;
 
+    fn directory_get_json_url(
+        &mut self,
+        _url: &str,
+        _headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        Err(crate::ImError::unsupported("directory-raw-json-resolution"))
+    }
+
     fn reconcile_pending_registration(
         &mut self,
         _pending: &crate::internal::identity_registration_pending::PendingRegistration,
@@ -197,6 +205,14 @@ pub(crate) trait RpcTransport {
 
 pub(crate) trait AsyncRpcTransport {
     async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value>;
+
+    async fn directory_get_json_url(
+        &mut self,
+        _url: &str,
+        _headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        Err(crate::ImError::unsupported("directory-raw-json-resolution"))
+    }
 
     async fn reconcile_pending_registration(
         &mut self,
@@ -1466,11 +1482,27 @@ impl RpcTransport for CoreHttpTransport<'_> {
     fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
         self.plain_rpc(endpoint, method, params)
     }
+
+    fn directory_get_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        RawJsonTransport::get_json_url(self, url, headers)
+    }
 }
 
 impl AsyncRpcTransport for CoreHttpTransport<'_> {
     async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
         self.plain_rpc_async(endpoint, method, params).await
+    }
+
+    async fn directory_get_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        AsyncRawJsonTransport::get_json_url(self, url, headers).await
     }
 }
 
