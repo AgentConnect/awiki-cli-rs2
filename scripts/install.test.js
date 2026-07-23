@@ -13,15 +13,90 @@ const { _internal } = require('./install.js');
 
 const execFileAsync = promisify(execFile);
 
-test('maps only the four supported release targets', () => {
-  assert.deepEqual(_internal.mapTarget('darwin', 'arm64'), {
-    osName: 'darwin', archName: 'arm64', target: 'darwin-arm64',
+test('maps the host independently from available release artifacts', () => {
+  assert.deepEqual(_internal.mapHost('darwin', 'arm64'), {
+    osName: 'darwin', archName: 'arm64', hostTarget: 'darwin-arm64',
   });
-  assert.deepEqual(_internal.mapTarget('linux', 'x64'), {
-    osName: 'linux', archName: 'amd64', target: 'linux-amd64',
+  assert.deepEqual(_internal.mapHost('darwin', 'x86_64'), {
+    osName: 'darwin', archName: 'amd64', hostTarget: 'darwin-amd64',
   });
-  assert.throws(() => _internal.mapTarget('linux', 'arm64'), /Unsupported platform/);
-  assert.throws(() => _internal.mapTarget('win32', 'arm64'), /Unsupported platform/);
+  assert.deepEqual(_internal.mapHost('linux', 'x64'), {
+    osName: 'linux', archName: 'amd64', hostTarget: 'linux-amd64',
+  });
+  assert.deepEqual(_internal.mapHost('win32', 'x64'), {
+    osName: 'windows', archName: 'amd64', hostTarget: 'windows-amd64',
+  });
+  assert.deepEqual(_internal.mapHost('win32', 'arm64'), {
+    osName: 'windows', archName: 'arm64', hostTarget: 'windows-arm64',
+  });
+  assert.deepEqual(_internal.mapHost('win32', 'aarch64'), {
+    osName: 'windows', archName: 'arm64', hostTarget: 'windows-arm64',
+  });
+  assert.throws(() => _internal.mapHost('linux', 'arm64'), /Unsupported platform/);
+  assert.throws(() => _internal.mapHost('freebsd', 'x64'), /Unsupported platform/);
+  assert.throws(() => _internal.mapHost('win32', 'ia32'), /Unsupported platform/);
+});
+
+test('prefers a native Windows ARM64 artifact when release metadata provides one', () => {
+  const host = _internal.mapHost('win32', 'arm64');
+  const arm64 = { url: 'https://downloads.example/arm64.zip', sha256: 'a'.repeat(64) };
+  const amd64 = { url: 'https://downloads.example/amd64.zip', sha256: 'b'.repeat(64) };
+
+  assert.deepEqual(_internal.selectArtifactForHost(host, {
+    'windows-amd64': amd64,
+    'windows-arm64': arm64,
+  }), {
+    artifact: arm64,
+    artifactTarget: 'windows-arm64',
+    compatibilityFallback: false,
+  });
+});
+
+test('selects the real Windows x64 artifact as the ARM64 compatibility fallback', () => {
+  const host = _internal.mapHost('win32', 'arm64');
+  const amd64 = { url: 'https://downloads.example/amd64.zip', sha256: 'b'.repeat(64) };
+
+  assert.deepEqual(_internal.selectArtifactForHost(host, {
+    'windows-amd64': amd64,
+  }), {
+    artifact: amd64,
+    artifactTarget: 'windows-amd64',
+    compatibilityFallback: true,
+  });
+});
+
+test('selects Windows x64 directly without marking it as a compatibility fallback', () => {
+  const host = _internal.mapHost('win32', 'x64');
+  const amd64 = { url: 'https://downloads.example/amd64.zip', sha256: 'b'.repeat(64) };
+
+  assert.deepEqual(_internal.selectArtifactForHost(host, {
+    'windows-amd64': amd64,
+  }), {
+    artifact: amd64,
+    artifactTarget: 'windows-amd64',
+    compatibilityFallback: false,
+  });
+});
+
+test('fails closed when release metadata declares an invalid Windows ARM64 artifact', () => {
+  const host = _internal.mapHost('win32', 'arm64');
+  const amd64 = { url: 'https://downloads.example/amd64.zip', sha256: 'b'.repeat(64) };
+
+  assert.throws(
+    () => _internal.selectArtifactForHost(host, {
+      'windows-amd64': amd64,
+      'windows-arm64': { url: 'https://downloads.example/arm64.zip', sha256: 'invalid' },
+    }),
+    /invalid package entry for windows-arm64/,
+  );
+});
+
+test('rejects a supported host when release metadata has no compatible artifact', () => {
+  const host = _internal.mapHost('darwin', 'arm64');
+  assert.throws(
+    () => _internal.selectArtifactForHost(host, {}),
+    /no valid package entry for darwin-arm64/,
+  );
 });
 
 test('requires structured release metadata', () => {
@@ -67,7 +142,7 @@ printf 'installer smoke\n'
   const tar = await execFileAsync('tar', ['-C', archiveStage, '-czf', archive, 'awiki-cli']);
   assert.equal(tar.stderr, '');
   const digest = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
-  const target = _internal.mapTarget().target;
+  const target = _internal.mapHost().hostTarget;
 
   const server = http.createServer((request, response) => {
     if (request.url !== '/awiki-cli.tar.gz') {

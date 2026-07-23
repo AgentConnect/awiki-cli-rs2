@@ -2,7 +2,7 @@
 
 [English](compatibility.md) | [简体中文](compatibility.zh-CN.md)
 
-Last reviewed: 2026-07-14. Add real release versions, commits, and verification dates before public release.
+Last reviewed: 2026-07-23. Add real release versions, commits, and verification dates before public release.
 
 ## 1. Capability status
 
@@ -20,7 +20,7 @@ Last reviewed: 2026-07-14. Add real release versions, commits, and verification 
 
 ## 2. CLI platform targets
 
-Current release configuration lists `darwin-arm64`, `darwin-amd64`, `linux-amd64` with a static musl strategy, and `windows-amd64`. Listing a target does not prove every release passed complete system tests; the manifest must record what was actually produced.
+Current release configuration lists `darwin-arm64`, `darwin-amd64`, `linux-amd64` with a static musl strategy, and `windows-amd64`. On Windows 11 ARM64, the installer identifies the ARM64 host separately and selects the real `windows-amd64` artifact through Windows x64 app emulation when the manifest does not declare a native `windows-arm64` entry. A declared but invalid ARM64 entry fails closed. The manifest and installer logs continue to report the selected artifact as `windows-amd64`; native Windows ARM64 is not a current release target. Listing a target does not prove every release passed complete system tests; the manifest must record what was actually produced.
 
 ## 3. SDK platforms
 

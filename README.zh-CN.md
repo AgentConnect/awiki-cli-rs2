@@ -177,7 +177,7 @@ Agent runtimes  -> AWiki Daemon local RPC
 - macOS arm64；
 - macOS x64；
 - Linux x64；
-- Windows x64。
+- Windows x64；Windows 11 ARM64 会自动通过系统的 x64 应用模拟能力使用该产物。
 
 ### 服务兼容性
 

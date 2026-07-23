@@ -7,21 +7,65 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const SUPPORTED_TARGETS = new Set([
-  'darwin-amd64',
-  'darwin-arm64',
-  'linux-amd64',
-  'windows-amd64',
-]);
+const HOST_ARTIFACT_CANDIDATES = Object.freeze({
+  'darwin-amd64': ['darwin-amd64'],
+  'darwin-arm64': ['darwin-arm64'],
+  'linux-amd64': ['linux-amd64'],
+  'windows-amd64': ['windows-amd64'],
+  'windows-arm64': ['windows-arm64', 'windows-amd64'],
+});
 
-function mapTarget(platform = process.platform, arch = process.arch) {
+function mapHost(
+  platform = process.platform,
+  machine = typeof os.machine === 'function' ? os.machine() : process.arch,
+) {
+  const normalizedMachine = String(machine).trim().toLowerCase();
   const osName = platform === 'darwin' ? 'darwin' : platform === 'linux' ? 'linux' : platform === 'win32' ? 'windows' : '';
-  const archName = arch === 'x64' ? 'amd64' : arch === 'arm64' ? 'arm64' : '';
-  const target = osName && archName ? `${osName}-${archName}` : `${platform}-${arch}`;
-  if (!SUPPORTED_TARGETS.has(target)) {
-    throw new Error(`Unsupported platform: ${platform}/${arch}. Supported targets: ${[...SUPPORTED_TARGETS].join(', ')}`);
+  const archName = ['x64', 'x86_64', 'amd64'].includes(normalizedMachine)
+    ? 'amd64'
+    : ['arm64', 'aarch64'].includes(normalizedMachine) ? 'arm64' : '';
+  const target = osName && archName ? `${osName}-${archName}` : '';
+  if (!target || !Object.hasOwn(HOST_ARTIFACT_CANDIDATES, target)) {
+    throw new Error(`Unsupported platform: ${platform}/${machine}`);
   }
-  return { osName, archName, target };
+  return { osName, archName, hostTarget: target };
+}
+
+function artifactCandidates(hostTarget) {
+  const candidates = HOST_ARTIFACT_CANDIDATES[hostTarget];
+  if (!candidates) {
+    throw new Error(`Unsupported host target: ${hostTarget}`);
+  }
+  return [...candidates];
+}
+
+function validArtifact(artifact) {
+  return artifact
+    && typeof artifact === 'object'
+    && typeof artifact.url === 'string'
+    && artifact.url.trim().length > 0
+    && /^[a-f0-9]{64}$/i.test(artifact.sha256 || '');
+}
+
+function selectArtifactForHost(host, packages) {
+  const candidates = artifactCandidates(host.hostTarget);
+  for (const artifactTarget of candidates) {
+    if (!Object.hasOwn(packages, artifactTarget)) {
+      continue;
+    }
+    const artifact = packages[artifactTarget];
+    if (!validArtifact(artifact)) {
+      throw new Error(`awiki-release.json has an invalid package entry for ${artifactTarget}`);
+    }
+    return {
+      artifact,
+      artifactTarget,
+      compatibilityFallback: artifactTarget !== host.hostTarget,
+    };
+  }
+  throw new Error(
+    `awiki-release.json has no valid package entry for ${host.hostTarget} (tried: ${candidates.join(', ')})`,
+  );
 }
 
 function readReleaseMetadata(rootDir) {
@@ -104,7 +148,8 @@ function binaryProbeEnvironment(metadata, tempDir) {
 
 async function main() {
   const rootDir = path.resolve(__dirname, '..');
-  const { osName, target } = mapTarget();
+  const host = mapHost();
+  const { osName } = host;
   const binDir = path.join(rootDir, 'bin');
   const binaryPath = path.join(binDir, osName === 'windows' ? 'awiki-cli.exe' : 'awiki-cli');
   fs.mkdirSync(binDir, { recursive: true });
@@ -117,19 +162,23 @@ async function main() {
   }
 
   const metadata = readReleaseMetadata(rootDir);
-  const artifact = metadata.packages[target];
-  if (!artifact || !artifact.url || !/^[a-f0-9]{64}$/i.test(artifact.sha256 || '')) {
-    throw new Error(`awiki-release.json has no valid package entry for ${target}`);
+  const { artifact, artifactTarget, compatibilityFallback } =
+    selectArtifactForHost(host, metadata.packages);
+  if (compatibilityFallback) {
+    console.log(
+      `[awiki-cli] ${host.hostTarget} host detected; using the ${artifactTarget} compatibility package. `
+      + 'Windows 11 x64 app emulation is required.',
+    );
   }
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-cli-'));
   const archivePath = path.join(tempDir, path.basename(new URL(artifact.url).pathname) || 'awiki-cli.archive');
   try {
-    console.log(`Downloading awiki-cli ${metadata.version} for ${target} from ${artifact.url} ...`);
+    console.log(`Downloading awiki-cli ${metadata.version} for ${artifactTarget} from ${artifact.url} ...`);
     await download(artifact.url, archivePath);
     const actualDigest = sha256File(archivePath);
     if (actualDigest.toLowerCase() !== artifact.sha256.toLowerCase()) {
-      throw new Error(`SHA-256 mismatch for ${target}: expected ${artifact.sha256}, got ${actualDigest}`);
+      throw new Error(`SHA-256 mismatch for ${artifactTarget}: expected ${artifact.sha256}, got ${actualDigest}`);
     }
     await extract(archivePath, binDir, osName);
     if (!fs.existsSync(binaryPath)) throw new Error(`Archive did not contain ${path.basename(binaryPath)}`);
@@ -137,7 +186,17 @@ async function main() {
     // `version` resolves workspace configuration. Probe inside the installer
     // temp directory so postinstall cannot initialize or alter the user's
     // real workspace before the package wrapper supplies release defaults.
-    await runCommand(binaryPath, ['version'], { env: binaryProbeEnvironment(metadata, tempDir) });
+    try {
+      await runCommand(binaryPath, ['version'], { env: binaryProbeEnvironment(metadata, tempDir) });
+    } catch (err) {
+      if (compatibilityFallback) {
+        throw new Error(
+          `${artifactTarget} compatibility binary could not run on ${host.hostTarget}. `
+          + `Windows 11 x64 app emulation is required: ${err.message}`,
+        );
+      }
+      throw err;
+    }
     console.log(`awiki-cli binary is installed at ${binaryPath}`);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -153,9 +212,10 @@ if (require.main === module) {
 
 module.exports = {
   _internal: {
-    SUPPORTED_TARGETS,
-    mapTarget,
+    artifactCandidates,
+    mapHost,
     readReleaseMetadata,
+    selectArtifactForHost,
     sha256File,
     binaryProbeEnvironment,
   },

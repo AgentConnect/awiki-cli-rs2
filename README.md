@@ -175,7 +175,7 @@ See [Workspace Components](docs/workspace-components.md).
 - macOS arm64
 - macOS x64
 - Linux x64
-- Windows x64
+- Windows x64; Windows 11 ARM64 automatically uses this artifact through the operating system's x64 app emulation
 
 ### Service compatibility
 
