@@ -312,8 +312,6 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "id.device.join.cancel" => app.run_id_device_join_cancel_async(command).await,
         "id.device.revoke" => app.run_id_device_revoke_async(command).await,
         "id.device.root-key.send" => app.run_id_device_root_key_send_async(command).await,
-        "id.device.root-key.list" => app.run_id_device_root_key_list_async(command).await,
-        "id.device.root-key.retry" => app.run_id_device_root_key_retry_async(command).await,
         "group.create" => app.run_group_create_async(command).await,
         "group.get" => app.run_group_get_async(command).await,
         "group.join" => app.run_group_join_async(command).await,

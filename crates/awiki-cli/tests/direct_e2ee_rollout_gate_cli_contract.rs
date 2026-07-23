@@ -40,7 +40,6 @@ fn awiki_cmd(workspace: &Path, gate: Option<&str>) -> Output {
         .env("HOME", &home)
         .env("USERPROFILE", &home)
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
-        .env_remove("AWIKI_MULTI_DEVICE_ROOT_TRANSFER_ENABLED")
         .env_remove("AWIKI_MULTI_DEVICE_DEVICE_REVOKE_ENABLED")
         .env_remove("AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED")
         .env_remove("AWIKI_MULTI_DEVICE_HANDLE_RECOVERY_ENABLED")

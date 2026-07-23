@@ -427,8 +427,6 @@ fn cli_dispatch_names() -> BTreeSet<&'static str> {
         "id.device.join.cancel",
         "id.device.revoke",
         "id.device.root-key.send",
-        "id.device.root-key.list",
-        "id.device.root-key.retry",
         "id.recovery.sessions",
         "id.recovery.begin",
         "id.recovery.status",
