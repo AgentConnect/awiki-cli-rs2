@@ -2419,188 +2419,6 @@ async fn messages_read_async_projects_direct_init_without_legacy_fallback() {
     assert_eq!(saved_session.recv_n, 1);
 }
 
-#[tokio::test]
-async fn messages_read_async_never_projects_private_root_control_when_gate_is_off() {
-    let fixture = Fixture::new();
-    let client = fixture.client();
-    let response = json!({
-        "messages": [{
-            "id": "root-control-message-1",
-            "sender_did": "did:example:alice",
-            "receiver_did": "did:example:alice",
-            "content_type": "application/anp-direct-cipher+json;v=2",
-            "server_seq": 1,
-            "meta": {},
-            "body": {"ciphertext_b64u": "ROOT-PLAINTEXT-MUST-NEVER-APPEAR"},
-            "private_transport_context": {
-                "message_id": "root-control-message-1",
-                "delivery_class": "awiki-root-key-control",
-                "sender_device_id": "device-admin",
-                "recipient_device_id": "device-member",
-                "expires_at": "2026-07-20T01:00:00Z"
-            }
-        }],
-        "has_more": false
-    });
-    let runtime = MessageReadRuntime::new(
-        &client,
-        ReadyAnyReadSessionProvider,
-        RecordingTransport {
-            calls: Rc::new(RefCell::new(Vec::new())),
-            response,
-        },
-        NoopDirectoryTransport,
-    );
-
-    let result = runtime
-        .inbox_async(InboxRead {
-            query: crate::messages::InboxQuery {
-                scope: crate::messages::InboxScope::DirectOnly,
-                limit: crate::ids::PageLimit(20),
-                cursor: None,
-                unread_only: false,
-                inbox_history_options: None,
-            },
-        })
-        .await
-        .unwrap();
-
-    assert!(result.page.items.is_empty());
-    assert_eq!(result.raw["messages"], json!([]));
-    let public_raw = serde_json::to_string(&result.raw).unwrap();
-    assert!(!public_raw.contains("ROOT-PLAINTEXT-MUST-NEVER-APPEAR"));
-    assert!(!public_raw.contains("private_transport_context"));
-}
-
-#[test]
-fn messages_read_sync_inbox_and_history_hide_v2_session_controls_with_gate_off() {
-    let fixture = Fixture::new();
-    let response = session_control_page();
-
-    let inbox_client = fixture.client();
-    let inbox = MessageReadRuntime::new(
-        &inbox_client,
-        ReadyAnyReadSessionProvider,
-        RecordingTransport {
-            calls: Rc::new(RefCell::new(Vec::new())),
-            response: response.clone(),
-        },
-        NoopDirectoryTransport,
-    )
-    .inbox(InboxRead {
-        query: crate::messages::InboxQuery {
-            scope: crate::messages::InboxScope::DirectOnly,
-            limit: crate::ids::PageLimit(20),
-            cursor: None,
-            unread_only: false,
-            inbox_history_options: None,
-        },
-    })
-    .unwrap();
-    assert!(inbox.page.items.is_empty());
-    assert_eq!(inbox.raw["messages"], json!([]));
-
-    let history_client = fixture.client();
-    let history = MessageReadRuntime::new(
-        &history_client,
-        ReadyAnyReadSessionProvider,
-        RecordingTransport {
-            calls: Rc::new(RefCell::new(Vec::new())),
-            response,
-        },
-        NoopDirectoryTransport,
-    )
-    .history(HistoryRead {
-        thread: crate::messages::ThreadRef::Direct(
-            crate::ids::PeerRef::parse("did:example:alice", "").unwrap(),
-        ),
-        query: crate::messages::HistoryQuery {
-            limit: crate::ids::PageLimit(20),
-            cursor: None,
-            inbox_history_options: None,
-        },
-        resolved_peer_did: None,
-        peer_scope: None,
-    })
-    .unwrap();
-    assert!(history.page.items.is_empty());
-    assert_eq!(history.raw["messages"], json!([]));
-}
-
-#[tokio::test]
-async fn messages_read_async_hides_v2_session_controls_gate_off_and_on_failure() {
-    for enabled in [false, true] {
-        let fixture = Fixture::new();
-        let client = fixture.client_with_root_transfer_enabled(enabled);
-        let mut response = session_control_page();
-        // Replay is still control traffic and must remain idempotently hidden.
-        let replay = response["messages"][0].clone();
-        response["messages"].as_array_mut().unwrap().push(replay);
-        let result = MessageReadRuntime::new(
-            &client,
-            ReadyAnyReadSessionProvider,
-            RecordingTransport {
-                calls: Rc::new(RefCell::new(Vec::new())),
-                response,
-            },
-            NoopDirectoryTransport,
-        )
-        .inbox_async(InboxRead {
-            query: crate::messages::InboxQuery {
-                scope: crate::messages::InboxScope::DirectOnly,
-                limit: crate::ids::PageLimit(20),
-                cursor: None,
-                unread_only: false,
-                inbox_history_options: None,
-            },
-        })
-        .await
-        .unwrap();
-
-        assert!(result.page.items.is_empty(), "gate enabled={enabled}");
-        assert_eq!(result.raw["messages"], json!([]));
-        let public_raw = serde_json::to_string(&result.raw).unwrap();
-        assert!(!public_raw.contains("U0VTU0lPTi1DT05UUk9MLUNJUEhFUlRFWFQ"));
-        assert!(!public_raw.contains("p5-v2-session-"));
-    }
-}
-
-#[test]
-fn v2_session_control_parser_requires_strict_operation_id_and_standard_p5_shape() {
-    let init = session_control_message(true);
-    let reply = session_control_message(false);
-    assert!(matches!(
-        parse_v2_session_control(&init).unwrap(),
-        Some((_, anp::direct_e2ee::V2DirectBody::Init(_)))
-    ));
-    assert!(matches!(
-        parse_v2_session_control(&reply).unwrap(),
-        Some((_, anp::direct_e2ee::V2DirectBody::Cipher(_)))
-    ));
-
-    let mut forged = init.clone();
-    forged["meta"]["operation_id"] = json!("p5-v2-session-init:AAAAAAAAAAAAAAAAAAAAA!");
-    forged["meta"]["message_id"] = forged["meta"]["operation_id"].clone();
-    assert!(parse_v2_session_control(&forged).is_err());
-    assert!(is_v2_session_control_projection(&forged));
-
-    let mut ordinary = init.clone();
-    ordinary["meta"]["operation_id"] = json!("ordinary-p5-v2-operation");
-    ordinary["meta"]["message_id"] = ordinary["meta"]["operation_id"].clone();
-    assert!(parse_v2_session_control(&ordinary).unwrap().is_none());
-    assert!(!is_v2_session_control_projection(&ordinary));
-
-    let mut wrong_shape = init;
-    wrong_shape["meta"]["content_type"] = json!(anp::direct_e2ee::CONTENT_TYPE_DIRECT_CIPHER_V2);
-    assert!(parse_v2_session_control(&wrong_shape).is_err());
-    assert!(is_v2_session_control_projection(&wrong_shape));
-
-    let mut wrong_profile = reply;
-    wrong_profile["meta"]["profile"] = json!("anp.direct.e2ee.v1");
-    assert!(parse_v2_session_control(&wrong_profile).is_err());
-    assert!(is_v2_session_control_projection(&wrong_profile));
-}
-
 #[test]
 #[cfg(feature = "group-e2ee")]
 fn v2_product_profiles_are_hidden_gate_independently_from_blocking_and_delegated_reads() {
@@ -2891,48 +2709,6 @@ fn p6_v2_incoming_wire() -> Value {
             }
         }
     })
-}
-
-#[test]
-fn private_root_control_parser_requires_exact_standard_wire_and_private_sidecar() {
-    let message = json!({
-        "meta": {
-            "profile": "anp.direct.e2ee.v2",
-            "security_profile": "direct-e2ee",
-            "sender_did": "did:example:alice",
-            "sender_device_id": "device-admin",
-            "target": {"kind": "agent", "did": "did:example:alice"},
-            "recipient_device_id": "device-member",
-            "operation_id": "root-control-message-1",
-            "message_id": "root-control-message-1",
-            "content_type": "application/anp-direct-cipher+json;v=2"
-        },
-        "body": {
-            "session_id": "AAAAAAAAAAAAAAAAAAAAAA",
-            "suite": "X25519-HKDF-SHA256+ChaCha20-Poly1305+Ed25519",
-            "ratchet_header": {
-                "dh_pub_b64u": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "pn": "0",
-                "n": "0"
-            },
-            "ciphertext_b64u": "AA"
-        },
-        "private_transport_context": {
-            "message_id": "root-control-message-1",
-            "delivery_class": "awiki-root-key-control",
-            "sender_device_id": "device-admin",
-            "recipient_device_id": "device-member",
-            "expires_at": "2026-07-20T01:00:00Z"
-        }
-    });
-
-    let (meta, _, context) = parse_private_root_control(&message).unwrap();
-    assert_eq!(meta.message_id, "root-control-message-1");
-    assert_eq!(context.delivery_class, "awiki-root-key-control");
-
-    let mut with_private_extension = message;
-    with_private_extension["private_transport_context"]["document_version"] = json!(19);
-    assert!(parse_private_root_control(&with_private_extension).is_err());
 }
 
 #[tokio::test]
@@ -6272,10 +6048,6 @@ impl Fixture {
     }
 
     fn client(&self) -> crate::core::ImClient {
-        self.client_with_root_transfer_enabled(false)
-    }
-
-    fn client_with_root_transfer_enabled(&self, enabled: bool) -> crate::core::ImClient {
         crate::core::ImCore::new_with_options(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
@@ -6302,7 +6074,7 @@ impl Fixture {
                     temp_dir: self.root.join("tmp"),
                 },
             },
-            crate::ImCoreOpenOptions::default().with_multi_device_root_transfer_enabled(enabled),
+            crate::ImCoreOpenOptions::default(),
         )
         .unwrap()
         .client(crate::identity::IdentitySelector::LocalAlias(
@@ -6498,25 +6270,8 @@ impl Fixture {
     }
 }
 
-fn session_control_page() -> Value {
-    json!({
-        "messages": [
-            session_control_message(true),
-            session_control_message(false),
-        ],
-        "has_more": false,
-    })
-}
-
-fn session_control_message(init: bool) -> Value {
-    let init_id =
-        crate::internal::secure_direct::v2_runtime::session_init_operation_id("read-session")
-            .unwrap();
-    let operation_id = if init {
-        init_id
-    } else {
-        crate::internal::secure_direct::v2_runtime::session_reply_operation_id(&init_id).unwrap()
-    };
+fn p5_wire_message(init: bool) -> Value {
+    let operation_id = "p5-wire-placeholder";
     let content_type = if init {
         anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2
     } else {
@@ -6608,7 +6363,7 @@ fn ordinary_p5_cache_message_with_kind(
     recipient_did: &str,
     recipient_device_id: &str,
 ) -> Value {
-    let mut message = session_control_message(init);
+    let mut message = p5_wire_message(init);
     let object = message.as_object_mut().unwrap();
     object.insert("id".to_owned(), json!(message_id));
     object.insert("sender_did".to_owned(), json!(sender_did));

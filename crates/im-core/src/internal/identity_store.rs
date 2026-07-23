@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use fs2::FileExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -7,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 const INDEX_SCHEMA_VERSION: i64 = 5;
 const IDENTITY_FILE_NAME: &str = "identity.json";
@@ -19,6 +21,9 @@ const E2EE_AGREEMENT_PRIVATE_FILE_NAME: &str = "e2ee-agreement-private.pem";
 const DAEMON_SUBKEY_PRIVATE_FILE_NAME: &str = "daemon-key-1-private.pem";
 const DAEMON_SUBKEY_PACKAGE_FILE_NAME: &str = "daemon-subkey-package.json";
 const IDENTITY_INDEX_MUTATION_LOCK_FILE: &str = ".identity-index-mutation.lock";
+const ED25519_PKCS8_PREFIX: [u8; 16] = [
+    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+];
 pub(crate) const IDENTITY_VAULT_MIGRATION_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
@@ -163,6 +168,44 @@ pub(crate) struct PromoteLegacyIdentityInput {
     pub(crate) vault: Arc<dyn crate::internal::secret_vault::SecretVault>,
 }
 
+#[derive(Clone)]
+pub(crate) struct PromoteVerifiedRootImportInput {
+    pub(crate) local_alias: String,
+    pub(crate) completed_message_id: String,
+    pub(crate) pending_root_ref: crate::internal::secret_vault::record::SecretRef,
+    pub(crate) root_key_id: String,
+    pub(crate) root_public_key_fingerprint: String,
+    pub(crate) auth_generation: u64,
+    pub(crate) checkpoint: crate::internal::identity_device_state::IdentityInternalCheckpoint,
+    pub(crate) secret_storage: SaveIdentitySecretStorage,
+}
+
+impl std::fmt::Debug for PromoteVerifiedRootImportInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PromoteVerifiedRootImportInput")
+            .field("local_alias", &self.local_alias)
+            .field("completed_message_id", &self.completed_message_id)
+            .field("pending_root_ref", &self.pending_root_ref)
+            .field("root_key_id", &self.root_key_id)
+            .field(
+                "root_public_key_fingerprint",
+                &self.root_public_key_fingerprint,
+            )
+            .field("auth_generation", &self.auth_generation)
+            .field("checkpoint", &self.checkpoint)
+            .field("secret_storage", &self.secret_storage)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RootImportPromotionResult {
+    pub(crate) active_root_ref: crate::internal::secret_vault::record::SecretRef,
+    pub(crate) index_was_already_promoted: bool,
+    pub(crate) pending_cleanup_required: bool,
+}
+
 impl std::fmt::Debug for PromoteLegacyIdentityInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PromoteLegacyIdentityInput")
@@ -246,8 +289,6 @@ impl<'a> IdentityStore<'a> {
         input.full_handle = full_handle;
 
         let mut index = self.load_index()?;
-        let preserved_root_import =
-            preserve_imported_root_for_resave(&index, &local_alias, &input, &secret_storage)?;
         let dir_name = preferred_dir_name(&input.unique_id)?;
         for (name, entry) in &index.credentials {
             if name == &local_alias {
@@ -277,26 +318,18 @@ impl<'a> IdentityStore<'a> {
         }
         fs::create_dir_all(&self.paths.identity_root_dir)?;
         set_private_dir_mode(&self.paths.identity_root_dir)?;
-        let vault_metadata = if let Some(preserved) = preserved_root_import.as_ref() {
-            // Imported-root identities preserve all deterministic Vault refs.
-            // The preflight below has already proven immutable device/root
-            // material and auth state byte-for-byte, so ordinary save performs
-            // no Vault write. Token rotation uses its dedicated mutation path.
-            Some(preserved.metadata.clone())
-        } else {
-            match &secret_storage {
-                SaveIdentitySecretStorage::FileCompat => None,
-                SaveIdentitySecretStorage::Vault {
-                    workspace_id,
-                    device_id,
-                    vault,
-                } => Some(seal_identity_input_to_vault(
-                    &input,
-                    workspace_id,
-                    device_id,
-                    vault.as_ref(),
-                )?),
-            }
+        let vault_metadata = match &secret_storage {
+            SaveIdentitySecretStorage::FileCompat => None,
+            SaveIdentitySecretStorage::Vault {
+                workspace_id,
+                device_id,
+                vault,
+            } => Some(seal_identity_input_to_vault(
+                &input,
+                workspace_id,
+                device_id,
+                vault.as_ref(),
+            )?),
         };
 
         fs::create_dir_all(&identity_dir)?;
@@ -391,7 +424,6 @@ impl<'a> IdentityStore<'a> {
                 .get(&local_alias)
                 .and_then(|entry| entry.device_state.clone())
         });
-        let root_key_import = preserved_root_import.map(|preserved| preserved.import);
         index.credentials.insert(
             local_alias.clone(),
             IndexEntry {
@@ -407,7 +439,6 @@ impl<'a> IdentityStore<'a> {
                 is_default,
                 vault_migration: vault_metadata,
                 device_state,
-                root_key_import,
             },
         );
         self.save_index_locked(lock, index)?;
@@ -493,198 +524,35 @@ impl<'a> IdentityStore<'a> {
         })?
     }
 
-    /// Loads the auth ref from an already committed imported-root transition.
-    /// Exact ACK retries use this to repair a live provider whose first ref
-    /// advance failed after the index commit.
-    pub(crate) fn committed_root_import_management_auth_ref(
+    /// Promotes one already-validated root import from its non-addressable
+    /// pending Vault kind to the active vNext root ref.
+    ///
+    /// The active Vault record is published first and the complete identity
+    /// index image is the authorization linearization point. Repeating this
+    /// operation repairs a crash after either boundary. The pending record is
+    /// deliberately left for the coordinator to delete only after its phase
+    /// has also converged to `promoted`.
+    pub(crate) fn promote_verified_root_import(
         &self,
-        local_alias: &str,
-        completed_message_id: &str,
-        auth_generation: u64,
-        secret_storage: &SaveIdentitySecretStorage,
-    ) -> crate::ImResult<crate::internal::secret_vault::record::SecretRef> {
+        input: PromoteVerifiedRootImportInput,
+    ) -> crate::ImResult<RootImportPromotionResult> {
+        let alias = sanitize_identity_name(&input.local_alias);
+        if alias.is_empty()
+            || input.completed_message_id.trim().is_empty()
+            || input.auth_generation == 0
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
         let SaveIdentitySecretStorage::Vault {
             workspace_id,
             device_id,
             vault,
-        } = secret_storage
+        } = &input.secret_storage
         else {
             return Err(crate::ImError::LocalStateUnavailable {
-                detail: "vNext device refresh tokens require Vault storage".to_owned(),
+                detail: "root import promotion requires Vault storage".to_owned(),
             });
         };
-        let alias = sanitize_identity_name(local_alias);
-        let _lock = self.lock_index_mutation()?;
-        let index = self.load_index()?;
-        let entry =
-            index
-                .credentials
-                .get(&alias)
-                .ok_or_else(|| crate::ImError::IdentityNotFound {
-                    selector: alias.clone(),
-                })?;
-        if entry
-            .root_key_import
-            .as_ref()
-            .map(|record| record.message_id())
-            != Some(completed_message_id)
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let state = entry
-            .device_state
-            .as_ref()
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let authorization = state
-            .authorization
-            .as_ref()
-            .ok_or(crate::ImError::PermissionDenied)?;
-        if state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
-            || authorization.status
-                != crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
-            || authorization.role
-                != crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
-            || !authorization.management_ready
-            || authorization.auth_generation != auth_generation
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let metadata = entry
-            .vault_migration
-            .as_ref()
-            .filter(|metadata| {
-                metadata.workspace_id == *workspace_id
-                    && metadata.device_id == *device_id
-                    && metadata.status == IdentityVaultMigrationStatus::Verified
-            })
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let auth_ref = metadata
-            .vnext_refs
-            .as_ref()
-            .map(|refs| refs.auth_jwt.clone())
-            .filter(|auth_ref| {
-                metadata.refs.auth_jwt == *auth_ref
-                    && auth_ref.workspace_id == *workspace_id
-                    && auth_ref.device_id == *device_id
-                    && auth_ref.identity_id.as_deref() == Some(entry.unique_id.as_str())
-                    && auth_ref.did.as_deref() == Some(entry.did.as_str())
-                    && auth_ref.kind == crate::internal::secret_vault::record::SecretKind::AuthJwt
-                    && auth_ref.key_id == AUTH_FILE_NAME
-                    && auth_ref.key_version > 0
-            })
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let opened = vault.open(&auth_ref)?;
-        let snapshot = crate::internal::auth::state::parse_auth_state(opened.expose_secret())?;
-        if !snapshot.has_token {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        Ok(auth_ref)
-    }
-
-    /// Loads and validates the DID root ref from an already committed import.
-    /// A long-lived client uses this authoritative pointer to repair its live
-    /// Vault provider after fresh import or an exact replay.
-    pub(crate) fn committed_root_import_root_ref(
-        &self,
-        local_alias: &str,
-        completed_message_id: &str,
-        secret_storage: &SaveIdentitySecretStorage,
-    ) -> crate::ImResult<crate::internal::secret_vault::record::SecretRef> {
-        let SaveIdentitySecretStorage::Vault {
-            workspace_id,
-            device_id,
-            vault,
-        } = secret_storage
-        else {
-            return Err(crate::ImError::LocalStateUnavailable {
-                detail: "vNext DID root keys require Vault storage".to_owned(),
-            });
-        };
-        let alias = sanitize_identity_name(local_alias);
-        let _lock = self.lock_index_mutation()?;
-        let index = self.load_index()?;
-        let entry =
-            index
-                .credentials
-                .get(&alias)
-                .ok_or_else(|| crate::ImError::IdentityNotFound {
-                    selector: alias.clone(),
-                })?;
-        let imported = entry
-            .root_key_import
-            .as_ref()
-            .filter(|record| record.message_id() == completed_message_id)
-            .ok_or(crate::ImError::PermissionDenied)?;
-        if imported.root_key_id() != imported.completion.root_key_id {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let metadata = entry
-            .vault_migration
-            .as_ref()
-            .filter(|metadata| {
-                metadata.workspace_id == *workspace_id
-                    && metadata.device_id == *device_id
-                    && metadata.status == IdentityVaultMigrationStatus::Verified
-            })
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let root_ref = metadata
-            .vnext_refs
-            .as_ref()
-            .and_then(|refs| refs.did_document_root_private.clone())
-            .filter(|root_ref| {
-                root_ref.workspace_id == *workspace_id
-                    && root_ref.device_id == *device_id
-                    && root_ref.identity_id.as_deref() == Some(entry.unique_id.as_str())
-                    && root_ref.did.as_deref() == Some(entry.did.as_str())
-                    && root_ref.kind
-                        == crate::internal::secret_vault::record::SecretKind::IdentityRootPrivate
-                    && root_ref.key_id == imported.completion.root_key_id
-                    && root_ref.key_version == 1
-            })
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let opened = vault.open(&root_ref)?;
-        let root_pem = std::str::from_utf8(opened.expose_secret())
-            .map_err(|_| crate::ImError::PermissionDenied)?;
-        let root = anp::PrivateKeyMaterial::from_pem(root_pem)
-            .map_err(|_| crate::ImError::PermissionDenied)?;
-        if !matches!(root, anp::PrivateKeyMaterial::Ed25519(_)) {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let fingerprint = format!(
-            "e1_{}",
-            anp::authentication::compute_multikey_fingerprint(&root.public_key())
-                .map_err(|_| crate::ImError::PermissionDenied)?
-        );
-        if imported.completion.did != entry.did
-            || imported.completion.root_public_key_fingerprint != fingerprint
-            || entry.did.rsplit(':').next() != Some(fingerprint.as_str())
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        Ok(root_ref)
-    }
-
-    /// Commits the verified DID document projection for one management-ready
-    /// root import without changing its auth ref, token operation or
-    /// authorization generation. The index checkpoint remains authoritative;
-    /// an atomic document projection failure is reported so the same signed
-    /// completion can repair it by exact retry.
-    pub(crate) fn commit_root_import_management_document(
-        &self,
-        local_alias: &str,
-        completed_message_id: &str,
-        auth_generation: u64,
-        checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
-        did_document: &Value,
-    ) -> crate::ImResult<()> {
-        if completed_message_id.trim().is_empty()
-            || auth_generation == 0
-            || checkpoint.document_version == 0
-            || checkpoint.registry_version == 0
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let alias = sanitize_identity_name(local_alias);
         let lock = self.lock_index_mutation()?;
         let mut index = self.load_index()?;
         let entry =
@@ -694,161 +562,12 @@ impl<'a> IdentityStore<'a> {
                 .ok_or_else(|| crate::ImError::IdentityNotFound {
                     selector: alias.clone(),
                 })?;
-        let imported = entry
-            .root_key_import
-            .as_ref()
-            .filter(|record| record.message_id() == completed_message_id)
-            .ok_or(crate::ImError::PermissionDenied)?;
-        if imported.completion.did != entry.did
-            || imported.completion.importing_device_id
-                != entry
-                    .device_state
-                    .as_ref()
-                    .and_then(|state| state.authorization.as_ref())
-                    .map(|authorization| authorization.protocol_device_id.as_str())
-                    .unwrap_or_default()
-            || checkpoint.document_version < imported.completion.document_version
-            || (checkpoint.document_version == imported.completion.document_version
-                && checkpoint.document_hash != imported.completion.document_hash)
-            || did_document.get("id").and_then(Value::as_str) != Some(entry.did.as_str())
-            || !anp::authentication::validate_did_document_binding(did_document, true)
-            || crate::internal::identity_wire::document::document_hash(did_document)?
-                != checkpoint.document_hash
+        let did = crate::ids::Did::parse(&entry.did)?;
+        if input.root_key_id != format!("{}#{}", did.as_str(), anp::authentication::VM_KEY_AUTH)
+            || did.as_str().rsplit(':').next() != Some(input.root_public_key_fingerprint.as_str())
         {
             return Err(crate::ImError::PermissionDenied);
         }
-        let state = entry
-            .device_state
-            .as_mut()
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let authorization = state
-            .authorization
-            .as_ref()
-            .ok_or(crate::ImError::PermissionDenied)?;
-        if state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
-            || authorization.status
-                != crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
-            || authorization.role
-                != crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
-            || !authorization.management_ready
-            || authorization.auth_generation != auth_generation
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let manifest = anp::authentication::find_eligible_device(
-            did_document,
-            authorization.protocol_device_id.as_str(),
-            anp::authentication::PROFILE_DIRECT_E2EE_V2,
-        )
-        .map_err(|_| crate::ImError::PermissionDenied)?
-        .ok_or(crate::ImError::PermissionDenied)?;
-        if manifest.signing_key_id != authorization.signing_key_id
-            || manifest.e2ee_key_id != authorization.e2ee_key_id
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        if let Some(current) = state.checkpoint.as_ref() {
-            if checkpoint.document_version < current.document_version
-                || checkpoint.registry_version < current.registry_version
-                || (checkpoint.document_version == current.document_version
-                    && checkpoint.document_hash != current.document_hash)
-            {
-                return Err(crate::ImError::PermissionDenied);
-            }
-        }
-        let checkpoint_changed = state.checkpoint.as_ref() != Some(checkpoint);
-        if checkpoint_changed {
-            state.checkpoint = Some(checkpoint.clone());
-        }
-        let dir_name = entry.dir_name.clone();
-        if checkpoint_changed {
-            index.schema_version = INDEX_SCHEMA_VERSION;
-            self.save_index_locked(&lock, index)?;
-        }
-        self.save_did_document(&dir_name, did_document)
-            .map_err(|_| crate::ImError::LocalStateUnavailable {
-                detail: "verified DID document projection requires exact retry".to_owned(),
-            })
-    }
-
-    /// Seals the replacement token under a new Vault `SecretRef`, then commits
-    /// that ref, authorization generation and checkpoint in one atomic index
-    /// image. A crash before the index rename leaves the old ref/state active;
-    /// a crash after it leaves the complete new ref/state active.
-    pub(crate) fn converge_root_import_management_ready(
-        &self,
-        local_alias: &str,
-        completed_message_id: &str,
-        auth_generation: u64,
-        checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
-        access_token: &str,
-        secret_storage: &SaveIdentitySecretStorage,
-    ) -> crate::ImResult<crate::internal::secret_vault::record::SecretRef> {
-        if completed_message_id.trim().is_empty() || auth_generation == 0 {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let alias = sanitize_identity_name(local_alias);
-        let lock = self.lock_index_mutation()?;
-        let mut index = self.load_index()?;
-        let SaveIdentitySecretStorage::Vault {
-            workspace_id,
-            device_id,
-            vault,
-        } = secret_storage
-        else {
-            return Err(crate::ImError::LocalStateUnavailable {
-                detail: "vNext device access tokens require Vault storage".to_owned(),
-            });
-        };
-        let entry =
-            index
-                .credentials
-                .get_mut(&alias)
-                .ok_or_else(|| crate::ImError::IdentityNotFound {
-                    selector: alias.clone(),
-                })?;
-        if entry
-            .root_key_import
-            .as_ref()
-            .map(|record| record.message_id())
-            != Some(completed_message_id)
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let state = entry
-            .device_state
-            .as_mut()
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let authorization = state
-            .authorization
-            .as_mut()
-            .ok_or(crate::ImError::PermissionDenied)?;
-        if state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
-            || authorization.status
-                != crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
-            || authorization.role
-                != crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
-            || authorization.auth_generation > auth_generation
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        if let Some(current) = state.checkpoint.as_ref() {
-            if checkpoint.document_version < current.document_version
-                || checkpoint.registry_version < current.registry_version
-                || (checkpoint.document_version == current.document_version
-                    && checkpoint.document_hash != current.document_hash)
-            {
-                return Err(crate::ImError::PermissionDenied);
-            }
-        }
-        let already_ready = authorization.management_ready;
-        if already_ready && authorization.auth_generation != auth_generation {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        if !already_ready && authorization.auth_generation >= auth_generation {
-            return Err(crate::ImError::PermissionDenied);
-        }
-
         let metadata = entry
             .vault_migration
             .as_mut()
@@ -862,79 +581,135 @@ impl<'a> IdentityStore<'a> {
             .vnext_refs
             .as_mut()
             .ok_or(crate::ImError::PermissionDenied)?;
-        let current_auth_ref = refs.auth_jwt.clone();
-        if metadata.refs.auth_jwt != current_auth_ref
-            || current_auth_ref.workspace_id != *workspace_id
-            || current_auth_ref.device_id != *device_id
-            || current_auth_ref.identity_id.as_deref() != Some(entry.unique_id.as_str())
-            || current_auth_ref.did.as_deref() != Some(entry.did.as_str())
-            || current_auth_ref.kind != crate::internal::secret_vault::record::SecretKind::AuthJwt
-            || current_auth_ref.key_id != AUTH_FILE_NAME
-            || current_auth_ref.key_version == 0
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        if already_ready {
-            return Ok(current_auth_ref);
-        }
-        // Prove that the currently committed ref is readable before staging a
-        // successor. The plaintext is held only by zeroizing SecretBytes.
-        let current_auth = vault.open(&current_auth_ref)?;
-        drop(current_auth);
-        let next_key_version = current_auth_ref
-            .key_version
-            .checked_add(1)
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let raw = crate::internal::auth::state::auth_state_json_for_token(access_token)?;
-        let staged_auth_ref = vault.seal(crate::internal::secret_vault::SealSecretRequest {
-            metadata: crate::internal::secret_vault::record::SecretMetadata {
-                workspace_id: current_auth_ref.workspace_id.clone(),
-                device_id: current_auth_ref.device_id.clone(),
-                identity_id: current_auth_ref.identity_id.clone(),
-                did: current_auth_ref.did.clone(),
-                kind: current_auth_ref.kind.clone(),
-                key_id: current_auth_ref.key_id.clone(),
-                key_version: next_key_version,
-                policy: crate::internal::secret_vault::policy::SecretAccessPolicy::no_prompt_local_secret(),
-            },
-            plaintext: crate::internal::platform_secret::SecretBytes::from_vec(raw),
-        })?;
-        let opened = match vault.open(&staged_auth_ref) {
-            Ok(opened) => opened,
-            Err(error) => {
-                let _ = vault.delete(&staged_auth_ref);
-                return Err(error);
+        validate_root_import_pending_ref(
+            &input.pending_root_ref,
+            workspace_id,
+            device_id,
+            &entry.unique_id,
+            did.as_str(),
+        )?;
+        let active_root_ref = expected_active_root_ref(&input.pending_root_ref, &input.root_key_id);
+        let vault_refs = vault.list()?;
+        let active_exists = vault_refs.iter().any(|value| value == &active_root_ref);
+        let pending_exists = vault_refs
+            .iter()
+            .any(|value| value == &input.pending_root_ref);
+        let active_pem = if active_exists {
+            let opened = vault.open(&active_root_ref)?;
+            validate_promoted_root_pem(
+                opened.expose_secret(),
+                &did,
+                &input.root_public_key_fingerprint,
+            )?
+        } else {
+            if !pending_exists {
+                return Err(crate::ImError::PermissionDenied);
             }
-        };
-        let snapshot = match crate::internal::auth::state::parse_auth_state(opened.expose_secret())
-        {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                let _ = vault.delete(&staged_auth_ref);
-                return Err(error);
+            let opened = vault.open(&input.pending_root_ref)?;
+            let pending = decode_pending_root_import(opened.expose_secret())?;
+            validate_pending_root_import(
+                &pending,
+                did.as_str(),
+                &input.completed_message_id,
+                &input.root_key_id,
+                &input.root_public_key_fingerprint,
+            )?;
+            let pem = Zeroizing::new(pending.root_private_key_pkcs8_pem.clone());
+            validate_promoted_root_pem(pem.as_bytes(), &did, &input.root_public_key_fingerprint)?;
+            let sealed = vault.seal_if_absent(
+                crate::internal::secret_vault::SealSecretRequest {
+                    metadata: crate::internal::secret_vault::record::SecretMetadata {
+                        workspace_id: active_root_ref.workspace_id.clone(),
+                        device_id: active_root_ref.device_id.clone(),
+                        identity_id: active_root_ref.identity_id.clone(),
+                        did: active_root_ref.did.clone(),
+                        kind: active_root_ref.kind.clone(),
+                        key_id: active_root_ref.key_id.clone(),
+                        key_version: active_root_ref.key_version,
+                        policy: crate::internal::secret_vault::policy::SecretAccessPolicy::no_prompt_local_secret(),
+                    },
+                    plaintext: crate::internal::platform_secret::SecretBytes::from_vec(
+                        pem.as_bytes().to_vec(),
+                    ),
+                },
+            )?;
+            let sealed_ref = match sealed {
+                crate::internal::secret_vault::SealIfAbsentResult::Sealed(secret_ref)
+                | crate::internal::secret_vault::SealIfAbsentResult::AlreadyExists(secret_ref) => {
+                    secret_ref
+                }
+            };
+            if sealed_ref != active_root_ref {
+                return Err(crate::ImError::PermissionDenied);
             }
+            let opened = vault.open(&active_root_ref)?;
+            if opened.expose_secret() != pem.as_bytes() {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            pem
         };
-        if snapshot.bearer_token.as_deref() != Some(access_token.trim()) {
-            let _ = vault.delete(&staged_auth_ref);
-            return Err(crate::ImError::PermissionDenied);
-        }
-        drop(snapshot);
-        drop(opened);
+        validate_promoted_root_pem(
+            active_pem.as_bytes(),
+            &did,
+            &input.root_public_key_fingerprint,
+        )?;
 
-        refs.auth_jwt = staged_auth_ref.clone();
-        metadata.refs.auth_jwt = staged_auth_ref.clone();
-        authorization.management_ready = true;
-        authorization.auth_generation = auth_generation;
-        state.checkpoint = Some(checkpoint.clone());
-        index.schema_version = INDEX_SCHEMA_VERSION;
-        if let Err(error) = self.save_index_locked(&lock, index) {
-            let _ = vault.delete(&staged_auth_ref);
-            return Err(error);
+        let state = entry
+            .device_state
+            .as_mut()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let authorization = state
+            .authorization
+            .as_mut()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let already_promoted = refs.did_document_root_private.as_ref() == Some(&active_root_ref)
+            && authorization.role
+                == crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
+            && authorization.management_ready
+            && authorization.auth_generation == input.auth_generation
+            && state.checkpoint.as_ref() == Some(&input.checkpoint);
+        if already_promoted {
+            return Ok(RootImportPromotionResult {
+                active_root_ref,
+                index_was_already_promoted: true,
+                pending_cleanup_required: pending_exists,
+            });
         }
-        // Keep the superseded encrypted record until live providers have
-        // advanced to the committed ref. It is no longer authoritative and a
-        // later Vault compaction may remove it safely.
-        Ok(staged_auth_ref)
+        if refs.did_document_root_private.is_some()
+            || state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
+            || authorization.status
+                != crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
+            || authorization.role
+                != crate::internal::identity_device_state::DeviceAuthorizationRole::Member
+            || authorization.management_ready
+            || input.auth_generation <= authorization.auth_generation
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if let Some(current) = state.checkpoint.as_ref() {
+            if input.checkpoint.document_version < current.document_version
+                || input.checkpoint.registry_version < current.registry_version
+                || (input.checkpoint.document_version == current.document_version
+                    && input.checkpoint.document_hash != current.document_hash)
+            {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+        refs.did_document_root_private = Some(active_root_ref.clone());
+        authorization.role = crate::internal::identity_device_state::DeviceAuthorizationRole::Admin;
+        authorization.management_ready = true;
+        authorization.auth_generation = input.auth_generation;
+        state.checkpoint = Some(input.checkpoint);
+        state
+            .validate_for_did(&did)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        index.schema_version = INDEX_SCHEMA_VERSION;
+        self.save_index_locked(&lock, index)?;
+        Ok(RootImportPromotionResult {
+            active_root_ref,
+            index_was_already_promoted: false,
+            pending_cleanup_required: pending_exists,
+        })
     }
 
     pub(crate) fn load_daemon_subkey_package(
@@ -1904,6 +1679,146 @@ impl<'a> IdentityStore<'a> {
     }
 }
 
+#[derive(Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
+#[serde(deny_unknown_fields)]
+struct PendingRootImportSecretV1 {
+    schema_version: u8,
+    did: String,
+    message_id: String,
+    root_key_id: String,
+    root_public_key_fingerprint: String,
+    sender_device_id: String,
+    recipient_device_id: String,
+    sender_e2ee_key_id: String,
+    recipient_e2ee_key_id: String,
+    envelope_expires_at: String,
+    root_private_key_pkcs8_pem: String,
+}
+
+fn validate_root_import_pending_ref(
+    pending: &crate::internal::secret_vault::record::SecretRef,
+    workspace_id: &str,
+    device_id: &str,
+    identity_id: &str,
+    did: &str,
+) -> crate::ImResult<()> {
+    if pending.workspace_id != workspace_id
+        || pending.device_id != device_id
+        || pending.identity_id.as_deref() != Some(identity_id)
+        || pending.did.as_deref() != Some(did)
+        || pending.kind
+            != crate::internal::secret_vault::record::SecretKind::IdentityRootImportPending
+        || pending.key_id.trim().is_empty()
+        || pending.key_version != 1
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn expected_active_root_ref(
+    pending: &crate::internal::secret_vault::record::SecretRef,
+    root_key_id: &str,
+) -> crate::internal::secret_vault::record::SecretRef {
+    crate::internal::secret_vault::record::SecretRef {
+        workspace_id: pending.workspace_id.clone(),
+        device_id: pending.device_id.clone(),
+        identity_id: pending.identity_id.clone(),
+        did: pending.did.clone(),
+        kind: crate::internal::secret_vault::record::SecretKind::IdentityRootPrivate,
+        key_id: root_key_id.to_owned(),
+        key_version: 1,
+    }
+}
+
+fn decode_pending_root_import(raw: &[u8]) -> crate::ImResult<Zeroizing<PendingRootImportSecretV1>> {
+    let pending: PendingRootImportSecretV1 =
+        serde_json::from_slice(raw).map_err(|_| crate::ImError::PermissionDenied)?;
+    let pending = Zeroizing::new(pending);
+    let canonical = Zeroizing::new(
+        serde_json_canonicalizer::to_vec(&*pending)
+            .map_err(|_| crate::ImError::PermissionDenied)?,
+    );
+    if canonical.as_slice() != raw {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(pending)
+}
+
+fn validate_pending_root_import(
+    pending: &PendingRootImportSecretV1,
+    did: &str,
+    completed_message_id: &str,
+    root_key_id: &str,
+    root_public_key_fingerprint: &str,
+) -> crate::ImResult<()> {
+    if pending.schema_version != 1
+        || pending.did != did
+        || pending.message_id != completed_message_id
+        || pending.root_key_id != root_key_id
+        || pending.root_public_key_fingerprint != root_public_key_fingerprint
+        || pending.sender_device_id.trim().is_empty()
+        || pending.recipient_device_id.trim().is_empty()
+        || pending.sender_device_id == pending.recipient_device_id
+        || pending.sender_e2ee_key_id.trim().is_empty()
+        || pending.recipient_e2ee_key_id.trim().is_empty()
+        || pending.sender_e2ee_key_id == pending.recipient_e2ee_key_id
+        || pending.envelope_expires_at.trim().is_empty()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn validate_promoted_root_pem(
+    raw: &[u8],
+    did: &crate::ids::Did,
+    root_public_key_fingerprint: &str,
+) -> crate::ImResult<Zeroizing<String>> {
+    let pem = Zeroizing::new(
+        String::from_utf8(raw.to_vec()).map_err(|_| crate::ImError::PermissionDenied)?,
+    );
+    if pem.contains('\r') {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let lines = pem.split('\n').collect::<Vec<_>>();
+    if lines.len() != 4
+        || lines[0] != "-----BEGIN PRIVATE KEY-----"
+        || lines[1].len() != 64
+        || lines[2] != "-----END PRIVATE KEY-----"
+        || !lines[3].is_empty()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let der = Zeroizing::new(
+        STANDARD
+            .decode(lines[1])
+            .map_err(|_| crate::ImError::PermissionDenied)?,
+    );
+    if der.len() != 48
+        || der[..ED25519_PKCS8_PREFIX.len()] != ED25519_PKCS8_PREFIX
+        || STANDARD.encode(&*der) != lines[1]
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let seed: [u8; 32] = der[ED25519_PKCS8_PREFIX.len()..]
+        .try_into()
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let private = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let public = anp::PublicKeyMaterial::Ed25519(private.verifying_key());
+    let fingerprint = format!(
+        "e1_{}",
+        anp::authentication::compute_multikey_fingerprint(&public)
+            .map_err(|_| crate::ImError::PermissionDenied)?
+    );
+    if fingerprint != root_public_key_fingerprint
+        || did.as_str().rsplit(':').next() != Some(fingerprint.as_str())
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(pem)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct IndexEntry {
     #[serde(default)]
@@ -1930,11 +1845,6 @@ pub(crate) struct IndexEntry {
     pub(crate) vault_migration: Option<IdentityVaultMigrationMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) device_state: Option<crate::internal::identity_device_state::IdentityDeviceState>,
-    /// Non-secret, AWiki-local replay record for the one imported root ACK.
-    /// The root private key itself remains only in SecretVault.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) root_key_import:
-        Option<crate::internal::identity_root_transfer::PersistedRootKeyImport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2198,210 +2108,6 @@ fn derive_full_handle_from_did(handle: &str, did: &str) -> String {
     };
     format!("{local_part}.{}", domain.trim().to_lowercase())
 }
-
-struct PreservedImportedRoot {
-    import: crate::internal::identity_root_transfer::PersistedRootKeyImport,
-    metadata: IdentityVaultMigrationMetadata,
-}
-
-/// Root import is a one-way security transition. Ordinary identity save paths
-/// may refresh the same rootless vNext identity, but must not silently move,
-/// replace, or downgrade its imported root state.
-fn preserve_imported_root_for_resave(
-    index: &IndexPayload,
-    local_alias: &str,
-    input: &SaveIdentityInput,
-    storage: &SaveIdentitySecretStorage,
-) -> crate::ImResult<Option<PreservedImportedRoot>> {
-    for (name, entry) in &index.credentials {
-        if name != local_alias
-            && entry.root_key_import.is_some()
-            && (entry.did == input.did.as_str() || entry.unique_id == input.unique_id)
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-    }
-
-    let Some(entry) = index
-        .credentials
-        .get(local_alias)
-        .filter(|entry| entry.root_key_import.is_some())
-    else {
-        return Ok(None);
-    };
-    if input.local_alias.trim() != local_alias
-        || entry.did != input.did.as_str()
-        || entry.unique_id != input.unique_id
-        || entry.dir_name != preferred_dir_name(&input.unique_id)?
-        || !input.key1_private_pem.trim().is_empty()
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let SaveIdentitySecretStorage::Vault {
-        workspace_id,
-        device_id,
-        vault,
-    } = storage
-    else {
-        return Err(crate::ImError::PermissionDenied);
-    };
-    let metadata = entry
-        .vault_migration
-        .as_ref()
-        .filter(|metadata| {
-            metadata.status == IdentityVaultMigrationStatus::Verified
-                && metadata.backend == "vault"
-                && metadata.workspace_id == *workspace_id
-                && metadata.device_id == *device_id
-        })
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let refs = metadata
-        .vnext_refs
-        .as_ref()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let root_ref = refs
-        .did_document_root_private
-        .as_ref()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    let SaveIdentityKeyMode::VNext {
-        root_key_id,
-        device_signing_key_id,
-        device_e2ee_key_id,
-    } = &input.key_mode
-    else {
-        return Err(crate::ImError::PermissionDenied);
-    };
-    if root_ref.workspace_id != *workspace_id
-        || root_ref.device_id != *device_id
-        || root_ref.identity_id.as_deref() != Some(input.unique_id.as_str())
-        || root_ref.did.as_deref() != Some(input.did.as_str())
-        || root_ref.kind != crate::internal::secret_vault::record::SecretKind::IdentityRootPrivate
-        || root_ref.key_id != *root_key_id
-        || root_ref.key_version != 1
-        || refs.device_request_signing_private.key_id != *device_signing_key_id
-        || refs.e2ee_agreement_private.key_id != *device_e2ee_key_id
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    if metadata.refs.default_signing_private != refs.device_request_signing_private
-        || metadata.refs.e2ee_signing_private.as_ref() != Some(&refs.device_request_signing_private)
-        || metadata.refs.e2ee_agreement_private != refs.e2ee_agreement_private
-        || metadata.refs.auth_jwt != refs.auth_jwt
-        || refs.auth_jwt.workspace_id != *workspace_id
-        || refs.auth_jwt.device_id != *device_id
-        || refs.auth_jwt.identity_id.as_deref() != Some(input.unique_id.as_str())
-        || refs.auth_jwt.did.as_deref() != Some(input.did.as_str())
-        || refs.auth_jwt.kind != crate::internal::secret_vault::record::SecretKind::AuthJwt
-        || refs.auth_jwt.key_id != AUTH_FILE_NAME
-        || refs.auth_jwt.key_version == 0
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-
-    for (secret_ref, kind, expected) in [
-        (
-            &refs.device_request_signing_private,
-            crate::internal::secret_vault::record::SecretKind::IdentityDeviceSigningPrivate,
-            input.e2ee_signing_private_pem.as_bytes(),
-        ),
-        (
-            &refs.e2ee_agreement_private,
-            crate::internal::secret_vault::record::SecretKind::IdentityE2eeAgreementPrivate,
-            input.e2ee_agreement_private_pem.as_bytes(),
-        ),
-    ] {
-        if secret_ref.workspace_id != *workspace_id
-            || secret_ref.device_id != *device_id
-            || secret_ref.identity_id.as_deref() != Some(input.unique_id.as_str())
-            || secret_ref.did.as_deref() != Some(input.did.as_str())
-            || secret_ref.kind != kind
-            || secret_ref.key_version != 1
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        let opened = vault.open(secret_ref)?;
-        if opened.expose_secret() != expected {
-            return Err(crate::ImError::PermissionDenied);
-        }
-    }
-    let root_secret = vault.open(root_ref)?;
-    let root_private = std::str::from_utf8(root_secret.expose_secret())
-        .map_err(|_| crate::ImError::PermissionDenied)?;
-    let root_material = anp::PrivateKeyMaterial::from_pem(root_private)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
-    if !matches!(root_material, anp::PrivateKeyMaterial::Ed25519(_))
-        || root_material.public_key().to_pem() != input.key1_public_pem
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    drop(root_material);
-    drop(root_secret);
-    let opened_auth = vault.open(&refs.auth_jwt)?;
-    let auth = crate::internal::auth::state::parse_auth_state(opened_auth.expose_secret())?;
-    if !auth.has_token || auth.bearer_token.as_deref() != Some(input.jwt_token.trim()) {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    match (
-        metadata.refs.daemon_subkey_private.as_ref(),
-        input.daemon_subkey_package.as_ref(),
-    ) {
-        (None, None) => {}
-        (Some(secret_ref), Some(package)) => {
-            let opened = vault.open(secret_ref)?;
-            if opened.expose_secret() != package.private_key_material().as_bytes() {
-                return Err(crate::ImError::PermissionDenied);
-            }
-        }
-        _ => return Err(crate::ImError::PermissionDenied),
-    }
-    if let Some(incoming_state) = input.device_state.as_ref() {
-        let existing_authorization = entry
-            .device_state
-            .as_ref()
-            .and_then(|state| state.authorization.as_ref())
-            .ok_or(crate::ImError::PermissionDenied)?;
-        let incoming_authorization = incoming_state
-            .authorization
-            .as_ref()
-            .ok_or(crate::ImError::PermissionDenied)?;
-        if incoming_state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
-            || incoming_authorization.protocol_device_id
-                != existing_authorization.protocol_device_id
-            || incoming_authorization.signing_key_id != existing_authorization.signing_key_id
-            || incoming_authorization.e2ee_key_id != existing_authorization.e2ee_key_id
-            || incoming_authorization.signing_key_id != *device_signing_key_id
-            || incoming_authorization.e2ee_key_id != *device_e2ee_key_id
-        {
-            return Err(crate::ImError::PermissionDenied);
-        }
-        if let Some(document) = input.did_document.as_ref() {
-            if !anp::authentication::validate_did_document_binding(document, true) {
-                return Err(crate::ImError::PermissionDenied);
-            }
-            let manifest_device = anp::authentication::find_eligible_device(
-                document,
-                incoming_authorization.protocol_device_id.as_str(),
-                anp::authentication::PROFILE_DIRECT_E2EE_V2,
-            )
-            .map_err(|_| crate::ImError::PermissionDenied)?
-            .ok_or(crate::ImError::PermissionDenied)?;
-            if manifest_device.signing_key_id != incoming_authorization.signing_key_id
-                || manifest_device.e2ee_key_id != incoming_authorization.e2ee_key_id
-            {
-                return Err(crate::ImError::PermissionDenied);
-            }
-        }
-    }
-
-    Ok(Some(PreservedImportedRoot {
-        import: entry
-            .root_key_import
-            .clone()
-            .ok_or(crate::ImError::PermissionDenied)?,
-        metadata: metadata.clone(),
-    }))
-}
-
 fn local_identity_dir(root: &Path, dir_name: &str) -> crate::ImResult<std::path::PathBuf> {
     let relative = Path::new(dir_name);
     let mut components = relative.components();
@@ -3779,6 +3485,272 @@ mod tests {
             "member-device-signing-private"
         );
         assert!(provider.did_document_root_private_pem().is_err());
+    }
+
+    #[test]
+    fn verified_root_import_promotes_pending_pem_and_is_restart_idempotent() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([29_u8; 32]),
+            FileSecretVaultStore::new(root.path().join("vault")),
+        ));
+        let (did, fingerprint, root_pem) = test_root_import_material([31_u8; 32]);
+        let (pending_ref, secret_storage) =
+            save_member_with_pending_root(&store, vault.clone(), &did, &fingerprint, &root_pem);
+        let checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+            document_version: 2,
+            document_hash: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_owned(),
+            registry_version: 2,
+        };
+        let input = PromoteVerifiedRootImportInput {
+            local_alias: "alice-member".to_owned(),
+            completed_message_id: "message-root-a".to_owned(),
+            pending_root_ref: pending_ref.clone(),
+            root_key_id: format!("{}#{}", did.as_str(), anp::authentication::VM_KEY_AUTH),
+            root_public_key_fingerprint: fingerprint,
+            auth_generation: 2,
+            checkpoint: checkpoint.clone(),
+            secret_storage,
+        };
+
+        let promoted = store.promote_verified_root_import(input.clone()).unwrap();
+
+        assert!(!promoted.index_was_already_promoted);
+        assert!(promoted.pending_cleanup_required);
+        assert_eq!(
+            promoted.active_root_ref.kind,
+            crate::internal::secret_vault::record::SecretKind::IdentityRootPrivate
+        );
+        assert_eq!(
+            vault
+                .open(&promoted.active_root_ref)
+                .unwrap()
+                .expose_secret(),
+            root_pem.as_bytes()
+        );
+        let index = store.load_index().unwrap();
+        let entry = &index.credentials["alice-member"];
+        assert_eq!(
+            entry
+                .vault_migration
+                .as_ref()
+                .unwrap()
+                .vnext_refs
+                .as_ref()
+                .unwrap()
+                .did_document_root_private
+                .as_ref(),
+            Some(&promoted.active_root_ref)
+        );
+        let state = entry.device_state.as_ref().unwrap();
+        let authorization = state.authorization.as_ref().unwrap();
+        assert_eq!(
+            authorization.role,
+            crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
+        );
+        assert!(authorization.management_ready);
+        assert_eq!(authorization.auth_generation, 2);
+        assert_eq!(state.checkpoint.as_ref(), Some(&checkpoint));
+
+        let replay = store.promote_verified_root_import(input.clone()).unwrap();
+        assert!(replay.index_was_already_promoted);
+        assert!(replay.pending_cleanup_required);
+
+        vault.delete(&pending_ref).unwrap();
+        let repaired_after_cleanup = store.promote_verified_root_import(input).unwrap();
+        assert!(repaired_after_cleanup.index_was_already_promoted);
+        assert!(!repaired_after_cleanup.pending_cleanup_required);
+    }
+
+    #[test]
+    fn verified_root_import_repairs_active_vault_before_index_commit() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([30_u8; 32]),
+            FileSecretVaultStore::new(root.path().join("vault")),
+        ));
+        let (did, fingerprint, root_pem) = test_root_import_material([32_u8; 32]);
+        let (pending_ref, secret_storage) =
+            save_member_with_pending_root(&store, vault.clone(), &did, &fingerprint, &root_pem);
+        let active_ref = expected_active_root_ref(
+            &pending_ref,
+            &format!("{}#{}", did.as_str(), anp::authentication::VM_KEY_AUTH),
+        );
+        vault
+            .seal(crate::internal::secret_vault::SealSecretRequest {
+                metadata: crate::internal::secret_vault::record::SecretMetadata {
+                    workspace_id: active_ref.workspace_id.clone(),
+                    device_id: active_ref.device_id.clone(),
+                    identity_id: active_ref.identity_id.clone(),
+                    did: active_ref.did.clone(),
+                    kind: active_ref.kind.clone(),
+                    key_id: active_ref.key_id.clone(),
+                    key_version: active_ref.key_version,
+                    policy: crate::internal::secret_vault::policy::SecretAccessPolicy::no_prompt_local_secret(),
+                },
+                plaintext: crate::internal::platform_secret::SecretBytes::from_vec(
+                    root_pem.as_bytes().to_vec(),
+                ),
+            })
+            .unwrap();
+
+        let promoted = store
+            .promote_verified_root_import(PromoteVerifiedRootImportInput {
+                local_alias: "alice-member".to_owned(),
+                completed_message_id: "message-root-a".to_owned(),
+                pending_root_ref: pending_ref,
+                root_key_id: active_ref.key_id.clone(),
+                root_public_key_fingerprint: fingerprint,
+                auth_generation: 2,
+                checkpoint: crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                    document_version: 2,
+                    document_hash: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_owned(),
+                    registry_version: 2,
+                },
+                secret_storage,
+            })
+            .unwrap();
+
+        assert_eq!(promoted.active_root_ref, active_ref);
+        assert!(!promoted.index_was_already_promoted);
+    }
+
+    fn test_root_import_material(seed: [u8; 32]) -> (crate::ids::Did, String, String) {
+        let private = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let public = anp::PublicKeyMaterial::Ed25519(private.verifying_key());
+        let fingerprint = format!(
+            "e1_{}",
+            anp::authentication::compute_multikey_fingerprint(&public).unwrap()
+        );
+        let did =
+            crate::ids::Did::parse(format!("did:wba:awiki.info:alice:{fingerprint}")).unwrap();
+        let mut der = ED25519_PKCS8_PREFIX.to_vec();
+        der.extend_from_slice(&seed);
+        let pem = format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+            STANDARD.encode(der)
+        );
+        (did, fingerprint, pem)
+    }
+
+    fn save_member_with_pending_root(
+        store: &IdentityStore<'_>,
+        vault: Arc<FileSecretVault>,
+        did: &crate::ids::Did,
+        fingerprint: &str,
+        root_pem: &str,
+    ) -> (SecretRef, SaveIdentitySecretStorage) {
+        use crate::internal::identity_device_state::{
+            DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
+            IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
+            IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+        };
+        let signing_key_id = format!("{}#dev-member-sign", did.as_str());
+        let e2ee_key_id = format!("{}#dev-member-e2ee", did.as_str());
+        let secret_storage = SaveIdentitySecretStorage::Vault {
+            workspace_id: "workspace-root-import".to_owned(),
+            device_id: "vault-device-root-import".to_owned(),
+            vault: vault.clone(),
+        };
+        store
+            .save_identity_with_secret_storage(
+                SaveIdentityInput {
+                    local_alias: "alice-member".to_owned(),
+                    did: did.clone(),
+                    unique_id: "alice-member-vnext".to_owned(),
+                    user_id: "user-1".to_owned(),
+                    display_name: "Alice member".to_owned(),
+                    handle: "alice".to_owned(),
+                    full_handle: "alice.awiki.info".to_owned(),
+                    jwt_token: "member-token".to_owned(),
+                    did_document: Some(json!({"id": did.as_str()})),
+                    key_mode: SaveIdentityKeyMode::VNext {
+                        root_key_id: format!(
+                            "{}#{}",
+                            did.as_str(),
+                            anp::authentication::VM_KEY_AUTH
+                        ),
+                        device_signing_key_id: signing_key_id.clone(),
+                        device_e2ee_key_id: e2ee_key_id.clone(),
+                    },
+                    device_state: Some(IdentityDeviceState {
+                        schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                        mode: IdentityDeviceMode::VNext,
+                        authorization: Some(DeviceAuthorizationProjection {
+                            protocol_device_id: crate::ids::ProtocolDeviceId::parse("dev-member")
+                                .unwrap(),
+                            signing_key_id,
+                            e2ee_key_id: e2ee_key_id.clone(),
+                            status: DeviceAuthorizationStatus::Active,
+                            role: DeviceAuthorizationRole::Member,
+                            management_ready: false,
+                            auth_generation: 1,
+                        }),
+                        checkpoint: Some(IdentityInternalCheckpoint {
+                            document_version: 1,
+                            document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                                .to_owned(),
+                            registry_version: 1,
+                        }),
+                    }),
+                    key1_private_pem: String::new(),
+                    key1_public_pem: String::new(),
+                    e2ee_signing_private_pem: "device-signing-private".to_owned(),
+                    e2ee_agreement_private_pem: "device-e2ee-private".to_owned(),
+                    daemon_subkey_package: None,
+                    make_default: true,
+                },
+                secret_storage.clone(),
+            )
+            .unwrap();
+        let pending_ref = SecretRef {
+            workspace_id: "workspace-root-import".to_owned(),
+            device_id: "vault-device-root-import".to_owned(),
+            identity_id: Some("alice-member-vnext".to_owned()),
+            did: Some(did.as_str().to_owned()),
+            kind: crate::internal::secret_vault::record::SecretKind::IdentityRootImportPending,
+            key_id: "root-import-pending:message-root-a".to_owned(),
+            key_version: 1,
+        };
+        let pending = PendingRootImportSecretV1 {
+            schema_version: 1,
+            did: did.as_str().to_owned(),
+            message_id: "message-root-a".to_owned(),
+            root_key_id: format!("{}#{}", did.as_str(), anp::authentication::VM_KEY_AUTH),
+            root_public_key_fingerprint: fingerprint.to_owned(),
+            sender_device_id: "dev-admin".to_owned(),
+            recipient_device_id: "dev-member".to_owned(),
+            sender_e2ee_key_id: format!("{}#dev-admin-e2ee", did.as_str()),
+            recipient_e2ee_key_id: e2ee_key_id,
+            envelope_expires_at: "2026-07-24T00:10:00.000000Z".to_owned(),
+            root_private_key_pkcs8_pem: root_pem.to_owned(),
+        };
+        let raw = serde_json_canonicalizer::to_vec(&pending).unwrap();
+        let sealed = vault
+            .seal_if_absent(crate::internal::secret_vault::SealSecretRequest {
+                metadata: crate::internal::secret_vault::record::SecretMetadata {
+                    workspace_id: pending_ref.workspace_id.clone(),
+                    device_id: pending_ref.device_id.clone(),
+                    identity_id: pending_ref.identity_id.clone(),
+                    did: pending_ref.did.clone(),
+                    kind: pending_ref.kind.clone(),
+                    key_id: pending_ref.key_id.clone(),
+                    key_version: pending_ref.key_version,
+                    policy: crate::internal::secret_vault::policy::SecretAccessPolicy::no_prompt_local_secret(),
+                },
+                plaintext: crate::internal::platform_secret::SecretBytes::from_vec(raw),
+            })
+            .unwrap();
+        assert!(matches!(
+            sealed,
+            crate::internal::secret_vault::SealIfAbsentResult::Sealed(ref value)
+                if value == &pending_ref
+        ));
+        (pending_ref, secret_storage)
     }
 
     #[test]

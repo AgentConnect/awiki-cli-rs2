@@ -398,6 +398,13 @@ impl<'a> AsyncFirstSecureRealtimeNotificationProjector<'a> {
                 ),
         }
     }
+
+    fn recover_identity_transitions(&self) {
+        let Some(runtime) = self.runtime.as_ref() else {
+            return;
+        };
+        runtime.block_on(recover_identity_transitions_async(self.client));
+    }
 }
 
 #[cfg(all(feature = "blocking", feature = "sqlite"))]
@@ -1263,26 +1270,6 @@ fn normalize_direct_e2ee_realtime_notification_async_first(
     >,
     notification: Value,
 ) -> DirectRealtimeProjectionResult {
-    match parse_realtime_v2_session_control(&notification) {
-        Ok(Some((metadata, body))) => {
-            if client.core_inner().root_key_transfer_enabled() {
-                if let Some(runtime) = runtime {
-                    let core = client.core_handle();
-                    let _ = runtime.block_on(
-                        crate::internal::identity_root_transfer_runtime::receive_session_control(
-                            &core, client, metadata, body,
-                        ),
-                    );
-                }
-            }
-            return dropped_v2_session_control_projection();
-        }
-        // A strict session-control operation ID with a malformed P5 object is
-        // still confidential control traffic. Fail closed instead of falling
-        // back to a normal message or notification projection.
-        Err(_) => return dropped_v2_session_control_projection(),
-        Ok(None) => {}
-    }
     if is_p5_v2_realtime_candidate(&notification) {
         if !client.core_inner().direct_e2ee_v2_enabled() {
             return dropped_v2_session_control_projection();
@@ -1330,20 +1317,6 @@ async fn normalize_direct_e2ee_realtime_notification_async(
     >,
     notification: Value,
 ) -> DirectRealtimeProjectionResult {
-    match parse_realtime_v2_session_control(&notification) {
-        Ok(Some((metadata, body))) => {
-            if client.core_inner().root_key_transfer_enabled() {
-                let core = client.core_handle();
-                let _ = crate::internal::identity_root_transfer_runtime::receive_session_control(
-                    &core, client, metadata, body,
-                )
-                .await;
-            }
-            return dropped_v2_session_control_projection();
-        }
-        Err(_) => return dropped_v2_session_control_projection(),
-        Ok(None) => {}
-    }
     if is_p5_v2_realtime_candidate(&notification) {
         if !client.core_inner().direct_e2ee_v2_enabled() {
             return dropped_v2_session_control_projection();
@@ -1393,24 +1366,6 @@ async fn normalize_direct_e2ee_realtime_notification_async(
 }
 
 #[cfg(feature = "sqlite")]
-fn parse_realtime_v2_session_control(
-    notification: &Value,
-) -> crate::ImResult<
-    Option<(
-        anp::direct_e2ee::V2DirectMetadata,
-        anp::direct_e2ee::V2DirectBody,
-    )>,
-> {
-    if notification.get("method").and_then(Value::as_str) != Some("direct.incoming") {
-        return Ok(None);
-    }
-    let Some(params) = notification.get("params") else {
-        return Ok(None);
-    };
-    crate::internal::message_runtime::read::parse_v2_session_control(params)
-}
-
-#[cfg(feature = "sqlite")]
 fn dropped_v2_session_control_projection() -> DirectRealtimeProjectionResult {
     DirectRealtimeProjectionResult::Projected {
         notification: None,
@@ -1439,11 +1394,46 @@ async fn project_p5_v2_realtime_notification(
     let (metadata, body) =
         crate::internal::secure_direct::v2_product::parse_v2_wire_message(&params)?
             .ok_or(crate::ImError::PermissionDenied)?;
+    let delivery =
+        crate::internal::identity_root_import_completion::TrustedDirectDeliveryContext::realtime_hint(
+            &metadata,
+        )?;
+    let message_id = metadata.message_id.clone();
     let core = client.core_handle();
-    let outcome = crate::internal::secure_direct::v2_product::receive_for_client(
-        &core, client, true, metadata, body,
+    let outcome = match crate::internal::secure_direct::v2_product::receive_for_client_scoped(
+        &core,
+        client,
+        true,
+        metadata,
+        body,
+        None,
+        Some(&delivery),
     )
-    .await?;
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(crate::ImError::UnsupportedCapability { capability })
+            if capability == "root-import-mailbox-hydration-required" =>
+        {
+            let warnings =
+                match crate::internal::message_runtime::read::hydrate_reliable_direct_message_async(
+                    client,
+                    &message_id,
+                    100,
+                )
+                .await
+                {
+                    Ok(warnings) => warnings,
+                    Err(_) => vec!["root.import.reliable_hydration_deferred".to_owned()],
+                };
+            return Ok(DirectRealtimeProjectionResult::Projected {
+                notification: None,
+                additional_notifications: Vec::new(),
+                warnings,
+            });
+        }
+        Err(error) => return Err(error),
+    };
     let mut projected = notification;
     let params = projected
         .get_mut("params")
@@ -2062,7 +2052,11 @@ pub(crate) fn run_default_until_shutdown(
     let (sender, receiver) = mpsc::sync_channel(options.event_buffer);
     let mut events = ChannelRunnerEvents { sender };
     #[cfg(feature = "sqlite")]
-    let projector = AsyncFirstSecureRealtimeNotificationProjector::new(client);
+    let projector = {
+        let projector = AsyncFirstSecureRealtimeNotificationProjector::new(client);
+        projector.recover_identity_transitions();
+        projector
+    };
     #[cfg(not(feature = "sqlite"))]
     let projector = SecureRealtimeNotificationProjector {
         client,
@@ -2106,7 +2100,11 @@ where
     let (_sender, receiver) = mpsc::sync_channel(options.event_buffer);
     let mut events = SinkRunnerEvents { sink: event_sink };
     #[cfg(feature = "sqlite")]
-    let projector = AsyncFirstSecureRealtimeNotificationProjector::new(client);
+    let projector = {
+        let projector = AsyncFirstSecureRealtimeNotificationProjector::new(client);
+        projector.recover_identity_transitions();
+        projector
+    };
     #[cfg(not(feature = "sqlite"))]
     let projector = SecureRealtimeNotificationProjector {
         client,
@@ -2151,7 +2149,11 @@ pub(crate) fn spawn_default(
             let mut sink = SenderRunnerEvents { sender };
             let mut events = SinkRunnerEvents { sink: &mut sink };
             #[cfg(feature = "sqlite")]
-            let projector = AsyncFirstSecureRealtimeNotificationProjector::new(&client);
+            let projector = {
+                let projector = AsyncFirstSecureRealtimeNotificationProjector::new(&client);
+                projector.recover_identity_transitions();
+                projector
+            };
             #[cfg(not(feature = "sqlite"))]
             let projector = SecureRealtimeNotificationProjector {
                 client: &client,
@@ -2198,6 +2200,8 @@ pub(crate) async fn spawn_default_async(
     let worker_shutdown = shutdown.clone();
     let worker_options = options.clone();
     let worker = tokio::spawn(async move {
+        #[cfg(feature = "sqlite")]
+        recover_identity_transitions_async(&client).await;
         let mut transport = AsyncDefaultRunnerTransport {
             client: client.clone(),
             socket: None,
@@ -2245,6 +2249,16 @@ pub(crate) async fn spawn_default_async(
         exit_receiver,
         Some(worker),
     ))
+}
+
+#[cfg(feature = "sqlite")]
+async fn recover_identity_transitions_async(client: &crate::core::ImClient) {
+    let _ =
+        crate::internal::identity_root_transfer_runtime::recover_pending_root_key_transfers(client)
+            .await;
+    let _ =
+        crate::internal::identity_root_import_completion::recover_root_import_completions(client)
+            .await;
 }
 
 struct AsyncDefaultRunnerTransport {

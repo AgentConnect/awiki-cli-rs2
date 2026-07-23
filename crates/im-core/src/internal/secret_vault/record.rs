@@ -28,6 +28,9 @@ pub enum SecretKind {
     IdentityRegistrationPending,
     /// Encrypted exact-retry state for the one-device Legacy promotion.
     IdentityLegacyUpgradePending,
+    /// Canonical 48-byte root PKCS#8 DER awaiting remote completion and exact
+    /// Registry confirmation. Active key providers must never resolve it.
+    IdentityRootImportPending,
     /// Encrypted access token awaiting local-only auth-state convergence.
     IdentityAuthCommitPending,
     /// Encrypted exact-retry intent for one permanent device revocation.
@@ -62,6 +65,7 @@ impl SecretKind {
             Self::IdentityJoinActivationPending => "identity.join.activation.pending",
             Self::IdentityRegistrationPending => "identity.registration.pending",
             Self::IdentityLegacyUpgradePending => "identity.legacy_upgrade.pending",
+            Self::IdentityRootImportPending => "identity.root_import.pending",
             Self::IdentityAuthCommitPending => "identity.auth_commit.pending",
             Self::IdentityDeviceRevokePending => "identity.device.revoke.pending",
             Self::IdentityDaemonPrivate => "identity.daemon.private",

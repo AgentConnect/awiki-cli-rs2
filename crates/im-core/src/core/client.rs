@@ -112,6 +112,10 @@ impl ImClient {
         crate::system_notifications::SystemNotificationService::new(self)
     }
 
+    pub fn root_key_transfer(&self) -> crate::identity::RootKeyTransferService<'_> {
+        crate::identity::RootKeyTransferService::new(self)
+    }
+
     pub(crate) fn runtime(&self) -> &crate::internal::identity_runtime::ClientIdentityRuntime {
         &self.runtime
     }

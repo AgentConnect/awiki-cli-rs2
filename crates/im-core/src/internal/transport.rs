@@ -301,6 +301,7 @@ pub(crate) struct CoreHttpTransport<'a> {
     /// may be retried. It must never cause the business RPC to be replayed.
     pending_auth_commit: Option<(String, String)>,
     expected_device_access: Option<ExpectedDeviceAccessOwned>,
+    alternate_expected_device_access: Option<ExpectedDeviceAccessOwned>,
     ephemeral_bearer: bool,
     last_auth_retry_consumed: bool,
 }
@@ -348,6 +349,7 @@ impl<'a> CoreHttpTransport<'a> {
             jwt_token,
             pending_auth_commit: None,
             expected_device_access: None,
+            alternate_expected_device_access: None,
             ephemeral_bearer: false,
             last_auth_retry_consumed: false,
         };
@@ -369,6 +371,7 @@ impl<'a> CoreHttpTransport<'a> {
             jwt_token: None,
             pending_auth_commit: None,
             expected_device_access: None,
+            alternate_expected_device_access: None,
             ephemeral_bearer: false,
             last_auth_retry_consumed: false,
         }
@@ -389,9 +392,25 @@ impl<'a> CoreHttpTransport<'a> {
             jwt_token: None,
             pending_auth_commit: None,
             expected_device_access: Some(expected),
+            alternate_expected_device_access: None,
             ephemeral_bearer: true,
             last_auth_retry_consumed: false,
         }
+    }
+
+    /// Issues one signature-only request while a root-import completion may
+    /// have committed remotely without returning its response. Exactly the
+    /// pre-completion member principal or the post-completion admin principal
+    /// is accepted; callers classify the returned token against the same pair.
+    pub(crate) fn new_pending_device_transition(
+        client: &'a crate::core::ImClient,
+        provider: Arc<dyn crate::internal::key_provider::KeyMaterialProvider>,
+        before: ExpectedDeviceAccessOwned,
+        after: ExpectedDeviceAccessOwned,
+    ) -> Self {
+        let mut transport = Self::new_pending_device(client, provider, before);
+        transport.alternate_expected_device_access = Some(after);
+        transport
     }
 
     /// Uses one already-validated bearer without persisting it through the
@@ -885,7 +904,7 @@ impl<'a> CoreHttpTransport<'a> {
         {
             if !token.trim().is_empty() {
                 if let Some(expected) = &self.expected_device_access {
-                    crate::internal::access_token::validate_device_access_token(
+                    let primary = crate::internal::access_token::validate_device_access_token(
                         &token,
                         &crate::internal::access_token::ExpectedDeviceAccess {
                             did: &expected.did,
@@ -896,7 +915,25 @@ impl<'a> CoreHttpTransport<'a> {
                             role: expected.role,
                             management_ready: expected.management_ready,
                         },
-                    )?;
+                    );
+                    if primary.is_err() {
+                        let alternate = self
+                            .alternate_expected_device_access
+                            .as_ref()
+                            .ok_or(crate::ImError::PermissionDenied)?;
+                        crate::internal::access_token::validate_device_access_token(
+                            &token,
+                            &crate::internal::access_token::ExpectedDeviceAccess {
+                                did: &alternate.did,
+                                user_id: &alternate.user_id,
+                                device_id: &alternate.device_id,
+                                key_id: &alternate.key_id,
+                                auth_generation: alternate.auth_generation,
+                                role: alternate.role,
+                                management_ready: alternate.management_ready,
+                            },
+                        )?;
+                    }
                 } else {
                     validate_access_token_for_client(self.client, &token)?;
                 }
@@ -943,6 +980,16 @@ impl<'a> CoreHttpTransport<'a> {
             return Err(crate::ImError::PermissionDenied);
         }
         expected.user_id = user_id.to_owned();
+        if let Some(alternate) = self.alternate_expected_device_access.as_mut() {
+            if alternate.did != did {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            if alternate.user_id.trim().is_empty() {
+                alternate.user_id = user_id.to_owned();
+            } else if alternate.user_id != user_id {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
         Ok(())
     }
 

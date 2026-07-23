@@ -2344,92 +2344,6 @@ mod tests {
     }
 
     #[test]
-    fn delete_identity_preserves_other_identity_root_import_replay_record() {
-        let root = tempfile::tempdir().unwrap();
-        let paths = test_paths(root.path());
-        let store = crate::internal::identity_store::IdentityStore::new(&paths.identities);
-        for (alias, did, identity_id, make_default) in [
-            ("alice", "did:example:alice", "alice-id", true),
-            ("bob", "did:example:bob", "bob-id", false),
-        ] {
-            store
-                .save_identity(crate::internal::identity_store::SaveIdentityInput {
-                    local_alias: alias.to_owned(),
-                    did: crate::ids::Did::parse(did).unwrap(),
-                    unique_id: identity_id.to_owned(),
-                    user_id: format!("user-{alias}"),
-                    display_name: alias.to_owned(),
-                    handle: alias.to_owned(),
-                    full_handle: format!("{alias}.example"),
-                    jwt_token: "token".to_owned(),
-                    did_document: Some(json!({"id": did})),
-                    key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,
-                    device_state: None,
-                    key1_private_pem: "private".to_owned(),
-                    key1_public_pem: "public".to_owned(),
-                    e2ee_signing_private_pem: "signing".to_owned(),
-                    e2ee_agreement_private_pem: "agreement".to_owned(),
-                    daemon_subkey_package: None,
-                    make_default,
-                })
-                .unwrap();
-        }
-        let replay_record = json!({
-            "schema_version": 1,
-            "reservation": {
-                "message_id": "root-message-123",
-                "did": "did:example:alice",
-                "root_key_id": "did:example:alice#root",
-                "document_version": 2,
-                "document_hash": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "sender_device_id": "dev-a",
-                "recipient_device_id": "dev-b",
-                "expires_at": "2026-07-19T00:05:00Z"
-            },
-            "completion": {
-                "type": "awiki.device.root-key-imported.v1",
-                "ack_for_message_id": "root-message-123",
-                "did": "did:example:alice",
-                "sending_device_id": "dev-a",
-                "importing_device_id": "dev-b",
-                "root_key_id": "did:example:alice#root",
-                "root_public_key_fingerprint": "e1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "document_version": 2,
-                "document_hash": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "result": "imported",
-                "imported_at": "2026-07-19T00:03:00Z",
-                "device_signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-            }
-        });
-        let mut raw: Value =
-            serde_json::from_slice(&std::fs::read(&paths.identities.registry_path).unwrap())
-                .unwrap();
-        raw["credentials"]["alice"]["root_key_import"] = replay_record.clone();
-        std::fs::write(
-            &paths.identities.registry_path,
-            serde_json::to_vec_pretty(&raw).unwrap(),
-        )
-        .unwrap();
-
-        let core = crate::ImCore::new(test_config(), paths).unwrap();
-        core.identities()
-            .delete_local_identity(crate::identity::IdentitySelector::LocalAlias(
-                "bob".to_owned(),
-            ))
-            .unwrap();
-
-        let committed: Value = serde_json::from_slice(
-            &std::fs::read(&core.inner().sdk_paths().identities.registry_path).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            committed["credentials"]["alice"]["root_key_import"],
-            replay_record
-        );
-        assert!(committed["credentials"].get("bob").is_none());
-    }
-
-    #[test]
     fn vnext_device_summary_is_ready_and_excludes_internal_checkpoint() {
         use crate::internal::identity_device_state::{
             DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
@@ -2817,7 +2731,6 @@ mod tests {
             crate::ImCoreOpenOptions {
                 identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultPreferred,
                 identity_secret_vault: None,
-                multi_device_root_transfer_enabled: false,
                 multi_device_device_revoke_enabled: false,
                 multi_device_direct_e2ee_enabled: false,
                 multi_device_group_e2ee_enabled: false,
@@ -2959,7 +2872,6 @@ mod tests {
             crate::ImCoreOpenOptions {
                 identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultRequired,
                 identity_secret_vault: None,
-                multi_device_root_transfer_enabled: false,
                 multi_device_device_revoke_enabled: false,
                 multi_device_direct_e2ee_enabled: false,
                 multi_device_group_e2ee_enabled: false,

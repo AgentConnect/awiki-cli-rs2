@@ -50,10 +50,10 @@ fn request(user_presence_confirmed: bool) -> DeviceRevokeRequest {
 }
 
 #[tokio::test]
-async fn dedicated_revoke_gate_defaults_off_and_is_not_enabled_by_root_transfer() {
+async fn dedicated_revoke_gate_defaults_off() {
     let defaults = ImCoreOpenOptions::default();
     assert!(!defaults.multi_device_device_revoke_enabled);
-    let (_root, core) = test_core(defaults.with_multi_device_root_transfer_enabled(true));
+    let (_root, core) = test_core(defaults);
 
     assert_eq!(
         core.device_revoke()

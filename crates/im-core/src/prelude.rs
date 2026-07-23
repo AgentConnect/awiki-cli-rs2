@@ -48,9 +48,10 @@ pub use crate::identity::{
     IdentitySecretStorageBackend, IdentitySelector, IdentityService, IdentitySummary,
     IdentityVaultMigrationReport, IdentityVaultStatus, IdentityVaultVerificationReport,
     InitialProfile, Profile, ProfileAttribute, ProfilePatch, RegisterHandleRequest,
-    RegistrationMethod, RootKeyTransferListRequest, RootKeyTransferRetryRequest,
-    RootKeyTransferSendRequest, RootKeyTransferSendResult, RootKeyTransferService,
-    RootKeyTransferStatus, RootKeyTransferSummary, VerificationInput,
+    RegistrationMethod, RootKeyTransferAuthorizationHandle, RootKeyTransferError,
+    RootKeyTransferErrorCode, RootKeyTransferPreparation, RootKeyTransferPrepareRequest,
+    RootKeyTransferRecipientSummary, RootKeyTransferResult, RootKeyTransferSendRequest,
+    RootKeyTransferSendResult, RootKeyTransferService, VerificationInput,
 };
 pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef,

@@ -35,9 +35,9 @@ use super::secret_store::{
     DirectSecretSealInput,
 };
 use super::v2_runtime::{
-    classify_session_control, is_session_init_operation_id, is_session_reply_operation_id,
-    session_established_plaintext, session_reply_operation_id, PreparedV2Outbound,
-    V2EstablishedDirectRuntime, V2SessionControlKind, V2ValidatedInboundOutcome,
+    classify_session_control, is_session_reply_operation_id, session_established_plaintext,
+    session_reply_operation_id, PreparedV2Outbound, V2EstablishedDirectRuntime,
+    V2SessionControlKind, V2ValidatedInboundOutcome,
 };
 use super::v2_store::{SqliteV2DirectStateStore, V2OwnerScope};
 
@@ -2235,7 +2235,7 @@ pub(crate) async fn receive_for_client(
     metadata: V2DirectMetadata,
     body: V2DirectBody,
 ) -> crate::ImResult<V2InboundProductOutcome> {
-    receive_for_client_scoped(core, client, enabled, metadata, body, None).await
+    receive_for_client_scoped(core, client, enabled, metadata, body, None, None).await
 }
 
 pub(crate) async fn receive_for_client_scoped(
@@ -2245,11 +2245,32 @@ pub(crate) async fn receive_for_client_scoped(
     metadata: V2DirectMetadata,
     body: V2DirectBody,
     expected_peer_did: Option<&str>,
+    delivery: Option<
+        &crate::internal::identity_root_import_completion::TrustedDirectDeliveryContext,
+    >,
 ) -> crate::ImResult<V2InboundProductOutcome> {
     if !enabled {
         return Err(crate::ImError::unsupported(
             "awiki-multi-device-direct-disabled",
         ));
+    }
+    if let Some(delivery) = delivery {
+        match crate::internal::identity_root_import_completion::receive_root_envelope_candidate(
+            core, client, &metadata, &body, delivery,
+        )
+        .await?
+        {
+            crate::internal::identity_root_import_completion::RootInboundInterceptOutcome::NotRoot => {}
+            crate::internal::identity_root_import_completion::RootInboundInterceptOutcome::Consumed => {
+                return Ok(V2InboundProductOutcome::ConsumedControl);
+            }
+            crate::internal::identity_root_import_completion::RootInboundInterceptOutcome::Replay => {
+                return Ok(V2InboundProductOutcome::Replay);
+            }
+            crate::internal::identity_root_import_completion::RootInboundInterceptOutcome::SuppressedForHydration => {
+                return Ok(V2InboundProductOutcome::SuppressedControl);
+            }
+        }
     }
     let context = V2DirectProductContext::from_client(core, client)?;
     #[cfg(test)]
@@ -2326,9 +2347,7 @@ where
 
     match body {
         V2DirectBody::Init(init) => {
-            if is_session_init_operation_id(&metadata.operation_id)
-                || is_session_reply_operation_id(&metadata.operation_id)
-            {
+            if is_session_reply_operation_id(&metadata.operation_id) {
                 return Ok(V2InboundProductOutcome::ConsumedControl);
             }
             let decrypted = context.with_direct(|direct| {
@@ -2402,9 +2421,6 @@ where
                     direct.complete_session_init_for_session(&binding, &session_id)
                 })?;
                 return Ok(V2InboundProductOutcome::ConsumedControl);
-            }
-            if is_session_init_operation_id(&metadata.operation_id) {
-                return Err(crate::ImError::PermissionDenied);
             }
             let decrypted = context.with_direct(|direct| {
                 direct.decrypt_inbound_validated(

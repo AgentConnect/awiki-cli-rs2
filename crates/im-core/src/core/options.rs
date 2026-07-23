@@ -59,11 +59,6 @@ impl fmt::Debug for ImCoreSecretVaultOptions {
 pub struct ImCoreOpenOptions {
     pub identity_secret_storage_policy: IdentitySecretStoragePolicy,
     pub identity_secret_vault: Option<ImCoreSecretVaultOptions>,
-    /// Enables AWiki-local root-key transfer over established P5 v2 sessions.
-    ///
-    /// This rollout gate is independent from Join and defaults to `false`.
-    /// It is local configuration, not an ANP or DID Document field.
-    pub multi_device_root_transfer_enabled: bool,
     /// Enables AWiki-local permanent device revocation.
     ///
     /// This rollout gate defaults to `false`. It is independent from Join and
@@ -94,11 +89,6 @@ impl ImCoreOpenOptions {
     ) -> Self {
         self.identity_secret_storage_policy = identity_secret_storage_policy;
         self.identity_secret_vault = Some(identity_secret_vault);
-        self
-    }
-
-    pub fn with_multi_device_root_transfer_enabled(mut self, enabled: bool) -> Self {
-        self.multi_device_root_transfer_enabled = enabled;
         self
     }
 

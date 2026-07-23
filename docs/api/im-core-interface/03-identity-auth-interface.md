@@ -206,40 +206,41 @@ Core 从标准 `Authentication-Info` 或 `Authorization: Bearer` 响应头取得
 
 ## 3.2 Root-key transfer control plane
 
-`ImCore::root_key_transfer()` is independently gated and defaults off. The
-sender host supplies only an identity selector, exact recipient device ID,
-message ID/idempotency key, and a local user-presence assertion. Core verifies
-the current ready admin and recipient authorization before opening the root
-Vault record. The safe result reports delivery acceptance metadata only.
+Root transfer exists only on an identity-scoped `ImClient`; it has no rollout
+gate. `prepare` accepts the exact recipient device ID and returns a secret-free
+recipient summary plus an opaque, 60-second, single-use authorization handle.
+`confirm_and_send` accepts only that handle and local user presence. The host
+cannot provide a message ID, root material, proof, checkpoint or transport
+metadata.
 
-RootKeyEnvelope and imported ACK are JSON plaintexts only inside an established
-exact-device P5 v2 cipher. Standard P5 metadata/body are unchanged; the
-same-domain routing/completion sidecar is internal and does not enter ANP or
-AAD. Blocking/async Inbox and History plus realtime filter both the fixed P5 v2
-session handshake and private root controls before public projection. This
-confidentiality filter is independent of the rollout gate; the gate controls
-only whether async/realtime executes the session/root side effect. Failed or
-disabled processing never falls back to a normal message or notification. No
-root key, inner JSON, sidecar, completion proof, or ratchet state is exposed by
-this interface.
+Core verifies a ready Admin sender and active Member/not-ready recipient before
+opening the active Root Vault record. It sends the RootKeyEnvelope as secret
+JSON in a standard exact-device P5 v2 Init or Cipher. P5 pending state and the
+secret-free sender ledger are one SQLite transaction. After response or process
+loss, Core startup recovery reads only `pending_delivery`, resumes the same
+durable operation/message/ciphertext, and atomically commits P5 acceptance with
+the sender `sent` fact; it never reopens the Root Vault or creates a replacement
+message. A later prepare for the same recipient fails closed while the pending
+or sent fact exists. There is no private
+root-control endpoint, delivery class, sidecar, empty Init, imported ACK,
+sender list/retry API or completion tombstone exposed through this interface.
 
-If the exact device pair has no established P5 v2 session, the first `send`
-persists and sends only the fixed session Init, does not open or persist the
-root Envelope, and returns the stable capability
-`p5-v2-session-establishment-pending`. After both devices sync the Init/reply,
-the host repeats `send` with the same recipient and `message_id` under fresh
-user presence. A root-transfer status record exists only after the encrypted
-Envelope is prepared.
-
-`list` returns an owner-scoped, restart-safe, non-secret status projection.
-`retry` accepts only the original `message_id` plus fresh user presence and
-reuses the persisted route and exact ciphertext; callers cannot override the
-recipient or sidecar. Expired, completed, unknown, and otherwise non-retryable
-operations fail closed. Device Registry/local identity readiness remains the
-authority for whether an Admin is actually management-ready.
-Signed completion removes the pending ciphertext, private sidecar, and
-Vault-backed pending ratchet record. The local store retains only a
-secret-free completed status tombstone for idempotency.
+Authenticated Mailbox delivery is the receiver authority. Core validates the
+exact delivery tuple, P5 pre-state, Registry/Manifest, Root fingerprint and
+checkpoint, seals an `IdentityRootImportPending` record, and persists the P5
+advance plus completion coordinator atomically. Completion uses one canonical
+double-proof request with a fixed nonce and request hash. After response loss,
+a fresh DID-WBA `get_me` may return only the original Member principal (retry
+the exact request) or the next-generation ready Admin principal (skip replay
+and confirm Registry once). Registry confirmation precedes pending-to-active
+Root promotion and durable Admin token replacement. No root key, private PEM,
+proof, nonce, ciphertext or Vault reference crosses the public interface.
+Realtime arrival metadata is only a hint: it never supplies `accepted_at` and
+never commits a Root import. A matching hint triggers an exact authenticated
+Inbox hydration; only the persisted Mailbox row and its service-provided
+six-microsecond `accepted_at` can advance the Root transaction. Startup recovery
+also replays receiver coordinators in `registry_confirmed` or `promoted` so both
+the index/coordinator crash window and pending-Vault cleanup converge.
 
 ## 4. Register Handle
 

@@ -158,8 +158,7 @@ completion 返回后，Core 必须重新读取 Registry：
 - 响应不确定：按同一 operation 精确重试，并以 Registry 事实收敛。
 
 只有“Registry ready admin + 本地 active root 可读”同时成立，host 才能看到 ready admin。
-密文删除和可选的 `root-key-imported` 系统通知在远端事务后幂等收敛，不参与本地 root 激活的
-授权判断。
+密文删除在远端事务后幂等收敛，不参与本地 root 激活的授权判断；V1 不为根导入增加刷新通知。
 
 管理员升级后，Core 使用明确的本机 device signing key 发起 fresh DID-WBA User Service
 请求，从标准认证响应头取得新的管理 access token。`get_me` 只是没有其他业务 RPC 时的

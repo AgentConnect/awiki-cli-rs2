@@ -19,13 +19,14 @@ pub(crate) struct ImCoreInner {
     pub(crate) identity_secret_storage_policy: IdentitySecretStoragePolicy,
     pub(crate) identity_vault: Option<options::IdentityVaultContext>,
     pub(crate) device_join_lock: std::sync::Mutex<()>,
-    pub(crate) root_key_transfer_enabled: bool,
     pub(crate) device_revoke_enabled: bool,
     pub(crate) direct_e2ee_v2_enabled: bool,
     pub(crate) device_revoke_lock: tokio::sync::Mutex<()>,
     pub(crate) group_e2ee_v2_enabled: bool,
     pub(crate) device_join_approvals:
         crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleStore,
+    pub(crate) root_key_transfer_authorizations:
+        crate::internal::identity_root_transfer_runtime::RootKeyTransferAuthorizationStore,
     #[cfg(feature = "sqlite")]
     pub(crate) local_state_db: OnceCell<crate::internal::local_state::actor::LocalStateDb>,
 }
@@ -90,12 +91,12 @@ impl ImCore {
                 identity_secret_storage_policy: options.identity_secret_storage_policy,
                 identity_vault,
                 device_join_lock: std::sync::Mutex::new(()),
-                root_key_transfer_enabled: options.multi_device_root_transfer_enabled,
                 device_revoke_enabled: options.multi_device_device_revoke_enabled,
                 direct_e2ee_v2_enabled: options.multi_device_direct_e2ee_enabled,
                 device_revoke_lock: tokio::sync::Mutex::new(()),
                 group_e2ee_v2_enabled: options.multi_device_group_e2ee_enabled,
                 device_join_approvals: Default::default(),
+                root_key_transfer_authorizations: Default::default(),
                 #[cfg(feature = "sqlite")]
                 local_state_db: OnceCell::new(),
             }),
@@ -108,10 +109,6 @@ impl ImCore {
 
     pub fn device_join(&self) -> crate::identity::DeviceJoinService<'_> {
         crate::identity::DeviceJoinService::new(self)
-    }
-
-    pub fn root_key_transfer(&self) -> crate::identity::RootKeyTransferService<'_> {
-        crate::identity::RootKeyTransferService::new(self)
     }
 
     pub fn device_revoke(&self) -> crate::identity::DeviceRevokeService<'_> {
@@ -219,10 +216,6 @@ impl ImCoreInner {
 
     pub(crate) fn identity_vault(&self) -> Option<&options::IdentityVaultContext> {
         self.identity_vault.as_ref()
-    }
-
-    pub(crate) fn root_key_transfer_enabled(&self) -> bool {
-        self.root_key_transfer_enabled
     }
 
     pub(crate) fn device_revoke_enabled(&self) -> bool {

@@ -457,9 +457,9 @@ V1 通知内核支持：
 - 现有 Message 持久化、Mailbox、同步和 realtime；
 - TTL、离线投递和失败重试。
 
-V1 内置业务类型至少包括 Join 系列；根导入完成后可以发送不含秘密的
-`root-key-imported` 刷新通知。后续业务通过新的 versioned payload type 接入同一发送器，不新建
-业务专用通知通道。
+V1 内置业务类型至少包括 Join 系列。根导入完成不新增刷新通知；客户端只以新 access token、
+Registry ready admin 和本地 active root 的收敛结果刷新状态。后续业务通过新的 versioned
+payload type 接入同一发送器，不新建业务专用通知通道。
 
 ### 8.2 通知信任链
 
@@ -703,8 +703,8 @@ AND
 本地 active root 可读
 ```
 
-V1 不返回旧设备的 E2EE imported ACK，不以 P5 Reply 表示导入成功，也不保留 completion sidecar。
-可选的 `root-key-imported` 系统通知只用于刷新 UI，不参与授权事务。
+V1 不返回旧设备的 E2EE imported ACK，不以 P5 Reply 表示导入成功，也不保留 completion sidecar
+或根导入刷新通知。客户端只根据本机 completion 收敛流程刷新 UI。
 
 ---
 

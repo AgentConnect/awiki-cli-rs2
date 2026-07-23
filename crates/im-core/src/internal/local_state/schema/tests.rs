@@ -743,6 +743,60 @@ fn local_state_schema_atomically_upgrades_v28_with_system_notification_tables() 
     for table in [
         "system_notification_receipts",
         "system_notification_join_state",
+        "identity_root_import_completion_v1",
+        "identity_root_transfer_sender_v1",
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[test]
+fn local_state_schema_atomically_upgrades_v29_with_root_import_tables() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute_batch(
+        "DROP TABLE identity_root_import_completion_v1;
+         DROP TABLE identity_root_transfer_sender_v1;",
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 29).unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    for table in [
+        "identity_root_import_completion_v1",
+        "identity_root_transfer_sender_v1",
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[test]
+fn local_state_schema_v30_open_is_idempotent_and_keeps_root_import_tables() {
+    let db = Connection::open_in_memory().unwrap();
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), 30);
+
+    ensure_schema(&db).unwrap();
+
+    for table in [
+        "identity_root_import_completion_v1",
+        "identity_root_transfer_sender_v1",
     ] {
         let count: i64 = db
             .query_row(

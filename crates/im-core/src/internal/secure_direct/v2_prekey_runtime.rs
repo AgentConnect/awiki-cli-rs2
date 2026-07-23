@@ -336,24 +336,23 @@ pub(crate) async fn fetch_verified_prekey(
     require_exact("operation_seed", operation_seed)?;
     let service_did = target_prekey_service_did(target_did, target_did_document)?;
     let local_state = local_authorization(client)?;
-    for require_opk in [true, false] {
-        let operation_id = format!(
-            "p5-v2-prekey-get:{}:{}",
-            operation_seed,
-            if require_opk { "opk" } else { "fallback" }
-        );
-        let request = get_request(
-            client.did().as_str(),
-            local_state.protocol_device_id.as_str(),
-            &service_did,
-            &operation_id,
-            target_did,
-            target_device_id,
-            require_opk,
-        )?;
-        let (method, params) = split_rpc_request(request)?;
+    // One logical query: OPK is an optional response sidecar. A transport
+    // retry reuses the exact operation ID and body; it is never a second
+    // business query asking for a different OPK policy.
+    let operation_id = format!("p5-v2-prekey-get:{operation_seed}");
+    let request = get_request(
+        client.did().as_str(),
+        local_state.protocol_device_id.as_str(),
+        &service_did,
+        &operation_id,
+        target_did,
+        target_device_id,
+        false,
+    )?;
+    let (method, params) = split_rpc_request(request)?;
+    for attempt in 0..=1 {
         let response = crate::internal::transport::CoreHttpTransport::new(client)
-            .authenticated_rpc("/im/rpc", &method, params)
+            .authenticated_rpc("/im/rpc", &method, params.clone())
             .await;
         match response {
             Ok(response) => {
@@ -363,19 +362,26 @@ pub(crate) async fn fetch_verified_prekey(
                     target_device_id,
                     target_did_document,
                     Utc::now(),
-                    require_opk,
+                    false,
                 );
             }
-            Err(error)
-                if require_opk
-                    && anp::direct_e2ee::should_retry_without_opk_message(&error.to_string()) =>
-            {
-                continue;
-            }
+            Err(error) if attempt == 0 && retryable_prekey_transport_error(&error) => continue,
             Err(error) => return Err(error),
         }
     }
-    Err(crate::ImError::PermissionDenied)
+    unreachable!("the bounded PreKey attempt loop always returns")
+}
+
+fn retryable_prekey_transport_error(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::TransportUnavailable { .. }
+            | crate::ImError::Io { .. }
+            | crate::ImError::Service {
+                status_code: Some(500..=599),
+                ..
+            }
+    )
 }
 
 fn target_prekey_service_did(

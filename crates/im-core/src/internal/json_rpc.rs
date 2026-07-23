@@ -393,11 +393,11 @@ mod tests {
             "id": "req-1",
             "error": {
                 "code": -32003,
-                "message": "root control expired",
+                "message": "device join expired",
                 "data": {
-                    "awiki_code": "awiki.root_control_expired",
-                    "anp_code": "awiki.root_control_expired",
-                    "code": "awiki.root_control_expired"
+                    "awiki_code": "device.join.expired",
+                    "anp_code": "device.join.expired",
+                    "code": "device.join.expired"
                 }
             }
         }))
@@ -407,7 +407,7 @@ mod tests {
         let crate::ImError::Service { code, .. } = error else {
             panic!("expected service error")
         };
-        assert_eq!(code.as_deref(), Some("awiki.root_control_expired"));
+        assert_eq!(code.as_deref(), Some("device.join.expired"));
     }
 
     #[test]

@@ -610,57 +610,6 @@ async fn realtime_async_projector_replays_pending_direct_cipher_after_init() {
     assert_eq!(saved_session.recv_n, 2);
     db.shutdown().await.unwrap();
 }
-
-#[tokio::test]
-async fn realtime_async_projector_hides_v2_session_controls_gate_off_on_failure_and_replay() {
-    for enabled in [false, true] {
-        let fixture = TestClientFixture::new("async-v2-session-control");
-        let client = fixture.client_with_root_transfer_enabled(enabled);
-        let mut projector = AsyncSecureRealtimeNotificationProjector::new(&client);
-        let init = v2_session_control_realtime_notification(true);
-        let reply = v2_session_control_realtime_notification(false);
-
-        for notification in [init.clone(), reply, init] {
-            let outcome = projector.project_async(notification).await;
-            assert!(outcome.event.is_none(), "gate enabled={enabled}");
-            assert!(outcome.additional_events.is_empty());
-            assert!(outcome.warnings.is_empty());
-        }
-    }
-}
-
-#[tokio::test]
-async fn realtime_v2_session_control_requires_strict_operation_id_and_fails_closed_on_shape() {
-    let fixture = TestClientFixture::new("async-v2-session-control-negative");
-    let client = fixture.client();
-    let mut projector = AsyncSecureRealtimeNotificationProjector::new(&client);
-
-    let mut forged = v2_session_control_realtime_notification(true);
-    forged["params"]["meta"]["operation_id"] = json!("p5-v2-session-init:AAAAAAAAAAAAAAAAAAAAA!");
-    forged["params"]["meta"]["message_id"] = forged["params"]["meta"]["operation_id"].clone();
-    assert!(parse_realtime_v2_session_control(&forged).is_err());
-    let forged_outcome = projector.project_async(forged).await;
-    assert!(forged_outcome.event.is_none());
-    assert!(forged_outcome.additional_events.is_empty());
-    assert!(forged_outcome.warnings.is_empty());
-
-    let mut ordinary = v2_session_control_realtime_notification(true);
-    ordinary["params"]["meta"]["operation_id"] = json!("ordinary-p5-v2-operation");
-    ordinary["params"]["meta"]["message_id"] = ordinary["params"]["meta"]["operation_id"].clone();
-    assert!(parse_realtime_v2_session_control(&ordinary)
-        .unwrap()
-        .is_none());
-
-    let mut wrong_shape = v2_session_control_realtime_notification(true);
-    wrong_shape["params"]["meta"]["content_type"] =
-        json!(anp::direct_e2ee::CONTENT_TYPE_DIRECT_CIPHER_V2);
-    assert!(parse_realtime_v2_session_control(&wrong_shape).is_err());
-    let outcome = projector.project_async(wrong_shape).await;
-    assert!(outcome.event.is_none());
-    assert!(outcome.additional_events.is_empty());
-    assert!(outcome.warnings.is_empty());
-}
-
 #[cfg(feature = "group-e2ee")]
 #[tokio::test]
 async fn realtime_async_projector_uses_async_group_e2ee_normalizer() {
@@ -1118,11 +1067,7 @@ impl TestClientFixture {
     }
 
     fn client(&self) -> crate::core::ImClient {
-        self.client_with_root_transfer_enabled(false)
-    }
-
-    fn client_with_root_transfer_enabled(&self, enabled: bool) -> crate::core::ImClient {
-        self.core_with_root_transfer_enabled(enabled)
+        self.core()
             .client(crate::identity::IdentitySelector::LocalAlias(
                 "alice".to_string(),
             ))
@@ -1130,10 +1075,6 @@ impl TestClientFixture {
     }
 
     fn core(&self) -> crate::core::ImCore {
-        self.core_with_root_transfer_enabled(false)
-    }
-
-    fn core_with_root_transfer_enabled(&self, enabled: bool) -> crate::core::ImCore {
         crate::core::ImCore::new_with_options(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
@@ -1160,7 +1101,7 @@ impl TestClientFixture {
                     temp_dir: self.root.join("tmp"),
                 },
             },
-            crate::ImCoreOpenOptions::default().with_multi_device_root_transfer_enabled(enabled),
+            crate::ImCoreOpenOptions::default(),
         )
         .unwrap()
     }
@@ -1263,61 +1204,6 @@ impl TestClientFixture {
         }));
         std::fs::write(registry_path, registry.to_string()).unwrap();
     }
-}
-
-fn v2_session_control_realtime_notification(init: bool) -> serde_json::Value {
-    let init_id =
-        crate::internal::secure_direct::v2_runtime::session_init_operation_id("realtime-session")
-            .unwrap();
-    let operation_id = if init {
-        init_id
-    } else {
-        crate::internal::secure_direct::v2_runtime::session_reply_operation_id(&init_id).unwrap()
-    };
-    let content_type = if init {
-        anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2
-    } else {
-        anp::direct_e2ee::CONTENT_TYPE_DIRECT_CIPHER_V2
-    };
-    let body = if init {
-        json!({
-            "session_id": "AAAAAAAAAAAAAAAAAAAAAA",
-            "suite": anp::direct_e2ee::MTI_DIRECT_E2EE_SUITE_V2,
-            "sender_static_key_agreement_id": "did:example:alice#ka-admin",
-            "recipient_bundle_id": "bundle-member",
-            "recipient_signed_prekey_id": "signed-member",
-            "sender_ephemeral_pub_b64u": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "ciphertext_b64u": "U0VTU0lPTi1DT05UUk9MLUNJUEhFUlRFWFQ"
-        })
-    } else {
-        json!({
-            "session_id": "AAAAAAAAAAAAAAAAAAAAAA",
-            "suite": anp::direct_e2ee::MTI_DIRECT_E2EE_SUITE_V2,
-            "ratchet_header": {
-                "dh_pub_b64u": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "pn": "0",
-                "n": "0"
-            },
-            "ciphertext_b64u": "U0VTU0lPTi1DT05UUk9MLUNJUEhFUlRFWFQ"
-        })
-    };
-    json!({
-        "method": "direct.incoming",
-        "params": {
-            "meta": {
-                "profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2,
-                "security_profile": "direct-e2ee",
-                "sender_did": "did:example:alice",
-                "sender_device_id": "device-admin",
-                "target": {"kind": "agent", "did": "did:example:alice"},
-                "recipient_device_id": "device-member",
-                "operation_id": operation_id,
-                "message_id": operation_id,
-                "content_type": content_type
-            },
-            "body": body
-        }
-    })
 }
 
 fn verified_bob_lookup() -> crate::directory::HandleLookupResult {

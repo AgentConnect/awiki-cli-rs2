@@ -44,8 +44,9 @@ pub(crate) use self::join::{
 };
 pub use self::registry::IdentityRegistry;
 pub use self::root_key_transfer::{
-    RootKeyTransferListRequest, RootKeyTransferRetryRequest, RootKeyTransferSendRequest,
-    RootKeyTransferSendResult, RootKeyTransferService, RootKeyTransferStatus,
-    RootKeyTransferSummary,
+    RootKeyTransferAuthorizationHandle, RootKeyTransferError, RootKeyTransferErrorCode,
+    RootKeyTransferPreparation, RootKeyTransferPrepareRequest, RootKeyTransferRecipientSummary,
+    RootKeyTransferResult, RootKeyTransferSendRequest, RootKeyTransferSendResult,
+    RootKeyTransferService,
 };
 pub use self::service::IdentityService;
