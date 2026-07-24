@@ -381,11 +381,8 @@ pub fn resolve_hermes_home() -> anyhow::Result<String> {
             return Ok(value.to_string());
         }
     }
-    let home = env::var("HOME").context("resolve user home: HOME is not set")?;
-    Ok(Path::new(home.trim())
-        .join(".hermes")
-        .to_string_lossy()
-        .into_owned())
+    let home = awiki_user_dirs::home_dir()?;
+    Ok(home.join(".hermes").to_string_lossy().into_owned())
 }
 
 pub fn inspect_route(home: &str, route_name: &str) -> anyhow::Result<RouteState> {

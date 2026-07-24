@@ -116,8 +116,13 @@ jobs:
         working-directory: awiki-cli-rs2
         run: |
           binary="target/${{ matrix.target }}/release/awiki-cli"
-          if [ "${{ matrix.os_name }}" = windows ]; then binary="${binary}.exe"; fi
-          "${binary}" version | tee version.json
+          if [ "${{ matrix.os_name }}" = windows ]; then
+            binary="${binary}.exe"
+            # Match normal PowerShell: USERPROFILE is present, while HOME may be absent.
+            env -u HOME "${binary}" version | tee version.json
+          else
+            "${binary}" version | tee version.json
+          fi
           node -e 'const p=require("./version.json"); if(p.data.version!==process.argv[1]) process.exit(1)' "${{ inputs.expected_version }}"
 
       - name: Upload release archive

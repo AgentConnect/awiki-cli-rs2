@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/user-dirs",
     "crates/im-core",
     "crates/im-core-dart",
     "crates/awiki-cli",
@@ -15,6 +16,7 @@ license = "Apache-2.0"
 repository = "git@github.com:AgentConnect/awiki-cli-rs2.git"
 
 [workspace.dependencies]
+awiki-user-dirs = { path = "crates/user-dirs" }
 anyhow = "1"
 base64 = "0.22"
 bs58 = "0.5"

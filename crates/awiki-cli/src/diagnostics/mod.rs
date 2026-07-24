@@ -563,8 +563,10 @@ fn workspace_upgrade_check(resolved: &Resolved) -> Check {
 fn legacy_paths_check(resolved: &Resolved) -> Check {
     let manager = Manager::new(resolved.paths.clone());
     let scan_result = manager.scan_legacy();
-    let credentials_exists = Path::new(&resolved.paths.legacy_credentials_dir).exists();
-    let data_exists = Path::new(&resolved.paths.legacy_data_dir).exists();
+    let credentials_exists = !resolved.paths.legacy_credentials_dir.trim().is_empty()
+        && Path::new(&resolved.paths.legacy_credentials_dir).exists();
+    let data_exists = !resolved.paths.legacy_data_dir.trim().is_empty()
+        && Path::new(&resolved.paths.legacy_data_dir).exists();
     let legacy_database_result = store::scan_legacy_database(&resolved.paths);
     let legacy_database = legacy_database_result.as_ref().ok().cloned();
     let legacy_database_exists = legacy_database

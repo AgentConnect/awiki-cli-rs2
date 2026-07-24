@@ -983,7 +983,7 @@ fn seed_codex_profile_home_from_host(config_home: &std::path::Path) -> Result<()
 fn host_codex_home_for_profile_seed(config_home: &std::path::Path) -> Option<std::path::PathBuf> {
     let candidates = [
         std::env::var_os("CODEX_HOME").map(std::path::PathBuf::from),
-        std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".codex")),
+        awiki_user_dirs::try_home_dir().map(|home| home.join(".codex")),
     ];
     candidates
         .into_iter()

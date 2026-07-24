@@ -85,16 +85,12 @@ impl App {
         let resolved = self.resolve_config()?;
         let host_notify_view =
             host_runtime::host_notify_config_view(&resolved).map_err(internal_anyhow)?;
-        let home = host_runtime::hermes_bridge::resolve_hermes_home().unwrap_or_else(|_| {
-            std::path::Path::new("")
-                .join(".hermes")
-                .to_string_lossy()
-                .into_owned()
+        let route_result = host_runtime::hermes_bridge::resolve_hermes_home().and_then(|home| {
+            host_runtime::hermes_bridge::inspect_route(
+                &home,
+                host_runtime::hermes_bridge::DEFAULT_WEBHOOK_ROUTE_NAME,
+            )
         });
-        let route_result = host_runtime::hermes_bridge::inspect_route(
-            &home,
-            host_runtime::hermes_bridge::DEFAULT_WEBHOOK_ROUTE_NAME,
-        );
         let bridge_status = host_runtime::hermes_bridge::status_for(&resolved);
         let expected_deliver = resolve_hermes_deliver_target(&resolved, "");
         let host_notify = host_runtime::resolve(&resolved).host_notify;
@@ -231,7 +227,8 @@ impl App {
         }
 
         if self.globals.dry_run {
-            let hermes_config_file = Path::new(&resolve_hermes_home_dir())
+            let hermes_home = resolve_hermes_home_dir()?;
+            let hermes_config_file = Path::new(&hermes_home)
                 .join("config.yaml")
                 .to_string_lossy()
                 .into_owned();
@@ -283,7 +280,7 @@ impl App {
         })?;
         let route_state = host_runtime::hermes_bridge::ensure_route(
             host_runtime::hermes_bridge::EnsureRouteOptions {
-                hermes_home: resolve_hermes_home_dir(),
+                hermes_home: resolve_hermes_home_dir()?,
                 route_name: host_runtime::hermes_bridge::DEFAULT_WEBHOOK_ROUTE_NAME.to_string(),
                 deliver: deliver.clone(),
                 webhook_port: 0,
@@ -628,13 +625,8 @@ fn resolve_hermes_notify_secret_for_setup(
     Ok((String::new(), "unset".to_string()))
 }
 
-fn resolve_hermes_home_dir() -> String {
-    host_runtime::hermes_bridge::resolve_hermes_home().unwrap_or_else(|_| {
-        Path::new(&std::env::var("HOME").unwrap_or_default())
-            .join(".hermes")
-            .to_string_lossy()
-            .into_owned()
-    })
+fn resolve_hermes_home_dir() -> Result<String, ExitError> {
+    host_runtime::hermes_bridge::resolve_hermes_home().map_err(internal_anyhow)
 }
 
 fn generate_hermes_notify_secret() -> String {

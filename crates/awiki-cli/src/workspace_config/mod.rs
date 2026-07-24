@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::durable_fs;
+use awiki_user_dirs::{expand_tilde, requires_home_expansion, try_home_dir, HomeDirUnavailable};
 
 mod write;
 pub(crate) use write::write_file_config_raw;
@@ -393,12 +394,12 @@ pub struct UpdateConfig {
 }
 
 pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
-    let home = home_dir()?;
-    let (product_home_dir, product_source) = resolve_workspace_home(&home);
+    let home = try_home_dir();
+    let (product_home_dir, product_source) = resolve_workspace_home(home.as_deref())?;
     archive_legacy_product_root(&product_home_dir)?;
     let tenant = resolve_active_tenant(&product_home_dir, &overrides)?;
     let tenant_dir = tenant_dir(&product_home_dir, &tenant.profile);
-    let paths = build_paths(&home, &tenant_dir);
+    let paths = build_paths(home.as_deref(), &tenant_dir);
     validate_deprecated_config_fields(&paths.config_file)?;
     let (file_config, config_exists, config_error) = read_file_config(&paths.config_file);
     let mut sources = BTreeMap::new();
@@ -718,29 +719,25 @@ fn duplicate_tenant_endpoint_error(prefix: &str) -> WorkspaceConfigError {
 }
 
 pub fn product_cache_dir() -> anyhow::Result<String> {
-    let home = home_dir()?;
-    let (product_home_dir, _) = resolve_workspace_home(&home);
+    let (product_home_dir, _) = current_workspace_home()?;
     Ok(path_string(&product_home_dir.join("cache")))
 }
 
 pub fn list_tenants() -> anyhow::Result<Vec<TenantProfile>> {
-    let home = home_dir()?;
-    let (product_home_dir, _) = resolve_workspace_home(&home);
+    let (product_home_dir, _) = current_workspace_home()?;
     archive_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     Ok(load_tenant_registry(&product_home_dir)?.tenants)
 }
 
 pub fn current_tenant_context() -> anyhow::Result<TenantContext> {
-    let home = home_dir()?;
-    let (product_home_dir, _) = resolve_workspace_home(&home);
+    let (product_home_dir, _) = current_workspace_home()?;
     archive_legacy_product_root(&product_home_dir)?;
     resolve_active_tenant(&product_home_dir, &Overrides::default())
 }
 
 pub fn tenant_context_for_resolved(resolved: &Resolved) -> anyhow::Result<TenantContext> {
-    let home = home_dir()?;
-    let (product_home_dir, _) = resolve_workspace_home(&home);
+    let (product_home_dir, _) = current_workspace_home()?;
     archive_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     let active_source = resolved
@@ -817,8 +814,7 @@ pub fn preview_create_tenant(input: TenantCreateInput) -> anyhow::Result<TenantC
 }
 
 pub fn preview_use_tenant(name: &str) -> anyhow::Result<TenantContext> {
-    let home = home_dir()?;
-    let (product_home_dir, _) = resolve_workspace_home(&home);
+    let (product_home_dir, _) = current_workspace_home()?;
     archive_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     let name = normalize_tenant_name(name)?;
@@ -839,8 +835,7 @@ pub fn preview_use_tenant(name: &str) -> anyhow::Result<TenantContext> {
 fn prepare_tenant_create(
     input: TenantCreateInput,
 ) -> anyhow::Result<(PathBuf, TenantRegistry, TenantProfile)> {
-    let home = home_dir()?;
-    let (product_home_dir, _) = resolve_workspace_home(&home);
+    let (product_home_dir, _) = current_workspace_home()?;
     archive_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     let name = normalize_tenant_name(&input.name)?;
@@ -884,8 +879,7 @@ fn prepare_tenant_create(
 fn prepare_tenant_setup(
     input: TenantCreateInput,
 ) -> anyhow::Result<(PathBuf, TenantRegistry, TenantProfile, String)> {
-    let home = home_dir()?;
-    let (product_home_dir, _) = resolve_workspace_home(&home);
+    let (product_home_dir, _) = current_workspace_home()?;
     archive_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     let name = normalize_tenant_name(&input.name)?;
@@ -935,8 +929,7 @@ fn prepare_tenant_setup(
 }
 
 pub fn use_tenant(name: &str) -> anyhow::Result<TenantContext> {
-    let home = home_dir()?;
-    let (product_home_dir, _) = resolve_workspace_home(&home);
+    let (product_home_dir, _) = current_workspace_home()?;
     archive_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     let name = normalize_tenant_name(name)?;
@@ -998,8 +991,7 @@ fn prepare_tenant_reconfigure(
     backend_base_url: &str,
     did_host: &str,
 ) -> anyhow::Result<(PathBuf, TenantRegistry, usize, TenantProfile)> {
-    let home = home_dir()?;
-    let (product_home_dir, _) = resolve_workspace_home(&home);
+    let (product_home_dir, _) = current_workspace_home()?;
     archive_legacy_product_root(&product_home_dir)?;
     ensure_tenant_state(&product_home_dir)?;
     let name = normalize_tenant_name(name)?;
@@ -1184,7 +1176,8 @@ fn write_tenant_config(product_home_dir: &Path, profile: &TenantProfile) -> anyh
     let tenant_dir = tenant_dir(product_home_dir, profile);
     fs::create_dir_all(&tenant_dir)
         .map_err(|err| anyhow::anyhow!("create tenant directory: {err}"))?;
-    let paths = build_paths(&home_dir()?, &tenant_dir);
+    let home = try_home_dir();
+    let paths = build_paths(home.as_deref(), &tenant_dir);
     let (mut config, exists, error) = read_file_config(&paths.config_file);
     if exists && error.is_empty() {
         config.schema_version = CONFIG_SCHEMA_VERSION;
@@ -1748,40 +1741,53 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
-fn home_dir() -> anyhow::Result<PathBuf> {
-    if let Some(home) = env::var_os("HOME") {
-        return Ok(PathBuf::from(home));
-    }
-    anyhow::bail!("resolve user home: HOME is not set")
+fn current_workspace_home() -> anyhow::Result<(PathBuf, ValueSource)> {
+    let home = try_home_dir();
+    resolve_workspace_home(home.as_deref())
 }
 
-fn resolve_workspace_home(home: &Path) -> (PathBuf, ValueSource) {
-    if let Ok(value) = env::var("AWIKI_CLI_WORKSPACE_HOME_DIR") {
+fn resolve_workspace_home(home: Option<&Path>) -> anyhow::Result<(PathBuf, ValueSource)> {
+    let configured = env::var("AWIKI_CLI_WORKSPACE_HOME_DIR").ok();
+    resolve_workspace_home_from(home, configured.as_deref())
+}
+
+fn resolve_workspace_home_from(
+    home: Option<&Path>,
+    configured: Option<&str>,
+) -> anyhow::Result<(PathBuf, ValueSource)> {
+    if let Some(value) = configured {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
-            let expanded = expand_home(home, trimmed);
-            return (
+            let expanded = match home {
+                Some(home) => expand_tilde(home, trimmed),
+                None if requires_home_expansion(trimmed) => {
+                    return Err(HomeDirUnavailable.into());
+                }
+                None => PathBuf::from(trimmed),
+            };
+            return Ok((
                 expanded.clone(),
                 ValueSource {
                     source: "canonical_env".to_string(),
                     key: "AWIKI_CLI_WORKSPACE_HOME_DIR".to_string(),
                     value: path_string(&expanded),
                 },
-            );
+            ));
         }
     }
+    let home = home.ok_or(HomeDirUnavailable)?;
     let default = home.join(format!(".{APP_NAME}"));
-    (
+    Ok((
         default.clone(),
         ValueSource {
             source: "default".to_string(),
             key: String::new(),
             value: path_string(&default),
         },
-    )
+    ))
 }
 
-fn build_paths(home: &Path, workspace_home_dir: &Path) -> Paths {
+fn build_paths(home: Option<&Path>, workspace_home_dir: &Path) -> Paths {
     let data_dir = workspace_home_dir.join("data");
     let state_dir = workspace_home_dir.join("runtime");
     let cache_dir = workspace_home_dir.join("cache");
@@ -1797,19 +1803,25 @@ fn build_paths(home: &Path, workspace_home_dir: &Path) -> Paths {
         config_file: path_string(&workspace_home_dir.join(CONFIG_FILE_NAME)),
         identity_dir: path_string(&workspace_home_dir.join("identities")),
         database_file: path_string(&data_dir.join(format!("{APP_NAME}.db"))),
-        legacy_credentials_dir: path_string(
-            &home
-                .join(".openclaw")
-                .join("credentials")
-                .join("awiki-agent-id-message"),
-        ),
-        legacy_data_dir: path_string(
-            &home
-                .join(".openclaw")
-                .join("workspace")
-                .join("data")
-                .join("awiki-agent-id-message"),
-        ),
+        legacy_credentials_dir: home
+            .map(|home| {
+                home.join(".openclaw")
+                    .join("credentials")
+                    .join("awiki-agent-id-message")
+            })
+            .as_deref()
+            .map(path_string)
+            .unwrap_or_default(),
+        legacy_data_dir: home
+            .map(|home| {
+                home.join(".openclaw")
+                    .join("workspace")
+                    .join("data")
+                    .join("awiki-agent-id-message")
+            })
+            .as_deref()
+            .map(path_string)
+            .unwrap_or_default(),
     }
 }
 
@@ -2270,13 +2282,6 @@ fn default_trimmed_string(value: &str, default: &str) -> String {
     }
 }
 
-fn expand_home(home: &Path, value: &str) -> PathBuf {
-    value
-        .strip_prefix("~/")
-        .map(|rest| home.join(rest))
-        .unwrap_or_else(|| PathBuf::from(value))
-}
-
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -2310,5 +2315,37 @@ services:
             config.services.message_service_endpoint,
             "https://messages.example.test/"
         );
+    }
+
+    #[test]
+    fn absolute_workspace_override_does_not_require_a_user_home() {
+        let (workspace, source) =
+            resolve_workspace_home_from(None, Some("/srv/awiki/workspace")).unwrap();
+
+        assert_eq!(workspace, PathBuf::from("/srv/awiki/workspace"));
+        assert_eq!(source.source, "canonical_env");
+        assert_eq!(source.key, "AWIKI_CLI_WORKSPACE_HOME_DIR");
+    }
+
+    #[test]
+    fn default_and_tilde_workspace_paths_require_a_user_home() {
+        assert!(resolve_workspace_home_from(None, None)
+            .unwrap_err()
+            .downcast_ref::<HomeDirUnavailable>()
+            .is_some());
+        assert!(resolve_workspace_home_from(None, Some("~/workspace"))
+            .unwrap_err()
+            .downcast_ref::<HomeDirUnavailable>()
+            .is_some());
+    }
+
+    #[test]
+    fn paths_without_a_user_home_keep_legacy_discovery_disabled() {
+        let workspace = Path::new("/srv/awiki/workspace");
+        let paths = build_paths(None, workspace);
+
+        assert_eq!(paths.workspace_home_dir, path_string(workspace));
+        assert!(paths.legacy_credentials_dir.is_empty());
+        assert!(paths.legacy_data_dir.is_empty());
     }
 }

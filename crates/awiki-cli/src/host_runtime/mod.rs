@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::env;
 use std::fs;
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub mod bridge;
 pub mod hermes_bridge;
@@ -390,7 +390,7 @@ fn probe_openclaw_config(default_port: i64, default_hooks_path: &str) -> OpenCla
             probe.gateway_source = "environment".to_string();
         }
     }
-    if let Ok(raw) = fs::read_to_string(config_path) {
+    if let Some(raw) = config_path.and_then(|path| fs::read_to_string(path).ok()) {
         let Ok(payload) = serde_json::from_str::<OpenClawConfigFile>(&raw) else {
             return probe;
         };
@@ -413,29 +413,22 @@ fn parse_openclaw_port(raw: &str) -> Option<i64> {
     raw.parse::<i64>().ok().filter(|port| *port > 0)
 }
 
-fn openclaw_config_path() -> PathBuf {
-    env::var(OPENCLAW_CONFIG_PATH_ENV)
-        .ok()
-        .map(|value| value.trim().to_string())
+fn openclaw_config_path() -> Option<PathBuf> {
+    let configured = env::var(OPENCLAW_CONFIG_PATH_ENV).ok();
+    let home = openclaw_home_dir();
+    resolve_openclaw_config_path(configured.as_deref(), home.as_deref())
+}
+
+fn resolve_openclaw_config_path(configured: Option<&str>, home: Option<&Path>) -> Option<PathBuf> {
+    configured
+        .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| openclaw_home_dir().map(|home| home.join(".openclaw/openclaw.json")))
-        .unwrap_or_else(|| PathBuf::from(".openclaw/openclaw.json"))
+        .or_else(|| home.map(|home| home.join(".openclaw/openclaw.json")))
 }
 
 fn openclaw_home_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        if let Some(home) = env::var_os("USERPROFILE") {
-            return Some(PathBuf::from(home));
-        }
-        if let (Some(drive), Some(path)) = (env::var_os("HOMEDRIVE"), env::var_os("HOMEPATH")) {
-            let mut home = PathBuf::from(drive);
-            home.push(path);
-            return Some(home);
-        }
-    }
-    env::var_os("HOME").map(PathBuf::from)
+    awiki_user_dirs::try_home_dir()
 }
 
 fn normalize_openclaw_hooks_base_path(raw: &str) -> String {
@@ -493,5 +486,27 @@ fn default_string(value: &str, default: &str) -> String {
         default.to_string()
     } else {
         value.trim().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_openclaw_config_path;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn openclaw_config_probe_requires_an_explicit_path_or_user_home() {
+        let home = Path::new("/profiles/alice");
+
+        assert_eq!(
+            resolve_openclaw_config_path(None, Some(home)),
+            Some(home.join(".openclaw/openclaw.json"))
+        );
+        assert_eq!(
+            resolve_openclaw_config_path(Some(" /srv/openclaw.json "), None),
+            Some(PathBuf::from("/srv/openclaw.json"))
+        );
+        assert_eq!(resolve_openclaw_config_path(None, None), None);
+        assert_eq!(resolve_openclaw_config_path(Some("  "), None), None);
     }
 }

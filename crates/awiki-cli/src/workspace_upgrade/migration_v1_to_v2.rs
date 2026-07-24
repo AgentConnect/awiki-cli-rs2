@@ -25,7 +25,13 @@ pub fn apply_workspace_v1_to_v2_cleanup_optional(
 }
 
 fn cleanup_legacy_skill_artifacts() -> Vec<String> {
-    let home_dir = match legacy_cleanup_user_home() {
+    cleanup_legacy_skill_artifacts_with_home(legacy_cleanup_user_home())
+}
+
+fn cleanup_legacy_skill_artifacts_with_home(
+    resolved_home: Result<PathBuf, std::io::Error>,
+) -> Vec<String> {
+    let home_dir = match resolved_home {
         Ok(home_dir) => home_dir,
         Err(err) => {
             return vec![format!(
@@ -296,30 +302,8 @@ fn remove_all(path: &Path) -> std::io::Result<()> {
 }
 
 fn legacy_cleanup_user_home() -> Result<PathBuf, std::io::Error> {
-    #[cfg(windows)]
-    {
-        if let Some(path) = std::env::var_os("USERPROFILE") {
-            if !path.as_os_str().is_empty() {
-                return Ok(PathBuf::from(path));
-            }
-        }
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "%userprofile% is not defined",
-        ));
-    }
-    #[cfg(not(windows))]
-    {
-        if let Some(path) = std::env::var_os("HOME") {
-            if !path.as_os_str().is_empty() {
-                return Ok(PathBuf::from(path));
-            }
-        }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "$HOME is not defined",
-        ))
-    }
+    awiki_user_dirs::home_dir()
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::NotFound, err))
 }
 
 fn system_command_runner(name: &str, args: &[String]) -> Result<(), String> {
@@ -627,16 +611,16 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
     #[test]
-    fn cleanup_legacy_skill_artifacts_reports_go_home_error() {
-        let _home_guard = EnvGuard::set("HOME", None);
-
-        let warnings = cleanup_legacy_skill_artifacts();
+    fn cleanup_legacy_skill_artifacts_reports_user_home_error() {
+        let warnings = cleanup_legacy_skill_artifacts_with_home(Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            awiki_user_dirs::HomeDirUnavailable,
+        )));
 
         assert_eq!(
             warnings,
-            vec!["Legacy awiki skill cleanup skipped: resolve home directory failed: $HOME is not defined"]
+            vec!["Legacy awiki skill cleanup skipped: resolve home directory failed: resolve user home: the operating system did not provide a user profile directory"]
         );
     }
 

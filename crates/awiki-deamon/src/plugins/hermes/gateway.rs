@@ -370,8 +370,7 @@ fn detect_hermes_gateway_command(config: &DaemonConfig) -> Option<DetectedHermes
 
 fn hermes_gateway_command_candidates() -> Vec<HermesGatewayCommandCandidate> {
     let mut candidates = Vec::new();
-    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
-        let home = PathBuf::from(home);
+    if let Some(home) = awiki_user_dirs::try_home_dir() {
         for relative in [
             ".hermes/hermes-agent/venv/bin/python",
             ".hermes/hermes-agent/.venv/bin/python",

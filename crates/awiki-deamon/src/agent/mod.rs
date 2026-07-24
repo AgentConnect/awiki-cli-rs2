@@ -382,9 +382,14 @@ pub fn workspace_path(input: Option<&str>) -> Result<Option<PathBuf>> {
     if trimmed.is_empty() {
         bail!("workspace must not be empty when present");
     }
-    if let Some(rest) = trimmed.strip_prefix("~/") {
-        let home = std::env::var_os("HOME").context("workspace uses ~/ but HOME is not set")?;
-        return Ok(Some(PathBuf::from(home).join(rest)));
+    #[cfg(not(windows))]
+    let uses_user_home = trimmed == "~" || trimmed.starts_with("~/");
+    #[cfg(windows)]
+    let uses_user_home = trimmed == "~" || trimmed.starts_with("~/") || trimmed.starts_with("~\\");
+    if uses_user_home {
+        let home = awiki_user_dirs::home_dir()
+            .context("workspace uses ~ but the user home directory is unavailable")?;
+        return Ok(Some(awiki_user_dirs::expand_tilde(&home, trimmed)));
     }
     Ok(Some(PathBuf::from(trimmed)))
 }

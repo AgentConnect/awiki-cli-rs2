@@ -1745,6 +1745,17 @@ fn internal_anyhow(err: anyhow::Error) -> ExitError {
     if let Some(err) = err.downcast_ref::<workspace_config::WorkspaceConfigError>() {
         return workspace_config_exit(err);
     }
+    if err
+        .downcast_ref::<awiki_user_dirs::HomeDirUnavailable>()
+        .is_some()
+    {
+        return ExitError::new(
+            "internal_error",
+            1,
+            err.to_string(),
+            "Run awiki-cli from a normal OS user session with a user profile directory available.",
+        );
+    }
     let hint = error_hints::refine_workspace_write_hint(
         &err,
         "Run `awiki-cli doctor` to inspect the local workspace state.",

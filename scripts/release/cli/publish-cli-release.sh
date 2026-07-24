@@ -44,12 +44,13 @@ if [[ "$(GH_TOKEN="${GH_TOKEN_VALUE}" gh api "repos/${GITHUB_REPO}/git/tags/${ta
 fi
 
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-GH_TOKEN="${GH_TOKEN_VALUE}" gh workflow run "${WORKFLOW}" --repo "${GITHUB_REPO}" --ref main \
+# Keep the workflow definition and the checked-out source on the same immutable release tag.
+GH_TOKEN="${GH_TOKEN_VALUE}" gh workflow run "${WORKFLOW}" --repo "${GITHUB_REPO}" --ref "${TAG}" \
   -f source_ref="${TAG}" -f channel="${CHANNEL}" -f expected_version="${VERSION}"
 run_id=""
 for _ in $(seq 1 60); do
   run_id="$(GH_TOKEN="${GH_TOKEN_VALUE}" gh run list --repo "${GITHUB_REPO}" --workflow "${WORKFLOW}" --event workflow_dispatch --limit 30 \
-    --json databaseId,displayTitle,createdAt --jq ".[] | select(.displayTitle == \"CLI ${CHANNEL} ${TAG}\" and .createdAt >= \"${started_at}\") | .databaseId" | head -n1)"
+    --json databaseId,displayTitle,createdAt,headSha --jq ".[] | select(.displayTitle == \"CLI ${CHANNEL} ${TAG}\" and .headSha == \"${tag_commit}\" and .createdAt >= \"${started_at}\") | .databaseId" | head -n1)"
   [[ -n "${run_id}" ]] && break
   sleep 2
 done

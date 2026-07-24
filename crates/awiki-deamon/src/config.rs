@@ -88,15 +88,12 @@ pub enum IdentitySelectorConfig {
 
 impl DaemonConfig {
     pub fn default_product_state_root() -> Result<PathBuf> {
-        if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
-            return normalize_state_root(
-                PathBuf::from(home)
-                    .join(".awiki-daemon")
-                    .join("deamon")
-                    .join("state"),
-            );
-        }
-        normalize_state_root(PathBuf::from(".awiki-daemon").join("deamon").join("state"))
+        normalize_state_root(
+            awiki_user_dirs::home_dir()?
+                .join(".awiki-daemon")
+                .join("deamon")
+                .join("state"),
+        )
     }
 
     pub fn for_state_root(state_root: impl Into<PathBuf>) -> Result<Self> {
@@ -697,17 +694,14 @@ mod tests {
     fn default_product_state_root_uses_daemon_home_layout() {
         let root = DaemonConfig::default_product_state_root().unwrap();
 
-        if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
-            assert_eq!(
-                root,
-                PathBuf::from(home)
-                    .join(".awiki-daemon")
-                    .join("deamon")
-                    .join("state")
-            );
-        } else {
-            assert!(root.ends_with(Path::new(".awiki-daemon").join("deamon").join("state")));
-        }
+        assert_eq!(
+            root,
+            awiki_user_dirs::home_dir()
+                .unwrap()
+                .join(".awiki-daemon")
+                .join("deamon")
+                .join("state")
+        );
     }
 
     #[test]

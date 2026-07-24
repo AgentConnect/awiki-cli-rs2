@@ -50,42 +50,32 @@ pub fn inspect(resolved: &Resolved, _app_version: &str) -> Result<Inspection, In
 }
 
 pub fn resolve_paths(resolved: &Resolved) -> Paths {
-    let workspace_home_dir = if resolved.paths.workspace_home_dir.trim().is_empty() {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join(".awiki-cli"))
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    } else {
-        resolved.paths.workspace_home_dir.clone()
-    };
-    let upgrade_dir = Path::new(&workspace_home_dir).join("upgrade");
+    let workspace_home_dir = resolved.paths.workspace_home_dir.clone();
     Paths {
         config_file: resolved.paths.config_file.clone(),
-        legacy_config_file: Path::new(&resolved.paths.config_dir)
-            .join("config.json")
-            .to_string_lossy()
-            .into_owned(),
+        legacy_config_file: joined_path(&resolved.paths.config_dir, &["config.json"]),
         identity_dir: resolved.paths.identity_dir.clone(),
         database_file: resolved.paths.database_file.clone(),
         legacy_credentials_dir: resolved.paths.legacy_credentials_dir.clone(),
         legacy_data_dir: resolved.paths.legacy_data_dir.clone(),
-        legacy_settings_path: Path::new(&resolved.paths.legacy_data_dir)
-            .join("config")
-            .join("settings.json")
-            .to_string_lossy()
-            .into_owned(),
-        meta_path: upgrade_dir.join("meta.json").to_string_lossy().into_owned(),
-        journal_path: upgrade_dir
-            .join("upgrade_journal.json")
-            .to_string_lossy()
-            .into_owned(),
-        lock_path: upgrade_dir
-            .join("upgrade.lock")
-            .to_string_lossy()
-            .into_owned(),
-        backup_root: upgrade_dir.join("backups").to_string_lossy().into_owned(),
+        legacy_settings_path: joined_path(
+            &resolved.paths.legacy_data_dir,
+            &["config", "settings.json"],
+        ),
+        meta_path: joined_path(&workspace_home_dir, &["upgrade", "meta.json"]),
+        journal_path: joined_path(&workspace_home_dir, &["upgrade", "upgrade_journal.json"]),
+        lock_path: joined_path(&workspace_home_dir, &["upgrade", "upgrade.lock"]),
+        backup_root: joined_path(&workspace_home_dir, &["upgrade", "backups"]),
     }
+}
+
+fn joined_path(base: &str, children: &[&str]) -> String {
+    if base.trim().is_empty() {
+        return String::new();
+    }
+    let mut path = PathBuf::from(base);
+    path.extend(children);
+    path.to_string_lossy().into_owned()
 }
 
 pub fn detect(resolved: &Resolved, meta: Option<&Meta>) -> Detection {
@@ -104,8 +94,10 @@ pub fn detect(resolved: &Resolved, meta: Option<&Meta>) -> Detection {
     }
     detection.legacy_config_exists = super::fsutil::file_exists(&paths.legacy_config_file);
 
-    let identity_index_path = Path::new(&paths.identity_dir).join(identity::INDEX_FILE_NAME);
-    detection.identity_index_exists = identity_index_path.is_file();
+    detection.identity_index_exists = !paths.identity_dir.trim().is_empty()
+        && Path::new(&paths.identity_dir)
+            .join(identity::INDEX_FILE_NAME)
+            .is_file();
     if detection.identity_index_exists {
         let manager = Manager::new(resolved.paths.clone());
         match manager.load_index() {
@@ -158,4 +150,22 @@ pub fn detect(resolved: &Resolved, meta: Option<&Meta>) -> Detection {
     }
 
     detection
+}
+
+#[cfg(test)]
+mod tests {
+    use super::joined_path;
+
+    #[test]
+    fn empty_path_bases_never_create_working_directory_relative_paths() {
+        assert_eq!(joined_path("", &["upgrade", "meta.json"]), "");
+        assert_eq!(joined_path("  ", &["config.json"]), "");
+        let base = std::env::temp_dir().join("awiki-cli-profile");
+        let expected = base.join("upgrade").join("meta.json");
+        assert!(base.is_absolute());
+        assert_eq!(
+            joined_path(base.to_string_lossy().as_ref(), &["upgrade", "meta.json"]),
+            expected.to_string_lossy()
+        );
+    }
 }

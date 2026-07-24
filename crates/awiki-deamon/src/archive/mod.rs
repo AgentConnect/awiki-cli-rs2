@@ -252,7 +252,7 @@ fn finalize_daemon_archive_with_service_action(
     let archive_dir = daemon_archive_dir(config, archive_id);
     std::fs::create_dir_all(&archive_dir)
         .with_context(|| format!("create daemon archive {}", archive_dir.display()))?;
-    let service_uninstalled = if should_uninstall_product_service(config)? {
+    let service_uninstalled = if should_uninstall_product_service(config) {
         let executable = crate::service::default_executable_path()?;
         manage_service(config, &executable, service_action).is_ok()
     } else {
@@ -299,8 +299,13 @@ fn pending_daemon_archive_finalizer_path(config: &DaemonConfig) -> PathBuf {
         .join("daemon-archive-finalizer.json")
 }
 
-fn should_uninstall_product_service(config: &DaemonConfig) -> Result<bool> {
-    Ok(config.state_root == DaemonConfig::default_product_state_root()?)
+fn should_uninstall_product_service(config: &DaemonConfig) -> bool {
+    let default_root = DaemonConfig::default_product_state_root().ok();
+    state_root_owns_product_service(&config.state_root, default_root.as_deref())
+}
+
+fn state_root_owns_product_service(state_root: &Path, default_root: Option<&Path>) -> bool {
+    default_root.is_some_and(|default_root| state_root == default_root)
 }
 
 fn runtime_archive_dir(config: &DaemonConfig, archive_id: &str) -> PathBuf {
@@ -530,6 +535,21 @@ mod tests {
         assert!(report.state_root_moved);
         assert!(!report.service_uninstalled);
         assert!(report.archived_state_root.join("daemon.db").is_file());
+    }
+
+    #[test]
+    fn custom_state_root_never_owns_product_service_without_a_default_root() {
+        let custom_root = Path::new("/srv/awiki/custom-state");
+
+        assert!(!state_root_owns_product_service(custom_root, None));
+        assert!(!state_root_owns_product_service(
+            custom_root,
+            Some(Path::new("/home/alice/.awiki-daemon/deamon/state"))
+        ));
+        assert!(state_root_owns_product_service(
+            custom_root,
+            Some(custom_root)
+        ));
     }
 
     #[test]

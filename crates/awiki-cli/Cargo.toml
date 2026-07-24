@@ -11,6 +11,7 @@ name = "awiki-cli"
 path = "src/main.rs"
 
 [dependencies]
+awiki-user-dirs.workspace = true
 anyhow.workspace = true
 anp.workspace = true
 base64.workspace = true
