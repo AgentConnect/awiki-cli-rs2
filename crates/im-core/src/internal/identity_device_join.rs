@@ -1122,6 +1122,17 @@ pub(crate) fn mark_join_authorized(
             })?;
     if stored.phase == DeviceJoinLocalPhase::Authorized {
         validate_remote_authorization(&stored, authorization, resolved_document)?;
+        if side == DeviceJoinSide::Admin {
+            commit_admin_join_projection(
+                core,
+                stored
+                    .admin_identity
+                    .as_ref()
+                    .ok_or_else(|| invalid_state("admin identity missing"))?,
+                &authorization.checkpoint,
+                resolved_document,
+            )?;
+        }
         cleanup_consumed_join_secrets(core, &stored)?;
         return summary(&stored);
     }
@@ -1137,22 +1148,82 @@ pub(crate) fn mark_join_authorized(
     }
     validate_remote_authorization(&stored, authorization, resolved_document)?;
     if side == DeviceJoinSide::Admin {
-        let admin_identity = stored
-            .admin_identity
-            .as_ref()
-            .ok_or_else(|| invalid_state("admin identity missing"))?;
-        let client = core.client(admin_identity.clone())?;
-        let raw = serde_json::to_vec_pretty(resolved_document).map_err(|error| {
-            crate::ImError::Serialization {
-                detail: error.to_string(),
-            }
-        })?;
-        write_private_atomic(&client.runtime().did_document_path, &raw)?;
+        commit_admin_join_projection(
+            core,
+            stored
+                .admin_identity
+                .as_ref()
+                .ok_or_else(|| invalid_state("admin identity missing"))?,
+            &authorization.checkpoint,
+            resolved_document,
+        )?;
     }
     stored.phase = DeviceJoinLocalPhase::Authorized;
     store.save(&stored)?;
     cleanup_consumed_join_secrets(core, &stored)?;
     summary(&stored)
+}
+
+fn commit_admin_join_projection(
+    core: &crate::core::ImCore,
+    admin_identity: &crate::identity::IdentitySelector,
+    checkpoint: &crate::internal::identity_device_state::IdentityInternalCheckpoint,
+    resolved_document: &Value,
+) -> crate::ImResult<()> {
+    use crate::internal::identity_device_state::{
+        DeviceAuthorizationRole, DeviceAuthorizationStatus, IdentityDeviceMode,
+    };
+
+    if canonical_hash(resolved_document)? != checkpoint.document_hash {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let client = core.client(admin_identity.clone())?;
+    let local_alias = client
+        .current_identity()
+        .local_alias
+        .as_deref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let identity_store =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
+    let index = identity_store.load_index()?;
+    let entry = index
+        .credentials
+        .get(local_alias)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let mut state = entry
+        .device_state
+        .clone()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let local_authorization = state
+        .authorization
+        .as_ref()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if state.mode != IdentityDeviceMode::VNext
+        || local_authorization.status != DeviceAuthorizationStatus::Active
+        || local_authorization.role != DeviceAuthorizationRole::Admin
+        || !local_authorization.management_ready
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    if let Some(current) = state.checkpoint.as_ref() {
+        if checkpoint.document_version < current.document_version
+            || checkpoint.registry_version < current.registry_version
+            || (checkpoint.document_version == current.document_version
+                && checkpoint.document_hash != current.document_hash)
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    state.checkpoint = Some(checkpoint.clone());
+    state.validate_for_did(client.did())?;
+
+    let raw = serde_json::to_vec_pretty(resolved_document).map_err(|error| {
+        crate::ImError::Serialization {
+            detail: error.to_string(),
+        }
+    })?;
+    write_private_atomic(&client.runtime().did_document_path, &raw)?;
+    identity_store.save_device_state(local_alias, state)
 }
 
 pub(crate) fn load_pending_new_device_activation(

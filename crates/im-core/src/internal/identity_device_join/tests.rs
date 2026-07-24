@@ -292,3 +292,81 @@ fn local_admin_verification_progress_is_phase_gated_and_read_only() {
     assert_eq!(progress.sas.as_deref(), Some(verified.sas.as_str()));
     assert!(progress.authorized_device.is_none());
 }
+
+#[test]
+fn admin_join_projection_advances_checkpoint_and_is_repeat_safe() {
+    let root = tempfile::tempdir().unwrap();
+    let (core, document, did) = open_ready_admin_core(root.path());
+    let checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+        document_version: 8,
+        document_hash: canonical_hash(&document).unwrap(),
+        registry_version: 4,
+    };
+
+    commit_admin_join_projection(
+        &core,
+        &crate::identity::IdentitySelector::Default,
+        &checkpoint,
+        &document,
+    )
+    .unwrap();
+    commit_admin_join_projection(
+        &core,
+        &crate::identity::IdentitySelector::Default,
+        &checkpoint,
+        &document,
+    )
+    .unwrap();
+
+    let paths = test_paths(root.path());
+    let index = crate::internal::identity_store::IdentityStore::new(&paths.identities)
+        .load_index()
+        .unwrap();
+    let state = index
+        .credentials
+        .get("alice")
+        .unwrap()
+        .device_state
+        .as_ref()
+        .unwrap();
+    assert_eq!(state.checkpoint.as_ref(), Some(&checkpoint));
+    state.validate_for_did(&did).unwrap();
+}
+
+#[test]
+fn admin_join_projection_rejects_checkpoint_regression() {
+    let root = tempfile::tempdir().unwrap();
+    let (core, document, _) = open_ready_admin_core(root.path());
+    let regressed = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+        document_version: 6,
+        document_hash: canonical_hash(&document).unwrap(),
+        registry_version: 2,
+    };
+
+    assert!(matches!(
+        commit_admin_join_projection(
+            &core,
+            &crate::identity::IdentitySelector::Default,
+            &regressed,
+            &document,
+        ),
+        Err(crate::ImError::PermissionDenied)
+    ));
+
+    let paths = test_paths(root.path());
+    let index = crate::internal::identity_store::IdentityStore::new(&paths.identities)
+        .load_index()
+        .unwrap();
+    let checkpoint = index
+        .credentials
+        .get("alice")
+        .unwrap()
+        .device_state
+        .as_ref()
+        .unwrap()
+        .checkpoint
+        .as_ref()
+        .unwrap();
+    assert_eq!(checkpoint.document_version, 7);
+    assert_eq!(checkpoint.registry_version, 3);
+}
