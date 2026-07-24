@@ -161,6 +161,45 @@ test('requires structured release metadata', () => {
   }
 });
 
+test('builds strict platform-specific curl arguments', () => {
+  const url = 'https://downloads.example/awiki-cli.zip';
+  const destination = 'awiki-cli.zip';
+  const windowsArgs = _internal.buildCurlArgs(url, destination, 'win32');
+
+  assert.ok(windowsArgs.includes('--ssl-no-revoke'));
+  assert.ok(!windowsArgs.includes('--ssl-revoke-best-effort'));
+  assert.ok(!windowsArgs.includes('--insecure'));
+  assert.ok(!windowsArgs.includes('-k'));
+  assert.ok(!windowsArgs.includes('--proxy-insecure'));
+  assert.deepEqual(windowsArgs.slice(-3), ['--output', destination, url]);
+
+  for (const platform of ['darwin', 'linux']) {
+    const args = _internal.buildCurlArgs(url, destination, platform);
+    assert.ok(!args.includes('--ssl-no-revoke'));
+    assert.ok(!args.includes('--ssl-revoke-best-effort'));
+    assert.deepEqual(args.slice(-3), ['--output', destination, url]);
+  }
+});
+
+test('allows HTTPS and local HTTP downloads while rejecting remote HTTP', () => {
+  assert.doesNotThrow(() => _internal.buildCurlArgs(
+    'https://downloads.example/awiki-cli.zip',
+    'awiki-cli.zip',
+  ));
+  assert.doesNotThrow(() => _internal.buildCurlArgs(
+    'http://127.0.0.1:8080/awiki-cli.zip',
+    'awiki-cli.zip',
+  ));
+  assert.doesNotThrow(() => _internal.buildCurlArgs(
+    'http://localhost/awiki-cli.zip',
+    'awiki-cli.zip',
+  ));
+  assert.throws(
+    () => _internal.buildCurlArgs('http://downloads.example/awiki-cli.zip', 'awiki-cli.zip'),
+    /must use HTTPS/,
+  );
+});
+
 test('downloads an artifact, verifies SHA-256, and rejects a mismatched digest', async t => {
   if (process.platform === 'win32') {
     t.skip('the portable installer test uses a POSIX tar archive');

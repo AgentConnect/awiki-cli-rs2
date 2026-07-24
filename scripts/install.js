@@ -118,14 +118,23 @@ function runCommand(command, args, options = {}) {
   });
 }
 
-async function download(url, destination) {
+function buildCurlArgs(url, destination, platform = process.platform) {
   if (!/^https:\/\//i.test(url) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//i.test(url)) {
     throw new Error(`Release artifact URL must use HTTPS: ${url}`);
   }
-  const curl = process.env.AWIKI_CLI_CURL || 'curl';
   const args = ['--fail', '--location', '--silent', '--show-error', '--connect-timeout', '10', '--max-time', '180'];
-  if (process.platform === 'win32') args.push('--ssl-revoke-best-effort');
+
+  // Schannel revocation lookups can bypass curl's proxy and block before the
+  // HTTP request. CA, hostname, and validity checks remain enabled, and the
+  // downloaded archive is checked against the digest shipped in this package.
+  if (platform === 'win32') args.push('--ssl-no-revoke');
   args.push('--output', destination, url);
+  return args;
+}
+
+async function download(url, destination) {
+  const curl = process.env.AWIKI_CLI_CURL || 'curl';
+  const args = buildCurlArgs(url, destination);
   await runCommand(curl, args);
 }
 
@@ -235,6 +244,7 @@ if (require.main === module) {
 module.exports = {
   _internal: {
     artifactCandidates,
+    buildCurlArgs,
     detectHostArchitecture,
     mapHost,
     normalizeArchitecture,
