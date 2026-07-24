@@ -1668,6 +1668,7 @@ fn normalize_group_snapshot(raw: &Value) -> Option<Value> {
             "member_count": raw.get("member_count").cloned().unwrap_or(Value::Null),
             "group_profile": profile,
             "group_policy": raw.get("group_policy").cloned().unwrap_or(Value::Null),
+            "e2ee_maintenance": raw.get("e2ee_maintenance").cloned().unwrap_or(Value::Null),
             "created_at": raw.get("created_at").cloned().unwrap_or(Value::Null),
             "updated_at": raw.get("updated_at").cloned().unwrap_or(Value::Null),
         }));
@@ -1855,7 +1856,7 @@ mod group_message_projection_tests {
 
     use super::{
         im_error_to_message_error, is_attachment_manifest_payload,
-        required_group_member_page_binding,
+        normalize_group_snapshot, required_group_member_page_binding,
     };
     use crate::m_core_cli_adapter::message_result::{MessageAdapterError, ServiceError};
 
@@ -1895,6 +1896,23 @@ mod group_message_projection_tests {
                 ))
             );
         }
+    }
+
+    #[test]
+    fn group_snapshot_preserves_host_revocation_maintenance_projection() {
+        let maintenance = json!({
+            "reason": "device_revocation_pending",
+            "send_paused": true,
+        });
+        let snapshot = normalize_group_snapshot(&json!({
+            "group_did": "did:example:group",
+            "group_state_version": "41",
+            "group_profile": {"display_name": "Step 4"},
+            "e2ee_maintenance": maintenance,
+        }))
+        .expect("group snapshot");
+
+        assert_eq!(snapshot["e2ee_maintenance"], maintenance);
     }
 
     #[test]
