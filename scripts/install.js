@@ -15,18 +15,40 @@ const HOST_ARTIFACT_CANDIDATES = Object.freeze({
   'windows-arm64': ['windows-arm64', 'windows-amd64'],
 });
 
-function mapHost(
-  platform = process.platform,
-  machine = typeof os.machine === 'function' ? os.machine() : process.arch,
-) {
+function normalizeArchitecture(machine) {
   const normalizedMachine = String(machine).trim().toLowerCase();
-  const osName = platform === 'darwin' ? 'darwin' : platform === 'linux' ? 'linux' : platform === 'win32' ? 'windows' : '';
-  const archName = ['x64', 'x86_64', 'amd64'].includes(normalizedMachine)
+  return ['x64', 'x86_64', 'amd64'].includes(normalizedMachine)
     ? 'amd64'
     : ['arm64', 'aarch64'].includes(normalizedMachine) ? 'arm64' : '';
+}
+
+function detectHostArchitecture(
+  machineReader = typeof os.machine === 'function' ? os.machine : null,
+  fallbackArchitecture = process.arch,
+) {
+  let machine = '';
+  if (typeof machineReader === 'function') {
+    try {
+      machine = machineReader();
+    } catch {
+      machine = '';
+    }
+  }
+
+  // Some Windows ARM64 Node/libuv versions report `unknown` from
+  // os.machine(). process.arch still identifies an executable architecture.
+  return normalizeArchitecture(machine) || normalizeArchitecture(fallbackArchitecture);
+}
+
+function mapHost(
+  platform = process.platform,
+  architecture = detectHostArchitecture(),
+) {
+  const osName = platform === 'darwin' ? 'darwin' : platform === 'linux' ? 'linux' : platform === 'win32' ? 'windows' : '';
+  const archName = normalizeArchitecture(architecture);
   const target = osName && archName ? `${osName}-${archName}` : '';
   if (!target || !Object.hasOwn(HOST_ARTIFACT_CANDIDATES, target)) {
-    throw new Error(`Unsupported platform: ${platform}/${machine}`);
+    throw new Error(`Unsupported platform: ${platform}/${architecture || 'unknown'}`);
   }
   return { osName, archName, hostTarget: target };
 }
@@ -213,7 +235,9 @@ if (require.main === module) {
 module.exports = {
   _internal: {
     artifactCandidates,
+    detectHostArchitecture,
     mapHost,
+    normalizeArchitecture,
     readReleaseMetadata,
     selectArtifactForHost,
     sha256File,

@@ -13,6 +13,40 @@ const { _internal } = require('./install.js');
 
 const execFileAsync = promisify(execFile);
 
+test('normalizes supported executable architectures', () => {
+  assert.equal(_internal.normalizeArchitecture('x64'), 'amd64');
+  assert.equal(_internal.normalizeArchitecture(' X86_64 '), 'amd64');
+  assert.equal(_internal.normalizeArchitecture('amd64'), 'amd64');
+  assert.equal(_internal.normalizeArchitecture('arm64'), 'arm64');
+  assert.equal(_internal.normalizeArchitecture('AARCH64'), 'arm64');
+  assert.equal(_internal.normalizeArchitecture('ia32'), '');
+  assert.equal(_internal.normalizeArchitecture('unknown'), '');
+});
+
+test('prefers a recognized machine architecture over the Node binary architecture', () => {
+  assert.equal(_internal.detectHostArchitecture(() => 'arm64', 'x64'), 'arm64');
+  assert.equal(_internal.detectHostArchitecture(() => 'x86_64', 'arm64'), 'amd64');
+});
+
+test('falls back to the Node binary architecture when machine detection is unavailable', () => {
+  assert.equal(_internal.detectHostArchitecture(() => 'unknown', 'arm64'), 'arm64');
+  assert.equal(_internal.detectHostArchitecture(() => '', 'x64'), 'amd64');
+  assert.equal(_internal.detectHostArchitecture(() => '   ', 'arm64'), 'arm64');
+  assert.equal(_internal.detectHostArchitecture(() => null, 'x64'), 'amd64');
+  assert.equal(_internal.detectHostArchitecture(() => undefined, 'arm64'), 'arm64');
+  assert.equal(_internal.detectHostArchitecture(() => 'riscv64', 'x64'), 'amd64');
+  assert.equal(_internal.detectHostArchitecture(null, 'arm64'), 'arm64');
+  assert.equal(_internal.detectHostArchitecture(() => {
+    throw new Error('machine detection unavailable');
+  }, 'x64'), 'amd64');
+});
+
+test('rejects architecture detection when neither source is supported', () => {
+  assert.equal(_internal.detectHostArchitecture(() => 'unknown', 'ia32'), '');
+  assert.equal(_internal.detectHostArchitecture(() => 'ia32', 'unknown'), '');
+  assert.throws(() => _internal.mapHost('win32', ''), /Unsupported platform: win32\/unknown/);
+});
+
 test('maps the host independently from available release artifacts', () => {
   assert.deepEqual(_internal.mapHost('darwin', 'arm64'), {
     osName: 'darwin', archName: 'arm64', hostTarget: 'darwin-arm64',
@@ -54,6 +88,20 @@ test('prefers a native Windows ARM64 artifact when release metadata provides one
 
 test('selects the real Windows x64 artifact as the ARM64 compatibility fallback', () => {
   const host = _internal.mapHost('win32', 'arm64');
+  const amd64 = { url: 'https://downloads.example/amd64.zip', sha256: 'b'.repeat(64) };
+
+  assert.deepEqual(_internal.selectArtifactForHost(host, {
+    'windows-amd64': amd64,
+  }), {
+    artifact: amd64,
+    artifactTarget: 'windows-amd64',
+    compatibilityFallback: true,
+  });
+});
+
+test('recovers an unknown Windows machine type and selects the x64 compatibility artifact', () => {
+  const architecture = _internal.detectHostArchitecture(() => 'unknown', 'arm64');
+  const host = _internal.mapHost('win32', architecture);
   const amd64 = { url: 'https://downloads.example/amd64.zip', sha256: 'b'.repeat(64) };
 
   assert.deepEqual(_internal.selectArtifactForHost(host, {
