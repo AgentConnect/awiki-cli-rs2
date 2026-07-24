@@ -298,6 +298,9 @@ pub(crate) async fn receive_root_envelope_candidate(
         || metadata.sender_did != client.did().as_str()
         || metadata.target.did != client.did().as_str()
         || metadata.sender_device_id == metadata.recipient_device_id
+        || !crate::internal::identity_root_transfer_runtime::is_root_key_transfer_message_id(
+            &metadata.message_id,
+        )
     {
         return Ok(RootInboundInterceptOutcome::NotRoot);
     }

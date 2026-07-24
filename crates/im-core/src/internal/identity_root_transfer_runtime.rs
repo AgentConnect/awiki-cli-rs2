@@ -25,6 +25,7 @@ const ROOT_TRANSFER_PREFLIGHT_DEADLINE_SECONDS: u64 = 10;
 const ROOT_TRANSFER_HANDLE_TTL_SECONDS: i64 = 60;
 const ROOT_TRANSFER_ENVELOPE_TTL_SECONDS: i64 = 600;
 const ROOT_KEY_ENVELOPE_V1: &str = "awiki.device.root-key-envelope.v1";
+pub(crate) const ROOT_KEY_TRANSFER_MESSAGE_ID_PREFIX: &str = "msg-root-key-";
 const ED25519_PKCS8_PREFIX: [u8; 16] = [
     0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
 ];
@@ -175,9 +176,8 @@ pub(crate) async fn prepare_root_key_transfer(
         return Err(root_error(RootTransferErrorCode::RecipientNotEligible));
     }
 
-    let message_id =
-        crate::ids::MessageId::parse(crate::internal::secure_direct::send::generate_message_id())
-            .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
+    let message_id = crate::ids::MessageId::parse(generate_root_key_transfer_message_id())
+        .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?;
     let recipient_device_id = request.recipient_device_id.as_str().to_owned();
 
     let preflight = tokio::time::timeout(
@@ -291,6 +291,20 @@ pub(crate) async fn prepare_root_key_transfer(
         expires_at: format_time(expires_at)
             .map_err(|_| root_error(RootTransferErrorCode::TemporarilyUnavailable))?,
     })
+}
+
+fn generate_root_key_transfer_message_id() -> String {
+    let generated = crate::internal::secure_direct::send::generate_message_id();
+    format!(
+        "{ROOT_KEY_TRANSFER_MESSAGE_ID_PREFIX}{}",
+        generated.strip_prefix("msg-").unwrap_or(generated.as_str())
+    )
+}
+
+pub(crate) fn is_root_key_transfer_message_id(message_id: &str) -> bool {
+    message_id
+        .strip_prefix(ROOT_KEY_TRANSFER_MESSAGE_ID_PREFIX)
+        .is_some_and(|suffix| !suffix.is_empty())
 }
 
 pub(crate) async fn confirm_and_send_root_key_transfer(
@@ -1118,5 +1132,16 @@ mod tests {
             assert_eq!(error.code, RootTransferErrorCode::RecipientNotEligible);
             assert!(!error.retryable);
         }
+    }
+
+    #[test]
+    fn root_key_transfer_message_ids_have_an_explicit_interceptor_namespace() {
+        let message_id = generate_root_key_transfer_message_id();
+
+        assert!(is_root_key_transfer_message_id(&message_id));
+        assert!(!is_root_key_transfer_message_id("msg-business-1"));
+        assert!(!is_root_key_transfer_message_id(
+            ROOT_KEY_TRANSFER_MESSAGE_ID_PREFIX
+        ));
     }
 }
