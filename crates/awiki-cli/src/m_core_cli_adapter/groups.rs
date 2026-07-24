@@ -1633,7 +1633,14 @@ fn normalize_group_snapshot(raw: &Value) -> Option<Value> {
         return None;
     }
     if let Some(snapshot) = raw.get("group_snapshot").filter(|value| value.is_object()) {
-        return Some(snapshot.clone());
+        let mut snapshot = snapshot.clone();
+        if let (Some(object), Some(maintenance)) = (
+            snapshot.as_object_mut(),
+            raw.get("e2ee_maintenance").filter(|value| value.is_object()),
+        ) {
+            object.insert("e2ee_maintenance".to_owned(), maintenance.clone());
+        }
+        return Some(snapshot);
     }
     let group_did = group_did_from_raw(raw);
     if group_did.trim().is_empty() {
@@ -1907,7 +1914,10 @@ mod group_message_projection_tests {
         let snapshot = normalize_group_snapshot(&json!({
             "group_did": "did:example:group",
             "group_state_version": "41",
-            "group_profile": {"display_name": "Step 4"},
+            "group_snapshot": {
+                "group_did": "did:example:group",
+                "group_profile": {"display_name": "Step 4"},
+            },
             "e2ee_maintenance": maintenance,
         }))
         .expect("group snapshot");
