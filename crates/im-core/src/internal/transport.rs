@@ -427,6 +427,19 @@ impl<'a> CoreHttpTransport<'a> {
             return Err(crate::ImError::AuthRequired);
         }
         let mut transport = Self::new_signature_only(client);
+        let config = client.core_inner().sdk_config();
+        let user_origin = config
+            .user_service_endpoint
+            .as_ref()
+            .unwrap_or(&config.service_base_url);
+        transport
+            .auth
+            .store_token(user_origin.as_str(), bearer_token);
+        if let Some(message_origin) = config.message_service_endpoint.as_ref() {
+            transport
+                .auth
+                .store_token(message_origin.as_str(), bearer_token);
+        }
         transport.jwt_token = Some(bearer_token.to_owned());
         transport.ephemeral_bearer = true;
         Ok(transport)
