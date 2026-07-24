@@ -1,3 +1,10 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartDeviceRevokeOutcomeCategory {
+    CancelledBeforeSubmit,
+    RejectedBeforeCommit,
+    OutcomeUnknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartImError {
     pub code: String,
@@ -7,6 +14,7 @@ pub struct DartImError {
     pub capability: Option<String>,
     pub service_code: Option<String>,
     pub service_data_json: Option<String>,
+    pub device_revoke_outcome_category: Option<DartDeviceRevokeOutcomeCategory>,
 }
 
 impl DartImError {
@@ -19,6 +27,7 @@ impl DartImError {
             capability: None,
             service_code: None,
             service_data_json: None,
+            device_revoke_outcome_category: None,
         }
     }
 
@@ -32,6 +41,7 @@ impl DartImError {
             capability: Some(capability),
             service_code: None,
             service_data_json: None,
+            device_revoke_outcome_category: None,
         }
     }
 
@@ -45,6 +55,7 @@ impl DartImError {
             capability: None,
             service_code: None,
             service_data_json: None,
+            device_revoke_outcome_category: None,
         }
     }
 
@@ -57,6 +68,7 @@ impl DartImError {
             capability: None,
             service_code: None,
             service_data_json: None,
+            device_revoke_outcome_category: None,
         }
     }
 }
@@ -91,6 +103,41 @@ impl From<im_core::ImError> for DartImError {
             }
             im_core::ImError::GroupNotFound { group } => {
                 Self::simple("group_not_found", format!("group not found: {group}"))
+            }
+            im_core::ImError::CursorInvalid => {
+                Self::group_inventory("group.local_cursor_invalid", false)
+            }
+            im_core::ImError::CursorStale => {
+                Self::group_inventory("group.local_cursor_stale", true)
+            }
+            im_core::ImError::InventoryIncomplete => {
+                Self::group_inventory("group.local_inventory_incomplete", true)
+            }
+            im_core::ImError::InventoryTooLarge => {
+                Self::group_inventory("group.local_inventory_too_large", false)
+            }
+            im_core::ImError::DeviceRevokeOutcome { category } => {
+                let category = match category {
+                    im_core::DeviceRevokeOutcomeCategory::CancelledBeforeSubmit => {
+                        DartDeviceRevokeOutcomeCategory::CancelledBeforeSubmit
+                    }
+                    im_core::DeviceRevokeOutcomeCategory::RejectedBeforeCommit => {
+                        DartDeviceRevokeOutcomeCategory::RejectedBeforeCommit
+                    }
+                    im_core::DeviceRevokeOutcomeCategory::OutcomeUnknown => {
+                        DartDeviceRevokeOutcomeCategory::OutcomeUnknown
+                    }
+                };
+                Self {
+                    code: "device_revoke_outcome".to_owned(),
+                    message: "device revoke did not return a confirmed result".to_owned(),
+                    field: None,
+                    status_code: None,
+                    capability: None,
+                    service_code: None,
+                    service_data_json: None,
+                    device_revoke_outcome_category: Some(category),
+                }
             }
             im_core::ImError::MessageNotFound { message_id } => Self::simple(
                 "message_not_found",
@@ -172,6 +219,7 @@ impl From<im_core::ImError> for DartImError {
                 capability: None,
                 service_code: code,
                 service_data_json: data.map(|value| value.to_string()),
+                device_revoke_outcome_category: None,
             },
             im_core::ImError::Serialization { detail } => Self::simple(
                 "serialization_error",
@@ -186,6 +234,19 @@ impl From<im_core::ImError> for DartImError {
 }
 
 impl DartImError {
+    fn group_inventory(service_code: &str, retryable: bool) -> Self {
+        Self {
+            code: "service_error".to_owned(),
+            message: "group member inventory request failed".to_owned(),
+            field: None,
+            status_code: None,
+            capability: None,
+            service_code: Some(service_code.to_owned()),
+            service_data_json: Some(format!(r#"{{"retryable":{retryable}}}"#)),
+            device_revoke_outcome_category: None,
+        }
+    }
+
     fn simple(code: &str, message: impl ToString) -> Self {
         Self {
             code: code.to_string(),
@@ -195,6 +256,7 @@ impl DartImError {
             capability: None,
             service_code: None,
             service_data_json: None,
+            device_revoke_outcome_category: None,
         }
     }
 }

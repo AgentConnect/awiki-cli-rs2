@@ -884,6 +884,46 @@ impl GroupService<'_> {
 
 普通群消息统一走 `client.messages().send(MessageTarget::Group)`。`groups().send_text()` 只是便利封装，不重复实现业务逻辑。
 
+Step 4 对当前 `GroupReadResult` 做兼容增量，不另建一套结果 hierarchy：
+
+```rust
+pub struct GroupListRequest {
+    pub limit: PageLimit,
+    pub cursor: Option<Cursor>,
+}
+
+pub struct GroupMembersRequest {
+    pub group: GroupRef,
+    pub limit: PageLimit,
+    pub cursor: Option<Cursor>,
+}
+
+pub struct GroupReadResult {
+    // 原有 group/groups/members/messages/total/source/warnings 保持
+    pub next_cursor: Option<Cursor>,
+    pub has_more: bool,
+    pub page_group: Option<GroupRef>,
+    pub group_state_version: Option<String>,
+}
+```
+
+`cursor` 是 opaque service cursor，只能原样传回同一方法和 scope。`page_group` 与
+`group_state_version` 只投影 `group.list_members` Host response；version 跨 Rust/Dart 保持
+canonical positive decimal string，不转换成整数。`messages: Page<Message>` 只承载 message
+history 的分页信息，不能承载 group/member page metadata。普通 list API 一次只返回一页，
+不会隐式抓取全部成员。CLI 的 `page_group` 以及兼容 `group` 字段都来自该 Host response；
+response 缺失该 binding 或与请求 Group 冲突时返回
+`group.local_inventory_incomplete`，不得用请求参数补写。
+
+MLS roster、P6 notice 和安全成员判断使用内部 bounded complete collector：固定单页 100，
+最多 10 页、1000 个 parsed item，并以群的权威 `max_members`（缺省 500、产品上限 500）
+继续约束 active members。collector 校验 raw/typed count、Group DID、version、cursor progress、
+显式 `status=active`、Message wire 中可解析且唯一的 `agent_did`、total 与最终页；
+version/cursor 的首尾空白不会被规范化接受。stale 最多重启三次，完整收齐前不修改 MLS。
+稳定错误闭集为
+`group.local_cursor_invalid`、`group.local_cursor_stale`、
+`group.local_inventory_incomplete`、`group.local_inventory_too_large`。
+
 Rust SDK 调用方创建群组时推荐使用 `GroupCreateRequest::new(name)`，再按需设置 `description`、`avatar_uri`、`discoverability` 等可选字段，避免后续新增可选字段时依赖完整 struct literal。群资料更新继续使用 `GroupProfilePatch::default()` 后按需填写字段；`avatar_uri` 对应 Group Host 权威的 `group_profile.avatar_uri`，`name` 仍只是 `group_profile.display_name` 的兼容输入。
 
 Handle recovery 后，host 通过现有 high-level `resume_rebind_recovery_async(limit)` 恢复 durable P4/P6 任务。该调用会先从完整 Handle 的 provider-domain HTTPS `/.well-known/handle/{local-part}` 读取公开 WNS 文档，再补建历史缺失的 P4 job；普通 `handle.lookup` RPC 不含权威 generation，不能替代该文档。只有以下条件全部满足时才补建：公开状态为 `active`、返回的完整 Handle 精确一致、WNS DID 等于当前签名 DID、`did:wba` domain 与 Handle provider 一致、`binding_generation` 是 canonical positive decimal string 且严格大于本地成员 generation、旧成员 DID 精确属于当前 `IdentityId` 的 previous DID history。缺字段、numeric/非 canonical generation、DID/domain mismatch、跨域同名 local-part 都 fail closed；不得推算 generation。
@@ -1055,6 +1095,23 @@ client.secure().group(group).repair()
 ```
 
 KeyPackage、prekey、MLS provider、ciphertext processing、direct session id、ratchet counter、raw attachment manifest 不进入默认 public API。
+
+`secure().group(group).status()` 会先读取 Host-authoritative
+`group.get.e2ee_maintenance`。`device_revocation_pending` gate 存在时：
+
+- active owner 且本机持有 active controller state：`NeedsRepair`；
+- 当前 identity 不是 active owner：`WaitingForMembershipUpdate`；
+- 本机没有 controller state：`MissingLocalState`。
+
+三种状态都固定 `can_send_secure=false`。该 status 调用不抓完整 roster、不 resolve member
+Manifest、不生成 Commit，也不写 MLS WAL；Host projection 读取失败或字段畸形时 fail closed
+为 unavailable，不能因本地 tree 看似 ready 而返回 `Ready`。低敏 projection 只接受
+`reason` 与 `send_paused` 两个字段；出现 target、count 或其他额外字段同样按畸形处理。
+
+永久设备撤销的成功结果仍只有 DID、target device ID 和 `Revoked`。异常边界额外提供闭集
+`DeviceRevokeOutcomeCategory::{CancelledBeforeSubmit, RejectedBeforeCommit, OutcomeUnknown}`；
+调用方不得靠错误 message 文本判断是否可以重试。成功只表示 User Registry/DID Document 与
+本地 Identity state 已收敛，不表示所有 Group MLS 已完成。
 
 ## 15. system_notifications：V1 control-plane projection
 

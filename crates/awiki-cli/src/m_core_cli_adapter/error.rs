@@ -77,6 +77,51 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: group not found: {group}"),
             "Check the group DID or id.",
         ),
+        im_core::ImError::CursorInvalid => ExitError::new(
+            "invalid_argument",
+            2,
+            format!("{context}: group page cursor is invalid."),
+            "Use the opaque cursor returned by the previous page.",
+        ),
+        im_core::ImError::CursorStale | im_core::ImError::InventoryIncomplete => {
+            let mut mapped = ExitError::new(
+                "temporarily_unavailable",
+                5,
+                format!("{context}: the group member inventory changed or is incomplete."),
+                "Retry the operation from the first page.",
+            );
+            mapped.detail.retryable = true;
+            mapped
+        }
+        im_core::ImError::InventoryTooLarge => ExitError::new(
+            "resource_limit",
+            5,
+            format!("{context}: the group member inventory exceeds its allowed limit."),
+            "Check the authoritative group member policy before retrying.",
+        ),
+        im_core::ImError::DeviceRevokeOutcome { category } => {
+            let (code, exit, message, hint) = match category {
+                im_core::DeviceRevokeOutcomeCategory::CancelledBeforeSubmit => (
+                    "cancelled_before_submit",
+                    2,
+                    "device revoke was cancelled before submission.",
+                    "Confirm user presence before retrying.",
+                ),
+                im_core::DeviceRevokeOutcomeCategory::RejectedBeforeCommit => (
+                    "rejected_before_commit",
+                    4,
+                    "device revoke was rejected before commit.",
+                    "Refresh the device Registry and review the target before retrying.",
+                ),
+                im_core::DeviceRevokeOutcomeCategory::OutcomeUnknown => (
+                    "outcome_unknown",
+                    5,
+                    "device revoke outcome is unknown.",
+                    "Refresh the authoritative device Registry before deciding whether to retry.",
+                ),
+            };
+            ExitError::new(code, exit, format!("{context}: {message}"), hint)
+        }
         im_core::ImError::MessageNotFound { message_id } => ExitError::new(
             "not_found",
             5,
@@ -181,6 +226,38 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             "Check identity file permissions.",
         ),
         im_core::ImError::Service {
+            code: Some(code), ..
+        } if code == "group.local_cursor_invalid" => {
+            service_group_page_error(
+                context,
+                "invalid_argument",
+                2,
+                &code,
+                "The group page cursor is invalid.",
+            )
+        }
+        im_core::ImError::Service {
+            code: Some(code), ..
+        } if matches!(
+            code.as_str(),
+            "group.local_cursor_stale" | "group.local_inventory_incomplete"
+        ) => service_group_page_error(
+            context,
+            "temporarily_unavailable",
+            5,
+            &code,
+            "Retry the operation from the first page.",
+        ),
+        im_core::ImError::Service {
+            code: Some(code), ..
+        } if code == "group.local_inventory_too_large" => service_group_page_error(
+            context,
+            "resource_limit",
+            5,
+            &code,
+            "The authoritative group inventory exceeds its allowed limit.",
+        ),
+        im_core::ImError::Service {
             status_code: Some(401),
             ..
         } => ExitError::new(
@@ -240,6 +317,27 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             "Report this issue with the command output.",
         ),
     }
+}
+
+fn service_group_page_error(
+    context: &'static str,
+    category: &'static str,
+    exit_code: i32,
+    service_code: &str,
+    hint: &'static str,
+) -> ExitError {
+    let mut mapped = ExitError::new(
+        category,
+        exit_code,
+        format!("{context}: remote group inventory request failed."),
+        hint,
+    );
+    mapped.detail.details = serde_json::json!({"service_code": service_code});
+    mapped.detail.retryable = matches!(
+        service_code,
+        "group.local_cursor_stale" | "group.local_inventory_incomplete"
+    );
+    mapped
 }
 
 pub(crate) fn is_public_service_code(code: &str) -> bool {

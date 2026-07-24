@@ -3,6 +3,7 @@
 pub(crate) mod fake_provider;
 pub(crate) mod incoming;
 pub(crate) mod lifecycle;
+pub(crate) mod member_collector;
 pub(crate) mod native_provider;
 pub(crate) mod notices;
 pub(crate) mod provider;

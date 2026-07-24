@@ -169,6 +169,7 @@ where
         let group_list_params = crate::internal::wire::group::build_group_list_rpc_params(
             self.client.did().as_str(),
             limit,
+            None,
         );
         let group_list_raw = self.transport.authenticated_rpc(
             MESSAGE_RPC_ENDPOINT,
@@ -470,6 +471,7 @@ where
         let group_list_params = crate::internal::wire::group::build_group_list_rpc_params(
             self.client.did().as_str(),
             limit,
+            None,
         );
         let group_list_raw = self
             .transport

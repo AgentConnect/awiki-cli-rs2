@@ -56,6 +56,8 @@ where
         warnings: vec![
             "Revocation protects future access; it cannot erase data already obtained by the device."
                 .to_owned(),
+            "Affected encrypted groups converge independently; group sending may remain paused until an owner device repairs each group."
+                .to_owned(),
         ],
     })
 }

@@ -1106,6 +1106,7 @@ async fn process_agent_group_inbox_once(
         .groups()
         .list_async(im_core::groups::GroupListRequest {
             limit: im_core::ids::PageLimit::new(50)?,
+            cursor: None,
         })
         .await
         .with_context(|| format!("list groups for agent {agent_did}"))?;

@@ -153,6 +153,10 @@ class DartGroupReadResult {
   final List<DartGroupMember> members;
   final DartMessagePage messages;
   final int? total;
+  final String? nextCursor;
+  final bool hasMore;
+  final String? pageGroupDid;
+  final String? groupStateVersion;
   final String? source;
   final List<String> warnings;
 
@@ -162,6 +166,10 @@ class DartGroupReadResult {
     required this.members,
     required this.messages,
     this.total,
+    this.nextCursor,
+    required this.hasMore,
+    this.pageGroupDid,
+    this.groupStateVersion,
     this.source,
     required this.warnings,
   });
@@ -173,6 +181,10 @@ class DartGroupReadResult {
       members.hashCode ^
       messages.hashCode ^
       total.hashCode ^
+      nextCursor.hashCode ^
+      hasMore.hashCode ^
+      pageGroupDid.hashCode ^
+      groupStateVersion.hashCode ^
       source.hashCode ^
       warnings.hashCode;
 
@@ -186,6 +198,10 @@ class DartGroupReadResult {
           members == other.members &&
           messages == other.messages &&
           total == other.total &&
+          nextCursor == other.nextCursor &&
+          hasMore == other.hasMore &&
+          pageGroupDid == other.pageGroupDid &&
+          groupStateVersion == other.groupStateVersion &&
           source == other.source &&
           warnings == other.warnings;
 }

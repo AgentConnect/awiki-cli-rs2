@@ -231,6 +231,19 @@ impl GroupSecureConversation<'_> {
         #[cfg(all(feature = "group-e2ee", feature = "blocking"))]
         {
             if self.client.core_inner().group_e2ee_v2_enabled() {
+                let authoritative =
+                    match crate::internal::group_runtime::read::GroupReadRuntime::new(
+                        self.client,
+                        crate::internal::auth::session::FileSessionProvider::new(self.client),
+                        crate::internal::transport::CoreHttpTransport::new(self.client),
+                    )
+                    .get_with_policy(self.group.clone())
+                    {
+                        Ok(authoritative) => authoritative,
+                        Err(err) => {
+                            return Ok(group_status_unavailable(self.group.clone(), err));
+                        }
+                    };
                 let runtime = match crate::internal::group_e2ee::v2_runtime::runtime_for_client(
                     self.client,
                 ) {
@@ -240,7 +253,9 @@ impl GroupSecureConversation<'_> {
                 let status =
                     crate::internal::group_e2ee::v2_status::GroupE2eeV2StatusRuntime::new(runtime)
                         .status(self.group.clone());
-                return match status {
+                return match status
+                    .and_then(|status| overlay_group_maintenance_status(status, &authoritative))
+                {
                     Ok(status) => Ok(status),
                     Err(err) if group_status_can_downgrade_error(&err) => {
                         Ok(group_status_unavailable(self.group.clone(), err))
@@ -314,6 +329,20 @@ impl GroupSecureConversation<'_> {
         #[cfg(feature = "group-e2ee")]
         {
             if self.client.core_inner().group_e2ee_v2_enabled() {
+                let authoritative =
+                    match crate::internal::group_runtime::read::GroupReadRuntime::new(
+                        self.client,
+                        crate::internal::auth::session::FileSessionProvider::new(self.client),
+                        crate::internal::transport::CoreHttpTransport::new(self.client),
+                    )
+                    .get_with_policy_async(self.group.clone())
+                    .await
+                    {
+                        Ok(authoritative) => authoritative,
+                        Err(err) => {
+                            return Ok(group_status_unavailable(self.group.clone(), err));
+                        }
+                    };
                 let runtime = match crate::internal::group_e2ee::v2_runtime::runtime_for_client(
                     self.client,
                 ) {
@@ -329,7 +358,9 @@ impl GroupSecureConversation<'_> {
                 .map_err(|err| crate::ImError::Internal {
                     message: format!("P6 v2 status worker failed: {err}"),
                 })?;
-                return match status {
+                return match status
+                    .and_then(|status| overlay_group_maintenance_status(status, &authoritative))
+                {
                     Ok(status) => Ok(status),
                     Err(err) if group_status_can_downgrade_error(&err) => {
                         Ok(group_status_unavailable(self.group.clone(), err))
@@ -540,6 +571,83 @@ fn group_status_unavailable(
 }
 
 #[cfg(feature = "group-e2ee")]
+fn overlay_group_maintenance_status(
+    mut status: super::GroupSecureStatus,
+    authoritative: &crate::groups::GroupReadResult,
+) -> crate::ImResult<super::GroupSecureStatus> {
+    let raw =
+        authoritative
+            .raw_response()
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "authoritative group.get omitted its response".to_owned(),
+            })?;
+    if raw.get("group_did").and_then(serde_json::Value::as_str) != Some(status.group.as_str()) {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "authoritative group.get returned a conflicting group".to_owned(),
+        });
+    }
+    let Some(maintenance) = raw.get("e2ee_maintenance") else {
+        return Ok(status);
+    };
+    let maintenance =
+        maintenance
+            .as_object()
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "authoritative group maintenance projection is malformed".to_owned(),
+            })?;
+    if maintenance.len() != 2
+        || !maintenance.contains_key("send_paused")
+        || !maintenance.contains_key("reason")
+        || maintenance
+            .get("send_paused")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || maintenance
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            != Some("device_revocation_pending")
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "authoritative group maintenance projection is unsupported".to_owned(),
+        });
+    }
+    let active_owner = authoritative.group.as_ref().is_some_and(|group| {
+        group.did == status.group
+            && group.membership_status.as_deref() == Some("active")
+            && group.my_role.as_deref() == Some("owner")
+    });
+    status.can_send_secure = false;
+    if !active_owner {
+        status.state = super::GroupSecureState::WaitingForMembershipUpdate;
+        status.problem = Some(super::SecureProblem {
+            code: super::SecureProblemCode::GroupStateUnavailable,
+            message: "group sending is paused for device revocation convergence".to_owned(),
+            retryable: true,
+        });
+    } else if status.local_readiness.has_active_membership && status.local_readiness.has_local_state
+    {
+        status.state = super::GroupSecureState::NeedsRepair;
+        status.problem = Some(super::SecureProblem {
+            code: super::SecureProblemCode::SessionNeedsRepair,
+            message: "group device membership requires repair before sending resumes".to_owned(),
+            retryable: true,
+        });
+    } else {
+        status.state = super::GroupSecureState::MissingLocalState;
+        status.problem = Some(super::SecureProblem {
+            code: super::SecureProblemCode::GroupStateUnavailable,
+            message: "this device does not hold the group controller state required for repair"
+                .to_owned(),
+            retryable: true,
+        });
+    }
+    status
+        .warnings
+        .push("group sending is paused until device revocation convergence completes".to_owned());
+    Ok(status)
+}
+
+#[cfg(feature = "group-e2ee")]
 fn group_status_can_downgrade_error(err: &crate::ImError) -> bool {
     matches!(
         err,
@@ -551,6 +659,10 @@ fn group_status_can_downgrade_error(err: &crate::ImError) -> bool {
             | crate::ImError::SessionExpired
             | crate::ImError::TransportUnavailable { .. }
             | crate::ImError::LocalStateUnavailable { .. }
+            | crate::ImError::CursorInvalid
+            | crate::ImError::CursorStale
+            | crate::ImError::InventoryIncomplete
+            | crate::ImError::InventoryTooLarge
             | crate::ImError::PathUnavailable { .. }
             | crate::ImError::CredentialFileUnreadable { .. }
     )
@@ -787,4 +899,101 @@ fn outbox_result_from_record(
         delivery: None,
         warnings: Vec::new(),
     })
+}
+
+#[cfg(all(test, feature = "group-e2ee"))]
+mod step4_tests {
+    use super::*;
+
+    fn local_status(
+        has_active_membership: bool,
+        has_local_state: bool,
+    ) -> crate::secure::GroupSecureStatus {
+        crate::secure::GroupSecureStatus {
+            group: crate::ids::GroupRef::parse("did:example:group").unwrap(),
+            state: crate::secure::GroupSecureState::Ready,
+            can_send_secure: true,
+            local_readiness: crate::secure::GroupSecureLocalReadiness {
+                has_local_state,
+                has_active_membership,
+            },
+            pending_work: Default::default(),
+            problem: None,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn authoritative(role: &str) -> crate::groups::GroupReadResult {
+        crate::groups::GroupReadResult::from_raw_response(
+            serde_json::json!({
+                "group_did": "did:example:group",
+                "group": {
+                    "group_did": "did:example:group",
+                    "my_role": role,
+                    "membership_status": "active"
+                },
+                "e2ee_maintenance": {
+                    "send_paused": true,
+                    "reason": "device_revocation_pending"
+                }
+            }),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn maintenance_gate_never_reports_ready() {
+        let owner =
+            overlay_group_maintenance_status(local_status(true, true), &authoritative("owner"))
+                .unwrap();
+        assert_eq!(owner.state, crate::secure::GroupSecureState::NeedsRepair);
+        assert!(!owner.can_send_secure);
+
+        let member =
+            overlay_group_maintenance_status(local_status(true, true), &authoritative("member"))
+                .unwrap();
+        assert_eq!(
+            member.state,
+            crate::secure::GroupSecureState::WaitingForMembershipUpdate
+        );
+
+        let missing =
+            overlay_group_maintenance_status(local_status(false, false), &authoritative("owner"))
+                .unwrap();
+        assert_eq!(
+            missing.state,
+            crate::secure::GroupSecureState::MissingLocalState
+        );
+
+        let owner_without_controller =
+            overlay_group_maintenance_status(local_status(true, false), &authoritative("owner"))
+                .unwrap();
+        assert_eq!(
+            owner_without_controller.state,
+            crate::secure::GroupSecureState::MissingLocalState
+        );
+    }
+
+    #[test]
+    fn maintenance_gate_rejects_nonminimal_projection() {
+        let authoritative = crate::groups::GroupReadResult::from_raw_response(
+            serde_json::json!({
+                "group_did": "did:example:group",
+                "group": {
+                    "group_did": "did:example:group",
+                    "my_role": "owner",
+                    "membership_status": "active"
+                },
+                "e2ee_maintenance": {
+                    "send_paused": true,
+                    "reason": "device_revocation_pending",
+                    "target_device_id": "must-not-be-projected"
+                }
+            }),
+            Vec::new(),
+        );
+        assert!(
+            overlay_group_maintenance_status(local_status(true, true), &authoritative).is_err()
+        );
+    }
 }

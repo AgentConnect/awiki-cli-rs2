@@ -21,6 +21,14 @@ fn legacy_group_state_ref_converts_without_internal_versions() {
 }
 
 #[test]
+fn fresh_roster_revision_comparison_rejects_padding() {
+    let canonical = serde_json::json!({"group_state_version": "41"});
+    let padded = serde_json::json!({"group_state_version": " 41 "});
+    assert!(group_state_version_matches(Some(&canonical), "41"));
+    assert!(!group_state_version_matches(Some(&padded), "41"));
+}
+
+#[test]
 fn create_requires_exact_p4_group_state_ref() {
     let missing = required_created_group_state_ref("did:example:group", None)
         .expect_err("P6 create must not synthesize a missing P4 state reference");
@@ -118,38 +126,6 @@ fn empty_eligible_manifest_set_can_drive_whole_roster_leaf_removal() {
 }
 
 #[test]
-fn exact_device_selector_does_not_match_a_sibling_leaf() {
-    let endpoints = vec![
-        endpoint("did:example:bob", "device-b1"),
-        endpoint("did:example:bob", "device-b2"),
-        endpoint("did:example:alice", "device-a1"),
-    ];
-    assert!(has_exact_endpoint(
-        &endpoints,
-        "did:example:bob",
-        "device-b1"
-    ));
-    assert!(!has_exact_endpoint(
-        &endpoints,
-        "did:example:bob",
-        "device-a1"
-    ));
-}
-
-#[test]
-fn exact_device_remove_skips_groups_without_active_local_mls_state() {
-    assert!(local_group_can_remove_exact_device(
-        &V2LocalGroupReadiness::Active
-    ));
-    assert!(!local_group_can_remove_exact_device(
-        &V2LocalGroupReadiness::Missing
-    ));
-    assert!(!local_group_can_remove_exact_device(
-        &V2LocalGroupReadiness::Inactive
-    ));
-}
-
-#[test]
 fn p4_owner_without_local_mls_state_skips_roster_repair() {
     assert!(local_group_can_reconcile_roster(
         &V2LocalGroupReadiness::Active
@@ -160,116 +136,6 @@ fn p4_owner_without_local_mls_state_skips_roster_repair() {
     assert!(!local_group_can_reconcile_roster(
         &V2LocalGroupReadiness::Inactive
     ));
-}
-
-#[test]
-fn revoke_inventory_calls_exact_remove_only_for_active_owned_groups() {
-    let listed = crate::groups::GroupReadResult::from_raw_response(
-        serde_json::json!({
-            "groups": [
-                {
-                    "group_did": "did:example:owned",
-                    "member_role": "owner",
-                    "member_status": "active"
-                },
-                {
-                    "group_did": "did:example:member",
-                    "member_role": "member",
-                    "member_status": "active"
-                },
-                {
-                    "group_did": "did:example:old-owned",
-                    "member_role": "owner",
-                    "member_status": "left"
-                }
-            ],
-            "total": 3
-        }),
-        Vec::new(),
-    );
-    let mut called = Vec::new();
-    let removed = reconcile_owned_group_device_removals(listed, |group| {
-        called.push(group.as_str().to_owned());
-        Ok(true)
-    })
-    .unwrap();
-    assert_eq!(called, vec!["did:example:owned"]);
-    assert_eq!(removed, 1);
-
-    let incomplete = crate::groups::GroupReadResult::from_raw_response(
-        serde_json::json!({
-            "groups": [{
-                "group_did": "did:example:owned",
-                "member_role": "owner",
-                "member_status": "active"
-            }],
-            "total": 2
-        }),
-        Vec::new(),
-    );
-    assert!(matches!(
-        reconcile_owned_group_device_removals(incomplete, |_| Ok(false)),
-        Err(crate::ImError::LocalStateUnavailable { .. })
-    ));
-}
-
-#[test]
-fn full_page_without_completeness_marker_never_drives_leaf_deletion() {
-    let groups = (0..100)
-        .map(|index| {
-            serde_json::json!({
-                "group_did": format!("did:example:owned-{index}"),
-                "member_role": "owner",
-                "member_status": "active"
-            })
-        })
-        .collect::<Vec<_>>();
-    let listed = crate::groups::GroupReadResult::from_raw_response(
-        serde_json::json!({ "groups": groups }),
-        Vec::new(),
-    );
-    let mut removal_calls = 0usize;
-
-    let error = reconcile_owned_group_device_removals(listed, |_| {
-        removal_calls += 1;
-        Ok(true)
-    })
-    .expect_err("an unmarked full page must not be treated as a complete inventory");
-
-    assert!(matches!(
-        error,
-        crate::ImError::LocalStateUnavailable { .. }
-    ));
-    assert_eq!(removal_calls, 0);
-}
-
-#[test]
-fn inventory_completeness_requires_consistent_has_more_or_total() {
-    let groups = (0..100)
-        .map(|index| serde_json::json!({ "group_did": format!("did:example:g-{index}") }))
-        .collect::<Vec<_>>();
-
-    let no_marker = serde_json::json!({ "groups": groups });
-    assert!(require_complete_inventory(&no_marker, "groups", 100, None, "incomplete").is_err());
-
-    let has_more = serde_json::json!({ "groups": no_marker["groups"], "has_more": true });
-    assert!(require_complete_inventory(&has_more, "groups", 100, None, "incomplete").is_err());
-
-    let final_page = serde_json::json!({
-        "groups": no_marker["groups"],
-        "has_more": false
-    });
-    assert!(require_complete_inventory(&final_page, "groups", 100, None, "incomplete").is_ok());
-
-    let matching_total = serde_json::json!({ "groups": no_marker["groups"], "total": 100 });
-    assert!(
-        require_complete_inventory(&matching_total, "groups", 100, Some(100), "incomplete").is_ok()
-    );
-
-    let larger_total = serde_json::json!({ "groups": no_marker["groups"], "total": 101 });
-    assert!(
-        require_complete_inventory(&larger_total, "groups", 100, Some(101), "incomplete").is_err()
-    );
 }
 
 #[test]

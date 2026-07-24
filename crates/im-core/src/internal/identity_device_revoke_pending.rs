@@ -20,6 +20,7 @@ use crate::internal::secret_vault::{SealSecretRequest, SecretVault};
 
 const SCHEMA_VERSION: u32 = 1;
 const KEY_VERSION: u32 = 1;
+const MAX_PENDING_REVOKES_PER_IDENTITY: usize = 100;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -245,6 +246,41 @@ impl PendingDeviceRevokeStore {
             return Err(crate::ImError::PermissionDenied);
         }
         Ok(secret_ref)
+    }
+
+    pub(crate) fn list_for_identity(
+        &self,
+        did: &crate::ids::Did,
+    ) -> crate::ImResult<Vec<(SecretRef, PendingDeviceRevoke)>> {
+        let mut references = self
+            .vault
+            .list()?
+            .into_iter()
+            .filter(|secret_ref| {
+                secret_ref.workspace_id == self.workspace_id
+                    && secret_ref.device_id == self.vault_context_device_id
+                    && secret_ref.kind == SecretKind::IdentityDeviceRevokePending
+                    && secret_ref.did.as_deref() == Some(did.as_str())
+            })
+            .collect::<Vec<_>>();
+        references.sort_by(|left, right| left.key_id.cmp(&right.key_id));
+        if references.len() > MAX_PENDING_REVOKES_PER_IDENTITY {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "too many pending device revoke records".to_owned(),
+            });
+        }
+        let mut records = Vec::with_capacity(references.len());
+        for secret_ref in references {
+            let plaintext = self.vault.open(&secret_ref)?;
+            let record: PendingDeviceRevoke = serde_json::from_slice(plaintext.expose_secret())
+                .map_err(|_| crate::ImError::PermissionDenied)?;
+            record.validate()?;
+            if record.did != *did {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            records.push((secret_ref, record));
+        }
+        Ok(records)
     }
 
     pub(crate) fn delete(&self, secret_ref: &SecretRef) -> crate::ImResult<()> {

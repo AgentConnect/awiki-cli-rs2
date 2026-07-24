@@ -1706,6 +1706,10 @@ impl From<im_core::groups::GroupReadResult> for DartGroupReadResult {
             members: value.members.into_iter().map(Into::into).collect(),
             messages: value.messages.into(),
             total: value.total,
+            next_cursor: value.next_cursor.map(|cursor| cursor.as_str().to_owned()),
+            has_more: value.has_more,
+            page_group_did: value.page_group.map(|group| group.as_str().to_owned()),
+            group_state_version: value.group_state_version,
             source: value.source,
             warnings: value.warnings,
         }

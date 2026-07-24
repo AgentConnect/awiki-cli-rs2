@@ -9,6 +9,47 @@ fn dart_error_unsupported_has_stable_code() {
 }
 
 #[test]
+fn dart_device_revoke_outcome_is_structured() {
+    let error =
+        awiki_im_core::dto::error::DartImError::from(im_core::ImError::DeviceRevokeOutcome {
+            category: im_core::DeviceRevokeOutcomeCategory::OutcomeUnknown,
+        });
+    assert_eq!(error.code, "device_revoke_outcome");
+    assert_eq!(
+        error.device_revoke_outcome_category,
+        Some(awiki_im_core::dto::error::DartDeviceRevokeOutcomeCategory::OutcomeUnknown)
+    );
+}
+
+#[test]
+fn dart_group_read_result_preserves_member_page_metadata_as_strings() {
+    let core: im_core::groups::GroupReadResult = serde_json::from_value(serde_json::json!({
+        "group": null,
+        "groups": [],
+        "members": [],
+        "resolved_member": null,
+        "messages": {"items":[],"next_cursor":null,"has_more":false},
+        "total": 0,
+        "next_cursor": "opaque-page-2",
+        "has_more": true,
+        "page_group": "did:example:group",
+        "group_state_version": "9007199254740993",
+        "source": null,
+        "warnings": []
+    }))
+    .unwrap();
+    let mapped = awiki_im_core::dto::group::DartGroupReadResult::from(core);
+    assert!(mapped.has_more);
+    assert_eq!(mapped.next_cursor.as_deref(), Some("opaque-page-2"));
+    assert_eq!(mapped.page_group_did.as_deref(), Some("did:example:group"));
+    assert_eq!(
+        mapped.group_state_version.as_deref(),
+        Some("9007199254740993")
+    );
+    assert!(mapped.messages.next_cursor.is_none());
+}
+
+#[test]
 fn root_key_transfer_result_mapping_exposes_delivery_metadata_only() {
     let mapped = awiki_im_core::dto::identity::DartRootKeyTransferSendResult::from(
         im_core::identity::RootKeyTransferSendResult {

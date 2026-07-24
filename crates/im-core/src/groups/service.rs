@@ -1942,32 +1942,41 @@ impl<'a> GroupService<'a> {
         group: crate::ids::GroupRef,
         requested: &super::GroupMemberResolution,
     ) -> crate::ImResult<Option<super::GroupMemberResolution>> {
-        let roster = self.members(super::GroupMembersRequest {
-            group,
-            limit: crate::ids::PageLimit(100),
-        })?;
-        let raw = roster
-            .raw_response()
-            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
-                detail: "authoritative P4 member roster omitted its response".to_owned(),
-            })?;
-        crate::internal::group_e2ee::v2_lifecycle::require_complete_inventory(
-            raw,
-            "members",
-            roster.members.len(),
-            roster.total,
-            "authoritative P4 member roster is incomplete",
-        )?;
-        Ok(roster
-            .members
-            .into_iter()
-            .find(|member| active_member_matches_resolution(member, requested))
-            .and_then(|member| {
-                member.did.map(|did| super::GroupMemberResolution {
-                    did,
-                    handle: member.handle.or_else(|| requested.handle.clone()),
-                })
-            }))
+        const MAX_ATTEMPTS: usize = 4;
+
+        for attempt in 0..MAX_ATTEMPTS {
+            let authoritative = self.get_authoritative_group(group.clone())?;
+            let raw = authoritative
+                .raw_response()
+                .ok_or(crate::ImError::InventoryIncomplete)?;
+            let max_members =
+                crate::internal::group_e2ee::member_collector::product_max_members(raw)?;
+            let expected_version = raw
+                .get("group_state_version")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(crate::ImError::InventoryIncomplete)?;
+            let roster =
+                match crate::internal::group_e2ee::member_collector::collect_complete_group_members(
+                    self.client,
+                    group.clone(),
+                    Some(expected_version),
+                    max_members,
+                ) {
+                    Err(crate::ImError::CursorStale) if attempt + 1 < MAX_ATTEMPTS => continue,
+                    result => result?,
+                };
+            return Ok(roster
+                .members
+                .into_iter()
+                .find(|member| active_member_matches_resolution(member, requested))
+                .and_then(|member| {
+                    member.did.map(|did| super::GroupMemberResolution {
+                        did,
+                        handle: member.handle.or_else(|| requested.handle.clone()),
+                    })
+                }));
+        }
+        Err(crate::ImError::CursorStale)
     }
 
     pub fn list(
@@ -2150,6 +2159,7 @@ impl<'a> GroupService<'a> {
         match self.members(super::GroupMembersRequest {
             group: group_ref,
             limit: crate::ids::PageLimit(100),
+            cursor: None,
         }) {
             Ok(members) => result.merge_group_members_from(&members),
             Err(err) => result.push_warning(format!("Failed to refresh group members: {err}")),
@@ -2202,6 +2212,7 @@ impl<'a> GroupService<'a> {
             .members_async(super::GroupMembersRequest {
                 group: group_ref,
                 limit: crate::ids::PageLimit(100),
+                cursor: None,
             })
             .await
         {

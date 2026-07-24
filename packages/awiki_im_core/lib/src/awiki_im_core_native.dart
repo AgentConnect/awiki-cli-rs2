@@ -64,8 +64,21 @@ Future<T> _mapNativeErrors<T>(Future<T> Function() action) async {
       capability: error.capability,
       serviceCode: error.serviceCode,
       serviceDataJson: error.serviceDataJson,
+      deviceRevokeOutcomeCategory:
+          error.deviceRevokeOutcomeCategory?._toModel(),
     );
   }
+}
+
+extension on gen_error.DartDeviceRevokeOutcomeCategory {
+  DeviceRevokeOutcomeCategory _toModel() => switch (this) {
+    gen_error.DartDeviceRevokeOutcomeCategory.cancelledBeforeSubmit =>
+      DeviceRevokeOutcomeCategory.cancelledBeforeSubmit,
+    gen_error.DartDeviceRevokeOutcomeCategory.rejectedBeforeCommit =>
+      DeviceRevokeOutcomeCategory.rejectedBeforeCommit,
+    gen_error.DartDeviceRevokeOutcomeCategory.outcomeUnknown =>
+      DeviceRevokeOutcomeCategory.outcomeUnknown,
+  };
 }
 
 class AwikiImCore {
@@ -1417,10 +1430,17 @@ class GroupApi {
     return result._toModel();
   }
 
-  Future<GroupReadResult> listGroups({required int limit}) async {
+  Future<GroupReadResult> listGroups({
+    required int limit,
+    String? cursor,
+  }) async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
-      () => gen_groups.listGroups(client: _client._inner, limit: limit),
+      () => gen_groups.listGroups(
+        client: _client._inner,
+        limit: limit,
+        cursor: cursor,
+      ),
     );
     return result._toModel();
   }
@@ -1428,6 +1448,7 @@ class GroupApi {
   Future<GroupReadResult> listMembers(
     String groupDid, {
     required int limit,
+    String? cursor,
   }) async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
@@ -1435,6 +1456,7 @@ class GroupApi {
         client: _client._inner,
         groupDid: groupDid,
         limit: limit,
+        cursor: cursor,
       ),
     );
     return result._toModel();
@@ -3244,6 +3266,10 @@ extension on gen_group_dto.DartGroupReadResult {
     members: members.map((member) => member._toModel()).toList(),
     messages: messages._toModel(),
     total: total,
+    nextCursor: nextCursor,
+    hasMore: hasMore,
+    pageGroupDid: pageGroupDid,
+    groupStateVersion: groupStateVersion,
     source: source,
     warnings: warnings,
   );

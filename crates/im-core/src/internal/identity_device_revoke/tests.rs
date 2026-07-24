@@ -288,7 +288,9 @@ async fn member_caller_self_revoke_and_last_ready_admin_are_rejected() {
         )
         .await
         .unwrap_err(),
-        crate::ImError::PermissionDenied
+        crate::ImError::DeviceRevokeOutcome {
+            category: crate::DeviceRevokeOutcomeCategory::RejectedBeforeCommit
+        }
     );
     assert_eq!(remote.registry_calls, 0);
     assert_eq!(resolver.calls, 0);
@@ -344,7 +346,9 @@ async fn expired_user_presence_fails_before_state_or_network_access() {
         )
         .await
         .unwrap_err(),
-        crate::ImError::SessionExpired
+        crate::ImError::DeviceRevokeOutcome {
+            category: crate::DeviceRevokeOutcomeCategory::RejectedBeforeCommit
+        }
     );
     assert_eq!(remote.registry_calls, 0);
     assert_eq!(resolver.calls, 0);
@@ -400,8 +404,8 @@ async fn response_loss_and_restart_reuse_operation_with_fresh_admin_proof() {
     .unwrap_err();
     assert_eq!(
         error,
-        crate::ImError::TransportUnavailable {
-            detail: "device revoke transport failed".to_owned()
+        crate::ImError::DeviceRevokeOutcome {
+            category: crate::DeviceRevokeOutcomeCategory::OutcomeUnknown
         }
     );
     assert!(first_store
@@ -506,11 +510,8 @@ async fn version_conflict_discards_stale_intent_and_redacts_server_data() {
 
     assert_eq!(
         error,
-        crate::ImError::Service {
-            status_code: Some(409),
-            code: Some("device.document_version_conflict".to_owned()),
-            message: "device revoke request failed".to_owned(),
-            data: None,
+        crate::ImError::DeviceRevokeOutcome {
+            category: crate::DeviceRevokeOutcomeCategory::RejectedBeforeCommit,
         }
     );
     let rendered = format!("{error:?} {error}");
@@ -559,13 +560,122 @@ async fn invalid_success_never_advances_local_state_and_keeps_exact_retry_intent
         )
         .await
         .unwrap_err(),
-        crate::ImError::PermissionDenied
+        crate::ImError::DeviceRevokeOutcome {
+            category: crate::DeviceRevokeOutcomeCategory::OutcomeUnknown
+        }
     );
     assert!(store
         .load(&scenario.did, TARGET_DEVICE_ID)
         .unwrap()
         .is_some());
     assert!(manifest_contains(
+        &scenario.local_document(),
+        TARGET_DEVICE_ID
+    ));
+}
+
+#[tokio::test]
+async fn registry_first_recovery_converges_identity_without_resubmitting_revoke() {
+    let scenario = scenario(
+        DeviceAuthorizationRole::Admin,
+        DeviceAuthorizationRole::Member,
+        false,
+    );
+    let core = scenario.open_core(true);
+    let client = core
+        .client(crate::identity::IdentitySelector::Default)
+        .unwrap();
+    let store = PendingDeviceRevokeStore::from_core(&core).unwrap();
+    let pending = prepare_initial_intent(
+        &client,
+        &scenario.target.device_id,
+        &scenario.authorizing.device_id,
+        &scenario.authorizing.signing_key_id,
+        scenario.registry.clone(),
+        scenario.document.clone(),
+    )
+    .unwrap();
+    store.save(&pending).unwrap();
+
+    let mut committed_registry = scenario.registry.clone();
+    committed_registry.checkpoint = pending.expected_result_checkpoint().unwrap();
+    let target = committed_registry
+        .devices
+        .iter_mut()
+        .find(|device| device.device_id == scenario.target.device_id)
+        .unwrap();
+    target.status = DeviceAuthorizationStatus::Revoked;
+    target.management_ready = false;
+    target.auth_generation += 1;
+    let mut resolver = MockResolver {
+        document: pending.new_document.clone(),
+        calls: 0,
+    };
+
+    let completed =
+        recover_pending_locked(&core, &client, &store, &committed_registry, &mut resolver)
+            .await
+            .unwrap();
+
+    assert_eq!(completed, 1);
+    assert_eq!(resolver.calls, 1);
+    assert!(store
+        .load(&scenario.did, TARGET_DEVICE_ID)
+        .unwrap()
+        .is_none());
+    assert!(!manifest_contains(
+        &scenario.local_document(),
+        TARGET_DEVICE_ID
+    ));
+}
+
+#[tokio::test]
+async fn committed_pending_recovery_is_identity_local() {
+    let scenario = scenario(
+        DeviceAuthorizationRole::Admin,
+        DeviceAuthorizationRole::Member,
+        false,
+    );
+    let core = scenario.open_core(true);
+    let client = core
+        .client(crate::identity::IdentitySelector::Default)
+        .unwrap();
+    let store = PendingDeviceRevokeStore::from_core(&core).unwrap();
+    let mut pending = prepare_initial_intent(
+        &client,
+        &scenario.target.device_id,
+        &scenario.authorizing.device_id,
+        &scenario.authorizing.signing_key_id,
+        scenario.registry.clone(),
+        scenario.document.clone(),
+    )
+    .unwrap();
+    pending.remote_result = Some(DeviceRevokeRemoteResult {
+        target_device_id: pending.target_device_id.clone(),
+        auth_generation: pending.target_auth_generation + 1,
+        checkpoint: pending.expected_result_checkpoint().unwrap(),
+    });
+    store.save(&pending).unwrap();
+    let mut remote = MockRemote::new(scenario.registry.clone(), []);
+    let mut resolver = MockResolver {
+        document: pending.new_document.clone(),
+        calls: 0,
+    };
+
+    let completed =
+        recover_pending_for_client_with_runtime(&core, &client, &store, &mut remote, &mut resolver)
+            .await
+            .unwrap();
+
+    assert_eq!(completed, 1);
+    assert_eq!(remote.registry_calls, 0);
+    assert!(remote.revoke_calls.is_empty());
+    assert_eq!(resolver.calls, 0);
+    assert!(store
+        .load(&scenario.did, TARGET_DEVICE_ID)
+        .unwrap()
+        .is_none());
+    assert!(!manifest_contains(
         &scenario.local_document(),
         TARGET_DEVICE_ID
     ));

@@ -11,15 +11,9 @@ use anp::group_e2ee::operations::v2::{V2DidDocument, V2ProcessNoticeInput, V2Pro
 use anp::group_e2ee::{V2E2eeNotice, V2GroupNoticeMetadata};
 use serde_json::{json, Value};
 
-use crate::internal::transport::{
-    AsyncAuthenticatedRpcTransport, AsyncRawJsonTransport, AuthenticatedRpcTransport,
-    RawJsonTransport,
-};
+use crate::internal::transport::{AsyncRawJsonTransport, RawJsonTransport};
 
 use super::v2_runtime::GroupE2eeV2Runtime;
-
-const MESSAGE_RPC_ENDPOINT: &str = "/im/rpc";
-const GROUP_MEMBER_RESOLUTION_LIMIT: i64 = 500;
 
 /// Returns true only for the standard P6 v2 notice profile and notice shape.
 ///
@@ -144,18 +138,25 @@ fn resolve_member_documents(
     notice: &V2E2eeNotice,
 ) -> crate::ImResult<Vec<V2DidDocument>> {
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-    let params = crate::internal::wire::group::build_group_members_rpc_params(
-        client.did().as_str(),
-        &notice.group_did,
-        GROUP_MEMBER_RESOLUTION_LIMIT,
+    let group = crate::ids::GroupRef::parse(&notice.group_did)?;
+    let authoritative = crate::internal::group_runtime::read::GroupReadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .get_with_policy(group.clone())?;
+    let max_members = super::member_collector::product_max_members(
+        authoritative
+            .raw_response()
+            .ok_or(crate::ImError::InventoryIncomplete)?,
     )?;
-    let raw = AuthenticatedRpcTransport::authenticated_rpc(
-        &mut transport,
-        MESSAGE_RPC_ENDPOINT,
-        "group.list_members",
-        params,
+    let roster = super::member_collector::collect_complete_group_members(
+        client,
+        group,
+        Some(&notice.group_state_ref.group_state_version),
+        max_members,
     )?;
-    let dids = collect_member_dids(client.did().as_str(), notice, &raw)?;
+    let dids = member_dids_from_complete_roster(client.did().as_str(), notice, roster.members)?;
     dids.into_iter()
         .map(|did| {
             resolve_did_document(client, &mut transport, &did)
@@ -169,19 +170,27 @@ async fn resolve_member_documents_async(
     notice: &V2E2eeNotice,
 ) -> crate::ImResult<Vec<V2DidDocument>> {
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
-    let params = crate::internal::wire::group::build_group_members_rpc_params(
-        client.did().as_str(),
-        &notice.group_did,
-        GROUP_MEMBER_RESOLUTION_LIMIT,
+    let group = crate::ids::GroupRef::parse(&notice.group_did)?;
+    let authoritative = crate::internal::group_runtime::read::GroupReadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .get_with_policy_async(group.clone())
+    .await?;
+    let max_members = super::member_collector::product_max_members(
+        authoritative
+            .raw_response()
+            .ok_or(crate::ImError::InventoryIncomplete)?,
     )?;
-    let raw = AsyncAuthenticatedRpcTransport::authenticated_rpc(
-        &mut transport,
-        MESSAGE_RPC_ENDPOINT,
-        "group.list_members",
-        params,
+    let roster = super::member_collector::collect_complete_group_members_async(
+        client,
+        group,
+        Some(&notice.group_state_ref.group_state_version),
+        max_members,
     )
     .await?;
-    let dids = collect_member_dids(client.did().as_str(), notice, &raw)?;
+    let dids = member_dids_from_complete_roster(client.did().as_str(), notice, roster.members)?;
     let mut documents = Vec::with_capacity(dids.len());
     for did in dids {
         let document = resolve_did_document_async(client, &mut transport, &did).await?;
@@ -190,58 +199,20 @@ async fn resolve_member_documents_async(
     Ok(documents)
 }
 
-fn collect_member_dids(
+fn member_dids_from_complete_roster(
     owner_did: &str,
     notice: &V2E2eeNotice,
-    raw: &Value,
+    members: Vec<crate::groups::GroupMember>,
 ) -> crate::ImResult<BTreeSet<String>> {
-    if raw
-        .get("group_did")
-        .and_then(Value::as_str)
-        .is_some_and(|group_did| group_did != notice.group_did)
-    {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    let members = raw
-        .get("members")
-        .and_then(Value::as_array)
-        .ok_or(crate::ImError::PermissionDenied)?;
-    if raw.get("has_more").and_then(Value::as_bool) == Some(true) {
-        return Err(crate::ImError::PermissionDenied);
-    }
-    if response_total(raw).is_some_and(|total| total > members.len() as u64) {
-        return Err(crate::ImError::PermissionDenied);
-    }
-
     let mut dids = BTreeSet::from([
         required_did(owner_did)?.to_owned(),
         required_did(&notice.subject_did)?.to_owned(),
     ]);
     for member in members {
-        let Some(member) = member.as_object() else {
-            return Err(crate::ImError::PermissionDenied);
-        };
-        let member_did = member
-            .get("member_did")
-            .or_else(|| member.get("did"))
-            .and_then(Value::as_str);
-        let credential_did = member
-            .get("member_credential_did")
-            .or_else(|| member.get("credential_did"))
-            .and_then(Value::as_str);
-        let fallback_agent_did = (member_did.is_none() && credential_did.is_none())
-            .then(|| member.get("agent_did").and_then(Value::as_str))
-            .flatten();
-        let mut found = false;
-        for did in [member_did, credential_did, fallback_agent_did]
-            .into_iter()
-            .flatten()
-        {
-            dids.insert(required_did(did)?.to_owned());
-            found = true;
-        }
-        if !found {
-            return Err(crate::ImError::PermissionDenied);
+        let did = member.did.ok_or(crate::ImError::InventoryIncomplete)?;
+        dids.insert(required_did(did.as_str())?.to_owned());
+        if let Some(credential_did) = member.credential_did {
+            dids.insert(required_did(credential_did.as_str())?.to_owned());
         }
     }
     Ok(dids)
@@ -323,14 +294,6 @@ fn required_did(value: &str) -> crate::ImResult<&str> {
     } else {
         Err(crate::ImError::PermissionDenied)
     }
-}
-
-fn response_total(raw: &Value) -> Option<u64> {
-    raw.get("total").and_then(|value| {
-        value
-            .as_u64()
-            .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
-    })
 }
 
 fn notice_meta_value(value: &Value) -> Option<&Value> {
@@ -480,26 +443,22 @@ mod tests {
     }
 
     #[test]
-    fn member_resolution_requires_complete_group_page_and_exact_anchor() {
+    fn member_resolution_uses_validated_typed_roster_and_exact_anchor() {
         let notice = test_notice();
-        let dids = collect_member_dids(
-            "did:example:alice",
-            &notice,
-            &json!({
-                "group_did": "did:example:group",
-                "members": [
-                    {"member_did": "did:example:alice"},
-                    {
-                        "member_did": "did:example:bob",
-                        "member_credential_did": "did:example:bob-credential",
-                        "agent_did": "did:example:auxiliary-agent"
-                    }
-                ],
-                "total": "2",
-                "has_more": false
-            }),
-        )
-        .unwrap();
+        let member = crate::groups::GroupMember {
+            membership_id: None,
+            peer_persona_id: None,
+            did: Some(crate::ids::Did::parse("did:example:bob").unwrap()),
+            credential_did: Some(crate::ids::Did::parse("did:example:bob-credential").unwrap()),
+            handle: None,
+            handle_binding_generation: None,
+            role: Some("member".to_owned()),
+            status: Some("active".to_owned()),
+            joined_at: None,
+            subject_type: Some("human".to_owned()),
+        };
+        let dids =
+            member_dids_from_complete_roster("did:example:alice", &notice, vec![member]).unwrap();
         assert_eq!(
             dids.into_iter().collect::<Vec<_>>(),
             vec![
@@ -509,22 +468,21 @@ mod tests {
             ]
         );
 
-        assert!(collect_member_dids(
+        assert!(member_dids_from_complete_roster(
             "did:example:alice",
             &notice,
-            &json!({"members": [], "total": 2})
-        )
-        .is_err());
-        assert!(collect_member_dids(
-            "did:example:alice",
-            &notice,
-            &json!({"group_did": "did:example:other", "members": []})
-        )
-        .is_err());
-        assert!(collect_member_dids(
-            "did:example:alice",
-            &notice,
-            &json!({"group_did": "did:example:group", "members": [{}]})
+            vec![crate::groups::GroupMember {
+                membership_id: None,
+                peer_persona_id: None,
+                did: None,
+                credential_did: None,
+                handle: None,
+                handle_binding_generation: None,
+                role: None,
+                status: None,
+                joined_at: None,
+                subject_type: None,
+            }]
         )
         .is_err());
     }

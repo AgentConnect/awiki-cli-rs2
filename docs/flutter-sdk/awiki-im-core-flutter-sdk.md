@@ -238,6 +238,13 @@ documents, proofs, tokens, and key material never enter the Dart API. Native
 Core rejects self-revocation and revoking the final ready management device;
 Flutter Web exposes the typed surface but keeps the operation unsupported.
 
+Failures expose `AwikiImCoreException.deviceRevokeOutcomeCategory` with the closed
+`DeviceRevokeOutcomeCategory.cancelledBeforeSubmit`, `rejectedBeforeCommit`, and
+`outcomeUnknown` values. Apps must refresh the authoritative device Registry after
+`outcomeUnknown`; they must not classify the outcome by matching `message`. A successful result
+does not claim every encrypted group has converged. Affected groups may remain send-paused until a
+current owner device explicitly repairs that group.
+
 ## Multi-device Direct E2EE rollout
 
 Native hosts select the exact-device P5 v2 Direct product path with
@@ -260,6 +267,37 @@ device-scoped P6 v2 state and return only redacted readiness and repair facts.
 `remainingDevices` for the selected group reconciliation.
 They never return raw KeyPackages, Welcome/Commit data, Leaf identifiers, MLS
 secrets, provider paths, or SQLite rows.
+
+Group inventory is explicitly paged:
+
+```dart
+final first = await client.groups.listGroups(limit: 100);
+final next = first.hasMore
+    ? await client.groups.listGroups(limit: 100, cursor: first.nextCursor)
+    : null;
+
+final firstMembers = await client.groups.listMembers(
+  groupDid,
+  limit: 100,
+);
+final moreMembers = await client.groups.listMembers(
+  groupDid,
+  limit: 100,
+  cursor: firstMembers.nextCursor,
+);
+```
+
+`GroupReadResult` exposes `nextCursor`, `hasMore`, `pageGroupDid`, and
+`groupStateVersion`. The cursor is opaque. `groupStateVersion` remains a canonical decimal
+`String`, not a Dart `int`; `pageGroupDid/groupStateVersion` come from the Host member-page
+response and must not be filled from request arguments. The Dart wrapper returns one page and does
+not automatically enumerate a whole roster.
+
+When the Host projects `device_revocation_pending`, group secure status is never `ready`:
+an active owner with local controller state receives `needsRepair`, a non-owner receives
+`waitingForMembershipUpdate`, and a device without controller state receives
+`missingLocalState`. These are read-only readiness facts. Status does not mutate MLS, and malformed
+or unavailable Host maintenance state fails closed to `unavailable`.
 
 ## Directory profile metadata
 

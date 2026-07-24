@@ -576,9 +576,11 @@ pub fn list_groups_via_im_core(
     resolved: &Resolved,
     client: &im_core::ImClient,
     limit: i64,
+    cursor: String,
 ) -> Result<CommandResult, MessageAdapterError> {
     let request = GroupListRequest {
         limit: page_limit(limit, 50)?,
+        cursor: optional_cursor(&cursor)?,
     };
     let result = client
         .groups()
@@ -591,6 +593,8 @@ pub fn list_groups_via_im_core(
         data: json!({
             "groups": groups,
             "total": total,
+            "has_more": result.has_more,
+            "next_cursor": result.next_cursor.as_ref().map(im_core::ids::Cursor::as_str),
             "source": group_read_source(&result, &raw),
         }),
         summary: format!("Loaded {total} groups"),
@@ -602,9 +606,11 @@ pub async fn list_groups_via_im_core_async(
     resolved: &Resolved,
     client: &im_core::ImClient,
     limit: i64,
+    cursor: String,
 ) -> Result<CommandResult, MessageAdapterError> {
     let request = GroupListRequest {
         limit: page_limit(limit, 50)?,
+        cursor: optional_cursor(&cursor)?,
     };
     let result = client
         .groups()
@@ -618,6 +624,8 @@ pub async fn list_groups_via_im_core_async(
         data: json!({
             "groups": groups,
             "total": total,
+            "has_more": result.has_more,
+            "next_cursor": result.next_cursor.as_ref().map(im_core::ids::Cursor::as_str),
             "source": group_read_source(&result, &raw),
         }),
         summary: format!("Loaded {total} groups"),
@@ -630,23 +638,32 @@ pub fn group_members_via_im_core(
     client: &im_core::ImClient,
     group: String,
     limit: i64,
+    cursor: String,
 ) -> Result<CommandResult, MessageAdapterError> {
+    let requested_group = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
     let request = GroupMembersRequest {
-        group: GroupRef::parse(&group).map_err(im_error_to_message_error)?,
+        group: requested_group.clone(),
         limit: page_limit(limit, 100)?,
+        cursor: optional_cursor(&cursor)?,
     };
     let result = client
         .groups()
         .members(request)
         .map_err(im_error_to_message_error)?;
+    let page_group =
+        required_group_member_page_binding(result.page_group.as_ref(), &requested_group)?;
     let raw = group_raw_response(&result);
     let members = group_members_to_cli_json(&result, &raw);
     let total = group_read_total(&result, members.len());
     Ok(CommandResult {
         data: json!({
-            "group": group,
+            "group": page_group,
+            "page_group": page_group,
             "members": members,
             "total": total,
+            "has_more": result.has_more,
+            "next_cursor": result.next_cursor.as_ref().map(im_core::ids::Cursor::as_str),
+            "group_state_version": result.group_state_version.as_deref(),
             "source": group_read_source(&result, &raw),
         }),
         summary: format!("Loaded {total} group members"),
@@ -659,24 +676,33 @@ pub async fn group_members_via_im_core_async(
     client: &im_core::ImClient,
     group: String,
     limit: i64,
+    cursor: String,
 ) -> Result<CommandResult, MessageAdapterError> {
+    let requested_group = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
     let request = GroupMembersRequest {
-        group: GroupRef::parse(&group).map_err(im_error_to_message_error)?,
+        group: requested_group.clone(),
         limit: page_limit(limit, 100)?,
+        cursor: optional_cursor(&cursor)?,
     };
     let result = client
         .groups()
         .members_async(request)
         .await
         .map_err(im_error_to_message_error)?;
+    let page_group =
+        required_group_member_page_binding(result.page_group.as_ref(), &requested_group)?;
     let raw = group_raw_response(&result);
     let members = group_members_to_cli_json(&result, &raw);
     let total = group_read_total(&result, members.len());
     Ok(CommandResult {
         data: json!({
-            "group": group,
+            "group": page_group,
+            "page_group": page_group,
             "members": members,
             "total": total,
+            "has_more": result.has_more,
+            "next_cursor": result.next_cursor.as_ref().map(im_core::ids::Cursor::as_str),
+            "group_state_version": result.group_state_version.as_deref(),
             "source": group_read_source(&result, &raw),
         }),
         summary: format!("Loaded {total} group members"),
@@ -1564,6 +1590,18 @@ fn optional_string(value: &str) -> Option<String> {
     }
 }
 
+fn required_group_member_page_binding<'a>(
+    page_group: Option<&'a GroupRef>,
+    requested_group: &GroupRef,
+) -> Result<&'a str, MessageAdapterError> {
+    match page_group {
+        Some(page_group) if page_group == requested_group => Ok(page_group.as_str()),
+        Some(_) | None => Err(MessageAdapterError::PublicServiceCode(
+            "group.local_inventory_incomplete".to_owned(),
+        )),
+    }
+}
+
 fn default_string(value: &str, fallback: &str) -> String {
     if value.trim().is_empty() {
         fallback.to_string()
@@ -1720,6 +1758,18 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
             MessageAdapterError::GroupRequired
         }
         im_core::ImError::GroupNotFound { .. } => MessageAdapterError::GroupRequired,
+        im_core::ImError::CursorInvalid => {
+            MessageAdapterError::PublicServiceCode("group.local_cursor_invalid".to_owned())
+        }
+        im_core::ImError::CursorStale => {
+            MessageAdapterError::PublicServiceCode("group.local_cursor_stale".to_owned())
+        }
+        im_core::ImError::InventoryIncomplete => {
+            MessageAdapterError::PublicServiceCode("group.local_inventory_incomplete".to_owned())
+        }
+        im_core::ImError::InventoryTooLarge => {
+            MessageAdapterError::PublicServiceCode("group.local_inventory_too_large".to_owned())
+        }
         im_core::ImError::UnsupportedCapability { capability } if capability == "group-e2ee" => {
             MessageAdapterError::GroupNotSupported
         }
@@ -1803,7 +1853,10 @@ fn group_e2ee_service_unsupported(rpc_code: i64, message: &str) -> bool {
 mod group_message_projection_tests {
     use serde_json::json;
 
-    use super::{im_error_to_message_error, is_attachment_manifest_payload};
+    use super::{
+        im_error_to_message_error, is_attachment_manifest_payload,
+        required_group_member_page_binding,
+    };
     use crate::m_core_cli_adapter::message_result::{MessageAdapterError, ServiceError};
 
     #[test]
@@ -1820,6 +1873,28 @@ mod group_message_projection_tests {
                 "authoritative P4 member roster is incomplete".to_owned()
             )
         );
+    }
+
+    #[test]
+    fn group_member_page_binding_is_host_response_owned_and_fail_closed() {
+        let requested = im_core::ids::GroupRef::parse("did:example:requested").unwrap();
+        let returned = im_core::ids::GroupRef::parse("did:example:requested").unwrap();
+        assert_eq!(
+            required_group_member_page_binding(Some(&returned), &requested).unwrap(),
+            returned.as_str()
+        );
+
+        for page_group in [
+            None,
+            Some(im_core::ids::GroupRef::parse("did:example:conflict").unwrap()),
+        ] {
+            assert_eq!(
+                required_group_member_page_binding(page_group.as_ref(), &requested),
+                Err(MessageAdapterError::PublicServiceCode(
+                    "group.local_inventory_incomplete".to_owned()
+                ))
+            );
+        }
     }
 
     #[test]

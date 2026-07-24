@@ -10,6 +10,14 @@ pub struct GroupReadResult {
     pub resolved_member: Option<GroupMemberResolution>,
     pub messages: crate::ids::Page<crate::messages::Message>,
     pub total: Option<u32>,
+    #[serde(default)]
+    pub next_cursor: Option<crate::ids::Cursor>,
+    #[serde(default)]
+    pub has_more: bool,
+    #[serde(default)]
+    pub page_group: Option<crate::ids::GroupRef>,
+    #[serde(default)]
+    pub group_state_version: Option<String>,
     pub source: Option<String>,
     #[serde(skip)]
     raw_response: Option<Value>,
@@ -28,17 +36,33 @@ impl GroupReadResult {
             .into_iter()
             .filter_map(group_member_from_value)
             .collect();
+        let has_message_collection = raw.get("messages").is_some_and(Value::is_array);
         let message_items = values_from_array(raw.get("messages"))
             .into_iter()
             .filter_map(group_message_from_value)
             .collect::<Vec<_>>();
         let messages = crate::ids::Page {
             items: message_items,
-            next_cursor: cursor_from_value(
-                raw.get("next_cursor").or_else(|| raw.get("next_since_seq")),
-            ),
-            has_more: bool_value(raw.get("has_more")),
+            next_cursor: has_message_collection
+                .then(|| {
+                    cursor_from_value(raw.get("next_cursor").or_else(|| raw.get("next_since_seq")))
+                })
+                .flatten(),
+            has_more: has_message_collection && bool_value(raw.get("has_more")),
         };
+        let next_cursor = cursor_from_value(raw.get("next_cursor"));
+        let has_more = bool_value(raw.get("has_more"));
+        let has_member_collection = raw.get("members").is_some_and(Value::is_array);
+        let page_group = has_member_collection
+            .then(|| {
+                raw.get("group_did")
+                    .and_then(|value| optional_string(Some(value)))
+                    .and_then(|value| crate::ids::GroupRef::parse(value).ok())
+            })
+            .flatten();
+        let group_state_version = has_member_collection
+            .then(|| optional_string(raw.get("group_state_version")))
+            .flatten();
         Self {
             group,
             groups,
@@ -46,6 +70,10 @@ impl GroupReadResult {
             resolved_member: None,
             messages,
             total: u32_value(raw.get("total")),
+            next_cursor,
+            has_more,
+            page_group,
+            group_state_version,
             source: optional_string(raw.get("source")),
             raw_response: Some(raw),
             warnings,
@@ -787,12 +815,14 @@ pub struct GroupUpdateResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupListRequest {
     pub limit: crate::ids::PageLimit,
+    pub cursor: Option<crate::ids::Cursor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupMembersRequest {
     pub group: crate::ids::GroupRef,
     pub limit: crate::ids::PageLimit,
+    pub cursor: Option<crate::ids::Cursor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

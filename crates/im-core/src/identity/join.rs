@@ -566,7 +566,14 @@ impl<'a> DeviceJoinService<'a> {
                 self.core,
                 &admin_client,
             );
-        public_registry(runtime.registry().await?, current.as_ref())
+        let registry = runtime.registry().await?;
+        let _ = crate::internal::identity_device_revoke::recover_pending_with_registry(
+            self.core,
+            &admin_client,
+            &registry,
+        )
+        .await;
+        public_registry(registry, current.as_ref())
     }
 
     pub async fn local_device_join_requests(

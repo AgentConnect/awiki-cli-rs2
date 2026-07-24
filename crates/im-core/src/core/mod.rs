@@ -129,7 +129,13 @@ impl ImCore {
         selector: crate::identity::IdentitySelector,
     ) -> crate::ImResult<ImClient> {
         let runtime = self.identities().load_runtime_async(selector).await?;
-        Ok(ImClient::new(self.inner.clone(), runtime))
+        let client = ImClient::new(self.inner.clone(), runtime);
+        if self.inner().device_revoke_enabled() {
+            let _ =
+                crate::internal::identity_device_revoke::recover_pending_for_client(self, &client)
+                    .await;
+        }
+        Ok(client)
     }
 
     pub fn client_with_identity_material(

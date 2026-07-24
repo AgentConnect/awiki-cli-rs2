@@ -84,8 +84,11 @@ where
         let params = crate::internal::wire::group::build_group_list_rpc_params(
             self.client.did().as_str(),
             page_limit(request.limit, 50),
+            request.cursor.as_ref().map(crate::ids::Cursor::as_str),
         );
-        self.group_rpc("group.list", params)
+        let result = self.group_rpc("group.list", params)?;
+        validate_relaxed_collection_page(&result, "groups", result.groups.len())?;
+        Ok(result)
     }
 
     pub(crate) fn members(
@@ -97,8 +100,11 @@ where
             self.client.did().as_str(),
             request.group.as_str(),
             page_limit(request.limit, 100),
+            request.cursor.as_ref().map(crate::ids::Cursor::as_str),
         )?;
-        self.group_rpc("group.list_members", params)
+        let result = self.group_rpc("group.list_members", params)?;
+        validate_relaxed_collection_page(&result, "members", result.members.len())?;
+        Ok(result)
     }
 
     pub(crate) fn messages(
@@ -204,8 +210,11 @@ where
         let params = crate::internal::wire::group::build_group_list_rpc_params(
             self.client.did().as_str(),
             page_limit(request.limit, 50),
+            request.cursor.as_ref().map(crate::ids::Cursor::as_str),
         );
-        self.group_rpc_async("group.list", params).await
+        let result = self.group_rpc_async("group.list", params).await?;
+        validate_relaxed_collection_page(&result, "groups", result.groups.len())?;
+        Ok(result)
     }
 
     pub(crate) async fn members_async(
@@ -217,8 +226,11 @@ where
             self.client.did().as_str(),
             request.group.as_str(),
             page_limit(request.limit, 100),
+            request.cursor.as_ref().map(crate::ids::Cursor::as_str),
         )?;
-        self.group_rpc_async("group.list_members", params).await
+        let result = self.group_rpc_async("group.list_members", params).await?;
+        validate_relaxed_collection_page(&result, "members", result.members.len())?;
+        Ok(result)
     }
 
     pub(crate) async fn messages_async(
@@ -351,6 +363,39 @@ fn page_limit(limit: crate::ids::PageLimit, fallback: i64) -> i64 {
     }
 }
 
+fn validate_relaxed_collection_page(
+    result: &crate::groups::GroupReadResult,
+    collection: &str,
+    parsed_count: usize,
+) -> crate::ImResult<()> {
+    let raw = result
+        .raw_response()
+        .ok_or(crate::ImError::InventoryIncomplete)?;
+    let raw_count = raw
+        .get(collection)
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .ok_or(crate::ImError::InventoryIncomplete)?;
+    if raw_count != parsed_count
+        || (raw.get("total").is_some() && result.total.is_none())
+        || (raw.get("next_cursor").is_some() && result.next_cursor.is_none())
+    {
+        return Err(crate::ImError::InventoryIncomplete);
+    }
+    match raw.get("has_more") {
+        Some(Value::Bool(true)) if result.next_cursor.is_some() => Ok(()),
+        Some(Value::Bool(false)) if raw.get("next_cursor").is_none() => Ok(()),
+        None if result
+            .total
+            .is_some_and(|total| total as usize == raw_count)
+            && raw.get("next_cursor").is_none() =>
+        {
+            Ok(())
+        }
+        _ => Err(crate::ImError::InventoryIncomplete),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,11 +431,12 @@ mod tests {
             ReadyGroupSessionProvider,
             RecordingTransport {
                 calls: Rc::clone(&calls),
-                response: json!({"groups":[]}),
+                response: json!({"groups":[],"total":0}),
             },
         )
         .list(crate::groups::GroupListRequest {
             limit: crate::ids::PageLimit(25),
+            cursor: Some(crate::ids::Cursor::parse("groups-page-2").unwrap()),
         })
         .unwrap();
 
@@ -399,12 +445,13 @@ mod tests {
             ReadyGroupSessionProvider,
             RecordingTransport {
                 calls: Rc::clone(&calls),
-                response: json!({"members":[]}),
+                response: json!({"members":[],"total":0}),
             },
         )
         .members(crate::groups::GroupMembersRequest {
             group: group.clone(),
             limit: crate::ids::PageLimit(10),
+            cursor: Some(crate::ids::Cursor::parse("members-page-2").unwrap()),
         })
         .unwrap();
 
@@ -435,8 +482,10 @@ mod tests {
         assert_eq!(calls[0].params["body"]["group_did"], "did:example:group");
         assert_eq!(calls[1].method, "group.list");
         assert_eq!(calls[1].params["body"]["limit"], 25);
+        assert_eq!(calls[1].params["body"]["cursor"], "groups-page-2");
         assert_eq!(calls[2].method, "group.list_members");
         assert_eq!(calls[2].params["body"]["limit"], 10);
+        assert_eq!(calls[2].params["body"]["cursor"], "members-page-2");
         assert_eq!(calls[3].method, "group.list_messages");
         assert_eq!(calls[3].params["body"]["limit"], 5);
         assert_eq!(calls[3].params["body"]["since_seq"], "42");
@@ -466,11 +515,12 @@ mod tests {
             ReadyGroupSessionProvider,
             RecordingTransport {
                 calls: Rc::clone(&calls),
-                response: json!({"groups":[]}),
+                response: json!({"groups":[],"total":0}),
             },
         )
         .list_async(crate::groups::GroupListRequest {
             limit: crate::ids::PageLimit(25),
+            cursor: Some(crate::ids::Cursor::parse("groups-page-2").unwrap()),
         })
         .await
         .unwrap();
@@ -480,12 +530,13 @@ mod tests {
             ReadyGroupSessionProvider,
             RecordingTransport {
                 calls: Rc::clone(&calls),
-                response: json!({"members":[]}),
+                response: json!({"members":[],"total":0}),
             },
         )
         .members_async(crate::groups::GroupMembersRequest {
             group: group.clone(),
             limit: crate::ids::PageLimit(10),
+            cursor: Some(crate::ids::Cursor::parse("members-page-2").unwrap()),
         })
         .await
         .unwrap();
@@ -518,8 +569,10 @@ mod tests {
         assert_eq!(calls[0].params["body"]["group_did"], "did:example:group");
         assert_eq!(calls[1].method, "group.list");
         assert_eq!(calls[1].params["body"]["limit"], 25);
+        assert_eq!(calls[1].params["body"]["cursor"], "groups-page-2");
         assert_eq!(calls[2].method, "group.list_members");
         assert_eq!(calls[2].params["body"]["limit"], 10);
+        assert_eq!(calls[2].params["body"]["cursor"], "members-page-2");
         assert_eq!(calls[3].method, "group.list_messages");
         assert_eq!(calls[3].params["body"]["limit"], 5);
         assert_eq!(calls[3].params["body"]["since_seq"], "42");

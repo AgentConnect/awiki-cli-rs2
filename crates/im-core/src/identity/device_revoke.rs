@@ -50,7 +50,9 @@ impl<'a> DeviceRevokeService<'a> {
             return Err(crate::ImError::unsupported("awiki-device-revoke-disabled"));
         }
         if !request.user_presence_confirmed {
-            return Err(crate::ImError::PermissionDenied);
+            return Err(crate::ImError::DeviceRevokeOutcome {
+                category: crate::error::DeviceRevokeOutcomeCategory::CancelledBeforeSubmit,
+            });
         }
         crate::internal::identity_device_revoke::revoke(
             self.core,

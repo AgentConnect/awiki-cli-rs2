@@ -42,9 +42,10 @@ pub(crate) async fn revoke(
     let _guard = core.inner().device_revoke_lock.lock().await;
     // Require the authenticated Vault exact-retry boundary before identity or
     // network access. Public rollout and user-presence gates run even earlier.
-    let store = PendingDeviceRevokeStore::from_core(core)?;
+    let store = PendingDeviceRevokeStore::from_core(core).map_err(rejected_before_commit)?;
     let (client, authorizing_device_id, authorizing_signing_key_id) =
-        crate::internal::identity_device_join::ready_admin_context(core, &identity, None)?;
+        crate::internal::identity_device_join::ready_admin_context(core, &identity, None)
+            .map_err(rejected_before_commit)?;
     let now = OffsetDateTime::now_utc();
     let mut remote =
         DeviceRevokeHttpAdapter::new(crate::internal::transport::CoreHttpTransport::new(&client));
@@ -64,6 +65,191 @@ pub(crate) async fn revoke(
         &mut resolver,
     )
     .await
+}
+
+pub(crate) async fn recover_pending_for_client(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+) -> crate::ImResult<usize> {
+    let _guard = core.inner().device_revoke_lock.lock().await;
+    let store = PendingDeviceRevokeStore::from_core(core)?;
+    let mut remote =
+        DeviceRevokeHttpAdapter::new(crate::internal::transport::CoreHttpTransport::new(client));
+    let mut resolver = DeviceRevokeDidResolver::new(
+        crate::internal::transport::CoreHttpTransport::new_signature_only(client),
+    );
+    recover_pending_for_client_with_runtime(core, client, &store, &mut remote, &mut resolver).await
+}
+
+pub(crate) async fn recover_pending_with_registry(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    registry: &DeviceJoinRemoteRegistry,
+) -> crate::ImResult<usize> {
+    let _guard = core.inner().device_revoke_lock.lock().await;
+    let store = PendingDeviceRevokeStore::from_core(core)?;
+    let mut resolver = DeviceRevokeDidResolver::new(
+        crate::internal::transport::CoreHttpTransport::new_signature_only(client),
+    );
+    recover_pending_locked(core, client, &store, registry, &mut resolver).await
+}
+
+async fn recover_pending_for_client_with_runtime<R, D>(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    store: &PendingDeviceRevokeStore,
+    remote: &mut R,
+    resolver: &mut D,
+) -> crate::ImResult<usize>
+where
+    R: DeviceRevokeRemote,
+    D: DeviceRevokeDocumentResolver,
+{
+    let (completed, pending_records) =
+        converge_committed_pending(core, client, store, store.list_for_identity(client.did())?)?;
+    if pending_records.is_empty() {
+        return Ok(completed);
+    }
+    let registry = remote.registry(client.did()).await?;
+    let recovered =
+        recover_uncommitted_pending(core, client, store, &registry, pending_records, resolver)
+            .await?;
+    Ok(completed.saturating_add(recovered))
+}
+
+async fn recover_pending_locked<D>(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    store: &PendingDeviceRevokeStore,
+    registry: &DeviceJoinRemoteRegistry,
+    resolver: &mut D,
+) -> crate::ImResult<usize>
+where
+    D: DeviceRevokeDocumentResolver,
+{
+    let (completed, pending_records) =
+        converge_committed_pending(core, client, store, store.list_for_identity(client.did())?)?;
+    if pending_records.is_empty() {
+        return Ok(completed);
+    }
+    let recovered =
+        recover_uncommitted_pending(core, client, store, registry, pending_records, resolver)
+            .await?;
+    Ok(completed.saturating_add(recovered))
+}
+
+fn converge_committed_pending(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    store: &PendingDeviceRevokeStore,
+    pending_records: Vec<(
+        crate::internal::secret_vault::record::SecretRef,
+        PendingDeviceRevoke,
+    )>,
+) -> crate::ImResult<(
+    usize,
+    Vec<(
+        crate::internal::secret_vault::record::SecretRef,
+        PendingDeviceRevoke,
+    )>,
+)> {
+    let mut completed = 0usize;
+    let mut uncommitted = Vec::new();
+    for (secret_ref, pending) in pending_records {
+        let Some(remote_result) = pending.remote_result.as_ref() else {
+            uncommitted.push((secret_ref, pending));
+            continue;
+        };
+        pending.validate()?;
+        converge_local_state(core, client, &pending, remote_result)?;
+        store.delete(&secret_ref)?;
+        completed = completed.saturating_add(1);
+    }
+    Ok((completed, uncommitted))
+}
+
+async fn recover_uncommitted_pending<D>(
+    core: &crate::core::ImCore,
+    client: &crate::core::ImClient,
+    store: &PendingDeviceRevokeStore,
+    registry: &DeviceJoinRemoteRegistry,
+    pending_records: Vec<(
+        crate::internal::secret_vault::record::SecretRef,
+        PendingDeviceRevoke,
+    )>,
+    resolver: &mut D,
+) -> crate::ImResult<usize>
+where
+    D: DeviceRevokeDocumentResolver,
+{
+    if registry.did != *client.did() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let document = resolver.resolve(client.did()).await?;
+    let mut completed = 0usize;
+    for (secret_ref, mut pending) in pending_records {
+        if pending.remote_result.is_some() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let remote_result = recover_remote_result_from_authority(&pending, registry, &document)?;
+        pending.remote_result = Some(remote_result.clone());
+        if store.save(&pending)? != secret_ref {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        converge_local_state(core, client, &pending, &remote_result)?;
+        store.delete(&secret_ref)?;
+        completed = completed.saturating_add(1);
+    }
+    Ok(completed)
+}
+
+fn recover_remote_result_from_authority(
+    pending: &PendingDeviceRevoke,
+    registry: &DeviceJoinRemoteRegistry,
+    document: &Value,
+) -> crate::ImResult<DeviceRevokeRemoteResult> {
+    pending.validate()?;
+    let expected_checkpoint = pending.expected_result_checkpoint()?;
+    let expected_generation = pending
+        .target_auth_generation
+        .checked_add(1)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if registry.did != pending.did
+        || registry.checkpoint != expected_checkpoint
+        || registry.checkpoint.document_hash
+            != crate::internal::identity_wire::document::document_hash(document)?
+        || document.get("id").and_then(Value::as_str) != Some(pending.did.as_str())
+        || !anp::authentication::validate_did_document_binding(document, true)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let target = registry
+        .devices
+        .iter()
+        .find(|device| device.device_id == pending.target_device_id)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if target.status != DeviceAuthorizationStatus::Revoked
+        || target.management_ready
+        || target.auth_generation != expected_generation
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let manifest = anp::authentication::validate_device_manifest(document)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if manifest
+        .devices
+        .iter()
+        .any(|device| device.device_id == pending.target_device_id)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    validate_manifest_device(document, &pending.authorizing_device)?;
+    Ok(DeviceRevokeRemoteResult {
+        target_device_id: pending.target_device_id.clone(),
+        auth_generation: expected_generation,
+        checkpoint: expected_checkpoint,
+    })
 }
 
 pub(crate) trait DeviceRevokeRemote {
@@ -170,25 +356,37 @@ where
     R: DeviceRevokeRemote,
     D: DeviceRevokeDocumentResolver,
 {
-    validate_user_presence(user_presence_at, now)?;
-    crate::ids::ProtocolDeviceId::parse(target_device_id)?;
+    validate_user_presence(user_presence_at, now).map_err(rejected_before_commit)?;
+    crate::ids::ProtocolDeviceId::parse(target_device_id).map_err(rejected_before_commit)?;
     if target_device_id == authorizing_device_id {
-        return Err(crate::ImError::PermissionDenied);
+        return Err(rejected_before_commit(crate::ImError::PermissionDenied));
     }
     let did = client.did().clone();
-    let (secret_ref, mut pending) = match store.load(&did, target_device_id)? {
+    let (secret_ref, mut pending) = match store
+        .load(&did, target_device_id)
+        .map_err(unknown_outcome)?
+    {
         Some((secret_ref, pending)) => {
             validate_pending_authorizer(
                 &pending,
                 &did,
                 authorizing_device_id,
                 authorizing_signing_key_id,
-            )?;
+            )
+            .map_err(unknown_outcome)?;
             (secret_ref, pending)
         }
         None => {
-            let registry = remote.registry(&did).await.map_err(redact_remote_error)?;
-            let document = resolver.resolve(&did).await.map_err(redact_remote_error)?;
+            let registry = remote
+                .registry(&did)
+                .await
+                .map_err(redact_remote_error)
+                .map_err(rejected_before_commit)?;
+            let document = resolver
+                .resolve(&did)
+                .await
+                .map_err(redact_remote_error)
+                .map_err(rejected_before_commit)?;
             let pending = prepare_initial_intent(
                 client,
                 target_device_id,
@@ -196,8 +394,9 @@ where
                 authorizing_signing_key_id,
                 registry,
                 document,
-            )?;
-            let secret_ref = store.save(&pending)?;
+            )
+            .map_err(rejected_before_commit)?;
+            let secret_ref = store.save(&pending).map_err(rejected_before_commit)?;
             (secret_ref, pending)
         }
     };
@@ -207,10 +406,11 @@ where
             client
                 .runtime()
                 .key_provider
-                .device_request_signing_private_pem()?,
+                .device_request_signing_private_pem()
+                .map_err(unknown_outcome)?,
         );
         let signing_private = anp::PrivateKeyMaterial::from_pem(&signing_pem)
-            .map_err(|_| crate::ImError::PermissionDenied)?;
+            .map_err(|_| unknown_outcome(crate::ImError::PermissionDenied))?;
         let prepared = crate::internal::identity_wire::device_revoke::prepare_revoke(
             pending.operation_id.clone(),
             pending.target_device_id.clone(),
@@ -220,12 +420,15 @@ where
             &pending.authorizing_device.signing_key_id,
             &signing_private,
             now,
-        )?;
-        let expected_checkpoint = pending.expected_result_checkpoint()?;
+        )
+        .map_err(unknown_outcome)?;
+        let expected_checkpoint = pending
+            .expected_result_checkpoint()
+            .map_err(unknown_outcome)?;
         let expected_generation = pending
             .target_auth_generation
             .checked_add(1)
-            .ok_or(crate::ImError::PermissionDenied)?;
+            .ok_or_else(|| unknown_outcome(crate::ImError::PermissionDenied))?;
         let remote_result = match remote
             .revoke(&prepared, expected_generation, &expected_checkpoint)
             .await
@@ -233,66 +436,39 @@ where
             Ok(result) => result,
             Err(error) => {
                 if stale_intent_error(&error) {
-                    store.delete(&secret_ref)?;
+                    store
+                        .delete(&secret_ref)
+                        .map_err(|_| unknown_outcome(crate::ImError::PermissionDenied))?;
+                    return Err(rejected_before_commit(redact_remote_error(error)));
                 }
-                return Err(redact_remote_error(error));
+                return Err(unknown_outcome(redact_remote_error(error)));
             }
         };
         if remote_result.target_device_id != pending.target_device_id
             || remote_result.auth_generation != expected_generation
             || remote_result.checkpoint != expected_checkpoint
         {
-            return Err(crate::ImError::PermissionDenied);
+            return Err(unknown_outcome(crate::ImError::PermissionDenied));
         }
         pending.remote_result = Some(remote_result);
-        if store.save(&pending)? != secret_ref {
-            return Err(crate::ImError::PermissionDenied);
+        if store.save(&pending).map_err(unknown_outcome)? != secret_ref {
+            return Err(unknown_outcome(crate::ImError::PermissionDenied));
         }
     }
 
     let remote_result = pending
         .remote_result
         .as_ref()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    converge_local_state(core, client, &pending, remote_result)?;
-    converge_revoked_group_leaves(client, &pending.target_device_id).await?;
-    store.delete(&secret_ref)?;
+        .ok_or_else(|| unknown_outcome(crate::ImError::PermissionDenied))?;
+    converge_local_state(core, client, &pending, remote_result).map_err(unknown_outcome)?;
+    let target_device_id =
+        crate::ids::ProtocolDeviceId::parse(&pending.target_device_id).map_err(unknown_outcome)?;
+    store.delete(&secret_ref).map_err(unknown_outcome)?;
     Ok(crate::identity::DeviceRevokeResult {
         did,
-        target_device_id: crate::ids::ProtocolDeviceId::parse(&pending.target_device_id)?,
+        target_device_id,
         status: crate::identity::DeviceRevokeStatus::Revoked,
     })
-}
-
-#[cfg(feature = "group-e2ee")]
-async fn converge_revoked_group_leaves(
-    client: &crate::core::ImClient,
-    target_device_id: &str,
-) -> crate::ImResult<()> {
-    if !client.core_inner().group_e2ee_v2_enabled() {
-        return Ok(());
-    }
-    let client = client.clone();
-    let target_device_id = target_device_id.to_owned();
-    crate::internal::runtime::worker::run_blocking(move || {
-        crate::internal::group_e2ee::v2_lifecycle::remove_revoked_device_from_owned_groups(
-            &client,
-            &target_device_id,
-        )
-    })
-    .await
-    .map_err(|error| crate::ImError::Internal {
-        message: format!("revoked-device P6 convergence worker failed: {error}"),
-    })??;
-    Ok(())
-}
-
-#[cfg(not(feature = "group-e2ee"))]
-async fn converge_revoked_group_leaves(
-    _client: &crate::core::ImClient,
-    _target_device_id: &str,
-) -> crate::ImResult<()> {
-    Ok(())
 }
 
 fn prepare_initial_intent(
@@ -587,6 +763,18 @@ fn redact_remote_error(error: crate::ImError) -> crate::ImError {
             message: "device revoke request failed".to_owned(),
         },
         other => other,
+    }
+}
+
+fn rejected_before_commit(_error: crate::ImError) -> crate::ImError {
+    crate::ImError::DeviceRevokeOutcome {
+        category: crate::error::DeviceRevokeOutcomeCategory::RejectedBeforeCommit,
+    }
+}
+
+fn unknown_outcome(_error: crate::ImError) -> crate::ImError {
+    crate::ImError::DeviceRevokeOutcome {
+        category: crate::error::DeviceRevokeOutcomeCategory::OutcomeUnknown,
     }
 }
 

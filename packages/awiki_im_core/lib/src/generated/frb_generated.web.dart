@@ -228,6 +228,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeviceRevokeOutcomeCategory
+  dco_decode_box_autoadd_dart_device_revoke_outcome_category(dynamic raw);
+
+  @protected
   DartDownloadAttachmentRequest
   dco_decode_box_autoadd_dart_download_attachment_request(dynamic raw);
 
@@ -534,6 +538,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartDeviceJoinSide dco_decode_dart_device_join_side(dynamic raw);
+
+  @protected
+  DartDeviceRevokeOutcomeCategory
+  dco_decode_dart_device_revoke_outcome_category(dynamic raw);
 
   @protected
   DartDeviceRevokeResult dco_decode_dart_device_revoke_result(dynamic raw);
@@ -1081,6 +1089,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeviceRevokeOutcomeCategory?
+  dco_decode_opt_box_autoadd_dart_device_revoke_outcome_category(dynamic raw);
+
+  @protected
   DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
     dynamic raw,
   );
@@ -1346,6 +1358,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartDeviceJoinAuthorizedDeviceSummary
   sse_decode_box_autoadd_dart_device_join_authorized_device_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceRevokeOutcomeCategory
+  sse_decode_box_autoadd_dart_device_revoke_outcome_category(
     SseDeserializer deserializer,
   );
 
@@ -1734,6 +1752,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartDeviceJoinSide sse_decode_dart_device_join_side(
     SseDeserializer deserializer,
   );
+
+  @protected
+  DartDeviceRevokeOutcomeCategory
+  sse_decode_dart_device_revoke_outcome_category(SseDeserializer deserializer);
 
   @protected
   DartDeviceRevokeResult sse_decode_dart_device_revoke_result(
@@ -2447,6 +2469,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeviceRevokeOutcomeCategory?
+  sse_decode_opt_box_autoadd_dart_device_revoke_outcome_category(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(
     SseDeserializer deserializer,
   );
@@ -2747,6 +2775,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_device_join_authorized_device_summary(
     DartDeviceJoinAuthorizedDeviceSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_device_revoke_outcome_category(
+    DartDeviceRevokeOutcomeCategory self,
     SseSerializer serializer,
   );
 
@@ -3203,6 +3237,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_device_join_side(
     DartDeviceJoinSide self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_revoke_outcome_category(
+    DartDeviceRevokeOutcomeCategory self,
     SseSerializer serializer,
   );
 
@@ -4073,6 +4113,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_device_join_authorized_device_summary(
     DartDeviceJoinAuthorizedDeviceSummary? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_device_revoke_outcome_category(
+    DartDeviceRevokeOutcomeCategory? self,
     SseSerializer serializer,
   );
 

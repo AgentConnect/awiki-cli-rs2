@@ -357,12 +357,22 @@ pub(crate) fn build_group_get_info_rpc_params(
     }))
 }
 
-pub(crate) fn build_group_list_rpc_params(sender_did: &str, limit: i64) -> Value {
+pub(crate) fn build_group_list_rpc_params(
+    sender_did: &str,
+    limit: i64,
+    cursor: Option<&str>,
+) -> Value {
+    let mut body = Map::new();
+    body.insert(
+        "limit".to_string(),
+        json!(if limit <= 0 { 50 } else { limit }),
+    );
+    if let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
+        body.insert("cursor".to_string(), Value::String(cursor.to_string()));
+    }
     json!({
         "meta": group_local_meta(sender_did, None),
-        "body": {
-            "limit": if limit <= 0 { 50 } else { limit },
-        },
+        "body": body,
     })
 }
 
@@ -370,14 +380,24 @@ pub(crate) fn build_group_members_rpc_params(
     sender_did: &str,
     group_did: &str,
     limit: i64,
+    cursor: Option<&str>,
 ) -> crate::ImResult<Value> {
     let group_did = require_group(group_did)?;
+    let mut body = Map::new();
+    body.insert(
+        "group_did".to_string(),
+        Value::String(group_did.to_string()),
+    );
+    body.insert(
+        "limit".to_string(),
+        json!(if limit <= 0 { 100 } else { limit }),
+    );
+    if let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
+        body.insert("cursor".to_string(), Value::String(cursor.to_string()));
+    }
     Ok(json!({
         "meta": group_local_meta(sender_did, Some(group_did)),
-        "body": {
-            "group_did": group_did,
-            "limit": if limit <= 0 { 100 } else { limit },
-        },
+        "body": body,
     }))
 }
 

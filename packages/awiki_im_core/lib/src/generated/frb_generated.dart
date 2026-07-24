@@ -325,6 +325,7 @@ abstract class RustLibApi extends BaseApi {
     required ArcDartImClient client,
     required String groupDid,
     required int limit,
+    String? cursor,
   });
 
   Future<DartGroupReadResult> crateApiGroupsListGroupMessages({
@@ -337,6 +338,7 @@ abstract class RustLibApi extends BaseApi {
   Future<DartGroupReadResult> crateApiGroupsListGroups({
     required ArcDartImClient client,
     required int limit,
+    String? cursor,
   });
 
   Future<List<DartIdentitySummary>> crateApiIdentityListIdentities({
@@ -2431,6 +2433,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required ArcDartImClient client,
     required String groupDid,
     required int limit,
+    String? cursor,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2442,6 +2445,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_String(groupDid, serializer);
           sse_encode_u_32(limit, serializer);
+          sse_encode_opt_String(cursor, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -2454,7 +2458,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_dart_im_error,
         ),
         constMeta: kCrateApiGroupsListGroupMembersConstMeta,
-        argValues: [client, groupDid, limit],
+        argValues: [client, groupDid, limit, cursor],
         apiImpl: this,
       ),
     );
@@ -2463,7 +2467,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiGroupsListGroupMembersConstMeta =>
       const TaskConstMeta(
         debugName: "list_group_members",
-        argNames: ["client", "groupDid", "limit"],
+        argNames: ["client", "groupDid", "limit", "cursor"],
       );
 
   @override
@@ -2512,6 +2516,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<DartGroupReadResult> crateApiGroupsListGroups({
     required ArcDartImClient client,
     required int limit,
+    String? cursor,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2522,6 +2527,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_u_32(limit, serializer);
+          sse_encode_opt_String(cursor, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -2534,7 +2540,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_dart_im_error,
         ),
         constMeta: kCrateApiGroupsListGroupsConstMeta,
-        argValues: [client, limit],
+        argValues: [client, limit, cursor],
         apiImpl: this,
       ),
     );
@@ -2542,7 +2548,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiGroupsListGroupsConstMeta => const TaskConstMeta(
     debugName: "list_groups",
-    argNames: ["client", "limit"],
+    argNames: ["client", "limit", "cursor"],
   );
 
   @override
@@ -6061,6 +6067,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartDeviceRevokeOutcomeCategory
+  dco_decode_box_autoadd_dart_device_revoke_outcome_category(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_device_revoke_outcome_category(raw);
+  }
+
+  @protected
   DartDownloadAttachmentRequest
   dco_decode_box_autoadd_dart_download_attachment_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -6953,6 +6966,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartDeviceRevokeOutcomeCategory
+  dco_decode_dart_device_revoke_outcome_category(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartDeviceRevokeOutcomeCategory.values[raw as int];
+  }
+
+  @protected
   DartDeviceRevokeResult dco_decode_dart_device_revoke_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -7307,16 +7327,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartGroupReadResult dco_decode_dart_group_read_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return DartGroupReadResult(
       group: dco_decode_opt_box_autoadd_dart_group_snapshot(arr[0]),
       groups: dco_decode_list_dart_group_summary(arr[1]),
       members: dco_decode_list_dart_group_member(arr[2]),
       messages: dco_decode_dart_message_page(arr[3]),
       total: dco_decode_opt_box_autoadd_u_32(arr[4]),
-      source: dco_decode_opt_String(arr[5]),
-      warnings: dco_decode_list_String(arr[6]),
+      nextCursor: dco_decode_opt_String(arr[5]),
+      hasMore: dco_decode_bool(arr[6]),
+      pageGroupDid: dco_decode_opt_String(arr[7]),
+      groupStateVersion: dco_decode_opt_String(arr[8]),
+      source: dco_decode_opt_String(arr[9]),
+      warnings: dco_decode_list_String(arr[10]),
     );
   }
 
@@ -7753,8 +7777,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartImError dco_decode_dart_im_error(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return DartImError(
       code: dco_decode_String(arr[0]),
       message: dco_decode_String(arr[1]),
@@ -7763,6 +7787,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       capability: dco_decode_opt_String(arr[4]),
       serviceCode: dco_decode_opt_String(arr[5]),
       serviceDataJson: dco_decode_opt_String(arr[6]),
+      deviceRevokeOutcomeCategory:
+          dco_decode_opt_box_autoadd_dart_device_revoke_outcome_category(
+            arr[7],
+          ),
     );
   }
 
@@ -9022,6 +9050,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartDeviceRevokeOutcomeCategory?
+  dco_decode_opt_box_autoadd_dart_device_revoke_outcome_category(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_dart_device_revoke_outcome_category(raw);
+  }
+
+  @protected
   DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
     dynamic raw,
   ) {
@@ -9524,6 +9561,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return (sse_decode_dart_device_join_authorized_device_summary(
       deserializer,
     ));
+  }
+
+  @protected
+  DartDeviceRevokeOutcomeCategory
+  sse_decode_box_autoadd_dart_device_revoke_outcome_category(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_device_revoke_outcome_category(deserializer));
   }
 
   @protected
@@ -10656,6 +10702,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartDeviceRevokeOutcomeCategory
+  sse_decode_dart_device_revoke_outcome_category(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartDeviceRevokeOutcomeCategory.values[inner];
+  }
+
+  @protected
   DartDeviceRevokeResult sse_decode_dart_device_revoke_result(
     SseDeserializer deserializer,
   ) {
@@ -11097,6 +11151,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_members = sse_decode_list_dart_group_member(deserializer);
     var var_messages = sse_decode_dart_message_page(deserializer);
     var var_total = sse_decode_opt_box_autoadd_u_32(deserializer);
+    var var_nextCursor = sse_decode_opt_String(deserializer);
+    var var_hasMore = sse_decode_bool(deserializer);
+    var var_pageGroupDid = sse_decode_opt_String(deserializer);
+    var var_groupStateVersion = sse_decode_opt_String(deserializer);
     var var_source = sse_decode_opt_String(deserializer);
     var var_warnings = sse_decode_list_String(deserializer);
     return DartGroupReadResult(
@@ -11105,6 +11163,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       members: var_members,
       messages: var_messages,
       total: var_total,
+      nextCursor: var_nextCursor,
+      hasMore: var_hasMore,
+      pageGroupDid: var_pageGroupDid,
+      groupStateVersion: var_groupStateVersion,
       source: var_source,
       warnings: var_warnings,
     );
@@ -11684,6 +11746,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_capability = sse_decode_opt_String(deserializer);
     var var_serviceCode = sse_decode_opt_String(deserializer);
     var var_serviceDataJson = sse_decode_opt_String(deserializer);
+    var var_deviceRevokeOutcomeCategory =
+        sse_decode_opt_box_autoadd_dart_device_revoke_outcome_category(
+          deserializer,
+        );
     return DartImError(
       code: var_code,
       message: var_message,
@@ -11692,6 +11758,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       capability: var_capability,
       serviceCode: var_serviceCode,
       serviceDataJson: var_serviceDataJson,
+      deviceRevokeOutcomeCategory: var_deviceRevokeOutcomeCategory,
     );
   }
 
@@ -13410,6 +13477,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartDeviceRevokeOutcomeCategory?
+  sse_decode_opt_box_autoadd_dart_device_revoke_outcome_category(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_device_revoke_outcome_category(
+        deserializer,
+      ));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(
     SseDeserializer deserializer,
   ) {
@@ -14061,6 +14144,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_dart_device_join_authorized_device_summary(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_dart_device_revoke_outcome_category(
+    DartDeviceRevokeOutcomeCategory self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_device_revoke_outcome_category(self, serializer);
   }
 
   @protected
@@ -15028,6 +15120,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_device_revoke_outcome_category(
+    DartDeviceRevokeOutcomeCategory self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_dart_device_revoke_result(
     DartDeviceRevokeResult self,
     SseSerializer serializer,
@@ -15350,6 +15451,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_dart_group_member(self.members, serializer);
     sse_encode_dart_message_page(self.messages, serializer);
     sse_encode_opt_box_autoadd_u_32(self.total, serializer);
+    sse_encode_opt_String(self.nextCursor, serializer);
+    sse_encode_bool(self.hasMore, serializer);
+    sse_encode_opt_String(self.pageGroupDid, serializer);
+    sse_encode_opt_String(self.groupStateVersion, serializer);
     sse_encode_opt_String(self.source, serializer);
     sse_encode_list_String(self.warnings, serializer);
   }
@@ -15768,6 +15873,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.capability, serializer);
     sse_encode_opt_String(self.serviceCode, serializer);
     sse_encode_opt_String(self.serviceDataJson, serializer);
+    sse_encode_opt_box_autoadd_dart_device_revoke_outcome_category(
+      self.deviceRevokeOutcomeCategory,
+      serializer,
+    );
   }
 
   @protected
@@ -17095,6 +17204,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_dart_device_join_authorized_device_summary(
+        self,
+        serializer,
+      );
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_device_revoke_outcome_category(
+    DartDeviceRevokeOutcomeCategory? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_device_revoke_outcome_category(
         self,
         serializer,
       );

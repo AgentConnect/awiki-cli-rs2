@@ -287,7 +287,7 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 | Module | Public API expresses | Internal only |
 | --- | --- | --- |
 | core | `ImCore`, `ImClient`, config, paths, bootstrap, errors | `ClientIdentityRuntime`, path expansion, store handles |
-| identity | selectors, summaries, registration, Legacy upgrade, device Join/admin promotion, profile | private key material, DID writer, raw identity store rows |
+| identity | selectors, summaries, registration, Legacy upgrade, device Join/admin promotion, permanent device revoke result/outcome category, profile | private key material, DID writer, raw identity store rows, revoke checkpoints and pending intents |
 | auth | login, ensure, device-signed access-token renewal, status | proof builder, JWT file format, bearer header handling |
 | directory | peer resolve, handle lookup, contacts, relationships | user-service raw request/response, contact store rows |
 | messages | send, inbox, history, mark-read, conversations, reliable sync | message RPC params, wire DTOs, raw notification frames, checkpoint load/store |
@@ -301,7 +301,7 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 ## 7. Module Map
 
 - `core`: environment entrypoint, identity-bound client, bootstrap, errors, common IDs and paging types.
-- `identity`: local registry, default identity, Handle registration, one-time Legacy upgrade, device Join/admin promotion, profile, and contact binding.
+- `identity`: local registry, default identity, Handle registration, one-time Legacy upgrade, device Join/admin promotion, permanent device revoke and Identity-only pending recovery, profile, and contact binding.
 - `auth`: DID-WBA, access-only session persistence, signed token renewal, status, and retry support for business services.
 - `local_state`: SQLite schema, owner isolation, messages, contacts, groups, email notification, secure outbox, realtime projection, and reliable sync checkpoints.
 - `discovery`: endpoint and capability selection from config, DID documents, profile, and service metadata.
@@ -331,6 +331,35 @@ Transport is explicit through configuration and capability checks:
 - CLI/App output must not expose JWTs, private keys, raw secure state, ciphertext internals, MLS artifacts, provider stdout/stderr, or host secrets.
 - Host notification payloads must contain approved event summaries, not raw message instructions.
 - Diagnostics may expose lower-level details only behind explicit debug/diagnostic gates.
+- Whole-roster Group security decisions use a bounded, version-bound
+  `group.list_members` page collector. No MLS mutation may begin until every page has the same
+  Group DID and canonical state version, cursor progress and totals are complete, and the
+  authoritative `max_members` policy and implementation hard cap are satisfied.
+- Permanent device revoke completes at the validated User Registry/DID Document result and local
+  Identity convergence. It does not scan or wait for every MLS group. Message Service keeps the
+  durable per-group send-pause gate; an owner device with local controller state converges a
+  selected group only through explicit group repair.
+
+## 9.2 Device Revoke And Group MLS Convergence
+
+`PendingDeviceRevoke` is an Identity exact-retry record, not a second MLS work queue. The
+destructive request persists its stable intent before submission. A validated remote result is
+persisted before local DID Document/checkpoint convergence, after which the pending record is
+deleted. Identity/session activation and a successful fresh Registry read may resume only that
+local convergence. A record that already contains a validated remote result converges and deletes
+without Registry or DID Document network access. Only a record without that result requires the
+exact Registry, generation, checkpoint, DID Document hash and Manifest match. Recovery is bounded,
+shares the revoke lock, never submits a new revoke request, and never touches MLS.
+
+Message Service owns the per-group `device_revocation_pending` fact. Core group secure status reads
+the Host-authoritative, low-sensitivity `group.get.e2ee_maintenance` projection before reporting
+readiness. A gate plus active owner and local controller state becomes `NeedsRepair`; a non-owner
+becomes `WaitingForMembershipUpdate`; a device without controller state becomes
+`MissingLocalState`. A missing or malformed authoritative response fails closed and cannot be
+reported as `Ready`. Status is read-only: it does not enumerate the roster, resolve Manifests,
+write the MLS WAL, or build a Commit. The low-sensitivity maintenance object accepts exactly
+`reason` and `send_paused`; target identifiers, counts, and other fields are rejected rather than
+silently projected.
 
 ## 9.1 Key Material Boundary
 

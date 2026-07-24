@@ -2567,6 +2567,7 @@ fn wire__crate__api__groups__list_group_members_impl(
             >>::sse_decode(&mut deserializer);
             let api_group_did = <String>::sse_decode(&mut deserializer);
             let api_limit = <u32>::sse_decode(&mut deserializer);
+            let api_cursor = <Option<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, crate::dto::error::DartImError>(
@@ -2594,6 +2595,7 @@ fn wire__crate__api__groups__list_group_members_impl(
                             &*api_client_guard,
                             api_group_did,
                             api_limit,
+                            api_cursor,
                         )
                         .await?;
                         Ok(output_ok)
@@ -2696,6 +2698,7 @@ fn wire__crate__api__groups__list_groups_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
             >>::sse_decode(&mut deserializer);
             let api_limit = <u32>::sse_decode(&mut deserializer);
+            let api_cursor = <Option<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, crate::dto::error::DartImError>(
@@ -2719,8 +2722,12 @@ fn wire__crate__api__groups__list_groups_impl(
                             }
                         }
                         let api_client_guard = api_client_guard.unwrap();
-                        let output_ok =
-                            crate::api::groups::list_groups(&*api_client_guard, api_limit).await?;
+                        let output_ok = crate::api::groups::list_groups(
+                            &*api_client_guard,
+                            api_limit,
+                            api_cursor,
+                        )
+                        .await?;
                         Ok(output_ok)
                     })()
                     .await,
@@ -8642,6 +8649,22 @@ impl SseDecode for crate::dto::identity::DartDeviceJoinSide {
     }
 }
 
+impl SseDecode for crate::dto::error::DartDeviceRevokeOutcomeCategory {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::error::DartDeviceRevokeOutcomeCategory::CancelledBeforeSubmit,
+            1 => crate::dto::error::DartDeviceRevokeOutcomeCategory::RejectedBeforeCommit,
+            2 => crate::dto::error::DartDeviceRevokeOutcomeCategory::OutcomeUnknown,
+            _ => unreachable!(
+                "Invalid variant for DartDeviceRevokeOutcomeCategory: {}",
+                inner
+            ),
+        };
+    }
+}
+
 impl SseDecode for crate::dto::identity::DartDeviceRevokeResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -9091,6 +9114,10 @@ impl SseDecode for crate::dto::group::DartGroupReadResult {
         let mut var_members = <Vec<crate::dto::group::DartGroupMember>>::sse_decode(deserializer);
         let mut var_messages = <crate::dto::message::DartMessagePage>::sse_decode(deserializer);
         let mut var_total = <Option<u32>>::sse_decode(deserializer);
+        let mut var_nextCursor = <Option<String>>::sse_decode(deserializer);
+        let mut var_hasMore = <bool>::sse_decode(deserializer);
+        let mut var_pageGroupDid = <Option<String>>::sse_decode(deserializer);
+        let mut var_groupStateVersion = <Option<String>>::sse_decode(deserializer);
         let mut var_source = <Option<String>>::sse_decode(deserializer);
         let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
         return crate::dto::group::DartGroupReadResult {
@@ -9099,6 +9126,10 @@ impl SseDecode for crate::dto::group::DartGroupReadResult {
             members: var_members,
             messages: var_messages,
             total: var_total,
+            next_cursor: var_nextCursor,
+            has_more: var_hasMore,
+            page_group_did: var_pageGroupDid,
+            group_state_version: var_groupStateVersion,
             source: var_source,
             warnings: var_warnings,
         };
@@ -9693,6 +9724,8 @@ impl SseDecode for crate::dto::error::DartImError {
         let mut var_capability = <Option<String>>::sse_decode(deserializer);
         let mut var_serviceCode = <Option<String>>::sse_decode(deserializer);
         let mut var_serviceDataJson = <Option<String>>::sse_decode(deserializer);
+        let mut var_deviceRevokeOutcomeCategory =
+            <Option<crate::dto::error::DartDeviceRevokeOutcomeCategory>>::sse_decode(deserializer);
         return crate::dto::error::DartImError {
             code: var_code,
             message: var_message,
@@ -9701,6 +9734,7 @@ impl SseDecode for crate::dto::error::DartImError {
             capability: var_capability,
             service_code: var_serviceCode,
             service_data_json: var_serviceDataJson,
+            device_revoke_outcome_category: var_deviceRevokeOutcomeCategory,
         };
     }
 }
@@ -11405,6 +11439,19 @@ impl SseDecode for Option<crate::dto::identity::DartDeviceJoinAuthorizedDeviceSu
                 <crate::dto::identity::DartDeviceJoinAuthorizedDeviceSummary>::sse_decode(
                     deserializer,
                 ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::dto::error::DartDeviceRevokeOutcomeCategory> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::dto::error::DartDeviceRevokeOutcomeCategory>::sse_decode(deserializer),
             );
         } else {
             return None;
@@ -13284,6 +13331,28 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartDeviceJoinSide>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::error::DartDeviceRevokeOutcomeCategory {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::CancelledBeforeSubmit => 0.into_dart(),
+            Self::RejectedBeforeCommit => 1.into_dart(),
+            Self::OutcomeUnknown => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::error::DartDeviceRevokeOutcomeCategory
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::error::DartDeviceRevokeOutcomeCategory>
+    for crate::dto::error::DartDeviceRevokeOutcomeCategory
+{
+    fn into_into_dart(self) -> crate::dto::error::DartDeviceRevokeOutcomeCategory {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartDeviceRevokeResult {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -13862,6 +13931,10 @@ impl flutter_rust_bridge::IntoDart for crate::dto::group::DartGroupReadResult {
             self.members.into_into_dart().into_dart(),
             self.messages.into_into_dart().into_dart(),
             self.total.into_into_dart().into_dart(),
+            self.next_cursor.into_into_dart().into_dart(),
+            self.has_more.into_into_dart().into_dart(),
+            self.page_group_did.into_into_dart().into_dart(),
+            self.group_state_version.into_into_dart().into_dart(),
             self.source.into_into_dart().into_dart(),
             self.warnings.into_into_dart().into_dart(),
         ]
@@ -14603,6 +14676,9 @@ impl flutter_rust_bridge::IntoDart for crate::dto::error::DartImError {
             self.capability.into_into_dart().into_dart(),
             self.service_code.into_into_dart().into_dart(),
             self.service_data_json.into_into_dart().into_dart(),
+            self.device_revoke_outcome_category
+                .into_into_dart()
+                .into_dart(),
         ]
         .into_dart()
     }
@@ -17134,6 +17210,23 @@ impl SseEncode for crate::dto::identity::DartDeviceJoinSide {
     }
 }
 
+impl SseEncode for crate::dto::error::DartDeviceRevokeOutcomeCategory {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::error::DartDeviceRevokeOutcomeCategory::CancelledBeforeSubmit => 0,
+                crate::dto::error::DartDeviceRevokeOutcomeCategory::RejectedBeforeCommit => 1,
+                crate::dto::error::DartDeviceRevokeOutcomeCategory::OutcomeUnknown => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::dto::identity::DartDeviceRevokeResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -17444,6 +17537,10 @@ impl SseEncode for crate::dto::group::DartGroupReadResult {
         <Vec<crate::dto::group::DartGroupMember>>::sse_encode(self.members, serializer);
         <crate::dto::message::DartMessagePage>::sse_encode(self.messages, serializer);
         <Option<u32>>::sse_encode(self.total, serializer);
+        <Option<String>>::sse_encode(self.next_cursor, serializer);
+        <bool>::sse_encode(self.has_more, serializer);
+        <Option<String>>::sse_encode(self.page_group_did, serializer);
+        <Option<String>>::sse_encode(self.group_state_version, serializer);
         <Option<String>>::sse_encode(self.source, serializer);
         <Vec<String>>::sse_encode(self.warnings, serializer);
     }
@@ -17887,6 +17984,10 @@ impl SseEncode for crate::dto::error::DartImError {
         <Option<String>>::sse_encode(self.capability, serializer);
         <Option<String>>::sse_encode(self.service_code, serializer);
         <Option<String>>::sse_encode(self.service_data_json, serializer);
+        <Option<crate::dto::error::DartDeviceRevokeOutcomeCategory>>::sse_encode(
+            self.device_revoke_outcome_category,
+            serializer,
+        );
     }
 }
 
@@ -19134,6 +19235,16 @@ impl SseEncode for Option<crate::dto::identity::DartDeviceJoinAuthorizedDeviceSu
             <crate::dto::identity::DartDeviceJoinAuthorizedDeviceSummary>::sse_encode(
                 value, serializer,
             );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::dto::error::DartDeviceRevokeOutcomeCategory> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::error::DartDeviceRevokeOutcomeCategory>::sse_encode(value, serializer);
         }
     }
 }

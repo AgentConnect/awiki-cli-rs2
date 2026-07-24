@@ -2,6 +2,13 @@ use std::fmt;
 
 pub type ImResult<T> = Result<T, ImError>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceRevokeOutcomeCategory {
+    CancelledBeforeSubmit,
+    RejectedBeforeCommit,
+    OutcomeUnknown,
+}
+
 /// Stable, redacted reasons why an identity vault cannot be opened or verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityVaultFailure {
@@ -54,6 +61,13 @@ pub enum ImError {
     },
     GroupNotFound {
         group: String,
+    },
+    CursorInvalid,
+    CursorStale,
+    InventoryIncomplete,
+    InventoryTooLarge,
+    DeviceRevokeOutcome {
+        category: DeviceRevokeOutcomeCategory,
     },
     MessageNotFound {
         message_id: String,
@@ -167,6 +181,21 @@ impl fmt::Display for ImError {
             Self::PermissionDenied => f.write_str("permission denied"),
             Self::PeerNotFound { peer } => write!(f, "peer not found: {peer}"),
             Self::GroupNotFound { group } => write!(f, "group not found: {group}"),
+            Self::CursorInvalid => f.write_str("group page cursor is invalid"),
+            Self::CursorStale => f.write_str("group member inventory changed during pagination"),
+            Self::InventoryIncomplete => f.write_str("group member inventory is incomplete"),
+            Self::InventoryTooLarge => f.write_str("group member inventory exceeds its limit"),
+            Self::DeviceRevokeOutcome { category } => match category {
+                DeviceRevokeOutcomeCategory::CancelledBeforeSubmit => {
+                    f.write_str("device revoke was cancelled before submission")
+                }
+                DeviceRevokeOutcomeCategory::RejectedBeforeCommit => {
+                    f.write_str("device revoke was rejected before commit")
+                }
+                DeviceRevokeOutcomeCategory::OutcomeUnknown => {
+                    f.write_str("device revoke outcome is unknown")
+                }
+            },
             Self::MessageNotFound { message_id } => write!(f, "message not found: {message_id}"),
             Self::TransportUnavailable { detail } => write!(f, "transport unavailable: {detail}"),
             Self::UnsupportedCapability { capability } => {

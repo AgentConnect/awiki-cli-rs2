@@ -50,3 +50,4 @@ pub use self::root_key_transfer::{
     RootKeyTransferService,
 };
 pub use self::service::IdentityService;
+pub use crate::error::DeviceRevokeOutcomeCategory;

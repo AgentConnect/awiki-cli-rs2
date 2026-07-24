@@ -454,152 +454,6 @@ pub(crate) struct V2RosterReconcileSummary {
     pub(crate) remaining_devices: usize,
 }
 
-/// Removes only one accepted `(DID, device_id)` Leaf. This is the device
-/// revocation primitive: it never performs a P4 business-member removal and
-/// never selects sibling Leaves by consulting a changed Manifest.
-pub(crate) fn remove_exact_member_device(
-    client: &crate::core::ImClient,
-    group: crate::ids::GroupRef,
-    member_did: &str,
-    member_device_id: &str,
-) -> crate::ImResult<bool> {
-    if !current_actor_is_active_owner(client, group.clone())? {
-        return Ok(false);
-    }
-    let group_did = group.as_str().to_owned();
-    let mut context = production_context(client)?;
-    let inspected = context
-        .product
-        .inspect_local_group(endpoint_inventory_input(
-            client,
-            &context.device,
-            &group_did,
-            "exact-device-remove-readiness",
-        ))?;
-    // A newly authorized sibling can be the P4 owner without having joined
-    // this historical MLS group. Such a device must not block Identity
-    // revocation; the Host's durable removal trigger remains for a sibling
-    // owner that has the local controller Leaf (or later secure repair).
-    if !local_group_can_remove_exact_device(&inspected.readiness) {
-        return Ok(false);
-    }
-    let _ = resume_pending_membership_commits(client, &mut context, &group_did)?;
-    let endpoints = context
-        .product
-        .list_local_group_member_endpoints(endpoint_inventory_input(
-            client,
-            &context.device,
-            &group_did,
-            "exact-device-remove",
-        ))?;
-    require_current_controller_endpoint(
-        &endpoints.member_endpoints,
-        client.did().as_str(),
-        &context.device.device_id,
-    )?;
-    if !has_exact_endpoint(&endpoints.member_endpoints, member_did, member_device_id) {
-        return Ok(false);
-    }
-    let document = resolve_member_document(client, member_did)?;
-    validate_member_document_id(member_did, &document)?;
-    submit_exact_remove(
-        client,
-        &mut context,
-        fresh_group_state_ref(client, &group_did)?,
-        member_did,
-        member_device_id,
-        document,
-    )?;
-    Ok(true)
-}
-
-/// Best-effort scope used by Step 06 after Identity has permanently revoked
-/// one device. Only groups where this DID is the active P4 owner are locally
-/// actionable; other Group Hosts retain their durable revocation trigger and
-/// converge when their owner repairs the group.
-pub(crate) fn remove_revoked_device_from_owned_groups(
-    client: &crate::core::ImClient,
-    member_device_id: &str,
-) -> crate::ImResult<usize> {
-    let listed = crate::internal::group_runtime::read::GroupReadRuntime::new(
-        client,
-        crate::internal::auth::session::FileSessionProvider::new(client),
-        crate::internal::transport::CoreHttpTransport::new(client),
-    )
-    .list(crate::groups::GroupListRequest {
-        limit: crate::ids::PageLimit(100),
-    })?;
-    reconcile_owned_group_device_removals(listed, |group| {
-        remove_exact_member_device(client, group, client.did().as_str(), member_device_id)
-    })
-}
-
-fn reconcile_owned_group_device_removals(
-    listed: crate::groups::GroupReadResult,
-    mut remove_exact: impl FnMut(crate::ids::GroupRef) -> crate::ImResult<bool>,
-) -> crate::ImResult<usize> {
-    let raw = listed
-        .raw_response()
-        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
-            detail: "group.list omitted its authoritative response".to_owned(),
-        })?;
-    require_complete_inventory(
-        raw,
-        "groups",
-        listed.groups.len(),
-        listed.total,
-        "group.list did not return the complete owned-group inventory",
-    )?;
-    let groups = listed
-        .groups
-        .into_iter()
-        .filter(|group| {
-            group.my_role.as_deref() == Some("owner")
-                && group.membership_status.as_deref() == Some("active")
-        })
-        .map(|group| group.did)
-        .collect::<Vec<_>>();
-    let mut removed = 0usize;
-    for group in groups {
-        if remove_exact(group)? {
-            removed = removed.saturating_add(1);
-        }
-    }
-    Ok(removed)
-}
-
-/// Requires an explicit completeness marker before an inventory can drive P6
-/// membership reconciliation. A matching `total` or `has_more: false` is
-/// sufficient; an unmarked response is never assumed complete merely because
-/// it filled the requested page.
-pub(crate) fn require_complete_inventory(
-    raw: &Value,
-    collection_field: &str,
-    parsed_count: usize,
-    total: Option<u32>,
-    detail: &str,
-) -> crate::ImResult<()> {
-    let raw_count = raw
-        .get(collection_field)
-        .and_then(Value::as_array)
-        .map(Vec::len);
-    let has_more = raw.get("has_more").and_then(Value::as_bool);
-    let total_matches = total.is_some_and(|total| total as usize == parsed_count);
-    let explicitly_complete = has_more == Some(false) || total_matches;
-    let conflicting_total = total.is_some_and(|total| total as usize != parsed_count);
-
-    if raw_count != Some(parsed_count)
-        || has_more == Some(true)
-        || conflicting_total
-        || !explicitly_complete
-    {
-        return Err(crate::ImError::LocalStateUnavailable {
-            detail: detail.to_owned(),
-        });
-    }
-    Ok(())
-}
-
 /// Reconciles one selected group's MLS endpoints to the authoritative P4
 /// active-member set and each member's fresh P2 device Manifest. Progress is
 /// derived from the accepted SDK tree after every commit; the SDK WAL remains
@@ -750,6 +604,19 @@ fn fresh_desired_group_roster(
     client: &crate::core::ImClient,
     group: crate::ids::GroupRef,
 ) -> crate::ImResult<(V2GroupStateRef, BTreeMap<String, DesiredP6Member>)> {
+    for attempt in 0..4 {
+        match fresh_desired_group_roster_attempt(client, group.clone()) {
+            Err(crate::ImError::CursorStale) if attempt < 3 => continue,
+            result => return result,
+        }
+    }
+    Err(crate::ImError::CursorStale)
+}
+
+fn fresh_desired_group_roster_attempt(
+    client: &crate::core::ImClient,
+    group: crate::ids::GroupRef,
+) -> crate::ImResult<(V2GroupStateRef, BTreeMap<String, DesiredP6Member>)> {
     let group_did = group.as_str().to_owned();
     let authoritative = crate::internal::group_runtime::read::GroupReadRuntime::new(
         client,
@@ -786,37 +653,17 @@ fn fresh_desired_group_roster(
     .ok_or_else(|| crate::ImError::LocalStateUnavailable {
         detail: "authoritative group.get omitted group_state_version".to_owned(),
     })?;
-
-    let members = crate::internal::group_runtime::read::GroupReadRuntime::new(
+    let max_members =
+        super::member_collector::product_max_members(authoritative.raw_response().unwrap_or(raw))?;
+    let members = super::member_collector::collect_complete_group_members(
         client,
-        crate::internal::auth::session::FileSessionProvider::new(client),
-        crate::internal::transport::CoreHttpTransport::new(client),
-    )
-    .members(crate::groups::GroupMembersRequest {
-        group,
-        limit: crate::ids::PageLimit(100),
-    })?;
-    let member_raw =
-        members
-            .raw_response()
-            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
-                detail: "authoritative group.list_members omitted raw roster".to_owned(),
-            })?;
-    if member_raw
-        .get("group_did")
-        .is_some_and(|value| value.as_str() != Some(group_did.as_str()))
-    {
-        return Err(crate::ImError::LocalStateUnavailable {
-            detail: "authoritative P4 member roster is incomplete or conflicting".to_owned(),
-        });
-    }
-    require_complete_inventory(
-        member_raw,
-        "members",
-        members.members.len(),
-        members.total,
-        "authoritative P4 member roster is incomplete or conflicting",
+        group.clone(),
+        Some(&state_ref.group_state_version),
+        max_members,
     )?;
+    if members.group_state_version != state_ref.group_state_version {
+        return Err(crate::ImError::CursorStale);
+    }
 
     let mut desired = BTreeMap::new();
     for member in members.members {
@@ -838,7 +685,25 @@ fn fresh_desired_group_roster(
             },
         );
     }
+    let refreshed = crate::internal::group_runtime::read::GroupReadRuntime::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .get_with_policy(group)?;
+    if !group_state_version_matches(
+        refreshed.raw_response(),
+        state_ref.group_state_version.as_str(),
+    ) {
+        return Err(crate::ImError::CursorStale);
+    }
     Ok((state_ref, desired))
+}
+
+fn group_state_version_matches(raw: Option<&Value>, expected: &str) -> bool {
+    raw.and_then(|raw| raw.get("group_state_version"))
+        .and_then(Value::as_str)
+        == Some(expected)
 }
 
 pub(crate) fn v2_group_state_ref(reference: anp::group_e2ee::GroupStateRef) -> V2GroupStateRef {
@@ -1316,20 +1181,6 @@ fn roster_delta(
         observed.difference(desired).cloned().collect(),
         desired.difference(observed).cloned().collect(),
     )
-}
-
-fn has_exact_endpoint(
-    endpoints: &[V2LocalGroupMemberEndpoint],
-    member_did: &str,
-    member_device_id: &str,
-) -> bool {
-    endpoints.iter().any(|endpoint| {
-        endpoint.member_did == member_did && endpoint.member_device_id == member_device_id
-    })
-}
-
-fn local_group_can_remove_exact_device(readiness: &V2LocalGroupReadiness) -> bool {
-    *readiness == V2LocalGroupReadiness::Active
 }
 
 fn local_group_can_reconcile_roster(readiness: &V2LocalGroupReadiness) -> bool {
