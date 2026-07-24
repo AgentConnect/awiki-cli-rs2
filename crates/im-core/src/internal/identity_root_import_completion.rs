@@ -368,6 +368,7 @@ pub(crate) async fn receive_root_envelope_candidate(
         RootProbeOutcome::NotRoot => return Ok(RootInboundInterceptOutcome::NotRoot),
         RootProbeOutcome::Replay => {
             return if import_coordinator_exists(core, client, &metadata.message_id)? {
+                drive_root_import_completion(core, client, &metadata.message_id).await?;
                 Ok(RootInboundInterceptOutcome::Replay)
             } else {
                 Ok(RootInboundInterceptOutcome::NotRoot)
@@ -438,7 +439,7 @@ pub(crate) async fn receive_root_envelope_candidate(
             validated: RootInboundValidation::Root(_),
             ..
         }) => {
-            let _ = drive_root_import_completion(core, client, &metadata.message_id).await;
+            drive_root_import_completion(core, client, &metadata.message_id).await?;
             Ok(RootInboundInterceptOutcome::Consumed)
         }
         Ok(V2ValidatedSecretInboundOutcome::Decrypted {
@@ -451,7 +452,7 @@ pub(crate) async fn receive_root_envelope_candidate(
         }) => Ok(RootInboundInterceptOutcome::Consumed),
         Ok(V2ValidatedSecretInboundOutcome::Replay { .. }) => {
             if import_coordinator_exists(core, client, &metadata.message_id)? {
-                let _ = drive_root_import_completion(core, client, &metadata.message_id).await;
+                drive_root_import_completion(core, client, &metadata.message_id).await?;
                 Ok(RootInboundInterceptOutcome::Replay)
             } else {
                 Ok(RootInboundInterceptOutcome::NotRoot)
