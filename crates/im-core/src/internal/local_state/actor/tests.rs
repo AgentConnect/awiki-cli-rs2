@@ -83,6 +83,7 @@ async fn db_actor_stores_classifies_marks_and_lists_messages() {
         .await
         .unwrap();
     assert_eq!(classification.direct_ids, vec!["direct-1"]);
+    assert_eq!(classification.remote_direct_ids, vec!["direct-1"]);
     assert_eq!(classification.group_ids, vec!["group-1"]);
 
     let unread_direct = db

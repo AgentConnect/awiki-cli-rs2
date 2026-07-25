@@ -125,7 +125,7 @@ fn msg_mark_read_websocket_mode_reports_http_failure_without_bridge_fallback() {
     let message = envelope["error"]["message"]
         .as_str()
         .expect("error message");
-    assert_contains_text(message, "http mark-read failed");
+    assert_contains_text(message, "message operation: remote service request failed.");
     assert!(
         !message.contains("local websocket bridge request failed"),
         "legacy bridge fallback should not be used, got: {message}"

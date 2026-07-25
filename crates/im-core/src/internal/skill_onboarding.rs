@@ -199,7 +199,9 @@ impl SkillOnboardingRemote for ProductionSkillOnboardingRemote<'_> {
                     display_name: Some("AWiki Skill Agent".to_owned()),
                     did_document: pending.did_document.clone(),
                     default_signing_private_key_pem: pending.key1_private_pem.clone(),
-                    e2ee_agreement_private_key_pem: pending.e2ee_agreement_private_pem.clone(),
+                    e2ee_agreement_private_key_pem: Some(
+                        pending.e2ee_agreement_private_pem.clone(),
+                    ),
                     auth_token: None,
                 })?;
         client
@@ -438,6 +440,8 @@ async fn persist_ready_identity(
             full_handle: journal.agent_handle.as_str().to_owned(),
             jwt_token,
             did_document: Some(pending.did_document),
+            key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,
+            device_state: None,
             key1_private_pem: pending.key1_private_pem,
             key1_public_pem: pending.key1_public_pem,
             e2ee_signing_private_pem: pending.e2ee_signing_private_pem,

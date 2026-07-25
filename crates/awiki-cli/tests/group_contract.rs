@@ -365,7 +365,7 @@ fn group_reads_default_cutover_route_through_group_service_bridge() {
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
             "group_did": "did:wba:awiki.ai:groups:demo:e1_group",
-            "group_state_version": "v7",
+            "group_state_version": "7",
             "group_event_seq": 7,
             "group_profile": {
                 "display_name": "Demo Group",
@@ -388,12 +388,15 @@ fn group_reads_default_cutover_route_through_group_service_bridge() {
         }))),
         TestResponse::ok(&json_rpc_result(json!({
             "members": [{
-                "member_did": "did:wba:awiki.ai:bob:e1_bob",
-                "member_handle": "bob.awiki.ai",
+                "agent_did": "did:wba:awiki.ai:bob:e1_bob",
+                "agent_handle": "bob.awiki.ai",
                 "role": "member",
                 "status": "active"
             }],
+            "group_did": "did:wba:awiki.ai:groups:demo:e1_group",
+            "group_state_version": "7",
             "total": 1,
+            "has_more": false,
             "source": "remote_http"
         }))),
         TestResponse::ok(&json_rpc_result(json!({

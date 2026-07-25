@@ -94,11 +94,31 @@ pub(crate) fn ingest_remote_messages(
     source_event_type: &str,
 ) -> crate::ImResult<RemoteMessageIngestOutcome> {
     let source_event_type = source_event_type.trim();
-    let mut resolved = Vec::new();
+    let mut stored_messages = 0usize;
     let mut backlogged_messages = 0usize;
     for record in records {
         match canonicalize_inbound_message(connection, record.clone()) {
-            Ok(record) => resolved.push(record),
+            Ok(record) => match super::messages::upsert_message(connection, &record) {
+                Ok(()) => {
+                    stored_messages = stored_messages.saturating_add(1);
+                }
+                Err(error @ crate::ImError::MessageWireIdentityConflict { .. }) => {
+                    let event_id = format!("{}:{}", source_event_type, record.msg_id.trim());
+                    let event_seq = record.server_seq.unwrap_or_default().to_string();
+                    store(
+                        connection,
+                        BacklogSource {
+                            event_id: &event_id,
+                            event_seq: &event_seq,
+                            event_type: source_event_type,
+                        },
+                        &record,
+                        &error,
+                    )?;
+                    backlogged_messages = backlogged_messages.saturating_add(1);
+                }
+                Err(error) => return Err(error),
+            },
             Err(error) if is_resolution_error(&error) => {
                 let event_id = format!("{}:{}", source_event_type, record.msg_id.trim());
                 let event_seq = record.server_seq.unwrap_or_default().to_string();
@@ -117,9 +137,8 @@ pub(crate) fn ingest_remote_messages(
             Err(error) => return Err(error),
         }
     }
-    super::messages::upsert_messages(connection, &resolved)?;
     Ok(RemoteMessageIngestOutcome {
-        stored_messages: resolved.len(),
+        stored_messages,
         backlogged_messages,
     })
 }
@@ -161,6 +180,7 @@ pub(crate) fn store(
         error,
         crate::ImError::IdentityBindingConflict { .. }
             | crate::ImError::ConversationAliasConflict { .. }
+            | crate::ImError::MessageWireIdentityConflict { .. }
     ) {
         "blocked_conflict"
     } else {
@@ -169,6 +189,7 @@ pub(crate) fn store(
     let error_code = match error {
         crate::ImError::IdentityBindingConflict { .. } => "identity_binding_conflict",
         crate::ImError::ConversationAliasConflict { .. } => "conversation_alias_conflict",
+        crate::ImError::MessageWireIdentityConflict { .. } => "message_wire_identity_conflict",
         crate::ImError::CanonicalGroupIdentityMissing { .. } => "canonical_group_identity_missing",
         _ => "identity_unresolved",
     };
@@ -418,6 +439,9 @@ fn redacted_detail(error: &crate::ImError) -> String {
         crate::ImError::ConversationAliasConflict { .. } => {
             "canonical conversation alias conflict".to_owned()
         }
+        crate::ImError::MessageWireIdentityConflict { .. } => {
+            "message wire identity conflict".to_owned()
+        }
         crate::ImError::CanonicalGroupIdentityMissing { .. } => {
             "canonical Group DID is missing".to_owned()
         }
@@ -637,6 +661,117 @@ FROM messages WHERE owner_identity_id = 'owner-a' AND msg_id = 'msg-unresolved-1
             crate::internal::local_state::canonical_invariants::check(&db, "owner-a")
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn wire_identity_conflict_does_not_poison_other_remote_messages() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let lookup = crate::directory::HandleLookupResult {
+            handle: crate::ids::Handle::parse("peer.awiki.info", "").unwrap(),
+            did: crate::ids::Did::parse("did:example:peer").unwrap(),
+            user_id: "user-peer".to_owned(),
+            domain: Some("awiki.info".to_owned()),
+            status: Some("active".to_owned()),
+            binding_generation: Some("1".to_owned()),
+            profile: None,
+            warnings: Vec::new(),
+        };
+        let conversation_id = super::super::peer_personas::project_verified_handle(
+            &mut db,
+            "owner-a",
+            "did:example:owner",
+            &lookup,
+        )
+        .unwrap();
+        let original = super::super::messages::MessageRecord {
+            msg_id: "msg-existing-outgoing".to_owned(),
+            owner_identity_id: "owner-a".to_owned(),
+            owner_did: "did:example:owner".to_owned(),
+            conversation_id: conversation_id.clone(),
+            thread_id: conversation_id.clone(),
+            direction: 1,
+            sender_did: "did:example:owner".to_owned(),
+            receiver_did: "did:example:peer".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "local plaintext".to_owned(),
+            stored_at: "2026-07-15T00:00:00Z".to_owned(),
+            credential_name: "owner-a".to_owned(),
+            ..super::super::messages::MessageRecord::default()
+        }
+        .with_resolved_wire_thread("direct", "did:example:peer");
+        super::super::messages::upsert_message(&db, &original).unwrap();
+
+        let mut conflicting = original.clone();
+        conflicting.content = String::new();
+        conflicting.server_seq = Some(7);
+        conflicting.wire_thread_kind = "thread".to_owned();
+        conflicting.wire_thread_ref = conversation_id.clone();
+        let valid = super::super::messages::MessageRecord {
+            msg_id: "msg-valid-incoming".to_owned(),
+            owner_identity_id: "owner-a".to_owned(),
+            owner_did: "did:example:owner".to_owned(),
+            conversation_id: conversation_id.clone(),
+            thread_id: conversation_id.clone(),
+            direction: 0,
+            sender_did: "did:example:peer".to_owned(),
+            receiver_did: "did:example:owner".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "decrypted follow-up".to_owned(),
+            server_seq: Some(8),
+            stored_at: "2026-07-15T00:00:01Z".to_owned(),
+            credential_name: "owner-a".to_owned(),
+            ..super::super::messages::MessageRecord::default()
+        }
+        .with_resolved_wire_thread("direct", "did:example:peer");
+
+        let outcome =
+            ingest_remote_messages(&db, &[conflicting, valid], "remote_history").unwrap();
+
+        assert_eq!(outcome.stored_messages, 1);
+        assert_eq!(outcome.backlogged_messages, 1);
+        let existing: (String, String, String) = db
+            .query_row(
+                r#"SELECT wire_thread_kind, wire_thread_ref, content
+FROM messages
+WHERE owner_identity_id = 'owner-a' AND msg_id = 'msg-existing-outgoing'"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            existing,
+            (
+                "direct".to_owned(),
+                "did:example:peer".to_owned(),
+                "local plaintext".to_owned(),
+            )
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT content FROM messages WHERE owner_identity_id = 'owner-a' AND msg_id = 'msg-valid-incoming'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "decrypted follow-up"
+        );
+        let blocked: (String, String) = db
+            .query_row(
+                r#"SELECT resolution_state, error_code
+FROM inbound_resolution_backlog
+WHERE owner_identity_id = 'owner-a' AND message_id = 'msg-existing-outgoing'"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            blocked,
+            (
+                "blocked_conflict".to_owned(),
+                "message_wire_identity_conflict".to_owned(),
+            )
         );
     }
 }

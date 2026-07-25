@@ -25,9 +25,6 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
     let server = TestServer::new(vec![
         TestResponse::json(&json_rpc_error(1401, "jwt expired")),
         TestResponse::json(&json_rpc_result(json!({
-            "access_token": "jwt-alice-refreshed"
-        }))),
-        TestResponse::json(&json_rpc_result(json!({
             "attachment_id": "__REQUEST_ATTACHMENT_ID__",
             "slot_id": "slot-live-1",
             "upload_uri": "__BASE__/objects/upload/slot-live-1",
@@ -145,7 +142,7 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
     assert_eq!(envelope["data"]["delivery"]["group_event_seq"], "77");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 6);
+    assert_eq!(requests.len(), 5);
 
     let create_text = request_text(&requests[0]);
     assert!(
@@ -189,24 +186,18 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
         "none"
     );
 
-    let refresh_text = request_text(&requests[1]);
-    assert!(
-        refresh_text.starts_with("POST /user-service/did-auth/rpc HTTP/1.1"),
-        "{refresh_text}"
-    );
-    let refresh_body = json_body(&requests[1]);
-    assert_eq!(refresh_body["method"], "get_me");
-
-    let retry_create_text = request_text(&requests[2]);
+    let retry_create_text = request_text(&requests[1]);
     assert!(
         retry_create_text.starts_with("POST /im/rpc HTTP/1.1"),
         "{retry_create_text}"
     );
-    assert_contains_text(
-        &retry_create_text,
-        "Authorization: Bearer jwt-alice-refreshed\r\n",
+    assert!(
+        retry_create_text
+            .lines()
+            .any(|line| line.to_ascii_lowercase().starts_with("signature-input: ")),
+        "expired bearer retry must sign the original business request, got:\n{retry_create_text}"
     );
-    let retry_create_body = json_body(&requests[2]);
+    let retry_create_body = json_body(&requests[1]);
     assert_eq!(retry_create_body["method"], "attachment.create_slot");
     assert_eq!(
         retry_create_body["params"]["body"]["attachment_id"],
@@ -217,24 +208,26 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
         digest_b64u(payload)
     );
 
-    let upload_text = request_text(&requests[3]);
+    let upload_text = request_text(&requests[2]);
     assert!(
         upload_text.starts_with("PUT /objects/upload/slot-live-1 HTTP/1.1"),
         "{upload_text}"
     );
     assert_contains_text(&upload_text, "x-awiki-upload-token: slot-token-1\r\n");
-    assert_eq!(request_body_bytes(&requests[3]), payload);
+    assert_eq!(request_body_bytes(&requests[2]), payload);
 
-    let commit_text = request_text(&requests[4]);
+    let commit_text = request_text(&requests[3]);
     assert!(
         commit_text.starts_with("POST /im/rpc HTTP/1.1"),
         "{commit_text}"
     );
-    assert_contains_text(
-        &commit_text,
-        "Authorization: Bearer jwt-alice-refreshed\r\n",
+    assert!(
+        commit_text
+            .lines()
+            .any(|line| line.to_ascii_lowercase().starts_with("signature-input: ")),
+        "without a minted fake access token, commit must remain signed, got:\n{commit_text}"
     );
-    let commit_body = json_body(&requests[4]);
+    let commit_body = json_body(&requests[3]);
     assert_eq!(commit_body["method"], "attachment.commit_object");
     assert_eq!(
         commit_body["params"]["meta"]["profile"],
@@ -259,13 +252,18 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
         digest_b64u(payload)
     );
 
-    let send_text = request_text(&requests[5]);
+    let send_text = request_text(&requests[4]);
     assert!(
         send_text.starts_with("POST /im/rpc HTTP/1.1"),
         "{send_text}"
     );
-    assert_contains_text(&send_text, "Authorization: Bearer jwt-alice-refreshed\r\n");
-    let send_body = json_body(&requests[5]);
+    assert!(
+        send_text
+            .lines()
+            .any(|line| line.to_ascii_lowercase().starts_with("signature-input: ")),
+        "without a minted fake access token, send must remain signed, got:\n{send_text}"
+    );
+    let send_body = json_body(&requests[4]);
     assert_eq!(send_body["method"], "group.send");
     assert_eq!(send_body["params"]["meta"]["profile"], "anp.group.base.v1");
     assert_eq!(
@@ -647,7 +645,7 @@ fn msg_attachment_download_error_mapping_matches_go_attachment_codes() {
             ))],
             5,
             "not_found",
-            "service rpc error 6000: attachment not found",
+            "message operation: remote resource was not found.",
         ),
         (
             vec![TestResponse::json(&json_rpc_error(
@@ -656,7 +654,7 @@ fn msg_attachment_download_error_mapping_matches_go_attachment_codes() {
             ))],
             2,
             "invalid_argument",
-            "service rpc error 6006: invalid attachment id",
+            "message operation: remote service rejected the request.",
         ),
         (
             vec![TestResponse::json(&json_rpc_result(json!({

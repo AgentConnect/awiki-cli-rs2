@@ -1494,6 +1494,7 @@ fn project_direct_records_to_thread(records: &mut [MessageRecord], thread_id: &s
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MarkReadClassification {
     pub(crate) direct_ids: Vec<String>,
+    pub(crate) remote_direct_ids: Vec<String>,
     pub(crate) group_ids: Vec<String>,
     pub(crate) local_only_ids: Vec<String>,
 }
@@ -1845,6 +1846,7 @@ fn classify_mark_read_ids_from_rows(
         let requested_msg_id = id.trim();
         let Some(row) = rows.get(requested_msg_id) else {
             result.direct_ids.push(id.clone());
+            result.remote_direct_ids.push(id.clone());
             continue;
         };
         if row.is_local_mail_notification() {
@@ -1853,6 +1855,7 @@ fn classify_mark_read_ids_from_rows(
             result.group_ids.push(id.clone());
         } else {
             result.direct_ids.push(id.clone());
+            result.remote_direct_ids.push(row.remote_mark_read_id());
         }
     }
     Ok(result)
@@ -3003,6 +3006,41 @@ impl MessageClassificationRow {
             .map(|value| value.trim() == "mail")
             .unwrap_or(false)
     }
+
+    fn remote_mark_read_id(&self) -> String {
+        let metadata = parse_metadata(&self.metadata);
+        let is_authenticated_p5_v2_projection = metadata
+            .get("p5_cache_profile")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            == Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
+            && [
+                "p5_cache_sender_did",
+                "p5_cache_sender_device_id",
+                "p5_cache_recipient_did",
+                "p5_cache_recipient_device_id",
+                "p5_cache_binding_digest",
+            ]
+            .into_iter()
+            .all(|key| {
+                metadata
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty())
+            });
+        if is_authenticated_p5_v2_projection {
+            if let Some(raw_message_id) = metadata
+                .get("raw_message_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return raw_message_id.to_owned();
+            }
+        }
+        self.requested_msg_id.clone()
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -4123,6 +4161,10 @@ VALUES (?1, ?2, ?3, ?4, ?4, 0, 'mail.notification', 'mail', '2026-05-21T00:00:00
         .unwrap();
 
         assert_eq!(classified.direct_ids, vec!["direct-1", "missing-1"]);
+        assert_eq!(
+            classified.remote_direct_ids,
+            vec!["direct-1", "missing-1"]
+        );
         assert_eq!(classified.group_ids, vec!["group-1"]);
         assert_eq!(classified.local_only_ids, vec!["mail-1"]);
     }

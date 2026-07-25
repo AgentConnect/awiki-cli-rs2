@@ -1,3 +1,4 @@
+use base64::Engine;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -87,9 +88,7 @@ fn identity_register_email_wait_already_verified_registers_and_persists_identity
         TestResponse::ok(
             r#"{"email":"alice@example.com","verified":true,"verified_at":"2026-01-01T00:00:00Z"}"#,
         ),
-        TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","user_id":"user-alice","message":"Registration successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-register"},"id":"req-1"}"#,
-        ),
+        TestResponse::registration(),
     ]);
     write_service_config(workspace.path(), &server.base_url());
 
@@ -124,7 +123,7 @@ fn identity_register_email_wait_already_verified_registers_and_persists_identity
         .expect("registered identity did")
         .to_string();
     assert!(
-        registered_did.starts_with("did:wba:awiki.ai:alice:e1_"),
+        registered_did.starts_with("did:wba:awiki.ai:user:alice:e1_"),
         "registration should persist the locally generated key-bound DID: {registered_did}"
     );
     assert!(envelope["data"]["identity"]["has_jwt"]
@@ -132,7 +131,7 @@ fn identity_register_email_wait_already_verified_registers_and_persists_identity
         .expect("identity has_jwt bool"));
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     assert!(requests[0].starts_with(
         "GET /user-service/auth/email-status?email=alice%40example.com&handle=alice.awiki.ai HTTP/1.1"
     ));
@@ -153,6 +152,7 @@ fn identity_register_email_wait_already_verified_registers_and_persists_identity
     assert!(body["params"].get("phone").is_none());
     assert!(body["params"].get("otp_code").is_none());
     assert_eq!(body["params"]["did_document"]["id"], registered_did);
+    assert_prekey_publication(&requests[2]);
 
     let stored = read_stored_identity(workspace.path(), "alice");
     assert_eq!(stored.index["handle"], "alice");
@@ -175,9 +175,7 @@ fn identity_register_email_wait_sends_then_polls_before_register_like_go() {
         TestResponse::ok(
             r#"{"email":"alice@example.com","verified":true,"verified_at":"2026-01-01T00:00:00Z"}"#,
         ),
-        TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","user_id":"user-alice","handle":"alice","full_handle":"alice.awiki.ai","access_token":"jwt-register"},"id":"req-1"}"#,
-        ),
+        TestResponse::registration(),
     ]);
     write_service_config(workspace.path(), &server.base_url());
 
@@ -201,7 +199,7 @@ fn identity_register_email_wait_sends_then_polls_before_register_like_go() {
     assert_eq!(envelope["data"]["verification_state"], "completed");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
     assert!(requests[0].starts_with(
         "GET /user-service/auth/email-status?email=alice%40example.com&handle=alice.awiki.ai HTTP/1.1"
     ));
@@ -210,6 +208,7 @@ fn identity_register_email_wait_sends_then_polls_before_register_like_go() {
         "GET /user-service/auth/email-status?email=alice%40example.com&handle=alice.awiki.ai HTTP/1.1"
     ));
     assert!(requests[3].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert_prekey_publication(&requests[4]);
 }
 
 fn write_service_config(workspace: &Path, base_url: &str) {
@@ -315,6 +314,106 @@ fn assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(
     }
 }
 
+fn registration_response(request: &str) -> String {
+    let rpc: Value =
+        serde_json::from_str(request_body(request)).expect("registration request JSON");
+    let params = &rpc["params"];
+    let document = &params["did_document"];
+    let did = document["id"]
+        .as_str()
+        .expect("registration DID document id");
+    let device = &document["deviceManifest"]["devices"][0];
+    let device_id = device["device_id"]
+        .as_str()
+        .expect("registration manifest device_id");
+    let key_id = device["signing_key_id"]
+        .as_str()
+        .expect("registration manifest signing_key_id");
+    let handle = params["handle"]
+        .as_str()
+        .expect("registration handle");
+    let domain = did
+        .strip_prefix("did:wba:")
+        .and_then(|suffix| suffix.split(':').next())
+        .expect("registration DID domain");
+    let user_id = format!("user-{handle}");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let claims = json!({
+        "iss": "user-service",
+        "aud": ["awiki-user-service", "awiki-message-service"],
+        "sub": did,
+        "type": "access",
+        "purpose": "awiki.device.access.v1",
+        "did": did,
+        "user_id": user_id,
+        "device_id": device_id,
+        "key_id": key_id,
+        "auth_generation": 1,
+        "scopes": ["device:manage", "device:read", "message:connect"],
+        "iat": now,
+        "nbf": now,
+        "exp": now + 3600,
+        "jti": format!("registration-{device_id}"),
+    });
+    let access_token = format!(
+        "e30.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).expect("serialize test access token claims"))
+    );
+    json!({
+        "jsonrpc": "2.0",
+        "result": {
+            "state": "registered",
+            "did": did,
+            "user_id": format!("user-{handle}"),
+            "message": "Registration successful",
+            "access_token": access_token,
+            "handle": handle,
+            "domain": domain,
+            "full_handle": format!("{handle}.{domain}"),
+        },
+        "id": rpc["id"].clone(),
+    })
+    .to_string()
+}
+
+fn prekey_publication_response(request: &str) -> String {
+    let rpc: Value = serde_json::from_str(request_body(request)).expect("P5 publish request JSON");
+    let body = &rpc["params"]["body"];
+    let bundle = &body["prekey_bundle"];
+    let published_opk_count = body["one_time_prekeys"]
+        .as_array()
+        .map(Vec::len)
+        .expect("P5 publish one_time_prekeys");
+    json!({
+        "jsonrpc": "2.0",
+        "result": {
+            "published": true,
+            "owner_did": bundle["owner_did"].clone(),
+            "owner_device_id": bundle["owner_device_id"].clone(),
+            "bundle_id": bundle["bundle_id"].clone(),
+            "published_at": "2026-07-25T00:00:00Z",
+            "published_opk_count": published_opk_count,
+        },
+        "id": rpc["id"].clone(),
+    })
+    .to_string()
+}
+
+fn assert_prekey_publication(request: &str) {
+    assert!(
+        request.starts_with("POST /im/rpc HTTP/1.1"),
+        "registration must publish its P5 PreKey bundle through Message Service:\n{request}"
+    );
+    let body: Value = serde_json::from_str(request_body(request)).expect("P5 publish request body");
+    assert_eq!(body["method"], "direct.e2ee.publish_prekey_bundle");
+    assert!(body["params"].get("auth").is_none());
+    assert_eq!(body["params"]["meta"]["target"]["kind"], "service");
+}
+
 #[derive(Clone)]
 struct TestResponse {
     status: u16,
@@ -327,6 +426,14 @@ impl TestResponse {
             status: 200,
             body: body.to_string(),
         }
+    }
+
+    fn registration() -> Self {
+        Self::ok("__DYNAMIC_REGISTRATION_RESPONSE__")
+    }
+
+    fn prekey_publication() -> Self {
+        Self::ok("__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__")
     }
 }
 
@@ -347,11 +454,23 @@ impl TestServer {
         let server_requests = Arc::clone(&requests);
         let join = thread::spawn(move || {
             for response in responses {
+                let follows_with_prekey = response.body == "__DYNAMIC_REGISTRATION_RESPONSE__";
                 let stream = accept_with_timeout(&listener);
                 let Some(stream) = stream else {
                     break;
                 };
                 handle_connection(stream, &server_requests, response);
+                if follows_with_prekey {
+                    let stream = accept_with_timeout(&listener);
+                    let Some(stream) = stream else {
+                        break;
+                    };
+                    handle_connection(
+                        stream,
+                        &server_requests,
+                        TestResponse::prekey_publication(),
+                    );
+                }
             }
         });
         Self {
@@ -379,7 +498,7 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
@@ -405,13 +524,20 @@ fn handle_connection(
     response: TestResponse,
 ) {
     let request = read_http_request(&mut stream);
+    let body = if response.body == "__DYNAMIC_REGISTRATION_RESPONSE__" {
+        registration_response(&request)
+    } else if response.body == "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" {
+        prekey_publication_response(&request)
+    } else {
+        response.body
+    };
     requests.lock().expect("requests mutex").push(request);
-    let body = response.body.as_bytes();
+    let body_bytes = body.as_bytes();
     let raw = format!(
         "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         response.status,
-        body.len(),
-        response.body
+        body_bytes.len(),
+        body
     );
     stream.write_all(raw.as_bytes()).expect("write response");
 }
