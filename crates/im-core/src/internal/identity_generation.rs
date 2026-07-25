@@ -108,12 +108,33 @@ pub(crate) fn generate_vnext_handle_identity_with_default_daemon_subkey(
             "Handle local-part is required",
         ));
     }
-    generate_vnext_identity_with_path_segments(
+    let mut generated = generate_vnext_identity_with_path_segments(
         hostname,
         ["user", local_part.as_str()],
         service_endpoint,
         service_did,
-    )
+    )?;
+    let handle_service =
+        anp::wns::build_handle_service_entry(generated.did.as_str(), &local_part, hostname.trim());
+    let services = generated
+        .did_document
+        .as_object_mut()
+        .and_then(|document| document.get_mut("service"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| crate::ImError::Internal {
+            message: "generated vNext DID document is missing service entries".to_owned(),
+        })?;
+    services.push(handle_service);
+    crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+        &mut generated.did_document,
+        &generated.did,
+        &generated.root_private_pem,
+    )?;
+    crate::internal::identity_daemon_subkey::validate_package_against_did_document(
+        &generated.daemon_subkey_package,
+        &generated.did_document,
+    )?;
+    Ok(generated)
 }
 
 fn generate_vnext_identity_with_path_segments<I, S>(

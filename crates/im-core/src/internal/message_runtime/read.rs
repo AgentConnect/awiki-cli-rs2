@@ -98,11 +98,13 @@ where
         &mut self,
         query: crate::messages::InboxQuery,
     ) -> crate::ImResult<ReadPageResult> {
-        self.session_provider
-            .ensure_session(crate::auth::AuthScope::Messaging)?;
         let limit = page_limit(query.limit, 20);
         let delegated =
             delegated_inbox_context(self.client, query.inbox_history_options.as_ref(), limit)?;
+        if delegated.is_none() {
+            self.session_provider
+                .ensure_session(crate::auth::AuthScope::Messaging)?;
+        }
         let service_did = delegated
             .as_ref()
             .map(|_| delegated_message_service_did(self.client));
@@ -218,14 +220,16 @@ where
     pub(crate) fn history(mut self, input: HistoryRead) -> crate::ImResult<ReadPageResult> {
         match input.thread {
             crate::messages::ThreadRef::Direct(peer) => {
-                self.session_provider
-                    .ensure_session(crate::auth::AuthScope::Messaging)?;
                 let peer = direct_thread(peer, input.resolved_peer_did)?;
                 let delegated = delegated_inbox_context(
                     self.client,
                     input.query.inbox_history_options.as_ref(),
                     page_limit(input.query.limit, 50),
                 )?;
+                if delegated.is_none() {
+                    self.session_provider
+                        .ensure_session(crate::auth::AuthScope::Messaging)?;
+                }
                 let service_did = delegated
                     .as_ref()
                     .map(|_| delegated_message_service_did(self.client));
@@ -386,13 +390,15 @@ where
         &mut self,
         query: crate::messages::InboxQuery,
     ) -> crate::ImResult<ReadPageResult> {
-        self.session_provider
-            .ensure_session(crate::auth::AuthScope::Messaging)
-            .await?;
         let limit = page_limit(query.limit, 20);
         let delegated =
             delegated_inbox_context_async(self.client, query.inbox_history_options.as_ref(), limit)
                 .await?;
+        if delegated.is_none() {
+            self.session_provider
+                .ensure_session(crate::auth::AuthScope::Messaging)
+                .await?;
+        }
         let service_did = delegated
             .as_ref()
             .map(|_| delegated_message_service_did(self.client));
@@ -522,9 +528,6 @@ where
     ) -> crate::ImResult<ReadPageResult> {
         match input.thread {
             crate::messages::ThreadRef::Direct(peer) => {
-                self.session_provider
-                    .ensure_session(crate::auth::AuthScope::Messaging)
-                    .await?;
                 let peer = direct_thread(peer, input.resolved_peer_did)?;
                 let delegated = delegated_inbox_context_async(
                     self.client,
@@ -532,6 +535,11 @@ where
                     page_limit(input.query.limit, 50),
                 )
                 .await?;
+                if delegated.is_none() {
+                    self.session_provider
+                        .ensure_session(crate::auth::AuthScope::Messaging)
+                        .await?;
+                }
                 let service_did = delegated
                     .as_ref()
                     .map(|_| delegated_message_service_did(self.client));

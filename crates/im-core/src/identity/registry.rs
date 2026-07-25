@@ -603,8 +603,9 @@ impl<'a> IdentityRegistry<'a> {
         let entry = registry.find_entry(selector)?;
         let core = (*self.core).clone();
         let entry = entry.clone();
+        let prepared_entry = entry.clone();
         let prepared = crate::internal::runtime::worker::run_blocking(move || {
-            IdentityRegistry::new(&core).prepare_daemon_subkey_revoke(&entry)
+            IdentityRegistry::new(&core).prepare_daemon_subkey_revoke(&prepared_entry)
         })
         .await
         .map_err(|err| crate::ImError::Internal {
@@ -626,6 +627,94 @@ impl<'a> IdentityRegistry<'a> {
                 did_document,
                 selector,
             } => {
+                if entry.device_state.as_ref().is_some_and(|state| {
+                    state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
+                }) {
+                    let mut state = entry
+                        .device_state
+                        .clone()
+                        .ok_or(crate::ImError::PermissionDenied)?;
+                    let expected_checkpoint = state
+                        .checkpoint
+                        .clone()
+                        .ok_or(crate::ImError::PermissionDenied)?;
+                    let (client, authorizing_device_id, authorizing_signing_key_id) =
+                        crate::internal::identity_device_join::ready_admin_context(
+                            self.core, &selector, None,
+                        )?;
+                    let signing_pem = zeroize::Zeroizing::new(
+                        client
+                            .runtime()
+                            .key_provider
+                            .device_request_signing_private_pem()?,
+                    );
+                    let signing_private = anp::PrivateKeyMaterial::from_pem(&signing_pem)
+                        .map_err(|_| crate::ImError::PermissionDenied)?;
+                    let next_document_hash =
+                        crate::internal::identity_wire::document::document_hash(&did_document)?;
+                    let expected_result_checkpoint =
+                        crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                            document_version: expected_checkpoint
+                                .document_version
+                                .checked_add(1)
+                                .ok_or(crate::ImError::PermissionDenied)?,
+                            document_hash: next_document_hash.clone(),
+                            registry_version: expected_checkpoint.registry_version,
+                        };
+                    let operation_id = format!(
+                        "daemon-subkey-revoke-{}",
+                        next_document_hash
+                            .strip_prefix("sha256:")
+                            .ok_or(crate::ImError::PermissionDenied)?
+                    );
+                    let prepared =
+                        crate::internal::identity_wire::device_document_update::prepare_update(
+                            operation_id,
+                            expected_checkpoint,
+                            did_document.clone(),
+                            authorizing_device_id,
+                            &authorizing_signing_key_id,
+                            &signing_private,
+                            time::OffsetDateTime::now_utc(),
+                        )?;
+                    let call =
+                        crate::internal::identity_wire::device_document_update::build_update_call(
+                            &prepared,
+                        )?;
+                    use crate::internal::transport::AsyncAuthenticatedRpcTransport;
+                    let mut transport = crate::internal::transport::CoreHttpTransport::new(&client);
+                    let raw = transport
+                        .authenticated_rpc(call.endpoint, call.method, call.params)
+                        .await?;
+                    let checkpoint =
+                        crate::internal::identity_wire::device_document_update::parse_update_result(
+                            raw,
+                            &did,
+                            &expected_result_checkpoint,
+                        )?;
+                    state.checkpoint = Some(checkpoint);
+                    state.validate_for_did(&did)?;
+                    let local_alias = client
+                        .current_identity()
+                        .local_alias
+                        .clone()
+                        .ok_or(crate::ImError::PermissionDenied)?;
+                    let paths = self.core.inner().sdk_paths().identities.clone();
+                    crate::internal::runtime::worker::run_blocking(move || {
+                        let store = crate::internal::identity_store::IdentityStore::new(&paths);
+                        store.save_device_state(&local_alias, state)?;
+                        store.save_did_document(&dir_name, &did_document)
+                    })
+                    .await
+                    .map_err(|err| crate::ImError::Internal {
+                        message: err.to_string(),
+                    })??;
+                    return Ok(super::DaemonSubkeyAuthorizationRevokeResult {
+                        user_did: did,
+                        verification_method,
+                        updated: true,
+                    });
+                }
                 let client = self.core.client_async(selector).await?;
                 let call =
                     crate::internal::identity_wire::update_document::build_update_document_rpc_call(

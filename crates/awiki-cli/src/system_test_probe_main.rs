@@ -423,16 +423,22 @@ impl Probe {
         params: &AttachmentTicketParams,
     ) -> Result<RpcOutcome<HeldTicket>, ProbeFailure> {
         let rpc_params = self.download_ticket_rpc_params(params).await?;
-        let request_body =
-            validated_ticket_request_body(&rpc_params, params, &self.local_did, &self.service_did)?;
+        let target_service_did = ticket_target_service_did(&rpc_params)?;
+        let object_uri = self.validate_object_uri(&params.object_uri, target_service_did)?;
+        let request_body = validated_ticket_request_body(
+            &rpc_params,
+            params,
+            &self.local_did,
+            target_service_did,
+        )?;
         match self
             .rpc::<DownloadTicketResult>("attachment.get_download_ticket", rpc_params)
             .await?
         {
             RpcOutcome::Success(result) => Ok(RpcOutcome::Success(self.validated_held_ticket(
                 result,
-                params,
                 &request_body,
+                object_uri,
             )?)),
             RpcOutcome::Rejected(code) => Ok(RpcOutcome::Rejected(code)),
         }
@@ -465,7 +471,7 @@ impl Probe {
 
         #[cfg(test)]
         {
-            let object_uri = self.validate_object_uri(&params.object_uri)?;
+            let object_uri = self.validate_object_uri(&params.object_uri, &self.service_did)?;
             let selection = im_core::attachments::AttachmentSelection {
                 message_id: params.message_id.clone(),
                 sender_did: params.sender_did.clone(),
@@ -496,15 +502,14 @@ impl Probe {
     fn validated_held_ticket(
         &self,
         mut result: DownloadTicketResult,
-        params: &AttachmentTicketParams,
         request_body: &Map<String, Value>,
+        object_uri: reqwest::Url,
     ) -> Result<HeldTicket, ProbeFailure> {
         if result.download_ticket_b64u.trim().is_empty()
             || !ticket_binding_matches_request(&result.ticket_binding, request_body)
         {
             return Err(ProbeFailure::Runtime);
         }
-        let object_uri = self.validate_object_uri(&params.object_uri)?;
         Ok(HeldTicket {
             ticket: Zeroizing::new(std::mem::take(&mut result.download_ticket_b64u)),
             object_uri,
@@ -637,10 +642,14 @@ impl Probe {
         }
     }
 
-    fn validate_object_uri(&self, raw: &str) -> Result<reqwest::Url, ProbeFailure> {
+    fn validate_object_uri(
+        &self,
+        raw: &str,
+        target_service_did: &str,
+    ) -> Result<reqwest::Url, ProbeFailure> {
         let url = reqwest::Url::parse(raw).map_err(|_| ProbeFailure::InvalidRequest)?;
         validate_service_url(&url).map_err(|_| ProbeFailure::InvalidRequest)?;
-        if !same_origin(&url, &self.message_rpc_url)
+        if !service_did_matches_url(target_service_did, &url)
             || !url.path().starts_with("/objects/")
             || !url.username().is_empty()
             || url.password().is_some()
@@ -965,6 +974,18 @@ fn validated_ticket_request_body(
     Ok(body.clone())
 }
 
+fn ticket_target_service_did(rpc_params: &Value) -> Result<&str, ProbeFailure> {
+    let target_service_did = rpc_params
+        .get("meta")
+        .and_then(Value::as_object)
+        .and_then(|meta| meta.get("target"))
+        .and_then(Value::as_object)
+        .and_then(|target| string_field(target, "did"))
+        .ok_or(ProbeFailure::Runtime)?;
+    im_core::ids::Did::parse(target_service_did).map_err(|_| ProbeFailure::Runtime)?;
+    Ok(target_service_did)
+}
+
 fn ticket_binding_matches_request(
     binding: &Map<String, Value>,
     request_body: &Map<String, Value>,
@@ -1035,10 +1056,14 @@ fn validate_service_url(url: &reqwest::Url) -> Result<(), ProbeFailure> {
     }
 }
 
-fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
-    left.scheme() == right.scheme()
-        && left.host_str() == right.host_str()
-        && left.port_or_known_default() == right.port_or_known_default()
+fn service_did_matches_url(service_did: &str, url: &reqwest::Url) -> bool {
+    let mut parts = service_did.split(':');
+    let domain = match (parts.next(), parts.next(), parts.next()) {
+        (Some("did"), Some("wba"), Some(domain)) if !domain.is_empty() => domain,
+        _ => return false,
+    };
+    url.host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case(domain))
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -1072,7 +1097,7 @@ mod tests {
     const LOCAL_DID: &str = "did:wba:example.test:user:local";
     const SENDER_DID: &str = "did:wba:example.test:user:sender";
     const TARGET_DID: &str = "did:wba:example.test:user:target";
-    const SERVICE_DID: &str = "did:wba:example.test:service:message";
+    const SERVICE_DID: &str = "did:wba:127.0.0.1:service:message";
     const TOKEN_SECRET: &str = "jwt-secret-must-not-leak";
     const TICKET_SECRET: &str = "ticket-secret-must-not-leak";
     const SERVER_ERROR_SECRET: &str = "server-error-must-not-leak";
@@ -1104,6 +1129,20 @@ mod tests {
             response,
             json!({"id": 7, "ok": false, "error": {"code": INVALID_REQUEST}})
         );
+    }
+
+    #[test]
+    fn ticket_object_is_bound_to_target_service_did() {
+        let object_uri =
+            reqwest::Url::parse("https://home-a.example.test/objects/object-1?download=1").unwrap();
+        assert!(service_did_matches_url(
+            "did:wba:home-a.example.test:service:message",
+            &object_uri,
+        ));
+        assert!(!service_did_matches_url(
+            "did:wba:home-b.example.test:service:message",
+            &object_uri,
+        ));
     }
 
     #[tokio::test]

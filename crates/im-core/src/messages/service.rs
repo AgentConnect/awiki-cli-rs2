@@ -144,6 +144,9 @@ mod direct_send_result_identity_tests {
 }
 
 #[cfg(test)]
+mod conversation_send_tests;
+
+#[cfg(test)]
 mod stale_delivery_target_tests {
     use serde_json::json;
 
@@ -1873,6 +1876,9 @@ impl<'a> MessageService<'a> {
         &self,
         resolved: ResolvedConversationSendRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        if conversation_send_uses_security_runtime(&resolved.request.security) {
+            return self.send_async(resolved.request).await;
+        }
         validate_plain_conversation_send(&resolved.request)?;
         let message_id = resolved
             .request
@@ -3549,6 +3555,15 @@ pub(crate) fn normalize_direct_send_result_for_peer_scope(
         );
     }
     Ok(())
+}
+
+fn conversation_send_uses_security_runtime(security: &super::MessageSecurityMode) -> bool {
+    matches!(
+        security,
+        super::MessageSecurityMode::E2eeRequired
+            | super::MessageSecurityMode::SecureDirect
+            | super::MessageSecurityMode::GroupE2ee
+    )
 }
 
 fn conversation_send_request(

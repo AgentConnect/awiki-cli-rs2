@@ -329,16 +329,6 @@ impl UserDelegatedInboxClient for ImCoreDelegatedInboxClient<'_> {
             minimal_user_did_document(identity),
             private_key_pem,
         )?;
-        let auth_status = client
-            .auth()
-            .status()
-            .context("inspect delegated inbox auth session")?;
-        if !auth_status.has_session || auth_status.needs_refresh {
-            client
-                .auth()
-                .refresh_session()
-                .context("refresh delegated inbox auth session")?;
-        }
         let page = client.messages().inbox_with_metadata(InboxQuery {
             scope: InboxScope::All,
             limit: im_core::ids::PageLimit::new(limit)?,

@@ -17,6 +17,28 @@ use std::sync::{Mutex, OnceLock};
 const NOW: &str = "2026-07-20T00:00:00Z";
 const ACCEPTED_AT: &str = "2026-07-20T00:00:01Z";
 
+#[test]
+fn delivery_failure_code_preserves_safe_local_state_category() {
+    assert_eq!(
+        failure_code(&crate::ImError::LocalStateUnavailable {
+            detail: "database is locked".to_owned(),
+        }),
+        "local_state_database_locked"
+    );
+    assert_eq!(
+        failure_code(&crate::ImError::LocalStateUnavailable {
+            detail: "UNIQUE constraint failed: sessions.id".to_owned(),
+        }),
+        "local_state_constraint"
+    );
+    assert_eq!(
+        failure_code(&crate::ImError::IdentityVault {
+            failure: crate::IdentityVaultFailure::Unavailable,
+        }),
+        "identity_vault"
+    );
+}
+
 #[derive(Clone, Copy)]
 struct DeviceSpec {
     id: &'static str,

@@ -1147,11 +1147,15 @@ fn validate_access_token_for_client(
     client: &crate::core::ImClient,
     token: &str,
 ) -> crate::ImResult<()> {
-    let local_alias = client
-        .current_identity()
-        .local_alias
-        .as_deref()
-        .ok_or(crate::ImError::PermissionDenied)?;
+    let Some(local_alias) = client.current_identity().local_alias.as_deref() else {
+        // Hosted identities (daemon/runtime agents) have no on-disk identity
+        // registry entry. Their current registration contract is Legacy DID,
+        // so validate the newly issued token against the hosted DID directly.
+        return crate::internal::access_token::validate_legacy_access_token(
+            token,
+            client.did().as_str(),
+        );
+    };
     let store = crate::internal::identity_store::IdentityStore::new(
         &client.core_inner().sdk_paths().identities,
     );

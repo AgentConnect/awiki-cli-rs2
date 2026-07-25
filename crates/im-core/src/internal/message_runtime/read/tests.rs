@@ -221,7 +221,7 @@ fn messages_read_runtime_builds_delegated_inbox_auth_and_filters_e2ee() {
     let calls = Rc::new(RefCell::new(Vec::new()));
     let runtime = MessageReadRuntime::new(
         &client,
-        ReadySessionProvider,
+        DelegatedProofOnlySessionProvider,
         RecordingTransport {
             calls: Rc::clone(&calls),
             response: json!({
@@ -5511,6 +5511,43 @@ impl SessionProvider for ReadySessionProvider {
 }
 
 impl crate::internal::auth::session::AsyncSessionProvider for ReadySessionProvider {
+    async fn ensure_session(
+        &self,
+        scope: crate::auth::AuthScope,
+    ) -> crate::ImResult<crate::auth::SessionBundle> {
+        SessionProvider::ensure_session(self, scope)
+    }
+
+    async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+        SessionProvider::refresh_session(self)
+    }
+
+    async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+        SessionProvider::status(self)
+    }
+}
+
+#[derive(Clone)]
+struct DelegatedProofOnlySessionProvider;
+
+impl SessionProvider for DelegatedProofOnlySessionProvider {
+    fn ensure_session(
+        &self,
+        _scope: crate::auth::AuthScope,
+    ) -> crate::ImResult<crate::auth::SessionBundle> {
+        panic!("delegated inbox reads must use their DID proof without an access-token session")
+    }
+
+    fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+        panic!("delegated inbox reads must not refresh an access-token session")
+    }
+
+    fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+        panic!("delegated inbox reads must not inspect an access-token session")
+    }
+}
+
+impl crate::internal::auth::session::AsyncSessionProvider for DelegatedProofOnlySessionProvider {
     async fn ensure_session(
         &self,
         scope: crate::auth::AuthScope,

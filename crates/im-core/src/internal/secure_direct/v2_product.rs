@@ -2817,9 +2817,18 @@ fn failure_code(error: &crate::ImError) -> &'static str {
     match error {
         crate::ImError::PermissionDenied => "permission_denied",
         crate::ImError::Service { .. } | crate::ImError::TransportUnavailable { .. } => "transport",
-        crate::ImError::LocalStateUnavailable { .. } | crate::ImError::IdentityVault { .. } => {
-            "local_state"
+        crate::ImError::LocalStateUnavailable { detail }
+            if detail.to_ascii_lowercase().contains("database is locked") =>
+        {
+            "local_state_database_locked"
         }
+        crate::ImError::LocalStateUnavailable { detail }
+            if detail.to_ascii_lowercase().contains("constraint failed") =>
+        {
+            "local_state_constraint"
+        }
+        crate::ImError::LocalStateUnavailable { .. } => "local_state",
+        crate::ImError::IdentityVault { .. } => "identity_vault",
         crate::ImError::UnsupportedCapability { .. } => "unsupported",
         _ => "delivery_failed",
     }

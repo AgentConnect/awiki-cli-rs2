@@ -1636,7 +1636,8 @@ fn normalize_group_snapshot(raw: &Value) -> Option<Value> {
         let mut snapshot = snapshot.clone();
         if let (Some(object), Some(maintenance)) = (
             snapshot.as_object_mut(),
-            raw.get("e2ee_maintenance").filter(|value| value.is_object()),
+            raw.get("e2ee_maintenance")
+                .filter(|value| value.is_object()),
         ) {
             object.insert("e2ee_maintenance".to_owned(), maintenance.clone());
         }
@@ -1862,8 +1863,8 @@ mod group_message_projection_tests {
     use serde_json::json;
 
     use super::{
-        im_error_to_message_error, is_attachment_manifest_payload,
-        normalize_group_snapshot, required_group_member_page_binding,
+        im_error_to_message_error, is_attachment_manifest_payload, normalize_group_snapshot,
+        required_group_member_page_binding,
     };
     use crate::m_core_cli_adapter::message_result::{MessageAdapterError, ServiceError};
 

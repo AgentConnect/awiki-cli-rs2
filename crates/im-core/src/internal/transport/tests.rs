@@ -1,4 +1,5 @@
 use super::*;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::json;
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;
@@ -105,6 +106,67 @@ async fn async_unavailable_transport_errors_match_sync_shape() {
         .await,
         "GET transport is not configured for https://object.test/download",
     );
+}
+
+#[test]
+fn hosted_legacy_identity_accepts_refreshed_did_access_token() {
+    let root = tempfile::tempdir().unwrap();
+    let endpoint = crate::config::ServiceEndpoint::parse("https://awiki.test").unwrap();
+    let core = crate::core::ImCore::new(
+        crate::config::ImCoreConfig {
+            service_base_url: endpoint,
+            did_domain: "awiki.test".to_owned(),
+            user_service_endpoint: None,
+            message_service_endpoint: None,
+            mail_service_endpoint: None,
+            anp_service_endpoint: None,
+            anp_service_did: None,
+            ca_bundle: None,
+            transport_policy: crate::config::MessageTransportPolicy::HttpOnly,
+        },
+        crate::paths::ImCorePaths {
+            identities: crate::paths::IdentityRegistryPaths {
+                identity_root_dir: root.path().join("identities"),
+                registry_path: root.path().join("identities").join("registry.json"),
+                default_identity_path: Some(root.path().join("identities").join("default")),
+            },
+            local_state: crate::paths::LocalStatePaths {
+                sqlite_path: root.path().join("local").join("im.sqlite"),
+            },
+            runtime: crate::paths::RuntimePaths {
+                cache_dir: root.path().join("cache"),
+                temp_dir: root.path().join("tmp"),
+            },
+        },
+    )
+    .unwrap();
+    let did = "did:wba:awiki.test:agent:daemon:edgehost:e1_demo";
+    let client = core
+        .client_with_identity_material(crate::identity::HostedIdentityMaterial {
+            identity_id: "daemon-agent".to_owned(),
+            did: did.to_owned(),
+            handle: Some("edgehost.awiki.test".to_owned()),
+            display_name: None,
+            did_document: json!({"id": did}),
+            default_signing_private_key_pem: "signing-secret".to_owned(),
+            e2ee_agreement_private_key_pem: Some("agreement-secret".to_owned()),
+            auth_token: None,
+        })
+        .unwrap();
+    let token = format!(
+        "e30.{}.signature",
+        URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&json!({
+                "iss": "user-service",
+                "sub": did,
+                "type": "access",
+                "exp": time::OffsetDateTime::now_utc().unix_timestamp() + 300
+            }))
+            .unwrap()
+        )
+    );
+
+    validate_access_token_for_client(&client, &token).unwrap();
 }
 
 #[tokio::test]

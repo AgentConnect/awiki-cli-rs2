@@ -79,7 +79,7 @@ fn project_direct_incoming(notification: &Value) -> NotificationProjection {
         );
     let mut metadata = message_metadata(
         meta,
-        None,
+        int64_value(value_from_object(Some(params), "server_seq")),
         Some(content_type.clone()),
         [("notification_method", "direct.incoming")],
     );
@@ -591,6 +591,29 @@ fn none_if_empty(value: String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_projection_keeps_trusted_realtime_server_sequence_sidecar() {
+        let notification = serde_json::json!({
+            "method": "direct.incoming",
+            "params": {
+                "meta": {
+                    "sender_did": "did:example:bob",
+                    "target": {"kind": "agent", "did": "did:example:alice"},
+                    "message_id": "message-1",
+                    "content_type": "text/plain"
+                },
+                "body": {"text": "hello"},
+                "server_seq": 42
+            }
+        });
+
+        let projection = project_notification(&notification);
+        let ImEvent::MessageReceived(event) = projection.event else {
+            panic!("direct.incoming must project a message");
+        };
+        assert_eq!(event.message.metadata.server_sequence, Some(42));
+    }
 
     #[test]
     fn verified_p6_projection_marks_decrypted_group_security() {

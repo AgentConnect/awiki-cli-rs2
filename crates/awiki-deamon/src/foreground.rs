@@ -633,7 +633,8 @@ async fn process_realtime_event(
             )?;
             Ok(0)
         }
-        im_core::realtime::ImEvent::LocalNotification(_)
+        im_core::realtime::ImEvent::SystemNotificationChanged(_)
+        | im_core::realtime::ImEvent::LocalNotification(_)
         | im_core::realtime::ImEvent::HostNotification(_) => {
             state.insert_audit_event_json(
                 "daemon.realtime.notification.ignored",

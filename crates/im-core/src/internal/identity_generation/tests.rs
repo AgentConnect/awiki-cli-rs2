@@ -61,6 +61,12 @@ fn vnext_genesis_has_one_device_and_separate_root_and_device_keys() {
         .did
         .as_str()
         .starts_with("did:wba:awiki.info:user:alice:e1_"));
+    assert!(generated.did_document["service"]
+        .as_array()
+        .is_some_and(|services| services.iter().any(|service| {
+            service["type"] == "ANPHandleService"
+                && service["serviceEndpoint"] == "https://awiki.info/.well-known/handle/alice"
+        })));
     assert!(anp::authentication::validate_did_document_binding(
         &generated.did_document,
         true
