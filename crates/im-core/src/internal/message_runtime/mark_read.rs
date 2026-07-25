@@ -1390,6 +1390,91 @@ mod tests {
     }
 
     #[test]
+    fn mark_thread_read_without_explicit_watermark_stops_at_latest_hydrated_message() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        fixture.seed_message_with_seq(&client, "hydrated-5", "", "text/plain", "", 0, 5);
+        fixture.seed_message_with_seq(&client, "discovered-10", "", "text/plain", "", 0, 10);
+        let connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        connection
+            .execute(
+                "UPDATE messages SET content = '', hydration_state = 'discovered' WHERE owner_identity_id = 'alice-id' AND msg_id = 'discovered-10'",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        let result = MessageMarkReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"updated_count": 1}),
+            },
+        )
+        .mark_thread_read(MarkThreadReadInput {
+            request: crate::messages::MarkThreadReadRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                watermark: None,
+                fallback_max_message_ids: None,
+            },
+            remote_thread: None,
+        })
+        .unwrap();
+
+        assert_eq!(result.sdk_result.updated_count, 1);
+        assert_eq!(
+            result
+                .sdk_result
+                .effective_watermark
+                .as_ref()
+                .and_then(|watermark| watermark.last_read_thread_seq.as_deref()),
+            Some("5")
+        );
+        assert_eq!(fixture.is_read(&client, "hydrated-5"), 1);
+        assert_eq!(fixture.is_read(&client, "discovered-10"), 0);
+        assert_eq!(
+            calls.borrow()[0].params["body"]["read_up_to_server_seq"],
+            "5"
+        );
+
+        let connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        crate::internal::local_state::messages::upsert_message(
+            &connection,
+            &crate::internal::local_state::messages::MessageRecord {
+                msg_id: "discovered-10".to_owned(),
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                conversation_id: "dm:did:example:bob".to_owned(),
+                thread_id: "dm:did:example:bob".to_owned(),
+                direction: 0,
+                sender_did: "did:example:bob".to_owned(),
+                receiver_did: "did:example:alice".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "now visible".to_owned(),
+                server_seq: Some(10),
+                hydration_state:
+                    crate::internal::local_state::messages::MessageHydrationState::Hydrated,
+                sent_at: "2026-05-21T00:00:10Z".to_owned(),
+                stored_at: "2026-05-21T00:00:10Z".to_owned(),
+                is_read: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(fixture.is_read(&client, "discovered-10"), 0);
+    }
+
+    #[test]
     fn mark_thread_read_runtime_uses_remote_thread_override_for_read_state_wire() {
         let fixture = Fixture::new();
         let client = fixture.client();

@@ -892,6 +892,7 @@ pub(crate) fn list_group_messages_for_owner_identity(
 SELECT *
 FROM messages
 WHERE {} AND (group_did = ?2 OR group_id = ?2)
+  AND hydration_state = 'hydrated'
   AND COALESCE(server_seq, 0) > ?3
 ORDER BY COALESCE(server_seq, 0) DESC, COALESCE(sent_at, stored_at) DESC
 LIMIT ?4"#,
@@ -913,6 +914,7 @@ LIMIT ?4"#,
 SELECT *
 FROM messages
 WHERE {} AND (group_did = ?2 OR group_id = ?2)
+  AND hydration_state = 'hydrated'
 ORDER BY COALESCE(server_seq, 0) DESC, COALESCE(sent_at, stored_at) DESC
 LIMIT ?3"#,
         owner_predicate("messages")
@@ -1249,6 +1251,19 @@ VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, 'text/plain', 'hello', 7, ?8, ?8, ?9)"#,
             ),
         )
         .unwrap();
+        db.execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction,
+     sender_did, group_id, group_did, content_type, server_seq, hydration_state,
+     sent_at, stored_at, credential_name)
+VALUES ('msg-group-discovered', 'alice-identity', 'did:owner', 'group:did:group',
+        'group:did:group', 0, 'did:member', 'group-key', 'did:group',
+        'application/json', 8, 'discovered', '2026-05-21T00:00:01Z',
+        '2026-05-21T00:00:01Z', 'alice')"#,
+            [],
+        )
+        .unwrap();
 
         let snapshot =
             get_group_snapshot_for_owner_identity(&db, "alice-identity", "did:owner", "did:group")
@@ -1274,6 +1289,17 @@ VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, 'text/plain', 'hello', 7, ?8, ?8, ?9)"#,
             "did:group",
             10,
             Some(1),
+        )
+        .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["msg_id"], "msg-group-1");
+        let messages = list_group_messages_for_owner_identity(
+            &db,
+            "alice-identity",
+            "did:owner",
+            "did:group",
+            10,
+            None,
         )
         .unwrap();
         assert_eq!(messages.len(), 1);

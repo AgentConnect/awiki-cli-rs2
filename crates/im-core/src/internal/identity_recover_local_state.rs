@@ -1,4 +1,6 @@
 mod records;
+#[cfg(test)]
+mod records_tests;
 mod sql;
 
 use crate::internal::identity_recover_local_state::helpers::StoreResult;

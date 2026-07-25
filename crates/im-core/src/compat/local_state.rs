@@ -264,6 +264,8 @@ impl From<MessageRecord> for crate::internal::local_state::messages::MessageReco
             content: record.content,
             title: record.title,
             server_seq: record.server_seq,
+            hydration_state:
+                crate::internal::local_state::messages::MessageHydrationState::Hydrated,
             sent_at: record.sent_at,
             stored_at: record.stored_at,
             is_e2ee: record.is_e2ee,

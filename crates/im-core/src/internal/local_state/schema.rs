@@ -2,7 +2,8 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 28;
+pub(crate) const SCHEMA_VERSION: i64 = 29;
+pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
 const CONVERSATION_REGISTRY_SCHEMA_VERSION: i64 = 26;
@@ -931,6 +932,9 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
+    if version == CANONICAL_CONVERSATION_SCHEMA_VERSION {
+        return migrate_schema_28_to_29(connection);
+    }
     if version < SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUpgradeRequired {
             from_version: version,
@@ -979,6 +983,7 @@ pub(super) fn create_schema(
         "TEXT",
     )?;
     let mut should_rebuild_conversation_summaries = backfill_conversation_summaries;
+    ensure_message_hydration_projection(connection)?;
     if ensure_message_projection_columns(connection)? {
         backfill_message_mention_projection(connection)?;
         should_rebuild_conversation_summaries = true;
@@ -1084,6 +1089,7 @@ CREATE TABLE IF NOT EXISTS messages{suffix} (
     content           TEXT,
     title             TEXT,
     server_seq        INTEGER,
+    hydration_state   TEXT NOT NULL DEFAULT 'hydrated',
     sent_at           TEXT,
     stored_at         TEXT NOT NULL,
     is_e2ee           INTEGER DEFAULT 0,
@@ -1360,6 +1366,68 @@ fn ensure_message_projection_columns(connection: &Connection) -> crate::ImResult
         changed = true;
     }
     Ok(changed)
+}
+
+fn ensure_message_hydration_projection(connection: &Connection) -> crate::ImResult<()> {
+    let added = !has_column(connection, "messages", "hydration_state")?;
+    ensure_column(
+        connection,
+        "messages",
+        "hydration_state",
+        "TEXT NOT NULL DEFAULT 'hydrated'",
+    )?;
+    connection
+        .execute_batch(
+            r#"CREATE INDEX IF NOT EXISTS idx_messages_owner_hydration_conversation_seq
+ON messages(owner_identity_id, hydration_state, conversation_id, server_seq);"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    if added && current_schema_version(connection)? != 0 {
+        mark_legacy_hydration_probes(connection)?;
+    }
+    Ok(())
+}
+
+fn mark_legacy_hydration_probes(connection: &Connection) -> crate::ImResult<()> {
+    // Pre-29 rows did not preserve sync.delta provenance. Treat ambiguous empty
+    // rows as one-time probes, not as confirmed metadata-only discoveries.
+    connection
+        .execute(
+            r#"UPDATE messages
+SET hydration_state = 'legacy_probe'
+WHERE server_seq IS NOT NULL
+  AND TRIM(COALESCE(content, '')) = ''
+  AND hydration_state = 'hydrated'"#,
+            [],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+fn migrate_schema_28_to_29(connection: &Connection) -> crate::ImResult<()> {
+    connection
+        .execute_batch("SAVEPOINT awiki_schema_29_upgrade")
+        .map_err(super::local_state_unavailable)?;
+    let result = (|| {
+        set_schema_version(connection, SCHEMA_VERSION)?;
+        create_schema(connection, false)?;
+        mark_legacy_hydration_probes(connection)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => connection
+            .execute_batch("RELEASE SAVEPOINT awiki_schema_29_upgrade")
+            .map_err(super::local_state_unavailable),
+        Err(error) => {
+            let rollback = connection.execute_batch(
+                "ROLLBACK TO SAVEPOINT awiki_schema_29_upgrade; RELEASE SAVEPOINT awiki_schema_29_upgrade",
+            );
+            match rollback {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(super::local_state_unavailable(rollback_error)),
+            }
+        }
+    }
 }
 
 fn ensure_group_member_identity_columns(connection: &Connection) -> crate::ImResult<()> {

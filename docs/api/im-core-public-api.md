@@ -144,6 +144,10 @@ cutover 的 journal，将当前 target 保留为 private safety copy 后恢复�
 backup。公共结果只包含 schema、聚合计数、alias mapping 和 backup/safety-copy
 availability，不返回 backup 路径、消息内容或凭证。
 
+当前 target 为 schema 29。既有 schema 28 已经完成 canonical conversation cutover，
+普通 Core open 会在单个 SQLite 事务内自动补充 hydration projection 并升级到 29；host
+不得把 schema 28 再送入 release/0710 runner，也不需要删除、归档或重建数据库。
+
 P2+ API：
 
 ```rust
@@ -530,8 +534,15 @@ Reliable sync 补充：
 - `sync_conversation_after` 是 conversationId-first thread-local 补新 wrapper。新的 App/Dart
   消息显示主路径应使用 `ConversationReadRef.conversation_id`，旧 `sync_thread_after(ThreadRef)`
   只作为 CLI/legacy adapter 或低层调试入口。
+- `sync.delta` 的 metadata-only message discovery 可以先更新会话活动和未读数，但不会作为
+  完整 Message 暴露给 local timeline。`discovered` / `hydrated` / migration-only
+  `legacy_probe` 都是 Core 私有持久化状态，不新增 public DTO 字段，host 不得自行保存或推断。
+- `after_server_seq` 是补新提示。若 Core 存在更早的 durable hydration gap，blocking/async
+  路径都会使用 `min(requested_after, earliest_gap - 1)`；未显式传值时同样从最早 gap 前开始，
+  无 gap 才使用本地最大 sequence。结果中的过滤和 `next_after_server_seq` 均以这个 effective
+  cursor 为准，因此结果可能包含不大于调用方原始提示、但尚未 hydrated 的缺口消息。
 - `local_conversation_timeline` 读取 `conversation_id` 对应的 committed SQLite projection，
-  是 App local-first timeline 的事实源；远端 history/backfill 结果只有持久化到 projection
+  是 App local-first timeline 的事实源，并且只返回 Core 已确认完整的 hydrated 消息；远端 history/backfill 结果只有持久化到 projection
   后才能成为 UI 可见事实。
 - `send_conversation_text` / `send_conversation_payload` 是 conversation-surface send 主路径。
   该边界只接受 verified Persona route 对应的 `dm:peer-scope:v1:*`，或存在 active local

@@ -30,6 +30,14 @@ enum LocalStateCommand {
             crate::ImResult<super::inbound_resolution_backlog::RemoteMessageIngestOutcome>,
         >,
     },
+    StoreCatchUpMessages {
+        records: Vec<super::messages::MessageRecord>,
+        source_event_type: String,
+        proof: super::messages::CatchUpHydrationProof,
+        reply: oneshot::Sender<
+            crate::ImResult<super::inbound_resolution_backlog::RemoteMessageIngestOutcome>,
+        >,
+    },
     LoadGlobalCheckpoint {
         owner_identity_id: String,
         reply: oneshot::Sender<crate::ImResult<Option<super::sync_state::GlobalCheckpoint>>>,
@@ -172,6 +180,12 @@ enum LocalStateCommand {
         owner_did: String,
         thread: crate::messages::ThreadRef,
         reply: oneshot::Sender<crate::ImResult<Option<i64>>>,
+    },
+    CatchUpServerSeqForThreadRef {
+        owner_identity_id: String,
+        owner_did: String,
+        thread: crate::messages::ThreadRef,
+        reply: oneshot::Sender<crate::ImResult<super::messages::CatchUpCursor>>,
     },
     ListActiveGroupRefs {
         owner_identity_id: String,
@@ -421,6 +435,23 @@ impl LocalStateDb {
         self.send(LocalStateCommand::StoreRemoteMessages {
             records,
             source_event_type: source_event_type.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn store_catch_up_messages(
+        &self,
+        records: Vec<super::messages::MessageRecord>,
+        source_event_type: impl Into<String>,
+        proof: super::messages::CatchUpHydrationProof,
+    ) -> crate::ImResult<super::inbound_resolution_backlog::RemoteMessageIngestOutcome> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::StoreCatchUpMessages {
+            records,
+            source_event_type: source_event_type.into(),
+            proof,
             reply,
         })
         .await?;
@@ -796,6 +827,23 @@ impl LocalStateDb {
     ) -> crate::ImResult<Option<i64>> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::MaxServerSeqForThreadRef {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            thread,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn catch_up_server_seq_for_thread_ref(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        thread: crate::messages::ThreadRef,
+    ) -> crate::ImResult<super::messages::CatchUpCursor> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::CatchUpServerSeqForThreadRef {
             owner_identity_id: owner_identity_id.into(),
             owner_did: owner_did.into(),
             thread,
@@ -1285,6 +1333,30 @@ fn run_actor(
                 })();
                 let _ = reply.send(result);
             }
+            LocalStateCommand::StoreCatchUpMessages {
+                records,
+                source_event_type,
+                proof,
+                reply,
+            } => {
+                let result = (|| {
+                    let transaction = connection
+                        .transaction()
+                        .map_err(super::local_state_unavailable)?;
+                    let outcome =
+                        super::inbound_resolution_backlog::ingest_catch_up_remote_messages(
+                            &transaction,
+                            &records,
+                            &source_event_type,
+                            &proof,
+                        )?;
+                    transaction
+                        .commit()
+                        .map_err(super::local_state_unavailable)?;
+                    Ok(outcome)
+                })();
+                let _ = reply.send(result);
+            }
             LocalStateCommand::LoadGlobalCheckpoint {
                 owner_identity_id,
                 reply,
@@ -1571,6 +1643,20 @@ fn run_actor(
                 reply,
             } => {
                 let result = super::messages::max_server_seq_for_thread_ref_for_owner_identity(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &thread,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::CatchUpServerSeqForThreadRef {
+                owner_identity_id,
+                owner_did,
+                thread,
+                reply,
+            } => {
+                let result = super::messages::catch_up_server_seq_for_thread_ref_for_owner_identity(
                     &connection,
                     &owner_identity_id,
                     &owner_did,

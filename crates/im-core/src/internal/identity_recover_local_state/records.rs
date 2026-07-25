@@ -25,6 +25,7 @@ pub(super) struct MessageRecord {
     pub(super) content: String,
     pub(super) title: String,
     pub(super) server_seq: Option<i64>,
+    pub(super) hydration_state: String,
     pub(super) sent_at: String,
     pub(super) stored_at: String,
     pub(super) is_e2ee: bool,
@@ -186,6 +187,7 @@ pub(super) fn normalize_recovered_message_row(
         content: string_from_row(row, "content"),
         title: string_from_row(row, "title"),
         server_seq: int64_ptr_from_row(row, "server_seq"),
+        hydration_state: normalize_hydration_state(&string_from_row(row, "hydration_state")),
         sent_at: string_from_row(row, "sent_at"),
         stored_at: string_from_row(row, "stored_at"),
         is_e2ee: bool_from_row(row, "is_e2ee"),
@@ -387,6 +389,10 @@ pub(super) fn merge_recovered_message(existing: &RowMap, incoming: MessageRecord
             int64_ptr_from_row(existing, "server_seq"),
             incoming.server_seq,
         ),
+        hydration_state: merge_hydration_state(
+            &string_from_row(existing, "hydration_state"),
+            &incoming.hydration_state,
+        ),
         sent_at: later_time_string(
             &string_from_row(existing, "sent_at"),
             incoming.sent_at.clone(),
@@ -414,6 +420,28 @@ pub(super) fn merge_recovered_message(existing: &RowMap, incoming: MessageRecord
             incoming.credential_name.clone(),
         ),
         ..incoming
+    }
+}
+
+pub(super) fn normalize_hydration_state(value: &str) -> String {
+    match value.trim() {
+        "discovered" => "discovered",
+        "legacy_probe" => "legacy_probe",
+        "" | "hydrated" => "hydrated",
+        _ => "discovered",
+    }
+    .to_owned()
+}
+
+pub(super) fn merge_hydration_state(existing: &str, incoming: &str) -> String {
+    let existing = normalize_hydration_state(existing);
+    let incoming = normalize_hydration_state(incoming);
+    if existing == "hydrated" || incoming == "hydrated" {
+        "hydrated".to_owned()
+    } else if existing == "discovered" || incoming == "discovered" {
+        "discovered".to_owned()
+    } else {
+        "legacy_probe".to_owned()
     }
 }
 

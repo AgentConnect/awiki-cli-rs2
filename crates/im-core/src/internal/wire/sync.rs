@@ -12,6 +12,19 @@ pub(crate) struct SyncDeltaWireRequest {
     pub(crate) reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SyncThreadAfterWireThread {
+    Direct { peer_did: String },
+    Group { group_did: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncThreadAfterWireRequest {
+    pub(crate) thread: SyncThreadAfterWireThread,
+    pub(crate) after_server_seq: String,
+    pub(crate) limit: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SyncDeltaPage {
     pub(crate) events: Vec<SyncDeltaEvent>,
@@ -53,6 +66,43 @@ pub(crate) fn build_sync_delta_rpc_params(
     Ok(json!({
         "meta": common::local_meta(&user_did, SYNC_PROFILE),
         "body": body,
+    }))
+}
+
+pub(crate) fn build_sync_thread_after_rpc_params(
+    identity: &WireIdentity,
+    request: SyncThreadAfterWireRequest,
+) -> crate::ImResult<Value> {
+    let user_did = required_string("user_did", Some(identity.did.as_str()))?;
+    let after_server_seq =
+        crate::internal::local_state::sync_state::normalize_decimal_seq(&request.after_server_seq)
+            .map_err(|_| invalid_decimal("after_server_seq", &request.after_server_seq))?;
+    let limit = validate_limit(request.limit)?;
+    let thread = match request.thread {
+        SyncThreadAfterWireThread::Direct { peer_did } => {
+            let peer_did = required_string("peer_did", Some(&peer_did))?;
+            json!({
+                "kind": "direct",
+                "peer_did": peer_did,
+            })
+        }
+        SyncThreadAfterWireThread::Group { group_did } => {
+            let group_did = required_string("group_did", Some(&group_did))?;
+            json!({
+                "kind": "group",
+                "group_did": group_did,
+            })
+        }
+    };
+
+    Ok(json!({
+        "meta": common::local_meta(&user_did, SYNC_PROFILE),
+        "body": {
+            "user_did": user_did,
+            "thread": thread,
+            "after_server_seq": after_server_seq,
+            "limit": limit,
+        },
     }))
 }
 
@@ -212,5 +262,56 @@ fn invalid_page(message: impl Into<String>) -> crate::ImError {
         code: Some("sync.invalid_page".to_owned()),
         message: message.into(),
         data: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_thread_after_wire_params_use_canonical_direct_contract() {
+        let params = build_sync_thread_after_rpc_params(
+            &WireIdentity {
+                did: "did:example:alice".to_owned(),
+            },
+            SyncThreadAfterWireRequest {
+                thread: SyncThreadAfterWireThread::Direct {
+                    peer_did: " did:example:bob ".to_owned(),
+                },
+                after_server_seq: "42".to_owned(),
+                limit: 100,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(params["meta"]["profile"], SYNC_PROFILE);
+        assert_eq!(params["body"]["user_did"], "did:example:alice");
+        assert_eq!(params["body"]["thread"]["kind"], "direct");
+        assert_eq!(params["body"]["thread"]["peer_did"], "did:example:bob");
+        assert_eq!(params["body"]["after_server_seq"], "42");
+        assert_eq!(params["body"]["limit"], 100);
+    }
+
+    #[test]
+    fn sync_thread_after_wire_params_use_canonical_group_contract() {
+        let params = build_sync_thread_after_rpc_params(
+            &WireIdentity {
+                did: "did:example:alice".to_owned(),
+            },
+            SyncThreadAfterWireRequest {
+                thread: SyncThreadAfterWireThread::Group {
+                    group_did: "did:example:group".to_owned(),
+                },
+                after_server_seq: "7".to_owned(),
+                limit: 25,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(params["body"]["thread"]["kind"], "group");
+        assert_eq!(params["body"]["thread"]["group_did"], "did:example:group");
+        assert_eq!(params["body"]["after_server_seq"], "7");
+        assert_eq!(params["body"]["limit"], 25);
     }
 }

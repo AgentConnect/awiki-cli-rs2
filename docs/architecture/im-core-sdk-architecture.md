@@ -210,7 +210,7 @@ These files describe the SDK public surface and interface-level contracts. They 
 
 ## 11. Durable Conversation Registry And Summary Projection
 
-The SQLite local state keeps `messages` as the durable message projection truth, while target schema version 28 uses `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
+The SQLite local state keeps `messages` as the durable message projection truth, while current target schema version 29 uses the schema-28 `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
 
 - primary key: `(owner_identity_id, conversation_id)`;
 - hot index: `idx_conversation_summaries_owner_last(owner_identity_id, last_message_at DESC, conversation_id)`;
@@ -317,12 +317,16 @@ validation runner performs the explicit 27→28 cutover. The runner uses a
 cross-process file lock and SQLite Online Backup, performs canonical mapping
 inside a disposable shadow transaction, verifies conservation and canonical
 invariants, and records a resumable redacted journal before replacing the live
-SQLite file set. Re-running against schema 28 is a no-op.
+SQLite file set. With a schema-29 Core, the same shadow transaction also adds
+the hydration projection before cutover, so a fresh 27 upgrade lands directly
+on schema 29. An already canonical schema 28 database is upgraded atomically in
+place by ordinary Core open; it must not be routed back through the release/0710
+cutover or require App-side deletion/archival.
 The source allowlist is pinned to the exact deployed release/0710 daemon
 artifact, source ref, and schema fingerprint. Its checked-in fixture is built
 by that binary in an isolated state root and contains synthetic rows only.
 After a completed cutover, the pre-open restore API verifies the retained
-backup, keeps the schema 28 target as a private safety copy, and restores the
+backup, keeps the current schema-29 target as a private safety copy, and restores the
 whole schema 27 file set; partial table-level downgrade is unsupported.
 
 Because summaries contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
@@ -355,6 +359,7 @@ Because snapshots and patches contain message preview fields, diagnostics and te
 Local conversation timeline:
 
 - reads only the local SQLite `messages` projection through `owner_identity_id` and canonical `ConversationReadRef.conversation_id`;
+- returns only internally `hydrated` message rows. A metadata-only reliable-sync discovery remains eligible for conversation activity and unread projection but is not exposed as a complete public timeline message;
 - does not call `direct.get_history`, `group.list_messages`, `inbox.get`, directory lookup, or E2EE remote projection;
 - returns newest-first `MessagePage` items and an opaque `local-history:v1:*` cursor for paging older local messages;
 - supports direct, group, and raw thread-backed conversations through the same owner-scoped conversation-id normalization as conversation mark-read.
@@ -391,7 +396,15 @@ the SDK architecture boundary.
   Persona projection later performs idempotent replay. Binding conflicts remain
   conflict-visible rather than being guessed or last-write-wins.
 
-`messages.sync_conversation_after()` / Dart `client.messages.syncConversationAfter(...)` is the conversationId-first catch-up API for AWiki Me and the Flutter SDK display chain. It resolves `ConversationReadRef.conversation_id` to the syncable storage thread/ref, uses `after_server_seq`, and does not read or advance the account-level checkpoint. `messages.sync_thread_after()` / Dart `client.messages.syncThreadAfter(...)` remains a legacy / debug adapter. Implementations must not return a locally merged `history_async` page as a catch-up result; they use a raw remote path or strictly filter `server_seq > after_server_seq`.
+`messages.sync_conversation_after()` / Dart `client.messages.syncConversationAfter(...)` is the conversationId-first catch-up API for AWiki Me and the Flutter SDK display chain. It resolves `ConversationReadRef.conversation_id` to the syncable storage thread/ref, uses `after_server_seq`, and does not read or advance the account-level checkpoint. `messages.sync_thread_after()` / Dart `client.messages.syncThreadAfter(...)` remains a legacy / debug adapter. Implementations must not return a locally merged `history_async` page as a catch-up result; they use a raw remote path and strictly filter `server_seq` against the effective gap-aware cursor described below.
+
+Schema 29 distinguishes message projection completeness internally:
+
+- `discovered` means reliable sync has committed server identity, thread-local sequence, routing metadata, activity, and unread truth, but has not received the message body/E2EE artifact required for a complete timeline row;
+- `hydrated` means a full history, catch-up, realtime, or send projection has committed the complete message representation available to Core;
+- `legacy_probe` is a migration-only one-time repair state for ambiguous schema-28 rows. Schema 28 did not retain enough sync provenance to distinguish an old metadata placeholder from a valid empty/unsupported message, so Core rewinds once and marks the probe complete only when a trusted thread-after response proves that sequence range was scanned. An error, or an empty page with `has_more=true`, does not clear it.
+
+These states are private SQLite recovery facts and are not public Message DTO fields. A metadata-only upsert must never erase an existing body or downgrade an already hydrated row. A full remote upsert hydrates the same owner/message row by ID. The earliest non-hydrated `server_seq` is the durable owner + canonical-conversation gap; the default catch-up cursor is one sequence before that gap, otherwise it is the local maximum sequence. A caller-supplied `after_server_seq` is a freshness hint, not authority to skip a known gap: blocking and async implementations clamp it to `min(requested, earliest_gap - 1)`. Returned filtering and `next_after_server_seq` use that effective cursor. This correctly repairs a hole such as hydrated seq 1, discovered seq 2, hydrated seq 3 even when the caller submits 3.
 
 Realtime notification parsing may expose a readonly `RealtimeSyncHint` from the
 top-level WebSocket `sync` member. The hint is scheduling metadata for

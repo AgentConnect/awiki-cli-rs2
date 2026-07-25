@@ -39,9 +39,9 @@ pub(super) fn upsert_recovered_message(
         r#"
 INSERT INTO messages
     (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, group_id, group_did,
-     content_type, content, title, server_seq, sent_at, stored_at, is_e2ee, is_read,
+     content_type, content, title, server_seq, hydration_state, sent_at, stored_at, is_e2ee, is_read,
      sender_name, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
 ON CONFLICT(owner_identity_id, msg_id)
 DO UPDATE SET
     owner_did = excluded.owner_did,
@@ -56,6 +56,13 @@ DO UPDATE SET
     content = excluded.content,
     title = excluded.title,
     server_seq = excluded.server_seq,
+    hydration_state = CASE
+        WHEN messages.hydration_state = 'hydrated' OR excluded.hydration_state = 'hydrated'
+        THEN 'hydrated'
+        WHEN messages.hydration_state = 'discovered' OR excluded.hydration_state = 'discovered'
+        THEN 'discovered'
+        ELSE 'legacy_probe'
+    END,
     sent_at = excluded.sent_at,
     stored_at = excluded.stored_at,
     is_e2ee = excluded.is_e2ee,
@@ -78,6 +85,7 @@ DO UPDATE SET
             record.content,
             normalize_optional_string(&record.title),
             normalize_optional_int64(record.server_seq),
+            record.hydration_state,
             normalize_optional_string(&record.sent_at),
             stored_at,
             bool_to_int(record.is_e2ee),

@@ -45,6 +45,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     }
     assert_index_exists(&db, "idx_messages_owner_identity_thread");
     assert_index_exists(&db, "idx_messages_owner_identity_conversation");
+    assert_index_exists(&db, "idx_messages_owner_hydration_conversation_seq");
     assert_index_exists(&db, "idx_conversation_summaries_owner_last");
     assert_index_exists(&db, "idx_conversation_summaries_owner_last_desc");
     assert_index_exists(&db, "idx_conversation_summaries_owner_unread_last");
@@ -112,6 +113,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         "wire_thread_kind",
         "wire_thread_ref",
         "wire_identity_resolution_state",
+        "hydration_state",
     ] {
         assert_column_exists(&db, "messages", column);
     }
@@ -162,6 +164,174 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     ] {
         assert_primary_key_columns(&db, table, &key_columns);
     }
+}
+
+#[test]
+fn local_state_schema_28_auto_migrates_hydration_probes_and_survives_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("im.sqlite");
+    {
+        let db = Connection::open(&path).unwrap();
+        ensure_schema(&db).unwrap();
+        for (msg_id, content_type, content, server_seq) in [
+            ("known-body", "text/plain", "body", 41),
+            ("metadata-placeholder", "text/plain", "", 42),
+            ("valid-empty-text", "text/plain", "", 43),
+            ("valid-unsupported", "application/x-awiki-future", "", 44),
+        ] {
+            crate::internal::local_state::messages::upsert_message(
+                &db,
+                &crate::internal::local_state::messages::MessageRecord {
+                    msg_id: msg_id.to_owned(),
+                    owner_identity_id: "alice-id".to_owned(),
+                    owner_did: "did:example:alice".to_owned(),
+                    conversation_id: "dm:did:example:bob".to_owned(),
+                    thread_id: "dm:did:example:bob".to_owned(),
+                    direction: 0,
+                    sender_did: "did:example:bob".to_owned(),
+                    receiver_did: "did:example:alice".to_owned(),
+                    content_type: content_type.to_owned(),
+                    content: content.to_owned(),
+                    server_seq: Some(server_seq),
+                    stored_at: format!("2026-07-24T00:00:{server_seq}Z"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let legacy_backlog_record = crate::internal::local_state::messages::MessageRecord {
+            msg_id: "legacy-backlog-metadata".to_owned(),
+            owner_identity_id: "carol-id".to_owned(),
+            owner_did: "did:example:carol".to_owned(),
+            conversation_id: "dm:did:example:dave".to_owned(),
+            thread_id: "dm:did:example:dave".to_owned(),
+            direction: 0,
+            sender_did: "did:example:dave".to_owned(),
+            receiver_did: "did:example:carol".to_owned(),
+            content_type: "text/plain".to_owned(),
+            server_seq: Some(45),
+            stored_at: "2026-07-24T00:00:45Z".to_owned(),
+            credential_name: "carol-id".to_owned(),
+            ..Default::default()
+        }
+        .with_resolved_wire_thread("direct", "did:example:dave");
+        let mut legacy_backlog_payload = serde_json::to_value(legacy_backlog_record).unwrap();
+        legacy_backlog_payload
+            .as_object_mut()
+            .unwrap()
+            .remove("hydration_state");
+        db.execute(
+            r#"INSERT INTO inbound_resolution_backlog
+    (owner_identity_id, owner_did, event_id, event_seq, event_type, message_id,
+     peer_did, message_record_json, resolution_state, error_code, error_detail,
+     attempt_count, first_seen_at, last_attempt_at)
+VALUES ('carol-id', 'did:example:carol', 'legacy-event-45', '45',
+        'message.created', 'legacy-backlog-metadata', 'did:example:dave', ?1,
+        'pending', 'identity_unresolved', '', 1, '45', '45')"#,
+            [legacy_backlog_payload.to_string()],
+        )
+        .unwrap();
+        db.execute_batch(
+            r#"
+DROP VIEW IF EXISTS threads;
+DROP VIEW IF EXISTS inbox;
+DROP VIEW IF EXISTS outbox;
+CREATE TABLE messages_schema_28 AS
+SELECT msg_id, owner_identity_id, owner_did, conversation_id,
+       wire_thread_kind, wire_thread_ref, wire_identity_resolution_state,
+       thread_id, direction, sender_did, receiver_did, group_id, group_did,
+       content_type, content, title, server_seq, sent_at, stored_at, is_e2ee,
+       is_read, sender_name, metadata, mentions_current_user, credential_name
+FROM messages;
+DROP TABLE messages;
+ALTER TABLE messages_schema_28 RENAME TO messages;
+CREATE UNIQUE INDEX messages_schema_28_owner_msg
+ON messages(owner_identity_id, msg_id);
+PRAGMA user_version = 28;
+"#,
+        )
+        .unwrap();
+    }
+
+    {
+        let mut db = Connection::open(&path).unwrap();
+        ensure_schema(&db).unwrap();
+        assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+        assert_column_exists(&db, "messages", "hydration_state");
+        assert_eq!(hydration_state(&db, "known-body"), "hydrated");
+        for msg_id in [
+            "metadata-placeholder",
+            "valid-empty-text",
+            "valid-unsupported",
+        ] {
+            assert_eq!(hydration_state(&db, msg_id), "legacy_probe");
+        }
+
+        let lookup = crate::directory::HandleLookupResult {
+            handle: crate::ids::Handle::parse("dave.example.test", "").unwrap(),
+            did: crate::ids::Did::parse("did:example:dave").unwrap(),
+            user_id: "user-dave".to_owned(),
+            domain: Some("example.test".to_owned()),
+            status: Some("active".to_owned()),
+            binding_generation: Some("1".to_owned()),
+            profile: None,
+            warnings: Vec::new(),
+        };
+        crate::internal::local_state::peer_personas::project_verified_handle(
+            &mut db,
+            "carol-id",
+            "did:example:carol",
+            &lookup,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::internal::local_state::inbound_resolution_backlog::pending_count(
+                &db, "carol-id"
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            hydration_state_for_owner(&db, "carol-id", "legacy-backlog-metadata"),
+            "discovered"
+        );
+        let thread = crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:dave", "").unwrap(),
+        );
+        let cursor = crate::internal::local_state::messages::catch_up_server_seq_for_thread_ref_for_owner_identity(
+            &db,
+            "carol-id",
+            "did:example:carol",
+            &thread,
+        )
+        .unwrap();
+        assert_eq!(cursor.default_after_server_seq, Some(44));
+        assert_eq!(cursor.hydration_gap_after_server_seq, Some(44));
+        assert!(
+            crate::internal::local_state::messages::list_messages_for_thread_ref_for_owner_identity(
+                &db,
+                "carol-id",
+                "did:example:carol",
+                &thread,
+                10,
+                None,
+            )
+            .unwrap()
+            .records
+            .is_empty()
+        );
+    }
+
+    let reopened = Connection::open(&path).unwrap();
+    ensure_schema(&reopened).unwrap();
+    assert_eq!(
+        hydration_state(&reopened, "metadata-placeholder"),
+        "legacy_probe"
+    );
+    assert_eq!(
+        hydration_state_for_owner(&reopened, "carol-id", "legacy-backlog-metadata"),
+        "discovered"
+    );
 }
 
 #[test]
@@ -815,4 +985,17 @@ fn column_exists(db: &Connection, table: &str, column: &str) -> bool {
         .query_map([], |row| row.get::<_, String>(1))
         .unwrap();
     rows.any(|name| name.unwrap() == column)
+}
+
+fn hydration_state(db: &Connection, message_id: &str) -> String {
+    hydration_state_for_owner(db, "alice-id", message_id)
+}
+
+fn hydration_state_for_owner(db: &Connection, owner_identity_id: &str, message_id: &str) -> String {
+    db.query_row(
+        "SELECT hydration_state FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",
+        (owner_identity_id, message_id),
+        |row| row.get(0),
+    )
+    .unwrap()
 }

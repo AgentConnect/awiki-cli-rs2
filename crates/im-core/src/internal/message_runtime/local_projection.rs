@@ -49,10 +49,52 @@ pub(crate) fn persist_remote_messages(
     Ok(outcome)
 }
 
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+pub(crate) fn persist_catch_up_remote_messages(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+    proof: crate::internal::local_state::messages::CatchUpHydrationProof,
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    let mut connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let records = messages
+        .iter()
+        .map(|message| message_record_from_message(client, message))
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    let transaction = connection
+        .transaction()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let outcome =
+        crate::internal::local_state::inbound_resolution_backlog::ingest_catch_up_remote_messages(
+            &transaction,
+            &records,
+            "thread_catch_up",
+            &proof,
+        )?;
+    transaction
+        .commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(outcome)
+}
+
 #[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
 pub(crate) fn persist_remote_messages(
     _client: &crate::core::ImClient,
     _messages: &[crate::messages::Message],
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_catch_up_remote_messages(
+    _client: &crate::core::ImClient,
+    _messages: &[crate::messages::Message],
+    _proof: crate::internal::local_state::messages::CatchUpHydrationProof,
 ) -> crate::ImResult<
     crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
 > {
@@ -109,6 +151,26 @@ pub(crate) async fn persist_remote_messages_async(
         .await
 }
 
+#[cfg(feature = "sqlite")]
+pub(crate) async fn persist_catch_up_remote_messages_async(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+    proof: crate::internal::local_state::messages::CatchUpHydrationProof,
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    let records = messages
+        .iter()
+        .map(|message| message_record_from_message(client, message))
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_catch_up_messages(records, "thread_catch_up", proof)
+        .await
+}
+
 #[cfg(not(feature = "sqlite"))]
 pub(crate) fn persist_messages(
     _client: &crate::core::ImClient,
@@ -129,6 +191,28 @@ pub(crate) async fn persist_messages_async(
 pub(crate) fn persist_remote_messages(
     _client: &crate::core::ImClient,
     _messages: &[crate::messages::Message],
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    Ok(Default::default())
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) fn persist_catch_up_remote_messages(
+    _client: &crate::core::ImClient,
+    _messages: &[crate::messages::Message],
+    _proof: crate::internal::local_state::messages::CatchUpHydrationProof,
+) -> crate::ImResult<
+    crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+> {
+    Ok(Default::default())
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn persist_catch_up_remote_messages_async(
+    _client: &crate::core::ImClient,
+    _messages: &[crate::messages::Message],
+    _proof: crate::internal::local_state::messages::CatchUpHydrationProof,
 ) -> crate::ImResult<
     crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
 > {

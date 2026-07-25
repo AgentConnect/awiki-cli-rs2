@@ -531,6 +531,7 @@ fn complete_existing_journal_if_needed(upgrade_dir: &Path) -> crate::ImResult<()
 fn validate_target_file(path: &Path) -> crate::ImResult<()> {
     let connection = rusqlite::Connection::open(path)
         .map_err(|_| upgrade_failed("validation", "target_open_failed"))?;
+    super::schema::ensure_schema(&connection)?;
     let version = super::schema::current_schema_version(&connection)?;
     if version != super::schema::SCHEMA_VERSION {
         return Err(upgrade_failed(
@@ -538,7 +539,6 @@ fn validate_target_file(path: &Path) -> crate::ImResult<()> {
             "target_schema_version_invalid",
         ));
     }
-    super::schema::ensure_schema(&connection)?;
     let integrity: String = connection
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .map_err(|_| upgrade_failed("validation", "target_integrity_check_failed"))?;
@@ -719,7 +719,7 @@ VALUES ('owner', 'did:example:owner', 'message-1', 'dm:legacy', 'dm:legacy',
         assert_eq!(
             live.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            28
+            crate::internal::local_state::schema::SCHEMA_VERSION
         );
         let alias_count = live
             .query_row("SELECT COUNT(*) FROM conversation_aliases", [], |row| {
@@ -762,7 +762,7 @@ VALUES ('owner', 'did:example:owner', 'message-1', 'dm:legacy', 'dm:legacy',
             format_version: 1,
             upgrade_id: upgrade_id.to_owned(),
             source_schema_version: 27,
-            target_schema_version: 28,
+            target_schema_version: crate::internal::local_state::schema::SCHEMA_VERSION,
             source_fingerprint: detection.source_fingerprint,
             phase: CanonicalUpgradePhase::CutoverStarted,
             backup_file: format!("backups/{upgrade_id}/im.sqlite"),
@@ -786,7 +786,7 @@ VALUES ('owner', 'did:example:owner', 'message-1', 'dm:legacy', 'dm:legacy',
                 .unwrap()
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            28
+            crate::internal::local_state::schema::SCHEMA_VERSION
         );
     }
 
@@ -824,7 +824,7 @@ VALUES ('owner', 'did:example:owner', 'message-1', 'dm:legacy', 'dm:legacy',
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .unwrap(),
-                28
+                crate::internal::local_state::schema::SCHEMA_VERSION
             );
             let counts = (
                 db.query_row("SELECT COUNT(*) FROM messages", [], |row| {

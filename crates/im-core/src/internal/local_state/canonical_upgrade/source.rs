@@ -65,7 +65,10 @@ pub(super) fn detect(path: &Path) -> crate::ImResult<CanonicalUpgradeDetection> 
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|_| upgrade_failed("detect", "schema_version_unreadable"))?;
     let source_fingerprint = schema_fingerprint(&connection)?;
-    if source_schema_version == super::super::schema::SCHEMA_VERSION {
+    if (super::super::schema::CANONICAL_CONVERSATION_SCHEMA_VERSION
+        ..=super::super::schema::SCHEMA_VERSION)
+        .contains(&source_schema_version)
+    {
         return Ok(CanonicalUpgradeDetection {
             eligibility: CanonicalUpgradeEligibility::NotRequired,
             source_schema_version,
@@ -243,6 +246,32 @@ mod tests {
         assert_eq!(
             detection.source_fingerprint,
             RELEASE_0710_SCHEMA_FINGERPRINT
+        );
+    }
+
+    #[test]
+    fn schema_28_is_not_sent_back_through_release_0710_cutover() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("im.sqlite");
+        let db = Connection::open(&path).unwrap();
+        super::super::super::schema::ensure_schema(&db).unwrap();
+        db.pragma_update(
+            None,
+            "user_version",
+            super::super::super::schema::CANONICAL_CONVERSATION_SCHEMA_VERSION,
+        )
+        .unwrap();
+        drop(db);
+
+        let detection = detect(&path).unwrap();
+        assert_eq!(
+            detection.eligibility,
+            CanonicalUpgradeEligibility::NotRequired
+        );
+        assert_eq!(detection.source_schema_version, 28);
+        assert_eq!(
+            detection.target_schema_version,
+            super::super::super::schema::SCHEMA_VERSION
         );
     }
 

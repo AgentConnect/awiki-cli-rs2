@@ -917,6 +917,7 @@ fn message_from_local_state_value(
         content: string_value(row.get("content")),
         title: string_value(row.get("title")),
         server_seq: row.get("server_seq").and_then(serde_json::Value::as_i64),
+        hydration_state: crate::internal::local_state::messages::MessageHydrationState::Hydrated,
         sent_at: string_value(row.get("sent_at")),
         stored_at: string_value(row.get("stored_at")),
         is_e2ee: bool_value(row.get("is_e2ee")).unwrap_or(false),

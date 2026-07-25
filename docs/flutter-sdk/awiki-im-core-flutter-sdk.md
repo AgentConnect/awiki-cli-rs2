@@ -65,9 +65,14 @@ assert(restored.targetSafetyCopyAvailable);
 ```
 
 Restore is not an in-process rollback for an open Core. It only accepts a
-completed canonical-upgrade journal, keeps the schema 28 target as a private
+completed canonical-upgrade journal, keeps the current schema-29 target as a private
 safety copy, and is idempotent across interruption. The public result exposes
 versions/availability only, never filesystem backup paths.
+
+Schema 28 stores have already completed the canonical-conversation cutover.
+Ordinary Core open upgrades them atomically in place to schema 29 to add the
+private message-hydration projection; applications must not invoke the
+release/0710 runner again or delete/archive local state for this additive step.
 
 ## DTO policy
 
@@ -174,7 +179,7 @@ These display fields are UI metadata only. They must not be used for routing, au
 
 ## Local-first message reads
 
-`client.messages.conversations(...)` returns durable local conversations from `im-core`. Schema version 27 reads conversation existence from `conversation_registry` and left-joins the message-derived `conversation_summaries`, so a validated empty conversation remains visible. Protocol/control records (including group lifecycle records) do not materialize a message summary; until the first user-visible message, `messageCount` remains `0` and `lastMessage` remains `null`. The API is paged: pass `cursor: page.nextCursor` to continue, and stop when `hasMore` is false or `nextCursor` is null. A single page is capped at 100 items by `PageLimit::new`. The cursor is opaque and follows `activity_at DESC, conversation_id DESC`; callers must not parse it or treat it as an offset.
+`client.messages.conversations(...)` returns durable local conversations from `im-core`. Current schema version 29 reads conversation existence from the schema-28 `conversation_registry` and left-joins the message-derived `conversation_summaries`, so a validated empty conversation remains visible. Protocol/control records (including group lifecycle records) do not materialize a message summary; until the first user-visible message, `messageCount` remains `0` and `lastMessage` remains `null`. The API is paged: pass `cursor: page.nextCursor` to continue, and stop when `hasMore` is false or `nextCursor` is null. A single page is capped at 100 items by `PageLimit::new`. The cursor is opaque and follows `activity_at DESC, conversation_id DESC`; callers must not parse it or treat it as an offset.
 
 Before opening a newly resolved Direct conversation or a newly created/joined Group conversation, commit its existence:
 
@@ -270,6 +275,7 @@ canonical `conversationId` and does not call remote history. `localHistory(threa
 and `history(thread, ...)` remain migration adapters:
 
 - `localConversationTimeline` / `localHistory` read only the local SQLite projection and return an opaque local cursor;
+- local timeline APIs return only complete hydrated rows. A metadata-only sync discovery may already increase conversation activity/unread counts while its body is still absent; the SDK does not expose that placeholder as a normal Message;
 - it does not call message-service history RPCs, directory lookup, or remote E2EE projection;
 - it is the correct API for chat first paint before background reconcile;
 - `history` keeps remote history + projection/reconcile semantics and should be called in the background when freshness is required.
@@ -424,13 +430,25 @@ final page = await client.messages.syncConversationAfter(
 - It is a thread-local freshness API for direct/group chat surfaces.
 - `afterServerSeq` is a thread-local message sequence, not the account-level
   `event_seq`.
+- `afterServerSeq` is a caller freshness hint. If Core has an earlier durable
+  hydration gap, both blocking and async implementations clamp the effective
+  cursor to `min(afterServerSeq, earliestGap - 1)`; when omitted, Core starts
+  before the earliest gap or at the local maximum when no gap exists.
 - It does not read or advance the reliable global checkpoint.
-- The returned page must contain only `server_seq > afterServerSeq` messages in
-  ascending `server_seq` order.
+- The returned page contains only `server_seq > effectiveAfterServerSeq`
+  messages in ascending `server_seq` order. It can therefore include a missing
+  sequence below the caller's original hint; `nextAfterServerSeq` is also based
+  on the effective cursor.
 - Returned messages are not UI truth until `im-core` persists them to the local
   projection and the App reloads/repairs through the conversation timeline.
 `syncThreadAfter(ThreadRef)` remains a compatibility wrapper and should not be the
 AWiki Me display-chain routing owner.
+
+`discovered`, `hydrated`, and migration-only `legacyProbe` are Core-private
+SQLite recovery states, not Dart Message fields. Dart/App code must not infer
+them from an empty body, store a parallel hydration flag, or advance a cursor
+past a Core-known gap. A metadata-only duplicate cannot erase an existing body;
+a full history/catch-up projection hydrates the same message ID in place.
 
 Realtime integration:
 

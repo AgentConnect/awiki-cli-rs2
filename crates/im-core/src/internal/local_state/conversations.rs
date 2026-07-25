@@ -237,6 +237,7 @@ fn conversation_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Con
             content: row.get::<_, Option<String>>("content")?.unwrap_or_default(),
             title: row.get::<_, Option<String>>("title")?.unwrap_or_default(),
             server_seq: row.get::<_, Option<i64>>("server_seq")?,
+            hydration_state: super::messages::MessageHydrationState::Hydrated,
             sent_at: row.get::<_, Option<String>>("sent_at")?.unwrap_or_default(),
             stored_at: row
                 .get::<_, Option<String>>("stored_at")?

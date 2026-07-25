@@ -37,6 +37,7 @@ pub(crate) struct BacklogSource<'a> {
 pub(crate) struct RemoteMessageIngestOutcome {
     pub(crate) stored_messages: usize,
     pub(crate) backlogged_messages: usize,
+    pub(crate) hydration_probes_resolved: usize,
 }
 
 pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
@@ -121,7 +122,33 @@ pub(crate) fn ingest_remote_messages(
     Ok(RemoteMessageIngestOutcome {
         stored_messages: resolved.len(),
         backlogged_messages,
+        hydration_probes_resolved: 0,
     })
+}
+
+pub(crate) fn ingest_catch_up_remote_messages(
+    connection: &Connection,
+    records: &[super::messages::MessageRecord],
+    source_event_type: &str,
+    proof: &super::messages::CatchUpHydrationProof,
+) -> crate::ImResult<RemoteMessageIngestOutcome> {
+    let mut outcome = ingest_remote_messages(connection, records, source_event_type)?;
+    // A backlogged message was present in the scanned range but was not
+    // committed to the canonical timeline. Do not let range coverage promote
+    // an older empty probe for that message into a visible hydrated row.
+    if outcome.backlogged_messages == 0 {
+        outcome.hydration_probes_resolved =
+            super::messages::resolve_legacy_hydration_probes_for_thread_ref(
+                connection,
+                &proof.owner_identity_id,
+                &proof.owner_did,
+                &proof.thread,
+                proof.after_server_seq,
+                proof.through_server_seq,
+                proof.exhausted,
+            )?;
+    }
+    Ok(outcome)
 }
 
 pub(crate) fn is_resolution_error(error: &crate::ImError) -> bool {
@@ -225,7 +252,7 @@ pub(crate) fn replay_for_persona(
     for did in dids {
         let mut statement = connection
             .prepare(
-                r#"SELECT event_id, message_id, message_record_json
+                r#"SELECT event_id, event_type, message_id, message_record_json
 FROM inbound_resolution_backlog
 WHERE owner_identity_id = ?1 AND resolution_state = 'pending' AND peer_did = ?2
 ORDER BY LENGTH(event_seq), event_seq, event_id, message_id"#,
@@ -237,6 +264,7 @@ ORDER BY LENGTH(event_seq), event_seq, event_id, message_id"#,
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             })
             .map_err(super::local_state_unavailable)?;
@@ -245,13 +273,8 @@ ORDER BY LENGTH(event_seq), event_seq, event_id, message_id"#,
         }
     }
     let mut replayed = 0usize;
-    for (event_id, message_id, payload) in rows {
-        let record: super::messages::MessageRecord =
-            serde_json::from_str(&payload).map_err(|err| {
-                crate::ImError::LocalStateUnavailable {
-                    detail: format!("failed to decode unresolved inbound message: {err}"),
-                }
-            })?;
+    for (event_id, event_type, message_id, payload) in rows {
+        let record = decode_message_record(&event_type, &payload)?;
         let record = canonicalize_inbound_message(connection, record)?;
         super::messages::upsert_message(connection, &record)?;
         connection
@@ -307,7 +330,7 @@ pub(crate) fn list_decrypted_secure_messages_for_owner_identity(
     }
     let placeholders = vec!["?"; message_ids.len()].join(",");
     let query = format!(
-        r#"SELECT message_record_json
+        r#"SELECT event_type, message_record_json
 FROM inbound_resolution_backlog
 WHERE owner_identity_id = ?
   AND message_id IN ({placeholders})"#
@@ -321,17 +344,14 @@ WHERE owner_identity_id = ?
         .prepare(&query)
         .map_err(super::local_state_unavailable)?;
     let rows = statement
-        .query_map(params.as_slice(), |row| row.get::<_, String>(0))
+        .query_map(params.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(super::local_state_unavailable)?;
     let mut records = Vec::new();
-    for payload in rows {
-        let payload = payload.map_err(super::local_state_unavailable)?;
-        let record: super::messages::MessageRecord =
-            serde_json::from_str(&payload).map_err(|err| {
-                crate::ImError::LocalStateUnavailable {
-                    detail: format!("failed to decode unresolved inbound message: {err}"),
-                }
-            })?;
+    for row in rows {
+        let (event_type, payload) = row.map_err(super::local_state_unavailable)?;
+        let record = decode_message_record(&event_type, &payload)?;
         let decrypted = serde_json::from_str::<serde_json::Value>(&record.metadata)
             .ok()
             .and_then(|metadata| {
@@ -350,6 +370,58 @@ WHERE owner_identity_id = ?
         }
     }
     Ok(records)
+}
+
+fn decode_message_record(
+    event_type: &str,
+    payload: &str,
+) -> crate::ImResult<super::messages::MessageRecord> {
+    let value = serde_json::from_str::<serde_json::Value>(payload).map_err(|err| {
+        crate::ImError::LocalStateUnavailable {
+            detail: format!("failed to decode unresolved inbound message: {err}"),
+        }
+    })?;
+    let has_explicit_hydration_state = value
+        .as_object()
+        .is_some_and(|object| object.contains_key("hydration_state"));
+    let mut record =
+        serde_json::from_value::<super::messages::MessageRecord>(value).map_err(|err| {
+            crate::ImError::LocalStateUnavailable {
+                detail: format!("failed to decode unresolved inbound message: {err}"),
+            }
+        })?;
+    if !has_explicit_hydration_state {
+        record.hydration_state = legacy_hydration_state(event_type, &record);
+    }
+    Ok(record)
+}
+
+fn legacy_hydration_state(
+    event_type: &str,
+    record: &super::messages::MessageRecord,
+) -> super::messages::MessageHydrationState {
+    use super::messages::MessageHydrationState;
+
+    if !record.content.trim().is_empty() {
+        return MessageHydrationState::Hydrated;
+    }
+    match event_type.trim() {
+        // Before schema 29, sync.delta records did not retain whether `content`
+        // was absent or explicitly empty. A sequence makes metadata provenance
+        // reliable; catch-up will either hydrate it or confirm a legitimate
+        // empty body. Without a sequence, keep the row as a conservative probe
+        // and force thread catch-up from the beginning.
+        "message.created" | "conversation.updated" if record.server_seq.is_some() => {
+            MessageHydrationState::Discovered
+        }
+        "message.created" | "conversation.updated" => MessageHydrationState::LegacyProbe,
+        // These sources carry complete message projections, where an empty body
+        // can be valid and must not be reclassified as metadata-only.
+        "remote_history" | "realtime_message" | "thread_catch_up" => {
+            MessageHydrationState::Hydrated
+        }
+        _ => MessageHydrationState::LegacyProbe,
+    }
 }
 
 fn direct_peer_did(record: &super::messages::MessageRecord) -> Option<String> {
@@ -396,6 +468,81 @@ fn now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn legacy_payload(mut record: super::super::messages::MessageRecord) -> String {
+        record.hydration_state = super::super::messages::MessageHydrationState::Hydrated;
+        let mut value = serde_json::to_value(record).unwrap();
+        value.as_object_mut().unwrap().remove("hydration_state");
+        value.to_string()
+    }
+
+    #[test]
+    fn legacy_backlog_hydration_uses_source_contract_and_fails_closed() {
+        let base = super::super::messages::MessageRecord {
+            msg_id: "legacy-message".to_owned(),
+            owner_identity_id: "owner-a".to_owned(),
+            owner_did: "did:example:owner".to_owned(),
+            conversation_id: "dm:did:example:peer".to_owned(),
+            thread_id: "dm:did:example:peer".to_owned(),
+            direction: 0,
+            sender_did: "did:example:peer".to_owned(),
+            receiver_did: "did:example:owner".to_owned(),
+            content_type: "text/plain".to_owned(),
+            server_seq: Some(8),
+            stored_at: "2026-07-24T00:00:00Z".to_owned(),
+            ..super::super::messages::MessageRecord::default()
+        };
+        let sync_metadata =
+            decode_message_record("message.created", &legacy_payload(base.clone())).unwrap();
+        assert_eq!(
+            sync_metadata.hydration_state,
+            super::super::messages::MessageHydrationState::Discovered
+        );
+
+        let mut unsequenced = base.clone();
+        unsequenced.server_seq = None;
+        assert_eq!(
+            decode_message_record("conversation.updated", &legacy_payload(unsequenced))
+                .unwrap()
+                .hydration_state,
+            super::super::messages::MessageHydrationState::LegacyProbe
+        );
+        assert_eq!(
+            decode_message_record("remote_history", &legacy_payload(base.clone()))
+                .unwrap()
+                .hydration_state,
+            super::super::messages::MessageHydrationState::Hydrated
+        );
+        assert_eq!(
+            decode_message_record("unknown_source", &legacy_payload(base.clone()))
+                .unwrap()
+                .hydration_state,
+            super::super::messages::MessageHydrationState::LegacyProbe
+        );
+
+        let mut complete = base.clone();
+        complete.content = "complete body".to_owned();
+        assert_eq!(
+            decode_message_record("message.created", &legacy_payload(complete))
+                .unwrap()
+                .hydration_state,
+            super::super::messages::MessageHydrationState::Hydrated
+        );
+
+        let explicit_discovered = super::super::messages::MessageRecord {
+            hydration_state: super::super::messages::MessageHydrationState::Discovered,
+            ..base
+        };
+        assert_eq!(
+            decode_message_record(
+                "remote_history",
+                &serde_json::to_string(&explicit_discovered).unwrap(),
+            )
+            .unwrap()
+            .hydration_state,
+            super::super::messages::MessageHydrationState::Discovered
+        );
+    }
 
     #[test]
     fn unresolved_direct_is_durable_and_replays_after_verified_persona_projection() {
