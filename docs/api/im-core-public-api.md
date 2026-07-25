@@ -707,7 +707,10 @@ Reliable sync 补充：
   canonical `conversation_id` storage key，远端 `read_state.mark_read` 由 core resolver 转成
   direct / group service thread；旧服务端 fallback 到本地 unread ids +
   `inbox.mark_read(message_ids)` 或本地 group pending ack。`mark_thread_read(ThreadRef)` 与
-  `mark_read(ids)` 仅保留 legacy/explicit message-id compatibility。
+  `mark_read(ids)` 仅保留 legacy/explicit message-id compatibility。返回的
+  `MarkThreadReadResult.effective_watermark` 是本地已提交水位；`pending_remote_ack=true`
+  只表示远端回执尚待收敛，不回滚本地 read-state。调用方必须保留这个结构化结果，不能把
+  `remote_acknowledged=false` 直接等同于本地失败。
 - `load_conversation_snapshot`、`clear_conversation_snapshot`、
   `watch_conversation_patches`、`repair_conversation_store` 和
   `watch_conversation_timeline_patches`、`repair_conversation_timeline_store` 是
@@ -717,6 +720,10 @@ Reliable sync 补充：
   snapshot/patch DTO 的 optional `title` 只表示 committed Group profile display name；
   DTO 必须保持 core-only，不引用 `awiki-me` 的 `ConversationSummary`、`ChatMessage`
   或 presentation overlay 字段。
+- conversation/timeline runtime store 只对 material change 递增版本并发 patch。
+  committed invalidation 重新投影后若 items 与当前 store 完全相同，则不发事件；
+  单项变化发 `upsert/remove`，多项真实变化才回退 `reset`。显式 repair、lag/overflow
+  仍按 repair contract 返回 patch。
 - Public API 不得暴露 `loadGlobalCheckpoint`、`storeGlobalCheckpoint`、SQLite helper、
   raw `sync.delta` wire params 或手动 checkpoint advance。
 - Realtime sync hint 只作为只读事件元数据进入 event stream，用于调度 `sync_delta`，

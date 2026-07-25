@@ -1047,7 +1047,7 @@ fn messages_read_runtime_group_history_merges_committed_local_projection() {
 }
 
 #[test]
-fn messages_read_runtime_prefers_remote_group_message_id_at_same_event_position() {
+fn messages_read_runtime_keeps_canonical_group_id_and_remote_raw_id() {
     let fixture = Fixture::new();
     let client = fixture.client();
     let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
@@ -1110,8 +1110,11 @@ fn messages_read_runtime_prefers_remote_group_message_id_at_same_event_position(
     merge_local_message_values_into_page(&mut page, rows, crate::ids::PageLimit(20));
 
     assert_eq!(page.items.len(), 1);
-    assert_eq!(page.items[0].id.as_str(), "msg-original-77");
+    assert_eq!(page.items[0].id.as_str(), "did:example:group:77");
     assert_eq!(page.items[0].metadata.server_sequence, Some(77));
+    assert!(page.items[0].metadata.attributes.iter().any(|attribute| {
+        attribute.key == "raw_message_id" && attribute.value == "msg-original-77"
+    }));
 }
 
 #[test]

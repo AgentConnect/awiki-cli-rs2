@@ -401,6 +401,12 @@ projection, runtime store, read state, or reliable checkpoint. `watchConversatio
 `repairRequired`) emitted only after the underlying local projection commit
 succeeds. The conversation store is keyed only by canonical `conversationId`;
 `remove` and `reorder` carry that ID instead of thread kind/id or a legacy alias.
+After a committed invalidation, the runtime store compares the full projected
+items with its current state. Identical items do not advance the store version
+and do not emit a synthetic `reset`; one-row material changes emit
+`upsert`/`remove`, while material multi-row changes may emit `reset`. Explicit
+repair, lag, overflow, stream-close, and version-gap paths keep their repair
+semantics.
 Snapshot format v3 invalidates older discardable redb snapshots and rebuilds them
 from SQLite so Group first paint retains the committed profile title across a
 restart. `repairConversationStore` returns a reset/repair patch after lag,
@@ -545,8 +551,12 @@ The SDK first uses the service `read_state.mark_read` contract. When the service
 does not support the endpoint, the SDK falls back to local unread-id lookup and
 legacy direct `inbox.mark_read(message_ids)`. Group fallback on an old service is
 local/pending only. Results must expose `updatedCount`, `remoteAcknowledged`,
-`partial`, `fallbackUsed`, `pendingRemoteAck`, and `warnings`; any returned
-message ids are legacy fallback diagnostics only.
+`partial`, `fallbackUsed`, `pendingRemoteAck`, `effectiveWatermark`, and
+`warnings`; any returned message ids are legacy fallback diagnostics only.
+`effectiveWatermark` is the locally committed read watermark. Therefore
+`remoteAcknowledged == false && pendingRemoteAck == true` is still local-first
+success when `effectiveWatermark` covers the requested target; callers must not
+discard the result or convert it into a void fire-and-forget boundary.
 
 `markConversationRead` does not expose or advance the reliable sync checkpoint.
 `remoteAcknowledged` and `pendingRemoteAck` describe only read-ack state.
