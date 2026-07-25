@@ -261,6 +261,7 @@ fn skill_onboarding_error_exposes_only_stable_redacted_fields() {
         err.service_data_json.as_deref(),
         Some(r#"{"phase":"preflight","retryable":false}"#)
     );
+    assert_eq!(err.device_revoke_outcome_category, None);
     assert!(!err.message.contains(secret));
     assert!(!err.service_data_json.as_deref().unwrap().contains(secret));
 }

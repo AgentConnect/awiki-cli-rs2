@@ -224,6 +224,7 @@ impl From<im_core::ImError> for DartImError {
                     })
                     .to_string(),
                 ),
+                device_revoke_outcome_category: None,
             },
             im_core::ImError::Service {
                 status_code,
