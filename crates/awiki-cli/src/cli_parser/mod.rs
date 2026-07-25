@@ -129,6 +129,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
             "sync init is disabled in the async cutover.",
             "Use the async CLI entrypoint.",
         )),
+        "onboarding.claim" => app.run_onboarding_claim(command),
         "completion.bash" => app.run_completion("bash"),
         "completion.zsh" => app.run_completion("zsh"),
         "completion.fish" => app.run_completion("fish"),
@@ -281,6 +282,7 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
 
     match command.name.as_str() {
         "init" => app.run_init_async().await,
+        "onboarding.claim" => app.run_onboarding_claim_async(command).await,
         "msg.send" => app.run_msg_send_async(command).await,
         "msg.attachment.download" => app.run_msg_attachment_download_async(command).await,
         "msg.inbox" => app.run_msg_inbox_async(command).await,

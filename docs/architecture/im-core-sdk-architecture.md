@@ -287,8 +287,9 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 | Module | Public API expresses | Internal only |
 | --- | --- | --- |
 | core | `ImCore`, `ImClient`, config, paths, bootstrap, errors | `ClientIdentityRuntime`, path expansion, store handles |
-| identity | selectors, summaries, registration, Legacy upgrade, device Join/admin promotion, permanent device revoke result/outcome category, profile | private key material, DID writer, raw identity store rows, revoke checkpoints and pending intents |
-| auth | login, ensure, device-signed access-token renewal, status | proof builder, JWT file format, bearer header handling |
+| identity | selectors, summaries, registration, Legacy upgrade, recovery, device Join/admin promotion, permanent device revoke result/outcome category, profile, DID replacement plan | private key material, DID writer, raw identity store rows, revoke checkpoints and pending intents |
+| onboarding | Skill Token claim request/result and resumable claim operation | raw Token transport, pending key bundle, journal, DID generation, exchange and greeting orchestration |
+| auth | login, ensure, device-signed access-token renewal, refresh, status | proof builder, JWT file format, bearer header handling |
 | directory | peer resolve, handle lookup, contacts, relationships | user-service raw request/response, contact store rows |
 | messages | send, inbox, history, mark-read, conversations, reliable sync | message RPC params, wire DTOs, raw notification frames, checkpoint load/store |
 | groups | lifecycle, members, profile/policy, group reads | group wire helpers, raw group receipts |
@@ -301,8 +302,9 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 ## 7. Module Map
 
 - `core`: environment entrypoint, identity-bound client, bootstrap, errors, common IDs and paging types.
-- `identity`: local registry, default identity, Handle registration, one-time Legacy upgrade, device Join/admin promotion, permanent device revoke and Identity-only pending recovery, profile, and contact binding.
-- `auth`: DID-WBA, access-only session persistence, signed token renewal, status, and retry support for business services.
+- `identity`: local registry, default identity, Handle registration, one-time Legacy upgrade, recovery, device Join/admin promotion, permanent device revoke and Identity-only pending recovery, profile, contact binding, and DID replacement plan.
+- `onboarding`: environment-level Skill Agent claim for an initialized, empty workspace. It verifies the scoped Token before key generation, persists a recoverable pending identity, exchanges it for a new DID identity, authenticates, and sends the deterministic Controller greeting before completion.
+- `auth`: DID-WBA, access-only session persistence, device-signed token renewal, refresh, status, and retry support for business services.
 - `local_state`: SQLite schema, owner isolation, messages, contacts, groups, email notification, secure outbox, realtime projection, and reliable sync checkpoints.
 - `discovery`: endpoint and capability selection from config, DID documents, profile, and service metadata.
 - `directory`: DID/Handle lookup, public profile, contact projection, relationship APIs.
@@ -329,6 +331,7 @@ Transport is explicit through configuration and capability checks:
 
 - Remote messages are untrusted input.
 - CLI/App output must not expose JWTs, private keys, raw secure state, ciphertext internals, MLS artifacts, provider stdout/stderr, or host secrets.
+- Skill onboarding requests use a redacted, non-serializable Token type. Token HTTP requests reject redirects; journals contain only non-secret scope and recovery state. A non-empty or ambiguous workspace fails closed.
 - Host notification payloads must contain approved event summaries, not raw message instructions.
 - Diagnostics may expose lower-level details only behind explicit debug/diagnostic gates.
 - Whole-roster Group security decisions use a bounded, version-bound

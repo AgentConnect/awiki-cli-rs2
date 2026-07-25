@@ -246,6 +246,26 @@ fn service_error_preserves_server_code_and_data_for_dart() {
 }
 
 #[test]
+fn skill_onboarding_error_exposes_only_stable_redacted_fields() {
+    let secret = "awsk1_must_not_cross_the_bridge";
+    let err = awiki_im_core::dto::error::DartImError::from(im_core::ImError::SkillOnboarding {
+        code: "token_expired".to_owned(),
+        phase: "preflight".to_owned(),
+        retryable: false,
+    });
+
+    assert_eq!(err.code, "skill_onboarding_error");
+    assert_eq!(err.message, "Skill onboarding failed during preflight");
+    assert_eq!(err.service_code.as_deref(), Some("token_expired"));
+    assert_eq!(
+        err.service_data_json.as_deref(),
+        Some(r#"{"phase":"preflight","retryable":false}"#)
+    );
+    assert!(!err.message.contains(secret));
+    assert!(!err.service_data_json.as_deref().unwrap().contains(secret));
+}
+
+#[test]
 fn thread_mark_read_result_preserves_best_effort_state_for_dart() {
     let core = im_core::messages::MarkThreadReadResult {
         updated_count: 1,

@@ -71,10 +71,14 @@ pub(crate) struct HttpResponse {
 
 impl HttpClient {
     pub(crate) fn from_config(config: &crate::ImCoreConfig) -> Self {
-        Self::with_ca_bundle(config.ca_bundle_path())
+        Self::with_ca_bundle(config.ca_bundle_path(), true)
     }
 
-    fn with_ca_bundle(ca_bundle: Option<&str>) -> Self {
+    pub(crate) fn from_config_no_redirect(config: &crate::ImCoreConfig) -> Self {
+        Self::with_ca_bundle(config.ca_bundle_path(), false)
+    }
+
+    fn with_ca_bundle(ca_bundle: Option<&str>, follow_redirects: bool) -> Self {
         #[cfg(feature = "blocking")]
         let (roots, init_error) = match root_store(ca_bundle) {
             Ok(roots) => (roots, None),
@@ -92,7 +96,7 @@ impl HttpClient {
                     .with_root_certificates(roots)
                     .with_no_client_auth(),
             ),
-            async_client: async_client(ca_bundle),
+            async_client: async_client(ca_bundle, follow_redirects),
             #[cfg(feature = "blocking")]
             init_error,
         }
@@ -177,11 +181,19 @@ impl HttpClient {
     }
 }
 
-fn async_client(ca_bundle: Option<&str>) -> Result<reqwest::Client, crate::ImError> {
+fn async_client(
+    ca_bundle: Option<&str>,
+    follow_redirects: bool,
+) -> Result<reqwest::Client, crate::ImError> {
     let mut builder = reqwest::Client::builder()
         .use_rustls_tls()
         .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(RESPONSE_TIMEOUT);
+        .timeout(RESPONSE_TIMEOUT)
+        .redirect(if follow_redirects {
+            reqwest::redirect::Policy::limited(10)
+        } else {
+            reqwest::redirect::Policy::none()
+        });
     if let Some(ca_bundle) = ca_bundle {
         let raw =
             fs::read(Path::new(ca_bundle)).map_err(|err| crate::ImError::TransportUnavailable {
@@ -587,5 +599,64 @@ mod tests {
         assert!(debug.contains("Authorization"));
         assert!(debug.contains("<redacted>"));
         assert!(debug.contains("Content-Type"));
+    }
+
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn skill_onboarding_no_redirect_does_not_contact_redirect_origin() {
+        let redirect_target = TcpListener::bind("127.0.0.1:0").unwrap();
+        redirect_target.set_nonblocking(true).unwrap();
+        let target_url = format!("http://{}/token", redirect_target.local_addr().unwrap());
+
+        let redirect_source = TcpListener::bind("127.0.0.1:0").unwrap();
+        let source_url = format!("http://{}/claim", redirect_source.local_addr().unwrap());
+        let source = thread::spawn(move || {
+            let (mut stream, _) = redirect_source.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 302 Found\r\nLocation: {target_url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        });
+
+        let (contacted_tx, contacted_rx) = mpsc::channel();
+        let target = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_millis(500);
+            while Instant::now() < deadline {
+                match redirect_target.accept() {
+                    Ok(_) => {
+                        contacted_tx.send(true).unwrap();
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("redirect target accept failed: {error}"),
+                }
+            }
+            contacted_tx.send(false).unwrap();
+        });
+
+        let response = HttpClient::with_ca_bundle(None, false)
+            .execute_async(HttpRequest {
+                method: "POST".to_owned(),
+                url: source_url,
+                headers: BTreeMap::new(),
+                body: b"secret-token".to_vec(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.status_code, 302);
+        assert!(!contacted_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        source.join().unwrap();
+        target.join().unwrap();
     }
 }

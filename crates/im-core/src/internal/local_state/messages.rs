@@ -1326,69 +1326,25 @@ WHERE owner_identity_id = ?
     for row in rows {
         result.push(row.map_err(super::local_state_unavailable)?);
     }
-    let mut known_message_ids = result
+    let committed_ids = result
         .iter()
         .map(|record| record.msg_id.clone())
         .collect::<BTreeSet<_>>();
-    let backlog_statement = format!(
-        r#"
-SELECT message_record_json
-FROM inbound_resolution_backlog
-WHERE owner_identity_id = ?
-  AND (
-        message_id IN ({placeholders})
-        OR CASE
-             WHEN json_valid(COALESCE(NULLIF(message_record_json, ''), '{{}}')) = 1
-             THEN CASE
-                    WHEN json_valid(
-                           COALESCE(
-                             NULLIF(
-                               json_extract(message_record_json, '$.metadata'),
-                               ''
-                             ),
-                             '{{}}'
-                           )
-                         ) = 1
-                    THEN json_extract(
-                           json_extract(message_record_json, '$.metadata'),
-                           '$.raw_message_id'
-                         ) IN ({placeholders})
-                    ELSE 0
-                  END
-             ELSE 0
-           END
-      )"#
+    let message_ids = message_ids
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
+    let backlogged =
+        super::inbound_resolution_backlog::list_decrypted_secure_messages_for_owner_identity(
+            connection,
+            &owner_identity_id,
+            &message_ids,
+        )?;
+    result.extend(
+        backlogged
+            .into_iter()
+            .filter(|record| !committed_ids.contains(&record.msg_id)),
     );
-    let mut backlog_params: Vec<&dyn rusqlite::ToSql> =
-        Vec::with_capacity(message_ids.len().saturating_mul(2) + 1);
-    backlog_params.push(&owner_identity_id);
-    for message_id in &message_ids {
-        backlog_params.push(message_id);
-    }
-    for message_id in &message_ids {
-        backlog_params.push(message_id);
-    }
-    let mut statement = connection
-        .prepare(&backlog_statement)
-        .map_err(super::local_state_unavailable)?;
-    let rows = statement
-        .query_map(backlog_params.as_slice(), |row| row.get::<_, String>(0))
-        .map_err(super::local_state_unavailable)?;
-    for row in rows {
-        let payload = row.map_err(super::local_state_unavailable)?;
-        let record = serde_json::from_str::<MessageRecord>(&payload).map_err(|err| {
-            crate::ImError::LocalStateUnavailable {
-                detail: format!("failed to decode unresolved secure message: {err}"),
-            }
-        })?;
-        let is_decrypted = parse_metadata(&record.metadata)
-            .get("decryption_state")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|state| state == "decrypted");
-        if record.is_e2ee && is_decrypted && known_message_ids.insert(record.msg_id.clone()) {
-            result.push(record);
-        }
-    }
     Ok(result)
 }
 

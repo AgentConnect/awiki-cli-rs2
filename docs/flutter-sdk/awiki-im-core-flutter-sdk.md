@@ -86,6 +86,10 @@ identity owner or supply a separate generated identity.
 This legacy API is not the multi-device Handle Recovery flow below and must
 never be used as its fallback.
 
+Skill Token claim is intentionally not exposed through the Dart facade in v1. The raw one-time
+Token is consumed only by the CLI/Rust onboarding path; App code signs and copies the instruction
+but does not pass the Token into im-core, persist it, or manage the resulting Skill Agent identity.
+
 ## Identity secret storage
 
 Native hosts can open `AwikiImCore` with explicit identity SecretVault options:

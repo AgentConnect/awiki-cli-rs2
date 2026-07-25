@@ -119,6 +119,10 @@ impl ImCore {
         CoreBootstrap::new(self)
     }
 
+    pub fn onboarding(&self) -> crate::onboarding::SkillOnboardingService<'_> {
+        crate::onboarding::SkillOnboardingService::new(self)
+    }
+
     pub fn client(&self, selector: crate::identity::IdentitySelector) -> crate::ImResult<ImClient> {
         let runtime = self.identities().load_runtime(selector)?;
         Ok(ImClient::new(self.inner.clone(), runtime))

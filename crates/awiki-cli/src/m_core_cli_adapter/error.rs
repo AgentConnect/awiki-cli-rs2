@@ -53,6 +53,25 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: identity vault verification failed."),
             "Check the configured vault root key and workspace/device context; do not replace an existing vault key.",
         ),
+        im_core::ImError::SkillOnboarding {
+            code,
+            phase,
+            retryable,
+        } => {
+            let mut error = ExitError::new(
+                &code,
+                if retryable { 5 } else { 3 },
+                format!("{context}: Skill Agent onboarding stopped during {phase}."),
+                if retryable {
+                    "Retry the same claim command with the same authorized Token block."
+                } else {
+                    "Stop and request a new authorized Token block; do not change its scope fields."
+                },
+            );
+            error.detail.retryable = retryable;
+            error.detail.details = serde_json::json!({"phase": phase});
+            error
+        }
         im_core::ImError::AuthRequired | im_core::ImError::SessionExpired => ExitError::new(
             "auth_required",
             3,

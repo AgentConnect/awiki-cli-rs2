@@ -478,13 +478,7 @@ impl<'a> CoreHttpTransport<'a> {
                 detail: err.to_string(),
             })?;
         let response = self.execute_json_request("POST", &url, body, false)?;
-        if response.status_code >= 400 {
-            return Err(service_error_from_http(
-                response.status_code,
-                &response.body,
-            ));
-        }
-        let result = crate::internal::json_rpc::decode_response(&response.body)?;
+        let result = decode_rpc_http_response(response.status_code, &response.body)?;
         self.capture_token(&url, &response.headers)?;
         Ok(result)
     }
@@ -504,13 +498,7 @@ impl<'a> CoreHttpTransport<'a> {
         let response = self
             .execute_json_request_async("POST", &url, body, false)
             .await?;
-        if response.status_code >= 400 {
-            return Err(service_error_from_http(
-                response.status_code,
-                &response.body,
-            ));
-        }
-        let result = crate::internal::json_rpc::decode_response(&response.body)?;
+        let result = decode_rpc_http_response(response.status_code, &response.body)?;
         self.capture_token(&url, &response.headers)?;
         Ok(result)
     }
@@ -1052,6 +1040,16 @@ impl<'a> CorePlainTransport<'a> {
         }
     }
 
+    pub(crate) fn new_no_redirect(core: &'a crate::core::ImCore) -> Self {
+        Self {
+            core,
+            http: crate::internal::http::HttpClient::from_config_no_redirect(
+                core.inner().sdk_config(),
+            ),
+            register_authorization: None,
+        }
+    }
+
     #[cfg(feature = "mcp-trusted-registration")]
     pub(crate) fn new_with_register_bearer_token(
         core: &'a crate::core::ImCore,
@@ -1583,13 +1581,7 @@ impl RpcTransport for CorePlainTransport<'_> {
             body,
             self.unsigned_headers(endpoint, Some(method)),
         )?;
-        if response.status_code >= 400 {
-            return Err(service_error_from_http(
-                response.status_code,
-                &response.body,
-            ));
-        }
-        crate::internal::json_rpc::decode_response(&response.body)
+        decode_rpc_http_response(response.status_code, &response.body)
     }
 
     fn reconcile_pending_registration(
@@ -1615,13 +1607,7 @@ impl AsyncRpcTransport for CorePlainTransport<'_> {
                 self.unsigned_headers(endpoint, Some(method)),
             )
             .await?;
-        if response.status_code >= 400 {
-            return Err(service_error_from_http(
-                response.status_code,
-                &response.body,
-            ));
-        }
-        crate::internal::json_rpc::decode_response(&response.body)
+        decode_rpc_http_response(response.status_code, &response.body)
     }
 
     async fn reconcile_pending_registration(
@@ -2145,6 +2131,24 @@ fn registration_is_explicitly_absent(error: &crate::ImError) -> bool {
             code: Some(code), ..
         } => code == "-32002",
         _ => false,
+    }
+}
+
+fn decode_rpc_http_response(status_code: u16, body: &[u8]) -> crate::ImResult<Value> {
+    match crate::internal::json_rpc::decode_response(body) {
+        Err(crate::ImError::Service {
+            code,
+            message,
+            data,
+            ..
+        }) => Err(crate::ImError::Service {
+            status_code: Some(status_code),
+            code,
+            message,
+            data,
+        }),
+        Ok(result) if status_code < 400 => Ok(result),
+        _ => Err(service_error_from_http(status_code, body)),
     }
 }
 

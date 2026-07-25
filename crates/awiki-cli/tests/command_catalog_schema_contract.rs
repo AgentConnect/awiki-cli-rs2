@@ -44,6 +44,25 @@ fn schema_flags_omit_empty_fields_like_go_catalog() {
 }
 
 #[test]
+fn onboarding_claim_schema_accepts_only_stdin_secret_input() {
+    let onboarding = schema_for(&["onboarding", "claim"]);
+    let command = schema_command(&onboarding);
+    let flags = schema_flag_names(command);
+
+    assert_eq!(command["name"], "onboarding.claim");
+    assert_eq!(command["primary_owner"], "im_core_onboarding");
+    assert_eq!(command["side_effect"], true);
+    assert!(flags.contains(&"service-base-url"));
+    assert!(flags.contains(&"expected-controller-handle"));
+    assert!(flags.contains(&"expected-agent-handle"));
+    assert!(flags.contains(&"token-stdin"));
+    assert!(!flags.contains(&"token"));
+    assert_eq!(schema_flag(command, "token-stdin")["type"], "bool");
+    assert_eq!(schema_flag(command, "token-stdin")["required"], true);
+    assert!(!serde_json::to_string(command).unwrap().contains("awsk1_"));
+}
+
+#[test]
 fn schema_command_list_preserves_go_catalog_order_for_drift_prone_groups() {
     let output = awiki_cmd(&["schema"]);
     assert_success(&output);
@@ -208,6 +227,7 @@ fn documented_current_user_commands_resolve_to_supported_current_surface() {
         &["doctor"][..],
         &["version"][..],
         &["init"][..],
+        &["onboarding", "claim"][..],
         &["config", "show"][..],
         &["id", "list"][..],
         &["id", "current"][..],
@@ -397,6 +417,7 @@ fn cli_dispatch_names() -> BTreeSet<&'static str> {
         "schema",
         "help",
         "init",
+        "onboarding.claim",
         "completion.bash",
         "completion.zsh",
         "completion.fish",

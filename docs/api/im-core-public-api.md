@@ -116,6 +116,7 @@ impl ImCore {
 
     pub fn identities(&self) -> IdentityRegistry<'_>;
     pub fn bootstrap(&self) -> CoreBootstrap<'_>;
+    pub fn onboarding(&self) -> SkillOnboardingService<'_>;
 
     pub fn client(&self, selector: IdentitySelector) -> ImResult<ImClient>;
 }
@@ -130,7 +131,36 @@ impl ImClient {
 }
 ```
 
-### 3.1 Core open 前的 local-state 升级与恢复
+### 3.1 Skill Agent Token onboarding
+
+`SkillOnboardingService` 是 environment-level API，因为 claim 从没有 current identity
+的空 workspace 开始。调用方只能构造 `SkillOnboardingToken` 并将其交给一次完整操作；
+该类型不可序列化且 `Debug` 始终脱敏。DID 私钥、User Service wire DTO、JWT 和问候
+消息发送都由 im-core 内部持有。
+
+```rust
+pub struct SkillClaimRequest {
+    pub token: SkillOnboardingToken,
+    pub service_base_url: String,
+    pub expected_controller_handle: String,
+    pub expected_agent_handle: String,
+}
+
+impl SkillOnboardingService<'_> {
+    pub async fn claim_async(&self, request: SkillClaimRequest)
+        -> ImResult<SkillClaimResult>;
+    pub fn claim(&self, request: SkillClaimRequest) -> ImResult<SkillClaimResult>;
+}
+```
+
+claim 只接受与 SDK 配置完全同源的 HTTPS 服务和已初始化、无可用 identity 的
+workspace。相同 journal 可恢复同一 DID；其他非空或无法识别状态均返回
+`skill_onboarding_workspace_conflict`。成功结果只包含 Agent DID/Handle、Controller
+Handle、确定性 greeting message ID、phase/status 和稳定错误码，不含 Token、JWT 或
+私钥。问候尚未被 Message Service 接受时返回 `greeting_pending + retryable=true`，
+重试继续使用同一 DID 和 message ID，不重新注册。
+
+### 3.2 Core open 前的 local-state 升级与恢复
 
 release/0710 schema 27 必须在 `ImCore` 打开前通过独立入口升级；普通 open
 只返回 `local_state_upgrade_required`，不能绕过 backup：

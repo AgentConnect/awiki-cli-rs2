@@ -21,7 +21,6 @@ system-test-probe = [
     "dep:futures-util",
     "dep:reqwest",
     "dep:tokio-tungstenite",
-    "dep:zeroize",
     "im-core/internal-test-helpers",
 ]
 
@@ -42,7 +41,7 @@ time.workspace = true
 tokio.workspace = true
 tokio-tungstenite = { workspace = true, optional = true }
 webpki-roots.workspace = true
-zeroize = { workspace = true, optional = true }
+zeroize.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
