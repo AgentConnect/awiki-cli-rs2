@@ -40,7 +40,7 @@ fn initialize_creates_required_tables() {
         "user_delegated_identity",
         "bootstrap_replay",
         "secure_bootstrap_replay",
-        "app_message_agent_binding",
+        "app_personal_agent_binding",
         "inbox_cursor",
         "processed_message",
         "message_event",
@@ -67,6 +67,118 @@ fn initialize_creates_required_tables() {
         )
         .unwrap();
     assert_eq!(salt_count, 1);
+}
+
+#[test]
+fn schema_v34_migrates_legacy_message_agent_binding_without_changing_opaque_ids() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            INSERT INTO schema_migrations(version, applied_at) VALUES (33, 'legacy');
+
+            CREATE TABLE app_message_agent_binding (
+                binding_id TEXT PRIMARY KEY,
+                user_did TEXT NOT NULL,
+                inbox_auth_verification_method TEXT NOT NULL,
+                app_instance_id TEXT NOT NULL,
+                bootstrap_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                daemon_agent_did TEXT NOT NULL,
+                runtime_agent_did TEXT NOT NULL,
+                runtime_profile_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                desired_agent_json TEXT NOT NULL,
+                capability_policy_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                revoked_at_ms INTEGER
+            );
+            INSERT INTO app_message_agent_binding (
+                binding_id,
+                user_did,
+                inbox_auth_verification_method,
+                app_instance_id,
+                bootstrap_id,
+                idempotency_key,
+                daemon_agent_did,
+                runtime_agent_did,
+                runtime_profile_id,
+                role,
+                desired_agent_json,
+                capability_policy_json,
+                status,
+                created_at_ms,
+                updated_at_ms,
+                revoked_at_ms
+            ) VALUES (
+                'app-message-agent:did:human:alice:app_1',
+                'did:human:alice',
+                'did:human:alice#daemon-key-1',
+                'app_1',
+                'boot_legacy',
+                'message-agent-bootstrap:did:human:alice:app_1',
+                'did:agent:daemon',
+                'did:agent:existing-runtime',
+                'profile_existing_runtime',
+                'app_message_handler',
+                '{"role":"app_message_handler","runtime_profile":"message_agent"}',
+                '{"allowed_actions":[]}',
+                'message_agent_ready',
+                10,
+                20,
+                NULL
+            );
+            "#,
+        )
+        .unwrap();
+    drop(connection);
+
+    let state = DaemonState::open(&config).unwrap();
+    let summary = state.initialize().unwrap();
+    assert_eq!(summary.schema_version, 34);
+    state.initialize().unwrap();
+
+    let binding = state
+        .load_active_app_personal_agent_binding("did:human:alice", "app_1", "app_message_handler")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        binding.binding_id,
+        "app-message-agent:did:human:alice:app_1"
+    );
+    assert_eq!(
+        binding.idempotency_key,
+        "message-agent-bootstrap:did:human:alice:app_1"
+    );
+    assert_eq!(binding.runtime_agent_did, "did:agent:existing-runtime");
+    assert_eq!(binding.runtime_profile_id, "profile_existing_runtime");
+    assert_eq!(binding.status, "personal_agent_ready");
+
+    let connection = state.connection().unwrap();
+    let canonical_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM app_personal_agent_binding",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let legacy_table_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'app_message_agent_binding'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(canonical_count, 1);
+    assert_eq!(legacy_table_count, 0);
 }
 
 fn cli_route_create(workspace: PathBuf, conversation_id: &str) -> CreateCliRouteSession {
@@ -1173,7 +1285,7 @@ fn delegated_identity_fixture() -> (UserDelegatedIdentityRecord, BootstrapReplay
         status: "paired_key_received".to_string(),
         expires_at: Some("2026-09-09T00:00:00Z".to_string()),
         bootstrap_id: "boot_1".to_string(),
-        idempotency_key: "message-agent-bootstrap:did:wba:example.com:user:alice:e1_user:app_1"
+        idempotency_key: "personal-agent-bootstrap:did:wba:example.com:user:alice:e1_user:app_1"
             .to_string(),
         created_at_ms: 0,
         updated_at_ms: 0,
@@ -1195,7 +1307,7 @@ fn delegated_identity_fixture() -> (UserDelegatedIdentityRecord, BootstrapReplay
 
 fn secure_bootstrap_replay_fixture() -> SecureBootstrapReplayRecord {
     SecureBootstrapReplayRecord {
-        operation_id: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+        operation_id: "personal-agent-bootstrap:did:human:alice:app_1".to_string(),
         nonce: "AQEBAQEBAQEBAQEB".to_string(),
         envelope_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .to_string(),
@@ -1203,7 +1315,7 @@ fn secure_bootstrap_replay_fixture() -> SecureBootstrapReplayRecord {
         recipient_key_id: "did:agent:daemon#key-3".to_string(),
         sender_human_did: "did:human:alice".to_string(),
         bootstrap_id: "boot_1".to_string(),
-        idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+        idempotency_key: "personal-agent-bootstrap:did:human:alice:app_1".to_string(),
         payload_sha256: Some(
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
         ),
@@ -1249,7 +1361,7 @@ fn secure_bootstrap_replay_roundtrips_and_rejects_conflicts() {
     assert!(error.contains("secure daemon bootstrap replay conflict"));
 
     let mut nonce_conflict = replay.clone();
-    nonce_conflict.operation_id = "message-agent-bootstrap:did:human:alice:app_2".to_string();
+    nonce_conflict.operation_id = "personal-agent-bootstrap:did:human:alice:app_2".to_string();
     nonce_conflict.idempotency_key = nonce_conflict.operation_id.clone();
     nonce_conflict.bootstrap_id = "boot_2".to_string();
     nonce_conflict.envelope_hash =
@@ -1313,6 +1425,39 @@ WHERE verification_method = ?1
         .unwrap()
         .unwrap();
     assert_eq!(recovered.status, "paired_key_received");
+}
+
+#[test]
+fn bootstrap_replay_accepts_explicit_legacy_hash_alias_without_rewriting_stored_hash() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [23_u8; 32]);
+    state.initialize().unwrap();
+    let (identity, mut legacy_replay) = delegated_identity_fixture();
+    legacy_replay.payload_hash = "legacy-message-agent-payload-hash".to_string();
+    state
+        .store_bootstrap_state(&identity, &legacy_replay)
+        .unwrap();
+
+    let mut canonical_replay = legacy_replay.clone();
+    canonical_replay.payload_hash = "canonical-personal-agent-payload-hash".to_string();
+    let outcome = state
+        .store_bootstrap_state_with_legacy_payload_hash(
+            &identity,
+            &canonical_replay,
+            &legacy_replay.payload_hash,
+        )
+        .unwrap();
+
+    assert_eq!(outcome, BootstrapStoreOutcome::Duplicate);
+    assert_eq!(
+        state
+            .load_bootstrap_replay(&legacy_replay.bootstrap_id)
+            .unwrap()
+            .unwrap()
+            .payload_hash,
+        legacy_replay.payload_hash
+    );
 }
 
 #[test]
@@ -1446,18 +1591,18 @@ WHERE verification_method = ?1
 }
 
 #[test]
-fn app_message_agent_binding_roundtrips_and_restores_active_record() {
+fn app_personal_agent_binding_roundtrips_and_restores_active_record() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
-    let record = AppMessageAgentBindingRecord {
-        binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+    let record = AppPersonalAgentBindingRecord {
+        binding_id: "app-personal-agent:did:human:alice:app_1".to_string(),
         user_did: "did:human:alice".to_string(),
         inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
         app_instance_id: "app_1".to_string(),
         bootstrap_id: "boot_1".to_string(),
-        idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+        idempotency_key: "personal-agent-bootstrap:did:human:alice:app_1".to_string(),
         daemon_agent_did: "did:agent:daemon".to_string(),
         runtime_agent_did: "did:agent:runtime-hermes".to_string(),
         runtime_profile_id: "profile_hermes_app_message".to_string(),
@@ -1469,15 +1614,15 @@ fn app_message_agent_binding_roundtrips_and_restores_active_record() {
         capability_policy_json: serde_json::json!({
             "allowed_actions": ["message.summarize_plain"]
         }),
-        status: "message_agent_ready".to_string(),
+        status: "personal_agent_ready".to_string(),
         created_at_ms: 0,
         updated_at_ms: 0,
         revoked_at_ms: None,
     };
 
-    state.upsert_app_message_agent_binding(&record).unwrap();
+    state.upsert_app_personal_agent_binding(&record).unwrap();
     let loaded = state
-        .load_active_app_message_agent_binding("did:human:alice", "app_1", "app_message_handler")
+        .load_active_app_personal_agent_binding("did:human:alice", "app_1", "app_message_handler")
         .unwrap()
         .unwrap();
     assert_eq!(loaded.binding_id, record.binding_id);
@@ -1485,56 +1630,56 @@ fn app_message_agent_binding_roundtrips_and_restores_active_record() {
 
     let reopened = DaemonState::open(&config).unwrap();
     let restored = reopened
-        .load_app_message_agent_binding(&record.binding_id)
+        .load_app_personal_agent_binding(&record.binding_id)
         .unwrap()
         .unwrap();
-    assert_eq!(restored.status, "message_agent_ready");
+    assert_eq!(restored.status, "personal_agent_ready");
 }
 
 #[test]
-fn app_message_agent_binding_disable_removes_record_from_active_queries() {
+fn app_personal_agent_binding_disable_removes_record_from_active_queries() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
-    let record = AppMessageAgentBindingRecord {
-        binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+    let record = AppPersonalAgentBindingRecord {
+        binding_id: "app-personal-agent:did:human:alice:app_1".to_string(),
         user_did: "did:human:alice".to_string(),
         inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
         app_instance_id: "app_1".to_string(),
         bootstrap_id: "boot_1".to_string(),
-        idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+        idempotency_key: "personal-agent-bootstrap:did:human:alice:app_1".to_string(),
         daemon_agent_did: "did:agent:daemon".to_string(),
         runtime_agent_did: "did:agent:runtime-hermes".to_string(),
         runtime_profile_id: "profile_hermes_app_message".to_string(),
         role: "app_message_handler".to_string(),
         desired_agent_json: serde_json::json!({"role": "app_message_handler"}),
         capability_policy_json: serde_json::json!({"allowed_actions": []}),
-        status: "message_agent_ready".to_string(),
+        status: "personal_agent_ready".to_string(),
         created_at_ms: 0,
         updated_at_ms: 0,
         revoked_at_ms: None,
     };
 
-    state.upsert_app_message_agent_binding(&record).unwrap();
+    state.upsert_app_personal_agent_binding(&record).unwrap();
     let updated = state
-        .update_app_message_agent_binding_status_by_runtime(
+        .update_app_personal_agent_binding_status_by_runtime(
             "did:agent:runtime-hermes",
-            "message_agent_disabled",
+            "personal_agent_disabled",
             false,
         )
         .unwrap()
         .unwrap();
 
-    assert_eq!(updated.status, "message_agent_disabled");
+    assert_eq!(updated.status, "personal_agent_disabled");
     assert!(updated.revoked_at_ms.is_none());
     assert!(state
-        .load_active_app_message_agent_binding_by_runtime("did:agent:runtime-hermes")
+        .load_active_app_personal_agent_binding_by_runtime("did:agent:runtime-hermes")
         .unwrap()
         .is_none());
     assert_eq!(
         state
-            .list_active_app_message_agent_bindings()
+            .list_active_app_personal_agent_bindings()
             .unwrap()
             .len(),
         0
@@ -1542,18 +1687,18 @@ fn app_message_agent_binding_disable_removes_record_from_active_queries() {
 }
 
 #[test]
-fn app_message_agent_binding_revokes_superseded_records_for_same_user_role() {
+fn app_personal_agent_binding_revokes_superseded_records_for_same_user_role() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
-    let mut first = AppMessageAgentBindingRecord {
-        binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+    let mut first = AppPersonalAgentBindingRecord {
+        binding_id: "app-personal-agent:did:human:alice:app_1".to_string(),
         user_did: "did:human:alice".to_string(),
         inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
         app_instance_id: "app_1".to_string(),
         bootstrap_id: "boot_1".to_string(),
-        idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+        idempotency_key: "personal-agent-bootstrap:did:human:alice:app_1".to_string(),
         daemon_agent_did: "did:agent:daemon".to_string(),
         runtime_agent_did: "did:agent:runtime-hermes-1".to_string(),
         runtime_profile_id: "profile_hermes_app_message_1".to_string(),
@@ -1565,31 +1710,33 @@ fn app_message_agent_binding_revokes_superseded_records_for_same_user_role() {
         capability_policy_json: serde_json::json!({
             "allowed_actions": ["message.summarize_plain"]
         }),
-        status: "message_agent_ready".to_string(),
+        status: "personal_agent_ready".to_string(),
         created_at_ms: 0,
         updated_at_ms: 0,
         revoked_at_ms: None,
     };
     let mut second = first.clone();
-    second.binding_id = "app-message-agent:did:human:alice:app_2".to_string();
+    second.binding_id = "app-personal-agent:did:human:alice:app_2".to_string();
     second.app_instance_id = "app_2".to_string();
     second.bootstrap_id = "boot_2".to_string();
-    second.idempotency_key = "message-agent-bootstrap:did:human:alice:app_2".to_string();
+    second.idempotency_key = "personal-agent-bootstrap:did:human:alice:app_2".to_string();
     second.runtime_agent_did = "did:agent:runtime-hermes-2".to_string();
     second.runtime_profile_id = "profile_hermes_app_message_2".to_string();
     let mut other_user = first.clone();
-    other_user.binding_id = "app-message-agent:did:human:bob:app_1".to_string();
+    other_user.binding_id = "app-personal-agent:did:human:bob:app_1".to_string();
     other_user.user_did = "did:human:bob".to_string();
     other_user.inbox_auth_verification_method = "did:human:bob#daemon-key-1".to_string();
     other_user.runtime_agent_did = "did:agent:runtime-hermes-bob".to_string();
     other_user.runtime_profile_id = "profile_hermes_bob".to_string();
 
-    state.upsert_app_message_agent_binding(&first).unwrap();
-    state.upsert_app_message_agent_binding(&second).unwrap();
-    state.upsert_app_message_agent_binding(&other_user).unwrap();
+    state.upsert_app_personal_agent_binding(&first).unwrap();
+    state.upsert_app_personal_agent_binding(&second).unwrap();
+    state
+        .upsert_app_personal_agent_binding(&other_user)
+        .unwrap();
 
     let revoked = state
-        .revoke_other_active_app_message_agent_bindings(
+        .revoke_other_active_app_personal_agent_bindings(
             "did:human:alice",
             "app_message_handler",
             &second.binding_id,
@@ -1597,12 +1744,12 @@ fn app_message_agent_binding_revokes_superseded_records_for_same_user_role() {
         .unwrap();
     assert_eq!(revoked, 1);
     assert!(state
-        .load_active_app_message_agent_binding("did:human:alice", "app_1", "app_message_handler",)
+        .load_active_app_personal_agent_binding("did:human:alice", "app_1", "app_message_handler",)
         .unwrap()
         .is_none());
     assert_eq!(
         state
-            .load_active_app_message_agent_binding(
+            .load_active_app_personal_agent_binding(
                 "did:human:alice",
                 "app_2",
                 "app_message_handler",
@@ -1613,11 +1760,11 @@ fn app_message_agent_binding_revokes_superseded_records_for_same_user_role() {
         second.binding_id
     );
     assert!(state
-        .load_active_app_message_agent_binding("did:human:bob", "app_1", "app_message_handler",)
+        .load_active_app_personal_agent_binding("did:human:bob", "app_1", "app_message_handler",)
         .unwrap()
         .is_some());
     first.revoked_at_ms = state
-        .load_app_message_agent_binding(&first.binding_id)
+        .load_app_personal_agent_binding(&first.binding_id)
         .unwrap()
         .unwrap()
         .revoked_at_ms;

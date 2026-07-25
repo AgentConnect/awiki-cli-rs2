@@ -10,6 +10,7 @@ pub(crate) struct AttachmentManifestCacheRecord {
     pub(crate) thread_kind: String,
     pub(crate) thread_id: String,
     pub(crate) message_id: String,
+    pub(crate) wire_message_id: String,
     pub(crate) sender_did: String,
     pub(crate) message_security_profile: String,
     pub(crate) content: String,
@@ -32,11 +33,12 @@ pub(crate) fn upsert_attachment_manifest_cache(
         .execute(
             r#"
 INSERT INTO attachment_manifest_cache
-    (owner_identity_id, owner_did, thread_kind, thread_id, message_id, sender_did,
-     message_security_profile, content, stored_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+    (owner_identity_id, owner_did, thread_kind, thread_id, message_id, wire_message_id,
+     sender_did, message_security_profile, content, stored_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
 ON CONFLICT(owner_identity_id, thread_kind, thread_id, message_id) DO UPDATE SET
     owner_did = excluded.owner_did,
+    wire_message_id = excluded.wire_message_id,
     sender_did = excluded.sender_did,
     message_security_profile = excluded.message_security_profile,
     content = excluded.content,
@@ -47,6 +49,7 @@ ON CONFLICT(owner_identity_id, thread_kind, thread_id, message_id) DO UPDATE SET
                 thread_kind,
                 thread_id,
                 message_id,
+                record.wire_message_id.trim(),
                 record.sender_did.trim(),
                 default_string(&record.message_security_profile, "transport-protected"),
                 content,
@@ -73,7 +76,7 @@ pub(crate) fn get_attachment_manifest_cache_message(
     let row = connection
         .query_row(
             r#"
-SELECT message_id, sender_did, message_security_profile, content
+SELECT message_id, wire_message_id, sender_did, message_security_profile, content
 FROM attachment_manifest_cache
 WHERE owner_identity_id = ?1
   AND thread_kind = ?2
@@ -83,6 +86,8 @@ WHERE owner_identity_id = ?1
             |row| {
                 Ok((
                     row.get::<_, String>("message_id")?,
+                    row.get::<_, Option<String>>("wire_message_id")?
+                        .unwrap_or_default(),
                     row.get::<_, Option<String>>("sender_did")?
                         .unwrap_or_default(),
                     row.get::<_, Option<String>>("message_security_profile")?
@@ -93,14 +98,14 @@ WHERE owner_identity_id = ?1
         )
         .optional()
         .map_err(super::local_state_unavailable)?;
-    let Some((message_id, sender_did, security_profile, content)) = row else {
+    let Some((message_id, wire_message_id, sender_did, security_profile, content)) = row else {
         return Ok(None);
     };
     let content: Value =
         serde_json::from_str(&content).map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),
         })?;
-    Ok(Some(serde_json::json!({
+    let mut message = serde_json::json!({
         "id": message_id,
         "message_id": message_id,
         "sender_did": sender_did,
@@ -112,7 +117,11 @@ WHERE owner_identity_id = ?1
         "decrypted": true,
         "decryption_state": "decrypted",
         "content": content
-    })))
+    });
+    if !wire_message_id.trim().is_empty() {
+        message["raw_message_id"] = Value::String(wire_message_id);
+    }
+    Ok(Some(message))
 }
 
 #[cfg(feature = "sqlite")]
@@ -180,7 +189,8 @@ mod tests {
                 owner_did: "did:example:bob".to_owned(),
                 thread_kind: "group".to_owned(),
                 thread_id: "did:example:group".to_owned(),
-                message_id: "did:example:group:7".to_owned(),
+                message_id: "logical-group-message-7".to_owned(),
+                wire_message_id: "wire-group-message-7".to_owned(),
                 sender_did: "did:example:alice".to_owned(),
                 message_security_profile: "group-e2ee".to_owned(),
                 content: serde_json::to_string(&manifest).unwrap(),
@@ -194,7 +204,7 @@ mod tests {
             "bob-id",
             "group",
             "did:example:group",
-            "did:example:group:7",
+            "logical-group-message-7",
         )
         .unwrap()
         .unwrap();
@@ -203,6 +213,10 @@ mod tests {
             "OBJECT-KEY-SECRET"
         );
         assert_eq!(message["message_security_profile"], "group-e2ee");
+        assert_eq!(message["id"], "logical-group-message-7");
+        assert_eq!(message["message_id"], "logical-group-message-7");
+        assert_eq!(message["raw_message_id"], "wire-group-message-7");
+        assert!(message.get("wire_message_id").is_none());
 
         let stored = db
             .query_row(
@@ -214,5 +228,55 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(stored.contains("OBJECT-KEY-SECRET"));
+    }
+
+    #[test]
+    fn attachment_manifest_cache_adds_wire_message_id_to_existing_table() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(&format!(
+            r#"
+CREATE TABLE attachment_manifest_cache (
+    owner_identity_id TEXT NOT NULL,
+    owner_did TEXT NOT NULL DEFAULT '',
+    thread_kind TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    sender_did TEXT,
+    message_security_profile TEXT NOT NULL DEFAULT 'transport-protected',
+    content TEXT NOT NULL,
+    stored_at TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, thread_kind, thread_id, message_id)
+);
+PRAGMA user_version = {};
+"#,
+            crate::internal::local_state::schema::SCHEMA_VERSION
+        ))
+        .unwrap();
+
+        upsert_attachment_manifest_cache(
+            &db,
+            &AttachmentManifestCacheRecord {
+                owner_identity_id: "owner-id".to_owned(),
+                owner_did: "did:example:owner".to_owned(),
+                thread_kind: "direct".to_owned(),
+                thread_id: "did:example:peer".to_owned(),
+                message_id: "logical-message".to_owned(),
+                wire_message_id: "wire-message".to_owned(),
+                sender_did: "did:example:peer".to_owned(),
+                message_security_profile: "direct-e2ee".to_owned(),
+                content: r#"{"attachments":[{"attachment_id":"att-1","access_info":{"object_uri":"https://objects.example/att-1"}}]}"#.to_owned(),
+                stored_at: "2026-07-21T00:00:00Z".to_owned(),
+            },
+        )
+        .unwrap();
+
+        let wire_message_id = db
+            .query_row(
+                "SELECT wire_message_id FROM attachment_manifest_cache WHERE message_id = 'logical-message'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert_eq!(wire_message_id, "wire-message");
     }
 }

@@ -18,6 +18,15 @@ pub(crate) struct ImCoreInner {
     pub(crate) sdk_paths: crate::ImCorePaths,
     pub(crate) identity_secret_storage_policy: IdentitySecretStoragePolicy,
     pub(crate) identity_vault: Option<options::IdentityVaultContext>,
+    pub(crate) device_join_lock: std::sync::Mutex<()>,
+    pub(crate) device_revoke_enabled: bool,
+    pub(crate) direct_e2ee_v2_enabled: bool,
+    pub(crate) device_revoke_lock: tokio::sync::Mutex<()>,
+    pub(crate) group_e2ee_v2_enabled: bool,
+    pub(crate) device_join_approvals:
+        crate::internal::identity_device_join_runtime::DeviceJoinApprovalHandleStore,
+    pub(crate) root_key_transfer_authorizations:
+        crate::internal::identity_root_transfer_runtime::RootKeyTransferAuthorizationStore,
     #[cfg(feature = "sqlite")]
     pub(crate) local_state_db: OnceCell<crate::internal::local_state::actor::LocalStateDb>,
 }
@@ -81,6 +90,13 @@ impl ImCore {
                 sdk_paths,
                 identity_secret_storage_policy: options.identity_secret_storage_policy,
                 identity_vault,
+                device_join_lock: std::sync::Mutex::new(()),
+                device_revoke_enabled: options.multi_device_device_revoke_enabled,
+                direct_e2ee_v2_enabled: options.multi_device_direct_e2ee_enabled,
+                device_revoke_lock: tokio::sync::Mutex::new(()),
+                group_e2ee_v2_enabled: options.multi_device_group_e2ee_enabled,
+                device_join_approvals: Default::default(),
+                root_key_transfer_authorizations: Default::default(),
                 #[cfg(feature = "sqlite")]
                 local_state_db: OnceCell::new(),
             }),
@@ -91,8 +107,20 @@ impl ImCore {
         crate::identity::IdentityRegistry::new(self)
     }
 
+    pub fn device_join(&self) -> crate::identity::DeviceJoinService<'_> {
+        crate::identity::DeviceJoinService::new(self)
+    }
+
+    pub fn device_revoke(&self) -> crate::identity::DeviceRevokeService<'_> {
+        crate::identity::DeviceRevokeService::new(self)
+    }
+
     pub fn bootstrap(&self) -> CoreBootstrap<'_> {
         CoreBootstrap::new(self)
+    }
+
+    pub fn onboarding(&self) -> crate::onboarding::SkillOnboardingService<'_> {
+        crate::onboarding::SkillOnboardingService::new(self)
     }
 
     pub fn client(&self, selector: crate::identity::IdentitySelector) -> crate::ImResult<ImClient> {
@@ -105,12 +133,34 @@ impl ImCore {
         selector: crate::identity::IdentitySelector,
     ) -> crate::ImResult<ImClient> {
         let runtime = self.identities().load_runtime_async(selector).await?;
-        Ok(ImClient::new(self.inner.clone(), runtime))
+        let client = ImClient::new(self.inner.clone(), runtime);
+        if self.inner().device_revoke_enabled() {
+            let _ =
+                crate::internal::identity_device_revoke::recover_pending_for_client(self, &client)
+                    .await;
+        }
+        Ok(client)
     }
 
     pub fn client_with_identity_material(
         &self,
         material: crate::identity::HostedIdentityMaterial,
+    ) -> crate::ImResult<ImClient> {
+        self.client_with_identity_material_inner(material, None)
+    }
+
+    pub(crate) fn client_with_identity_material_and_signing_key_id(
+        &self,
+        material: crate::identity::HostedIdentityMaterial,
+        request_signing_key_id: &str,
+    ) -> crate::ImResult<ImClient> {
+        self.client_with_identity_material_inner(material, Some(request_signing_key_id))
+    }
+
+    fn client_with_identity_material_inner(
+        &self,
+        material: crate::identity::HostedIdentityMaterial,
+        request_signing_key_id: Option<&str>,
     ) -> crate::ImResult<ImClient> {
         let identity_id = crate::ids::IdentityId::parse(&material.identity_id)?;
         let did = crate::ids::Did::parse(&material.did)?;
@@ -119,9 +169,15 @@ impl ImCore {
             .as_deref()
             .map(|handle| crate::ids::Handle::parse(handle, &self.inner.sdk_config().did_domain))
             .transpose()?;
-        let key_provider = std::sync::Arc::new(
-            crate::internal::key_provider::HostedKeyMaterialProvider::new(&material)?,
-        );
+        let key_provider = std::sync::Arc::new(match request_signing_key_id {
+            Some(key_id) => {
+                crate::internal::key_provider::HostedKeyMaterialProvider::new_for_request_signing_key(
+                    &material,
+                    key_id,
+                )?
+            }
+            None => crate::internal::key_provider::HostedKeyMaterialProvider::new(&material)?,
+        });
         let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: crate::identity::IdentitySummary {
                 id: identity_id.clone(),
@@ -170,6 +226,18 @@ impl ImCoreInner {
 
     pub(crate) fn identity_vault(&self) -> Option<&options::IdentityVaultContext> {
         self.identity_vault.as_ref()
+    }
+
+    pub(crate) fn device_revoke_enabled(&self) -> bool {
+        self.device_revoke_enabled
+    }
+
+    pub(crate) fn direct_e2ee_v2_enabled(&self) -> bool {
+        self.direct_e2ee_v2_enabled
+    }
+
+    pub(crate) fn group_e2ee_v2_enabled(&self) -> bool {
+        self.group_e2ee_v2_enabled
     }
 
     #[cfg(feature = "sqlite")]

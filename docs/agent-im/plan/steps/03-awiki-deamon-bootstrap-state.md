@@ -15,7 +15,7 @@ Step index：03
 | Commit | `eac62bd awiki-deamon: add app bootstrap state` |
 | Review evidence | 2026-06-09 Review：检查 secret handling、control payload redaction、幂等冲突、状态恢复、schema dispatch、E2EE / main key 禁止、Step 04 边界。发现并修复：control payload / extra Debug redaction 不够硬；bootstrap replay 查重在 transaction 外存在并发写入窗口；schema version 升级后集成测试仍期望 15。剩余风险：MVP 仍按现有 daemon secret 存储方式保存 delegated subkey，明文 bootstrap body 加密和 secure key store 留到后续版本。 |
 | Verification evidence | `cargo test -p awiki-deamon --locked -j1`：72 lib tests passed；integration tests passed：21 + 22 + 5 + 19 passed / 3 ignored + 15 + 3 + 21 + 2；doc tests 0 passed；0 failed。补充 targeted：`cargo test -p awiki-deamon --locked -j1 app_bridge -- --nocapture`：8 passed；`cargo test -p awiki-deamon --locked -j1 delegated_identity -- --nocapture`：2 passed；`git diff --check`：通过。 |
-| Next action | 启动 Step 04：awiki-deamon message agent binding |
+| Next action | 启动 Step 04：awiki-deamon personal agent binding |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -23,14 +23,14 @@ Step index：03
 
 - 结果：`awiki-deamon` 能从 message-service 普通消息发送接收 APP 发送的一次性 `awiki.daemon.bootstrap.v1` system/control payload，MVP body 是明文 JSON，保存 user delegated identity，按 `bootstrap_id` / `idempotency_key` 幂等处理。
 - 用户 / 系统可见行为：APP 只需 bootstrap 一次；Daemon 重启后能恢复 bootstrap state 和 delegated subkey profile；重复 bootstrap 不产生重复身份状态。
-- 非目标：不实现独立 APP ↔ Daemon pairing channel、本地 RPC、局域网通道或第二条传输链路；不实现 bootstrap 普通消息 body 加密；不实现完整本地 secret 生命周期管理、OS keychain/KMS、密钥覆盖/撤销自动清理；不把用户主私钥或 E2EE private state 存入 Daemon；不创建 Message Agent，本步骤只完成 bootstrap state，为 Step 04 提供入口。
+- 非目标：不实现独立 APP ↔ Daemon pairing channel、本地 RPC、局域网通道或第二条传输链路；不实现 bootstrap 普通消息 body 加密；不实现完整本地 secret 生命周期管理、OS keychain/KMS、密钥覆盖/撤销自动清理；不把用户主私钥或 E2EE private state 存入 Daemon；不创建 Personal Agent，本步骤只完成 bootstrap state，为 Step 04 提供入口。
 - 完成标准：Daemon 有明确 bootstrap schema、解析校验、secret 存储、幂等表和测试；日志/prompt/runtime temp/audit detail 不泄露 key material。
 
 ## 3. 设计方法
 
-- 设计边界：APP 和 Daemon 之间只有一条通道：message-service 承载的普通消息发送。bootstrap 是这条通道上的 system/control payload，是声明式 desired state，不是命令式 create runtime；它只传递已存在且已登记的 `user_did#daemon-key-1` key package 和 APP 期望的 message agent 配置。
+- 设计边界：APP 和 Daemon 之间只有一条通道：message-service 承载的普通消息发送。bootstrap 是这条通道上的 system/control payload，是声明式 desired state，不是命令式 create runtime；它只传递已存在且已登记的 `user_did#daemon-key-1` key package 和 APP 期望的 personal agent 配置。
 - 核心决策：MVP 明文传子私钥，且明确通过 message-service 普通消息明文 JSON payload 路由给 Daemon；message-service 只负责普通消息 payload 的路由/存储，不理解 private package 语义。该 payload 必须被 Daemon/APP schema router 识别为 system/control，不得渲染为普通聊天、不得进入 Hermes prompt。后续安全升级仍使用同一普通消息发送路径，只把消息 body 从明文 JSON 改为加密文本或加密 JSON envelope。
-- 契约 / API / 数据流：APP 使用现有消息发送能力向 `daemon_agent_did` 发送普通消息 payload。MVP payload body 是明文 JSON，包含 `schema`、`bootstrap_id`、`idempotency_key`、`controller_did`、`app_instance_id`、`user_subkey_package`、`capability_policy`、`desired_message_agent`。其中 `user_subkey_package` 使用 Step 01 固定的 `DaemonSubkeyPrivatePackage`。Daemon 从普通消息 inbox/control dispatch 中识别该 schema，校验后写入 `user_delegated_identity` 和 `bootstrap_replay` 状态。
+- 契约 / API / 数据流：APP 使用现有消息发送能力向 `daemon_agent_did` 发送普通消息 payload。MVP payload body 是明文 JSON，包含 `schema`、`bootstrap_id`、`idempotency_key`、`controller_did`、`app_instance_id`、`user_subkey_package`、`capability_policy`、`desired_personal_agent`。其中 `user_subkey_package` 使用 Step 01 固定的 `DaemonSubkeyPrivatePackage`。Daemon 从普通消息 inbox/control dispatch 中识别该 schema，校验后写入 `user_delegated_identity` 和 `bootstrap_replay` 状态。
 - 兼容性：未知 schema 或旧 `awiki.agent.command.v1` 不应显示为普通聊天；本步骤处理 Daemon 侧 schema dispatch、control payload 过滤和 unsupported 状态。
 - 迁移策略：在 Daemon state schema 中增加新表或新记录类型；旧 state 无该记录时按 unpaired 处理。
 - 风险控制：private key field 使用 redaction wrapper；所有 debug/audit 输出只记录 key ref、verification method hash 或尾号，不记录明文 key。MVP 对本地 secret 生命周期只做最小保护：复用现有 secret 存储方式、禁止日志/prompt/runtime temp/audit detail 泄露；自动 rotate、覆盖清理、OS keychain/KMS、文件权限 hardening 记录为后续版本。
@@ -39,11 +39,11 @@ Step index：03
 
 1. 阅读 `awiki-cli-rs2/crates/awiki-deamon/src/commands/mod.rs`、`foreground.rs`、`inbox/mod.rs`、`runtime_inbox.rs`、`im_core_adapter.rs` 和 `state/mod.rs`，确认现有 Agent command / 普通消息 JSON payload dispatch 入口和 state 存储方式。
 2. 新增或扩展 `app_bridge` 模块；如果当前没有目录，可创建 `awiki-cli-rs2/crates/awiki-deamon/src/app_bridge/bootstrap.rs`、`message_control.rs`、`secret_store.rs`。
-3. 定义 `DaemonBootstrapEnvelope`、`UserSubkeyPackage`、`DesiredMessageAgent`、`CapabilityPolicy` DTO；schema 固定为 `awiki.daemon.bootstrap.v1`。
+3. 定义 `DaemonBootstrapEnvelope`、`UserSubkeyPackage`、`DesiredPersonalAgent`、`CapabilityPolicy` DTO；schema 固定为 `awiki.daemon.bootstrap.v1`。
 4. 实现校验：禁止 user main key；`verification_method` 必须属于 `user_did`；MVP key fragment 必须是 `#daemon-key-1`；`allowed_usage_hint` 不得包含 E2EE private state。
 5. 实现 secret store：MVP 可复用现有 daemon secret 存储方式，但必须集中封装 redaction 和日志保护，并在文档/注释中记录后续 secure key store。不得新增 APP ↔ Daemon 本地 RPC、局域网或独立传输通道入口；bootstrap 入口只来自普通消息 payload schema dispatch。
 6. 实现幂等：`bootstrap_id` 与 `idempotency_key` 重复时返回已处理状态；payload 冲突时返回 deterministic conflict。
-7. 增加状态机：`unpaired -> paired_key_received -> message_agent_ensuring -> message_agent_ready -> message_agent_active`，本步骤至少能进入 `paired_key_received`。
+7. 增加状态机：`unpaired -> paired_key_received -> personal_agent_ensuring -> personal_agent_ready -> personal_agent_active`，本步骤至少能进入 `paired_key_received`。
 8. 增加测试：ordinary JSON message dispatch 到 bootstrap handler、valid bootstrap、重复 bootstrap、冲突 bootstrap、错误 key owner、main key 拒绝、E2EE private state 拒绝、日志 redaction、control payload 不进入普通聊天/Prompt。
 
 ## 5. 路径
@@ -76,7 +76,7 @@ Step index：03
 - [x] `bootstrap_id` / `idempotency_key` 重放幂等；冲突 payload 明确拒绝。
 - [x] secret store 不把 private key 写入日志、prompt、runtime temp、普通 audit detail。
 - [x] Daemon 重启后能恢复 `paired_key_received` 状态。
-- [x] 本步骤不创建重复 Runtime Agent；Message Agent 创建留给 Step 04。
+- [x] 本步骤不创建重复 Runtime Agent；Personal Agent 创建留给 Step 04。
 - [x] Review 发现已经修复或明确记录。
 - [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 

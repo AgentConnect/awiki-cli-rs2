@@ -223,7 +223,16 @@ pub fn build_group_get_rpc_params(sender_did: &str, group_did: &str) -> crate::I
 
 #[doc(hidden)]
 pub fn build_group_list_rpc_params(sender_did: &str, limit: i64) -> Value {
-    crate::internal::wire::group::build_group_list_rpc_params(sender_did, limit)
+    crate::internal::wire::group::build_group_list_rpc_params(sender_did, limit, None)
+}
+
+#[doc(hidden)]
+pub fn build_group_list_rpc_params_with_cursor(
+    sender_did: &str,
+    limit: i64,
+    cursor: Option<&str>,
+) -> Value {
+    crate::internal::wire::group::build_group_list_rpc_params(sender_did, limit, cursor)
 }
 
 #[doc(hidden)]
@@ -232,7 +241,19 @@ pub fn build_group_members_rpc_params(
     group_did: &str,
     limit: i64,
 ) -> crate::ImResult<Value> {
-    crate::internal::wire::group::build_group_members_rpc_params(sender_did, group_did, limit)
+    crate::internal::wire::group::build_group_members_rpc_params(sender_did, group_did, limit, None)
+}
+
+#[doc(hidden)]
+pub fn build_group_members_rpc_params_with_cursor(
+    sender_did: &str,
+    group_did: &str,
+    limit: i64,
+    cursor: Option<&str>,
+) -> crate::ImResult<Value> {
+    crate::internal::wire::group::build_group_members_rpc_params(
+        sender_did, group_did, limit, cursor,
+    )
 }
 
 #[doc(hidden)]

@@ -48,7 +48,107 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<IdentityDeviceSummary> identityDeviceSummary(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceRevokeResult> revokeDevice({
+    required IdentitySelector selector,
+    required String targetDeviceId,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<List<DeviceJoinSessionSummary>> localDeviceJoinSessions() async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> beginDeviceJoin({
+    required String did,
+    required String operationId,
+    int ttlSeconds = 600,
+    required DeviceJoinAccountVerificationGrant accountVerificationGrant,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> pollNewDeviceJoin(String joinSessionId) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinSessionSummary> cancelNewDeviceJoin(
+    String joinSessionId,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinRegistrySnapshot> identityDeviceRegistry(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<List<DeviceJoinRequestNotice>> localDeviceJoinRequests(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> localDeviceJoinVerificationProgress({
+    required IdentitySelector selector,
+    required String joinSessionId,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> startDeviceJoinVerification({
+    required IdentitySelector selector,
+    required String joinSessionId,
+    required String operationId,
+    int challengeTtlSeconds = 300,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> rejectDeviceJoin({
+    required IdentitySelector selector,
+    required String joinSessionId,
+    required DeviceJoinRejectReason reason,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinApprovalPrompt> prepareDeviceJoinApproval({
+    required IdentitySelector selector,
+    required String joinSessionId,
+    required bool sasConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<DeviceJoinProgress> confirmDeviceJoinApproval({
+    required String approvalHandle,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
   Future<IdentityVaultStatus> identityVaultStatus(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<LegacyUpgradeStatus> legacyUpgradeStatus(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<LegacyUpgradeStatus> upgradeLegacyIdentity(
     IdentitySelector selector,
   ) async {
     throw _unsupported();
@@ -98,7 +198,32 @@ class AwikiImClient {
 
   SecureApi get secure => SecureApi._();
 
+  RootKeyTransferApi get rootKeyTransfer => RootKeyTransferApi._();
+
   Future<void> dispose() async {}
+}
+
+class RootKeyTransferApi {
+  RootKeyTransferApi._();
+
+  Future<RootKeyTransferPreparation> prepare({
+    required String recipientDeviceId,
+  }) async {
+    throw const RootKeyTransferException(
+      code: 'root_transfer.unsupported',
+      retryable: false,
+    );
+  }
+
+  Future<RootKeyTransferSendResult> confirmAndSend({
+    required RootKeyTransferAuthorizationHandle authorizationHandle,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw const RootKeyTransferException(
+      code: 'root_transfer.unsupported',
+      retryable: false,
+    );
+  }
 }
 
 class MessageApi {

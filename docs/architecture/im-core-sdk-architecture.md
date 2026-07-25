@@ -81,6 +81,187 @@ Rules:
 - auth/session, local state, direct secure state, and MLS state must be identity-scoped.
 - Business queries inject owner internally; callers do not hand-write owner filters.
 
+### 4.1 Local multi-device authorization projection
+
+The V1 identity registry persists one AWiki-local `device_state` for every
+multi-device identity. It contains the random `ProtocolDeviceId`, public
+signing/E2EE key IDs, `active|revoked`, `member|admin`, server-confirmed
+`management_ready`, `auth_generation`, and the current Document/Registry
+checkpoint. These fields are local authorization state; the interoperable device
+list remains the root-signed DID Document's embedded `deviceManifest`.
+
+The only active Registry combinations exposed by V1 are:
+
+```text
+active + member + management_ready=false
+active + admin  + management_ready=true
+```
+
+Join does not create an `AdminAwaitingRoot` or
+`active + admin + management_ready=false` state. An admin projection is ready
+only when the Registry reports the second state and the local active Root Vault
+record can be opened. Revoked devices and local Vault/auth/checkpoint
+inconsistencies fail closed.
+
+The formal local identity shape is one `DeviceIdentity`:
+
+```text
+device id
+device signing private ref
+device E2EE private ref
+Manifest/Registry authorization checkpoint
+optional access token
+root capability = absent | pending | active
+```
+
+The device signing key is mandatory. The DID root ref is optional: a member can
+authenticate and communicate without it. `pending` root material is restricted
+to the current root-import completion; ordinary DID management requires both an
+`active` root ref and a ready-admin Registry projection. The signing, E2EE, and
+root key roles remain distinct and cannot substitute for one another.
+
+New registration continues through the existing `register` product method. Core
+generates one root key, independent signing/E2EE device keys, and a random
+protocol device ID, then builds a root-signed DID Document containing exactly
+one bootstrap Manifest entry. The server atomically creates User, Handle, DID
+checkpoint, Registry, and the first ready admin. The existing registration
+result returns one access token; it does not return a device refresh token.
+There is no production `device_genesis`, Genesis grant, or multi-device
+registration rollout branch.
+
+A local encrypted pending-registration record may preserve generated key
+material and the exact operation across an ambiguous network result. It is only
+a crash-recovery mechanism: it must not introduce a second remote registration
+protocol or generate a second identity on retry.
+
+Legacy identities keep `device_state` absent until an explicit one-time upgrade.
+Only the original device that still has the usable Legacy `key-1` is supported:
+Core treats that key as the existing DID root, creates new independent device
+keys and ID, and submits the same-DID/same-Handle single-device Manifest through
+the existing document-update path. The encrypted pending upgrade is reused
+after ambiguous failure. V1 does not support concurrent upgrade from copied
+Legacy roots, Join before upgrade, or recovery after the original root is lost.
+
+Device authentication is access-only. Core explicitly selects the current
+`device_signing_key_id` for a fresh DID-WBA signature. Any successful User
+Service RPC handled with that signature can return a new access token in the
+standard authentication response headers; `get_me` is only the recommended
+no-side-effect bootstrap when there is no business RPC to execute. Bearer
+requests do not renew tokens. Core validates the returned DID, user, device,
+key, generation, scope, audience, purpose, and expiry before atomically
+replacing the one persisted access token. V1 has no device-token issue or
+refresh RPC and stores no device refresh token.
+
+Device Join keeps unauthenticated new-device and authenticated ready-admin
+transports separate. The new device may create, poll, respond, cancel, and
+observe its own HTTP Join session. Existing ready admins discover work only
+through the generic P3 System Notification path; they do not
+poll Join lists or status in the background.
+
+Core uses the target DID's unique `ANPMessageService.serviceDid` only as the Home Service domain
+trust anchor. The P3 Business Origin must be a separately resolved
+`did:wba:<home-domain>:agents:system-notification:e1_*` Agent DID with a valid E1-bound document
+proof and Origin Proof; it must not equal or impersonate `serviceDid`. Core also verifies the
+candidate Join Request before exposing it. The admin's first explicit action
+submits claim and encrypted Challenge in one RPC/CAS. The two devices derive
+their six-digit SAS locally. Only the short-lived display value may cross the
+Core-to-host facade; SAS derivation material never does, and neither the SAS nor
+its derivation material enters the network, Outbox, persistence, or logs. After
+host user-presence, approval atomically commits the DID Document, Registry
+member row, and consumed Join session.
+
+Remote `consumed` is not sufficient local authorization. The candidate resolves
+the DID Document independently, verifies its exact Manifest entry and keys,
+then performs a fresh device-signed User Service request and stores the returned
+member access token with the rootless identity. Only after identity, checkpoint,
+and token persistence commit is the Join reported authorized. A request to
+continue as admin starts a separate root-transfer flow; it never changes the
+Join result.
+
+Public host DTOs expose only safe session, DID, device, role, status, readiness,
+fingerprint, short-lived local SAS display, and UI-action facts. OTP/account
+grants, Join tokens, pairing private keys, Challenge plaintext, SAS derivation
+material, root plaintext, Object Proof secrets, and internal checkpoints do not
+cross the host facade or CLI output boundary.
+
+Management-device root transfer reuses the ordinary exact-device P5 v2
+implementation. After eligibility and PreKey/session checks, one explicit user
+confirmation authorizes one target and message ID; V1 does not add a system
+PIN/biometric step to this transfer. An existing session sends a standard
+Cipher; when no session exists, the first standard Init carries the same
+RootKeyEnvelope as its first application plaintext. Core never sends an empty
+Init and never asks for a second confirmation.
+
+The sender persists ratchet state and byte-identical retry ciphertext before
+network I/O. The receiver processes the control JSON before ordinary message
+projection, revalidates the current Manifest/Registry and root fingerprint, and
+atomically seals the root as a `pending` Vault capability together with the
+consumed message and exact completion state. Root plaintext and control JSON
+never reach History, conversation, notification preview, search, Dart, CLI, or
+ordinary backup surfaces.
+
+The receiver then submits one HTTPS `device_root_import_complete` request with
+an outer importing-device Object Proof and an inner root-possession Object
+Proof. User Service verifies the current Registry, both proofs, and the ordinary
+P5 trusted route tuple, then atomically changes the member directly into a
+ready admin and increments `auth_generation`. After reading that authoritative
+state, Core promotes the pending root ref to active and obtains a management
+access token through a fresh device-signed request.
+
+There is no root-specific delivery class, private completion sidecar, encrypted
+imported ACK, ACK-driven readiness, empty-Init phase, or root-transfer rollout
+state machine in the target architecture. P5 Reply only converges the standard
+session. Transfer or completion failure leaves the already joined device as a
+member.
+
+### 4.2 P5/P6 public message product paths
+
+Ordinary multi-device messaging uses two independent, host-local rollout gates:
+`multi_device_direct_e2ee_enabled` selects exact-device P5 v2 Direct only for a
+local vNext identity, while `multi_device_group_e2ee_enabled` selects the
+device-scoped P6 v2 Group path. Both default to `false`; neither is an ANP
+capability, DID Document member, nor cross-domain request field. Turning either
+gate off preserves its existing message route and does not disable the other.
+
+P5 keeps one public logical message while the product runtime resolves the
+target DID Document's embedded `deviceManifest`. It sends one standard
+`direct.send` per exact recipient device and per eligible sibling device of the
+sender; it never invents a cross-domain `deliveries[]` request. Sibling copies
+use the encrypted own-sync application form and project as outgoing logical
+messages. A local, secret-free delivery ledger aggregates accepted/failed
+devices, preserves partial success, and makes a retry with the same logical
+message/idempotency identity skip already accepted devices. Attachment bytes
+are encrypted and uploaded once; only their Manifest is wrapped independently
+for each exact-device Direct session.
+
+P6 reads current business group state through the standard P4 boundary, then
+encrypts one application into exactly one MLS ciphertext and submits that
+ciphertext once, independent of the number of group Leaves. A group attachment
+is likewise encrypted and uploaded once, with its Manifest carried inside the
+single MLS Application message. Every device still owns independent MLS local
+state; the one-ciphertext rule does not imply shared Leaf secrets.
+
+P6 的本地 MLS OwnerScope 每次都从 identity index 中当前 `active` 的 vNext
+device authorization 读取 `ProtocolDeviceId`。重启或重建 `ImClient` 后仍使用同一
+权威设备标识；不得依赖进程内 `IdentitySummary.device_id`，也不得为 legacy、缺失授权
+或已撤销设备合成 sibling/`default` fallback。
+
+Inbound confidentiality filtering is gate-independent. Inbox/History, reliable
+sync, realtime, and delegated projections recognize P5/P6 v2 candidates before
+legacy rendering. Enabled paths may expose only an authenticated, decrypted
+business projection (including an outgoing projection for own-sync); handshake,
+notice/control, replay, malformed, failed, or gate-disabled candidates are
+consumed or dropped. Raw v2 wire bodies, ciphertext, and control JSON never
+cross the Rust/Dart/CLI/App public boundary and never fall back to a legacy
+plaintext renderer.
+
+For P6, blocking/async read and realtime share the same internal notice
+consumer. A standard `group.e2ee.notice` is bound to the current owner
+DID/device, resolved against the current P4 group-member DID documents, and
+passed to the SDK's durable, idempotent MLS notice state machine. Controls are
+never projected as messages or events; malformed, unknown-profile, wrong-device,
+or wrong-group inputs fail closed.
+
 ## 5. Paths and Configuration
 
 Hosts pass explicit `ImCoreConfig` and `ImCorePaths`.
@@ -106,8 +287,9 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 | Module | Public API expresses | Internal only |
 | --- | --- | --- |
 | core | `ImCore`, `ImClient`, config, paths, bootstrap, errors | `ClientIdentityRuntime`, path expansion, store handles |
-| identity | selectors, summaries, registration, recovery, profile, DID replacement plan | private key material, DID writer, raw identity store rows |
-| auth | login, ensure, refresh, status | proof builder, JWT file format, bearer header handling |
+| identity | selectors, summaries, registration, Legacy upgrade, recovery, device Join/admin promotion, permanent device revoke result/outcome category, profile, DID replacement plan | private key material, DID writer, raw identity store rows, revoke checkpoints and pending intents |
+| onboarding | Skill Token claim request/result and resumable claim operation | raw Token transport, pending key bundle, journal, DID generation, exchange and greeting orchestration |
+| auth | login, ensure, device-signed access-token renewal, refresh, status | proof builder, JWT file format, bearer header handling |
 | directory | peer resolve, handle lookup, contacts, relationships | user-service raw request/response, contact store rows |
 | messages | send, inbox, history, mark-read, conversations, reliable sync | message RPC params, wire DTOs, raw notification frames, checkpoint load/store |
 | groups | lifecycle, members, profile/policy, group reads | group wire helpers, raw group receipts |
@@ -120,8 +302,9 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 ## 7. Module Map
 
 - `core`: environment entrypoint, identity-bound client, bootstrap, errors, common IDs and paging types.
-- `identity`: local registry, default identity, handle registration/recovery, profile, contact binding, DID replacement plan.
-- `auth`: DID auth, session/JWT persistence, refresh, status, and retry support for business services.
+- `identity`: local registry, default identity, Handle registration, one-time Legacy upgrade, recovery, device Join/admin promotion, permanent device revoke and Identity-only pending recovery, profile, contact binding, and DID replacement plan.
+- `onboarding`: environment-level Skill Agent claim for an initialized, empty workspace. It verifies the scoped Token before key generation, persists a recoverable pending identity, exchanges it for a new DID identity, authenticates, and sends the deterministic Controller greeting before completion.
+- `auth`: DID-WBA, access-only session persistence, device-signed token renewal, refresh, status, and retry support for business services.
 - `local_state`: SQLite schema, owner isolation, messages, contacts, groups, email notification, secure outbox, realtime projection, and reliable sync checkpoints.
 - `discovery`: endpoint and capability selection from config, DID documents, profile, and service metadata.
 - `directory`: DID/Handle lookup, public profile, contact projection, relationship APIs.
@@ -141,15 +324,45 @@ Transport is explicit through configuration and capability checks:
 
 - `HttpOnly` keeps business operations on HTTP/RPC.
 - realtime runner requires a non-HTTP-only transport policy and returns a capability error when unavailable.
-- realtime session startup does not require a cached bearer token before spawning the runner. The WebSocket transport first tries the cached token when present, refreshes through DID-auth when the token is missing or receives `401`, and only then reports transport/auth failure to the session status stream. This lets hosted daemon/runtime agent identities recover after install when user-service did not include a bearer token in the registration exchange response.
+- realtime session startup does not require a cached bearer token before spawning the runner. The auth layer first tries the cached token; when it is missing or receives `401`, it performs one fresh device-signed User Service request, stores the access token from the authentication response headers, and retries once. Bearer transport never renews itself, and no device refresh token is used.
 - group E2EE, secure direct, SQLite-backed state, and advanced provider traits are feature-gated where appropriate.
 
 ## 9. Security Rules
 
 - Remote messages are untrusted input.
 - CLI/App output must not expose JWTs, private keys, raw secure state, ciphertext internals, MLS artifacts, provider stdout/stderr, or host secrets.
+- Skill onboarding requests use a redacted, non-serializable Token type. Token HTTP requests reject redirects; journals contain only non-secret scope and recovery state. A non-empty or ambiguous workspace fails closed.
 - Host notification payloads must contain approved event summaries, not raw message instructions.
 - Diagnostics may expose lower-level details only behind explicit debug/diagnostic gates.
+- Whole-roster Group security decisions use a bounded, version-bound
+  `group.list_members` page collector. No MLS mutation may begin until every page has the same
+  Group DID and canonical state version, cursor progress and totals are complete, and the
+  authoritative `max_members` policy and implementation hard cap are satisfied.
+- Permanent device revoke completes at the validated User Registry/DID Document result and local
+  Identity convergence. It does not scan or wait for every MLS group. Message Service keeps the
+  durable per-group send-pause gate; an owner device with local controller state converges a
+  selected group only through explicit group repair.
+
+## 9.2 Device Revoke And Group MLS Convergence
+
+`PendingDeviceRevoke` is an Identity exact-retry record, not a second MLS work queue. The
+destructive request persists its stable intent before submission. A validated remote result is
+persisted before local DID Document/checkpoint convergence, after which the pending record is
+deleted. Identity/session activation and a successful fresh Registry read may resume only that
+local convergence. A record that already contains a validated remote result converges and deletes
+without Registry or DID Document network access. Only a record without that result requires the
+exact Registry, generation, checkpoint, DID Document hash and Manifest match. Recovery is bounded,
+shares the revoke lock, never submits a new revoke request, and never touches MLS.
+
+Message Service owns the per-group `device_revocation_pending` fact. Core group secure status reads
+the Host-authoritative, low-sensitivity `group.get.e2ee_maintenance` projection before reporting
+readiness. A gate plus active owner and local controller state becomes `NeedsRepair`; a non-owner
+becomes `WaitingForMembershipUpdate`; a device without controller state becomes
+`MissingLocalState`. A missing or malformed authoritative response fails closed and cannot be
+reported as `Ready`. Status is read-only: it does not enumerate the roster, resolve Manifests,
+write the MLS WAL, or build a Commit. The low-sensitivity maintenance object accepts exactly
+`reason` and `send_paused`; target identifiers, counts, and other fields are rejected rather than
+silently projected.
 
 ## 9.1 Key Material Boundary
 
@@ -157,7 +370,7 @@ The full current technical design is documented in
 `docs/architecture/identity-secret-storage.md`. This section is the short
 architecture summary.
 
-Identity private material is an internal SDK concern. Business flows must not read `private_key_path`, `e2ee_agreement_private_key_path`, PEM files, or `auth.json` directly. DID-WBA auth, direct/group message signing, attachment signing, and secure direct static key loading go through the internal `KeyMaterialProvider` contract.
+Identity private material is an internal SDK concern. Business flows must not read `private_key_path`, `e2ee_agreement_private_key_path`, PEM files, or `auth.json` directly. DID-WBA auth, direct/group message signing, attachment signing, and secure direct static key loading go through the internal `KeyMaterialProvider` contract. That contract exposes separate device-request-signing and DID-Document-root accessors: daily authentication and messaging use the device accessor, while only DID Document creation/re-sign/update may request the root accessor. Legacy `key-1` identities retain their dual-role behavior only through an explicit compatibility adapter. vNext vault refs require a device-signing key but make the root ref optional, so a member device can authenticate without possessing DID root control material and root-only operations fail closed.
 
 The compatibility default remains file-backed when a host opens `ImCore` without
 explicit vault options:
@@ -171,9 +384,9 @@ Vault-backed identity storage is explicit and no-prompt by design:
 
 - Hosts pass `ImCoreOpenOptions` with `IdentitySecretStoragePolicy::VaultPreferred` or `VaultRequired` plus `ImCoreSecretVaultOptions`.
 - The vault root key is a host-provided no-prompt secret. It must not be written to `ImCoreConfig`, CLI workspace config, ordinary App JSON state, logs, diagnostics, JSON output, or `Debug` output. Explicit E2E runs may use a private file test provider that remains local and untracked.
-- `SecretVault` stores per-record AEAD ciphertext and binds workspace, device, identity, DID, kind, key id/version, schema, cipher, KDF, and no-prompt policy into authenticated metadata.
+- `SecretVault` stores per-record AEAD ciphertext and binds workspace, local vault-context device, identity, DID, kind, key id/version, schema, cipher, KDF, and no-prompt policy into authenticated metadata. The vault-context device id is a local storage scope and is a distinct Rust type from the random `ProtocolDeviceId`; it must never be published in a DID Manifest or copied into cross-domain messages.
 - `VaultRequired` is fail-closed. Missing root key, missing vault context, wrong workspace/device metadata, corrupt metadata, or failed open/verify must not silently fall back to plaintext for new secret persistence.
-- In `VaultRequired`, new registration, recovery, daemon subkey package persistence, and JWT/token refresh use vault-backed persistence and must not write private PEM/JWT material to the legacy identity files.
+- In `VaultRequired`, new registration, one-time Legacy upgrade, device Join/admin promotion, daemon subkey package persistence, and access-token replacement use vault-backed persistence and must not write private PEM/JWT material to the legacy identity files.
 - Identity vault migration seals records, opens them back for verification, and only then writes `vault_migration` metadata. Existing PEM/auth.json compatibility files are retained until an explicit cleanup path is available; migration failure must not delete or quarantine them.
 - Status, migration, and verification APIs expose backend/status/warnings summaries only. They must not expose the root key, private key, JWT, full `SecretRef`, or ciphertext internals.
 
@@ -210,7 +423,7 @@ These files describe the SDK public surface and interface-level contracts. They 
 
 ## 11. Durable Conversation Registry And Summary Projection
 
-The SQLite local state keeps `messages` as the durable message projection truth, while target schema version 28 uses `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
+The SQLite local state keeps `messages` as the durable message projection truth, while target schema version 29 uses `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
 
 - primary key: `(owner_identity_id, conversation_id)`;
 - hot index: `idx_conversation_summaries_owner_last(owner_identity_id, last_message_at DESC, conversation_id)`;
@@ -420,7 +633,33 @@ Schema version 20 adds `sync_state` with owner-scoped checkpoint rows:
 durations, redacted owner/thread identifiers, and checkpoint age rather than raw
 message payloads or sensitive E2EE material.
 
-## 15. Conversation Read State
+## 15. System Notification Projection
+
+Exact-device System Notification ingress is separated before ordinary Direct chat projection.
+Core accepts only delivery rows/hints carrying the trusted server-side
+`system_notification`/`system.notification` marker; a payload type alone never grants the system
+route. Exact-device routing is Message Service storage/delivery metadata and authenticated Inbox
+scope; it is not a P3 field and must not add `device_id`, `recipient_device_id`, or another
+device-targeting extension to P3 `meta`. P3 keeps the standard agent-DID target only. Full
+deliveries are verified against the target user's freshly resolved, root-bound DID
+Document and its unique compatible `ANPMessageService.serviceDid`. That service DID anchors only
+the trusted Home Service domain. `meta.sender_did` must instead use the reserved independent
+`did:wba:<home-domain>:agents:system-notification:e1_*` Business Origin Agent path; Core resolves
+that exact DID, verifies its E1-bound DID Document proof, and verifies its RFC 9421 Origin Proof.
+Join Request self-proof and the closed type-specific payload are verified separately.
+
+Schema version 29 stores an event receipt and one current reducer projection per
+`(owner_identity_id, owner_did, did, join_session_id)`. The reducer uses
+`none/revision=0`, ignores older revisions, treats identical same-revision content as a no-op,
+rejects same-revision conflicts, and never reopens a terminal state. Terminal tombstones carry a
+minimum 30-day retention boundary. The durable verified business payload is private Core state for
+the Join orchestrator; the public snapshot and change stream remain secret-free.
+
+`system.notification` sync events advance only the reliable account checkpoint and schedule
+exact-device Inbox hydration. Neither sync hints nor full notifications produce message,
+conversation, history, search, unread/read-watermark, attachment, or chat realtime projection.
+
+## 16. Conversation Read State
 
 Conversation-level read state is separate from reliable sync checkpoints:
 

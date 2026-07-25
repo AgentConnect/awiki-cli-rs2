@@ -51,12 +51,25 @@ impl ImCoreAdapter {
             .client_with_identity_material(hosted_identity_material(identity, jwt_token)?)?)
     }
 
-    pub fn client_for_did(&self, did: &str) -> Result<im_core::ImClient> {
+    pub fn client_for_delegated_signing_identity(
+        &self,
+        identity_id: String,
+        did: String,
+        did_document: serde_json::Value,
+        private_key_pem: String,
+    ) -> Result<im_core::ImClient> {
         Ok(self
             .core
-            .client(im_core::IdentitySelector::Did(im_core::ids::Did::parse(
+            .client_with_identity_material(im_core::HostedIdentityMaterial {
+                identity_id,
                 did,
-            )?))?)
+                handle: None,
+                display_name: None,
+                did_document,
+                default_signing_private_key_pem: private_key_pem,
+                e2ee_agreement_private_key_pem: None,
+                auth_token: None,
+            })?)
     }
 }
 
@@ -71,7 +84,7 @@ pub fn hosted_identity_material(
         display_name: Some(identity.handle.clone()),
         did_document: identity.did_document.clone(),
         default_signing_private_key_pem: identity.auth_private_key_pem.clone(),
-        e2ee_agreement_private_key_pem: identity.e2ee_agreement_private_key_pem.clone(),
+        e2ee_agreement_private_key_pem: Some(identity.e2ee_agreement_private_key_pem.clone()),
         auth_token: jwt_token
             .map(str::trim)
             .filter(|token| !token.is_empty())
@@ -134,5 +147,32 @@ mod tests {
         assert!(!identity_dir.join("private.key").exists());
         assert!(!identity_dir.join("e2ee-agreement-private.pem").exists());
         assert!(!identity_dir.join("auth.json").exists());
+    }
+
+    #[test]
+    fn delegated_signing_client_is_memory_only_and_ready_to_refresh_auth() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let identity = generate_agent_identity(&config, AgentKind::Daemon, "delegated-hosted-test")
+            .unwrap()
+            .into_record("delegated-hosted-test".to_string(), AgentKind::Daemon);
+        let adapter = ImCoreAdapter::open(&config).unwrap();
+
+        let client = adapter
+            .client_for_delegated_signing_identity(
+                "delegated-inbox-test".to_owned(),
+                identity.agent_did.clone(),
+                identity.did_document.clone(),
+                identity.auth_private_key_pem.clone(),
+            )
+            .unwrap();
+
+        let status = client.auth().status().unwrap();
+        assert!(!status.has_session);
+        assert!(status.needs_refresh);
+        assert!(!config
+            .identity_root_dir
+            .join("delegated-inbox-test")
+            .exists());
     }
 }

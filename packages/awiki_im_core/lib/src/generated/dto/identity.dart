@@ -147,11 +147,310 @@ class DartDeleteLocalIdentityResult {
           warnings == other.warnings;
 }
 
+class DartDeviceJoinApprovalPrompt {
+  final String approvalHandle;
+  final String joinSessionId;
+  final String sas;
+  final String expiresAt;
+
+  const DartDeviceJoinApprovalPrompt({
+    required this.approvalHandle,
+    required this.joinSessionId,
+    required this.sas,
+    required this.expiresAt,
+  });
+
+  @override
+  int get hashCode =>
+      approvalHandle.hashCode ^
+      joinSessionId.hashCode ^
+      sas.hashCode ^
+      expiresAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDeviceJoinApprovalPrompt &&
+          runtimeType == other.runtimeType &&
+          approvalHandle == other.approvalHandle &&
+          joinSessionId == other.joinSessionId &&
+          sas == other.sas &&
+          expiresAt == other.expiresAt;
+}
+
+enum DartDeviceJoinAuthorizationStatus { active, revoked }
+
+class DartDeviceJoinAuthorizedDeviceSummary {
+  final String protocolDeviceId;
+  final String signingKeyId;
+  final String e2EeKeyId;
+  final DartDeviceJoinAuthorizationStatus status;
+  final DartDeviceJoinRole role;
+  final bool managementReady;
+  final bool isCurrent;
+
+  const DartDeviceJoinAuthorizedDeviceSummary({
+    required this.protocolDeviceId,
+    required this.signingKeyId,
+    required this.e2EeKeyId,
+    required this.status,
+    required this.role,
+    required this.managementReady,
+    required this.isCurrent,
+  });
+
+  @override
+  int get hashCode =>
+      protocolDeviceId.hashCode ^
+      signingKeyId.hashCode ^
+      e2EeKeyId.hashCode ^
+      status.hashCode ^
+      role.hashCode ^
+      managementReady.hashCode ^
+      isCurrent.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDeviceJoinAuthorizedDeviceSummary &&
+          runtimeType == other.runtimeType &&
+          protocolDeviceId == other.protocolDeviceId &&
+          signingKeyId == other.signingKeyId &&
+          e2EeKeyId == other.e2EeKeyId &&
+          status == other.status &&
+          role == other.role &&
+          managementReady == other.managementReady &&
+          isCurrent == other.isCurrent;
+}
+
+enum DartDeviceJoinPhase {
+  pending,
+  challengePrepared,
+  responsePrepared,
+  responseVerified,
+  approvalPrepared,
+  authorized,
+  cancelled,
+  expired,
+}
+
+class DartDeviceJoinProgress {
+  final DartDeviceJoinSessionSummary session;
+  final DartDeviceJoinRemoteState remoteState;
+  final String? sas;
+  final DartDeviceJoinAuthorizedDeviceSummary? authorizedDevice;
+
+  const DartDeviceJoinProgress({
+    required this.session,
+    required this.remoteState,
+    this.sas,
+    this.authorizedDevice,
+  });
+
+  @override
+  int get hashCode =>
+      session.hashCode ^
+      remoteState.hashCode ^
+      sas.hashCode ^
+      authorizedDevice.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDeviceJoinProgress &&
+          runtimeType == other.runtimeType &&
+          session == other.session &&
+          remoteState == other.remoteState &&
+          sas == other.sas &&
+          authorizedDevice == other.authorizedDevice;
+}
+
+class DartDeviceJoinRegistrySnapshot {
+  final String did;
+  final List<DartDeviceJoinAuthorizedDeviceSummary> devices;
+
+  const DartDeviceJoinRegistrySnapshot({
+    required this.did,
+    required this.devices,
+  });
+
+  @override
+  int get hashCode => did.hashCode ^ devices.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDeviceJoinRegistrySnapshot &&
+          runtimeType == other.runtimeType &&
+          did == other.did &&
+          devices == other.devices;
+}
+
+enum DartDeviceJoinRejectReason { userRejected, sasMismatch }
+
+enum DartDeviceJoinRemoteState {
+  pending,
+  challengeSent,
+  responseVerified,
+  consumed,
+  cancelled,
+  rejected,
+  expired,
+}
+
+class DartDeviceJoinRequestNotice {
+  final String eventId;
+  final String joinSessionId;
+  final String did;
+  final String protocolDeviceId;
+  final String candidateKeyFingerprint;
+  final String issuedAt;
+  final String expiresAt;
+  final DartDeviceJoinRemoteState state;
+  final bool claimedByCurrentDevice;
+  final bool canStartVerification;
+
+  const DartDeviceJoinRequestNotice({
+    required this.eventId,
+    required this.joinSessionId,
+    required this.did,
+    required this.protocolDeviceId,
+    required this.candidateKeyFingerprint,
+    required this.issuedAt,
+    required this.expiresAt,
+    required this.state,
+    required this.claimedByCurrentDevice,
+    required this.canStartVerification,
+  });
+
+  @override
+  int get hashCode =>
+      eventId.hashCode ^
+      joinSessionId.hashCode ^
+      did.hashCode ^
+      protocolDeviceId.hashCode ^
+      candidateKeyFingerprint.hashCode ^
+      issuedAt.hashCode ^
+      expiresAt.hashCode ^
+      state.hashCode ^
+      claimedByCurrentDevice.hashCode ^
+      canStartVerification.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDeviceJoinRequestNotice &&
+          runtimeType == other.runtimeType &&
+          eventId == other.eventId &&
+          joinSessionId == other.joinSessionId &&
+          did == other.did &&
+          protocolDeviceId == other.protocolDeviceId &&
+          candidateKeyFingerprint == other.candidateKeyFingerprint &&
+          issuedAt == other.issuedAt &&
+          expiresAt == other.expiresAt &&
+          state == other.state &&
+          claimedByCurrentDevice == other.claimedByCurrentDevice &&
+          canStartVerification == other.canStartVerification;
+}
+
+enum DartDeviceJoinRole { member, admin }
+
+class DartDeviceJoinSessionSummary {
+  final String joinSessionId;
+  final String did;
+  final String protocolDeviceId;
+  final DartDeviceJoinSide side;
+  final DartDeviceJoinPhase phase;
+  final String expiresAt;
+
+  const DartDeviceJoinSessionSummary({
+    required this.joinSessionId,
+    required this.did,
+    required this.protocolDeviceId,
+    required this.side,
+    required this.phase,
+    required this.expiresAt,
+  });
+
+  @override
+  int get hashCode =>
+      joinSessionId.hashCode ^
+      did.hashCode ^
+      protocolDeviceId.hashCode ^
+      side.hashCode ^
+      phase.hashCode ^
+      expiresAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDeviceJoinSessionSummary &&
+          runtimeType == other.runtimeType &&
+          joinSessionId == other.joinSessionId &&
+          did == other.did &&
+          protocolDeviceId == other.protocolDeviceId &&
+          side == other.side &&
+          phase == other.phase &&
+          expiresAt == other.expiresAt;
+}
+
+enum DartDeviceJoinSide { newDevice, admin }
+
+/// Safe host projection. Internal checkpoints, documents, proofs and
+/// generations remain inside Core.
+class DartDeviceRevokeResult {
+  final String did;
+  final String targetDeviceId;
+  final DartDeviceRevokeStatus status;
+
+  const DartDeviceRevokeResult({
+    required this.did,
+    required this.targetDeviceId,
+    required this.status,
+  });
+
+  @override
+  int get hashCode => did.hashCode ^ targetDeviceId.hashCode ^ status.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDeviceRevokeResult &&
+          runtimeType == other.runtimeType &&
+          did == other.did &&
+          targetDeviceId == other.targetDeviceId &&
+          status == other.status;
+}
+
+enum DartDeviceRevokeStatus { revoked }
+
+class DartHandleRegistrationJoinRequired {
+  final String did;
+  final String accountVerificationToken;
+
+  const DartHandleRegistrationJoinRequired({
+    required this.did,
+    required this.accountVerificationToken,
+  });
+
+  @override
+  int get hashCode => did.hashCode ^ accountVerificationToken.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartHandleRegistrationJoinRequired &&
+          runtimeType == other.runtimeType &&
+          did == other.did &&
+          accountVerificationToken == other.accountVerificationToken;
+}
+
 class DartHandleRegistrationResult {
   final DartIdentitySummary? identity;
   final String handle;
   final String method;
   final String state;
+  final DartHandleRegistrationJoinRequired? joinRequired;
   final DartDefaultIdentityChange? defaultIdentityChange;
   final List<String> warnings;
 
@@ -160,6 +459,7 @@ class DartHandleRegistrationResult {
     required this.handle,
     required this.method,
     required this.state,
+    this.joinRequired,
     this.defaultIdentityChange,
     required this.warnings,
   });
@@ -170,6 +470,7 @@ class DartHandleRegistrationResult {
       handle.hashCode ^
       method.hashCode ^
       state.hashCode ^
+      joinRequired.hashCode ^
       defaultIdentityChange.hashCode ^
       warnings.hashCode;
 
@@ -182,8 +483,68 @@ class DartHandleRegistrationResult {
           handle == other.handle &&
           method == other.method &&
           state == other.state &&
+          joinRequired == other.joinRequired &&
           defaultIdentityChange == other.defaultIdentityChange &&
           warnings == other.warnings;
+}
+
+enum DartIdentityDeviceMode { legacy, vNext }
+
+enum DartIdentityDeviceReadiness {
+  legacy,
+  memberReady,
+  adminAwaitingRoot,
+  adminReady,
+  blocked,
+}
+
+enum DartIdentityDeviceRole { member, admin }
+
+class DartIdentityDeviceSummary {
+  final DartIdentitySummary identity;
+  final DartIdentityDeviceMode mode;
+  final String? protocolDeviceId;
+  final DartIdentityDeviceRole? role;
+  final String? signingKeyId;
+  final String? e2EeKeyId;
+  final DartIdentityDeviceReadiness readiness;
+  final String? blockedReason;
+
+  const DartIdentityDeviceSummary({
+    required this.identity,
+    required this.mode,
+    this.protocolDeviceId,
+    this.role,
+    this.signingKeyId,
+    this.e2EeKeyId,
+    required this.readiness,
+    this.blockedReason,
+  });
+
+  @override
+  int get hashCode =>
+      identity.hashCode ^
+      mode.hashCode ^
+      protocolDeviceId.hashCode ^
+      role.hashCode ^
+      signingKeyId.hashCode ^
+      e2EeKeyId.hashCode ^
+      readiness.hashCode ^
+      blockedReason.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartIdentityDeviceSummary &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          mode == other.mode &&
+          protocolDeviceId == other.protocolDeviceId &&
+          role == other.role &&
+          signingKeyId == other.signingKeyId &&
+          e2EeKeyId == other.e2EeKeyId &&
+          readiness == other.readiness &&
+          blockedReason == other.blockedReason;
 }
 
 enum DartIdentitySecretStorageBackend { fileCompat, vault }
@@ -405,45 +766,136 @@ class DartInitialProfile {
           avatarUrl == other.avatarUrl;
 }
 
-class DartRecoverHandleResult {
-  final String handle;
-  final String phone;
-  final String state;
-  final DartIdentitySummary? recoveredIdentity;
-  final String? userId;
-  final bool accessTokenPresent;
-  final List<String> warnings;
+@freezed
+sealed class DartLegacyUpgradeStatus with _$DartLegacyUpgradeStatus {
+  const DartLegacyUpgradeStatus._();
 
-  const DartRecoverHandleResult({
-    required this.handle,
-    required this.phone,
-    required this.state,
-    this.recoveredIdentity,
-    this.userId,
-    required this.accessTokenPresent,
-    required this.warnings,
-  });
+  const factory DartLegacyUpgradeStatus.idle() = DartLegacyUpgradeStatus_Idle;
+  const factory DartLegacyUpgradeStatus.running() =
+      DartLegacyUpgradeStatus_Running;
+  const factory DartLegacyUpgradeStatus.retryRequired({
+    required String identityId,
+    required String code,
+  }) = DartLegacyUpgradeStatus_RetryRequired;
+  const factory DartLegacyUpgradeStatus.completed() =
+      DartLegacyUpgradeStatus_Completed;
+}
+
+/// Closed, secret-free public error returned by root-transfer host APIs.
+class DartRootKeyTransferError implements FrbException {
+  final String code;
+  final bool retryable;
+
+  const DartRootKeyTransferError({required this.code, required this.retryable});
 
   @override
-  int get hashCode =>
-      handle.hashCode ^
-      phone.hashCode ^
-      state.hashCode ^
-      recoveredIdentity.hashCode ^
-      userId.hashCode ^
-      accessTokenPresent.hashCode ^
-      warnings.hashCode;
+  int get hashCode => code.hashCode ^ retryable.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is DartRecoverHandleResult &&
+      other is DartRootKeyTransferError &&
           runtimeType == other.runtimeType &&
-          handle == other.handle &&
-          phone == other.phone &&
-          state == other.state &&
-          recoveredIdentity == other.recoveredIdentity &&
-          userId == other.userId &&
-          accessTokenPresent == other.accessTokenPresent &&
-          warnings == other.warnings;
+          code == other.code &&
+          retryable == other.retryable;
+}
+
+/// Opaque, short-lived authorization returned by root-transfer preparation.
+///
+/// Its debug projection must never reveal the handle.
+class DartRootKeyTransferPreparation {
+  final String authorizationHandle;
+  final DartRootKeyTransferRecipientSummary recipient;
+  final String expiresAt;
+
+  const DartRootKeyTransferPreparation({
+    required this.authorizationHandle,
+    required this.recipient,
+    required this.expiresAt,
+  });
+
+  @override
+  int get hashCode =>
+      authorizationHandle.hashCode ^ recipient.hashCode ^ expiresAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartRootKeyTransferPreparation &&
+          runtimeType == other.runtimeType &&
+          authorizationHandle == other.authorizationHandle &&
+          recipient == other.recipient &&
+          expiresAt == other.expiresAt;
+}
+
+/// Secret-free exact-device summary verified by Core during preparation.
+class DartRootKeyTransferRecipientSummary {
+  final String did;
+  final String deviceId;
+  final String signingKeyId;
+  final String e2EeKeyId;
+  final BigInt registryVersion;
+
+  const DartRootKeyTransferRecipientSummary({
+    required this.did,
+    required this.deviceId,
+    required this.signingKeyId,
+    required this.e2EeKeyId,
+    required this.registryVersion,
+  });
+
+  @override
+  int get hashCode =>
+      did.hashCode ^
+      deviceId.hashCode ^
+      signingKeyId.hashCode ^
+      e2EeKeyId.hashCode ^
+      registryVersion.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartRootKeyTransferRecipientSummary &&
+          runtimeType == other.runtimeType &&
+          did == other.did &&
+          deviceId == other.deviceId &&
+          signingKeyId == other.signingKeyId &&
+          e2EeKeyId == other.e2EeKeyId &&
+          registryVersion == other.registryVersion;
+}
+
+/// Safe host projection for one accepted root-key control delivery.
+class DartRootKeyTransferSendResult {
+  final String did;
+  final String senderDeviceId;
+  final String recipientDeviceId;
+  final String messageId;
+  final String acceptedAt;
+
+  const DartRootKeyTransferSendResult({
+    required this.did,
+    required this.senderDeviceId,
+    required this.recipientDeviceId,
+    required this.messageId,
+    required this.acceptedAt,
+  });
+
+  @override
+  int get hashCode =>
+      did.hashCode ^
+      senderDeviceId.hashCode ^
+      recipientDeviceId.hashCode ^
+      messageId.hashCode ^
+      acceptedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartRootKeyTransferSendResult &&
+          runtimeType == other.runtimeType &&
+          did == other.did &&
+          senderDeviceId == other.senderDeviceId &&
+          recipientDeviceId == other.recipientDeviceId &&
+          messageId == other.messageId &&
+          acceptedAt == other.acceptedAt;
 }

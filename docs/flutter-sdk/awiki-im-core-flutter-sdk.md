@@ -73,7 +73,7 @@ versions/availability only, never filesystem backup paths.
 
 Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitives at the boundary. Time values remain ISO-8601 strings. The Dart wrapper may add convenience getters such as `AuthStatus.authenticated`, but it must not rename Rust DTO semantics such as `has_session` into a different facade meaning.
 
-## Identity registration and recovery
+## Identity registration and legacy recovery
 
 The SDK exposes `registerHandleWithPhone`, `registerHandleWithEmail`, and `recoverHandle` on `AwikiImCore`. These calls are core-level identity registry operations that map to `im-core` public identity DTOs; they do not depend on any `awiki-me` account gateway or UI model.
 
@@ -82,6 +82,13 @@ successful recovery of an existing full Handle rotates its DID without changing 
 identity ID, records old/current DID history, refreshes owner-DID snapshots, and enqueues any
 Handle-backed group member rebind work. Dart hosts must not persist the returned DID as a new local
 identity owner or supply a separate generated identity.
+
+This legacy API is not the multi-device Handle Recovery flow below and must
+never be used as its fallback.
+
+Skill Token claim is intentionally not exposed through the Dart facade in v1. The raw one-time
+Token is consumed only by the CLI/Rust onboarding path; App code signs and copies the instruction
+but does not pass the Token into im-core, persist it, or manage the resulting Skill Agent identity.
 
 ## Identity secret storage
 
@@ -128,6 +135,173 @@ Status/migration/verification DTOs report backend, metadata, warnings, and
 plaintext compatibility retention only. They do not expose root key material,
 JWTs, bearer tokens, or secret refs. Flutter Web remains a stub and cannot run
 the native vault-backed backend.
+
+Native hosts can read the current identity's safe device projection without
+opening any private key:
+
+```dart
+final device = await core.identityDeviceSummary(selector);
+```
+
+The result distinguishes legacy/member/admin readiness and exposes only the
+protocol device ID and public key IDs. It intentionally omits Vault references,
+root-key presence flags, and internal Document/Registry/auth checkpoints.
+
+## Multi-device Join
+
+Device Join 是 native SDK 的正式产品能力，不再受 Join host-local rollout gate 控制。新设备立即用
+`DeviceJoinAccountVerificationGrant.fromToken(...)` 包装短期账号验证结果；
+该 grant 没有 getter、copy/JSON API 或泄露内容的 `toString`，并由
+`beginDeviceJoin` 一次性消费。重启恢复与候选设备侧收敛继续使用
+`localDeviceJoinSessions`、`pollNewDeviceJoin` 和 `cancelNewDeviceJoin`。
+
+现有管理设备不通过 Registry pending 列表或 admin HTTP polling 发现请求。Core 在完成系统通知
+验证、durable dedupe 和本地 reducer commit 后，才发出可信
+`system_notification_changed` 事件；host 收到该信号后调用
+`localDeviceJoinRequests(selector)` 读取已验证、secret-free 的本地请求投影。打开页面或读取请求
+不得自动占有 Session。用户明确点击“开始验证”后，host 才调用
+`startDeviceJoinVerification(...)`，将 claim 与 Challenge 提交合并为一个操作；拒绝请求使用
+带 `DeviceJoinRejectReason.userRejected` 或 `DeviceJoinRejectReason.sasMismatch` 的
+`rejectDeviceJoin(...)`。
+
+该验证把目标 DID 的 `ANPMessageService.serviceDid` 仅作为 Home Service 域信任锚；P3
+Business Origin 是同域保留 path 下独立、E1 绑定的 System Notification Agent DID。Flutter
+host 不接收该身份的动态配置，也不需要处理自定义 profile。
+
+只有响应已经验证后，两端才显示本地推导的六位 SAS。管理设备收到可信通知并刷新本地请求后，
+调用 `localDeviceJoinVerificationProgress(selector:, joinSessionId:)` 读取短期 SAS。该接口是
+纯本地读取，只接受已经进入 `ResponseVerified` 或 `ApprovalPrepared` 的本地管理端 Session；
+它不发起 HTTP/RPC、不轮询远端、不写通知，也不推进 Join 状态。
+
+用户确认 SAS 一致后，host 调用 `prepareDeviceJoinApproval`，再在真实本地 user presence 后调用
+`confirmDeviceJoinApproval`。approval API 不接受 role，Join 结果固定为 rootless
+`member`；Registry 中既有设备的 member/admin role 仍可用于授权设备展示。approval handle
+只保留在进程内，不得记录或持久化。
+
+Join model 只暴露安全的 Session、设备、Registry role/status、expiry、请求生命周期和短期 SAS
+事实，不暴露 OTP/Join token、完整 Join Request/proof、pairing/private key、shared secret、
+root material、Challenge/ciphertext 或 AWiki 内部 Document/Registry/auth 版本与 hash。
+SAS 只允许短暂存在于 `DeviceJoinProgress`，不得进入 `DeviceJoinRequestNotice`、realtime event、
+持久化 DTO 或日志；相关模型的字符串与 Debug 输出必须保持脱敏。
+`system_notification_changed` 只携带 event ID、闭合 notification type 和可靠同步 hint，不透传
+raw P3 payload。Flutter Web 保留同形 API，但该 native 流程仍返回 unsupported。
+
+## Multi-device Handle Recovery
+
+V1 does not expose a Handle Recovery lifecycle, rollout flag, old-admin notice
+API, or native/Web stub. Recovery is a future, independently designed security
+capability; it must not be implemented by reusing Device Join or the
+single-original-device Legacy-to-Manifest upgrade. Applications must not infer
+Recovery support from identity registration, Join, root transfer, group rebind
+repair, or other operational repair APIs.
+
+## Management-device root-key transfer
+
+Root transfer is the single native V1 path and has no separate rollout option.
+The host first obtains an identity-scoped `AwikiImClient`, then calls:
+
+```dart
+final prepared = await client.rootKeyTransfer.prepare(
+  recipientDeviceId: justJoinedDeviceId,
+);
+// Verify and display prepared.recipient before prompting the user.
+final accepted = await client.rootKeyTransfer.confirmAndSend(
+  authorizationHandle: prepared.authorizationHandle,
+  userPresenceConfirmed: confirmedByOperatingSystem,
+);
+```
+
+`prepare` returns an opaque, short-lived authorization handle plus the exact
+secret-free recipient summary and expiry. The handle must only be passed back
+to the same client's `confirmAndSend`; its string projection is redacted.
+Core generates the message ID. The host cannot provide a root key, PreKey,
+session, checkpoint, proof, nonce, ciphertext, completion proof, or timeout.
+
+`RootKeyTransferSendResult` contains only DID, sender/recipient device IDs,
+Core-generated message ID, and accepted time. Acceptance means that encrypted
+delivery was accepted; it does not claim that recipient import or management
+readiness completed. Sender-side list, import status, and retry APIs are not
+public.
+
+RootKeyEnvelope, P5 state, imported completion, Vault state, and transport
+recovery remain entirely inside native Core. Public failures are the typed
+`RootKeyTransferException(code:, retryable:)` closed union. Flutter Web returns
+`root_transfer.unsupported` and has no plaintext or JavaScript fallback.
+
+## Permanent device revocation
+
+Native hosts opt in with
+`AwikiImCoreOpenOptions(multiDeviceDeviceRevokeEnabled: true)`; the option is
+independent from Join and defaults to false. After the host obtains foreground
+OS user presence, it calls `revokeDevice` with an identity selector, the exact
+opaque target device ID, and `userPresenceConfirmed: true`.
+
+The result contains only DID, target device ID, and `revoked` status. Internal
+Document/Registry versions and hashes, `auth_generation`, operation IDs,
+documents, proofs, tokens, and key material never enter the Dart API. Native
+Core rejects self-revocation and revoking the final ready management device;
+Flutter Web exposes the typed surface but keeps the operation unsupported.
+
+Failures expose `AwikiImCoreException.deviceRevokeOutcomeCategory` with the closed
+`DeviceRevokeOutcomeCategory.cancelledBeforeSubmit`, `rejectedBeforeCommit`, and
+`outcomeUnknown` values. Apps must refresh the authoritative device Registry after
+`outcomeUnknown`; they must not classify the outcome by matching `message`. A successful result
+does not claim every encrypted group has converged. Affected groups may remain send-paused until a
+current owner device explicitly repairs that group.
+
+## Multi-device Direct E2EE rollout
+
+Native hosts select the exact-device P5 v2 Direct product path with
+`AwikiImCoreOpenOptions(multiDeviceDirectE2eeEnabled: true)`. The option is
+host-local, defaults to false, and is independent from Join, root transfer,
+device revoke, Handle Recovery, and Group E2EE. It is never serialized into
+ANP, a DID Document, or a cross-domain request. Enabling it changes only Core's
+Direct product routing; it does not expose ciphertext, ratchet state, control
+JSON, or internal delivery ledgers to Dart.
+
+## Multi-device group encryption rollout
+
+Native hosts opt in with
+`AwikiImCoreOpenOptions(multiDeviceGroupE2eeEnabled: true)`; the option defaults
+to false and is independent from the Join flow and root-transfer gate. It is local
+configuration and is not sent as an ANP, DID Document, or cross-domain field.
+When enabled, `client.secure.group(groupDid).status()` and `repair()` read the
+device-scoped P6 v2 state and return only redacted readiness and repair facts.
+`GroupSecureRepairResult` reports `addedDevices`, `removedDevices`, and
+`remainingDevices` for the selected group reconciliation.
+They never return raw KeyPackages, Welcome/Commit data, Leaf identifiers, MLS
+secrets, provider paths, or SQLite rows.
+
+Group inventory is explicitly paged:
+
+```dart
+final first = await client.groups.listGroups(limit: 100);
+final next = first.hasMore
+    ? await client.groups.listGroups(limit: 100, cursor: first.nextCursor)
+    : null;
+
+final firstMembers = await client.groups.listMembers(
+  groupDid,
+  limit: 100,
+);
+final moreMembers = await client.groups.listMembers(
+  groupDid,
+  limit: 100,
+  cursor: firstMembers.nextCursor,
+);
+```
+
+`GroupReadResult` exposes `nextCursor`, `hasMore`, `pageGroupDid`, and
+`groupStateVersion`. The cursor is opaque. `groupStateVersion` remains a canonical decimal
+`String`, not a Dart `int`; `pageGroupDid/groupStateVersion` come from the Host member-page
+response and must not be filled from request arguments. The Dart wrapper returns one page and does
+not automatically enumerate a whole roster.
+
+When the Host projects `device_revocation_pending`, group secure status is never `ready`:
+an active owner with local controller state receives `needsRepair`, a non-owner receives
+`waitingForMembershipUpdate`, and a device without controller state receives
+`missingLocalState`. These are read-only readiness facts. Status does not mutate MLS, and malformed
+or unavailable Host maintenance state fails closed to `unavailable`.
 
 ## Directory profile metadata
 

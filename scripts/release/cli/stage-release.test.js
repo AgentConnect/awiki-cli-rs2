@@ -17,10 +17,10 @@ function run(command, args, options = {}) {
 
 function writeServerConfig(filePath, root) {
   const values = {
-    public_origin: 'https://downloads.example.com',
+    public_origin: 'https://awiki.info',
     public_base_path: '/cli',
-    default_backend_base_url: 'https://tenant.example.com',
-    default_did_host: 'tenant.example.com',
+    default_backend_base_url: 'https://awiki.info',
+    default_did_host: 'awiki.info',
     web_root: `${root}/web`,
     archive_root: `${root}/archive`,
     nginx_config: `${root}/nginx.conf`,
@@ -65,7 +65,7 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
 
     const manifest = JSON.parse(fs.readFileSync(path.join(output, 'manifest.json'), 'utf8'));
     assert.equal(manifest.latest, '1.0.20-beta.1');
-    assert.equal(manifest.installer.url, 'https://downloads.example.com/cli/beta/awiki-cli.tgz');
+    assert.equal(manifest.installer.url, 'https://awiki.info/cli/beta/awiki-cli.tgz');
     assert.deepEqual(Object.keys(manifest.packages).sort(), [
       'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64',
     ]);
@@ -82,17 +82,35 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
     const releaseMetadata = run('tar', ['-xOzf', path.join(output, 'awiki-cli.tgz'), 'package/awiki-release.json']);
     assert.equal(releaseMetadata.status, 0, releaseMetadata.stderr);
     const metadata = JSON.parse(releaseMetadata.stdout);
-    assert.equal(metadata.default_tenant.backend_base_url, 'https://tenant.example.com');
-    assert.equal(metadata.default_tenant.did_host, 'tenant.example.com');
+    assert.equal(metadata.default_tenant.backend_base_url, 'https://awiki.info');
+    assert.equal(metadata.default_tenant.did_host, 'awiki.info');
 
     const onboarding = fs.readFileSync(path.join(output, 'onboarding.md'), 'utf8');
-    assert.match(onboarding, /https:\/\/downloads\.example\.com\/cli\/beta\/awiki-cli\.tgz/);
+    assert.match(onboarding, /https:\/\/awiki\.info\/cli\/beta\/awiki-cli\.tgz/);
+    assert.match(onboarding, /AWIKI_SKILL_ONBOARDING_V1/);
+    assert.match(onboarding, /awiki-cli onboarding claim/);
+    assert.match(onboarding, /--expected-agent-handle/);
+    assert.match(onboarding, /--token-stdin/);
+    assert.doesNotMatch(onboarding, /awiki\.ai/);
     assert.doesNotMatch(onboarding, /\{\{[A-Z0-9_]+\}\}/);
     const skillListing = run('tar', ['-tzf', path.join(output, 'awiki-cli-skill.tar.gz')]);
     assert.equal(skillListing.status, 0, skillListing.stderr);
     assert.match(skillListing.stdout, /^SKILL\.md$/m);
     assert.match(skillListing.stdout, /^references\/00-installation\.md$/m);
+    assert.match(skillListing.stdout, /^references\/01-onboarding\.md$/m);
     assert.doesNotMatch(skillListing.stdout, /(^|\/)\._/m);
+
+    const skillEntry = run('tar', ['-xOzf', path.join(output, 'awiki-cli-skill.tar.gz'), 'SKILL.md']);
+    assert.equal(skillEntry.status, 0, skillEntry.stderr);
+    assert.match(skillEntry.stdout, /AWIKI_SKILL_ONBOARDING_V1/);
+    assert.doesNotMatch(skillEntry.stdout, /awiki\.ai/);
+    const skillOnboarding = run('tar', [
+      '-xOzf', path.join(output, 'awiki-cli-skill.tar.gz'), 'references/01-onboarding.md',
+    ]);
+    assert.equal(skillOnboarding.status, 0, skillOnboarding.stderr);
+    assert.match(skillOnboarding.stdout, /awiki-cli onboarding claim/);
+    assert.match(skillOnboarding.stdout, /--token-stdin/);
+    assert.doesNotMatch(skillOnboarding.stdout, /awiki\.ai/);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }

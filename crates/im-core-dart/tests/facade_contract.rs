@@ -9,6 +9,131 @@ fn dart_error_unsupported_has_stable_code() {
 }
 
 #[test]
+fn dart_device_revoke_outcome_is_structured() {
+    let error =
+        awiki_im_core::dto::error::DartImError::from(im_core::ImError::DeviceRevokeOutcome {
+            category: im_core::DeviceRevokeOutcomeCategory::OutcomeUnknown,
+        });
+    assert_eq!(error.code, "device_revoke_outcome");
+    assert_eq!(
+        error.device_revoke_outcome_category,
+        Some(awiki_im_core::dto::error::DartDeviceRevokeOutcomeCategory::OutcomeUnknown)
+    );
+}
+
+#[test]
+fn dart_group_read_result_preserves_member_page_metadata_as_strings() {
+    let core: im_core::groups::GroupReadResult = serde_json::from_value(serde_json::json!({
+        "group": null,
+        "groups": [],
+        "members": [],
+        "resolved_member": null,
+        "messages": {"items":[],"next_cursor":null,"has_more":false},
+        "total": 0,
+        "next_cursor": "opaque-page-2",
+        "has_more": true,
+        "page_group": "did:example:group",
+        "group_state_version": "9007199254740993",
+        "source": null,
+        "warnings": []
+    }))
+    .unwrap();
+    let mapped = awiki_im_core::dto::group::DartGroupReadResult::from(core);
+    assert!(mapped.has_more);
+    assert_eq!(mapped.next_cursor.as_deref(), Some("opaque-page-2"));
+    assert_eq!(mapped.page_group_did.as_deref(), Some("did:example:group"));
+    assert_eq!(
+        mapped.group_state_version.as_deref(),
+        Some("9007199254740993")
+    );
+    assert!(mapped.messages.next_cursor.is_none());
+}
+
+#[test]
+fn root_key_transfer_result_mapping_exposes_delivery_metadata_only() {
+    let mapped = awiki_im_core::dto::identity::DartRootKeyTransferSendResult::from(
+        im_core::identity::RootKeyTransferSendResult {
+            did: im_core::ids::Did::parse("did:example:alice").unwrap(),
+            sender_device_id: im_core::ids::ProtocolDeviceId::parse("device-admin").unwrap(),
+            recipient_device_id: im_core::ids::ProtocolDeviceId::parse("device-member").unwrap(),
+            message_id: im_core::ids::MessageId::parse("root-transfer-message-1").unwrap(),
+            accepted_at: "2026-07-20T01:00:00Z".to_owned(),
+        },
+    );
+
+    assert_eq!(mapped.message_id, "root-transfer-message-1");
+    let debug = format!("{mapped:?}");
+    assert!(!debug.contains("root_private_key"));
+    assert!(!debug.contains("transport_context"));
+    assert!(!debug.contains("completion"));
+}
+
+#[test]
+fn root_key_transfer_preparation_mapping_redacts_opaque_handle() {
+    let handle = serde_json::from_value(serde_json::Value::String(
+        "iIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIg".to_owned(),
+    ))
+    .unwrap();
+    let mapped = awiki_im_core::dto::identity::DartRootKeyTransferPreparation::from(
+        im_core::identity::RootKeyTransferPreparation {
+            authorization_handle: handle,
+            recipient: im_core::identity::RootKeyTransferRecipientSummary {
+                did: im_core::ids::Did::parse("did:example:alice").unwrap(),
+                device_id: im_core::ids::ProtocolDeviceId::parse("device-member").unwrap(),
+                signing_key_id: "did:example:alice#device-member-signing".to_owned(),
+                e2ee_key_id: "did:example:alice#device-member-e2ee".to_owned(),
+                registry_version: 7,
+            },
+            expires_at: "2026-07-20T01:00:00Z".to_owned(),
+        },
+    );
+
+    assert_eq!(mapped.recipient.device_id, "device-member");
+    assert_eq!(mapped.recipient.registry_version, 7);
+    let debug = format!("{mapped:?}");
+    assert!(debug.contains("<redacted-authorization-handle>"));
+    assert!(!debug.contains("iIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIg"));
+    assert!(!debug.contains("root_private_key"));
+}
+
+#[test]
+fn root_key_transfer_error_mapping_is_closed_and_secret_free() {
+    let mapped = awiki_im_core::dto::identity::DartRootKeyTransferError::from(
+        im_core::identity::RootKeyTransferError {
+            code: im_core::identity::RootKeyTransferErrorCode::PrekeyUnavailable,
+            retryable: true,
+        },
+    );
+
+    assert_eq!(mapped.code, "root_transfer.prekey_unavailable");
+    assert!(mapped.retryable);
+    assert_eq!(
+        format!("{mapped:?}"),
+        "DartRootKeyTransferError { code: \"root_transfer.prekey_unavailable\", retryable: true }"
+    );
+}
+
+#[test]
+fn group_secure_repair_mapping_preserves_device_reconciliation_counts() {
+    let mapped = awiki_im_core::dto::secure::DartGroupSecureRepairResult::from(
+        im_core::secure::GroupSecureRepairResult {
+            group: im_core::ids::GroupRef::parse("did:example:group").unwrap(),
+            state: im_core::secure::GroupSecureState::NeedsRepair,
+            repaired: true,
+            added_devices: 2,
+            removed_devices: 3,
+            remaining_devices: 1,
+            problem: None,
+            warnings: Vec::new(),
+        },
+    );
+
+    assert_eq!(mapped.added_devices, 2);
+    assert_eq!(mapped.removed_devices, 3);
+    assert_eq!(mapped.remaining_devices, 1);
+}
+
+#[test]
 fn local_state_upgrade_inspection_is_available_before_core_open() {
     let directory = tempfile::tempdir().unwrap();
     let inspection = awiki_im_core::api::local_state_upgrade::inspect_local_state_upgrade(
@@ -28,7 +153,7 @@ fn local_state_upgrade_inspection_is_available_before_core_open() {
         awiki_im_core::dto::local_state_upgrade::DartLocalStateUpgradeEligibility::NotRequired
     );
     assert_eq!(inspection.source_schema_version, 0);
-    assert_eq!(inspection.target_schema_version, 28);
+    assert_eq!(inspection.target_schema_version, 31);
 }
 
 #[test]
@@ -118,6 +243,26 @@ fn service_error_preserves_server_code_and_data_for_dart() {
         err.service_data_json.as_deref(),
         Some(r#"{"did":"did:example:old","handle":"alice"}"#)
     );
+}
+
+#[test]
+fn skill_onboarding_error_exposes_only_stable_redacted_fields() {
+    let secret = "awsk1_must_not_cross_the_bridge";
+    let err = awiki_im_core::dto::error::DartImError::from(im_core::ImError::SkillOnboarding {
+        code: "token_expired".to_owned(),
+        phase: "preflight".to_owned(),
+        retryable: false,
+    });
+
+    assert_eq!(err.code, "skill_onboarding_error");
+    assert_eq!(err.message, "Skill onboarding failed during preflight");
+    assert_eq!(err.service_code.as_deref(), Some("token_expired"));
+    assert_eq!(
+        err.service_data_json.as_deref(),
+        Some(r#"{"phase":"preflight","retryable":false}"#)
+    );
+    assert!(!err.message.contains(secret));
+    assert!(!err.service_data_json.as_deref().unwrap().contains(secret));
 }
 
 #[test]
@@ -769,6 +914,9 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
             workspace_id: "workspace-a".to_string(),
             device_id: "device-a".to_string(),
         }),
+        multi_device_device_revoke_enabled: true,
+        multi_device_direct_e2ee_enabled: true,
+        multi_device_group_e2ee_enabled: true,
     };
 
     let mapped: im_core::ImCoreOpenOptions = options.try_into().expect("open options map");
@@ -776,6 +924,9 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
         mapped.identity_secret_storage_policy,
         im_core::IdentitySecretStoragePolicy::VaultRequired
     ));
+    assert!(mapped.multi_device_device_revoke_enabled);
+    assert!(mapped.multi_device_direct_e2ee_enabled);
+    assert!(mapped.multi_device_group_e2ee_enabled);
     let vault = mapped.identity_secret_vault.expect("vault options");
     assert_eq!(
         vault.vault_dir,
@@ -801,6 +952,9 @@ fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
             workspace_id: "workspace-a".to_string(),
             device_id: "device-a".to_string(),
         }),
+        multi_device_device_revoke_enabled: false,
+        multi_device_direct_e2ee_enabled: false,
+        multi_device_group_e2ee_enabled: false,
     };
 
     let error = im_core::ImCoreOpenOptions::try_from(options).unwrap_err();
@@ -808,6 +962,34 @@ fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
     assert_eq!(error.field.as_deref(), Some("root_key"));
     assert!(error.message.contains("32 bytes"));
     assert!(!error.message.contains("short-secret"));
+}
+
+#[test]
+fn device_revoke_result_maps_only_safe_product_state() {
+    let result = im_core::identity::DeviceRevokeResult {
+        did: im_core::ids::Did::parse("did:wba:example.test:alice").expect("did"),
+        target_device_id: im_core::ids::ProtocolDeviceId::parse("device-member")
+            .expect("device id"),
+        status: im_core::identity::DeviceRevokeStatus::Revoked,
+    };
+
+    let dart: awiki_im_core::dto::identity::DartDeviceRevokeResult = result.into();
+    assert_eq!(dart.did, "did:wba:example.test:alice");
+    assert_eq!(dart.target_device_id, "device-member");
+    assert!(matches!(
+        dart.status,
+        awiki_im_core::dto::identity::DartDeviceRevokeStatus::Revoked
+    ));
+    let debug = format!("{dart:?}");
+    for forbidden in [
+        "auth_generation",
+        "document_hash",
+        "registry_version",
+        "root_proof",
+        "admin_proof",
+    ] {
+        assert!(!debug.contains(forbidden));
+    }
 }
 
 #[test]
@@ -855,6 +1037,64 @@ fn identity_vault_status_maps_without_secret_refs() {
     assert_eq!(dart.workspace_id.as_deref(), Some("workspace-a"));
     assert_eq!(dart.device_id.as_deref(), Some("device-a"));
     assert_eq!(dart.plaintext_compat_retained, Some(false));
+}
+
+#[test]
+fn identity_device_summary_maps_only_safe_product_state() {
+    let core_summary = im_core::identity::IdentityDeviceSummary {
+        identity: im_core::identity::IdentitySummary {
+            id: im_core::ids::IdentityId::parse("id-alice").expect("identity id"),
+            did: im_core::ids::Did::parse("did:example:alice").expect("did"),
+            handle: None,
+            display_name: Some("Alice".to_string()),
+            local_alias: Some("alice".to_string()),
+            device_id: Some("local-vault-device".to_string()),
+            is_default: true,
+            readiness: im_core::identity::IdentityReadiness {
+                ready_for_auth: true,
+                ready_for_messaging: true,
+                missing: vec![],
+            },
+        },
+        mode: im_core::identity::IdentityDeviceMode::VNext,
+        protocol_device_id: Some(
+            im_core::ids::ProtocolDeviceId::parse("protocol-device-a").expect("protocol device id"),
+        ),
+        role: Some(im_core::identity::IdentityDeviceRole::Admin),
+        signing_key_id: Some("did:example:alice#device-signing".to_string()),
+        e2ee_key_id: Some("did:example:alice#device-e2ee".to_string()),
+        readiness: im_core::identity::IdentityDeviceReadiness::AdminReady,
+        blocked_reason: None,
+    };
+
+    let dart: awiki_im_core::dto::identity::DartIdentityDeviceSummary = core_summary.into();
+    assert_eq!(dart.identity.did, "did:example:alice");
+    assert_eq!(
+        dart.protocol_device_id.as_deref(),
+        Some("protocol-device-a")
+    );
+    assert!(matches!(
+        dart.mode,
+        awiki_im_core::dto::identity::DartIdentityDeviceMode::VNext
+    ));
+    assert!(matches!(
+        dart.role,
+        Some(awiki_im_core::dto::identity::DartIdentityDeviceRole::Admin)
+    ));
+    assert!(matches!(
+        dart.readiness,
+        awiki_im_core::dto::identity::DartIdentityDeviceReadiness::AdminReady
+    ));
+    let debug = format!("{dart:?}");
+    for forbidden in [
+        "document_version",
+        "document_hash",
+        "registry_version",
+        "auth_generation",
+        "SecretRef",
+    ] {
+        assert!(!debug.contains(forbidden));
+    }
 }
 
 #[test]
@@ -948,6 +1188,98 @@ fn realtime_runner_capability_is_exposed_after_bridge_plan_lands() {
     assert!(capability.connect_supported);
     assert!(capability.runner_exposed);
     assert!(capability.reason.is_none());
+}
+
+#[test]
+fn device_join_bridge_projection_excludes_internal_state_and_redacts_prompt() {
+    let session = im_core::identity::DeviceJoinSessionView {
+        join_session_id: "join-safe-id".to_owned(),
+        did: im_core::ids::Did::parse("did:wba:example.test:alice").unwrap(),
+        protocol_device_id: im_core::ids::ProtocolDeviceId::parse("device-new").unwrap(),
+        side: im_core::identity::DeviceJoinSide::NewDevice,
+        phase: im_core::identity::DeviceJoinLocalPhase::Pending,
+        expires_at: "2026-07-19T12:00:00Z".to_owned(),
+    };
+    let dart: awiki_im_core::dto::identity::DartDeviceJoinSessionSummary = session.into();
+    let debug = format!("{dart:?}");
+    assert!(debug.contains("join-safe-id"));
+    for forbidden in [
+        "join_request_hash",
+        "challenge_id",
+        "document_hash",
+        "registry_version",
+        "auth_generation",
+    ] {
+        assert!(!debug.contains(forbidden));
+    }
+
+    let prompt = awiki_im_core::dto::identity::DartDeviceJoinApprovalPrompt {
+        approval_handle: "approval-secret-handle".to_owned(),
+        join_session_id: "join-safe-id".to_owned(),
+        sas: "123456".to_owned(),
+        expires_at: "2026-07-19T12:00:00Z".to_owned(),
+    };
+    let debug = format!("{prompt:?}");
+    assert!(!debug.contains("approval-secret-handle"));
+    assert!(!debug.contains("123456"));
+}
+
+#[test]
+fn device_join_progress_debug_redacts_short_lived_sas() {
+    let progress = awiki_im_core::dto::identity::DartDeviceJoinProgress {
+        session: awiki_im_core::dto::identity::DartDeviceJoinSessionSummary {
+            join_session_id: "join-safe-id".to_owned(),
+            did: "did:wba:example.test:alice".to_owned(),
+            protocol_device_id: "device-new".to_owned(),
+            side: awiki_im_core::dto::identity::DartDeviceJoinSide::Admin,
+            phase: awiki_im_core::dto::identity::DartDeviceJoinPhase::ResponseVerified,
+            expires_at: "2026-07-23T12:10:00Z".to_owned(),
+        },
+        remote_state: awiki_im_core::dto::identity::DartDeviceJoinRemoteState::ResponseVerified,
+        sas: Some("123456".to_owned()),
+        authorized_device: None,
+    };
+
+    let debug = format!("{progress:?}");
+    assert!(debug.contains("join-safe-id"));
+    assert!(debug.contains("<redacted-sas>"));
+    assert!(!debug.contains("123456"));
+}
+
+#[test]
+fn device_join_request_notice_is_closed_and_secret_free() {
+    let notice = im_core::identity::DeviceJoinRequestNotice {
+        event_id: "join-event-1".to_owned(),
+        join_session_id: "join-safe-id".to_owned(),
+        did: im_core::ids::Did::parse("did:wba:example.test:alice").unwrap(),
+        protocol_device_id: im_core::ids::ProtocolDeviceId::parse("device-new").unwrap(),
+        candidate_key_fingerprint: "fingerprint-safe".to_owned(),
+        issued_at: "2026-07-23T12:00:00Z".to_owned(),
+        expires_at: "2026-07-23T12:10:00Z".to_owned(),
+        state: im_core::identity::DeviceJoinRemoteState::Pending,
+        claimed_by_current_device: false,
+        can_start_verification: true,
+    };
+    let dart: awiki_im_core::dto::identity::DartDeviceJoinRequestNotice = notice.into();
+
+    assert_eq!(dart.event_id, "join-event-1");
+    assert_eq!(
+        dart.state,
+        awiki_im_core::dto::identity::DartDeviceJoinRemoteState::Pending
+    );
+    assert!(dart.can_start_verification);
+    let debug = format!("{dart:?}");
+    for forbidden in [
+        "join_request_proof",
+        "admin_proof",
+        "challenge_ciphertext",
+        "pairing_private_key",
+        "shared_secret",
+        "token",
+        "sas",
+    ] {
+        assert!(!debug.contains(forbidden));
+    }
 }
 
 #[test]

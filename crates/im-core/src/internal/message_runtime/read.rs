@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Map, Value};
+use sha2::{Digest as _, Sha256};
+use zeroize::Zeroizing;
 
 use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
 use crate::internal::transport::{
@@ -88,7 +91,6 @@ where
         direct.page.has_more |=
             dedupe_and_truncate_messages(&mut direct.page.items, requested_limit);
         merge_raw_metadata(&mut direct.raw, &group.raw, "all");
-        persist_projection_best_effort(self.client, &direct.page.items);
         Ok(direct)
     }
 
@@ -96,11 +98,13 @@ where
         &mut self,
         query: crate::messages::InboxQuery,
     ) -> crate::ImResult<ReadPageResult> {
-        self.session_provider
-            .ensure_session(crate::auth::AuthScope::Messaging)?;
         let limit = page_limit(query.limit, 20);
         let delegated =
             delegated_inbox_context(self.client, query.inbox_history_options.as_ref(), limit)?;
+        if delegated.is_none() {
+            self.session_provider
+                .ensure_session(crate::auth::AuthScope::Messaging)?;
+        }
         let service_did = delegated
             .as_ref()
             .map(|_| delegated_message_service_did(self.client));
@@ -127,16 +131,30 @@ where
         let mut raw =
             self.transport
                 .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)?;
-        if delegated.is_some() {
-            filter_delegated_e2ee_messages(&mut raw);
-        } else {
-            project_secure_direct_messages(self.client, &mut raw, &mut self.directory_transport);
+        #[cfg(feature = "sqlite")]
+        if delegated.is_none() {
+            let _ =
+                consume_system_notifications(self.client, &mut raw, &mut self.directory_transport);
         }
-        annotate_direct_peer_scopes(self.client, &mut raw, &mut self.directory_transport, None);
+        let mut p5_provenance = if delegated.is_some() {
+            filter_delegated_e2ee_messages(&mut raw);
+            DirectP5ProjectionProvenance::default()
+        } else {
+            consume_group_e2ee_control_messages(self.client, &mut raw);
+            project_secure_direct_messages(self.client, &mut raw, &mut self.directory_transport)
+        };
+        annotate_direct_peer_scopes(
+            self.client,
+            &mut raw,
+            &mut self.directory_transport,
+            None,
+            None,
+            Some(&mut p5_provenance),
+        );
         let mut page = page_from_raw(self.client, &raw, query.limit)?;
         page.items.retain(|message| message.group.is_none());
         page.has_more |= dedupe_and_truncate_messages(&mut page.items, query.limit);
-        persist_projection_best_effort(self.client, &page.items);
+        persist_projection_best_effort(self.client, &page.items, &p5_provenance);
         Ok(ReadPageResult { page, raw })
     }
 
@@ -153,6 +171,7 @@ where
         let group_list_params = crate::internal::wire::group::build_group_list_rpc_params(
             self.client.did().as_str(),
             limit,
+            None,
         );
         let group_list_raw = self.transport.authenticated_rpc(
             MESSAGE_RPC_ENDPOINT,
@@ -190,21 +209,27 @@ where
             next_cursor: None,
             has_more,
         };
-        persist_projection_best_effort(self.client, &page.items);
+        persist_projection_best_effort(
+            self.client,
+            &page.items,
+            &DirectP5ProjectionProvenance::default(),
+        );
         Ok(ReadPageResult { page, raw })
     }
 
     pub(crate) fn history(mut self, input: HistoryRead) -> crate::ImResult<ReadPageResult> {
         match input.thread {
             crate::messages::ThreadRef::Direct(peer) => {
-                self.session_provider
-                    .ensure_session(crate::auth::AuthScope::Messaging)?;
                 let peer = direct_thread(peer, input.resolved_peer_did)?;
                 let delegated = delegated_inbox_context(
                     self.client,
                     input.query.inbox_history_options.as_ref(),
                     page_limit(input.query.limit, 50),
                 )?;
+                if delegated.is_none() {
+                    self.session_provider
+                        .ensure_session(crate::auth::AuthScope::Messaging)?;
+                }
                 let service_did = delegated
                     .as_ref()
                     .map(|_| delegated_message_service_did(self.client));
@@ -236,23 +261,35 @@ where
                     "direct.get_history",
                     params,
                 )?;
-                if delegated.is_some() {
+                let mut p5_provenance = if delegated.is_some() {
                     filter_delegated_e2ee_messages(&mut raw);
+                    DirectP5ProjectionProvenance::default()
                 } else {
-                    project_secure_direct_messages(
+                    consume_group_e2ee_control_messages(self.client, &mut raw);
+                    project_secure_direct_messages_for_peer(
                         self.client,
                         &mut raw,
                         &mut self.directory_transport,
-                    );
-                }
+                        &peer.resolved_did,
+                    )
+                };
+                retain_direct_messages_for_expected_peer(
+                    self.client,
+                    &mut raw,
+                    &peer.resolved_did,
+                    &mut p5_provenance,
+                );
                 annotate_direct_peer_scopes(
                     self.client,
                     &mut raw,
                     &mut self.directory_transport,
                     input.peer_scope.as_ref(),
+                    Some(&peer.resolved_did),
+                    Some(&mut p5_provenance),
                 );
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
-                persist_projection_best_effort(self.client, &page.items);
+                reject_stalled_scoped_direct_page(&raw, page.items.len())?;
+                persist_projection_best_effort(self.client, &page.items, &p5_provenance);
                 let page = merge_direct_local_projection_best_effort(
                     self.client,
                     page,
@@ -283,7 +320,11 @@ where
                 project_group_e2ee_messages(self.client, &mut raw);
                 let mut page =
                     page_from_raw_with_group(self.client, &raw, input.query.limit, Some(&group))?;
-                persist_projection_best_effort(self.client, &page.items);
+                persist_projection_best_effort(
+                    self.client,
+                    &page.items,
+                    &DirectP5ProjectionProvenance::default(),
+                );
                 page = merge_group_local_projection_best_effort(
                     self.client,
                     page,
@@ -342,7 +383,6 @@ where
         direct.page.has_more |=
             dedupe_and_truncate_messages(&mut direct.page.items, requested_limit);
         merge_raw_metadata(&mut direct.raw, &group.raw, "all");
-        persist_projection_best_effort_async(self.client, &direct.page.items).await;
         Ok(direct)
     }
 
@@ -350,13 +390,15 @@ where
         &mut self,
         query: crate::messages::InboxQuery,
     ) -> crate::ImResult<ReadPageResult> {
-        self.session_provider
-            .ensure_session(crate::auth::AuthScope::Messaging)
-            .await?;
         let limit = page_limit(query.limit, 20);
         let delegated =
             delegated_inbox_context_async(self.client, query.inbox_history_options.as_ref(), limit)
                 .await?;
+        if delegated.is_none() {
+            self.session_provider
+                .ensure_session(crate::auth::AuthScope::Messaging)
+                .await?;
+        }
         let service_did = delegated
             .as_ref()
             .map(|_| delegated_message_service_did(self.client));
@@ -384,27 +426,40 @@ where
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)
             .await?;
-        if delegated.is_some() {
-            filter_delegated_e2ee_messages(&mut raw);
-        } else {
-            project_secure_direct_messages_async(
+        #[cfg(feature = "sqlite")]
+        if delegated.is_none() {
+            let _ = consume_system_notifications_async(
                 self.client,
                 &mut raw,
                 &mut self.directory_transport,
             )
             .await;
         }
+        let mut p5_provenance = if delegated.is_some() {
+            filter_delegated_e2ee_messages(&mut raw);
+            DirectP5ProjectionProvenance::default()
+        } else {
+            consume_group_e2ee_control_messages_async(self.client, &mut raw).await;
+            project_secure_direct_messages_async(
+                self.client,
+                &mut raw,
+                &mut self.directory_transport,
+            )
+            .await
+        };
         annotate_direct_peer_scopes_async(
             self.client,
             &mut raw,
             &mut self.directory_transport,
             None,
+            None,
+            Some(&mut p5_provenance),
         )
         .await;
         let mut page = page_from_raw(self.client, &raw, query.limit)?;
         page.items.retain(|message| message.group.is_none());
         page.has_more |= dedupe_and_truncate_messages(&mut page.items, query.limit);
-        persist_projection_best_effort_async(self.client, &page.items).await;
+        persist_projection_best_effort_async(self.client, &page.items, &p5_provenance).await;
         Ok(ReadPageResult { page, raw })
     }
 
@@ -422,6 +477,7 @@ where
         let group_list_params = crate::internal::wire::group::build_group_list_rpc_params(
             self.client.did().as_str(),
             limit,
+            None,
         );
         let group_list_raw = self
             .transport
@@ -457,7 +513,12 @@ where
             next_cursor: None,
             has_more,
         };
-        persist_projection_best_effort_async(self.client, &page.items).await;
+        persist_projection_best_effort_async(
+            self.client,
+            &page.items,
+            &DirectP5ProjectionProvenance::default(),
+        )
+        .await;
         Ok(ReadPageResult { page, raw })
     }
 
@@ -467,9 +528,6 @@ where
     ) -> crate::ImResult<ReadPageResult> {
         match input.thread {
             crate::messages::ThreadRef::Direct(peer) => {
-                self.session_provider
-                    .ensure_session(crate::auth::AuthScope::Messaging)
-                    .await?;
                 let peer = direct_thread(peer, input.resolved_peer_did)?;
                 let delegated = delegated_inbox_context_async(
                     self.client,
@@ -477,6 +535,11 @@ where
                     page_limit(input.query.limit, 50),
                 )
                 .await?;
+                if delegated.is_none() {
+                    self.session_provider
+                        .ensure_session(crate::auth::AuthScope::Messaging)
+                        .await?;
+                }
                 let service_did = delegated
                     .as_ref()
                     .map(|_| delegated_message_service_did(self.client));
@@ -507,25 +570,38 @@ where
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
                     .await?;
-                if delegated.is_some() {
+                let mut p5_provenance = if delegated.is_some() {
                     filter_delegated_e2ee_messages(&mut raw);
+                    DirectP5ProjectionProvenance::default()
                 } else {
-                    project_secure_direct_messages_async(
+                    consume_group_e2ee_control_messages_async(self.client, &mut raw).await;
+                    project_secure_direct_messages_async_for_peer(
                         self.client,
                         &mut raw,
                         &mut self.directory_transport,
+                        &peer.resolved_did,
                     )
-                    .await;
-                }
+                    .await
+                };
+                retain_direct_messages_for_expected_peer(
+                    self.client,
+                    &mut raw,
+                    &peer.resolved_did,
+                    &mut p5_provenance,
+                );
                 annotate_direct_peer_scopes_async(
                     self.client,
                     &mut raw,
                     &mut self.directory_transport,
                     input.peer_scope.as_ref(),
+                    Some(&peer.resolved_did),
+                    Some(&mut p5_provenance),
                 )
                 .await;
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
-                persist_projection_best_effort_async(self.client, &page.items).await;
+                reject_stalled_scoped_direct_page(&raw, page.items.len())?;
+                persist_projection_best_effort_async(self.client, &page.items, &p5_provenance)
+                    .await;
                 let page = merge_direct_local_projection_best_effort_async(
                     self.client,
                     page,
@@ -557,7 +633,12 @@ where
                 project_group_e2ee_messages_async(self.client, &mut raw).await;
                 let mut page =
                     page_from_raw_with_group(self.client, &raw, input.query.limit, Some(&group))?;
-                persist_projection_best_effort_async(self.client, &page.items).await;
+                persist_projection_best_effort_async(
+                    self.client,
+                    &page.items,
+                    &DirectP5ProjectionProvenance::default(),
+                )
+                .await;
                 page = merge_group_local_projection_best_effort_async(
                     self.client,
                     page,
@@ -588,36 +669,163 @@ where
 pub(crate) fn persist_projection_best_effort(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
+    p5_provenance: &DirectP5ProjectionProvenance,
 ) {
     if messages.is_empty() {
         return;
     }
     if matches!(
-        crate::internal::message_runtime::local_projection::persist_remote_messages(
-            client, messages,
-        ),
-        Ok(outcome) if outcome.stored_messages > 0
+        persist_projection(client, messages, p5_provenance),
+        Ok(stored_messages) if stored_messages > 0
     ) {
         client.emit_committed_local_message_projection("remote_history");
+    }
+}
+
+pub(crate) fn persist_projection(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+    p5_provenance: &DirectP5ProjectionProvenance,
+) -> crate::ImResult<usize> {
+    #[cfg(feature = "sqlite")]
+    {
+        let records = remote_projection_records(client, messages, p5_provenance)?;
+        let mut connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )?;
+        let transaction = connection
+            .transaction()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        let outcome =
+            crate::internal::local_state::inbound_resolution_backlog::ingest_remote_messages(
+                &transaction,
+                &records,
+                "remote_history",
+            )?;
+        transaction
+            .commit()
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        Ok(outcome.stored_messages)
+    }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (client, messages, p5_provenance);
+        Ok(0)
     }
 }
 
 pub(crate) async fn persist_projection_best_effort_async(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
+    p5_provenance: &DirectP5ProjectionProvenance,
 ) {
     if messages.is_empty() {
         return;
     }
     if matches!(
-        crate::internal::message_runtime::local_projection::persist_remote_messages_async(
-            client, messages,
-        )
-        .await,
-        Ok(outcome) if outcome.stored_messages > 0
+        persist_projection_async(client, messages, p5_provenance).await,
+        Ok(stored_messages) if stored_messages > 0
     ) {
         client.emit_committed_local_message_projection("remote_history");
     }
+}
+
+pub(crate) async fn persist_projection_async(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+    p5_provenance: &DirectP5ProjectionProvenance,
+) -> crate::ImResult<usize> {
+    #[cfg(feature = "sqlite")]
+    {
+        let records = remote_projection_records(client, messages, p5_provenance)?;
+        let outcome = client
+            .core_inner()
+            .local_state_db()
+            .await?
+            .store_remote_messages(records, "remote_history")
+            .await?;
+        Ok(outcome.stored_messages)
+    }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (client, messages, p5_provenance);
+        Ok(0)
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn remote_projection_records(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+    p5_provenance: &DirectP5ProjectionProvenance,
+) -> crate::ImResult<Vec<crate::internal::local_state::messages::MessageRecord>> {
+    messages
+        .iter()
+        .map(|message| {
+            let mut record =
+                crate::internal::message_runtime::local_projection::message_record_from_message(
+                    client, message,
+                )?;
+            let binding = p5_provenance.binding_for_message(message);
+            if let Some(binding) = binding {
+                if let Some(wire_peer_did) = p5_projection_wire_peer_did(
+                    message,
+                    &record,
+                    binding,
+                    p5_provenance.expected_peer_did.as_deref(),
+                    p5_provenance.verified_scoped_route_for_message(message),
+                ) {
+                    record = record.with_resolved_wire_thread("direct", wire_peer_did);
+                    persist_p5_cache_binding_metadata(&mut record, binding)?;
+                }
+            }
+            Ok(record)
+        })
+        .collect()
+}
+
+#[cfg(feature = "sqlite")]
+fn persist_p5_cache_binding_metadata(
+    record: &mut crate::internal::local_state::messages::MessageRecord,
+    binding: &P5CacheBinding,
+) -> crate::ImResult<()> {
+    let Some(encoded) = binding.digest.strip_prefix("sha256:") else {
+        return Err(crate::ImError::PermissionDenied);
+    };
+    if URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .len()
+        != 32
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let mut object = serde_json::from_str::<Value>(&record.metadata)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    object.insert(
+        "raw_message_id".to_owned(),
+        Value::String(binding.message_id.clone()),
+    );
+    for (key, value) in [
+        (P5_CACHE_PROFILE_KEY, binding.profile.as_str()),
+        (P5_CACHE_SENDER_DID_KEY, binding.sender_did.as_str()),
+        (
+            P5_CACHE_SENDER_DEVICE_ID_KEY,
+            binding.sender_device_id.as_str(),
+        ),
+        (P5_CACHE_RECIPIENT_DID_KEY, binding.recipient_did.as_str()),
+        (
+            P5_CACHE_RECIPIENT_DEVICE_ID_KEY,
+            binding.recipient_device_id.as_str(),
+        ),
+        (P5_CACHE_BINDING_DIGEST_KEY, binding.digest.as_str()),
+    ] {
+        object.insert(key.to_owned(), Value::String(value.to_owned()));
+    }
+    record.metadata = Value::Object(object).to_string();
+    Ok(())
 }
 
 fn delegated_message_service_did(client: &crate::core::ImClient) -> String {
@@ -851,7 +1059,7 @@ fn merge_local_message_values_into_page(
         !page
             .items
             .iter()
-            .any(|remote| same_group_message_position(remote, local))
+            .any(|remote| remote.id != local.id && same_group_message_position(remote, local))
     });
     merge_committed_projection_into_page(page, local_messages, requested_limit);
 }
@@ -871,12 +1079,38 @@ fn merge_committed_projection_into_page(
         .map(|message| (message.id.as_str().to_owned(), message))
         .collect::<std::collections::HashMap<_, _>>();
     for message in &mut page.items {
-        if let Some(committed) = committed_by_id.remove(message.id.as_str()) {
+        if let Some(mut committed) = committed_by_id.remove(message.id.as_str()) {
+            preserve_remote_position_attributes(&mut committed, message);
             *message = committed;
         }
     }
     page.items.extend(committed_by_id.into_values());
     page.has_more |= sort_dedupe_and_truncate_messages(&mut page.items, requested_limit);
+}
+
+#[cfg(feature = "sqlite")]
+fn preserve_remote_position_attributes(
+    committed: &mut crate::messages::Message,
+    remote: &crate::messages::Message,
+) {
+    for key in ["raw_message_id", "group_event_seq"] {
+        if committed
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == key)
+        {
+            continue;
+        }
+        if let Some(attribute) = remote
+            .metadata
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key == key)
+        {
+            committed.metadata.attributes.push(attribute.clone());
+        }
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -1174,6 +1408,247 @@ pub(crate) fn page_from_raw(
     page_from_raw_with_group(client, raw, requested_limit, None)
 }
 
+#[cfg(feature = "sqlite")]
+fn consume_system_notifications<R>(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut R,
+) -> Vec<crate::realtime::ImEvent>
+where
+    R: RpcTransport,
+{
+    let drained = {
+        let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+            return Vec::new();
+        };
+        std::mem::take(messages)
+    };
+    let mut retained = Vec::with_capacity(drained.len());
+    let mut warnings = Vec::new();
+    let mut events = Vec::new();
+    for message in drained {
+        match crate::internal::system_notification::dispatch::dispatch_with_transport(
+            client,
+            &message,
+            directory_transport,
+        ) {
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NotSystem => {
+                retained.push(message);
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NeedsHydration => {
+                warnings.push("system.notification.hydration_incomplete".to_owned());
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Consumed { event } => {
+                events.extend(event);
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Rejected { warning } => {
+                warnings.push(warning);
+            }
+        }
+    }
+    *raw.get_mut("messages")
+        .and_then(Value::as_array_mut)
+        .expect("messages array was checked above") = retained;
+    append_raw_warnings(raw, warnings);
+    events
+}
+
+#[cfg(feature = "sqlite")]
+async fn consume_system_notifications_async<R>(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut R,
+) -> Vec<crate::realtime::ImEvent>
+where
+    R: AsyncRpcTransport,
+{
+    let drained = {
+        let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+            return Vec::new();
+        };
+        std::mem::take(messages)
+    };
+    let mut retained = Vec::with_capacity(drained.len());
+    let mut warnings = Vec::new();
+    let mut events = Vec::new();
+    for message in drained {
+        match crate::internal::system_notification::dispatch::dispatch_with_transport_async(
+            client,
+            &message,
+            directory_transport,
+        )
+        .await
+        {
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NotSystem => {
+                retained.push(message);
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::NeedsHydration => {
+                warnings.push("system.notification.hydration_incomplete".to_owned());
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Consumed { event } => {
+                events.extend(event);
+            }
+            crate::internal::system_notification::dispatch::SystemNotificationDispatchOutcome::Rejected { warning } => {
+                warnings.push(warning);
+            }
+        }
+    }
+    *raw.get_mut("messages")
+        .and_then(Value::as_array_mut)
+        .expect("messages array was checked above") = retained;
+    append_raw_warnings(raw, warnings);
+    events
+}
+
+#[cfg(feature = "sqlite")]
+fn append_raw_warnings(raw: &mut Value, warnings: Vec<String>) {
+    if warnings.is_empty() {
+        return;
+    }
+    let Some(object) = raw.as_object_mut() else {
+        return;
+    };
+    let entry = object
+        .entry("warnings".to_owned())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(existing) = entry.as_array_mut() else {
+        return;
+    };
+    existing.extend(warnings.into_iter().map(Value::String));
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) struct SystemNotificationHydration {
+    pub(crate) events: Vec<crate::realtime::ImEvent>,
+    pub(crate) warnings: Vec<String>,
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn hydrate_system_notifications<T, R>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    directory_transport: &mut R,
+    limit: i64,
+) -> crate::ImResult<SystemNotificationHydration>
+where
+    T: AuthenticatedRpcTransport,
+    R: RpcTransport,
+{
+    let params = crate::internal::wire::inbox::build_inbox_rpc_params(
+        &crate::internal::wire::common::WireIdentity {
+            did: client.did().as_str().to_owned(),
+        },
+        crate::internal::wire::inbox::InboxWireRequest { limit, auth: None },
+    );
+    let mut raw = transport.authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)?;
+    let events = consume_system_notifications(client, &mut raw, directory_transport);
+    Ok(SystemNotificationHydration {
+        events,
+        warnings: raw_warnings(&raw),
+    })
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn hydrate_system_notifications_async<T, R>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    directory_transport: &mut R,
+    limit: i64,
+) -> crate::ImResult<SystemNotificationHydration>
+where
+    T: AsyncAuthenticatedRpcTransport,
+    R: AsyncRpcTransport,
+{
+    let params = crate::internal::wire::inbox::build_inbox_rpc_params(
+        &crate::internal::wire::common::WireIdentity {
+            did: client.did().as_str().to_owned(),
+        },
+        crate::internal::wire::inbox::InboxWireRequest { limit, auth: None },
+    );
+    let mut raw = transport
+        .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)
+        .await?;
+    let events = consume_system_notifications_async(client, &mut raw, directory_transport).await;
+    Ok(SystemNotificationHydration {
+        events,
+        warnings: raw_warnings(&raw),
+    })
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn hydrate_reliable_direct_message_async(
+    client: &crate::core::ImClient,
+    expected_message_id: &str,
+    limit: i64,
+) -> crate::ImResult<Vec<String>> {
+    if expected_message_id.trim().is_empty() || limit <= 0 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let params = crate::internal::wire::inbox::build_inbox_rpc_params(
+        &crate::internal::wire::common::WireIdentity {
+            did: client.did().as_str().to_owned(),
+        },
+        crate::internal::wire::inbox::InboxWireRequest { limit, auth: None },
+    );
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let mut raw = AsyncAuthenticatedRpcTransport::authenticated_rpc(
+        &mut transport,
+        MESSAGE_RPC_ENDPOINT,
+        "inbox.get",
+        params,
+    )
+    .await?;
+    let exact_message_present = raw
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|message| {
+            if !message
+                .get("accepted_at")
+                .and_then(Value::as_str)
+                .is_some_and(|accepted_at| !accepted_at.trim().is_empty())
+            {
+                return false;
+            }
+            let wire = p5_v2_wire_projection(message);
+            matches!(
+                crate::internal::secure_direct::v2_product::parse_v2_wire_message(&wire),
+                Ok(Some((metadata, _))) if metadata.message_id == expected_message_id
+            )
+        });
+    if !exact_message_present {
+        return Err(crate::ImError::unsupported(
+            "reliable-p5-hydration-message-not-found",
+        ));
+    }
+    consume_group_e2ee_control_messages_async(client, &mut raw).await;
+    let mut directory_transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let p5_provenance =
+        project_secure_direct_messages_async(client, &mut raw, &mut directory_transport).await;
+    let page = page_from_raw(
+        client,
+        &raw,
+        crate::ids::PageLimit::new(
+            u32::try_from(limit).map_err(|_| crate::ImError::PermissionDenied)?,
+        )
+        .map_err(|_| crate::ImError::PermissionDenied)?,
+    )?;
+    persist_projection_best_effort_async(client, &page.items, &p5_provenance).await;
+    Ok(raw_warnings(&raw))
+}
+
+#[cfg(feature = "sqlite")]
+fn raw_warnings(raw: &Value) -> Vec<String> {
+    raw.get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 pub(crate) fn page_from_raw_with_group(
     client: &crate::core::ImClient,
     raw: &Value,
@@ -1186,6 +1661,14 @@ pub(crate) fn page_from_raw_with_group(
         .map(|items| {
             items
                 .iter()
+                .filter(|item| {
+                    let normalized =
+                        crate::internal::system_notification::dispatch::normalize_delivery(item);
+                    !crate::internal::system_notification::wire::is_trusted_delivery_marker(item)
+                        && !crate::internal::system_notification::wire::is_system_namespace(
+                            &normalized,
+                        )
+                })
                 .filter_map(|item| message_from_value(client, item, group).transpose())
                 .collect::<crate::ImResult<Vec<_>>>()
         })
@@ -1385,12 +1868,21 @@ pub(crate) fn annotate_direct_peer_scopes(
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
     preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    expected_peer_did: Option<&str>,
+    mut p5_provenance: Option<&mut DirectP5ProjectionProvenance>,
 ) {
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
     for message in messages {
-        annotate_direct_peer_scope(client, message, directory_transport, preferred_scope);
+        annotate_direct_peer_scope(
+            client,
+            message,
+            directory_transport,
+            preferred_scope,
+            expected_peer_did,
+            p5_provenance.as_deref_mut(),
+        );
     }
 }
 
@@ -1399,6 +1891,8 @@ fn annotate_direct_peer_scope(
     message: &mut Value,
     directory_transport: &mut impl RpcTransport,
     preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    expected_peer_did: Option<&str>,
+    p5_provenance: Option<&mut DirectP5ProjectionProvenance>,
 ) {
     let Some(object) = message.as_object_mut() else {
         return;
@@ -1420,12 +1914,33 @@ fn annotate_direct_peer_scope(
     if peer_did.is_empty() || !peer_did.starts_with("did:") || peer_did == client.did().as_str() {
         return;
     }
-    if let Some(scope) = preferred_scope {
-        annotate_object_with_peer_scope(object, scope, Some(peer_did));
+    if expected_peer_did.is_some_and(|expected| expected.trim() != peer_did) {
         return;
     }
-    if let Some(scope) = resolve_direct_peer_scope(directory_transport, peer_did) {
-        annotate_object_with_peer_scope(object, &scope, Some(peer_did));
+    if let Some(scope) = preferred_scope {
+        annotate_object_with_peer_scope(object, scope, Some(peer_did));
+        if expected_peer_did.is_some() {
+            if let Some(provenance) = p5_provenance {
+                provenance.record_verified_peer_scope(object, scope, peer_did);
+            }
+        }
+        return;
+    }
+    if let Some(resolved) = resolve_direct_peer_scope(client, directory_transport, peer_did) {
+        if !resolved.cache_attestable
+            && p5_provenance
+                .as_deref()
+                .is_some_and(|provenance| provenance.has_binding_for_object(object))
+        {
+            return;
+        }
+        annotate_object_with_peer_scope(object, &resolved.scope, Some(peer_did));
+        if resolved.cache_attestable {
+            let Some(provenance) = p5_provenance else {
+                return;
+            };
+            provenance.record_verified_peer_scope(object, &resolved.scope, peer_did);
+        }
     }
 }
 
@@ -1434,13 +1949,22 @@ pub(crate) async fn annotate_direct_peer_scopes_async(
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
     preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    expected_peer_did: Option<&str>,
+    mut p5_provenance: Option<&mut DirectP5ProjectionProvenance>,
 ) {
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
     for message in messages {
-        annotate_direct_peer_scope_async(client, message, directory_transport, preferred_scope)
-            .await;
+        annotate_direct_peer_scope_async(
+            client,
+            message,
+            directory_transport,
+            preferred_scope,
+            expected_peer_did,
+            p5_provenance.as_deref_mut(),
+        )
+        .await;
     }
 }
 
@@ -1449,6 +1973,8 @@ async fn annotate_direct_peer_scope_async(
     message: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
     preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    expected_peer_did: Option<&str>,
+    p5_provenance: Option<&mut DirectP5ProjectionProvenance>,
 ) {
     let Some(object) = message.as_object_mut() else {
         return;
@@ -1470,87 +1996,226 @@ async fn annotate_direct_peer_scope_async(
     if peer_did.is_empty() || !peer_did.starts_with("did:") || peer_did == client.did().as_str() {
         return;
     }
-    if let Some(scope) = preferred_scope {
-        annotate_object_with_peer_scope(object, scope, Some(peer_did));
+    if expected_peer_did.is_some_and(|expected| expected.trim() != peer_did) {
         return;
     }
-    if let Some(scope) = resolve_direct_peer_scope_async(directory_transport, peer_did).await {
-        annotate_object_with_peer_scope(object, &scope, Some(peer_did));
+    if let Some(scope) = preferred_scope {
+        annotate_object_with_peer_scope(object, scope, Some(peer_did));
+        if expected_peer_did.is_some() {
+            if let Some(provenance) = p5_provenance {
+                provenance.record_verified_peer_scope(object, scope, peer_did);
+            }
+        }
+        return;
+    }
+    if let Some(resolved) =
+        resolve_direct_peer_scope_async(client, directory_transport, peer_did).await
+    {
+        if !resolved.cache_attestable
+            && p5_provenance
+                .as_deref()
+                .is_some_and(|provenance| provenance.has_binding_for_object(object))
+        {
+            return;
+        }
+        annotate_object_with_peer_scope(object, &resolved.scope, Some(peer_did));
+        if resolved.cache_attestable {
+            let Some(provenance) = p5_provenance else {
+                return;
+            };
+            provenance.record_verified_peer_scope(object, &resolved.scope, peer_did);
+        }
+    }
+}
+
+enum VerifiedHandleScopeLookup {
+    Verified(crate::internal::local_state::owner_scope::DirectPeerScope),
+    Unavailable,
+    Rejected,
+}
+
+struct ResolvedDirectPeerScope {
+    scope: crate::internal::local_state::owner_scope::DirectPeerScope,
+    cache_attestable: bool,
+}
+
+impl std::ops::Deref for ResolvedDirectPeerScope {
+    type Target = crate::internal::local_state::owner_scope::DirectPeerScope;
+
+    fn deref(&self) -> &Self::Target {
+        &self.scope
     }
 }
 
 fn resolve_direct_peer_scope(
+    client: &crate::core::ImClient,
     directory_transport: &mut impl RpcTransport,
     peer_did: &str,
-) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
-    lookup_direct_peer_scope(directory_transport, peer_did).or_else(|| {
-        let call =
-            crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(peer_did)
+) -> Option<ResolvedDirectPeerScope> {
+    match lookup_direct_peer_scope(client, directory_transport, peer_did) {
+        VerifiedHandleScopeLookup::Verified(scope) => Some(ResolvedDirectPeerScope {
+            scope,
+            cache_attestable: true,
+        }),
+        VerifiedHandleScopeLookup::Rejected => None,
+        VerifiedHandleScopeLookup::Unavailable => {
+            let call =
+                crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(peer_did)
+                    .ok()?;
+            let raw = directory_transport
+                .rpc(call.endpoint, call.method, call.params)
                 .ok()?;
-        let raw = directory_transport
-            .rpc(call.endpoint, call.method, call.params)
-            .ok()?;
-        direct_peer_scope_from_profile(raw)
-    })
+            direct_peer_scope_from_profile(raw, peer_did).map(|scope| ResolvedDirectPeerScope {
+                scope,
+                cache_attestable: false,
+            })
+        }
+    }
 }
 
 fn lookup_direct_peer_scope(
+    client: &crate::core::ImClient,
     directory_transport: &mut impl RpcTransport,
     peer_did: &str,
-) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
-    let call =
+) -> VerifiedHandleScopeLookup {
+    let Ok(call) =
         crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(peer_did)
-            .ok()?;
-    let raw = directory_transport
-        .rpc(call.endpoint, call.method, call.params)
-        .ok()?;
-    direct_peer_scope_from_handle_lookup(raw)
+    else {
+        return VerifiedHandleScopeLookup::Rejected;
+    };
+    let raw = match directory_transport.rpc(call.endpoint, call.method, call.params) {
+        Ok(raw) => raw,
+        Err(error) if is_legacy_handle_lookup_error(&error) => {
+            return VerifiedHandleScopeLookup::Unavailable;
+        }
+        Err(_) => return VerifiedHandleScopeLookup::Rejected,
+    };
+    let Ok(lookup) = crate::internal::directory_runtime::handle_lookup_from_value(&raw) else {
+        return VerifiedHandleScopeLookup::Rejected;
+    };
+    if lookup.did.as_str() != peer_did {
+        return VerifiedHandleScopeLookup::Rejected;
+    }
+    if crate::directory::project_handle_lookup(client, &lookup).is_err() {
+        return VerifiedHandleScopeLookup::Rejected;
+    }
+    match crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        lookup.user_id,
+        lookup.handle.as_str(),
+    ) {
+        Ok(scope) => VerifiedHandleScopeLookup::Verified(scope),
+        Err(_) => VerifiedHandleScopeLookup::Rejected,
+    }
 }
 
 async fn resolve_direct_peer_scope_async(
+    client: &crate::core::ImClient,
     directory_transport: &mut impl AsyncRpcTransport,
     peer_did: &str,
-) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
-    if let Some(scope) = lookup_direct_peer_scope_async(directory_transport, peer_did).await {
-        return Some(scope);
+) -> Option<ResolvedDirectPeerScope> {
+    match lookup_direct_peer_scope_async(client, directory_transport, peer_did).await {
+        VerifiedHandleScopeLookup::Verified(scope) => Some(ResolvedDirectPeerScope {
+            scope,
+            cache_attestable: true,
+        }),
+        VerifiedHandleScopeLookup::Rejected => None,
+        VerifiedHandleScopeLookup::Unavailable => {
+            let call =
+                crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(peer_did)
+                    .ok()?;
+            let raw = directory_transport
+                .rpc(call.endpoint, call.method, call.params)
+                .await
+                .ok()?;
+            direct_peer_scope_from_profile(raw, peer_did).map(|scope| ResolvedDirectPeerScope {
+                scope,
+                cache_attestable: false,
+            })
+        }
     }
-    let call =
-        crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(peer_did).ok()?;
-    let raw = directory_transport
-        .rpc(call.endpoint, call.method, call.params)
-        .await
-        .ok()?;
-    direct_peer_scope_from_profile(raw)
 }
 
 async fn lookup_direct_peer_scope_async(
+    client: &crate::core::ImClient,
     directory_transport: &mut impl AsyncRpcTransport,
     peer_did: &str,
-) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
-    let call =
+) -> VerifiedHandleScopeLookup {
+    let Ok(call) =
         crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(peer_did)
-            .ok()?;
-    let raw = directory_transport
+    else {
+        return VerifiedHandleScopeLookup::Rejected;
+    };
+    let raw = match directory_transport
         .rpc(call.endpoint, call.method, call.params)
         .await
-        .ok()?;
-    direct_peer_scope_from_handle_lookup(raw)
+    {
+        Ok(raw) => raw,
+        Err(error) if is_legacy_handle_lookup_error(&error) => {
+            return VerifiedHandleScopeLookup::Unavailable;
+        }
+        Err(_) => return VerifiedHandleScopeLookup::Rejected,
+    };
+    let Ok(lookup) = crate::internal::directory_runtime::handle_lookup_from_value(&raw) else {
+        return VerifiedHandleScopeLookup::Rejected;
+    };
+    if lookup.did.as_str() != peer_did {
+        return VerifiedHandleScopeLookup::Rejected;
+    }
+    if crate::directory::project_handle_lookup_async(client, &lookup)
+        .await
+        .is_err()
+    {
+        return VerifiedHandleScopeLookup::Rejected;
+    }
+    match crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        lookup.user_id,
+        lookup.handle.as_str(),
+    ) {
+        Ok(scope) => VerifiedHandleScopeLookup::Verified(scope),
+        Err(_) => VerifiedHandleScopeLookup::Rejected,
+    }
 }
 
-fn direct_peer_scope_from_handle_lookup(
-    raw: Value,
-) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
-    let lookup = crate::internal::directory_runtime::handle_lookup_from_value(&raw).ok()?;
-    crate::internal::local_state::owner_scope::DirectPeerScope::new(
-        lookup.user_id,
-        lookup.handle.as_str().to_owned(),
-    )
-    .ok()
+fn is_legacy_handle_lookup_error(error: &crate::ImError) -> bool {
+    match error {
+        crate::ImError::PeerNotFound { .. } => true,
+        crate::ImError::UnsupportedCapability { capability } => matches!(
+            capability.trim().to_ascii_lowercase().as_str(),
+            "handle.lookup" | "handle-lookup" | "directory.handle.lookup" | "directory-lookup"
+        ),
+        crate::ImError::Service {
+            status_code, code, ..
+        } => {
+            if let Some(status_code) = status_code {
+                return *status_code == 404;
+            }
+            matches!(
+                code.as_deref()
+                    .map(str::trim)
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some(
+                    "-32601"
+                        | "method_not_found"
+                        | "rpc.method_not_found"
+                        | "handle_not_found"
+                        | "handle.not_found"
+                        | "peer_not_found"
+                        | "not_found"
+                )
+            )
+        }
+        _ => false,
+    }
 }
 
 fn direct_peer_scope_from_profile(
     raw: Value,
+    peer_did: &str,
 ) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    if !profile_did_claims_match(&raw, peer_did) {
+        return None;
+    }
     let user_id = first_string_at(
         &raw,
         &[
@@ -1603,6 +2268,76 @@ fn direct_peer_scope_from_profile(
     crate::internal::local_state::owner_scope::DirectPeerScope::new(user_id, full_handle).ok()
 }
 
+fn profile_did_claims_match(raw: &Value, peer_did: &str) -> bool {
+    for pointer in [
+        "/did",
+        "/id",
+        "/subject_did",
+        "/subjectDid",
+        "/profile/did",
+        "/profile/id",
+        "/profile/subject_did",
+        "/profile/subjectDid",
+        "/result/did",
+        "/result/id",
+        "/result/subject_did",
+        "/result/subjectDid",
+        "/subject/did",
+        "/subject/id",
+        "/subject/subject_did",
+        "/subject/subjectDid",
+        "/profile/subject/did",
+        "/profile/subject/id",
+        "/profile/subject/subject_did",
+        "/profile/subject/subjectDid",
+        "/result/subject/did",
+        "/result/subject/id",
+        "/result/subject/subject_did",
+        "/result/subject/subjectDid",
+        "/result/profile/did",
+        "/result/profile/id",
+        "/result/profile/subject_did",
+        "/result/profile/subjectDid",
+        "/result/profile/subject/did",
+        "/result/profile/subject/id",
+        "/result/profile/subject/subject_did",
+        "/result/profile/subject/subjectDid",
+    ] {
+        let Some(value) = raw.pointer(pointer) else {
+            continue;
+        };
+        let Some(claimed_did) = value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return false;
+        };
+        if claimed_did != peer_did {
+            return false;
+        }
+    }
+    for pointer in [
+        "/subject",
+        "/profile/subject",
+        "/result/subject",
+        "/result/profile/subject",
+    ] {
+        let Some(claimed_did) = raw
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| value.starts_with("did:"))
+        else {
+            continue;
+        };
+        if claimed_did != peer_did {
+            return false;
+        }
+    }
+    true
+}
+
 fn first_string_at(raw: &Value, pointers: &[&str]) -> Option<String> {
     for pointer in pointers {
         let value = raw
@@ -1643,8 +2378,23 @@ pub(crate) fn project_secure_direct_messages(
     client: &crate::core::ImClient,
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
-) {
-    project_secure_direct_messages_impl(client, raw, directory_transport, true);
+) -> DirectP5ProjectionProvenance {
+    project_secure_direct_messages_impl(client, raw, directory_transport, true, None)
+}
+
+pub(crate) fn project_secure_direct_messages_for_peer(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut impl RpcTransport,
+    expected_peer_did: &str,
+) -> DirectP5ProjectionProvenance {
+    project_secure_direct_messages_impl(
+        client,
+        raw,
+        directory_transport,
+        true,
+        Some(expected_peer_did),
+    )
 }
 
 fn filter_delegated_e2ee_messages(raw: &mut Value) {
@@ -1655,6 +2405,9 @@ fn filter_delegated_e2ee_messages(raw: &mut Value) {
 }
 
 fn is_delegated_e2ee_message(message: &Value) -> bool {
+    if is_p5_v2_projection_candidate(message) || is_p6_v2_projection_candidate(message) {
+        return true;
+    }
     let content_type = direct_message_content_type(message);
     if anp::direct_e2ee::is_direct_e2ee_wire_content_type(&content_type) {
         return true;
@@ -1679,18 +2432,41 @@ fn project_secure_direct_messages_impl(
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
     redact_attachment_secrets: bool,
-) {
+    expected_peer_did: Option<&str>,
+) -> DirectP5ProjectionProvenance {
     #[cfg(not(feature = "sqlite"))]
     {
-        let _ = (client, raw, directory_transport, redact_attachment_secrets);
+        let _ = (
+            client,
+            raw,
+            directory_transport,
+            redact_attachment_secrets,
+            expected_peer_did,
+        );
+        DirectP5ProjectionProvenance::default()
     }
     #[cfg(feature = "sqlite")]
     {
         let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
-            return;
+            return DirectP5ProjectionProvenance::default();
         };
         let mut message_values = std::mem::take(messages);
-        apply_cached_secure_direct_messages(client, &mut message_values);
+        // Legacy private-delivery rows are never projected. Standard P5
+        // Init/Cipher traffic is handled by the ordinary P5 product path.
+        message_values.retain(|message| message.get("private_transport_context").is_none());
+        clear_untrusted_p5_projection_state(&mut message_values);
+        let cached_secure_indices =
+            apply_cached_secure_direct_messages(client, &mut message_values);
+        let mut p5_provenance =
+            p5_projection_provenance_for_applied_indices(&message_values, &cached_secure_indices);
+        message_values = message_values
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, message)| {
+                (!is_p5_v2_projection_candidate(&message) || cached_secure_indices.contains(&index))
+                    .then_some(message)
+            })
+            .collect();
         let warnings =
             crate::internal::secure_direct::incoming::maybe_decrypt_direct_e2ee_messages_for_client(
                 client,
@@ -1703,12 +2479,21 @@ fn project_secure_direct_messages_impl(
                 message_values,
             );
         let mut filtered = filtered;
+        if let Some(expected_peer_did) = expected_peer_did {
+            retain_direct_message_values_for_expected_peer(
+                client,
+                &mut filtered,
+                expected_peer_did,
+            );
+        }
         cache_attachment_manifests_for_internal_download(client, &filtered);
         if redact_attachment_secrets {
             redact_attachment_manifests_for_public_projection(&mut filtered);
         }
+        p5_provenance.retain_unambiguous_projected_instances(client, &filtered);
         *messages = filtered;
         append_secure_direct_warnings(raw, warnings);
+        p5_provenance
     }
 }
 
@@ -1717,16 +2502,50 @@ pub(crate) fn project_secure_direct_messages_for_attachment_download(
     client: &crate::core::ImClient,
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
-) {
-    project_secure_direct_messages_impl(client, raw, directory_transport, false);
+    expected_peer_did: &str,
+) -> DirectP5ProjectionProvenance {
+    project_secure_direct_messages_impl(
+        client,
+        raw,
+        directory_transport,
+        false,
+        Some(expected_peer_did),
+    )
 }
 
 pub(crate) async fn project_secure_direct_messages_async(
     client: &crate::core::ImClient,
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
-) {
-    project_secure_direct_messages_async_impl(client, raw, directory_transport, true).await;
+) -> DirectP5ProjectionProvenance {
+    project_secure_direct_messages_async_impl(
+        client,
+        raw,
+        directory_transport,
+        true,
+        None,
+        Some(
+            crate::internal::identity_root_import_completion::TrustedDirectDeliverySource::Mailbox,
+        ),
+    )
+    .await
+}
+
+pub(crate) async fn project_secure_direct_messages_async_for_peer(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut impl AsyncRpcTransport,
+    expected_peer_did: &str,
+) -> DirectP5ProjectionProvenance {
+    project_secure_direct_messages_async_impl(
+        client,
+        raw,
+        directory_transport,
+        true,
+        Some(expected_peer_did),
+        None,
+    )
+    .await
 }
 
 async fn project_secure_direct_messages_async_impl(
@@ -1734,18 +2553,34 @@ async fn project_secure_direct_messages_async_impl(
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
     redact_attachment_secrets: bool,
-) {
+    expected_peer_did: Option<&str>,
+    trusted_delivery_source: Option<
+        crate::internal::identity_root_import_completion::TrustedDirectDeliverySource,
+    >,
+) -> DirectP5ProjectionProvenance {
     #[cfg(not(feature = "sqlite"))]
     {
-        let _ = (client, raw, directory_transport, redact_attachment_secrets);
+        let _ = (
+            client,
+            raw,
+            directory_transport,
+            redact_attachment_secrets,
+            expected_peer_did,
+            trusted_delivery_source,
+        );
+        DirectP5ProjectionProvenance::default()
     }
     #[cfg(feature = "sqlite")]
     {
         let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
-            return;
+            return DirectP5ProjectionProvenance::default();
         };
         let mut message_values = std::mem::take(messages);
-        apply_cached_secure_direct_messages_async(client, &mut message_values).await;
+        clear_untrusted_p5_projection_state(&mut message_values);
+        let cached_secure_indices =
+            apply_cached_secure_direct_messages_async(client, &mut message_values).await;
+        let mut p5_provenance =
+            p5_projection_provenance_for_applied_indices(&message_values, &cached_secure_indices);
         let mut processed_async = vec![false; message_values.len()];
         let mut async_warnings = Vec::new();
         let mut pending_cipher_indices: HashMap<String, Vec<usize>> = HashMap::new();
@@ -1758,6 +2593,93 @@ async fn project_secure_direct_messages_async_impl(
             compare_secure_direct_message_order(&message_values[*left], &message_values[*right])
         });
         for index in order {
+            if message_values[index]
+                .get("private_transport_context")
+                .is_some()
+            {
+                // Forward migrations remove legacy private-delivery rows.
+                // Fail closed while an old row is still observable.
+                mark_suppressed_secure_control(&mut message_values[index]);
+                processed_async[index] = true;
+                continue;
+            }
+            if is_p5_v2_projection_candidate(&message_values[index]) {
+                processed_async[index] = true;
+                if cached_secure_indices.contains(&index) {
+                    continue;
+                }
+                if !client.core_inner().direct_e2ee_v2_enabled() {
+                    mark_suppressed_secure_control(&mut message_values[index]);
+                    continue;
+                }
+                let wire_message = p5_v2_wire_projection(&message_values[index]);
+                let (metadata, body) =
+                    match crate::internal::secure_direct::v2_product::parse_v2_wire_message(
+                        &wire_message,
+                    ) {
+                        Ok(Some(value)) => value,
+                        Ok(None) | Err(_) => {
+                            mark_suppressed_secure_control(&mut message_values[index]);
+                            continue;
+                        }
+                    };
+                let cache_binding = match p5_cache_binding(&metadata, &body) {
+                    Ok(binding) => binding,
+                    Err(_) => {
+                        mark_suppressed_secure_control(&mut message_values[index]);
+                        continue;
+                    }
+                };
+                let accepted_at = message_values[index]
+                    .get("accepted_at")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                let delivery = trusted_delivery_source
+                    .and_then(|source| {
+                        crate::internal::identity_root_import_completion::TrustedDirectDeliveryContext::from_stored_message(
+                            &metadata,
+                            accepted_at,
+                            source,
+                        )
+                        .ok()
+                    });
+                let core = client.core_handle();
+                match crate::internal::secure_direct::v2_product::receive_for_client_scoped(
+                    &core,
+                    client,
+                    true,
+                    metadata,
+                    body,
+                    expected_peer_did,
+                    delivery.as_ref(),
+                )
+                .await
+                {
+                    Ok(outcome) => {
+                        let logical_message_id = match &outcome {
+                            crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Business(projection) => {
+                                Some(projection.logical_message_id.clone())
+                            }
+                            crate::internal::secure_direct::v2_product::V2InboundProductOutcome::OwnSync(projection) => {
+                                Some(projection.logical_message_id.clone())
+                            }
+                            _ => None,
+                        };
+                        apply_p5_v2_product_outcome(&mut message_values[index], outcome);
+                        if let Some(logical_message_id) = logical_message_id {
+                            p5_provenance.record(&logical_message_id, cache_binding);
+                        }
+                    }
+                    Err(_) => {
+                        // Scoped P5 validation runs inside the ratchet transaction,
+                        // before replay state commits. A rejected delivery is
+                        // item-local so another valid delivery on this page can
+                        // still be projected and persisted.
+                        mark_suppressed_secure_control(&mut message_values[index]);
+                    }
+                }
+                continue;
+            }
             let content_type = direct_message_content_type(&message_values[index]);
             let notification = match crate::internal::secure_direct::incoming::direct_e2ee_notification_from_message_view(&message_values[index]) {
                 Ok(notification) => notification,
@@ -1902,12 +2824,21 @@ async fn project_secure_direct_messages_async_impl(
                 message_values,
             );
         let mut filtered = filtered;
+        if let Some(expected_peer_did) = expected_peer_did {
+            retain_direct_message_values_for_expected_peer(
+                client,
+                &mut filtered,
+                expected_peer_did,
+            );
+        }
         cache_attachment_manifests_for_internal_download_async(client, &filtered).await;
         if redact_attachment_secrets {
             redact_attachment_manifests_for_public_projection(&mut filtered);
         }
+        p5_provenance.retain_unambiguous_projected_instances(client, &filtered);
         *messages = filtered;
         append_secure_direct_warnings(raw, compact_secure_direct_warnings(async_warnings));
+        p5_provenance
     }
 }
 
@@ -1916,8 +2847,17 @@ pub(crate) async fn project_secure_direct_messages_for_attachment_download_async
     client: &crate::core::ImClient,
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
-) {
-    project_secure_direct_messages_async_impl(client, raw, directory_transport, false).await;
+    expected_peer_did: &str,
+) -> DirectP5ProjectionProvenance {
+    project_secure_direct_messages_async_impl(
+        client,
+        raw,
+        directory_transport,
+        false,
+        Some(expected_peer_did),
+        None,
+    )
+    .await
 }
 
 async fn resolve_direct_sender_document_async(
@@ -1990,6 +2930,500 @@ fn looks_like_did_document(value: &Value) -> bool {
         .and_then(Value::as_str)
         .is_some_and(|value| value.starts_with("did:"))
         && value.get("verificationMethod").is_some()
+}
+
+fn is_p5_v2_projection_candidate(message: &Value) -> bool {
+    message
+        .get("meta")
+        .or_else(|| message.pointer("/params/meta"))
+        .and_then(|meta| meta.get("profile"))
+        .and_then(Value::as_str)
+        == Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
+}
+
+fn is_p6_v2_projection_candidate(message: &Value) -> bool {
+    message
+        .get("meta")
+        .or_else(|| message.pointer("/params/meta"))
+        .and_then(|meta| meta.get("profile"))
+        .and_then(Value::as_str)
+        == Some(anp::group_e2ee::GROUP_E2EE_PROFILE_V2)
+}
+
+fn p5_v2_wire_projection(message: &Value) -> Value {
+    let Some(params) = message.get("params").and_then(Value::as_object) else {
+        return message.clone();
+    };
+    serde_json::json!({
+        "meta": params.get("meta").cloned().unwrap_or(Value::Null),
+        "body": params.get("body").cloned().unwrap_or(Value::Null),
+    })
+}
+
+const P5_CACHE_PROFILE_KEY: &str = "p5_cache_profile";
+const P5_CACHE_SENDER_DID_KEY: &str = "p5_cache_sender_did";
+const P5_CACHE_SENDER_DEVICE_ID_KEY: &str = "p5_cache_sender_device_id";
+const P5_CACHE_RECIPIENT_DID_KEY: &str = "p5_cache_recipient_did";
+const P5_CACHE_RECIPIENT_DEVICE_ID_KEY: &str = "p5_cache_recipient_device_id";
+const P5_CACHE_BINDING_DIGEST_KEY: &str = "p5_cache_binding_digest";
+
+const P5_CACHE_METADATA_KEYS: [&str; 6] = [
+    P5_CACHE_PROFILE_KEY,
+    P5_CACHE_SENDER_DID_KEY,
+    P5_CACHE_SENDER_DEVICE_ID_KEY,
+    P5_CACHE_RECIPIENT_DID_KEY,
+    P5_CACHE_RECIPIENT_DEVICE_ID_KEY,
+    P5_CACHE_BINDING_DIGEST_KEY,
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct P5CacheBinding {
+    message_id: String,
+    profile: String,
+    sender_did: String,
+    sender_device_id: String,
+    recipient_did: String,
+    recipient_device_id: String,
+    digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct P5ProjectionInstanceKey {
+    logical_message_id: String,
+    raw_message_id: String,
+}
+
+impl P5ProjectionInstanceKey {
+    fn from_direct_message(message: &crate::messages::Message) -> Option<Self> {
+        if message.group.is_some()
+            || !matches!(message.thread, crate::messages::ThreadRef::Direct(_))
+        {
+            return None;
+        }
+        Self::from_ungrouped_message(message)
+    }
+
+    fn from_ungrouped_message(message: &crate::messages::Message) -> Option<Self> {
+        if message.group.is_some() {
+            return None;
+        }
+        Some(Self {
+            logical_message_id: message.id.as_str().to_owned(),
+            raw_message_id: metadata_attribute(&message.metadata, "raw_message_id")
+                .unwrap_or(message.id.as_str())
+                .to_owned(),
+        })
+    }
+
+    fn from_ungrouped_object(object: &Map<String, Value>) -> Option<Self> {
+        if !string_value(object.get("group_did")).trim().is_empty() {
+            return None;
+        }
+        let logical_message_id = string_value(object.get("id"));
+        let raw_message_id = string_value(object.get("raw_message_id"));
+        if logical_message_id.trim().is_empty() || raw_message_id.trim().is_empty() {
+            return None;
+        }
+        Some(Self {
+            logical_message_id,
+            raw_message_id,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct P5VerifiedScopedRoute {
+    peer_did: String,
+    thread_id: String,
+}
+
+/// Ephemeral proof that a P5 projection in this exact Direct read call came
+/// from either a successful product receive or a validated local cache hit.
+///
+/// It is deliberately kept outside the service response and public message
+/// model so service-supplied projection flags cannot mint cache metadata.
+#[derive(Debug, Default)]
+pub(crate) struct DirectP5ProjectionProvenance {
+    bindings: HashMap<P5ProjectionInstanceKey, Vec<P5CacheBinding>>,
+    verified_scoped_routes: HashMap<P5ProjectionInstanceKey, P5VerifiedScopedRoute>,
+    expected_peer_did: Option<String>,
+}
+
+impl DirectP5ProjectionProvenance {
+    fn record(&mut self, logical_message_id: &str, binding: P5CacheBinding) {
+        let logical_message_id = logical_message_id.trim();
+        let raw_message_id = binding.message_id.trim();
+        if logical_message_id.is_empty() || raw_message_id.is_empty() {
+            return;
+        }
+        let key = P5ProjectionInstanceKey {
+            logical_message_id: logical_message_id.to_owned(),
+            raw_message_id: raw_message_id.to_owned(),
+        };
+        self.bindings.entry(key).or_default().push(binding);
+    }
+
+    fn retain_unambiguous_projected_instances(
+        &mut self,
+        client: &crate::core::ImClient,
+        messages: &[Value],
+    ) {
+        // Freeze ambiguity against the complete displayable projection before
+        // callers dedupe inboxes or filter/truncate incremental sync pages.
+        let mut logical_counts = HashMap::<String, usize>::new();
+        let mut raw_counts = HashMap::<String, usize>::new();
+        let mut projected_instances = HashSet::new();
+        for value in messages {
+            let Ok(Some(message)) = message_from_value(client, value, None) else {
+                continue;
+            };
+            // At this point verified peer-scope metadata has not been added.
+            // Only an authenticated product/cache result that still resolves
+            // to the concrete Direct endpoint may retain provenance.
+            let Some(key) = P5ProjectionInstanceKey::from_direct_message(&message) else {
+                continue;
+            };
+            *logical_counts
+                .entry(key.logical_message_id.clone())
+                .or_default() += 1;
+            *raw_counts.entry(key.raw_message_id.clone()).or_default() += 1;
+            projected_instances.insert(key);
+        }
+        self.bindings.retain(|key, bindings| {
+            bindings.len() == 1
+                && projected_instances.contains(key)
+                && logical_counts.get(&key.logical_message_id) == Some(&1)
+                && raw_counts.get(&key.raw_message_id) == Some(&1)
+        });
+    }
+
+    fn binding_for_message(&self, message: &crate::messages::Message) -> Option<&P5CacheBinding> {
+        // Verified Handle projection may replace Direct(peer DID) with the
+        // stable dm:peer-scope thread after provenance was frozen. Route and
+        // endpoint binding are checked separately before persistence.
+        let key = P5ProjectionInstanceKey::from_ungrouped_message(message)?;
+        let bindings = self.bindings.get(&key)?;
+        if bindings.len() != 1 {
+            return None;
+        }
+        bindings.first()
+    }
+
+    fn record_verified_peer_scope(
+        &mut self,
+        object: &Map<String, Value>,
+        scope: &crate::internal::local_state::owner_scope::DirectPeerScope,
+        peer_did: &str,
+    ) {
+        let Some(key) = P5ProjectionInstanceKey::from_ungrouped_object(object) else {
+            return;
+        };
+        let Some(bindings) = self.bindings.get(&key) else {
+            return;
+        };
+        let Some(binding) = (bindings.len() == 1).then(|| &bindings[0]) else {
+            return;
+        };
+        if !p5_projected_object_endpoint_matches_binding(object, peer_did, binding) {
+            return;
+        }
+        self.verified_scoped_routes.insert(
+            key,
+            P5VerifiedScopedRoute {
+                peer_did: peer_did.to_owned(),
+                thread_id: crate::internal::message_runtime::local_projection::direct_conversation_id_for_peer_scope(scope),
+            },
+        );
+    }
+
+    fn verified_scoped_route_for_message(
+        &self,
+        message: &crate::messages::Message,
+    ) -> Option<&P5VerifiedScopedRoute> {
+        let key = P5ProjectionInstanceKey::from_ungrouped_message(message)?;
+        self.verified_scoped_routes.get(&key)
+    }
+
+    fn has_binding_for_object(&self, object: &Map<String, Value>) -> bool {
+        let Some(key) = P5ProjectionInstanceKey::from_ungrouped_object(object) else {
+            return false;
+        };
+        self.bindings
+            .get(&key)
+            .is_some_and(|bindings| bindings.len() == 1)
+    }
+}
+
+fn p5_projected_object_endpoint_matches_binding(
+    object: &Map<String, Value>,
+    peer_did: &str,
+    binding: &P5CacheBinding,
+) -> bool {
+    let sender_did = string_value(object.get("sender_did"));
+    let receiver_did = string_value(object.get("receiver_did"));
+    let direction = i64_value(object.get("direction"));
+    if binding.sender_did != binding.recipient_did {
+        return direction == Some(0)
+            && sender_did == binding.sender_did
+            && receiver_did == binding.recipient_did
+            && peer_did == binding.sender_did;
+    }
+    direction == Some(1)
+        && sender_did == binding.sender_did
+        && !receiver_did.trim().is_empty()
+        && receiver_did != binding.recipient_did
+        && peer_did == receiver_did
+}
+
+#[cfg(feature = "sqlite")]
+fn p5_projection_provenance_for_applied_indices(
+    messages: &[Value],
+    applied: &HashSet<usize>,
+) -> DirectP5ProjectionProvenance {
+    let mut provenance = DirectP5ProjectionProvenance::default();
+    for index in applied {
+        let Some(message) = messages.get(*index) else {
+            continue;
+        };
+        let logical_message_id = message
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let binding = p5_cache_binding_from_message(message).ok().flatten();
+        let raw_message_id = message
+            .get("raw_message_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some((logical_message_id, binding)) = logical_message_id.zip(binding) else {
+            continue;
+        };
+        if raw_message_id == Some(binding.message_id.as_str()) {
+            provenance.record(logical_message_id, binding);
+        }
+    }
+    provenance
+}
+
+fn p5_cache_binding_from_message(message: &Value) -> crate::ImResult<Option<P5CacheBinding>> {
+    if !is_p5_v2_projection_candidate(message) {
+        return Ok(None);
+    }
+    let wire = p5_v2_wire_projection(message);
+    let (metadata, body) =
+        crate::internal::secure_direct::v2_product::parse_v2_wire_message(&wire)?
+            .ok_or(crate::ImError::PermissionDenied)?;
+    Ok(Some(p5_cache_binding(&metadata, &body)?))
+}
+
+fn p5_cache_metadata_from_message(
+    message: &Value,
+) -> crate::ImResult<Option<anp::direct_e2ee::V2DirectMetadata>> {
+    if !is_p5_v2_projection_candidate(message) {
+        return Ok(None);
+    }
+    let wire = p5_v2_wire_projection(message);
+    let (metadata, _) = crate::internal::secure_direct::v2_product::parse_v2_wire_message(&wire)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    Ok(Some(metadata))
+}
+
+fn p5_cache_binding(
+    metadata: &anp::direct_e2ee::V2DirectMetadata,
+    body: &anp::direct_e2ee::V2DirectBody,
+) -> crate::ImResult<P5CacheBinding> {
+    let aad = match body {
+        anp::direct_e2ee::V2DirectBody::Init(body) => {
+            anp::direct_e2ee::build_init_aad_v2(metadata, body)
+        }
+        anp::direct_e2ee::V2DirectBody::Cipher(body) => {
+            anp::direct_e2ee::build_message_aad_v2(metadata, body)
+        }
+    }
+    .map_err(|_| crate::ImError::PermissionDenied)?;
+    let body_value = match body {
+        anp::direct_e2ee::V2DirectBody::Init(body) => serde_json::to_value(body),
+        anp::direct_e2ee::V2DirectBody::Cipher(body) => serde_json::to_value(body),
+    }
+    .map_err(|error| crate::ImError::Serialization {
+        detail: format!("serialize P5 cache body: {error}"),
+    })?;
+    let canonical_body = Zeroizing::new(serde_json_canonicalizer::to_vec(&body_value).map_err(
+        |error| crate::ImError::Serialization {
+            detail: format!("canonicalize P5 cache body: {error}"),
+        },
+    )?);
+    let aad = Zeroizing::new(aad);
+    let mut digest = Sha256::new();
+    digest.update(b"AWIKI-P5-V2-CACHE-BINDING-V1\0");
+    update_digest_part(&mut digest, &aad);
+    update_digest_part(&mut digest, &canonical_body);
+    Ok(P5CacheBinding {
+        message_id: metadata.message_id.clone(),
+        profile: metadata.profile.clone(),
+        sender_did: metadata.sender_did.clone(),
+        sender_device_id: metadata.sender_device_id.clone(),
+        recipient_did: metadata.target.did.clone(),
+        recipient_device_id: metadata.recipient_device_id.clone(),
+        digest: format!("sha256:{}", URL_SAFE_NO_PAD.encode(digest.finalize())),
+    })
+}
+
+fn update_digest_part(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_be_bytes());
+    digest.update(value);
+}
+
+#[cfg(feature = "sqlite")]
+fn clear_untrusted_p5_projection_state(messages: &mut [Value]) {
+    for message in messages {
+        if !is_p5_v2_projection_candidate(message) {
+            continue;
+        }
+        if let Some(object) = message.as_object_mut() {
+            // These fields are local projection output. A service-provided
+            // value must not be mistaken for a completed authenticated
+            // receive or an accepted local cache hit.
+            for key in [
+                "secure",
+                "decryption_state",
+                "raw_message_id",
+                "peer_user_id",
+                "peer_full_handle",
+                "peer_current_did",
+                "resolved_target_did",
+                "target_handle",
+            ] {
+                object.remove(key);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn apply_p5_v2_product_outcome(
+    message: &mut Value,
+    outcome: crate::internal::secure_direct::v2_product::V2InboundProductOutcome,
+) {
+    use crate::internal::secure_direct::v2_product::V2InboundProductOutcome;
+
+    match outcome {
+        V2InboundProductOutcome::Business(projection) => {
+            apply_p5_v2_business_body(message, &projection.body);
+            if let Some(object) = message.as_object_mut() {
+                object.insert(
+                    "id".to_owned(),
+                    Value::String(projection.logical_message_id),
+                );
+                object.insert(
+                    "raw_message_id".to_owned(),
+                    Value::String(projection.wire_message_id),
+                );
+                object.insert(
+                    "sender_did".to_owned(),
+                    Value::String(projection.sender_did),
+                );
+                object.insert(
+                    "sender_device_id".to_owned(),
+                    Value::String(projection.sender_device_id),
+                );
+                object.insert(
+                    "receiver_did".to_owned(),
+                    Value::String(projection.recipient_did),
+                );
+                object.insert("direction".to_owned(), Value::from(0));
+            }
+        }
+        V2InboundProductOutcome::OwnSync(projection) => {
+            apply_p5_v2_business_body(message, &projection.body);
+            if let Some(object) = message.as_object_mut() {
+                object.insert(
+                    "id".to_owned(),
+                    Value::String(projection.logical_message_id),
+                );
+                object.insert(
+                    "raw_message_id".to_owned(),
+                    Value::String(projection.wire_message_id),
+                );
+                object.insert(
+                    "sender_did".to_owned(),
+                    Value::String(projection.original_sender_did),
+                );
+                object.insert(
+                    "sender_device_id".to_owned(),
+                    Value::String(projection.original_sender_device_id),
+                );
+                object.insert(
+                    "receiver_did".to_owned(),
+                    Value::String(projection.target_did),
+                );
+                object.insert("direction".to_owned(), Value::from(1));
+                object.insert("own_device_sync".to_owned(), Value::Bool(true));
+            }
+        }
+        V2InboundProductOutcome::Replay
+        | V2InboundProductOutcome::ConsumedControl
+        | V2InboundProductOutcome::SuppressedControl => mark_suppressed_secure_control(message),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn apply_p5_v2_business_body(
+    message: &mut Value,
+    body: &crate::internal::secure_direct::v2_product::V2InboundBusinessBody,
+) {
+    use crate::internal::secure_direct::v2_product::V2InboundBusinessBody;
+
+    let plaintext = match body {
+        V2InboundBusinessBody::Text { text, markdown } => json_object([
+            ("state", Value::String("decrypted".to_owned())),
+            (
+                "plaintext",
+                serde_json::json!({
+                    "application_content_type": if *markdown { "text/markdown" } else { "text/plain" },
+                    "text": text,
+                }),
+            ),
+        ]),
+        V2InboundBusinessBody::Json { payload } => json_object([
+            ("state", Value::String("decrypted".to_owned())),
+            (
+                "plaintext",
+                serde_json::json!({
+                    "application_content_type": "application/json",
+                    "payload": payload,
+                }),
+            ),
+        ]),
+        V2InboundBusinessBody::Attachment { full_manifest } => json_object([
+            ("state", Value::String("decrypted".to_owned())),
+            (
+                "plaintext",
+                serde_json::json!({
+                    "application_content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+                    "payload": full_manifest,
+                }),
+            ),
+        ]),
+    };
+    crate::internal::secure_direct::incoming::apply_direct_e2ee_processing_result(
+        message, &plaintext,
+    );
+}
+
+#[cfg(feature = "sqlite")]
+fn mark_suppressed_secure_control(message: &mut Value) {
+    let Some(object) = message.as_object_mut() else {
+        return;
+    };
+    object.insert("secure".to_owned(), Value::Bool(true));
+    object.insert("secure_control".to_owned(), Value::Bool(true));
+    object.insert(
+        "type".to_owned(),
+        Value::String("secure_control".to_owned()),
+    );
+    object.insert("content".to_owned(), Value::String(String::new()));
 }
 
 fn mark_async_direct_failure(message: &mut Value, warnings: &mut Vec<String>, err: crate::ImError) {
@@ -2112,21 +3546,32 @@ fn secure_direct_wire_message_ids(messages: &[Value]) -> Vec<String> {
     messages
         .iter()
         .filter(|message| is_direct_e2ee_wire_message(message))
-        .map(secure_direct_message_id)
+        .filter_map(|message| {
+            if is_p5_v2_projection_candidate(message) {
+                return p5_cache_binding_from_message(message)
+                    .ok()
+                    .flatten()
+                    .map(|binding| binding.message_id);
+            }
+            Some(secure_direct_message_id(message))
+        })
         .filter(|message_id| !message_id.trim().is_empty())
         .collect()
 }
 
 #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
-fn apply_cached_secure_direct_messages(client: &crate::core::ImClient, messages: &mut [Value]) {
+fn apply_cached_secure_direct_messages(
+    client: &crate::core::ImClient,
+    messages: &mut [Value],
+) -> HashSet<usize> {
     let message_ids = secure_direct_wire_message_ids(messages);
     if message_ids.is_empty() {
-        return;
+        return HashSet::new();
     }
     let Ok(connection) = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     ) else {
-        return;
+        return HashSet::new();
     };
     let Ok(records) =
         crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
@@ -2135,25 +3580,31 @@ fn apply_cached_secure_direct_messages(client: &crate::core::ImClient, messages:
             &message_ids,
         )
     else {
-        return;
+        return HashSet::new();
     };
-    apply_cached_secure_direct_records(messages, records);
+    let authorized_p5_indices = authorized_cached_p5_indices(client, messages);
+    apply_cached_secure_direct_records(messages, records, Some(&authorized_p5_indices))
 }
 
 #[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
-fn apply_cached_secure_direct_messages(_client: &crate::core::ImClient, _messages: &mut [Value]) {}
+fn apply_cached_secure_direct_messages(
+    _client: &crate::core::ImClient,
+    _messages: &mut [Value],
+) -> HashSet<usize> {
+    HashSet::new()
+}
 
 #[cfg(feature = "sqlite")]
 async fn apply_cached_secure_direct_messages_async(
     client: &crate::core::ImClient,
     messages: &mut [Value],
-) {
+) -> HashSet<usize> {
     let message_ids = secure_direct_wire_message_ids(messages);
     if message_ids.is_empty() {
-        return;
+        return HashSet::new();
     }
     let Ok(db) = client.core_inner().local_state_db().await else {
-        return;
+        return HashSet::new();
     };
     let Ok(records) = db
         .list_decrypted_secure_messages(
@@ -2162,47 +3613,90 @@ async fn apply_cached_secure_direct_messages_async(
         )
         .await
     else {
-        return;
+        return HashSet::new();
     };
-    apply_cached_secure_direct_records(messages, records);
+    let authorized_p5_indices = authorized_cached_p5_indices(client, messages);
+    apply_cached_secure_direct_records(messages, records, Some(&authorized_p5_indices))
+}
+
+#[cfg(feature = "sqlite")]
+fn authorized_cached_p5_indices(
+    client: &crate::core::ImClient,
+    messages: &[Value],
+) -> HashSet<usize> {
+    if !client.core_inner().direct_e2ee_v2_enabled() {
+        return HashSet::new();
+    }
+    messages
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| {
+            let metadata = p5_cache_metadata_from_message(message).ok().flatten()?;
+            crate::internal::secure_direct::v2_product::validate_cached_inbound_endpoint_for_client(
+                &client.core_handle(),
+                client,
+                &metadata,
+            )
+            .ok()?;
+            Some(index)
+        })
+        .collect()
 }
 
 #[cfg(feature = "sqlite")]
 fn apply_cached_secure_direct_records(
     messages: &mut [Value],
     records: Vec<crate::internal::local_state::messages::MessageRecord>,
-) {
-    let records = records
-        .into_iter()
-        .map(|record| {
-            (
-                (
-                    record.msg_id.clone(),
-                    record.sender_did.clone(),
-                    record.receiver_did.clone(),
-                ),
-                record,
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    for message in messages {
-        let key = (
-            secure_direct_message_id(message),
-            message
+    authorized_p5_indices: Option<&HashSet<usize>>,
+) -> HashSet<usize> {
+    let mut records_by_wire_id = HashMap::<String, Vec<_>>::new();
+    for record in records {
+        records_by_wire_id
+            .entry(cached_secure_direct_wire_message_id(&record))
+            .or_default()
+            .push(record);
+    }
+    let mut applied = HashSet::new();
+    for (index, message) in messages.iter_mut().enumerate() {
+        let is_p5 = is_p5_v2_projection_candidate(message);
+        if is_p5 && !authorized_p5_indices.is_some_and(|indices| indices.contains(&index)) {
+            continue;
+        }
+        let incoming_p5_binding = p5_cache_binding_from_message(message).ok().flatten();
+        let wire_message_id = incoming_p5_binding
+            .as_ref()
+            .map(|binding| binding.message_id.clone())
+            .unwrap_or_else(|| secure_direct_message_id(message));
+        let Some(candidates) = records_by_wire_id.get(&wire_message_id) else {
+            continue;
+        };
+        let Some(record) = (candidates.len() == 1).then(|| &candidates[0]) else {
+            continue;
+        };
+        let stored_p5_binding = p5_cache_binding_from_record(record);
+        let endpoint_matches = if let (Some(incoming), Some(stored)) =
+            (incoming_p5_binding.as_ref(), stored_p5_binding.as_ref())
+        {
+            incoming == stored
+                && p5_cache_record_has_direct_route(record)
+                && p5_cache_record_endpoint_matches(record, incoming)
+        } else if !is_p5 && stored_p5_binding.is_none() {
+            let sender_did = message
                 .get("sender_did")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            message
+                .unwrap_or_default();
+            let receiver_did = message
                 .get("receiver_did")
                 .or_else(|| message.get("recipient_did"))
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-        );
-        let Some(record) = records.get(&key) else {
-            continue;
+                .unwrap_or_default();
+            record.sender_did == sender_did && record.receiver_did == receiver_did
+        } else {
+            false
         };
+        if !endpoint_matches {
+            continue;
+        }
         let plaintext = cached_secure_direct_plaintext(record);
         crate::internal::secure_direct::incoming::apply_direct_e2ee_processing_result(
             message,
@@ -2211,7 +3705,161 @@ fn apply_cached_secure_direct_records(
                 ("plaintext", plaintext),
             ]),
         );
+        if let Some(object) = message.as_object_mut() {
+            object.insert("id".to_owned(), Value::String(record.msg_id.clone()));
+            object.insert("raw_message_id".to_owned(), Value::String(wire_message_id));
+            object.insert(
+                "sender_did".to_owned(),
+                Value::String(record.sender_did.clone()),
+            );
+            object.insert(
+                "receiver_did".to_owned(),
+                Value::String(record.receiver_did.clone()),
+            );
+            object.insert("direction".to_owned(), Value::from(record.direction));
+        }
+        applied.insert(index);
     }
+    applied
+}
+
+#[cfg(feature = "sqlite")]
+fn p5_cache_record_has_direct_route(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> bool {
+    record.group_id.trim().is_empty()
+        && record.group_did.trim().is_empty()
+        && record.wire_thread_kind.trim() == "direct"
+        && !record.wire_thread_ref.trim().is_empty()
+        && record.conversation_id.trim().starts_with("dm:")
+        && record.thread_id.trim().starts_with("dm:")
+}
+
+#[cfg(feature = "sqlite")]
+fn p5_projection_wire_peer_did(
+    message: &crate::messages::Message,
+    record: &crate::internal::local_state::messages::MessageRecord,
+    binding: &P5CacheBinding,
+    expected_peer_did: Option<&str>,
+    verified_scoped_route: Option<&P5VerifiedScopedRoute>,
+) -> Option<String> {
+    if !p5_cache_record_endpoint_matches(record, binding)
+        || !record.group_id.trim().is_empty()
+        || !record.group_did.trim().is_empty()
+        || record.conversation_id.trim() != record.thread_id.trim()
+        || !record.conversation_id.trim().starts_with("dm:")
+    {
+        return None;
+    }
+
+    let wire_peer_did = if binding.sender_did != binding.recipient_did {
+        binding.sender_did.trim()
+    } else {
+        record.receiver_did.trim()
+    };
+    if !wire_peer_did.starts_with("did:") || wire_peer_did == record.owner_did.trim() {
+        return None;
+    }
+    if expected_peer_did.is_some_and(|expected| expected.trim() != wire_peer_did) {
+        return None;
+    }
+
+    let route_matches = match &message.thread {
+        crate::messages::ThreadRef::Direct(peer) => peer.as_str() == wire_peer_did,
+        crate::messages::ThreadRef::Thread(thread) => {
+            let verified_route_matches = verified_scoped_route.is_some_and(|route| {
+                route.peer_did == wire_peer_did && route.thread_id == thread.as_str()
+            });
+            let scope =
+                crate::internal::message_runtime::local_projection::peer_scope_from_metadata(
+                    &message.metadata,
+                );
+            let canonical_thread = scope.as_ref().map(
+                crate::internal::message_runtime::local_projection::direct_conversation_id_for_peer_scope,
+            );
+            verified_route_matches
+                && canonical_thread.as_deref() == Some(thread.as_str())
+                && record.conversation_id.trim() == thread.as_str()
+                && record.wire_thread_kind.trim() == "thread"
+                && record.wire_thread_ref.trim() == thread.as_str()
+                && metadata_attribute(&message.metadata, "peer_current_did") == Some(wire_peer_did)
+                && metadata_attribute(&message.metadata, "resolved_target_did")
+                    == Some(wire_peer_did)
+        }
+        crate::messages::ThreadRef::Group(_) => false,
+    };
+    route_matches.then(|| wire_peer_did.to_owned())
+}
+
+#[cfg(feature = "sqlite")]
+fn p5_cache_record_endpoint_matches(
+    record: &crate::internal::local_state::messages::MessageRecord,
+    binding: &P5CacheBinding,
+) -> bool {
+    if record.owner_did != binding.recipient_did {
+        return false;
+    }
+    if binding.sender_did != binding.recipient_did {
+        return record.direction == 0
+            && record.sender_did == binding.sender_did
+            && record.receiver_did == binding.recipient_did;
+    }
+    record.direction == 1
+        && record.sender_did == record.owner_did
+        && binding.sender_did == record.owner_did
+        && !record.receiver_did.trim().is_empty()
+        && record.receiver_did != record.owner_did
+}
+
+#[cfg(feature = "sqlite")]
+fn cached_secure_direct_wire_message_id(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> String {
+    serde_json::from_str::<Value>(&record.metadata)
+        .ok()
+        .and_then(|metadata| {
+            metadata
+                .get("raw_message_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| record.msg_id.clone())
+}
+
+#[cfg(feature = "sqlite")]
+fn p5_cache_binding_from_record(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> Option<P5CacheBinding> {
+    let metadata = serde_json::from_str::<Value>(&record.metadata).ok()?;
+    let string = |key: &str| {
+        metadata
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let digest = string(P5_CACHE_BINDING_DIGEST_KEY)?;
+    let encoded = digest.strip_prefix("sha256:")?;
+    if URL_SAFE_NO_PAD
+        .decode(encoded)
+        .ok()
+        .is_none_or(|decoded| decoded.len() != 32)
+    {
+        return None;
+    }
+    let binding = P5CacheBinding {
+        message_id: string("raw_message_id")?,
+        profile: string(P5_CACHE_PROFILE_KEY)?,
+        sender_did: string(P5_CACHE_SENDER_DID_KEY)?,
+        sender_device_id: string(P5_CACHE_SENDER_DEVICE_ID_KEY)?,
+        recipient_did: string(P5_CACHE_RECIPIENT_DID_KEY)?,
+        recipient_device_id: string(P5_CACHE_RECIPIENT_DEVICE_ID_KEY)?,
+        digest,
+    };
+    (binding.profile == anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2).then_some(binding)
 }
 
 #[cfg(feature = "sqlite")]
@@ -2245,15 +3893,107 @@ pub(crate) fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &
 }
 
 #[cfg(feature = "group-e2ee")]
+fn consume_group_e2ee_control_messages(client: &crate::core::ImClient, raw: &mut Value) {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let message_values = std::mem::take(messages);
+    let mut retained = Vec::with_capacity(message_values.len());
+    let mut warnings = Vec::new();
+    for message in message_values {
+        if crate::internal::group_e2ee::v2_notice::is_v2_notice_candidate(&message) {
+            if client.core_inner().group_e2ee_v2_enabled()
+                && crate::internal::group_e2ee::v2_notice::consume_for_client(client, &message)
+                    .is_err()
+            {
+                warnings.push("P6 v2 group control notice was rejected".to_owned());
+            }
+            continue;
+        }
+        if crate::internal::group_e2ee::v2_notice::is_explicit_notice_control(&message) {
+            continue;
+        }
+        retained.push(message);
+    }
+    *messages = retained;
+    append_secure_direct_warnings(raw, warnings);
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+fn consume_group_e2ee_control_messages(_client: &crate::core::ImClient, raw: &mut Value) {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    messages.retain(|message| {
+        !is_p6_v2_projection_candidate(message)
+            && message.get("method").and_then(Value::as_str)
+                != Some(anp::group_e2ee::METHOD_GROUP_NOTICE_V2)
+    });
+}
+
+#[cfg(feature = "group-e2ee")]
+async fn consume_group_e2ee_control_messages_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+) {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let message_values = std::mem::take(messages);
+    let mut retained = Vec::with_capacity(message_values.len());
+    let mut warnings = Vec::new();
+    for message in message_values {
+        if crate::internal::group_e2ee::v2_notice::is_v2_notice_candidate(&message) {
+            if client.core_inner().group_e2ee_v2_enabled()
+                && crate::internal::group_e2ee::v2_notice::consume_for_client_async(
+                    client, &message,
+                )
+                .await
+                .is_err()
+            {
+                warnings.push("P6 v2 group control notice was rejected".to_owned());
+            }
+            continue;
+        }
+        if crate::internal::group_e2ee::v2_notice::is_explicit_notice_control(&message) {
+            continue;
+        }
+        retained.push(message);
+    }
+    *messages = retained;
+    append_secure_direct_warnings(raw, warnings);
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+async fn consume_group_e2ee_control_messages_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+) {
+    consume_group_e2ee_control_messages(client, raw);
+}
+
+#[cfg(feature = "group-e2ee")]
 fn project_group_e2ee_messages_impl(
     client: &crate::core::ImClient,
     raw: &mut Value,
     redact_attachment_secrets: bool,
 ) {
+    consume_group_e2ee_control_messages(client, raw);
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
-    let mut message_values = std::mem::take(messages);
+    let message_values = std::mem::take(messages);
+    let mut retained = Vec::with_capacity(message_values.len());
+    for message in message_values {
+        if is_p6_v2_projection_candidate(&message) {
+            continue;
+        }
+        retained.push(message);
+    }
+    let mut message_values = retained;
+    // P6 v2 notices were consumed above. Application decryption remains on the
+    // async device-scoped path, so blocking reads must never hand a v2
+    // ciphertext to the legacy decoder or ordinary message projection.
     apply_cached_group_e2ee_messages(client, &mut message_values);
     let warnings =
         crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client(
@@ -2295,10 +4035,28 @@ async fn project_group_e2ee_messages_async_impl(
     raw: &mut Value,
     redact_attachment_secrets: bool,
 ) {
+    consume_group_e2ee_control_messages_async(client, raw).await;
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
     let mut message_values = std::mem::take(messages);
+    let mut p6_projected = Vec::with_capacity(message_values.len());
+    for mut message in message_values.drain(..) {
+        if !is_p6_v2_projection_candidate(&message) {
+            p6_projected.push(message);
+            continue;
+        }
+        if !client.core_inner().group_e2ee_v2_enabled() {
+            continue;
+        }
+        if project_p6_v2_incoming_message(client, &mut message)
+            .await
+            .is_ok()
+        {
+            p6_projected.push(message);
+        }
+    }
+    message_values = p6_projected;
     apply_cached_group_e2ee_messages_async(client, &mut message_values).await;
     let warnings =
         crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client_async(
@@ -2312,6 +4070,255 @@ async fn project_group_e2ee_messages_async_impl(
     }
     *messages = message_values;
     append_secure_direct_warnings(raw, warnings);
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) async fn project_p6_v2_incoming_message(
+    client: &crate::core::ImClient,
+    message: &mut Value,
+) -> crate::ImResult<()> {
+    let wrapper_shape = message.get("params").is_some();
+    let (meta, body, auth) = parse_p6_v2_incoming_notification(message)?;
+    let runtime = crate::internal::group_e2ee::v2_runtime::runtime_for_client(client)?;
+    let scope = runtime.owner_scope()?;
+    let recipient_device_id = p6_recipient_device_id(
+        client.did().as_str(),
+        scope.owner_did.as_str(),
+        scope.device_id.as_str(),
+    )?;
+    let sender_document = resolve_direct_sender_document_async(
+        client,
+        &mut crate::internal::transport::CoreHttpTransport::new(client),
+        &meta.sender_did,
+    )
+    .await?;
+    // The Host is not consulted by decrypt_incoming_application; using the
+    // production adapter here keeps one product type without adding a second
+    // wire implementation.
+    let host = crate::internal::group_e2ee::v2_product::RpcGroupE2eeV2Host::new(
+        crate::internal::transport::CoreHttpTransport::new(client),
+        crate::internal::proof::origin::OriginProofIdentity {
+            identity_name: client.current_identity().id.as_str().to_owned(),
+            did_document: None,
+            key1_private_pem: String::new(),
+            verification_method: None,
+        },
+    );
+    let product = crate::internal::group_e2ee::v2_product::GroupE2eeV2Product::new(runtime, host);
+    let group_did = body.group_did.clone();
+    let group_state_version = body.group_state_version.clone();
+    let group_event_seq = body.group_event_seq.clone();
+    let accepted_at = body.accepted_at.clone();
+    let raw_message_id = meta.message_id.clone();
+    let sender_did = meta.sender_did.clone();
+    let sender_device_id = meta.sender_device_id.clone();
+    let output = product.decrypt_incoming_application(
+        crate::internal::group_e2ee::v2_product::V2IncomingApplicationInput {
+            recipient_did: client.did().as_str().to_owned(),
+            recipient_device_id,
+            meta,
+            body,
+            auth,
+            sender_did_document: sender_document,
+            now: crate::internal::wire::common::now_rfc3339(),
+            draft_extension_negotiated: true,
+            request_id: format!(
+                "p6-v2-decrypt-{}",
+                crate::internal::wire::common::generate_operation_id()
+            ),
+        },
+    )?;
+    let plaintext = output.application_plaintext;
+    if wrapper_shape {
+        *message = Value::Object(Map::new());
+    }
+    let object = message
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    object.remove("meta");
+    object.remove("body");
+    object.remove("auth");
+    object.insert(
+        "id".to_owned(),
+        Value::String(p6_group_message_id(&group_did, &group_event_seq)?),
+    );
+    object.insert(
+        "message_id".to_owned(),
+        Value::String(raw_message_id.clone()),
+    );
+    object.insert("raw_message_id".to_owned(), Value::String(raw_message_id));
+    object.insert("sender_did".to_owned(), Value::String(sender_did));
+    object.insert(
+        "sender_device_id".to_owned(),
+        Value::String(sender_device_id),
+    );
+    object.insert("group_did".to_owned(), Value::String(group_did));
+    object.insert(
+        "group_state_version".to_owned(),
+        Value::String(group_state_version),
+    );
+    object.insert("group_event_seq".to_owned(), Value::String(group_event_seq));
+    object.insert("accepted_at".to_owned(), Value::String(accepted_at));
+    object.insert("direction".to_owned(), Value::from(0));
+    object.insert("secure".to_owned(), Value::Bool(true));
+    object.insert(
+        "decryption_state".to_owned(),
+        Value::String("decrypted".to_owned()),
+    );
+    object.insert(
+        "content_type".to_owned(),
+        Value::String(plaintext.application_content_type.clone()),
+    );
+    if let Some(text) = plaintext.text {
+        object.insert("content".to_owned(), Value::String(text));
+        object.insert("type".to_owned(), Value::String("text".to_owned()));
+    } else if let Some(payload) = plaintext.payload {
+        let message_type = if plaintext.application_content_type
+            == crate::attachments::manifest::attachment_manifest_content_type()
+        {
+            "attachment_manifest"
+        } else {
+            "json"
+        };
+        object.insert("content".to_owned(), payload);
+        object.insert("type".to_owned(), Value::String(message_type.to_owned()));
+    } else if let Some(payload_b64u) = plaintext.payload_b64u {
+        object.insert("content".to_owned(), Value::String(payload_b64u));
+        object.insert("type".to_owned(), Value::String("binary".to_owned()));
+    } else {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "group-e2ee")]
+fn p6_group_message_id(group_did: &str, group_event_seq: &str) -> crate::ImResult<String> {
+    let group_did = group_did.trim();
+    let group_event_seq = group_event_seq.trim();
+    if group_did.is_empty() || group_event_seq.is_empty() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(format!("{group_did}:{group_event_seq}"))
+}
+
+#[cfg(feature = "group-e2ee")]
+fn p6_recipient_device_id(
+    expected_owner_did: &str,
+    scope_owner_did: &str,
+    scope_device_id: &str,
+) -> crate::ImResult<String> {
+    if scope_owner_did == expected_owner_did && !scope_device_id.is_empty() {
+        Ok(scope_device_id.to_owned())
+    } else {
+        Err(crate::ImError::PermissionDenied)
+    }
+}
+
+#[cfg(feature = "group-e2ee")]
+fn parse_p6_v2_incoming_notification(
+    message: &Value,
+) -> crate::ImResult<(
+    anp::group_e2ee::V2GroupIncomingMetadata,
+    anp::group_e2ee::V2GroupIncomingBody,
+    anp::group_e2ee::V2OriginAuth,
+)> {
+    let mut message = message.clone();
+    let object = message
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if let Some(jsonrpc) = object.remove("jsonrpc") {
+        if jsonrpc.as_str() != Some("2.0") {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    let wrapper_shape = object.contains_key("params");
+    let notification = if wrapper_shape {
+        message
+    } else {
+        serde_json::json!({
+            "method": anp::group_e2ee::METHOD_GROUP_INCOMING_V2,
+            "params": {
+                "meta": message.get("meta").cloned().ok_or(crate::ImError::PermissionDenied)?,
+                "body": message.get("body").cloned().ok_or(crate::ImError::PermissionDenied)?,
+                "auth": message.get("auth").cloned().ok_or(crate::ImError::PermissionDenied)?,
+            }
+        })
+    };
+    anp::group_e2ee::parse_group_incoming_notification_v2(&notification)
+        .map_err(|_| crate::ImError::PermissionDenied)
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) async fn normalize_p6_v2_realtime_incoming(
+    client: &crate::core::ImClient,
+    notification: &Value,
+) -> crate::ImResult<Value> {
+    let params = notification
+        .get("params")
+        .and_then(Value::as_object)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let mut message = serde_json::json!({
+        "meta": params.get("meta").cloned().ok_or(crate::ImError::PermissionDenied)?,
+        "body": params.get("body").cloned().ok_or(crate::ImError::PermissionDenied)?,
+        "auth": params.get("auth").cloned().ok_or(crate::ImError::PermissionDenied)?,
+    });
+    project_p6_v2_incoming_message(client, &mut message).await?;
+    cache_attachment_manifests_for_internal_download_async(client, std::slice::from_ref(&message))
+        .await;
+    let object = message
+        .as_object()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let content_type = object
+        .get("content_type")
+        .and_then(Value::as_str)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let content = object
+        .get("content")
+        .cloned()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let body_content = if content_type == "text/plain" || content_type == "text/markdown" {
+        serde_json::json!({"text": content})
+    } else {
+        let payload =
+            if content_type == crate::attachments::manifest::attachment_manifest_content_type() {
+                crate::attachments::manifest::redact_attachment_manifest(&content)
+            } else {
+                content
+            };
+        serde_json::json!({"payload": payload})
+    };
+    let mut body = body_content
+        .as_object()
+        .cloned()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    for key in [
+        "group_did",
+        "group_state_version",
+        "group_event_seq",
+        "accepted_at",
+    ] {
+        if let Some(value) = object.get(key).cloned() {
+            body.insert(key.to_owned(), value);
+        }
+    }
+    Ok(serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "group.incoming",
+        "params": {
+            "meta": {
+                "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2,
+                "security_profile": anp::group_e2ee::GROUP_E2EE_SECURITY_PROFILE_V2,
+                "sender_did": object.get("sender_did").cloned().unwrap_or(Value::Null),
+                "sender_device_id": object.get("sender_device_id").cloned().unwrap_or(Value::Null),
+                "target": {"kind": "agent", "did": client.did().as_str()},
+                "message_id": object.get("message_id").cloned().unwrap_or(Value::Null),
+                "content_type": content_type,
+            },
+            "body": body,
+            "secure": true,
+            "secure_state": "decrypted"
+        }
+    }))
 }
 
 #[cfg(not(feature = "group-e2ee"))]
@@ -2560,6 +4567,7 @@ fn attachment_manifest_cache_record(
             thread_kind: thread_kind.to_owned(),
             thread_id,
             message_id,
+            wire_message_id: string_value(object.get("raw_message_id")),
             sender_did: string_value(object.get("sender_did")),
             message_security_profile: secure_message_security_profile(object),
             content: serde_json::to_string(&content).ok()?,
@@ -2742,6 +4750,58 @@ fn direct_peer_did_for_message<'a>(
     sender_did
 }
 
+pub(crate) fn retain_direct_messages_for_expected_peer(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    expected_peer_did: &str,
+    p5_provenance: &mut DirectP5ProjectionProvenance,
+) -> bool {
+    let expected_peer_did = expected_peer_did.trim();
+    p5_provenance.expected_peer_did = Some(expected_peer_did.to_owned());
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    retain_direct_message_values_for_expected_peer(client, messages, expected_peer_did)
+}
+
+fn retain_direct_message_values_for_expected_peer(
+    client: &crate::core::ImClient,
+    messages: &mut Vec<Value>,
+    expected_peer_did: &str,
+) -> bool {
+    let expected_peer_did = expected_peer_did.trim();
+    let original_len = messages.len();
+    messages.retain(|message| {
+        let Some(object) = message.as_object() else {
+            return false;
+        };
+        if !string_value(object.get("group_did")).trim().is_empty() {
+            return false;
+        }
+        let sender_did = string_value(object.get("sender_did"));
+        let receiver_did = string_value(object.get("receiver_did"));
+        direct_peer_did_for_message(client.did().as_str(), &sender_did, &receiver_did).trim()
+            == expected_peer_did
+    });
+    original_len > 0 && messages.is_empty()
+}
+
+pub(crate) fn reject_stalled_scoped_direct_page(
+    raw: &Value,
+    final_projectable_count: usize,
+) -> crate::ImResult<()> {
+    if final_projectable_count == 0 && raw.get("has_more").and_then(Value::as_bool) == Some(true) {
+        return Err(scoped_direct_page_mismatch());
+    }
+    Ok(())
+}
+
+fn scoped_direct_page_mismatch() -> crate::ImError {
+    crate::ImError::IdentityBindingConflict {
+        detail: "Direct page does not match the requested peer scope".to_owned(),
+    }
+}
+
 fn message_metadata_from_object(
     object: &serde_json::Map<String, Value>,
     message_id: &str,
@@ -2823,11 +4883,27 @@ fn metadata_attributes_from_object(
             value: is_read.to_string(),
         });
     }
-    let raw_message_id = raw_message_identity(object);
+    let raw_message_id = if object
+        .get("meta")
+        .or_else(|| object.get("params").and_then(|params| params.get("meta")))
+        .and_then(Value::as_object)
+        .and_then(|meta| meta.get("profile"))
+        .and_then(Value::as_str)
+        == Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
+    {
+        string_or_number_value(object.get("raw_message_id"))
+    } else {
+        String::new()
+    };
+    let raw_message_id = if raw_message_id.trim().is_empty() {
+        raw_message_identity(object)
+    } else {
+        raw_message_id
+    };
     if !raw_message_id.trim().is_empty() && raw_message_id != message_id {
         attributes.push(crate::messages::MessageMetadataAttribute {
             key: "raw_message_id".to_string(),
-            value: raw_message_id,
+            value: raw_message_id.clone(),
         });
     }
     let group_event_seq = string_or_number_value(object.get("group_event_seq"));

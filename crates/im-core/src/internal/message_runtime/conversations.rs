@@ -593,6 +593,7 @@ pub(crate) fn message_from_record(
     record: &crate::internal::local_state::messages::MessageRecord,
 ) -> crate::ImResult<crate::messages::Message> {
     let thread = message_thread(record)?;
+    let group = group_ref_from_record(record)?;
     let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref_for_owner(
         &thread,
         &record.owner_did,
@@ -608,6 +609,17 @@ pub(crate) fn message_from_record(
         send_state.as_ref(),
         retry_target,
     );
+    let mut attributes = metadata_attributes(&record.metadata);
+    if record.is_e2ee && metadata_attribute_value(&attributes, "security").is_none() {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "security".to_owned(),
+            value: if group.is_some() {
+                "group-e2ee".to_owned()
+            } else {
+                "direct-e2ee".to_owned()
+            },
+        });
+    }
     Ok(crate::messages::Message {
         id: crate::ids::MessageId::parse(&record.msg_id)?,
         thread,
@@ -619,7 +631,7 @@ pub(crate) fn message_from_record(
         receiver: non_empty_string(&record.receiver_did)
             .map(|value| crate::ids::PeerRef::parse(value, ""))
             .transpose()?,
-        group: group_ref_from_record(record)?,
+        group,
         body: message_body(record, content_type.as_deref()),
         sent_at: non_empty_string(&record.sent_at),
         received_at: None,
@@ -631,7 +643,7 @@ pub(crate) fn message_from_record(
             retry_plan,
             server_sequence: record.server_seq,
             content_type,
-            attributes: metadata_attributes(&record.metadata),
+            attributes,
         },
     })
 }
@@ -792,6 +804,9 @@ fn metadata_attributes(metadata: &str) -> Vec<crate::messages::MessageMetadataAt
         "senderName",
         "sender_name",
         "sender_peer_persona_id",
+        "security",
+        "decryption_state",
+        "secure_wire_content_type",
     ]
     .into_iter()
     .filter_map(|key| {
@@ -806,6 +821,17 @@ fn metadata_attributes(metadata: &str) -> Vec<crate::messages::MessageMetadataAt
             })
     })
     .collect()
+}
+
+fn metadata_attribute_value<'a>(
+    attributes: &'a [crate::messages::MessageMetadataAttribute],
+    key: &str,
+) -> Option<&'a str> {
+    attributes
+        .iter()
+        .find(|attribute| attribute.key == key)
+        .map(|attribute| attribute.value.trim())
+        .filter(|value| !value.is_empty())
 }
 
 fn metadata_attribute<'a>(
@@ -860,6 +886,40 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn secure_message_record_restores_public_security_metadata() {
+        let message = message_from_record(
+            &crate::internal::local_state::messages::MessageRecord {
+                msg_id: "msg-secure".to_owned(),
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                conversation_id: "dm:did:example:bob".to_owned(),
+                thread_id: "dm:did:example:bob".to_owned(),
+                sender_did: "did:example:bob".to_owned(),
+                receiver_did: "did:example:alice".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "decrypted text".to_owned(),
+                is_e2ee: true,
+                metadata: r#"{"decryption_state":"decrypted","secure_wire_content_type":"application/anp-direct-init+json"}"#.to_owned(),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            metadata_attribute(&message.metadata, "security"),
+            Some("direct-e2ee")
+        );
+        assert_eq!(
+            metadata_attribute(&message.metadata, "decryption_state"),
+            Some("decrypted")
+        );
+        assert_eq!(
+            metadata_attribute(&message.metadata, "secure_wire_content_type"),
+            Some("application/anp-direct-init+json")
+        );
+    }
 
     #[test]
     fn empty_peer_scope_conversation_keeps_canonical_identity() {

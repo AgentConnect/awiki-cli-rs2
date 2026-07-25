@@ -16,11 +16,12 @@ use std::io::{self, Write};
 use std::path::Path;
 
 mod debug_handlers;
+mod device_join_handlers;
+mod device_revoke_handlers;
 mod error_hints;
 mod group_e2ee_handlers;
 mod group_handlers;
 mod handle_helpers;
-mod id_recover_handlers;
 mod id_replace_did_handlers;
 mod legacy_identity {
     pub(super) use crate::workspace_upgrade::legacy_identity::{
@@ -37,8 +38,10 @@ mod legacy_sqlite {
 }
 mod mail_handlers;
 mod msg_handlers;
+mod onboarding_handlers;
 mod page_handlers;
 mod people_handlers;
+mod root_key_transfer_handlers;
 mod runtime_handlers;
 mod runtime_hermes_handlers;
 mod runtime_host_notify_refresh;
@@ -1532,6 +1535,9 @@ fn finish_help(mut lines: Vec<String>) -> String {
 fn is_sensitive_public_key(key: &str) -> bool {
     let normalized = key.to_ascii_lowercase();
     normalized == "jwt_token"
+        || normalized == "approval_handle"
+        || normalized == "account_verification_grant"
+        || normalized == "root_private_key"
         || normalized == "did_document"
         || normalized == "key1_public_pem"
         || normalized == "root_key_material"
@@ -1578,7 +1584,7 @@ fn require_legacy_file_compat_identity_storage(
         "legacy_plaintext_identity_storage_disabled",
         3,
         format!("{command}: legacy plaintext identity storage is disabled."),
-        "Use `awiki-cli id register` or `awiki-cli id recover` for vault-backed identities. Set secret_storage.mode=file_compat only for explicit legacy migration work.",
+        "Use `awiki-cli id register` for vault-backed identities. Set secret_storage.mode=file_compat only for explicit legacy migration work.",
     ))
 }
 
@@ -1608,7 +1614,7 @@ pub(crate) fn identity_exit(err: IdentityError) -> ExitError {
             "auth_required",
             3,
             message,
-            "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
+            "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` first.",
         ),
         IdentityError::Service(err) => {
             identity_service_exit(err.status_code, err.rpc_code, err.to_string())
@@ -1646,7 +1652,7 @@ fn identity_service_exit(status_code: u16, rpc_code: i64, message: String) -> Ex
             "auth_required",
             3,
             message,
-            "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
+            "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` first.",
         ),
         (404, _) => ExitError::new(
             "not_found",
@@ -1671,7 +1677,7 @@ fn identity_service_exit(status_code: u16, rpc_code: i64, message: String) -> Ex
                 "auth_required",
                 3,
                 message,
-                "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
+                "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` first.",
             ),
             -32002 => ExitError::new(
                 "not_found",

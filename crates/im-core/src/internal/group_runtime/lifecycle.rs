@@ -381,7 +381,7 @@ where
 fn load_credentials(client: &crate::core::ImClient) -> crate::ImResult<GroupLifecycleCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
+    let key1_private_pem = runtime.key_provider.device_request_signing_private_pem()?;
     Ok(GroupLifecycleCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
@@ -394,7 +394,7 @@ async fn load_credentials_async(
 ) -> crate::ImResult<GroupLifecycleCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
+    let key1_private_pem = runtime.key_provider.device_request_signing_private_pem()?;
     Ok(GroupLifecycleCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,

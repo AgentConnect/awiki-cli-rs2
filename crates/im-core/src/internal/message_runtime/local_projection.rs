@@ -648,6 +648,69 @@ pub(crate) async fn persist_direct_e2ee_outgoing_async(
 }
 
 #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+pub(crate) fn persist_direct_e2ee_payload_outgoing(
+    connection: &rusqlite::Connection,
+    client: &crate::core::ImClient,
+    target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    payload: &Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    crate::internal::local_state::messages::upsert_message(
+        connection,
+        &direct_e2ee_payload_outgoing_record(
+            client,
+            target_did,
+            target_handle,
+            peer_scope,
+            payload,
+            sdk_result,
+        ),
+    )
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_direct_e2ee_payload_outgoing(
+    _connection: &rusqlite::Connection,
+    _client: &crate::core::ImClient,
+    _target_did: &str,
+    _target_handle: Option<&str>,
+    _peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    _payload: &Value,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported(
+        "sync-direct-e2ee-payload-projection",
+    ))
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn persist_direct_e2ee_payload_outgoing_async(
+    client: &crate::core::ImClient,
+    target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    payload: &Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    let record = direct_e2ee_payload_outgoing_record(
+        client,
+        target_did,
+        target_handle,
+        peer_scope,
+        payload,
+        sdk_result,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_messages(vec![record])
+        .await
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_direct_e2ee_attachment_outgoing(
     connection: &rusqlite::Connection,
     client: &crate::core::ImClient,
@@ -1155,7 +1218,7 @@ fn send_projection_record(
     Ok(record)
 }
 
-fn send_projection_result(
+pub(crate) fn send_projection_result(
     client: &crate::core::ImClient,
     target: &crate::messages::MessageTarget,
     body: &crate::messages::MessageBody,
@@ -1405,6 +1468,42 @@ fn direct_e2ee_outgoing_record(
         receiver_did: target_did.trim().to_owned(),
         content_type: content_type_for_kind(kind).to_owned(),
         content: text.to_owned(),
+        server_seq: sdk_result.message.metadata.server_sequence,
+        sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
+        is_e2ee: true,
+        is_read: true,
+        metadata: secure_metadata_json(
+            "direct-e2ee",
+            &sdk_result.message.metadata,
+            direct_metadata_extras(target_handle, peer_scope, target_did),
+        ),
+        credential_name: credential_name(client),
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    }
+    .with_resolved_wire_thread("direct", target_did)
+}
+
+#[cfg(feature = "sqlite")]
+fn direct_e2ee_payload_outgoing_record(
+    client: &crate::core::ImClient,
+    target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    payload: &Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = direct_conversation_id_for_scope_or_did(peer_scope, target_did);
+    crate::internal::local_state::messages::MessageRecord {
+        msg_id: sdk_result.message.id.as_str().to_owned(),
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
+        direction: 1,
+        sender_did: client.did().as_str().to_owned(),
+        receiver_did: target_did.trim().to_owned(),
+        content_type: "application/json".to_owned(),
+        content: serde_json::to_string(payload).unwrap_or_default(),
         server_seq: sdk_result.message.metadata.server_sequence,
         sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
         is_e2ee: true,
@@ -2149,6 +2248,7 @@ fn read_metadata_json(metadata: &crate::messages::MessageMetadata) -> String {
             | "peer_user_id"
             | "peer_full_handle"
             | "peer_current_did"
+            | "security"
             | "decryption_state"
             | "secure_wire_content_type"
                 if !attribute.value.trim().is_empty() =>
@@ -2253,6 +2353,27 @@ mod tests {
         assert_eq!(value["group_event_seq"], "7");
         assert!(value.get("private_message_b64u").is_none());
         assert!(!encoded.contains("cipher"));
+    }
+
+    #[test]
+    fn read_metadata_keeps_secure_projection_marker() {
+        let metadata = crate::messages::MessageMetadata {
+            attributes: vec![
+                crate::messages::MessageMetadataAttribute {
+                    key: "security".to_owned(),
+                    value: "direct-e2ee".to_owned(),
+                },
+                crate::messages::MessageMetadataAttribute {
+                    key: "ignored".to_owned(),
+                    value: "value".to_owned(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let value: Value = serde_json::from_str(&read_metadata_json(&metadata)).unwrap();
+        assert_eq!(value["security"], "direct-e2ee");
+        assert!(value.get("ignored").is_none());
     }
 
     #[test]

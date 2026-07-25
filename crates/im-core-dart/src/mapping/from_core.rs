@@ -17,9 +17,18 @@ use crate::dto::{
     },
     identity::{
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
-        DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartHandleRegistrationResult,
-        DartIdentitySecretStorageBackend, DartIdentitySummary, DartIdentityVaultMigrationReport,
-        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartRecoverHandleResult,
+        DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt,
+        DartDeviceJoinAuthorizationStatus, DartDeviceJoinAuthorizedDeviceSummary,
+        DartDeviceJoinPhase, DartDeviceJoinProgress, DartDeviceJoinRegistrySnapshot,
+        DartDeviceJoinRemoteState, DartDeviceJoinRequestNotice, DartDeviceJoinRole,
+        DartDeviceJoinSessionSummary, DartDeviceJoinSide, DartDeviceRevokeResult,
+        DartDeviceRevokeStatus, DartHandleRegistrationJoinRequired, DartHandleRegistrationResult,
+        DartIdentityDeviceMode, DartIdentityDeviceReadiness, DartIdentityDeviceRole,
+        DartIdentityDeviceSummary, DartIdentitySecretStorageBackend, DartIdentitySummary,
+        DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
+        DartIdentityVaultVerificationReport, DartLegacyUpgradeStatus, DartRootKeyTransferError,
+        DartRootKeyTransferPreparation, DartRootKeyTransferRecipientSummary,
+        DartRootKeyTransferSendResult,
     },
     message::{
         DartConversation, DartConversationAlias, DartConversationAliasSource,
@@ -43,6 +52,225 @@ use crate::dto::{
     },
 };
 
+impl From<im_core::identity::DeviceRevokeResult> for DartDeviceRevokeResult {
+    fn from(value: im_core::identity::DeviceRevokeResult) -> Self {
+        Self {
+            did: value.did.as_str().to_owned(),
+            target_device_id: value.target_device_id.as_str().to_owned(),
+            status: match value.status {
+                im_core::identity::DeviceRevokeStatus::Revoked => DartDeviceRevokeStatus::Revoked,
+            },
+        }
+    }
+}
+
+impl From<im_core::identity::RootKeyTransferSendResult> for DartRootKeyTransferSendResult {
+    fn from(value: im_core::identity::RootKeyTransferSendResult) -> Self {
+        Self {
+            did: value.did.as_str().to_owned(),
+            sender_device_id: value.sender_device_id.as_str().to_owned(),
+            recipient_device_id: value.recipient_device_id.as_str().to_owned(),
+            message_id: value.message_id.as_str().to_owned(),
+            accepted_at: value.accepted_at,
+        }
+    }
+}
+
+impl From<im_core::identity::RootKeyTransferPreparation> for DartRootKeyTransferPreparation {
+    fn from(value: im_core::identity::RootKeyTransferPreparation) -> Self {
+        let serde_json::Value::String(authorization_handle) =
+            serde_json::to_value(value.authorization_handle)
+                .expect("root transfer authorization handle serialization is infallible")
+        else {
+            unreachable!("root transfer authorization handle must serialize as a string")
+        };
+        Self {
+            authorization_handle,
+            recipient: value.recipient.into(),
+            expires_at: value.expires_at,
+        }
+    }
+}
+
+impl From<im_core::identity::RootKeyTransferRecipientSummary>
+    for DartRootKeyTransferRecipientSummary
+{
+    fn from(value: im_core::identity::RootKeyTransferRecipientSummary) -> Self {
+        Self {
+            did: value.did.as_str().to_owned(),
+            device_id: value.device_id.as_str().to_owned(),
+            signing_key_id: value.signing_key_id,
+            e2ee_key_id: value.e2ee_key_id,
+            registry_version: value.registry_version,
+        }
+    }
+}
+
+impl From<im_core::identity::RootKeyTransferError> for DartRootKeyTransferError {
+    fn from(value: im_core::identity::RootKeyTransferError) -> Self {
+        Self {
+            code: value.to_string(),
+            retryable: value.retryable,
+        }
+    }
+}
+
+impl DartRootKeyTransferError {
+    pub(crate) fn invalid_request() -> Self {
+        Self {
+            code: "root_transfer.invalid_request".to_owned(),
+            retryable: false,
+        }
+    }
+
+    pub(crate) fn authorization_invalid() -> Self {
+        Self {
+            code: "root_transfer.authorization_invalid".to_owned(),
+            retryable: false,
+        }
+    }
+
+    pub(crate) fn temporarily_unavailable() -> Self {
+        Self {
+            code: "root_transfer.temporarily_unavailable".to_owned(),
+            retryable: true,
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinSessionView> for DartDeviceJoinSessionSummary {
+    fn from(value: im_core::identity::DeviceJoinSessionView) -> Self {
+        Self {
+            join_session_id: value.join_session_id,
+            did: value.did.as_str().to_owned(),
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            side: match value.side {
+                im_core::identity::DeviceJoinSide::NewDevice => DartDeviceJoinSide::NewDevice,
+                im_core::identity::DeviceJoinSide::Admin => DartDeviceJoinSide::Admin,
+            },
+            phase: match value.phase {
+                im_core::identity::DeviceJoinLocalPhase::Pending => DartDeviceJoinPhase::Pending,
+                im_core::identity::DeviceJoinLocalPhase::ChallengePrepared => {
+                    DartDeviceJoinPhase::ChallengePrepared
+                }
+                im_core::identity::DeviceJoinLocalPhase::ResponsePrepared => {
+                    DartDeviceJoinPhase::ResponsePrepared
+                }
+                im_core::identity::DeviceJoinLocalPhase::ResponseVerified => {
+                    DartDeviceJoinPhase::ResponseVerified
+                }
+                im_core::identity::DeviceJoinLocalPhase::ApprovalPrepared => {
+                    DartDeviceJoinPhase::ApprovalPrepared
+                }
+                im_core::identity::DeviceJoinLocalPhase::Authorized => {
+                    DartDeviceJoinPhase::Authorized
+                }
+                im_core::identity::DeviceJoinLocalPhase::Cancelled => {
+                    DartDeviceJoinPhase::Cancelled
+                }
+                im_core::identity::DeviceJoinLocalPhase::Expired => DartDeviceJoinPhase::Expired,
+            },
+            expires_at: value.expires_at,
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinAuthorizedDeviceSummary>
+    for DartDeviceJoinAuthorizedDeviceSummary
+{
+    fn from(value: im_core::identity::DeviceJoinAuthorizedDeviceSummary) -> Self {
+        Self {
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            signing_key_id: value.signing_key_id,
+            e2ee_key_id: value.e2ee_key_id,
+            status: match value.status {
+                im_core::identity::DeviceJoinAuthorizationStatus::Active => {
+                    DartDeviceJoinAuthorizationStatus::Active
+                }
+                im_core::identity::DeviceJoinAuthorizationStatus::Revoked => {
+                    DartDeviceJoinAuthorizationStatus::Revoked
+                }
+            },
+            role: dart_device_join_role(value.role),
+            management_ready: value.management_ready,
+            is_current: value.is_current,
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinRequestNotice> for DartDeviceJoinRequestNotice {
+    fn from(value: im_core::identity::DeviceJoinRequestNotice) -> Self {
+        Self {
+            event_id: value.event_id,
+            join_session_id: value.join_session_id,
+            did: value.did.as_str().to_owned(),
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            candidate_key_fingerprint: value.candidate_key_fingerprint,
+            issued_at: value.issued_at,
+            expires_at: value.expires_at,
+            state: dart_device_join_remote_state(value.state),
+            claimed_by_current_device: value.claimed_by_current_device,
+            can_start_verification: value.can_start_verification,
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinRegistrySnapshot> for DartDeviceJoinRegistrySnapshot {
+    fn from(value: im_core::identity::DeviceJoinRegistrySnapshot) -> Self {
+        Self {
+            did: value.did.as_str().to_owned(),
+            devices: value.devices.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinProgress> for DartDeviceJoinProgress {
+    fn from(value: im_core::identity::DeviceJoinProgress) -> Self {
+        Self {
+            session: value.session.into(),
+            remote_state: dart_device_join_remote_state(value.remote_state),
+            sas: value.sas,
+            authorized_device: value.authorized_device.map(Into::into),
+        }
+    }
+}
+
+impl From<im_core::identity::DeviceJoinApprovalPrompt> for DartDeviceJoinApprovalPrompt {
+    fn from(value: im_core::identity::DeviceJoinApprovalPrompt) -> Self {
+        Self {
+            approval_handle: value.approval_handle,
+            join_session_id: value.join_session_id,
+            sas: value.sas,
+            expires_at: value.expires_at,
+        }
+    }
+}
+
+fn dart_device_join_remote_state(
+    value: im_core::identity::DeviceJoinRemoteState,
+) -> DartDeviceJoinRemoteState {
+    match value {
+        im_core::identity::DeviceJoinRemoteState::Pending => DartDeviceJoinRemoteState::Pending,
+        im_core::identity::DeviceJoinRemoteState::ChallengeSent => {
+            DartDeviceJoinRemoteState::ChallengeSent
+        }
+        im_core::identity::DeviceJoinRemoteState::ResponseVerified => {
+            DartDeviceJoinRemoteState::ResponseVerified
+        }
+        im_core::identity::DeviceJoinRemoteState::Consumed => DartDeviceJoinRemoteState::Consumed,
+        im_core::identity::DeviceJoinRemoteState::Cancelled => DartDeviceJoinRemoteState::Cancelled,
+        im_core::identity::DeviceJoinRemoteState::Rejected => DartDeviceJoinRemoteState::Rejected,
+        im_core::identity::DeviceJoinRemoteState::Expired => DartDeviceJoinRemoteState::Expired,
+    }
+}
+
+fn dart_device_join_role(value: im_core::identity::DeviceJoinRole) -> DartDeviceJoinRole {
+    match value {
+        im_core::identity::DeviceJoinRole::Member => DartDeviceJoinRole::Member,
+        im_core::identity::DeviceJoinRole::Admin => DartDeviceJoinRole::Admin,
+    }
+}
+
 impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
     fn from(value: im_core::identity::IdentitySummary) -> Self {
         Self {
@@ -61,6 +289,45 @@ impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
                 .into_iter()
                 .map(identity_missing_item_to_string)
                 .collect(),
+        }
+    }
+}
+
+impl From<im_core::identity::IdentityDeviceSummary> for DartIdentityDeviceSummary {
+    fn from(value: im_core::identity::IdentityDeviceSummary) -> Self {
+        Self {
+            identity: value.identity.into(),
+            mode: match value.mode {
+                im_core::identity::IdentityDeviceMode::Legacy => DartIdentityDeviceMode::Legacy,
+                im_core::identity::IdentityDeviceMode::VNext => DartIdentityDeviceMode::VNext,
+            },
+            protocol_device_id: value
+                .protocol_device_id
+                .map(|device_id| device_id.as_str().to_owned()),
+            role: value.role.map(|role| match role {
+                im_core::identity::IdentityDeviceRole::Member => DartIdentityDeviceRole::Member,
+                im_core::identity::IdentityDeviceRole::Admin => DartIdentityDeviceRole::Admin,
+            }),
+            signing_key_id: value.signing_key_id,
+            e2ee_key_id: value.e2ee_key_id,
+            readiness: match value.readiness {
+                im_core::identity::IdentityDeviceReadiness::Legacy => {
+                    DartIdentityDeviceReadiness::Legacy
+                }
+                im_core::identity::IdentityDeviceReadiness::MemberReady => {
+                    DartIdentityDeviceReadiness::MemberReady
+                }
+                im_core::identity::IdentityDeviceReadiness::AdminAwaitingRoot => {
+                    DartIdentityDeviceReadiness::AdminAwaitingRoot
+                }
+                im_core::identity::IdentityDeviceReadiness::AdminReady => {
+                    DartIdentityDeviceReadiness::AdminReady
+                }
+                im_core::identity::IdentityDeviceReadiness::Blocked => {
+                    DartIdentityDeviceReadiness::Blocked
+                }
+            },
+            blocked_reason: value.blocked_reason,
         }
     }
 }
@@ -100,6 +367,19 @@ impl From<im_core::identity::IdentityVaultStatus> for DartIdentityVaultStatus {
             plaintext_compat_retained: value.plaintext_compat_retained,
             missing: value.missing,
             warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::identity::LegacyUpgradeStatus> for DartLegacyUpgradeStatus {
+    fn from(value: im_core::identity::LegacyUpgradeStatus) -> Self {
+        match value {
+            im_core::identity::LegacyUpgradeStatus::Idle => Self::Idle,
+            im_core::identity::LegacyUpgradeStatus::Running => Self::Running,
+            im_core::identity::LegacyUpgradeStatus::RetryRequired { identity_id, code } => {
+                Self::RetryRequired { identity_id, code }
+            }
+            im_core::identity::LegacyUpgradeStatus::Completed => Self::Completed,
         }
     }
 }
@@ -331,6 +611,7 @@ impl From<im_core::identity::HandleRegistrationResult> for DartHandleRegistratio
             handle: value.handle.as_str().to_string(),
             method: registration_method_to_string(value.method),
             state: registration_state_to_string(value.state),
+            join_required: value.join_required.map(Into::into),
             default_identity_change: value.default_identity_change.map(Into::into),
             warnings: value.warnings,
         }
@@ -351,37 +632,18 @@ fn registration_state_to_string(value: im_core::identity::HandleRegistrationStat
         im_core::identity::HandleRegistrationState::EmailSent => "email_sent".to_string(),
         im_core::identity::HandleRegistrationState::EmailPending => "email_pending".to_string(),
         im_core::identity::HandleRegistrationState::Registered => "registered".to_string(),
+        im_core::identity::HandleRegistrationState::JoinRequired => "join_required".to_string(),
     }
 }
 
-impl From<im_core::identity::RecoverHandleResult> for DartRecoverHandleResult {
-    fn from(value: im_core::identity::RecoverHandleResult) -> Self {
-        let (recovered_identity, user_id, access_token_present) = value
-            .recovered_identity
-            .map(|recovered| {
-                (
-                    Some(recovered.identity.into()),
-                    recovered.user_id,
-                    recovered.access_token_present,
-                )
-            })
-            .unwrap_or((None, None, false));
+impl From<im_core::identity::HandleRegistrationJoinRequired>
+    for DartHandleRegistrationJoinRequired
+{
+    fn from(value: im_core::identity::HandleRegistrationJoinRequired) -> Self {
         Self {
-            handle: value.handle.as_str().to_string(),
-            phone: value.phone,
-            state: recover_state_to_string(value.state),
-            recovered_identity,
-            user_id,
-            access_token_present,
-            warnings: value.warnings,
+            did: value.did.as_str().to_owned(),
+            account_verification_token: value.account_verification_token,
         }
-    }
-}
-
-fn recover_state_to_string(value: im_core::identity::RecoverHandleState) -> String {
-    match value {
-        im_core::identity::RecoverHandleState::OtpSent => "otp_sent".to_string(),
-        im_core::identity::RecoverHandleState::Recovered => "recovered".to_string(),
     }
 }
 
@@ -1229,6 +1491,9 @@ impl From<im_core::secure::GroupSecureRepairResult> for DartGroupSecureRepairRes
             group: value.group.as_str().to_string(),
             state: value.state.into(),
             repaired: value.repaired,
+            added_devices: value.added_devices,
+            removed_devices: value.removed_devices,
+            remaining_devices: value.remaining_devices,
             problem: value.problem.map(Into::into),
             warnings: value.warnings,
         }
@@ -1441,6 +1706,10 @@ impl From<im_core::groups::GroupReadResult> for DartGroupReadResult {
             members: value.members.into_iter().map(Into::into).collect(),
             messages: value.messages.into(),
             total: value.total,
+            next_cursor: value.next_cursor.map(|cursor| cursor.as_str().to_owned()),
+            has_more: value.has_more,
+            page_group_did: value.page_group.map(|group| group.as_str().to_owned()),
+            group_state_version: value.group_state_version,
             source: value.source,
             warnings: value.warnings,
         }
@@ -1566,6 +1835,39 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
             out.sync = event.sync.map(Into::into);
             out
         }
+        ImEvent::SystemNotificationChanged(event) => {
+            let mut out = empty();
+            out.kind = "system_notification_changed".to_string();
+            out.notification_id = Some(event.notification.event_id);
+            out.notification_type = Some(
+                match event.notification.kind {
+                    im_core::system_notifications::SystemNotificationKind::JoinRequested => {
+                        "awiki.device.join-requested.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinClaimed => {
+                        "awiki.device.join-claimed.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinResponseVerified => {
+                        "awiki.device.join-response-verified.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinCompleted => {
+                        "awiki.device.join-completed.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinCancelled => {
+                        "awiki.device.join-cancelled.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinRejected => {
+                        "awiki.device.join-rejected.v1"
+                    }
+                    im_core::system_notifications::SystemNotificationKind::JoinExpired => {
+                        "awiki.device.join-expired.v1"
+                    }
+                }
+                .to_owned(),
+            );
+            out.sync = event.sync.map(Into::into);
+            out
+        }
         ImEvent::LocalNotification(event) => {
             let mut out = empty();
             out.kind = "local_notification".to_string();
@@ -1646,7 +1948,9 @@ fn realtime_subscription_to_string(value: im_core::realtime::RealtimeSubscriptio
 
 #[cfg(test)]
 mod tests {
-    use super::{realtime_event_to_dart, DartGroupSummary, DartRelationStatus};
+    use super::{
+        realtime_event_to_dart, DartGroupSummary, DartHandleRegistrationResult, DartRelationStatus,
+    };
     use im_core::{
         directory::RelationshipStatus,
         ids::{Did, GroupRef, MessageId, PeerRef, ThreadId},
@@ -1657,9 +1961,38 @@ mod tests {
             ConnectionStateChanged, GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent,
             HostNotificationKind, ImEvent, LocalNotificationEvent, MessageReceivedEvent,
             MessageUpdateKind, MessageUpdatedEvent, RealtimeConnectionState, RealtimeSyncHint,
-            UnknownNotificationEvent,
+            SystemNotificationChangedEvent, UnknownNotificationEvent,
+        },
+        system_notifications::{
+            SystemNotificationKind, SystemNotificationSnapshot, SystemNotificationState,
         },
     };
+
+    #[test]
+    fn registration_join_required_maps_to_typed_dart_result() {
+        let mapped =
+            DartHandleRegistrationResult::from(im_core::identity::HandleRegistrationResult {
+                identity: None,
+                handle: im_core::ids::Handle::parse("alice.example.test", "").unwrap(),
+                method: im_core::identity::RegistrationMethod::Phone,
+                state: im_core::identity::HandleRegistrationState::JoinRequired,
+                join_required: Some(im_core::identity::HandleRegistrationJoinRequired {
+                    did: im_core::ids::Did::parse("did:wba:example.test:existing").unwrap(),
+                    account_verification_token: "single-use-account-verification".to_owned(),
+                }),
+                default_identity_change: None,
+                warnings: Vec::new(),
+            });
+
+        assert_eq!(mapped.state, "join_required");
+        assert!(mapped.identity.is_none());
+        let join_required = mapped.join_required.expect("typed Join result");
+        assert_eq!(join_required.did, "did:wba:example.test:existing");
+        assert_eq!(
+            join_required.account_verification_token,
+            "single-use-account-verification"
+        );
+    }
 
     #[test]
     fn relationship_status_mapping_preserves_directional_truth() {
@@ -1797,6 +2130,47 @@ mod tests {
         assert_eq!(unknown.content_type.as_deref(), Some("application/json"));
         assert_eq!(unknown.notification_type.as_deref(), Some("custom.event"));
         assert_eq!(unknown.reason.as_deref(), Some("unsupported notification"));
+    }
+
+    #[test]
+    fn realtime_event_mapping_exposes_only_trusted_system_notification_signal() {
+        let event = realtime_event_to_dart(ImEvent::SystemNotificationChanged(
+            SystemNotificationChangedEvent {
+                notification: SystemNotificationSnapshot {
+                    event_id: "event-join-1".to_owned(),
+                    did: "did:wba:example.test:alice".to_owned(),
+                    join_session_id: "join-session-secret-adjacent".to_owned(),
+                    kind: SystemNotificationKind::JoinRequested,
+                    state: SystemNotificationState::Pending,
+                    session_revision: 1,
+                    issued_at: "2026-07-23T10:00:00Z".to_owned(),
+                    expires_at: "2026-07-23T10:10:00Z".to_owned(),
+                    first_seen_at: "2026-07-23T10:00:01Z".to_owned(),
+                    terminal: false,
+                },
+                sync: Some(RealtimeSyncHint {
+                    event_id: Some("sync-event-join-1".to_owned()),
+                    event_seq: Some("42".to_owned()),
+                    event_type: Some("system.notification".to_owned()),
+                    sync_dirty: false,
+                    gap_detected: false,
+                }),
+            },
+        ));
+
+        assert_eq!(event.kind, "system_notification_changed");
+        assert_eq!(event.notification_id.as_deref(), Some("event-join-1"));
+        assert_eq!(
+            event.notification_type.as_deref(),
+            Some("awiki.device.join-requested.v1")
+        );
+        assert!(event.message.is_none());
+        assert!(event.body.is_none());
+        assert!(event.content_type.is_none());
+        assert!(event.reason.is_none());
+        let sync = event.sync.expect("reliable sync hint");
+        assert_eq!(sync.event_seq.as_deref(), Some("42"));
+        assert_eq!(sync.event_type.as_deref(), Some("system.notification"));
     }
 
     #[test]

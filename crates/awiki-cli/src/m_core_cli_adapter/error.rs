@@ -1,5 +1,20 @@
 use crate::cli_output::ExitError;
 
+const PUBLIC_SERVICE_CODE_MAX_LEN: usize = 96;
+const PUBLIC_SERVICE_CODE_NAMESPACES: &[&str] = &[
+    "anp",
+    "attachment",
+    "awiki",
+    "client",
+    "device",
+    "direct",
+    "group",
+    "identity",
+    "inbox",
+    "read_state",
+    "sync",
+];
+
 pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
     match err {
         im_core::ImError::InvalidInput { message, .. } => ExitError::new(
@@ -38,6 +53,25 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: identity vault verification failed."),
             "Check the configured vault root key and workspace/device context; do not replace an existing vault key.",
         ),
+        im_core::ImError::SkillOnboarding {
+            code,
+            phase,
+            retryable,
+        } => {
+            let mut error = ExitError::new(
+                &code,
+                if retryable { 5 } else { 3 },
+                format!("{context}: Skill Agent onboarding stopped during {phase}."),
+                if retryable {
+                    "Retry the same claim command with the same authorized Token block."
+                } else {
+                    "Stop and request a new authorized Token block; do not change its scope fields."
+                },
+            );
+            error.detail.retryable = retryable;
+            error.detail.details = serde_json::json!({"phase": phase});
+            error
+        }
         im_core::ImError::AuthRequired | im_core::ImError::SessionExpired => ExitError::new(
             "auth_required",
             3,
@@ -62,6 +96,51 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: group not found: {group}"),
             "Check the group DID or id.",
         ),
+        im_core::ImError::CursorInvalid => ExitError::new(
+            "invalid_argument",
+            2,
+            format!("{context}: group page cursor is invalid."),
+            "Use the opaque cursor returned by the previous page.",
+        ),
+        im_core::ImError::CursorStale | im_core::ImError::InventoryIncomplete => {
+            let mut mapped = ExitError::new(
+                "temporarily_unavailable",
+                5,
+                format!("{context}: the group member inventory changed or is incomplete."),
+                "Retry the operation from the first page.",
+            );
+            mapped.detail.retryable = true;
+            mapped
+        }
+        im_core::ImError::InventoryTooLarge => ExitError::new(
+            "resource_limit",
+            5,
+            format!("{context}: the group member inventory exceeds its allowed limit."),
+            "Check the authoritative group member policy before retrying.",
+        ),
+        im_core::ImError::DeviceRevokeOutcome { category } => {
+            let (code, exit, message, hint) = match category {
+                im_core::DeviceRevokeOutcomeCategory::CancelledBeforeSubmit => (
+                    "cancelled_before_submit",
+                    2,
+                    "device revoke was cancelled before submission.",
+                    "Confirm user presence before retrying.",
+                ),
+                im_core::DeviceRevokeOutcomeCategory::RejectedBeforeCommit => (
+                    "rejected_before_commit",
+                    4,
+                    "device revoke was rejected before commit.",
+                    "Refresh the device Registry and review the target before retrying.",
+                ),
+                im_core::DeviceRevokeOutcomeCategory::OutcomeUnknown => (
+                    "outcome_unknown",
+                    5,
+                    "device revoke outcome is unknown.",
+                    "Refresh the authoritative device Registry before deciding whether to retry.",
+                ),
+            };
+            ExitError::new(code, exit, format!("{context}: {message}"), hint)
+        }
         im_core::ImError::MessageNotFound { message_id } => ExitError::new(
             "not_found",
             5,
@@ -165,12 +244,69 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: {path_kind} credential file unreadable: {detail}"),
             "Check identity file permissions.",
         ),
-        im_core::ImError::Service { message, .. } => ExitError::new(
-            "service_error",
+        im_core::ImError::Service {
+            code: Some(code), ..
+        } if code == "group.local_cursor_invalid" => {
+            service_group_page_error(
+                context,
+                "invalid_argument",
+                2,
+                &code,
+                "The group page cursor is invalid.",
+            )
+        }
+        im_core::ImError::Service {
+            code: Some(code), ..
+        } if matches!(
+            code.as_str(),
+            "group.local_cursor_stale" | "group.local_inventory_incomplete"
+        ) => service_group_page_error(
+            context,
+            "temporarily_unavailable",
             5,
-            format!("{context}: service error: {message}"),
-            "Check the remote service response and retry if appropriate.",
+            &code,
+            "Retry the operation from the first page.",
         ),
+        im_core::ImError::Service {
+            code: Some(code), ..
+        } if code == "group.local_inventory_too_large" => service_group_page_error(
+            context,
+            "resource_limit",
+            5,
+            &code,
+            "The authoritative group inventory exceeds its allowed limit.",
+        ),
+        im_core::ImError::Service {
+            status_code: Some(401),
+            ..
+        } => ExitError::new(
+            "auth_required",
+            3,
+            format!("{context}: authentication is required."),
+            "Refresh the selected identity credentials and try again.",
+        ),
+        im_core::ImError::Service {
+            status_code: Some(403),
+            ..
+        } => ExitError::new(
+            "permission_denied",
+            4,
+            format!("{context}: permission denied."),
+            "Check identity permissions and service access.",
+        ),
+        im_core::ImError::Service { code, .. } => {
+            let mut mapped = ExitError::new(
+                "service_error",
+                5,
+                format!("{context}: remote service request failed."),
+                "Retry if appropriate or inspect the stable service code.",
+            );
+            if let Some(service_code) = code.as_deref().filter(|code| is_public_service_code(code))
+            {
+                mapped.detail.details = serde_json::json!({"service_code": service_code});
+            }
+            mapped
+        }
         im_core::ImError::Serialization { detail }
             if detail.contains(im_core::vault::IM_CORE_VAULT_ROOT_KEY_ENV) =>
         {
@@ -200,6 +336,46 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             "Report this issue with the command output.",
         ),
     }
+}
+
+fn service_group_page_error(
+    context: &'static str,
+    category: &'static str,
+    exit_code: i32,
+    service_code: &str,
+    hint: &'static str,
+) -> ExitError {
+    let mut mapped = ExitError::new(
+        category,
+        exit_code,
+        format!("{context}: remote group inventory request failed."),
+        hint,
+    );
+    mapped.detail.details = serde_json::json!({"service_code": service_code});
+    mapped.detail.retryable = matches!(
+        service_code,
+        "group.local_cursor_stale" | "group.local_inventory_incomplete"
+    );
+    mapped
+}
+
+pub(crate) fn is_public_service_code(code: &str) -> bool {
+    if code.is_empty() || code.len() > PUBLIC_SERVICE_CODE_MAX_LEN || !code.is_ascii() {
+        return false;
+    }
+    if !code
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte))
+    {
+        return false;
+    }
+
+    let Some((namespace, suffix)) = code.split_once('.') else {
+        return false;
+    };
+    PUBLIC_SERVICE_CODE_NAMESPACES.contains(&namespace)
+        && !suffix.is_empty()
+        && code.split('.').all(|segment| !segment.is_empty())
 }
 
 pub fn map_identity_boundary_error(err: ExitError) -> ExitError {

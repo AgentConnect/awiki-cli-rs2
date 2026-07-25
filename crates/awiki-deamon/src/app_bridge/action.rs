@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::state::{
-    AppMessageAgentBindingRecord, AuthorizedRuntimeContext, DaemonState, MessageSyncOutboxRecord,
+    AppPersonalAgentBindingRecord, AuthorizedRuntimeContext, DaemonState, MessageSyncOutboxRecord,
 };
 
 pub const APP_CAPABILITIES_SCHEMA: &str = "awiki.app.capabilities.v1";
@@ -134,7 +134,7 @@ pub fn queue_runtime_app_action_request(
         serde_json::from_value(params.clone()).context("parse app.action.request params")?;
     validate_runtime_app_action_request(&request)?;
     let binding = state
-        .load_active_app_message_agent_binding_by_runtime(&context.agent_did)?
+        .load_active_app_personal_agent_binding_by_runtime(&context.agent_did)?
         .with_context(|| {
             format!(
                 "missing active app message binding for runtime {}",
@@ -200,6 +200,7 @@ pub fn queue_runtime_app_action_request(
             "binding_id": binding.binding_id,
             "owner_did": binding.user_did,
             "app_instance_id": binding.app_instance_id,
+            "daemon_agent_did": binding.daemon_agent_did,
             "runtime_agent_did": context.agent_did,
             "runtime_profile_id": context.runtime_profile_id,
             "run_id": context.run_id,
@@ -253,7 +254,7 @@ fn validate_runtime_app_action_request(request: &RuntimeAppActionRequest) -> Res
     Ok(())
 }
 
-fn validate_action_allowed(binding: &AppMessageAgentBindingRecord, action: &str) -> Result<()> {
+fn validate_action_allowed(binding: &AppPersonalAgentBindingRecord, action: &str) -> Result<()> {
     validate_action_name(action)?;
     if !MVP_ALLOWED_ACTIONS.contains(&action) {
         bail!("app action is not in MVP allowlist: {action}");
@@ -265,7 +266,7 @@ fn validate_action_allowed(binding: &AppMessageAgentBindingRecord, action: &str)
     Ok(())
 }
 
-fn effective_allowed_actions(binding: &AppMessageAgentBindingRecord) -> Vec<String> {
+fn effective_allowed_actions(binding: &AppPersonalAgentBindingRecord) -> Vec<String> {
     let has_explicit_capability_policy = binding
         .capability_policy_json
         .get("schema")
@@ -302,7 +303,7 @@ fn effective_allowed_actions(binding: &AppMessageAgentBindingRecord) -> Vec<Stri
     actions.into_iter().collect()
 }
 
-fn action_requires_confirmation(binding: &AppMessageAgentBindingRecord, action: &str) -> bool {
+fn action_requires_confirmation(binding: &AppPersonalAgentBindingRecord, action: &str) -> bool {
     if !WRITE_ACTIONS.contains(&action) {
         return false;
     }
@@ -316,7 +317,7 @@ fn action_requires_confirmation(binding: &AppMessageAgentBindingRecord, action: 
 fn queue_app_action_rejected_result(
     state: &DaemonState,
     context: &AuthorizedRuntimeContext,
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     request: &RuntimeAppActionRequest,
     action_id: &str,
     idempotency_key: &str,
@@ -335,6 +336,7 @@ fn queue_app_action_rejected_result(
             "binding_id": binding.binding_id,
             "owner_did": binding.user_did,
             "app_instance_id": binding.app_instance_id,
+            "daemon_agent_did": binding.daemon_agent_did,
             "runtime_agent_did": context.agent_did,
             "runtime_profile_id": context.runtime_profile_id,
             "run_id": context.run_id,
@@ -519,6 +521,8 @@ mod tests {
         assert_eq!(record.payload_json["action"], "contact.update_note");
         assert_eq!(record.payload_json["state"], "requires_confirmation");
         assert_eq!(record.payload_json["requires_confirmation"], true);
+        assert_eq!(record.payload_json["daemon_agent_did"], "did:agent:daemon");
+        assert_eq!(record.payload_json["runtime_agent_did"], "did:agent:hermes");
         assert_eq!(record.payload_json["args"]["contact_did"], "did:human:bob");
     }
 
@@ -553,6 +557,8 @@ mod tests {
         assert_eq!(record.payload_json["schema"], APP_ACTION_RESULT_SCHEMA);
         assert_eq!(record.payload_json["action"], "message.send");
         assert_eq!(record.payload_json["state"], "rejected");
+        assert_eq!(record.payload_json["daemon_agent_did"], "did:agent:daemon");
+        assert_eq!(record.payload_json["runtime_agent_did"], "did:agent:hermes");
         assert_eq!(record.payload_json["error_code"], "action_not_allowed");
     }
 
@@ -688,25 +694,25 @@ mod tests {
         if !allowed_actions.is_null() {
             desired_agent_json["allowed_actions"] = allowed_actions;
         }
-        let binding = AppMessageAgentBindingRecord {
-            binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+        let binding = AppPersonalAgentBindingRecord {
+            binding_id: "app-personal-agent:did:human:alice:app_1".to_string(),
             user_did: "did:human:alice".to_string(),
             inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
             app_instance_id: "app_1".to_string(),
             bootstrap_id: "boot_1".to_string(),
-            idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+            idempotency_key: "personal-agent-bootstrap:did:human:alice:app_1".to_string(),
             daemon_agent_did: "did:agent:daemon".to_string(),
             runtime_agent_did: "did:agent:hermes".to_string(),
             runtime_profile_id: "profile_hermes".to_string(),
             role: "app_message_handler".to_string(),
             desired_agent_json,
             capability_policy_json,
-            status: "message_agent_ready".to_string(),
+            status: "personal_agent_ready".to_string(),
             created_at_ms: 0,
             updated_at_ms: 0,
             revoked_at_ms: None,
         };
-        state.upsert_app_message_agent_binding(&binding).unwrap();
+        state.upsert_app_personal_agent_binding(&binding).unwrap();
         let context = AuthorizedRuntimeContext {
             token_id: "token_1".to_string(),
             agent_did: binding.runtime_agent_did.clone(),

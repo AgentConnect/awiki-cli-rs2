@@ -30,22 +30,37 @@ class AwikiImCoreOpenOptions {
   const AwikiImCoreOpenOptions({
     this.identitySecretStoragePolicy = IdentitySecretStoragePolicy.fileCompat,
     this.identitySecretVault,
+    this.multiDeviceDeviceRevokeEnabled = false,
+    this.multiDeviceDirectE2eeEnabled = false,
+    this.multiDeviceGroupE2eeEnabled = false,
   });
 
   const AwikiImCoreOpenOptions.fileCompat()
     : identitySecretStoragePolicy = IdentitySecretStoragePolicy.fileCompat,
-      identitySecretVault = null;
+      identitySecretVault = null,
+      multiDeviceDeviceRevokeEnabled = false,
+      multiDeviceDirectE2eeEnabled = false,
+      multiDeviceGroupE2eeEnabled = false;
 
   const AwikiImCoreOpenOptions.vaultPreferred({
     required ImCoreSecretVaultOptions this.identitySecretVault,
+    this.multiDeviceDeviceRevokeEnabled = false,
+    this.multiDeviceDirectE2eeEnabled = false,
+    this.multiDeviceGroupE2eeEnabled = false,
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultPreferred;
 
   const AwikiImCoreOpenOptions.vaultRequired({
     required ImCoreSecretVaultOptions this.identitySecretVault,
+    this.multiDeviceDeviceRevokeEnabled = false,
+    this.multiDeviceDirectE2eeEnabled = false,
+    this.multiDeviceGroupE2eeEnabled = false,
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultRequired;
 
   final IdentitySecretStoragePolicy identitySecretStoragePolicy;
   final ImCoreSecretVaultOptions? identitySecretVault;
+  final bool multiDeviceDeviceRevokeEnabled;
+  final bool multiDeviceDirectE2eeEnabled;
+  final bool multiDeviceGroupE2eeEnabled;
 }
 
 class ImCoreSecretVaultOptions {

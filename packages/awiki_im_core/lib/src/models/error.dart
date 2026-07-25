@@ -1,3 +1,9 @@
+enum DeviceRevokeOutcomeCategory {
+  cancelledBeforeSubmit,
+  rejectedBeforeCommit,
+  outcomeUnknown,
+}
+
 class AwikiImCoreException implements Exception {
   const AwikiImCoreException({
     required this.code,
@@ -7,6 +13,7 @@ class AwikiImCoreException implements Exception {
     this.capability,
     this.serviceCode,
     this.serviceDataJson,
+    this.deviceRevokeOutcomeCategory,
   });
 
   final String code;
@@ -16,6 +23,7 @@ class AwikiImCoreException implements Exception {
   final String? capability;
   final String? serviceCode;
   final String? serviceDataJson;
+  final DeviceRevokeOutcomeCategory? deviceRevokeOutcomeCategory;
 
   @override
   String toString() => 'AwikiImCoreException($code): $message';

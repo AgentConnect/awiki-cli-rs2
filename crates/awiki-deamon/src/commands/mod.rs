@@ -47,7 +47,8 @@ const DAEMON_UPGRADE_CANCEL: &str = "daemon.upgrade.cancel";
 const RUNTIME_AGENT_REBUILD: &str = "runtime.agent.rebuild";
 const DAEMON_DELETE: &str = "daemon.delete";
 const RUNTIME_AGENT_DELETE: &str = "runtime.agent.delete";
-const MESSAGE_AGENT_BINDING_DISABLE: &str = "message_agent.binding.disable";
+const PERSONAL_AGENT_BINDING_DISABLE: &str = "personal_agent.binding.disable";
+const LEGACY_MESSAGE_AGENT_BINDING_DISABLE: &str = "message_agent.binding.disable";
 const RUNTIME_INBOX_QUERY: &str = "runtime.inbox.query";
 const RUNTIME_INBOX_THREAD_QUERY: &str = "runtime.inbox.thread.query";
 const STATUS_QUERY_MIN_INTERVAL_MS: i64 = 10_000;
@@ -454,8 +455,8 @@ where
                 command_id: envelope.command_id,
             })
         }
-        MESSAGE_AGENT_BINDING_DISABLE => {
-            handle_message_agent_binding_disable(
+        PERSONAL_AGENT_BINDING_DISABLE | LEGACY_MESSAGE_AGENT_BINDING_DISABLE => {
+            handle_personal_agent_binding_disable(
                 outbox,
                 state,
                 &daemon_agent,
@@ -486,7 +487,7 @@ where
     }
 }
 
-fn handle_message_agent_binding_disable<O>(
+fn handle_personal_agent_binding_disable<O>(
     outbox: &O,
     state: &DaemonState,
     daemon_agent: &AgentDefinition,
@@ -496,19 +497,20 @@ fn handle_message_agent_binding_disable<O>(
 where
     O: AgentManagementOutbox,
 {
-    let runtime_agent_did = optional_arg_string(&payload.args, "message_agent_did")
+    let runtime_agent_did = optional_arg_string(&payload.args, "personal_agent_did")
         .or_else(|| optional_arg_string(&payload.args, "runtime_agent_did"))
-        .context("message_agent.binding.disable requires message_agent_did")?;
+        .or_else(|| optional_arg_string(&payload.args, "message_agent_did"))
+        .context("personal_agent.binding.disable requires personal_agent_did")?;
     let lifecycle_action = optional_arg_string(&payload.args, "lifecycle_action")
         .unwrap_or_else(|| "pause".to_string());
     let revoked = lifecycle_action.trim().eq_ignore_ascii_case("revoke");
     let next_status = if revoked {
-        "message_agent_revoked"
+        "personal_agent_revoked"
     } else {
-        "message_agent_disabled"
+        "personal_agent_disabled"
     };
     let active_binding =
-        state.load_active_app_message_agent_binding_by_runtime(&runtime_agent_did)?;
+        state.load_active_app_personal_agent_binding_by_runtime(&runtime_agent_did)?;
     let active_binding = match active_binding {
         Some(binding) if binding.daemon_agent_did == daemon_agent.agent_did => binding,
         Some(binding) => {
@@ -518,9 +520,9 @@ where
                 message,
                 &payload.command_id,
                 "failed",
-                Some("message agent binding does not belong to this daemon".to_string()),
+                Some("personal agent binding does not belong to this daemon".to_string()),
                 json!({
-                    "command": MESSAGE_AGENT_BINDING_DISABLE,
+                    "command": PERSONAL_AGENT_BINDING_DISABLE,
                     "runtime_agent_did": runtime_agent_did,
                     "binding_id": binding.binding_id,
                     "daemon_agent_did": daemon_agent.agent_did,
@@ -535,9 +537,9 @@ where
                 message,
                 &payload.command_id,
                 "failed",
-                Some("active message agent binding not found".to_string()),
+                Some("active personal agent binding not found".to_string()),
                 json!({
-                    "command": MESSAGE_AGENT_BINDING_DISABLE,
+                    "command": PERSONAL_AGENT_BINDING_DISABLE,
                     "runtime_agent_did": runtime_agent_did,
                     "daemon_agent_did": daemon_agent.agent_did,
                     "error_code": "binding_not_found",
@@ -546,17 +548,17 @@ where
         }
     };
     let binding = state
-        .update_app_message_agent_binding_status_by_runtime(
+        .update_app_personal_agent_binding_status_by_runtime(
             &active_binding.runtime_agent_did,
             next_status,
             revoked,
         )?
-        .context("updated message agent binding disappeared")?;
+        .context("updated personal agent binding disappeared")?;
     state.insert_audit_event_json(
         if revoked {
-            "app_message_agent.binding.revoked_local"
+            "app_personal_agent.binding.revoked_local"
         } else {
-            "app_message_agent.binding.disabled_local"
+            "app_personal_agent.binding.disabled_local"
         },
         Some(&daemon_agent.agent_did),
         Some(&binding.runtime_profile_id),
@@ -577,15 +579,15 @@ where
         &payload.command_id,
         if revoked { "revoked" } else { "disabled" },
         Some(if revoked {
-            "message agent authorization revoked locally".to_string()
+            "personal agent authorization revoked locally".to_string()
         } else {
-            "message agent processing paused".to_string()
+            "personal agent processing paused".to_string()
         }),
         json!({
-            "command": MESSAGE_AGENT_BINDING_DISABLE,
+            "command": PERSONAL_AGENT_BINDING_DISABLE,
             "binding_id": binding.binding_id,
             "runtime_agent_did": binding.runtime_agent_did,
-            "message_agent_did": binding.runtime_agent_did,
+            "personal_agent_did": binding.runtime_agent_did,
             "daemon_agent_did": daemon_agent.agent_did,
             "status": binding.status,
             "lifecycle_action": lifecycle_action,

@@ -38,6 +38,52 @@ enum LocalStateCommand {
         input: super::sync_state::SyncDeltaApplyInput,
         reply: oneshot::Sender<crate::ImResult<super::sync_state::SyncDeltaApplyOutcome>>,
     },
+    ApplySystemNotification {
+        input: crate::internal::system_notification::store::SystemNotificationApplyInput,
+        reply: oneshot::Sender<
+            crate::ImResult<
+                crate::internal::system_notification::store::SystemNotificationApplyOutcome,
+            >,
+        >,
+    },
+    ListSystemNotifications {
+        owner_identity_id: String,
+        owner_did: String,
+        protocol_device_id: String,
+        include_terminal: bool,
+        limit: u32,
+        reply: oneshot::Sender<
+            crate::ImResult<Vec<crate::system_notifications::SystemNotificationSnapshot>>,
+        >,
+    },
+    GetSystemNotification {
+        owner_identity_id: String,
+        owner_did: String,
+        protocol_device_id: String,
+        event_id: String,
+        reply: oneshot::Sender<
+            crate::ImResult<Option<crate::system_notifications::SystemNotificationSnapshot>>,
+        >,
+    },
+    ListVerifiedSystemNotifications {
+        owner_identity_id: String,
+        owner_did: String,
+        protocol_device_id: String,
+        include_terminal: bool,
+        limit: u32,
+        reply: oneshot::Sender<
+            crate::ImResult<Vec<crate::internal::system_notification::wire::JoinNotification>>,
+        >,
+    },
+    GetVerifiedSystemNotification {
+        owner_identity_id: String,
+        owner_did: String,
+        protocol_device_id: String,
+        join_session_id: String,
+        reply: oneshot::Sender<
+            crate::ImResult<Option<crate::internal::system_notification::wire::JoinNotification>>,
+        >,
+    },
     UpsertContact {
         record: crate::internal::contact_store::records::ContactRecord,
         reply: oneshot::Sender<crate::ImResult<()>>,
@@ -343,18 +389,6 @@ enum LocalStateCommand {
             crate::ImResult<Option<crate::internal::store::e2ee_outbox::E2eeOutboxRecord>>,
         >,
     },
-    MergeRecoveredHandleLocalState {
-        old_owner_dids: Vec<String>,
-        new_owner_did: String,
-        final_owner_identity_id: String,
-        final_credential_name: String,
-        reply: oneshot::Sender<
-            crate::ImResult<(
-                std::collections::BTreeMap<String, i64>,
-                std::collections::BTreeMap<String, i64>,
-            )>,
-        >,
-    },
     BackfillOwnerIdentityIds {
         identities: Vec<super::schema::OwnerIdentityBackfill>,
         reply: oneshot::Sender<crate::ImResult<usize>>,
@@ -447,6 +481,97 @@ impl LocalStateDb {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::ApplySyncDelta { input, reply })
             .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn apply_system_notification(
+        &self,
+        input: crate::internal::system_notification::store::SystemNotificationApplyInput,
+    ) -> crate::ImResult<crate::internal::system_notification::store::SystemNotificationApplyOutcome>
+    {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ApplySystemNotification { input, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_system_notifications(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        protocol_device_id: impl Into<String>,
+        include_terminal: bool,
+        limit: u32,
+    ) -> crate::ImResult<Vec<crate::system_notifications::SystemNotificationSnapshot>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListSystemNotifications {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            protocol_device_id: protocol_device_id.into(),
+            include_terminal,
+            limit,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn get_system_notification(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        protocol_device_id: impl Into<String>,
+        event_id: impl Into<String>,
+    ) -> crate::ImResult<Option<crate::system_notifications::SystemNotificationSnapshot>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::GetSystemNotification {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            protocol_device_id: protocol_device_id.into(),
+            event_id: event_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_verified_system_notifications(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        protocol_device_id: impl Into<String>,
+        include_terminal: bool,
+        limit: u32,
+    ) -> crate::ImResult<Vec<crate::internal::system_notification::wire::JoinNotification>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListVerifiedSystemNotifications {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            protocol_device_id: protocol_device_id.into(),
+            include_terminal,
+            limit,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn get_verified_system_notification(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        protocol_device_id: impl Into<String>,
+        join_session_id: impl Into<String>,
+    ) -> crate::ImResult<Option<crate::internal::system_notification::wire::JoinNotification>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::GetVerifiedSystemNotification {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            protocol_device_id: protocol_device_id.into(),
+            join_session_id: join_session_id.into(),
+            reply,
+        })
+        .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
 
@@ -1181,28 +1306,6 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
-    pub(crate) async fn merge_recovered_handle_local_state(
-        &self,
-        old_owner_dids: Vec<String>,
-        new_owner_did: impl Into<String>,
-        final_owner_identity_id: impl Into<String>,
-        final_credential_name: impl Into<String>,
-    ) -> crate::ImResult<(
-        std::collections::BTreeMap<String, i64>,
-        std::collections::BTreeMap<String, i64>,
-    )> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(LocalStateCommand::MergeRecoveredHandleLocalState {
-            old_owner_dids,
-            new_owner_did: new_owner_did.into(),
-            final_owner_identity_id: final_owner_identity_id.into(),
-            final_credential_name: final_credential_name.into(),
-            reply,
-        })
-        .await?;
-        receiver.await.map_err(|_| actor_closed())?
-    }
-
     pub(crate) async fn backfill_owner_identity_ids(
         &self,
         identities: Vec<super::schema::OwnerIdentityBackfill>,
@@ -1295,6 +1398,79 @@ fn run_actor(
             }
             LocalStateCommand::ApplySyncDelta { input, reply } => {
                 let result = apply_sync_delta(&mut connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ApplySystemNotification { input, reply } => {
+                let result =
+                    crate::internal::system_notification::store::apply(&mut connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListSystemNotifications {
+                owner_identity_id,
+                owner_did,
+                protocol_device_id,
+                include_terminal,
+                limit,
+                reply,
+            } => {
+                let result = crate::internal::system_notification::store::list(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &protocol_device_id,
+                    include_terminal,
+                    limit,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::GetSystemNotification {
+                owner_identity_id,
+                owner_did,
+                protocol_device_id,
+                event_id,
+                reply,
+            } => {
+                let result = crate::internal::system_notification::store::get_by_event_id(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &protocol_device_id,
+                    &event_id,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListVerifiedSystemNotifications {
+                owner_identity_id,
+                owner_did,
+                protocol_device_id,
+                include_terminal,
+                limit,
+                reply,
+            } => {
+                let result = crate::internal::system_notification::store::list_verified(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &protocol_device_id,
+                    include_terminal,
+                    limit,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::GetVerifiedSystemNotification {
+                owner_identity_id,
+                owner_did,
+                protocol_device_id,
+                join_session_id,
+                reply,
+            } => {
+                let result = crate::internal::system_notification::store::get_verified_by_session(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &protocol_device_id,
+                    &join_session_id,
+                );
                 let _ = reply.send(result);
             }
             LocalStateCommand::UpsertContact { record, reply } => {
@@ -1885,23 +2061,6 @@ fn run_actor(
                     &scope,
                     &outbox_id,
                 );
-                let _ = reply.send(result);
-            }
-            LocalStateCommand::MergeRecoveredHandleLocalState {
-                old_owner_dids,
-                new_owner_did,
-                final_owner_identity_id,
-                final_credential_name,
-                reply,
-            } => {
-                let result =
-                    crate::internal::identity_recover_local_state::merge_recovered_handle_local_state_for_connection(
-                        &mut connection,
-                        &old_owner_dids,
-                        &new_owner_did,
-                        &final_owner_identity_id,
-                        &final_credential_name,
-                    );
                 let _ = reply.send(result);
             }
             LocalStateCommand::BackfillOwnerIdentityIds { identities, reply } => {

@@ -325,12 +325,54 @@ pub(crate) fn build_group_get_rpc_params(
     }))
 }
 
-pub(crate) fn build_group_list_rpc_params(sender_did: &str, limit: i64) -> Value {
+pub(crate) fn build_group_get_info_rpc_params(
+    sender_did: &str,
+    group_did: &str,
+    operation_id: &str,
+    include_policy: bool,
+) -> crate::ImResult<Value> {
+    let group_did = require_group(group_did)?;
+    let operation_id = operation_id.trim();
+    if operation_id.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("operation_id".to_string()),
+            "operation id is required",
+        ));
+    }
+    Ok(json!({
+        "meta": {
+            "anp_version": "2.0",
+            "profile": "anp.group.base.v2",
+            "security_profile": "transport-protected",
+            "sender_did": sender_did,
+            "target": { "kind": "group", "did": group_did },
+            "operation_id": format!("p4-group-info-{operation_id}"),
+            "content_type": "application/json",
+            "created_at": super::common::now_rfc3339()
+        },
+        "body": {
+            "include_policy": include_policy,
+            "include_member_list": false
+        }
+    }))
+}
+
+pub(crate) fn build_group_list_rpc_params(
+    sender_did: &str,
+    limit: i64,
+    cursor: Option<&str>,
+) -> Value {
+    let mut body = Map::new();
+    body.insert(
+        "limit".to_string(),
+        json!(if limit <= 0 { 50 } else { limit }),
+    );
+    if let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
+        body.insert("cursor".to_string(), Value::String(cursor.to_string()));
+    }
     json!({
         "meta": group_local_meta(sender_did, None),
-        "body": {
-            "limit": if limit <= 0 { 50 } else { limit },
-        },
+        "body": body,
     })
 }
 
@@ -338,14 +380,24 @@ pub(crate) fn build_group_members_rpc_params(
     sender_did: &str,
     group_did: &str,
     limit: i64,
+    cursor: Option<&str>,
 ) -> crate::ImResult<Value> {
     let group_did = require_group(group_did)?;
+    let mut body = Map::new();
+    body.insert(
+        "group_did".to_string(),
+        Value::String(group_did.to_string()),
+    );
+    body.insert(
+        "limit".to_string(),
+        json!(if limit <= 0 { 100 } else { limit }),
+    );
+    if let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
+        body.insert("cursor".to_string(), Value::String(cursor.to_string()));
+    }
     Ok(json!({
         "meta": group_local_meta(sender_did, Some(group_did)),
-        "body": {
-            "group_did": group_did,
-            "limit": if limit <= 0 { 100 } else { limit },
-        },
+        "body": body,
     }))
 }
 
@@ -626,6 +678,28 @@ fn group_local_meta(sender_did: &str, group_did: Option<&str>) -> Value {
 #[cfg(test)]
 mod handle_identity_tests {
     use super::*;
+
+    #[test]
+    fn authoritative_p4_group_get_info_has_exact_target_and_policy_projection() {
+        let legacy = build_group_get_rpc_params("did:example:alice", "did:example:group").unwrap();
+        assert!(legacy["body"].get("include_policy").is_none());
+
+        let p4 = build_group_get_info_rpc_params(
+            "did:example:alice",
+            "did:example:group",
+            "read-1",
+            true,
+        )
+        .unwrap();
+        assert_eq!(p4["meta"]["anp_version"], "2.0");
+        assert_eq!(p4["meta"]["profile"], "anp.group.base.v2");
+        assert_eq!(
+            p4["meta"]["target"],
+            json!({"kind": "group", "did": "did:example:group"})
+        );
+        assert_eq!(p4["body"]["include_policy"], true);
+        assert_eq!(p4["body"]["include_member_list"], false);
+    }
 
     #[test]
     fn p4_wire_preserves_explicit_handle_mode_without_internal_ids() {

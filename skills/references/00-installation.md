@@ -154,6 +154,11 @@ The isolated workspace does not change service-manager state until runtime setup
 
 ## Step 4: Enable Runtime (Recommended)
 
+If the user's current instruction contains a complete `AWIKI_SKILL_ONBOARDING_V1` block, do not
+continue into runtime setup yet. After workspace initialization, open `01-onboarding.md` and follow
+its Authorized Skill Agent Token Branch. The Token block does not authorize runtime or
+service-manager changes.
+
 After initializing the workspace, it is recommended to continue by completing runtime initialization.
 
 ### 4.1 WebSocket Mode (Recommended)

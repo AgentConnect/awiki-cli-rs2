@@ -727,6 +727,115 @@ fn local_state_schema_rejects_unsupported_versions() {
 }
 
 #[test]
+fn local_state_schema_atomically_upgrades_v28_with_system_notification_tables() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute_batch(
+        "DROP TABLE system_notification_receipts;
+         DROP TABLE system_notification_join_state;",
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 28).unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    for table in [
+        "system_notification_receipts",
+        "system_notification_join_state",
+        "identity_root_import_completion_v1",
+        "identity_root_transfer_sender_v1",
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[test]
+fn local_state_schema_atomically_upgrades_v29_with_root_import_tables() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.execute_batch(
+        "DROP TABLE identity_root_import_completion_v1;
+         DROP TABLE identity_root_transfer_sender_v1;",
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 29).unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    for table in [
+        "identity_root_import_completion_v1",
+        "identity_root_transfer_sender_v1",
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[test]
+fn local_state_schema_atomically_upgrades_v30_with_p5_retirement_boundary() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    db.pragma_update(None, "user_version", 30).unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), 31);
+    for table in [
+        "direct_e2ee_v2_sessions",
+        "direct_e2ee_v2_pending",
+        "direct_e2ee_v2_prekey_bundles",
+        "direct_e2ee_v2_one_time_prekeys",
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[test]
+fn local_state_schema_v31_open_is_idempotent_and_keeps_root_import_tables() {
+    let db = Connection::open_in_memory().unwrap();
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), 31);
+
+    ensure_schema(&db).unwrap();
+
+    for table in [
+        "identity_root_import_completion_v1",
+        "identity_root_transfer_sender_v1",
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[test]
 fn local_state_schema_rejects_v6_handle_backfill_until_workspace_migration() {
     let db = Connection::open_in_memory().unwrap();
     db.pragma_update(None, "user_version", 6).unwrap();

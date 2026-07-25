@@ -1,6 +1,7 @@
 mod dto;
 mod mention;
 mod service;
+mod v2_product;
 
 pub(crate) use self::dto::thread_ref_parts;
 pub use self::dto::{

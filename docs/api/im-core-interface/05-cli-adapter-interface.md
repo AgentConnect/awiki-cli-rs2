@@ -70,6 +70,9 @@ available and which source would be used.
   cannot be created/read. `id vault status` may use a redacted
   `checked_without_vault_context` mode for diagnostics.
 
+Device Join has no host-local rollout environment or
+`ImCoreOpenOptions.multi_device_join_enabled` gate.
+
 ## 3. Paths Adapter
 
 ```rust
@@ -106,6 +109,50 @@ empty identity flag -> IdentitySelector::Default
 ```
 
 CLI 继续负责 OTP 输入、alias 文本校验和危险操作确认。
+
+### 4.1 Device Join adapter
+
+`id device join start` reads the short-lived account verification grant only
+from `AWIKI_ACCOUNT_VERIFICATION_TOKEN`; it is never accepted in argv or
+rendered in output. Session list/start/new-device poll/new-device cancel call
+the corresponding Core facade, while `id device list`, notification-driven
+request listing, start-verification, reject and approval use the selected
+management identity. There is no management-device Join poll or cancel path.
+
+`id device join approve` requires a foreground TTY. The user types the locally
+derived SAS and an explicit approval word; the adapter then prepares and
+consumes the one-time approval handle in the same process. The handle is never
+returned by the CLI. JSON/pretty output uses only the safe host projections and
+must not contain tokens, pairing/private/root material, challenge ciphertext,
+SAS, or internal Document/Registry/auth versions and hashes.
+
+### 4.2 Root-key transfer adapter
+
+`id device root-key send --device <id>` is the only V1 CLI command for this
+operation. It rejects dry-run and keeps the selected identity in the
+identity-scoped `ImClient`; the CLI does not accept a message ID, PreKey,
+session, proof, checkpoint, payload, retry selector, or user-presence override.
+This is a low-level, explicit single-target operation used by the current Join
+handoff and focused verification. It does not discover or list eligible
+devices, choose a target on the user's behalf, support batch transfer, or create
+a general resend workflow. AWiki Me exposes it only for the exact device held by
+the still-open admin-side Join context.
+
+The command performs one foreground flow:
+
+1. call Core `prepare` for the exact recipient device;
+2. display only the frozen DID, device, signing/E2EE key identifiers, and
+   preparation expiry;
+3. require the user to type `TRANSFER` exactly once;
+4. pass the opaque authorization back to Core `confirm_and_send`;
+5. render the accepted receipt with the summary `根密钥已发送`.
+
+The opaque authorization is never printed or serialized by the CLI. The CLI
+also never renders root material, ciphertext, PreKey data, proofs, nonces,
+checkpoints, internal routing metadata, or recipient import/completion state.
+Core generates the message ID and owns transport recovery; V1 exposes no
+`root-key list`, `root-key retry`, empty-Init step, reply wait, second
+confirmation, or recipient-completion wait.
 
 ## 5. Message Adapter
 

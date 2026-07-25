@@ -196,7 +196,7 @@ async fn load_credentials_async(
     if let Some(delegated) = delegated {
         return delegated_credentials_async(client, delegated, did_document).await;
     }
-    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
+    let key1_private_pem = runtime.key_provider.device_request_signing_private_pem()?;
     Ok(DirectTextCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
@@ -207,7 +207,10 @@ async fn load_credentials_async(
 }
 
 fn read_default_private_key(client: &crate::core::ImClient) -> crate::ImResult<String> {
-    client.runtime().key_provider.default_signing_private_pem()
+    client
+        .runtime()
+        .key_provider
+        .device_request_signing_private_pem()
 }
 
 fn delegated_credentials(

@@ -18,7 +18,7 @@ pub use self::events::{
     AttachmentDownloadAction, AttachmentMessageSummary, ConnectionStateChanged, GroupUpdateKind,
     GroupUpdatedEvent, HostNotificationEvent, HostNotificationKind, ImEvent,
     LocalNotificationEvent, MessageReceivedEvent, MessageUpdateKind, MessageUpdatedEvent,
-    RealtimeSyncHint, UnknownNotificationEvent,
+    RealtimeSyncHint, SystemNotificationChangedEvent, UnknownNotificationEvent,
 };
 #[cfg(feature = "blocking")]
 pub use self::handle::{RealtimeEventReceiver, RealtimeHandle};

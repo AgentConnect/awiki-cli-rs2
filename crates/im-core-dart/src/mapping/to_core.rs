@@ -165,6 +165,9 @@ impl TryFrom<crate::dto::config::DartImCoreOpenOptions> for im_core::ImCoreOpenO
         let mut options = im_core::ImCoreOpenOptions {
             identity_secret_storage_policy: value.identity_secret_storage_policy.into(),
             identity_secret_vault: None,
+            multi_device_device_revoke_enabled: value.multi_device_device_revoke_enabled,
+            multi_device_direct_e2ee_enabled: value.multi_device_direct_e2ee_enabled,
+            multi_device_group_e2ee_enabled: value.multi_device_group_e2ee_enabled,
         };
         if let Some(vault) = value.identity_secret_vault {
             options.identity_secret_vault = Some(vault.try_into()?);

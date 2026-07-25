@@ -90,7 +90,9 @@ pub fn handle_im_event(
             );
             push_warning(status, &warning);
         }
-        ImEvent::MessageUpdated(_) | ImEvent::LocalNotification(_) => {
+        ImEvent::MessageUpdated(_)
+        | ImEvent::LocalNotification(_)
+        | ImEvent::SystemNotificationChanged(_) => {
             result.route = CliImEventRoute::Ignored;
         }
     }

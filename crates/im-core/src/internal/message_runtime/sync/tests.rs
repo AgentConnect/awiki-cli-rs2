@@ -10,6 +10,66 @@ use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+#[test]
+fn system_notification_delta_is_checkpoint_only_and_never_projects_chat_state() {
+    let fixture = Fixture::new("sync-delta-system-notification");
+    let client = fixture.client();
+    let raw = delta_page(
+        vec![json!({
+            "event_id": "sev-system-1",
+            "event_seq": "1",
+            "event_type": "system.notification",
+            "aggregate_kind": "device",
+            "aggregate_id": "dev-local",
+            "owner_subject_id": "did:example:alice",
+            "created_at": "2026-07-23T02:00:00Z",
+            "payload": {
+                "projection_kind": "system_notification"
+            }
+        })],
+        "1",
+        false,
+    );
+    let page = crate::internal::wire::sync::parse_sync_delta_page(&raw).unwrap();
+    let apply = sync_delta_apply_event(&client, &page.events[0]).unwrap();
+
+    assert_eq!(apply.event_type, "system.notification");
+    assert!(apply.messages.is_empty());
+    assert!(apply.groups.is_empty());
+}
+
+#[test]
+fn chat_shaped_delta_with_system_marker_is_also_checkpoint_only() {
+    let fixture = Fixture::new("sync-delta-system-marker");
+    let client = fixture.client();
+    let raw = delta_page(
+        vec![json!({
+            "event_id": "sev-system-2",
+            "event_seq": "2",
+            "event_type": "message.created",
+            "aggregate_kind": "direct_message",
+            "aggregate_id": "must-not-be-chat",
+            "owner_subject_id": "did:example:alice",
+            "created_at": "2026-07-23T02:00:00Z",
+            "payload": {
+                "message": {
+                    "projection_kind": "system_notification",
+                    "content": {
+                        "type": "awiki.device.join-requested.v1"
+                    }
+                }
+            }
+        })],
+        "2",
+        false,
+    );
+    let page = crate::internal::wire::sync::parse_sync_delta_page(&raw).unwrap();
+    let apply = sync_delta_apply_event(&client, &page.events[0]).unwrap();
+
+    assert!(apply.messages.is_empty());
+    assert!(apply.groups.is_empty());
+}
+
 #[tokio::test]
 async fn sync_delta_reads_checkpoint_calls_wire_and_advances_checkpoint() {
     let fixture = Fixture::new("sync-delta-basic");
@@ -54,6 +114,59 @@ async fn sync_delta_reads_checkpoint_calls_wire_and_advances_checkpoint() {
     assert_eq!(calls[0].params["body"]["limit"], 50);
     assert_eq!(calls[0].params["body"]["device_id"], "device-a");
     assert_eq!(calls[0].params["body"]["reason"], "app_resumed");
+}
+
+#[tokio::test]
+async fn sync_delta_advances_past_v2_wire_without_persisting_private_objects() {
+    let fixture = Fixture::new("sync-delta-v2-private-wire");
+    let client = fixture.client();
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![delta_page(
+                vec![
+                    v2_message_event(
+                        "sev-p5",
+                        "1",
+                        "message.created",
+                        "wire-p5-secret",
+                        json!({
+                            "profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2
+                        }),
+                        false,
+                    ),
+                    v2_message_event(
+                        "sev-p6",
+                        "2",
+                        "conversation.updated",
+                        "wire-p6-secret",
+                        json!({
+                            "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2
+                        }),
+                        true,
+                    ),
+                ],
+                "2",
+                false,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 2);
+    assert_eq!(result.last_applied_event_seq.as_deref(), Some("2"));
+    assert_eq!(fixture.checkpoint().as_deref(), Some("2"));
+    assert_eq!(fixture.message_server_seq("wire-p5-secret"), None);
+    assert_eq!(fixture.message_server_seq("wire-p6-secret"), None);
 }
 
 #[tokio::test]
@@ -530,10 +643,11 @@ async fn sync_delta_has_more_duplicate_page_without_progress_is_invalid() {
 #[tokio::test]
 async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
     let fixture = Fixture::new("thread-after-direct");
+    let conversation_id = fixture.seed_verified_peer();
     let client = fixture.client();
     fixture.seed_message(
         "local-direct-newest",
-        "dm:did:example:bob",
+        &conversation_id,
         "",
         Some(42),
         "did:example:bob",
@@ -1209,6 +1323,53 @@ fn message_created_event(
                 "content": "hello from sync.delta",
                 "sent_at": "2026-06-27T00:00:00Z"
             }
+        }
+    })
+}
+
+fn v2_message_event(
+    event_id: &str,
+    event_seq: &str,
+    event_type: &str,
+    message_id: &str,
+    meta: Value,
+    json_rpc_shape: bool,
+) -> Value {
+    let private_message = if json_rpc_shape {
+        json!({
+            "id": message_id,
+            "params": {
+                "meta": meta,
+                "body": {"ciphertext_b64u": "PRIVATE-CIPHERTEXT"}
+            }
+        })
+    } else {
+        json!({
+            "id": message_id,
+            "meta": meta,
+            "body": {"ciphertext_b64u": "PRIVATE-CIPHERTEXT"}
+        })
+    };
+    let message_key = if event_type == "conversation.updated" {
+        "latest_message"
+    } else {
+        "message"
+    };
+    json!({
+        "event_id": event_id,
+        "event_seq": event_seq,
+        "event_type": event_type,
+        "aggregate_kind": "direct_message",
+        "aggregate_id": message_id,
+        "owner_subject_id": "did:example:alice",
+        "created_at": "2026-07-20T00:00:00Z",
+        "payload": {
+            "thread_kind": "direct",
+            "thread": {
+                "kind": "direct",
+                "peer_did": "did:example:bob"
+            },
+            (message_key): private_message
         }
     })
 }

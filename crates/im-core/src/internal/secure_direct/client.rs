@@ -546,11 +546,13 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
         bundle: &PrekeyBundle,
     ) -> crate::ImResult<DirectSecurePrekeyPublishRequest> {
         let one_time_prekeys = self.one_time_prekey_store()?.list_one_time_prekeys()?;
+        let operation_id = format!("op-publish-prekey-{}", operation_nonce_hex());
         let request = anp::direct_e2ee::prekey_bundle_publish_request(
             &self.prepared.owner_did,
             &self.prepared.local_service_did,
             bundle,
             &one_time_prekeys,
+            &operation_id,
         );
         direct_secure_request_method_params(request)
     }
@@ -888,6 +890,9 @@ mod tests {
         let calls = calls.borrow();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "direct.e2ee.publish_prekey_bundle");
+        let operation_id = calls[0].1["meta"]["operation_id"].as_str().unwrap();
+        assert!(operation_id.starts_with("op-publish-prekey-"));
+        assert_eq!(operation_id.len(), "op-publish-prekey-".len() + 32);
         let body = calls[0].1.get("body").and_then(Value::as_object).unwrap();
         assert!(body.get("prekey_bundle").is_some());
         assert_eq!(

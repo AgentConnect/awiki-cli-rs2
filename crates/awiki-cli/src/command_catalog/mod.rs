@@ -81,6 +81,7 @@ impl CommandAudience {
 pub enum CommandOwner {
     CliShell,
     ImCoreIdentity,
+    ImCoreOnboarding,
     ImCoreAuth,
     ImCoreDirectory,
     ImCoreMessages,
@@ -101,6 +102,7 @@ impl CommandOwner {
         match self {
             Self::CliShell => "cli_shell",
             Self::ImCoreIdentity => "im_core_identity",
+            Self::ImCoreOnboarding => "im_core_onboarding",
             Self::ImCoreAuth => "im_core_auth",
             Self::ImCoreDirectory => "im_core_directory",
             Self::ImCoreMessages => "im_core_messages",
@@ -387,6 +389,9 @@ pub fn cutover_status(raw: &str) -> CutoverStatus {
 pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "onboarding") {
+        return Some(CutoverStatus::ImCore);
+    }
     if is_one_of(
         name,
         &[
@@ -466,6 +471,9 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             phase: "future people search API",
         });
     }
+    if has_command_prefix(name, "id.device") {
+        return Some(CutoverStatus::ImCore);
+    }
     if is_one_of(
         name,
         &[
@@ -479,7 +487,6 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             "id.bind",
             "id.refresh-token",
             "id.resolve",
-            "id.recover",
             "id.list",
             "id.current",
             "id.use",
@@ -616,6 +623,9 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
 pub fn command_audience(raw: &str) -> CommandAudience {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "id.device") {
+        return CommandAudience::AdvancedUser;
+    }
     if is_one_of(
         name,
         &[
@@ -726,6 +736,9 @@ pub fn command_audience(raw: &str) -> CommandAudience {
 pub fn primary_owner(raw: &str) -> CommandOwner {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if has_command_prefix(name, "onboarding") {
+        return CommandOwner::ImCoreOnboarding;
+    }
     if has_any_command_prefix(name, &["debug.raw", "group.code"]) {
         return CommandOwner::ExternalUnsupported;
     }
@@ -811,6 +824,9 @@ pub fn secondary_owners(raw: &str) -> &'static [CommandOwner] {
 pub fn cli_shell_role(raw: &str) -> CliShellRole {
     let name = normalize_name(raw);
     let name = name.as_str();
+    if matches!(name, "id.device.join.approve" | "onboarding.claim") {
+        return CliShellRole::ParsesInputOnly;
+    }
     if name == "id.use" {
         return CliShellRole::WritesDefaultIdentityFile;
     }
@@ -818,7 +834,6 @@ pub fn cli_shell_role(raw: &str) -> CliShellRole {
         name,
         &[
             "id.register",
-            "id.recover",
             "id.vault.migrate",
             "id.vault.cleanup-plaintext",
             "id.replace-did",
@@ -1143,6 +1158,7 @@ fn default_surface_owner(owner: CommandOwner) -> bool {
         owner,
         CommandOwner::CliShell
             | CommandOwner::ImCoreIdentity
+            | CommandOwner::ImCoreOnboarding
             | CommandOwner::ImCoreAuth
             | CommandOwner::ImCoreDirectory
             | CommandOwner::ImCoreMessages
@@ -1220,6 +1236,17 @@ macro_rules! flag {
             deprecated: false,
         }
     };
+    ($name:expr, $ty:expr, $usage:expr, required, choices = [$($choice:expr),+ $(,)?]) => {
+        FlagSpec {
+            name: $name,
+            flag_type: $ty,
+            usage: $usage,
+            default: "",
+            required: true,
+            choices: &[$($choice),+],
+            deprecated: false,
+        }
+    };
     ($name:expr, $ty:expr, $usage:expr, deprecated) => {
         FlagSpec {
             name: $name,
@@ -1271,6 +1298,8 @@ fn default_specs() -> &'static [CommandSpec] {
         cmd!("version", "version", "Show build information", "phase1", "version"),
         CommandSpec { name: "upgrade", use_: "upgrade", short: "Check for newer awiki-cli versions and show upgrade hints", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "upgrade", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "init", use_: "init", short: "Initialize the awiki-cli workspace and config.yaml", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "init", side_effect: true, outputs: &["json", "pretty", "table"], flags: &[] },
+        CommandSpec { name: "onboarding", use_: "onboarding", short: "Claim an authorized Skill Agent identity", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "onboarding.claim", use_: "claim", short: "Claim a one-time Skill Agent registration", long: "Read exactly one one-time Token from stdin, verify its Controller and Agent Handle scope, create a new Skill Agent identity in an empty workspace, and send the fixed Controller greeting. The Token is never accepted as an argument or printed.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "onboarding.claim", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("service-base-url", "string", "Exact HTTPS User Service origin", required), flag!("expected-controller-handle", "string", "Controller full Handle copied from the authorized block", required), flag!("expected-agent-handle", "string", "Skill Agent full Handle copied from the authorized block", required), flag!("token-stdin", "bool", "Read the one-time Token from stdin", required)] },
         CommandSpec { name: "completion", use_: "completion", short: "Generate shell completion scripts", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "completion.bash", use_: "bash", short: "Generate Bash completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.bash", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "completion.zsh", use_: "zsh", short: "Generate Zsh completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.zsh", side_effect: false, outputs: &[], flags: &[] },
@@ -1298,11 +1327,24 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "id.bind", use_: "bind", short: "Bind phone or email to the current identity", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.bind", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("phone", "string", "Phone number to bind"), flag!("email", "string", "Email address to bind"), flag!("otp", "string", "Verification code"), flag!("wait", "bool", "Wait for email verification before completing the bind")] },
         CommandSpec { name: "id.refresh-token", use_: "refresh-token", short: "Refresh the stored JWT for an identity using DID auth", long: "Refresh the selected identity's stored JWT by calling did-auth.get_me with DID credentials and persisting the newly returned bearer token. This command intentionally bypasses the previously stored bearer token instead of deleting local auth state first.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.refresh-token", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "id.resolve", use_: "resolve", short: "Resolve a DID or handle", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.resolve", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("handle", "string", "Handle to resolve"), flag!("did", "string", "DID to resolve")] },
-        CommandSpec { name: "id.recover", use_: "recover", short: "Recover a handle with phone verification", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.recover", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("handle", "string", "Handle local part", required), flag!("phone", "string", "Recovery phone number", required), flag!("otp", "string", "Verification code")] },
         CommandSpec { name: "id.replace-did", use_: "replace-did", short: "Dangerously replace a handle DID with a new e1 DID", long: "Dangerous command: generates a new e1 DID and key material, replaces the selected handle identity's current DID through did-auth.replace_did, and rebinds local SQLite owner state. Select the target with the global --identity flag and run with --dry-run before executing.", aliases: &[], phase: "phase3", hidden: true, implemented: true, handler: "id.replace-did", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("is-public", "bool", "Override the public visibility flag"), flag!("is-agent", "bool", "Override the agent flag"), flag!("role", "string", "Override the role value; pass an empty string to clear it"), flag!("endpoint-url", "string", "Override the endpoint URL; pass an empty string to clear it")] },
         CommandSpec { name: "id.list", use_: "list", short: "List local identities", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.list", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "id.current", use_: "current", short: "Show the default identity", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.current", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "id.use", use_: "use <identity>", short: "Switch the default identity", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.use", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "id.device", use_: "device", short: "Inspect and authorize devices for one DID", long: "AWiki-local device management. These commands do not add AWiki-internal checkpoints or secrets to cross-domain ANP payloads.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "id.device.list", use_: "list", short: "List authorized devices", long: "Returns the authorized Device Registry projection without tokens, key material, pending Join requests, internal checkpoints, or document hashes.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.list", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
+        CommandSpec { name: "id.device.join", use_: "join", short: "Run the device Join flow", long: "Join state is restart-safe. Account verification grants are read only from AWIKI_ACCOUNT_VERIFICATION_TOKEN and are never accepted as command arguments or returned in output.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "id.device.join.sessions", use_: "sessions", short: "List restart-safe local Join sessions", long: "Lists only the safe host projection; transcript hashes, challenges, tokens, and private material stay internal.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.sessions", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
+        CommandSpec { name: "id.device.join.requests", use_: "requests", short: "List locally verified Join request notices", long: "Reads the local trusted notification projection. It does not list pending requests from User Service or start verification.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.requests", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
+        CommandSpec { name: "id.device.join.start", use_: "start", short: "Create a pending Join request as a new device", long: "Requires a short-lived AWIKI_ACCOUNT_VERIFICATION_TOKEN environment value. The verification grant is never accepted in argv or emitted.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.start", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("did", "string", "Existing account DID", required), flag!("operation-id", "string", "Caller idempotency operation id", required), flag!("ttl-seconds", "int", "Join session lifetime in seconds", default = "600")] },
+        CommandSpec { name: "id.device.join.poll", use_: "poll", short: "Advance and inspect the new-device Join session", long: "Polls only the new-device status endpoint. Management-device verification is notification-driven and never uses status polling.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.poll", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id", required)] },
+        CommandSpec { name: "id.device.join.verify", use_: "verify", short: "Start verification for a local Join request notice", long: "Explicitly starts verification once for the selected management identity. Opening or listing a request never performs this write.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.verify", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id from the local request notice", required), flag!("operation-id", "string", "Caller idempotency operation id", required), flag!("challenge-ttl-seconds", "int", "Challenge lifetime in seconds", default = "300")] },
+        CommandSpec { name: "id.device.join.approve", use_: "approve", short: "Interactively approve a verified device Join as a member", long: "Requires a foreground TTY. The user must type the locally derived SAS and APPROVE. The one-time approval handle is created and consumed in-process and never printed; the new device is always rootless member.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.approve", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id", required)] },
+        CommandSpec { name: "id.device.join.reject", use_: "reject", short: "Reject a local management-device Join request", long: "Rejects the selected request through the management identity. This is distinct from cancelling the new-device side. The reason is a closed protocol value.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.reject", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id", required), flag!("reason", "string", "Rejection reason", default = "user-rejected", choices = ["user-rejected", "sas-mismatch"])] },
+        CommandSpec { name: "id.device.join.cancel", use_: "cancel", short: "Cancel a new-device Join session", long: "Cancels only the local new-device side. Use reject from an authorized management device to reject a request.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.join.cancel", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("session", "string", "Join session id", required)] },
+        CommandSpec { name: "id.device.revoke", use_: "revoke", short: "Permanently revoke one other authorized device", long: "Requires AWIKI_MULTI_DEVICE_DEVICE_REVOKE_ENABLED=1 and a foreground TTY. Only a ready management device may revoke; self-revocation and revoking the last ready admin fail closed in Core. Output contains only DID, target device ID, and revoked status.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.revoke", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("device", "string", "Authorized target protocol device ID", required)] },
+        CommandSpec { name: "id.device.root-key", use_: "root-key", short: "Send the DID root key to an authorized member device", long: "This operation uses Core's exact-device preparation and never accepts or prints secret material.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "id.device.root-key.send", use_: "send", short: "Interactively send the DID root key to one joined member device", long: "Runs one foreground Core flow: prepare verifies the exact recipient and P5 readiness, the CLI displays the frozen safe recipient summary, the user types TRANSFER once, and confirm-and-send submits one standard P5 encrypted message. Core generates the message ID.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.device.root-key.send", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("device", "string", "Authorized recipient protocol device ID", required)] },
         CommandSpec { name: "id.profile", use_: "profile", short: "Read or update DID profile data", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "id.profile.get", use_: "get", short: "Get DID profile data", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.profile.get", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("self", "bool", "Read the active identity profile"), flag!("handle", "string", "Read a profile by handle"), flag!("did", "string", "Read a profile by DID")] },
         CommandSpec { name: "id.profile.set", use_: "set", short: "Update DID profile data", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.profile.set", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("display-name", "string", "Profile display name"), flag!("bio", "string", "Profile bio"), flag!("tags", "string", "Comma-separated tags"), flag!("markdown", "string", "Inline markdown body"), flag!("markdown-file", "string", "Markdown file path"), flag!("avatar-uri", "string", "Profile avatar URI"), flag!("avatar-url", "string", "Compatibility alias for --avatar-uri", deprecated)] },
@@ -1338,8 +1380,8 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "group.remove", use_: "remove", short: "Remove a member from a group", long: "", aliases: &["kick"], phase: "phase5", hidden: false, implemented: true, handler: "group.remove", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("member", "string", "Member DID or handle", required), flag!("reason", "string", "Removal reason"), flag!("secure", "string", "Group security requirement", default = "off", choices = ["off", "required"]), flag!("e2ee", "bool", "Alias for --secure required", deprecated)] },
         CommandSpec { name: "group.leave", use_: "leave", short: "Leave a group", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.leave", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("reason", "string", "Leave reason"), flag!("secure", "string", "Group security requirement", default = "off", choices = ["off", "required"]), flag!("e2ee", "bool", "Alias for --secure required", deprecated)] },
         CommandSpec { name: "group.update", use_: "update", short: "Update group profile or policy", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.update", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("name", "string", "New group display name"), flag!("description", "string", "New group description"), flag!("avatar-uri", "string", "New group avatar URI"), flag!("discoverability", "string", "Discoverability mode"), flag!("admission-mode", "string", "Admission mode"), flag!("slug", "string", "New group slug"), flag!("goal", "string", "New group goal"), flag!("rules", "string", "New group rules"), flag!("message-prompt", "string", "New group prompt"), flag!("doc-url", "string", "New group document URL"), flag!("attachments-allowed", "bool", "Allow attachments"), flag!("max-members", "string", "Maximum group members"), flag!("member-max-messages", "int", "Per-member message limit"), flag!("member-max-total-chars", "int", "Per-member total char limit")] },
-        CommandSpec { name: "group.list", use_: "list", short: "List groups joined by the active identity", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.list", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("limit", "int", "Maximum number of rows", default = "50")] },
-        CommandSpec { name: "group.members", use_: "members", short: "List active group members", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.members", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Group DID", required), flag!("limit", "int", "Maximum number of rows", default = "100")] },
+        CommandSpec { name: "group.list", use_: "list", short: "List groups joined by the active identity", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.list", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("limit", "int", "Maximum number of rows", default = "50"), flag!("cursor", "string", "Opaque cursor returned by the previous page")] },
+        CommandSpec { name: "group.members", use_: "members", short: "List active group members", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.members", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Group DID", required), flag!("limit", "int", "Maximum number of rows", default = "100"), flag!("cursor", "string", "Opaque cursor returned by the previous page")] },
         CommandSpec { name: "group.messages", use_: "messages", short: "List group messages", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.messages", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Group DID", required), flag!("limit", "int", "Maximum number of rows", default = "50"), flag!("cursor", "string", "Pagination cursor")] },
         CommandSpec { name: "group.secure", use_: "secure", short: "Group secure messaging commands", long: "", aliases: &[], phase: "phase6", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "group.secure.status", use_: "status", short: "Inspect group secure status", long: "", aliases: &[], phase: "phase6", hidden: false, implemented: true, handler: "group.secure.status", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Group DID", required)] },

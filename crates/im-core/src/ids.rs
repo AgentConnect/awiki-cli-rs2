@@ -1,7 +1,24 @@
 use serde::{Deserialize, Serialize};
 
+use base64::Engine;
+use rand::RngCore;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct IdentityId(String);
+
+/// Public cryptographic endpoint identifier carried by ANP device-aware Profiles.
+///
+/// This identifier is independent from the local vault context identifier and
+/// must never be derived from a hardware serial number or local storage scope.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ProtocolDeviceId(String);
+
+/// Local-only identifier binding encrypted SecretVault records to one runtime context.
+///
+/// It is not an ANP `device_id` and must never be serialized into a DID Document
+/// or cross-domain message.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct VaultContextDeviceId(String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Did(String);
@@ -37,6 +54,44 @@ pub struct PageLimit(pub u32);
 impl IdentityId {
     pub fn parse(input: impl AsRef<str>) -> crate::ImResult<Self> {
         parse_non_empty("identity_id", input).map(Self)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl ProtocolDeviceId {
+    pub fn parse(input: impl AsRef<str>) -> crate::ImResult<Self> {
+        let value = parse_non_empty("protocol_device_id", input)?;
+        if value == "default" {
+            return Err(crate::ImError::invalid_input(
+                Some("protocol_device_id".to_string()),
+                "protocol_device_id must not use the reserved legacy value default",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn generate() -> crate::ImResult<Self> {
+        let mut random = [0_u8; 16];
+        rand::rngs::OsRng
+            .try_fill_bytes(&mut random)
+            .map_err(|_| crate::ImError::Internal {
+                message: "secure protocol device id generation failed".to_owned(),
+            })?;
+        let value = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random);
+        Ok(Self(format!("dev-{value}")))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl VaultContextDeviceId {
+    pub fn parse(input: impl AsRef<str>) -> crate::ImResult<Self> {
+        parse_non_empty("vault_context_device_id", input).map(Self)
     }
 
     pub fn as_str(&self) -> &str {

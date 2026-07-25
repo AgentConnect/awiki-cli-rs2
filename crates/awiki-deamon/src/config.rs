@@ -675,7 +675,7 @@ mod tests {
             .path()
             .join("awiki-me")
             .join(".e2e")
-            .join("message-agent")
+            .join("personal-agent")
             .join("20260622-real")
             .join("daemon-state");
         let config = DaemonConfig::for_state_root(&root).unwrap();

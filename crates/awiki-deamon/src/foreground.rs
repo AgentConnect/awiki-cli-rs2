@@ -633,7 +633,8 @@ async fn process_realtime_event(
             )?;
             Ok(0)
         }
-        im_core::realtime::ImEvent::LocalNotification(_)
+        im_core::realtime::ImEvent::SystemNotificationChanged(_)
+        | im_core::realtime::ImEvent::LocalNotification(_)
         | im_core::realtime::ImEvent::HostNotification(_) => {
             state.insert_audit_event_json(
                 "daemon.realtime.notification.ignored",
@@ -1106,6 +1107,7 @@ async fn process_agent_group_inbox_once(
         .groups()
         .list_async(im_core::groups::GroupListRequest {
             limit: im_core::ids::PageLimit::new(50)?,
+            cursor: None,
         })
         .await
         .with_context(|| format!("list groups for agent {agent_did}"))?;

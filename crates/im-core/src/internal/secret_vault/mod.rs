@@ -14,8 +14,18 @@ pub struct SealSecretRequest {
     pub plaintext: SecretBytes,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SealIfAbsentResult {
+    Sealed(SecretRef),
+    AlreadyExists(SecretRef),
+}
+
 pub trait SecretVault {
     fn seal(&self, request: SealSecretRequest) -> crate::ImResult<SecretRef>;
+
+    /// Publishes a complete encrypted record only if its deterministic
+    /// `SecretRef` is absent. It must never replace an existing record.
+    fn seal_if_absent(&self, request: SealSecretRequest) -> crate::ImResult<SealIfAbsentResult>;
 
     fn open(&self, secret_ref: &SecretRef) -> crate::ImResult<SecretBytes>;
 
@@ -44,6 +54,16 @@ impl SecretVault for FileSecretVault {
     fn seal(&self, request: SealSecretRequest) -> crate::ImResult<SecretRef> {
         let record = crypto::seal_record(&self.root_key, request.metadata, &request.plaintext)?;
         self.store.put(&record)
+    }
+
+    fn seal_if_absent(&self, request: SealSecretRequest) -> crate::ImResult<SealIfAbsentResult> {
+        let record = crypto::seal_record(&self.root_key, request.metadata, &request.plaintext)?;
+        let (secret_ref, created) = self.store.put_if_absent(&record)?;
+        Ok(if created {
+            SealIfAbsentResult::Sealed(secret_ref)
+        } else {
+            SealIfAbsentResult::AlreadyExists(secret_ref)
+        })
     }
 
     fn open(&self, secret_ref: &SecretRef) -> crate::ImResult<SecretBytes> {
@@ -82,7 +102,7 @@ mod tests {
             .unwrap();
         let opened = vault.open(&secret_ref).unwrap();
 
-        assert_eq!(opened.expose_secret(), b"private-key-pem");
+        assert!(opened.expose_secret() == b"private-key-pem");
         assert_eq!(vault.list().unwrap(), vec![secret_ref.clone()]);
         vault.delete(&secret_ref).unwrap();
         assert!(vault.list().unwrap().is_empty());
@@ -107,6 +127,81 @@ mod tests {
         let err = vault.open(&secret_ref).unwrap_err();
 
         assert_eq!(err, crate::ImError::PermissionDenied);
+    }
+
+    #[test]
+    fn seal_if_absent_never_replaces_existing_record() {
+        let root = tempfile::tempdir().unwrap();
+        let vault = test_vault(root.path().join("vault"), [3_u8; 32]);
+        let first = vault
+            .seal_if_absent(SealSecretRequest {
+                metadata: test_metadata("workspace-a", "device-a"),
+                plaintext: SecretBytes::from_vec(b"first-private-value".to_vec()),
+            })
+            .unwrap();
+        let second = vault
+            .seal_if_absent(SealSecretRequest {
+                metadata: test_metadata("workspace-a", "device-a"),
+                plaintext: SecretBytes::from_vec(b"different-private-value".to_vec()),
+            })
+            .unwrap();
+        let (SealIfAbsentResult::Sealed(first_ref), SealIfAbsentResult::AlreadyExists(second_ref)) =
+            (first, second)
+        else {
+            panic!("first seal must win and second seal must observe the existing record");
+        };
+
+        assert_eq!(first_ref, second_ref);
+        let opened = vault.open(&first_ref).unwrap();
+        assert!(opened.expose_secret() == b"first-private-value");
+    }
+
+    #[test]
+    fn concurrent_seal_if_absent_has_exactly_one_winner() {
+        let root = tempfile::tempdir().unwrap();
+        let vault = std::sync::Arc::new(test_vault(root.path().join("vault"), [4_u8; 32]));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for value in [b"candidate-a".as_slice(), b"candidate-b"] {
+            let vault = vault.clone();
+            let barrier = barrier.clone();
+            let value = value.to_vec();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                vault.seal_if_absent(SealSecretRequest {
+                    metadata: test_metadata("workspace-a", "device-a"),
+                    plaintext: SecretBytes::from_vec(value),
+                })
+            }));
+        }
+        barrier.wait();
+        let results = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, SealIfAbsentResult::Sealed(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, SealIfAbsentResult::AlreadyExists(_)))
+                .count(),
+            1
+        );
+        let secret_ref = match &results[0] {
+            SealIfAbsentResult::Sealed(secret_ref)
+            | SealIfAbsentResult::AlreadyExists(secret_ref) => secret_ref,
+        };
+        let opened = vault.open(secret_ref).unwrap();
+        assert!(
+            opened.expose_secret() == b"candidate-a" || opened.expose_secret() == b"candidate-b"
+        );
     }
 
     #[test]

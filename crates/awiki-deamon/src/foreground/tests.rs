@@ -12,11 +12,11 @@ use crate::app_bridge::bootstrap::{
     encrypt_secure_bootstrap_payload_for_test, encrypt_secure_bootstrap_payload_for_test_with_hash,
     BootstrapProcessOutcome,
 };
-use crate::app_bridge::message_agent::EnsureAppMessageAgentOutcome;
 use crate::app_bridge::message_control::{
     handle_app_control_payload, is_app_control_payload, AppControlOutcome,
     IncomingAppControlPayload,
 };
+use crate::app_bridge::personal_agent::{ensure_app_personal_agent, EnsureAppPersonalAgentOutcome};
 use crate::commands::{
     handle_agent_payload_message, setup_daemon_agent, AgentCommandOutcome,
     IncomingAgentPayloadMessage, RuntimeAgentCreateOutcome,
@@ -248,12 +248,12 @@ fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
 
 fn expect_bootstrap_received(
     outcome: AppControlOutcome,
-) -> (BootstrapProcessOutcome, EnsureAppMessageAgentOutcome) {
+) -> (BootstrapProcessOutcome, EnsureAppPersonalAgentOutcome) {
     match outcome {
         AppControlOutcome::BootstrapReceived {
             bootstrap,
-            message_agent,
-        } => (bootstrap, message_agent),
+            personal_agent,
+        } => (bootstrap, personal_agent),
         other => panic!("expected bootstrap outcome, got {other:?}"),
     }
 }
@@ -404,7 +404,7 @@ fn bootstrap_payload_fixture() -> Value {
     json!({
         "schema": "awiki.daemon.bootstrap.v1",
         "bootstrap_id": "boot_1",
-        "idempotency_key": "message-agent-bootstrap:did:human:alice:app_1",
+        "idempotency_key": "personal-agent-bootstrap:did:human:alice:app_1",
         "app_instance_id": "app_1",
         "controller_did": "did:human:alice",
         "user_subkey_package": {
@@ -422,14 +422,14 @@ fn bootstrap_payload_fixture() -> Value {
                 "message.summarize_plain"
             ]
         },
-        "desired_message_agent": {
+        "desired_personal_agent": {
             "role": "app_message_handler",
             "runtime": "hermes",
             "runtime_provider": "hermes",
-            "runtime_profile": "message_agent",
-            "display_name": "Hermes Message Agent",
+            "runtime_profile": "personal_agent",
+            "display_name": "Hermes Personal Agent",
             "preferred_language": "zh-Hans",
-            "ensure_once_key": "app-message-agent:did:human:alice:app_1",
+            "ensure_once_key": "app-personal-agent:did:human:alice:app_1",
             "runtime_registration_token": "tok_runtime_secret_value"
         },
         "capability_policy": {
@@ -485,7 +485,7 @@ fn secure_bootstrap_payload_fixture_with_options(
     let aad = json!({
         "human_did": sender_human_did,
         "daemon_agent_did": envelope_recipient_daemon_did,
-        "binding_id": format!("app-message-agent:{sender_human_did}:app_1")
+        "binding_id": format!("app-personal-agent:{sender_human_did}:app_1")
     });
     if let Some(payload_sha256_override) = payload_sha256_override {
         encrypt_secure_bootstrap_payload_for_test_with_hash(
@@ -3139,20 +3139,20 @@ fn daemon_bootstrap_payload_is_system_control_and_persists_state() {
         },
     )
     .unwrap();
-    let (bootstrap, message_agent) = expect_bootstrap_received(outcome);
+    let (bootstrap, personal_agent) = expect_bootstrap_received(outcome);
     assert_eq!(bootstrap.status, "paired_key_received");
     assert!(!bootstrap.replayed);
-    assert!(message_agent.created_runtime_agent);
+    assert!(personal_agent.created_runtime_agent);
     assert_eq!(
-        message_agent.binding.binding_id,
-        "app-message-agent:did:human:alice:app_1"
+        personal_agent.binding.binding_id,
+        "app-personal-agent:did:human:alice:app_1"
     );
-    assert_eq!(message_agent.binding.role, "app_message_handler");
+    assert_eq!(personal_agent.binding.role, "app_message_handler");
     assert_eq!(
-        message_agent.binding.inbox_auth_verification_method,
+        personal_agent.binding.inbox_auth_verification_method,
         "did:human:alice#daemon-key-1"
     );
-    assert!(!message_agent
+    assert!(!personal_agent
         .binding
         .desired_agent_json
         .to_string()
@@ -3170,16 +3170,16 @@ fn daemon_bootstrap_payload_is_system_control_and_persists_state() {
     );
     assert!(!format!("{loaded:?}").contains("BEGIN PRIVATE KEY"));
     let binding = state
-        .load_active_app_message_agent_binding("did:human:alice", "app_1", "app_message_handler")
+        .load_active_app_personal_agent_binding("did:human:alice", "app_1", "app_message_handler")
         .unwrap()
         .unwrap();
     assert_eq!(
         binding.runtime_agent_did,
-        message_agent.binding.runtime_agent_did
+        personal_agent.binding.runtime_agent_did
     );
     assert_eq!(
         binding.runtime_profile_id,
-        message_agent.binding.runtime_profile_id
+        personal_agent.binding.runtime_profile_id
     );
     assert!(!state
         .audit_event_exists(
@@ -3189,9 +3189,93 @@ fn daemon_bootstrap_payload_is_system_control_and_persists_state() {
         )
         .unwrap());
     assert!(state
-        .load_secure_bootstrap_replay("message-agent-bootstrap:did:human:alice:app_1")
+        .load_secure_bootstrap_replay("personal-agent-bootstrap:did:human:alice:app_1")
         .unwrap()
         .is_some());
+}
+
+#[test]
+fn canonical_personal_agent_ensure_reuses_legacy_binding_id_without_new_runtime() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient;
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let inner_payload = bootstrap_payload_fixture();
+    write_bootstrap_did_document_cache(&config, &inner_payload);
+    let payload =
+        secure_bootstrap_payload_fixture(&state, &daemon.agent_did, inner_payload.clone());
+    let first = handle_app_control_payload(
+        &config,
+        &state,
+        &registration,
+        IncomingAppControlPayload {
+            message_id: "msg_bootstrap_before_legacy_migration".to_string(),
+            conversation_id: Some("direct:did:agent:daemon".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload,
+        },
+    )
+    .unwrap();
+    let (_, first_agent) = expect_bootstrap_received(first);
+    let runtime_agent_did = first_agent.binding.runtime_agent_did.clone();
+
+    state
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE app_personal_agent_binding SET binding_id = ?1 WHERE binding_id = ?2",
+            rusqlite::params![
+                "app-message-agent:did:human:alice:app_1",
+                "app-personal-agent:did:human:alice:app_1"
+            ],
+        )
+        .unwrap();
+    let identity = state
+        .load_user_delegated_identity("did:human:alice#daemon-key-1")
+        .unwrap()
+        .unwrap();
+    let mut desired = inner_payload["desired_personal_agent"].clone();
+    desired
+        .as_object_mut()
+        .unwrap()
+        .remove("runtime_registration_token");
+
+    let ensured = ensure_app_personal_agent(
+        &config,
+        &state,
+        &registration,
+        &daemon,
+        &identity,
+        &desired,
+        &inner_payload["capability_policy"],
+    )
+    .unwrap();
+
+    assert!(!ensured.created_runtime_agent);
+    assert_eq!(ensured.binding.runtime_agent_did, runtime_agent_did);
+    assert_eq!(
+        ensured.binding.binding_id,
+        "app-message-agent:did:human:alice:app_1"
+    );
+    let binding_count: i64 = state
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM app_personal_agent_binding",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(binding_count, 1);
 }
 
 #[test]
@@ -3315,10 +3399,68 @@ fn app_capabilities_and_action_result_are_system_control_payloads() {
     assert!(state
         .audit_event_exists("app.action.result.received", Some(&daemon.agent_did), None,)
         .unwrap());
+    let action_result_audit: String = state
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT COALESCE(detail_json, '') FROM audit_log \
+             WHERE event_type = 'app.action.result.received' \
+             ORDER BY created_at_ms DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(action_result_audit.contains("act_draft_1"));
+    assert!(!action_result_audit.contains("Looks good"));
+    assert!(!action_result_audit.contains("draft_text"));
 }
 
 #[test]
-fn daemon_secure_bootstrap_replay_reuses_message_agent() {
+fn app_action_result_from_non_controller_is_rejected_without_audit() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient;
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let result_payload = json!({
+        "schema": "awiki.app.action.result.v1",
+        "action_id": "act_draft_intruder",
+        "action": "message.create_draft",
+        "state": "succeeded",
+        "result": {"draft_text": "intruder text"}
+    });
+
+    let error = handle_app_control_payload(
+        &config,
+        &state,
+        &registration,
+        IncomingAppControlPayload {
+            message_id: "msg_app_action_result_intruder".to_string(),
+            conversation_id: Some("direct:did:agent:daemon".to_string()),
+            sender_did: "did:human:bob".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: result_payload,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("message sender is not the configured controller_did"));
+    assert!(!state
+        .audit_event_exists("app.action.result.received", Some(&daemon.agent_did), None,)
+        .unwrap());
+}
+
+#[test]
+fn daemon_secure_bootstrap_replay_reuses_personal_agent() {
     let (_root, config, state) = fixture();
     let registration = MockRegistrationClient;
     let daemon = setup_daemon_agent(
@@ -3393,7 +3535,7 @@ fn daemon_secure_bootstrap_replay_reuses_message_agent() {
     assert_eq!(runtime_count, 1);
     let binding_count: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM app_message_agent_binding",
+            "SELECT COUNT(*) FROM app_personal_agent_binding",
             [],
             |row| row.get(0),
         )
@@ -3403,7 +3545,7 @@ fn daemon_secure_bootstrap_replay_reuses_message_agent() {
         .query_row(
             r#"
 SELECT
-COALESCE((SELECT GROUP_CONCAT(desired_agent_json || ' ' || capability_policy_json, char(10)) FROM app_message_agent_binding), '')
+COALESCE((SELECT GROUP_CONCAT(desired_agent_json || ' ' || capability_policy_json, char(10)) FROM app_personal_agent_binding), '')
 || ' ' ||
 COALESCE((SELECT GROUP_CONCAT(outcome_json, char(10)) FROM runtime_agent_create_request), '')
 || ' ' ||
@@ -3648,7 +3790,7 @@ fn daemon_secure_bootstrap_rejects_nonce_replay_for_different_operation() {
     let mut second_inner_payload = bootstrap_payload_fixture();
     second_inner_payload["bootstrap_id"] = json!("boot_2");
     second_inner_payload["idempotency_key"] =
-        json!("message-agent-bootstrap:did:human:alice:app_1:second");
+        json!("personal-agent-bootstrap:did:human:alice:app_1:second");
     write_bootstrap_did_document_cache(&config, &second_inner_payload);
     let second_payload =
         secure_bootstrap_payload_fixture(&state, &daemon.agent_did, second_inner_payload);
@@ -3743,7 +3885,7 @@ fn daemon_secure_bootstrap_rejects_operation_replay_with_different_payload() {
 }
 
 #[test]
-fn app_message_agent_runtime_token_scope_is_limited_to_bound_user() {
+fn app_personal_agent_runtime_token_scope_is_limited_to_bound_user() {
     let (_root, config, state) = fixture();
     let registration = MockRegistrationClient;
     let daemon = setup_daemon_agent(
@@ -3772,7 +3914,7 @@ fn app_message_agent_runtime_token_scope_is_limited_to_bound_user() {
         },
     )
     .unwrap();
-    let (_bootstrap, message_agent) = expect_bootstrap_received(outcome);
+    let (_bootstrap, personal_agent) = expect_bootstrap_received(outcome);
 
     let outbox = MemoryRuntimeOutbox::default();
     let gateway = FakeHermesGateway::default();
@@ -3788,7 +3930,7 @@ fn app_message_agent_runtime_token_scope_is_limited_to_bound_user() {
             requester_full_handle: None,
             trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
             invocation_authority: RuntimeInvocationAuthority::Controller,
-            target_agent_did: message_agent.binding.runtime_agent_did.clone(),
+            target_agent_did: personal_agent.binding.runtime_agent_did.clone(),
             text: "message handler task".to_string(),
         },
         None,

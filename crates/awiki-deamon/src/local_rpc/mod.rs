@@ -148,7 +148,7 @@ pub fn execute_runtime_rpc_request_with_outbox(
             let message = RuntimeMessageSend::from_params(&request.params)?;
             let preliminary_context =
                 state.authorize_runtime_rpc_for_recipient_resolution(&token, &method)?;
-            ensure_message_agent_runtime_cannot_send(
+            ensure_personal_agent_runtime_cannot_send(
                 state,
                 &preliminary_context,
                 RpcMethod::MsgSend.as_str(),
@@ -176,7 +176,7 @@ pub fn execute_runtime_rpc_request_with_outbox(
         RpcMethod::SendAttachment => {
             let preliminary_context =
                 state.authorize_runtime_rpc_for_recipient_resolution(&token, &method)?;
-            ensure_message_agent_runtime_cannot_send(
+            ensure_personal_agent_runtime_cannot_send(
                 state,
                 &preliminary_context,
                 RpcMethod::SendAttachment.as_str(),
@@ -442,7 +442,7 @@ fn apply_attachment_send_side_effect(
     context: &AuthorizedRuntimeContext,
     attachment: &RuntimeAttachmentSend,
 ) -> Result<()> {
-    ensure_message_agent_runtime_cannot_send(state, context, RpcMethod::SendAttachment.as_str())?;
+    ensure_personal_agent_runtime_cannot_send(state, context, RpcMethod::SendAttachment.as_str())?;
     let (file_sha256, file_size_bytes) = attachment_file_audit(&attachment.file_path)?;
     let result = outbox.send_attachment(context, attachment);
     match result {
@@ -549,7 +549,7 @@ fn apply_msg_send_side_effect(
     context: &AuthorizedRuntimeContext,
     message: &RuntimeMessageSend,
 ) -> Result<()> {
-    ensure_message_agent_runtime_cannot_send(state, context, RpcMethod::MsgSend.as_str())?;
+    ensure_personal_agent_runtime_cannot_send(state, context, RpcMethod::MsgSend.as_str())?;
     let result = outbox.send_message(context, message);
     match result {
         Ok(send_result) => {
@@ -591,18 +591,18 @@ fn apply_msg_send_side_effect(
     }
 }
 
-fn ensure_message_agent_runtime_cannot_send(
+fn ensure_personal_agent_runtime_cannot_send(
     state: &DaemonState,
     context: &AuthorizedRuntimeContext,
     method: &str,
 ) -> Result<()> {
     let Some(binding) =
-        state.load_active_app_message_agent_binding_by_runtime(&context.agent_did)?
+        state.load_active_app_personal_agent_binding_by_runtime(&context.agent_did)?
     else {
         return Ok(());
     };
     state.insert_audit_event_json(
-        "runtime.message_agent_outbound_send.rejected",
+        "runtime.personal_agent_outbound_send.rejected",
         Some(&context.agent_did),
         Some(&context.runtime_profile_id),
         Some(&context.run_id),
@@ -610,10 +610,10 @@ fn ensure_message_agent_runtime_cannot_send(
         serde_json::json!({
             "binding_id": binding.binding_id,
             "method": method,
-            "reason": "message_agent_outbound_send_not_enabled",
+            "reason": "personal_agent_outbound_send_not_enabled",
         }),
     )?;
-    bail!("message agent outbound send is not enabled");
+    bail!("personal agent outbound send is not enabled");
 }
 
 impl From<AuthorizedRuntimeContext> for RuntimeRpcExecution {

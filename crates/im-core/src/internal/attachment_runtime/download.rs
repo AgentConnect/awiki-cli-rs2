@@ -75,7 +75,7 @@ where
             ));
         }
         let attachment_service = self.resolve_attachment_service(&selection.public.sender_did)?;
-        let ticket = self.get_download_ticket(&target, &selection.public, &attachment_service)?;
+        let ticket = self.get_download_ticket(&target, &selection, &attachment_service)?;
         let object = self
             .transport
             .get_attachment_object(&selection.public.object_uri, &ticket.download_ticket_b64u)?;
@@ -132,18 +132,31 @@ where
                 return Ok(selection);
             }
         }
-        crate::attachments::selection::find_internal_attachment_selection_with_paging(
-            |skip| self.fetch_page(target, skip),
-            requested_message_id,
-            requested_attachment_id,
-        )
+        let mut skip = 0_i64;
+        loop {
+            let (messages, has_more, consumed_count) = self.fetch_page(target, skip)?;
+            match crate::attachments::selection::find_internal_attachment_selection(
+                &messages,
+                requested_message_id,
+                requested_attachment_id,
+            ) {
+                Ok(selection) => return Ok(selection),
+                Err(crate::ImError::MessageNotFound { .. }) if has_more && consumed_count > 0 => {
+                    skip += consumed_count;
+                }
+                Err(crate::ImError::MessageNotFound { message_id }) => {
+                    return Err(crate::ImError::MessageNotFound { message_id });
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     fn fetch_page(
         &mut self,
         target: &DownloadTarget,
         skip: i64,
-    ) -> crate::ImResult<(Vec<Value>, bool)> {
+    ) -> crate::ImResult<(Vec<Value>, bool, i64)> {
         match target {
             DownloadTarget::Direct { peer_did } => {
                 let params = crate::internal::wire::history::build_history_rpc_params(
@@ -163,10 +176,12 @@ where
                     "direct.get_history",
                     params,
                 )?;
-                project_secure_direct_messages_for_download(self.client, &mut raw);
+                let consumed_count = values_from_array(raw.get("messages")).len() as i64;
+                project_secure_direct_messages_for_download(self.client, &mut raw, peer_did)?;
                 Ok((
                     values_from_array(raw.get("messages")),
                     bool_from_value(raw.get("has_more")),
+                    consumed_count,
                 ))
             }
             DownloadTarget::Group { group } => {
@@ -182,10 +197,12 @@ where
                     "group.list_messages",
                     params,
                 )?;
+                let consumed_count = values_from_array(raw.get("messages")).len() as i64;
                 project_group_e2ee_messages_for_download(self.client, &mut raw);
                 Ok((
                     values_from_array(raw.get("messages")),
                     bool_from_value(raw.get("has_more")),
+                    consumed_count,
                 ))
             }
         }
@@ -194,7 +211,7 @@ where
     fn resolve_attachment_service(
         &mut self,
         sender_did: &str,
-    ) -> crate::ImResult<crate::internal::discovery::attachment::DiscoveredAttachmentService> {
+    ) -> crate::ImResult<crate::internal::discovery::attachment::ProfiledAttachmentService> {
         let document = match crate::internal::discovery::did_document::resolve_did_document(
             &mut self.transport,
             sender_did,
@@ -204,7 +221,7 @@ where
                 local_identity_document(self.client, sender_did)?.ok_or(remote_error)?
             }
         };
-        crate::internal::discovery::attachment::select_attachment_rpc_service_from_document(
+        crate::internal::discovery::attachment::select_profiled_attachment_rpc_service_from_document(
             sender_did, &document,
         )
     }
@@ -212,24 +229,28 @@ where
     fn get_download_ticket(
         &mut self,
         target: &DownloadTarget,
-        selection: &crate::attachments::selection::AttachmentSelection,
-        attachment_service: &crate::internal::discovery::attachment::DiscoveredAttachmentService,
+        selection: &crate::attachments::selection::InternalAttachmentSelection,
+        attachment_service: &crate::internal::discovery::attachment::ProfiledAttachmentService,
     ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentDownloadTicketResult> {
         let group_did = match target {
             DownloadTarget::Direct { .. } => "",
             DownloadTarget::Group { group } => group.as_str(),
         };
+        let message_target_did =
+            original_direct_message_target_did(self.client.did().as_str(), target, selection);
         let params =
-            crate::internal::wire::attachment::build_attachment_download_ticket_rpc_params(
+            crate::internal::wire::attachment::build_attachment_download_ticket_rpc_params_with_profile_and_target(
                 self.client.did().as_str(),
-                &attachment_service.service_did,
-                &selection.sender_did,
-                &selection.message_id,
+                &attachment_service.service.service_did,
+                &selection.public.sender_did,
+                &selection.authorization_message_id,
+                message_target_did,
                 group_did,
-                selection,
+                &attachment_service.profile,
+                &selection.public,
             )?;
         let raw = self.transport.authenticated_rpc(
-            attachment_service.rpc_endpoint.as_str(),
+            MESSAGE_RPC_ENDPOINT,
             "attachment.get_download_ticket",
             params,
         )?;
@@ -278,7 +299,7 @@ where
             .resolve_attachment_service_async(&selection.public.sender_did)
             .await?;
         let ticket = self
-            .get_download_ticket_async(&target, &selection.public, &attachment_service)
+            .get_download_ticket_async(&target, &selection, &attachment_service)
             .await?;
         let object = self
             .transport
@@ -350,15 +371,15 @@ where
         }
         let mut skip = 0_i64;
         loop {
-            let (messages, has_more) = self.fetch_page_async(target, skip).await?;
+            let (messages, has_more, consumed_count) = self.fetch_page_async(target, skip).await?;
             match crate::attachments::selection::find_internal_attachment_selection(
                 &messages,
                 requested_message_id,
                 requested_attachment_id,
             ) {
                 Ok(selection) => return Ok(selection),
-                Err(crate::ImError::MessageNotFound { .. }) if has_more && !messages.is_empty() => {
-                    skip += messages.len() as i64;
+                Err(crate::ImError::MessageNotFound { .. }) if has_more && consumed_count > 0 => {
+                    skip += consumed_count;
                 }
                 Err(crate::ImError::MessageNotFound { message_id }) => {
                     return Err(crate::ImError::MessageNotFound { message_id });
@@ -372,7 +393,7 @@ where
         &mut self,
         target: &DownloadTarget,
         skip: i64,
-    ) -> crate::ImResult<(Vec<Value>, bool)> {
+    ) -> crate::ImResult<(Vec<Value>, bool, i64)> {
         match target {
             DownloadTarget::Direct { peer_did } => {
                 let params = crate::internal::wire::history::build_history_rpc_params(
@@ -391,10 +412,13 @@ where
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
                     .await?;
-                project_secure_direct_messages_for_download_async(self.client, &mut raw).await;
+                let consumed_count = values_from_array(raw.get("messages")).len() as i64;
+                project_secure_direct_messages_for_download_async(self.client, &mut raw, peer_did)
+                    .await?;
                 Ok((
                     values_from_array(raw.get("messages")),
                     bool_from_value(raw.get("has_more")),
+                    consumed_count,
                 ))
             }
             DownloadTarget::Group { group } => {
@@ -409,10 +433,12 @@ where
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)
                     .await?;
+                let consumed_count = values_from_array(raw.get("messages")).len() as i64;
                 project_group_e2ee_messages_for_download_async(self.client, &mut raw).await;
                 Ok((
                     values_from_array(raw.get("messages")),
                     bool_from_value(raw.get("has_more")),
+                    consumed_count,
                 ))
             }
         }
@@ -421,7 +447,7 @@ where
     async fn resolve_attachment_service_async(
         &mut self,
         sender_did: &str,
-    ) -> crate::ImResult<crate::internal::discovery::attachment::DiscoveredAttachmentService> {
+    ) -> crate::ImResult<crate::internal::discovery::attachment::ProfiledAttachmentService> {
         let document = match crate::internal::discovery::did_document::resolve_did_document_async(
             &mut self.transport,
             sender_did,
@@ -433,7 +459,7 @@ where
                 .await?
                 .ok_or(remote_error)?,
         };
-        crate::internal::discovery::attachment::select_attachment_rpc_service_from_document(
+        crate::internal::discovery::attachment::select_profiled_attachment_rpc_service_from_document(
             sender_did, &document,
         )
     }
@@ -441,26 +467,15 @@ where
     async fn get_download_ticket_async(
         &mut self,
         target: &DownloadTarget,
-        selection: &crate::attachments::selection::AttachmentSelection,
-        attachment_service: &crate::internal::discovery::attachment::DiscoveredAttachmentService,
+        selection: &crate::attachments::selection::InternalAttachmentSelection,
+        attachment_service: &crate::internal::discovery::attachment::ProfiledAttachmentService,
     ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentDownloadTicketResult> {
-        let group_did = match target {
-            DownloadTarget::Direct { .. } => "",
-            DownloadTarget::Group { group } => group.as_str(),
-        };
         let params =
-            crate::internal::wire::attachment::build_attachment_download_ticket_rpc_params(
-                self.client.did().as_str(),
-                &attachment_service.service_did,
-                &selection.sender_did,
-                &selection.message_id,
-                group_did,
-                selection,
-            )?;
+            self.build_download_ticket_rpc_params(target, selection, attachment_service)?;
         let raw = self
             .transport
             .authenticated_rpc(
-                attachment_service.rpc_endpoint.as_str(),
+                MESSAGE_RPC_ENDPOINT,
                 "attachment.get_download_ticket",
                 params,
             )
@@ -468,6 +483,58 @@ where
         serde_json::from_value(raw).map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),
         })
+    }
+
+    fn build_download_ticket_rpc_params(
+        &self,
+        target: &DownloadTarget,
+        selection: &crate::attachments::selection::InternalAttachmentSelection,
+        attachment_service: &crate::internal::discovery::attachment::ProfiledAttachmentService,
+    ) -> crate::ImResult<Value> {
+        let group_did = match target {
+            DownloadTarget::Direct { .. } => "",
+            DownloadTarget::Group { group } => group.as_str(),
+        };
+        let message_target_did =
+            original_direct_message_target_did(self.client.did().as_str(), target, selection);
+        crate::internal::wire::attachment::build_attachment_download_ticket_rpc_params_with_profile_and_target(
+            self.client.did().as_str(),
+            &attachment_service.service.service_did,
+            &selection.public.sender_did,
+            &selection.authorization_message_id,
+            message_target_did,
+            group_did,
+            &attachment_service.profile,
+            &selection.public,
+        )
+    }
+
+    #[cfg(feature = "internal-test-helpers")]
+    pub(crate) async fn build_download_ticket_rpc_params_for_system_test(
+        mut self,
+        input: AttachmentDownloadInput,
+    ) -> crate::ImResult<Value> {
+        let target = download_target(&input.request.thread, input.resolved_peer_did)?;
+        self.session_provider
+            .ensure_session(auth_scope(&target))
+            .await?;
+        let selection = self
+            .find_selection_async(
+                &target,
+                input.request.message_id.as_str(),
+                input.request.attachment_id.as_deref().unwrap_or_default(),
+            )
+            .await?;
+        if selection.public.sender_did.trim().is_empty() {
+            return Err(crate::ImError::invalid_input(
+                Some("sender_did".to_string()),
+                "attachment message sender_did is required",
+            ));
+        }
+        let attachment_service = self
+            .resolve_attachment_service_async(&selection.public.sender_did)
+            .await?;
+        self.build_download_ticket_rpc_params(&target, &selection, &attachment_service)
     }
 }
 
@@ -660,6 +727,24 @@ fn effective_message_security_profile(
     }
 }
 
+fn original_direct_message_target_did<'a>(
+    requester_did: &'a str,
+    target: &'a DownloadTarget,
+    selection: &'a crate::attachments::selection::InternalAttachmentSelection,
+) -> &'a str {
+    if !selection.message_target_did.trim().is_empty() {
+        return selection.message_target_did.trim();
+    }
+    match target {
+        DownloadTarget::Direct { peer_did }
+            if selection.public.sender_did.trim() == requester_did.trim() =>
+        {
+            peer_did.as_str()
+        }
+        DownloadTarget::Direct { .. } | DownloadTarget::Group { .. } => requester_did,
+    }
+}
+
 fn parse_optional_u64(value: &str, field: &str) -> crate::ImResult<Option<u64>> {
     let value = value.trim();
     if value.is_empty() {
@@ -679,40 +764,69 @@ fn attachment_service_error(code: &str, message: impl Into<String>) -> crate::Im
     }
 }
 
-fn project_secure_direct_messages_for_download(client: &crate::core::ImClient, raw: &mut Value) {
+fn project_secure_direct_messages_for_download(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    expected_peer_did: &str,
+) -> crate::ImResult<()> {
     #[cfg(all(feature = "sqlite", feature = "blocking"))]
-    {
+    let mut provenance = {
         let mut directory_transport = crate::internal::transport::CoreHttpTransport::new(client);
         crate::internal::message_runtime::read::project_secure_direct_messages_for_attachment_download(
-            client,
-            raw,
-            &mut directory_transport,
-        );
-    }
+                client,
+                raw,
+                &mut directory_transport,
+                expected_peer_did,
+            )
+    };
     #[cfg(not(all(feature = "sqlite", feature = "blocking")))]
-    {
-        let _ = (client, raw);
-    }
+    let mut provenance =
+        crate::internal::message_runtime::read::DirectP5ProjectionProvenance::default();
+    crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+        client,
+        raw,
+        expected_peer_did,
+        &mut provenance,
+    );
+    let projectable_count = values_from_array(raw.get("messages")).len();
+    crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+        raw,
+        projectable_count,
+    )?;
+    Ok(())
 }
 
 async fn project_secure_direct_messages_for_download_async(
     client: &crate::core::ImClient,
     raw: &mut Value,
-) {
+    expected_peer_did: &str,
+) -> crate::ImResult<()> {
     #[cfg(feature = "sqlite")]
-    {
+    let mut provenance = {
         let mut directory_transport = crate::internal::transport::CoreHttpTransport::new(client);
         crate::internal::message_runtime::read::project_secure_direct_messages_for_attachment_download_async(
-            client,
-            raw,
-            &mut directory_transport,
-        )
-        .await;
-    }
+                client,
+                raw,
+                &mut directory_transport,
+                expected_peer_did,
+            )
+            .await
+    };
     #[cfg(not(feature = "sqlite"))]
-    {
-        let _ = (client, raw);
-    }
+    let mut provenance =
+        crate::internal::message_runtime::read::DirectP5ProjectionProvenance::default();
+    crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+        client,
+        raw,
+        expected_peer_did,
+        &mut provenance,
+    );
+    let projectable_count = values_from_array(raw.get("messages")).len();
+    crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+        raw,
+        projectable_count,
+    )?;
+    Ok(())
 }
 
 fn project_group_e2ee_messages_for_download(client: &crate::core::ImClient, raw: &mut Value) {

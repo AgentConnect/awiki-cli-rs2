@@ -50,9 +50,19 @@ pub fn send_message_request(
 pub fn send_attachment_request(
     command: &ParsedCommand,
     default_domain: &str,
-) -> Result<(MessageTarget, AttachmentSendRequest, Vec<String>), ExitError> {
+) -> Result<
+    (
+        MessageTarget,
+        AttachmentSendRequest,
+        Option<MessageId>,
+        Vec<String>,
+    ),
+    ExitError,
+> {
     let target = message_target(command, default_domain)?;
     let (security, warnings) = message_security(command, &target)?;
+    let client_message_id = optional_message_id_flag(command, "client-message-id")?;
+    let idempotency_key = optional_string_flag(command, "idempotency-key");
     let file_path = string_flag(command, "file");
     if file_path.trim().is_empty() {
         return Err(ExitError::new(
@@ -76,9 +86,13 @@ pub fn send_attachment_request(
             mime_type: Some(string_flag(command, "mime-type"))
                 .filter(|value| !value.trim().is_empty()),
             filename: None,
-            delivery: MessageDeliveryOptions::default(),
+            delivery: MessageDeliveryOptions {
+                idempotency_key,
+                wait_for_final_acceptance: false,
+            },
             security,
         },
+        client_message_id,
         warnings,
     ))
 }
@@ -242,12 +256,18 @@ pub fn send_attachment_via_im_core(
     client: &im_core::ImClient,
     target: MessageTarget,
     request: AttachmentSendRequest,
+    client_message_id: Option<MessageId>,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    let result = client
-        .attachments()
-        .send(target, request)
-        .map_err(im_error_to_message_error)?;
+    let result = match client_message_id {
+        Some(client_message_id) => {
+            client
+                .attachments()
+                .send_with_client_message_id(target, request, client_message_id)
+        }
+        None => client.attachments().send(target, request),
+    }
+    .map_err(im_error_to_message_error)?;
     match &result.message.message.thread {
         ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
             let target = direct_target_from_attachment_result(&result);
@@ -264,13 +284,19 @@ pub async fn send_attachment_via_im_core_async(
     client: &im_core::ImClient,
     target: MessageTarget,
     request: AttachmentSendRequest,
+    client_message_id: Option<MessageId>,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    let result = client
-        .attachments()
-        .send_async(target, request)
-        .await
-        .map_err(im_error_to_message_error)?;
+    let result = match client_message_id {
+        Some(client_message_id) => {
+            client
+                .attachments()
+                .send_with_client_message_id_async(target, request, client_message_id)
+                .await
+        }
+        None => client.attachments().send_async(target, request).await,
+    }
+    .map_err(im_error_to_message_error)?;
     match &result.message.message.thread {
         ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
             let target = direct_target_from_attachment_result(&result);
@@ -1608,6 +1634,10 @@ fn message_bool_attribute(attributes: &[MessageMetadataAttribute], key: &str) ->
     })
 }
 
+fn message_u64_attribute(attributes: &[MessageMetadataAttribute], key: &str) -> Option<u64> {
+    message_attribute(attributes, key).and_then(|value| value.trim().parse().ok())
+}
+
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 struct DirectSendResult {
     #[serde(default)]
@@ -1624,6 +1654,16 @@ struct DirectSendResult {
     final_acceptance: bool,
     #[serde(default)]
     delivery_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attempted_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previously_accepted_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    newly_accepted_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accepted_device_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failed_device_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -1667,6 +1707,26 @@ impl DirectSendResult {
             )
             .unwrap_or(matches!(result.delivery, DeliveryState::Sent)),
             delivery_state: delivery_state_label(result),
+            attempted_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "attempted_device_count",
+            ),
+            previously_accepted_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "previously_accepted_device_count",
+            ),
+            newly_accepted_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "newly_accepted_device_count",
+            ),
+            accepted_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "accepted_device_count",
+            ),
+            failed_device_count: message_u64_attribute(
+                &result.message.metadata.attributes,
+                "failed_device_count",
+            ),
         }
     }
 }
@@ -1881,16 +1941,27 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
             message,
             ..
         } => {
+            let status_code = status_code.unwrap_or_default();
+            let public_code = code
+                .as_deref()
+                .filter(|value| super::error::is_public_service_code(value))
+                .map(str::to_owned);
+            if !matches!(status_code, 401 | 403) {
+                if let Some(public_code) = public_code {
+                    return MessageAdapterError::PublicServiceCode(public_code);
+                }
+            }
             let rpc_code = code
+                .as_deref()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or_default();
             if group_e2ee_service_unsupported(rpc_code, &message) {
                 return MessageAdapterError::GroupNotSupported;
             }
             MessageAdapterError::Service(ServiceError {
-                status_code: status_code.unwrap_or_default(),
+                status_code,
                 rpc_code,
-                message,
+                message: "remote service request failed".to_owned(),
                 data: None,
             })
         }

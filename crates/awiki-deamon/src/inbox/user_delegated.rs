@@ -12,14 +12,16 @@ use im_core::vault::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::fs;
 
 use crate::app_bridge::action::{APP_ACTION_RESULT_SCHEMA, APP_ACTION_SCHEMA, MVP_ALLOWED_ACTIONS};
 use crate::app_bridge::bootstrap::{
     validate_user_delegated_identity_against_did_document, BootstrapDidDocumentResolver,
     DefaultBootstrapDidDocumentResolver,
 };
-use crate::app_bridge::message_agent::APP_MESSAGE_HANDLER_ROLE;
+use crate::app_bridge::personal_agent::{
+    APP_MESSAGE_HANDLER_ROLE, APP_PERSONAL_AGENT_STATUS_ACTIVE, APP_PERSONAL_AGENT_STATUS_ENSURING,
+    APP_PERSONAL_AGENT_STATUS_READY,
+};
 use crate::app_bridge::secret_store::normalize_delegated_private_key_pem;
 use crate::im_core_adapter::ImCoreAdapter;
 use crate::outbox::{
@@ -35,7 +37,7 @@ use crate::runtime::{
 };
 use crate::security::runtime_token::current_time_millis;
 use crate::state::{
-    AppMessageAgentBindingRecord, AuthorizedRuntimeContext, DaemonState, InboxCursorRecord,
+    AppPersonalAgentBindingRecord, AuthorizedRuntimeContext, DaemonState, InboxCursorRecord,
     MessageEventRecord, MessageSyncOutboxRecord, ProcessedMessageRecord,
     UserDelegatedIdentityRecord,
 };
@@ -117,7 +119,7 @@ pub trait UserDelegatedInboxClient {
     fn fetch_user_delegated_inbox(
         &self,
         identity: &UserDelegatedIdentityRecord,
-        binding: &AppMessageAgentBindingRecord,
+        binding: &AppPersonalAgentBindingRecord,
         cursor: Option<&str>,
         limit: u32,
     ) -> Result<DelegatedInboxPage>;
@@ -126,7 +128,7 @@ pub trait UserDelegatedInboxClient {
 pub trait UserDelegatedMessageDispatcher {
     fn dispatch_user_message(
         &self,
-        binding: &AppMessageAgentBindingRecord,
+        binding: &AppPersonalAgentBindingRecord,
         task: RuntimeTask,
         envelope: &UserMessageEnvelope,
     ) -> Result<()>;
@@ -135,7 +137,7 @@ pub trait UserDelegatedMessageDispatcher {
 pub trait MessageSyncPayloadSender {
     fn send_message_sync_payload(
         &self,
-        binding: &AppMessageAgentBindingRecord,
+        binding: &AppPersonalAgentBindingRecord,
         idempotency_key: &str,
         payload: Value,
     ) -> Result<Option<String>>;
@@ -164,7 +166,7 @@ impl<'a> ImCoreMessageSyncPayloadSender<'a> {
 impl MessageSyncPayloadSender for ImCoreMessageSyncPayloadSender<'_> {
     fn send_message_sync_payload(
         &self,
-        binding: &AppMessageAgentBindingRecord,
+        binding: &AppPersonalAgentBindingRecord,
         idempotency_key: &str,
         payload: Value,
     ) -> Result<Option<String>> {
@@ -213,7 +215,7 @@ impl<'a> RuntimeHostMessageDispatcher<'a> {
 impl UserDelegatedMessageDispatcher for RuntimeHostMessageDispatcher<'_> {
     fn dispatch_user_message(
         &self,
-        _binding: &AppMessageAgentBindingRecord,
+        _binding: &AppPersonalAgentBindingRecord,
         task: RuntimeTask,
         _envelope: &UserMessageEnvelope,
     ) -> Result<()> {
@@ -301,7 +303,7 @@ impl UserDelegatedInboxClient for ImCoreDelegatedInboxClient<'_> {
     fn fetch_user_delegated_inbox(
         &self,
         identity: &UserDelegatedIdentityRecord,
-        binding: &AppMessageAgentBindingRecord,
+        binding: &AppPersonalAgentBindingRecord,
         cursor: Option<&str>,
         limit: u32,
     ) -> Result<DelegatedInboxPage> {
@@ -319,19 +321,14 @@ impl UserDelegatedInboxClient for ImCoreDelegatedInboxClient<'_> {
             &did_document,
             time::OffsetDateTime::now_utc(),
         )?;
-        let key_ref = ensure_delegated_inbox_key_ref(self.config, identity)?;
-        ensure_delegated_inbox_did_shadow(self.config, identity)?;
-        let client = self.im_core.client_for_did(&identity.user_did)?;
-        let auth_status = client
-            .auth()
-            .status()
-            .context("inspect delegated inbox auth session")?;
-        if !auth_status.has_session || auth_status.needs_refresh {
-            client
-                .auth()
-                .refresh_session()
-                .context("refresh delegated inbox auth session")?;
-        }
+        let private_key_pem = normalize_delegated_private_key_pem(&identity.private_key_material)?;
+        let key_ref = ensure_delegated_inbox_key_ref(self.config, identity, &private_key_pem)?;
+        let client = self.im_core.client_for_delegated_signing_identity(
+            delegated_identity_alias(&identity.user_did),
+            identity.user_did.clone(),
+            minimal_user_did_document(identity),
+            private_key_pem,
+        )?;
         let page = client.messages().inbox_with_metadata(InboxQuery {
             scope: InboxScope::All,
             limit: im_core::ids::PageLimit::new(limit)?,
@@ -375,7 +372,7 @@ impl<'a> UserDelegatedRuntimeOutbox<'a> {
     ) -> Result<RuntimeMessageSendResult> {
         let binding = self
             .state
-            .load_active_app_message_agent_binding_by_runtime(&context.agent_did)?
+            .load_active_app_personal_agent_binding_by_runtime(&context.agent_did)?
             .with_context(|| {
                 format!(
                     "missing app message binding for runtime final outbox {}",
@@ -536,10 +533,10 @@ impl RuntimeOutbox for UserDelegatedRuntimeOutbox<'_> {
             json!({
                 "target_kind": message.target_kind(),
                 "security": message.security.as_str(),
-                "reason": "user_delegated_message_agent_outbound_send_not_enabled_in_step_05",
+                "reason": "user_delegated_personal_agent_outbound_send_not_enabled_in_step_05",
             }),
         )?;
-        bail!("user delegated message agent outbound send is not enabled in Step 05")
+        bail!("user delegated personal agent outbound send is not enabled in Step 05")
     }
 
     fn send_attachment(
@@ -554,10 +551,10 @@ impl RuntimeOutbox for UserDelegatedRuntimeOutbox<'_> {
             Some(&context.run_id),
             Some(&context.token_id),
             json!({
-                "reason": "user_delegated_message_agent_attachment_send_not_enabled_in_step_05",
+                "reason": "user_delegated_personal_agent_attachment_send_not_enabled_in_step_05",
             }),
         )?;
-        bail!("user delegated message agent attachment send is not enabled in Step 05")
+        bail!("user delegated personal agent attachment send is not enabled in Step 05")
     }
 }
 
@@ -571,7 +568,7 @@ fn queue_runtime_status_sync(
     metadata: Option<&Value>,
 ) -> Result<()> {
     let binding = state
-        .load_active_app_message_agent_binding_by_runtime(&context.agent_did)?
+        .load_active_app_personal_agent_binding_by_runtime(&context.agent_did)?
         .with_context(|| {
             format!(
                 "missing app message binding for runtime status {}",
@@ -628,7 +625,7 @@ fn queue_runtime_final_sync(
     text: Option<&str>,
 ) -> Result<()> {
     let binding = state
-        .load_active_app_message_agent_binding_by_runtime(&context.agent_did)?
+        .load_active_app_personal_agent_binding_by_runtime(&context.agent_did)?
         .with_context(|| {
             format!(
                 "missing app message binding for runtime final {}",
@@ -742,7 +739,7 @@ where
             continue;
         }
         let binding = state
-            .load_active_app_message_agent_binding(
+            .load_active_app_personal_agent_binding(
                 &record.owner_did,
                 &record.app_instance_id,
                 APP_MESSAGE_HANDLER_ROLE,
@@ -866,7 +863,7 @@ where
 {
     let mut processed = 0usize;
     for binding in state
-        .list_active_app_message_agent_bindings()?
+        .list_active_app_personal_agent_bindings()?
         .into_iter()
         .filter(|binding| binding.role == APP_MESSAGE_HANDLER_ROLE)
     {
@@ -900,13 +897,30 @@ pub fn process_user_delegated_inbox_for_binding<C, D>(
     state: &DaemonState,
     client: &C,
     dispatcher: &D,
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
 ) -> Result<ProcessUserDelegatedInboxOutcome>
 where
     C: UserDelegatedInboxClient,
     D: UserDelegatedMessageDispatcher,
 {
     binding.validate()?;
+    if !binding_is_active_for_inbox_processing(binding) {
+        state.insert_audit_event_json(
+            "user_delegated_inbox.sync.skipped_inactive_binding",
+            Some(&binding.daemon_agent_did),
+            Some(&binding.runtime_profile_id),
+            None,
+            None,
+            json!({
+                "binding_id": binding.binding_id,
+                "user_did": binding.user_did,
+                "app_instance_id": binding.app_instance_id,
+                "status": binding.status,
+                "revoked": binding.revoked_at_ms.is_some(),
+            }),
+        )?;
+        return Ok(empty_inbox_outcome(binding));
+    }
     let identity = state
         .load_user_delegated_identity(&binding.inbox_auth_verification_method)?
         .with_context(|| {
@@ -985,7 +999,7 @@ fn processed_message_is_terminal(
 fn process_user_delegated_message_for_binding<D>(
     state: &DaemonState,
     dispatcher: &D,
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     message: &Message,
 ) -> Result<DelegatedMessageProcessOutcome>
 where
@@ -1057,7 +1071,7 @@ where
 
 fn process_app_recovery_control_message(
     state: &DaemonState,
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     message: &Message,
 ) -> Result<DelegatedMessageProcessOutcome> {
     let source_message_id = message.id.as_str().to_string();
@@ -1085,7 +1099,7 @@ fn process_app_recovery_control_message(
 
 fn process_unsupported_message_for_binding(
     state: &DaemonState,
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     message: &Message,
 ) -> Result<DelegatedMessageProcessOutcome> {
     let source_message_id = message.id.as_str().to_string();
@@ -1115,7 +1129,7 @@ fn process_unsupported_message_for_binding(
 }
 
 fn processing_record(
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     message_id: &str,
     schema: &str,
 ) -> ProcessedMessageRecord {
@@ -1129,7 +1143,7 @@ fn processing_record(
 }
 
 fn user_message_envelope(
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     message: &Message,
     dispatch_content: AgentDispatchContent,
 ) -> Result<UserMessageEnvelope> {
@@ -1160,7 +1174,7 @@ fn user_message_envelope(
 
 fn runtime_task_from_envelope(
     state: &DaemonState,
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     envelope: &UserMessageEnvelope,
 ) -> Result<RuntimeTask> {
     let profile = state.load_runtime_agent_profile(&binding.runtime_agent_did)?;
@@ -1218,7 +1232,7 @@ fn runtime_task_from_envelope(
 }
 
 fn message_event_from_envelope(
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     message: &Message,
     envelope: &UserMessageEnvelope,
 ) -> Result<MessageEventRecord> {
@@ -1245,7 +1259,7 @@ fn message_event_from_envelope(
 }
 
 fn ignored_e2ee_event(
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     message: &Message,
 ) -> Result<MessageEventRecord> {
     let message_id = message.id.as_str().to_string();
@@ -1271,7 +1285,7 @@ fn ignored_e2ee_event(
 }
 
 fn unsupported_message_event(
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     message: &Message,
     reason: &str,
 ) -> Result<MessageEventRecord> {
@@ -1298,7 +1312,7 @@ fn unsupported_message_event(
 }
 
 fn message_sync_outbox_record(
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     envelope: &UserMessageEnvelope,
 ) -> Result<MessageSyncOutboxRecord> {
     Ok(MessageSyncOutboxRecord {
@@ -1330,7 +1344,7 @@ fn message_sync_outbox_record(
 }
 
 fn unsupported_message_sync_outbox_record(
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     message: &Message,
     reason: &str,
 ) -> Result<MessageSyncOutboxRecord> {
@@ -1362,7 +1376,7 @@ fn unsupported_message_sync_outbox_record(
 }
 
 fn dispatch_content_for_agent(
-    _binding: &AppMessageAgentBindingRecord,
+    _binding: &AppPersonalAgentBindingRecord,
     message: &Message,
 ) -> Option<AgentDispatchContent> {
     if is_group_message(message) {
@@ -1385,7 +1399,7 @@ fn dispatch_content_for_agent(
 }
 
 fn processed_message_id_for_dispatch(
-    _binding: &AppMessageAgentBindingRecord,
+    _binding: &AppPersonalAgentBindingRecord,
     source_message_id: &str,
     _dispatch_content: &AgentDispatchContent,
 ) -> String {
@@ -1397,7 +1411,7 @@ fn is_group_message(message: &Message) -> bool {
 }
 
 fn message_sync_idempotency_key(
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     source_message_id: &str,
 ) -> String {
     format!(
@@ -1408,13 +1422,38 @@ fn message_sync_idempotency_key(
     )
 }
 
-fn inbox_scope_for_binding(binding: &AppMessageAgentBindingRecord) -> String {
+fn inbox_scope_for_binding(binding: &AppPersonalAgentBindingRecord) -> String {
     format!(
         "{}:binding:{}:runtime:{}",
         DEFAULT_SCOPE,
         stable_id_suffix(&binding.binding_id),
         stable_id_suffix(&binding.runtime_agent_did),
     )
+}
+
+fn binding_is_active_for_inbox_processing(binding: &AppPersonalAgentBindingRecord) -> bool {
+    binding.revoked_at_ms.is_none()
+        && matches!(
+            binding.status.as_str(),
+            APP_PERSONAL_AGENT_STATUS_READY
+                | APP_PERSONAL_AGENT_STATUS_ACTIVE
+                | APP_PERSONAL_AGENT_STATUS_ENSURING
+        )
+}
+
+fn empty_inbox_outcome(
+    binding: &AppPersonalAgentBindingRecord,
+) -> ProcessUserDelegatedInboxOutcome {
+    ProcessUserDelegatedInboxOutcome {
+        binding_id: binding.binding_id.clone(),
+        fetched_messages: 0,
+        dispatched_messages: 0,
+        ignored_e2ee_messages: 0,
+        skipped_app_control_messages: 0,
+        skipped_unsupported_messages: 0,
+        skipped_processed_messages: 0,
+        next_cursor: None,
+    }
 }
 
 fn is_system_control_payload(payload: &Value) -> bool {
@@ -1425,7 +1464,7 @@ fn is_system_control_payload(payload: &Value) -> bool {
 }
 
 fn is_bound_agent_control_message(
-    binding: &AppMessageAgentBindingRecord,
+    binding: &AppPersonalAgentBindingRecord,
     message: &Message,
 ) -> bool {
     let sender = message.sender.as_str();
@@ -1505,7 +1544,7 @@ fn conversation_id(message: &Message) -> Option<String> {
     }
 }
 
-fn allowed_actions(binding: &AppMessageAgentBindingRecord) -> Vec<String> {
+fn allowed_actions(binding: &AppPersonalAgentBindingRecord) -> Vec<String> {
     let has_explicit_capability_policy = binding
         .capability_policy_json
         .get("schema")
@@ -1543,8 +1582,8 @@ fn allowed_actions(binding: &AppMessageAgentBindingRecord) -> Vec<String> {
 fn ensure_delegated_inbox_key_ref(
     config: &DaemonConfig,
     identity: &UserDelegatedIdentityRecord,
+    private_key_pem: &str,
 ) -> Result<String> {
-    let private_key_pem = normalize_delegated_private_key_pem(&identity.private_key_material)?;
     let vault = im_core_file_vault(config)?;
     let secret_ref = vault
         .seal(SealSecretRequest {
@@ -1568,51 +1607,6 @@ fn ensure_delegated_inbox_key_ref(
         bail!("delegated inbox key_ref vault verification failed");
     }
     Ok(im_core::vault::encode_delegated_key_ref(&secret_ref)?)
-}
-
-fn ensure_delegated_inbox_did_shadow(
-    config: &DaemonConfig,
-    identity: &UserDelegatedIdentityRecord,
-) -> Result<()> {
-    let alias = delegated_identity_alias(&identity.user_did);
-    let identity_dir = config.identity_root_dir.join(&alias);
-    fs::create_dir_all(&identity_dir)?;
-    let did_document_path = identity_dir.join("did.json");
-    fs::write(
-        &did_document_path,
-        serde_json::to_vec_pretty(&minimal_user_did_document(identity))?,
-    )?;
-    let mut registry = read_identity_registry(config)?;
-    let identities = registry
-        .as_object_mut()
-        .and_then(|object| object.get_mut("identities"))
-        .and_then(Value::as_array_mut)
-        .context("identity registry must contain identities array")?;
-    let exists = identities.iter().any(|entry| {
-        entry
-            .get("did")
-            .and_then(Value::as_str)
-            .is_some_and(|did| did == identity.user_did)
-    });
-    if !exists {
-        identities.push(json!({
-            "id": alias,
-            "did": identity.user_did,
-            "dir_name": alias,
-            "local_alias": alias,
-            "ready_for_auth": true,
-            "ready_for_messaging": true,
-            "missing": []
-        }));
-        if let Some(parent) = config.identity_registry_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(
-            &config.identity_registry_path,
-            serde_json::to_vec_pretty(&registry)?,
-        )?;
-    }
-    Ok(())
 }
 
 fn im_core_file_vault(config: &DaemonConfig) -> Result<FileSecretVault> {
@@ -1663,24 +1657,6 @@ fn parse_im_core_vault_root_key(raw: &str) -> Result<DeviceVaultRootKey> {
 
 fn im_core_vault_root_key_env() -> &'static str {
     "AWIKI_IM_CORE_VAULT_ROOT_KEY_B64"
-}
-
-fn read_identity_registry(config: &DaemonConfig) -> Result<Value> {
-    if !config.identity_registry_path.exists() {
-        return Ok(json!({
-            "default_identity": "",
-            "identities": []
-        }));
-    }
-    let raw = fs::read(&config.identity_registry_path)?;
-    let mut value: Value = serde_json::from_slice(&raw)?;
-    if !value.is_object() {
-        value = json!({});
-    }
-    if value.get("identities").is_none() {
-        value["identities"] = json!([]);
-    }
-    Ok(value)
 }
 
 fn minimal_user_did_document(identity: &UserDelegatedIdentityRecord) -> Value {

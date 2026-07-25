@@ -14,6 +14,63 @@ use std::collections::VecDeque;
 use super::*;
 
 #[test]
+fn realtime_v2_product_recognition_is_profile_and_method_scoped() {
+    let p5 = json!({
+        "method": "direct.incoming",
+        "params": {"meta": {"profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2}}
+    });
+    let p6_message = json!({
+        "method": "group.incoming",
+        "params": {"meta": {"profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2}}
+    });
+    let p6_notice = json!({
+        "method": anp::group_e2ee::METHOD_GROUP_NOTICE_V2,
+        "params": {"meta": {"profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2}}
+    });
+
+    assert!(is_p5_v2_realtime_candidate(&p5));
+    assert!(is_p6_v2_realtime_candidate(&p6_message));
+    assert!(is_p6_v2_realtime_candidate(&p6_notice));
+
+    let mut wrong_method = p5.clone();
+    wrong_method["method"] = json!("direct.other");
+    assert!(!is_p5_v2_realtime_candidate(&wrong_method));
+
+    let mut wrong_profile = p6_message;
+    wrong_profile["params"]["meta"]["profile"] = json!("anp.group.e2ee.v1");
+    assert!(!is_p6_v2_realtime_candidate(&wrong_profile));
+}
+
+#[test]
+#[cfg(all(feature = "blocking", feature = "group-e2ee"))]
+fn realtime_unknown_group_notice_is_hidden_without_leaking_control_material() {
+    let fixture = TestClientFixture::new("unknown-p6-control");
+    let client = fixture.client();
+    let notification = json!({
+        "method": anp::group_e2ee::METHOD_GROUP_NOTICE_V2,
+        "params": {
+            "meta": {"profile": "anp.group.e2ee.unknown"},
+            "body": {"welcome_b64u": "SECRET-UNKNOWN-WELCOME"}
+        }
+    });
+    let mut warnings = Vec::new();
+
+    let projected = normalize_group_e2ee_realtime_notification_async_first(
+        &client,
+        None,
+        notification,
+        &mut warnings,
+    );
+
+    assert!(projected.is_none());
+    assert_eq!(
+        warnings,
+        vec!["unknown group E2EE control notice was rejected"]
+    );
+    assert!(!format!("{warnings:?}").contains("SECRET-UNKNOWN-WELCOME"));
+}
+
+#[test]
 #[cfg(feature = "blocking")]
 fn realtime_local_state_projector_stores_direct_message_and_contact() {
     let fixture = TestClientFixture::new("direct");
@@ -553,7 +610,6 @@ async fn realtime_async_projector_replays_pending_direct_cipher_after_init() {
     assert_eq!(saved_session.recv_n, 2);
     db.shutdown().await.unwrap();
 }
-
 #[cfg(feature = "group-e2ee")]
 #[tokio::test]
 async fn realtime_async_projector_uses_async_group_e2ee_normalizer() {
@@ -676,6 +732,29 @@ async fn realtime_async_runner_uses_tokio_channels_and_status_watch() {
     assert_eq!(
         status_receiver.borrow().state,
         super::super::RealtimeConnectionState::Closed
+    );
+}
+
+#[test]
+fn plain_realtime_projector_never_falls_system_notifications_back_to_chat() {
+    let mut projector = PlainRealtimeNotificationProjector;
+    let outcome = projector.project(json!({
+        "projection_kind": "system_notification",
+        "method": "direct.incoming",
+        "params": {
+            "body": {
+                "payload": {
+                    "type": "awiki.device.join-requested.v1"
+                }
+            }
+        }
+    }));
+
+    assert!(outcome.event.is_none());
+    assert!(outcome.additional_events.is_empty());
+    assert_eq!(
+        outcome.warnings,
+        vec!["system.notification.secure_projector_required".to_owned()]
     );
 }
 
@@ -996,7 +1075,7 @@ impl TestClientFixture {
     }
 
     fn core(&self) -> crate::core::ImCore {
-        crate::core::ImCore::new(
+        crate::core::ImCore::new_with_options(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
                 did_domain: "awiki.info".to_string(),
@@ -1022,6 +1101,7 @@ impl TestClientFixture {
                     temp_dir: self.root.join("tmp"),
                 },
             },
+            crate::ImCoreOpenOptions::default(),
         )
         .unwrap()
     }

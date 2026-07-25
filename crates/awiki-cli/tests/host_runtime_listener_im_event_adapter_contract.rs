@@ -8,7 +8,8 @@ use im_core::prelude::{
     AttachmentDownloadAction, AttachmentMessageSummary, ConnectionStateChanged, GroupRef,
     GroupUpdateKind, GroupUpdatedEvent, ImEvent, Message, MessageBodyView, MessageDirection,
     MessageId, MessageKind, MessageMetadata, MessageMetadataAttribute, MessageReceivedEvent,
-    PeerRef, RealtimeConnectionState, ThreadRef, UnknownNotificationEvent,
+    PeerRef, RealtimeConnectionState, SystemNotificationChangedEvent, SystemNotificationKind,
+    SystemNotificationSnapshot, SystemNotificationState, ThreadRef, UnknownNotificationEvent,
 };
 use serde_json::json;
 use std::sync::Mutex;
@@ -202,6 +203,39 @@ fn im_event_unknown_notification_records_warning_without_attachment_enrichment()
     assert!(status.warnings[0].contains("attachment.ready"));
     assert!(status.warnings[0].contains("application/vnd.awiki.attachment+json"));
     assert!(!status.warnings[0].contains("AttachmentInput"));
+}
+
+#[test]
+fn im_event_system_notification_is_not_dispatched_as_chat_or_host_notification() {
+    let sink = RecordingHostNotifySink::default();
+    let mut status = status();
+
+    let result = handle_im_event(
+        Some(&sink),
+        &mut status,
+        ImEvent::SystemNotificationChanged(SystemNotificationChangedEvent {
+            notification: SystemNotificationSnapshot {
+                event_id: "evt-system-1".to_owned(),
+                did: "did:wba:example:agents:bob:e1_bob".to_owned(),
+                join_session_id: "join-system-1".to_owned(),
+                kind: SystemNotificationKind::JoinRequested,
+                state: SystemNotificationState::Pending,
+                session_revision: 1,
+                issued_at: "2026-07-23T02:00:00Z".to_owned(),
+                expires_at: "2026-07-23T02:10:00Z".to_owned(),
+                first_seen_at: "2026-07-23T02:00:01Z".to_owned(),
+                terminal: false,
+            },
+            sync: None,
+        }),
+        None,
+        Some("bob"),
+        Some("did:wba:example:agents:bob:e1_bob"),
+    );
+
+    assert_eq!(result.route, CliImEventRoute::Ignored);
+    assert!(!result.dispatched_host_notification);
+    assert!(sink.events().is_empty());
 }
 
 #[test]

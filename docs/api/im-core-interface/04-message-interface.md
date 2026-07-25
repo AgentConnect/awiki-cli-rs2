@@ -238,13 +238,23 @@ second durable optimistic message source.
 Direct conversation send keeps a stable peer scope when the conversation is bound
 to a Handle/user identity. The normal send path uses the resolved DID already
 stored for the conversation and does not perform a Handle lookup before every
-message. If message-service rejects the send with JSON-RPC `1406` and
+message. Same-domain AWiki resolution obtains the authority subject from the
+authenticated Directory `user_id`. Cross-domain Direct and target-first attachment
+resolution instead reads the Handle provider's public WNS document and validates only
+the ANP-04 binding fields `handle`, `did`, `status`, and `binding_generation`; the
+normalized permanent full Handle is the authority subject. Public `user_id` /
+`subject_id` fields are ignored whether absent, changed, or conflicting, and the
+canonical positive decimal generation is required without a fixed integer-width limit.
+The same local-part under different domains therefore produces different peer scopes.
+
+If message-service rejects the send with JSON-RPC `1406` and
 `error.data.reason = "stale_did"`, `im-core` treats that as an authoritative
-target-rotation signal from user-service: it reads `current_did` /
-`full_handle` / `user_id` from `error.data`, fills missing data with one Handle
-lookup when a Handle is available, updates the retry target, and retries the
-network send once. Other `1406` reasons and all non-`stale_did` errors are not
-retargeted automatically and are persisted as failed local send state.
+target-rotation signal from user-service: it may use `current_did` / `full_handle`
+to find the target, but never accepts a private subject ID from `error.data`. When a
+Handle is available it repeats the normal authoritative same-domain Directory or
+cross-domain WNS resolution, updates the retry target, and retries the network send
+once. Other `1406` reasons and all non-`stale_did` errors are not retargeted
+automatically and are persisted as failed local send state.
 
 ### 2.1 Delegated Signing Optional 扩展
 
@@ -456,6 +466,17 @@ key；`send_state` 和 `retry_plan` 是 pending/accepted/sent/failed 展示事�
 pending rows 替代。
 
 ## 5. Inbox / History Query
+
+Inbox/History and realtime share a fail-closed control projection boundary.
+AWiki's fixed P5 v2 device-session Init/reply is recognized only from the exact
+session operation-ID form plus a strictly valid standard P5 `meta`/`body`.
+Recognized controls (including replays) and malformed strict-ID candidates are
+never returned as ordinary messages, timeline rows, events, or notifications.
+This filtering remains active when root-transfer rollout is off; enablement only
+permits async Inbox/History and realtime to execute the session-control side
+effect before dropping the wire object. A non-reserved operation ID remains
+ordinary P5 traffic. An ID that claims a reserved session prefix but fails the
+exact form is dropped fail-closed and cannot invoke the control side effect.
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -60,6 +60,7 @@ async API
 | `06-implementation-map.md` | 现有 CLI 模块到 P1 SDK 接口的迁移映射和 public/internal 规则。 |
 | `07-phase1-acceptance.md` | P1 验收测试、fixture、边界检查和完成标准。 |
 | `08-email-interface.md` | Email / Mail 迁移阶段的 SDK service、DTO、wire contract、CLI adapter 和 Dart facade 边界。 |
+| `10-device-revoke-interface.md` | AWiki 域内永久设备撤销、双证明/CAS、Vault exact retry 和公开安全 DTO 边界。 |
 
 ## 4. 使用方式
 

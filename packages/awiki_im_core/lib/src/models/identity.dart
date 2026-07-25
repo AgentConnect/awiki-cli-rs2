@@ -1,4 +1,38 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'config.dart';
+
+/// Single-use, write-only account-verification grant for device Join.
+class DeviceJoinAccountVerificationGrant {
+  factory DeviceJoinAccountVerificationGrant.fromToken(String token) {
+    if (token.trim().isEmpty) {
+      throw ArgumentError('account verification grant must not be empty');
+    }
+    return DeviceJoinAccountVerificationGrant._(
+      Uint8List.fromList(utf8.encode(token)),
+    );
+  }
+
+  DeviceJoinAccountVerificationGrant._(this._bytes);
+
+  Uint8List? _bytes;
+
+  /// Consumed by the native Join boundary. A second call always fails.
+  Uint8List takeBytes() {
+    final bytes = _bytes;
+    if (bytes == null) {
+      throw StateError(
+        'DeviceJoinAccountVerificationGrant was already consumed',
+      );
+    }
+    _bytes = null;
+    return bytes;
+  }
+
+  @override
+  String toString() => 'DeviceJoinAccountVerificationGrant(<redacted>)';
+}
 
 sealed class IdentitySelector {
   const IdentitySelector();
@@ -59,6 +93,74 @@ class IdentitySummary {
   final bool readyForAuth;
   final bool readyForMessaging;
   final List<String> missing;
+}
+
+enum IdentityDeviceMode { legacy, vNext }
+
+enum IdentityDeviceRole { member, admin }
+
+enum IdentityDeviceReadiness {
+  legacy,
+  memberReady,
+  adminAwaitingRoot,
+  adminReady,
+  blocked,
+}
+
+class IdentityDeviceSummary {
+  const IdentityDeviceSummary({
+    required this.identity,
+    required this.mode,
+    this.protocolDeviceId,
+    this.role,
+    this.signingKeyId,
+    this.e2eeKeyId,
+    required this.readiness,
+    this.blockedReason,
+  });
+
+  final IdentitySummary identity;
+  final IdentityDeviceMode mode;
+  final String? protocolDeviceId;
+  final IdentityDeviceRole? role;
+  final String? signingKeyId;
+  final String? e2eeKeyId;
+  final IdentityDeviceReadiness readiness;
+  final String? blockedReason;
+}
+
+sealed class LegacyUpgradeStatus {
+  const LegacyUpgradeStatus();
+
+  const factory LegacyUpgradeStatus.idle() = LegacyUpgradeIdle;
+  const factory LegacyUpgradeStatus.running() = LegacyUpgradeRunning;
+  const factory LegacyUpgradeStatus.retryRequired({
+    required String identityId,
+    required String code,
+  }) = LegacyUpgradeRetryRequired;
+  const factory LegacyUpgradeStatus.completed() = LegacyUpgradeCompleted;
+}
+
+final class LegacyUpgradeIdle extends LegacyUpgradeStatus {
+  const LegacyUpgradeIdle();
+}
+
+final class LegacyUpgradeRunning extends LegacyUpgradeStatus {
+  const LegacyUpgradeRunning();
+}
+
+final class LegacyUpgradeRetryRequired extends LegacyUpgradeStatus {
+  const LegacyUpgradeRetryRequired({
+    required this.identityId,
+    required this.code,
+  });
+
+  final String identityId;
+  final String code;
+}
+
+final class LegacyUpgradeCompleted extends LegacyUpgradeStatus {
+  const LegacyUpgradeCompleted();
 }
 
 enum IdentitySecretStorageBackend { fileCompat, vault }
@@ -202,6 +304,7 @@ class HandleRegistrationResult {
     required this.handle,
     required this.method,
     required this.state,
+    this.joinRequired,
     this.defaultIdentityChange,
     this.warnings = const [],
   });
@@ -210,26 +313,248 @@ class HandleRegistrationResult {
   final String handle;
   final String method;
   final String state;
+  final HandleRegistrationJoinRequired? joinRequired;
   final DefaultIdentityChange? defaultIdentityChange;
   final List<String> warnings;
 }
 
-class RecoverHandleResult {
-  const RecoverHandleResult({
-    required this.handle,
-    required this.phone,
-    required this.state,
-    this.recoveredIdentity,
-    this.userId,
-    required this.accessTokenPresent,
-    this.warnings = const [],
+class HandleRegistrationJoinRequired {
+  const HandleRegistrationJoinRequired({
+    required this.did,
+    required this.accountVerificationGrant,
   });
 
-  final String handle;
-  final String phone;
-  final String state;
-  final IdentitySummary? recoveredIdentity;
-  final String? userId;
-  final bool accessTokenPresent;
-  final List<String> warnings;
+  final String did;
+  final DeviceJoinAccountVerificationGrant accountVerificationGrant;
+}
+
+enum DeviceJoinSide { newDevice, admin }
+
+enum DeviceJoinPhase {
+  pending,
+  challengePrepared,
+  responsePrepared,
+  responseVerified,
+  approvalPrepared,
+  authorized,
+  cancelled,
+  expired,
+}
+
+enum DeviceJoinRole { member, admin }
+
+enum DeviceJoinAuthorizationStatus { active, revoked }
+
+enum DeviceJoinRemoteState {
+  pending,
+  challengeSent,
+  responseVerified,
+  consumed,
+  cancelled,
+  rejected,
+  expired,
+}
+
+class DeviceJoinSessionSummary {
+  const DeviceJoinSessionSummary({
+    required this.joinSessionId,
+    required this.did,
+    required this.protocolDeviceId,
+    required this.side,
+    required this.phase,
+    required this.expiresAt,
+  });
+
+  final String joinSessionId;
+  final String did;
+  final String protocolDeviceId;
+  final DeviceJoinSide side;
+  final DeviceJoinPhase phase;
+  final String expiresAt;
+}
+
+class DeviceJoinAuthorizedDeviceSummary {
+  const DeviceJoinAuthorizedDeviceSummary({
+    required this.protocolDeviceId,
+    required this.signingKeyId,
+    required this.e2eeKeyId,
+    required this.status,
+    required this.role,
+    required this.managementReady,
+    required this.isCurrent,
+  });
+
+  final String protocolDeviceId;
+  final String signingKeyId;
+  final String e2eeKeyId;
+  final DeviceJoinAuthorizationStatus status;
+  final DeviceJoinRole role;
+  final bool managementReady;
+  final bool isCurrent;
+}
+
+class DeviceJoinRequestNotice {
+  const DeviceJoinRequestNotice({
+    required this.eventId,
+    required this.joinSessionId,
+    required this.did,
+    required this.protocolDeviceId,
+    required this.candidateKeyFingerprint,
+    required this.issuedAt,
+    required this.expiresAt,
+    required this.state,
+    required this.claimedByCurrentDevice,
+    required this.canStartVerification,
+  });
+
+  final String eventId;
+  final String joinSessionId;
+  final String did;
+  final String protocolDeviceId;
+  final String candidateKeyFingerprint;
+  final String issuedAt;
+  final String expiresAt;
+  final DeviceJoinRemoteState state;
+  final bool claimedByCurrentDevice;
+  final bool canStartVerification;
+
+  @override
+  String toString() =>
+      'DeviceJoinRequestNotice(eventId: $eventId, '
+      'joinSessionId: $joinSessionId, did: $did, '
+      'protocolDeviceId: $protocolDeviceId, state: $state, '
+      'claimedByCurrentDevice: $claimedByCurrentDevice, '
+      'canStartVerification: $canStartVerification)';
+}
+
+class DeviceJoinRegistrySnapshot {
+  const DeviceJoinRegistrySnapshot({required this.did, required this.devices});
+
+  final String did;
+  final List<DeviceJoinAuthorizedDeviceSummary> devices;
+}
+
+enum DeviceJoinRejectReason { userRejected, sasMismatch }
+
+class DeviceJoinProgress {
+  const DeviceJoinProgress({
+    required this.session,
+    required this.remoteState,
+    this.sas,
+    this.authorizedDevice,
+  });
+
+  final DeviceJoinSessionSummary session;
+  final DeviceJoinRemoteState remoteState;
+  final String? sas;
+  final DeviceJoinAuthorizedDeviceSummary? authorizedDevice;
+
+  @override
+  String toString() =>
+      'DeviceJoinProgress(joinSessionId: ${session.joinSessionId}, '
+      'remoteState: $remoteState, '
+      'sas: ${sas == null ? 'null' : '<redacted>'})';
+}
+
+class DeviceJoinApprovalPrompt {
+  const DeviceJoinApprovalPrompt({
+    required this.approvalHandle,
+    required this.joinSessionId,
+    required this.sas,
+    required this.expiresAt,
+  });
+
+  final String approvalHandle;
+  final String joinSessionId;
+  final String sas;
+  final String expiresAt;
+
+  @override
+  String toString() =>
+      'DeviceJoinApprovalPrompt(joinSessionId: $joinSessionId, '
+      'approvalHandle: <redacted>, sas: <redacted>)';
+}
+
+/// Opaque authorization returned by [RootKeyTransferApi.prepare].
+///
+/// Applications may only pass it back to the same client's confirm operation.
+abstract interface class RootKeyTransferAuthorizationHandle {}
+
+/// Secret-free exact-device summary returned by Core before confirmation.
+class RootKeyTransferRecipientSummary {
+  const RootKeyTransferRecipientSummary({
+    required this.did,
+    required this.deviceId,
+    required this.signingKeyId,
+    required this.e2eeKeyId,
+    required this.registryVersion,
+  });
+
+  final String did;
+  final String deviceId;
+  final String signingKeyId;
+  final String e2eeKeyId;
+  final int registryVersion;
+}
+
+/// Prepared, short-lived authorization for one exact recipient device.
+class RootKeyTransferPreparation {
+  const RootKeyTransferPreparation({
+    required this.authorizationHandle,
+    required this.recipient,
+    required this.expiresAt,
+  });
+
+  final RootKeyTransferAuthorizationHandle authorizationHandle;
+  final RootKeyTransferRecipientSummary recipient;
+  final String expiresAt;
+
+  @override
+  String toString() =>
+      'RootKeyTransferPreparation(authorizationHandle: <redacted>, '
+      'recipientDeviceId: ${recipient.deviceId}, expiresAt: $expiresAt)';
+}
+
+/// Safe result for an accepted management-device root-key control delivery.
+class RootKeyTransferSendResult {
+  const RootKeyTransferSendResult({
+    required this.did,
+    required this.senderDeviceId,
+    required this.recipientDeviceId,
+    required this.messageId,
+    required this.acceptedAt,
+  });
+
+  final String did;
+  final String senderDeviceId;
+  final String recipientDeviceId;
+  final String messageId;
+  final String acceptedAt;
+}
+
+/// Closed, secret-free root-transfer failure exposed to the host.
+class RootKeyTransferException implements Exception {
+  const RootKeyTransferException({required this.code, required this.retryable});
+
+  final String code;
+  final bool retryable;
+
+  @override
+  String toString() =>
+      'RootKeyTransferException(code: $code, retryable: $retryable)';
+}
+
+enum DeviceRevokeStatus { revoked }
+
+/// Secret-free result of permanently revoking one AWiki device.
+class DeviceRevokeResult {
+  const DeviceRevokeResult({
+    required this.did,
+    required this.targetDeviceId,
+    required this.status,
+  });
+
+  final String did;
+  final String targetDeviceId;
+  final DeviceRevokeStatus status;
 }

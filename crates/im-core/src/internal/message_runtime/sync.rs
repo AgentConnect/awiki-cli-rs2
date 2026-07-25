@@ -90,6 +90,20 @@ where
             result.last_applied_event_seq = Some(outcome.last_applied_event_seq);
             append_backlog_warning(&mut result.warnings, outcome.backlogged_messages);
             emit_committed_sync_invalidation(self.client, &outcome.invalidation);
+            #[cfg(feature = "sqlite")]
+            if page_contains_system_notification(&page) {
+                match crate::internal::message_runtime::read::hydrate_system_notifications(
+                    self.client,
+                    &mut self.transport,
+                    &mut self.directory_transport,
+                    i64::from(limit),
+                ) {
+                    Ok(hydration) => result.warnings.extend(hydration.warnings),
+                    Err(_) => result
+                        .warnings
+                        .push("system.notification.hydration_deferred".to_owned()),
+                }
+            }
             result.retention_floor_event_seq = page.retention_floor_event_seq;
             result.has_more = page.has_more;
             reject_has_more_without_checkpoint_progress(
@@ -137,29 +151,53 @@ where
                     "direct.get_history",
                     params,
                 )?;
-                crate::internal::message_runtime::read::project_secure_direct_messages(
+                let mut p5_provenance =
+                    crate::internal::message_runtime::read::project_secure_direct_messages_for_peer(
+                        self.client,
+                        &mut raw,
+                        &mut self.directory_transport,
+                        &peer.resolved_did,
+                    );
+                crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
                     self.client,
                     &mut raw,
-                    &mut self.directory_transport,
+                    &peer.resolved_did,
+                    &mut p5_provenance,
                 );
                 crate::internal::message_runtime::read::annotate_direct_peer_scopes(
                     self.client,
                     &mut raw,
                     &mut self.directory_transport,
                     input.peer_scope.as_ref(),
+                    Some(&peer.resolved_did),
+                    Some(&mut p5_provenance),
                 );
                 let page = crate::internal::message_runtime::read::page_from_raw(
                     self.client,
                     &raw,
                     crate::ids::PageLimit(limit),
                 )?;
+                let final_projectable_count = page
+                    .items
+                    .iter()
+                    .filter(|message| {
+                        message
+                            .metadata
+                            .server_sequence
+                            .is_some_and(|sequence| sequence > after_server_seq)
+                    })
+                    .count();
+                crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+                    &raw,
+                    final_projectable_count,
+                )?;
                 let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                let outcome =
-                    crate::internal::message_runtime::local_projection::persist_remote_messages(
-                        self.client,
-                        &result.messages,
-                    )?;
-                if outcome.stored_messages > 0 {
+                let stored_messages = crate::internal::message_runtime::read::persist_projection(
+                    self.client,
+                    &result.messages,
+                    &p5_provenance,
+                )?;
+                if stored_messages > 0 {
                     self.client
                         .emit_committed_message_projection("sync_thread_after");
                 }
@@ -261,6 +299,22 @@ where
             result.last_applied_event_seq = Some(outcome.last_applied_event_seq);
             append_backlog_warning(&mut result.warnings, outcome.backlogged_messages);
             emit_committed_sync_invalidation(self.client, &outcome.invalidation);
+            #[cfg(feature = "sqlite")]
+            if page_contains_system_notification(&page) {
+                match crate::internal::message_runtime::read::hydrate_system_notifications_async(
+                    self.client,
+                    &mut self.transport,
+                    &mut self.directory_transport,
+                    i64::from(limit),
+                )
+                .await
+                {
+                    Ok(hydration) => result.warnings.extend(hydration.warnings),
+                    Err(_) => result
+                        .warnings
+                        .push("system.notification.hydration_deferred".to_owned()),
+                }
+            }
             result.retention_floor_event_seq = page.retention_floor_event_seq;
             result.has_more = page.has_more;
             reject_has_more_without_checkpoint_progress(
@@ -309,17 +363,27 @@ where
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
                     .await?;
-                crate::internal::message_runtime::read::project_secure_direct_messages_async(
+                let mut p5_provenance =
+                    crate::internal::message_runtime::read::project_secure_direct_messages_async_for_peer(
+                        self.client,
+                        &mut raw,
+                        &mut self.directory_transport,
+                        &peer.resolved_did,
+                    )
+                    .await;
+                crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
                     self.client,
                     &mut raw,
-                    &mut self.directory_transport,
-                )
-                .await;
+                    &peer.resolved_did,
+                    &mut p5_provenance,
+                );
                 crate::internal::message_runtime::read::annotate_direct_peer_scopes_async(
                     self.client,
                     &mut raw,
                     &mut self.directory_transport,
                     input.peer_scope.as_ref(),
+                    Some(&peer.resolved_did),
+                    Some(&mut p5_provenance),
                 )
                 .await;
                 let page = crate::internal::message_runtime::read::page_from_raw(
@@ -327,13 +391,29 @@ where
                     &raw,
                     crate::ids::PageLimit(limit),
                 )?;
+                let final_projectable_count = page
+                    .items
+                    .iter()
+                    .filter(|message| {
+                        message
+                            .metadata
+                            .server_sequence
+                            .is_some_and(|sequence| sequence > after_server_seq)
+                    })
+                    .count();
+                crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+                    &raw,
+                    final_projectable_count,
+                )?;
                 let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                let outcome = crate::internal::message_runtime::local_projection::persist_remote_messages_async(
-                    self.client,
-                    &result.messages,
-                )
-                .await?;
-                if outcome.stored_messages > 0 {
+                let stored_messages =
+                    crate::internal::message_runtime::read::persist_projection_async(
+                        self.client,
+                        &result.messages,
+                        &p5_provenance,
+                    )
+                    .await?;
+                if stored_messages > 0 {
                     self.client
                         .emit_committed_message_projection("sync_thread_after");
                 }
@@ -432,6 +512,12 @@ fn reject_invalid_delta_page_shape(
         ));
     }
     Ok(())
+}
+
+fn page_contains_system_notification(page: &crate::internal::wire::sync::SyncDeltaPage) -> bool {
+    page.events
+        .iter()
+        .any(|event| event.event_type == "system.notification")
 }
 
 fn reject_has_more_without_checkpoint_progress(
@@ -593,7 +679,25 @@ fn sync_delta_apply_event(
         ..crate::internal::local_state::sync_state::SyncDeltaApplyEvent::default()
     };
 
+    // Reliable Sync must advance its durable checkpoint even when the event
+    // carries a device-scoped ciphertext that this blocking transaction cannot
+    // decrypt. Never persist that wire/control object as an ordinary message;
+    // async Inbox/History or realtime performs the device-scoped projection.
+    if matches!(
+        event.event_type.as_str(),
+        "message.created" | "conversation.updated"
+    ) && (sync_delta_contains_v2_e2ee_message(event)
+        || sync_delta_contains_system_notification_message(event))
+    {
+        return Ok(apply);
+    }
+
     match event.event_type.as_str() {
+        // Device-targeted System Notification events are reliable hydration
+        // hints only. Advance the global checkpoint without creating any
+        // chat/conversation/read projection; exact-device Inbox supplies the
+        // full P3 envelope to the shared verifier.
+        "system.notification" => {}
         "message.created" => {
             let message = sync_delta_message_from_payload(client, event, true)?;
             apply.messages.push(
@@ -631,6 +735,54 @@ fn sync_delta_apply_event(
     }
 
     Ok(apply)
+}
+
+#[cfg(feature = "sqlite")]
+fn sync_delta_contains_system_notification_message(
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> bool {
+    let Some(payload) = event.payload.as_object() else {
+        return false;
+    };
+    let Some(message) = ["message", "latest_message", "last_message", "body"]
+        .into_iter()
+        .find_map(|key| payload.get(key).filter(|value| value.is_object()))
+    else {
+        return false;
+    };
+    if crate::internal::system_notification::wire::is_trusted_delivery_marker(message) {
+        return true;
+    }
+    message
+        .get("content")
+        .and_then(Value::as_object)
+        .and_then(|content| content.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.starts_with("awiki.device.join-"))
+}
+
+#[cfg(feature = "sqlite")]
+fn sync_delta_contains_v2_e2ee_message(
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> bool {
+    let Some(payload) = event.payload.as_object() else {
+        return false;
+    };
+    let message = ["message", "latest_message", "last_message", "body"]
+        .into_iter()
+        .find_map(|key| payload.get(key).filter(|value| value.is_object()));
+    let Some(message) = message else {
+        return false;
+    };
+    let profile = message
+        .pointer("/meta/profile")
+        .or_else(|| message.pointer("/params/meta/profile"))
+        .and_then(Value::as_str);
+    matches!(
+        profile,
+        Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
+            | Some(anp::group_e2ee::GROUP_E2EE_PROFILE_V2)
+    )
 }
 
 #[cfg(feature = "sqlite")]

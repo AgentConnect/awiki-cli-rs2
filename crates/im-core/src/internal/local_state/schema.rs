@@ -2,10 +2,63 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 28;
+pub(crate) const SCHEMA_VERSION: i64 = 31;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
 const CONVERSATION_REGISTRY_SCHEMA_VERSION: i64 = 26;
+const SYSTEM_NOTIFICATION_SCHEMA_VERSION: i64 = 29;
+const ROOT_IMPORT_COORDINATOR_SCHEMA_VERSION: i64 = 30;
+const LEGACY_PRIVATE_DELIVERY_RETIREMENT_SCHEMA_VERSION: i64 = 31;
+
+pub(crate) const ROOT_IMPORT_COORDINATOR_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS identity_root_import_completion_v1 (
+    owner_identity_id       TEXT NOT NULL,
+    owner_did               TEXT NOT NULL,
+    local_device_id         TEXT NOT NULL,
+    message_id              TEXT NOT NULL,
+    sender_device_id        TEXT NOT NULL,
+    recipient_device_id     TEXT NOT NULL,
+    sender_e2ee_key_id      TEXT NOT NULL,
+    recipient_e2ee_key_id   TEXT NOT NULL,
+    accepted_at             TEXT NOT NULL,
+    imported_at             TEXT NOT NULL,
+    envelope_expires_at     TEXT NOT NULL,
+    pending_root_ref_json   TEXT NOT NULL,
+    root_key_id             TEXT NOT NULL,
+    root_fingerprint        TEXT NOT NULL,
+    document_version        INTEGER NOT NULL,
+    document_hash           TEXT NOT NULL,
+    registry_version        INTEGER NOT NULL,
+    phase                   TEXT NOT NULL,
+    completion_params_json  TEXT,
+    completion_request_hash TEXT,
+    completion_result_json  TEXT,
+    last_error_code         TEXT,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, local_device_id, message_id),
+    CHECK (phase IN (
+        'import_sealed', 'proof_prepared', 'completion_pending',
+        'completion_accepted', 'token_refreshed', 'registry_confirmed',
+        'promoted', 'terminal_failed'
+    ))
+);
+
+CREATE TABLE IF NOT EXISTS identity_root_transfer_sender_v1 (
+    owner_identity_id   TEXT NOT NULL,
+    owner_did           TEXT NOT NULL,
+    local_device_id     TEXT NOT NULL,
+    message_id          TEXT NOT NULL,
+    recipient_device_id TEXT NOT NULL,
+    phase               TEXT NOT NULL,
+    accepted_at         TEXT,
+    failure_code        TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, local_device_id, message_id),
+    CHECK (phase IN ('pending_delivery', 'sent', 'terminal_failed', 'expired'))
+);
+"#;
 
 const V6_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS contacts (
@@ -246,6 +299,7 @@ CREATE TABLE IF NOT EXISTS attachment_manifest_cache (
     thread_kind             TEXT NOT NULL,
     thread_id               TEXT NOT NULL,
     message_id              TEXT NOT NULL,
+    wire_message_id         TEXT NOT NULL DEFAULT '',
     sender_did              TEXT,
     message_security_profile TEXT NOT NULL DEFAULT 'transport-protected',
     content                 TEXT NOT NULL,
@@ -931,6 +985,15 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
+    if version == LEGACY_PRIVATE_DELIVERY_RETIREMENT_SCHEMA_VERSION - 1 {
+        return migrate_v30_to_v31(connection);
+    }
+    if version == ROOT_IMPORT_COORDINATOR_SCHEMA_VERSION - 1 {
+        return migrate_v29_to_v31(connection);
+    }
+    if version == SYSTEM_NOTIFICATION_SCHEMA_VERSION - 1 {
+        return migrate_v28_to_v31(connection);
+    }
     if version < SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUpgradeRequired {
             from_version: version,
@@ -938,6 +1001,46 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
         });
     }
     create_schema(connection, false)
+}
+
+fn migrate_v28_to_v31(connection: &Connection) -> crate::ImResult<()> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    crate::internal::system_notification::store::create_schema(&transaction)?;
+    transaction
+        .execute_batch(ROOT_IMPORT_COORDINATOR_SQL)
+        .map_err(super::local_state_unavailable)?;
+    crate::internal::secure_direct::v2_store::migrate_legacy_private_delivery_state_v31(
+        &transaction,
+    )?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn migrate_v29_to_v31(connection: &Connection) -> crate::ImResult<()> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    transaction
+        .execute_batch(ROOT_IMPORT_COORDINATOR_SQL)
+        .map_err(super::local_state_unavailable)?;
+    crate::internal::secure_direct::v2_store::migrate_legacy_private_delivery_state_v31(
+        &transaction,
+    )?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn migrate_v30_to_v31(connection: &Connection) -> crate::ImResult<()> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    crate::internal::secure_direct::v2_store::migrate_legacy_private_delivery_state_v31(
+        &transaction,
+    )?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
+    transaction.commit().map_err(super::local_state_unavailable)
 }
 
 pub(crate) fn current_schema_version(connection: &Connection) -> crate::ImResult<i64> {
@@ -956,6 +1059,12 @@ pub(super) fn create_schema(
     connection
         .execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL)
         .map_err(super::local_state_unavailable)?;
+    ensure_column(
+        connection,
+        "attachment_manifest_cache",
+        "wire_message_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
     connection
         .execute_batch(SYNC_STATE_SQL)
         .map_err(super::local_state_unavailable)?;
@@ -970,6 +1079,10 @@ pub(super) fn create_schema(
         .map_err(super::local_state_unavailable)?;
     connection
         .execute_batch(DIRECT_PEER_ROUTES_SQL)
+        .map_err(super::local_state_unavailable)?;
+    crate::internal::system_notification::store::create_schema(connection)?;
+    connection
+        .execute_batch(ROOT_IMPORT_COORDINATOR_SQL)
         .map_err(super::local_state_unavailable)?;
     ensure_column(connection, "direct_peer_routes", "peer_persona_id", "TEXT")?;
     ensure_column(
@@ -1253,6 +1366,7 @@ CREATE TABLE IF NOT EXISTS attachment_manifest_cache{suffix} (
     thread_kind             TEXT NOT NULL,
     thread_id               TEXT NOT NULL,
     message_id              TEXT NOT NULL,
+    wire_message_id         TEXT NOT NULL DEFAULT '',
     sender_did              TEXT,
     message_security_profile TEXT NOT NULL DEFAULT 'transport-protected',
     content                 TEXT NOT NULL,

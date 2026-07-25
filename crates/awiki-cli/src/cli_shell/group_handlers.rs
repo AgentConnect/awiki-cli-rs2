@@ -681,13 +681,14 @@ impl App {
     pub fn run_group_list(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let limit = int_flag(command, "limit", 50)?;
+        let cursor = string_flag(command, "cursor");
         if !self.globals.dry_run {
             let client = crate::m_core_cli_adapter::build_im_client(
                 &resolved,
                 crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::m_core_cli_adapter::groups::list_groups_via_im_core(
-                &resolved, &client, limit,
+                &resolved, &client, limit, cursor,
             )
             .map_err(|err| group_cutover_exit(err, "group.list"))?;
             return self.render_group_result("awiki-cli group list", &resolved, result);
@@ -703,6 +704,7 @@ impl App {
                     "request": {
                         "IdentityName": self.globals.identity,
                         "Limit": limit,
+                        "Cursor": cursor,
                     },
                 }
             }),
@@ -717,13 +719,14 @@ impl App {
         }
         let resolved = self.resolve_config()?;
         let limit = int_flag(command, "limit", 50)?;
+        let cursor = string_flag(command, "cursor");
         let client = crate::m_core_cli_adapter::build_im_client_async(
             &resolved,
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )
         .await?;
         let result = crate::m_core_cli_adapter::groups::list_groups_via_im_core_async(
-            &resolved, &client, limit,
+            &resolved, &client, limit, cursor,
         )
         .await
         .map_err(|err| group_cutover_exit(err, "group.list"))?;
@@ -739,13 +742,14 @@ impl App {
             "Usage: awiki-cli group members --group <GROUP_DID>",
         )?;
         let limit = int_flag(command, "limit", 100)?;
+        let cursor = string_flag(command, "cursor");
         if !self.globals.dry_run {
             let client = crate::m_core_cli_adapter::build_im_client(
                 &resolved,
                 crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::m_core_cli_adapter::groups::group_members_via_im_core(
-                &resolved, &client, group, limit,
+                &resolved, &client, group, limit, cursor,
             )
             .map_err(|err| group_cutover_exit(err, "group.members"))?;
             return self.render_group_result("awiki-cli group members", &resolved, result);
@@ -762,6 +766,7 @@ impl App {
                         "IdentityName": self.globals.identity,
                         "Group": group,
                         "Limit": limit,
+                        "Cursor": cursor,
                     },
                 }
             }),
@@ -782,13 +787,14 @@ impl App {
             "Usage: awiki-cli group members --group <GROUP_DID>",
         )?;
         let limit = int_flag(command, "limit", 100)?;
+        let cursor = string_flag(command, "cursor");
         let client = crate::m_core_cli_adapter::build_im_client_async(
             &resolved,
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )
         .await?;
         let result = crate::m_core_cli_adapter::groups::group_members_via_im_core_async(
-            &resolved, &client, group, limit,
+            &resolved, &client, group, limit, cursor,
         )
         .await
         .map_err(|err| group_cutover_exit(err, "group.members"))?;
@@ -1062,7 +1068,66 @@ fn group_exit(err: MessageAdapterError) -> ExitError {
 fn group_cutover_exit(err: MessageAdapterError, command: &str) -> ExitError {
     match err {
         MessageAdapterError::GroupNotSupported => group_e2ee_unavailable(command),
+        MessageAdapterError::PublicServiceCode(service_code)
+            if service_code == "group.local_cursor_invalid" =>
+        {
+            group_inventory_exit(
+                command,
+                service_code,
+                "invalid_argument",
+                2,
+                false,
+                "Use the opaque cursor returned by the previous page.",
+            )
+        }
+        MessageAdapterError::PublicServiceCode(service_code)
+            if matches!(
+                service_code.as_str(),
+                "group.local_cursor_stale" | "group.local_inventory_incomplete"
+            ) =>
+        {
+            group_inventory_exit(
+                command,
+                service_code,
+                "temporarily_unavailable",
+                5,
+                true,
+                "Retry the operation from the first page.",
+            )
+        }
+        MessageAdapterError::PublicServiceCode(service_code)
+            if service_code == "group.local_inventory_too_large" =>
+        {
+            group_inventory_exit(
+                command,
+                service_code,
+                "resource_limit",
+                5,
+                false,
+                "Check the authoritative group member policy before retrying.",
+            )
+        }
         err => group_exit(err),
+    }
+}
+
+fn group_inventory_exit(
+    command: &str,
+    service_code: String,
+    code: &str,
+    exit_code: i32,
+    retryable: bool,
+    hint: &str,
+) -> ExitError {
+    ExitError {
+        exit_code,
+        detail: crate::cli_output::ErrorDetail {
+            code: code.to_owned(),
+            message: format!("{command}: group inventory request failed."),
+            hint: hint.to_owned(),
+            retryable,
+            details: json!({"service_code": service_code}),
+        },
     }
 }
 

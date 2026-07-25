@@ -1,6 +1,9 @@
 mod dto;
 mod service;
 
+#[cfg(feature = "group-e2ee")]
+pub(crate) use service::authoritative_group_e2ee_classification;
+
 pub use dto::{
     GroupAdmissionMode, GroupCreateRequest, GroupDiscoverability, GroupE2eeProcessLeaveRequest,
     GroupE2eeRecoverMemberRequest, GroupE2eeUpdateKeyRequest, GroupJoinRequest,

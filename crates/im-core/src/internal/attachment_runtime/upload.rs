@@ -72,6 +72,18 @@ struct ManifestSendResult {
     meta: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AttachmentControlContext {
+    service_did: String,
+    profile: String,
+    requested_attachment_id: String,
+}
+
+struct CreatedAttachmentSlot {
+    result: crate::internal::wire::attachment::AttachmentCreateSlotResult,
+    context: AttachmentControlContext,
+}
+
 enum PreparedAttachmentBody {
     Bytes(Vec<u8>),
     File(std::path::PathBuf),
@@ -108,24 +120,24 @@ where
         input: AttachmentSendInput,
     ) -> crate::ImResult<AttachmentUploadResult> {
         let target = send_target(&input.target, input.resolved_target_did)?;
-        let service_did = message_service_did(self.client)?;
+        let control = local_attachment_control_context(self.client)?;
         self.session_provider.ensure_session(auth_scope(&target))?;
 
         let operation_id = input.request.delivery.idempotency_key.clone();
         let upload = prepare_request(input.request)?;
         let prepared = upload.prepared;
-        let slot = self.create_slot(&target, &service_did, &prepared)?;
+        let slot = self.create_slot(&target, control, &prepared)?;
         self.transport.put_attachment_object(
-            slot.upload_uri.as_str(),
-            upload_headers(&slot.upload_headers),
+            slot.result.upload_uri.as_str(),
+            upload_headers(&slot.result.upload_headers),
             upload.body.clone_for_sync(),
         )?;
-        self.commit_object(&service_did, &prepared, &slot)?;
+        self.commit_object(&prepared, &slot)?;
 
         let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
             &prepared,
-            slot.attachment_id.clone(),
-            slot.object_uri.clone(),
+            slot.result.attachment_id.clone(),
+            slot.result.object_uri.clone(),
         );
         let manifest =
             crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
@@ -157,7 +169,7 @@ where
             target_kind: target.kind(),
             target_did: target.did().to_string(),
             prepared,
-            slot,
+            slot: slot.result,
             manifest,
             raw: send_result.raw,
         })
@@ -168,28 +180,28 @@ where
         input: AttachmentPrepareObjectInput,
     ) -> crate::ImResult<PreparedCommittedAttachment> {
         let target = send_target(&input.target, input.resolved_target_did)?;
-        let service_did = message_service_did(self.client)?;
+        let control = local_attachment_control_context(self.client)?;
         self.session_provider.ensure_session(auth_scope(&target))?;
 
         let upload = prepare_request_object_e2ee(input.request)?;
         let prepared = upload.prepared;
         let slot = self.create_slot_with_security_profile(
             &target,
-            &service_did,
+            control,
             input.message_security_profile,
             &prepared,
         )?;
         self.transport.put_attachment_object(
-            slot.upload_uri.as_str(),
-            upload_headers(&slot.upload_headers),
+            slot.result.upload_uri.as_str(),
+            upload_headers(&slot.result.upload_headers),
             upload.body.clone_for_sync(),
         )?;
-        self.commit_object(&service_did, &prepared, &slot)?;
+        self.commit_object(&prepared, &slot)?;
 
         let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
             &prepared,
-            slot.attachment_id.clone(),
-            slot.object_uri.clone(),
+            slot.result.attachment_id.clone(),
+            slot.result.object_uri.clone(),
         );
         let redacted_manifest =
             crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
@@ -216,7 +228,7 @@ where
             target_kind: target.kind(),
             target_did: target.did().to_string(),
             prepared,
-            slot,
+            slot: slot.result,
             descriptor,
             redacted_manifest,
             full_manifest,
@@ -227,26 +239,28 @@ where
     fn create_slot(
         &mut self,
         target: &ResolvedAttachmentTarget,
-        service_did: &str,
+        control: AttachmentControlContext,
         prepared: &crate::attachments::manifest::PreparedAttachment,
-    ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentCreateSlotResult> {
-        self.create_slot_with_security_profile(target, service_did, "transport-protected", prepared)
+    ) -> crate::ImResult<CreatedAttachmentSlot> {
+        self.create_slot_with_security_profile(target, control, "transport-protected", prepared)
     }
 
     fn create_slot_with_security_profile(
         &mut self,
         target: &ResolvedAttachmentTarget,
-        service_did: &str,
+        control: AttachmentControlContext,
         message_security_profile: &str,
         prepared: &crate::attachments::manifest::PreparedAttachment,
-    ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentCreateSlotResult> {
+    ) -> crate::ImResult<CreatedAttachmentSlot> {
         let params =
-            crate::internal::wire::attachment::build_attachment_create_slot_rpc_params_with_security_profile(
+            crate::internal::wire::attachment::build_attachment_create_slot_rpc_params_for_profile(
                 self.client.did().as_str(),
-                service_did,
+                &control.service_did,
                 target.kind(),
                 target.did(),
                 message_security_profile,
+                &control.profile,
+                &control.requested_attachment_id,
                 prepared,
             )?;
         let raw = self.transport.authenticated_rpc(
@@ -258,23 +272,28 @@ where
             serde_json::from_value(raw).map_err(|err| crate::ImError::Serialization {
                 detail: err.to_string(),
             })?;
-        slot.request_service_did = service_did.to_string();
-        Ok(slot)
+        validate_create_slot_response(&control, &slot)?;
+        slot.request_service_did = control.service_did.clone();
+        Ok(CreatedAttachmentSlot {
+            result: slot,
+            context: control,
+        })
     }
 
     fn commit_object(
         &mut self,
-        service_did: &str,
         prepared: &crate::attachments::manifest::PreparedAttachment,
-        slot: &crate::internal::wire::attachment::AttachmentCreateSlotResult,
+        slot: &CreatedAttachmentSlot,
     ) -> crate::ImResult<()> {
-        let params = crate::internal::wire::attachment::build_attachment_commit_object_rpc_params(
-            self.client.did().as_str(),
-            service_did,
-            prepared,
-            slot,
-        )?;
-        let _: crate::internal::wire::attachment::AttachmentCommitObjectResult =
+        let params =
+            crate::internal::wire::attachment::build_attachment_commit_object_rpc_params_with_profile(
+                self.client.did().as_str(),
+                &slot.context.service_did,
+                &slot.context.profile,
+                prepared,
+                &slot.result,
+            )?;
+        let response: crate::internal::wire::attachment::AttachmentCommitObjectResult =
             serde_json::from_value(self.transport.authenticated_rpc(
                 MESSAGE_RPC_ENDPOINT,
                 "attachment.commit_object",
@@ -283,7 +302,7 @@ where
             .map_err(|err| crate::ImError::Serialization {
                 detail: err.to_string(),
             })?;
-        Ok(())
+        validate_commit_object_response(&slot.result, &response)
     }
 
     fn send_manifest(
@@ -340,7 +359,7 @@ where
         input: AttachmentSendInput,
     ) -> crate::ImResult<AttachmentUploadResult> {
         let target = send_target(&input.target, input.resolved_target_did)?;
-        let service_did = message_service_did(self.client)?;
+        let control = local_attachment_control_context(self.client)?;
         self.session_provider
             .ensure_session(auth_scope(&target))
             .await?;
@@ -348,24 +367,21 @@ where
         let operation_id = input.request.delivery.idempotency_key.clone();
         let upload = prepare_request_async(input.request).await?;
         let prepared = upload.prepared;
-        let slot = self
-            .create_slot_async(&target, &service_did, &prepared)
-            .await?;
+        let slot = self.create_slot_async(&target, control, &prepared).await?;
         let body = async_object_body(&prepared, upload.body)?;
         self.transport
             .put_attachment_object_stream(
-                slot.upload_uri.as_str(),
-                upload_headers(&slot.upload_headers),
+                slot.result.upload_uri.as_str(),
+                upload_headers(&slot.result.upload_headers),
                 body,
             )
             .await?;
-        self.commit_object_async(&service_did, &prepared, &slot)
-            .await?;
+        self.commit_object_async(&prepared, &slot).await?;
 
         let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
             &prepared,
-            slot.attachment_id.clone(),
-            slot.object_uri.clone(),
+            slot.result.attachment_id.clone(),
+            slot.result.object_uri.clone(),
         );
         let manifest =
             crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
@@ -399,7 +415,7 @@ where
             target_kind: target.kind(),
             target_did: target.did().to_string(),
             prepared,
-            slot,
+            slot: slot.result,
             manifest,
             raw: send_result.raw,
         })
@@ -410,7 +426,7 @@ where
         input: AttachmentPrepareObjectInput,
     ) -> crate::ImResult<PreparedCommittedAttachment> {
         let target = send_target(&input.target, input.resolved_target_did)?;
-        let service_did = message_service_did(self.client)?;
+        let control = local_attachment_control_context(self.client)?;
         self.session_provider
             .ensure_session(auth_scope(&target))
             .await?;
@@ -420,7 +436,7 @@ where
         let slot = self
             .create_slot_with_security_profile_async(
                 &target,
-                &service_did,
+                control,
                 input.message_security_profile,
                 &prepared,
             )
@@ -428,18 +444,17 @@ where
         let body = async_object_body(&prepared, upload.body)?;
         self.transport
             .put_attachment_object_stream(
-                slot.upload_uri.as_str(),
-                upload_headers(&slot.upload_headers),
+                slot.result.upload_uri.as_str(),
+                upload_headers(&slot.result.upload_headers),
                 body,
             )
             .await?;
-        self.commit_object_async(&service_did, &prepared, &slot)
-            .await?;
+        self.commit_object_async(&prepared, &slot).await?;
 
         let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
             &prepared,
-            slot.attachment_id.clone(),
-            slot.object_uri.clone(),
+            slot.result.attachment_id.clone(),
+            slot.result.object_uri.clone(),
         );
         let redacted_manifest =
             crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
@@ -466,7 +481,7 @@ where
             target_kind: target.kind(),
             target_did: target.did().to_string(),
             prepared,
-            slot,
+            slot: slot.result,
             descriptor,
             redacted_manifest,
             full_manifest,
@@ -477,12 +492,12 @@ where
     async fn create_slot_async(
         &mut self,
         target: &ResolvedAttachmentTarget,
-        service_did: &str,
+        control: AttachmentControlContext,
         prepared: &crate::attachments::manifest::PreparedAttachment,
-    ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentCreateSlotResult> {
+    ) -> crate::ImResult<CreatedAttachmentSlot> {
         self.create_slot_with_security_profile_async(
             target,
-            service_did,
+            control,
             "transport-protected",
             prepared,
         )
@@ -492,17 +507,19 @@ where
     async fn create_slot_with_security_profile_async(
         &mut self,
         target: &ResolvedAttachmentTarget,
-        service_did: &str,
+        control: AttachmentControlContext,
         message_security_profile: &str,
         prepared: &crate::attachments::manifest::PreparedAttachment,
-    ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentCreateSlotResult> {
+    ) -> crate::ImResult<CreatedAttachmentSlot> {
         let params =
-            crate::internal::wire::attachment::build_attachment_create_slot_rpc_params_with_security_profile(
+            crate::internal::wire::attachment::build_attachment_create_slot_rpc_params_for_profile(
                 self.client.did().as_str(),
-                service_did,
+                &control.service_did,
                 target.kind(),
                 target.did(),
                 message_security_profile,
+                &control.profile,
+                &control.requested_attachment_id,
                 prepared,
             )?;
         let raw = self
@@ -513,23 +530,28 @@ where
             serde_json::from_value(raw).map_err(|err| crate::ImError::Serialization {
                 detail: err.to_string(),
             })?;
-        slot.request_service_did = service_did.to_string();
-        Ok(slot)
+        validate_create_slot_response(&control, &slot)?;
+        slot.request_service_did = control.service_did.clone();
+        Ok(CreatedAttachmentSlot {
+            result: slot,
+            context: control,
+        })
     }
 
     async fn commit_object_async(
         &mut self,
-        service_did: &str,
         prepared: &crate::attachments::manifest::PreparedAttachment,
-        slot: &crate::internal::wire::attachment::AttachmentCreateSlotResult,
+        slot: &CreatedAttachmentSlot,
     ) -> crate::ImResult<()> {
-        let params = crate::internal::wire::attachment::build_attachment_commit_object_rpc_params(
-            self.client.did().as_str(),
-            service_did,
-            prepared,
-            slot,
-        )?;
-        let _: crate::internal::wire::attachment::AttachmentCommitObjectResult =
+        let params =
+            crate::internal::wire::attachment::build_attachment_commit_object_rpc_params_with_profile(
+                self.client.did().as_str(),
+                &slot.context.service_did,
+                &slot.context.profile,
+                prepared,
+                &slot.result,
+            )?;
+        let response: crate::internal::wire::attachment::AttachmentCommitObjectResult =
             serde_json::from_value(
                 self.transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "attachment.commit_object", params)
@@ -538,7 +560,7 @@ where
             .map_err(|err| crate::ImError::Serialization {
                 detail: err.to_string(),
             })?;
-        Ok(())
+        validate_commit_object_response(&slot.result, &response)
     }
 
     async fn send_manifest_async(
@@ -968,6 +990,97 @@ fn message_service_did(client: &crate::core::ImClient) -> crate::ImResult<String
         })
 }
 
+fn local_attachment_control_context(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<AttachmentControlContext> {
+    let configured_service_did = message_service_did(client)?;
+    let key_provider = &client.runtime().key_provider;
+    let Some(document) = key_provider.optional_did_document()? else {
+        return Ok(attachment_control_context(
+            configured_service_did,
+            crate::internal::discovery::attachment::LEGACY_ATTACHMENT_PROFILE,
+        ));
+    };
+    match crate::internal::discovery::attachment::select_profiled_attachment_rpc_service_from_document(
+        client.did().as_str(),
+        &document,
+    ) {
+        Ok(selected) => {
+            if selected.service.service_did != configured_service_did {
+                return Err(crate::ImError::invalid_input(
+                    Some("service_did".to_owned()),
+                    "local DID attachment serviceDid does not match the configured Home service DID",
+                ));
+            }
+            Ok(attachment_control_context(
+                configured_service_did,
+                &selected.profile,
+            ))
+        }
+        Err(_)
+            if crate::internal::discovery::attachment::declared_attachment_profile_from_document(
+                &document,
+            )
+            .is_none() => Ok(attachment_control_context(
+                    configured_service_did,
+                    crate::internal::discovery::attachment::LEGACY_ATTACHMENT_PROFILE,
+                )),
+        Err(error) => Err(error),
+    }
+}
+
+fn attachment_control_context(service_did: String, profile: &str) -> AttachmentControlContext {
+    let requested_attachment_id = format!(
+        "att-{}",
+        crate::internal::wire::common::generate_operation_id()
+    );
+    AttachmentControlContext {
+        service_did,
+        profile: profile.to_owned(),
+        requested_attachment_id,
+    }
+}
+
+fn validate_create_slot_response(
+    context: &AttachmentControlContext,
+    response: &crate::internal::wire::attachment::AttachmentCreateSlotResult,
+) -> crate::ImResult<()> {
+    if response.attachment_id != context.requested_attachment_id {
+        return Err(invalid_attachment_response(
+            "attachment.create_slot response attachment_id does not match the request",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_commit_object_response(
+    slot: &crate::internal::wire::attachment::AttachmentCreateSlotResult,
+    response: &crate::internal::wire::attachment::AttachmentCommitObjectResult,
+) -> crate::ImResult<()> {
+    if !response.committed {
+        return Err(invalid_attachment_response(
+            "attachment.commit_object response must set committed=true",
+        ));
+    }
+    if response.attachment_id != slot.attachment_id {
+        return Err(invalid_attachment_response(
+            "attachment.commit_object response attachment_id does not match the slot",
+        ));
+    }
+    if response.object_uri != slot.object_uri {
+        return Err(invalid_attachment_response(
+            "attachment.commit_object response object_uri does not match the slot",
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_attachment_response(detail: impl Into<String>) -> crate::ImError {
+    crate::ImError::Serialization {
+        detail: detail.into(),
+    }
+}
+
 fn upload_headers(
     headers: &serde_json::Map<String, Value>,
 ) -> std::collections::BTreeMap<String, String> {
@@ -982,7 +1095,7 @@ fn load_credentials(
 ) -> crate::ImResult<AttachmentUploadCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
+    let key1_private_pem = runtime.key_provider.device_request_signing_private_pem()?;
     Ok(AttachmentUploadCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
@@ -995,7 +1108,7 @@ async fn load_credentials_async(
 ) -> crate::ImResult<AttachmentUploadCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
+    let key1_private_pem = runtime.key_provider.device_request_signing_private_pem()?;
     Ok(AttachmentUploadCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,

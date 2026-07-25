@@ -12,7 +12,7 @@ use crate::app_bridge::bootstrap::{
     parse_secure_bootstrap_payload, process_secure_bootstrap_envelope, BootstrapProcessOutcome,
     DefaultBootstrapDidDocumentResolver,
 };
-use crate::app_bridge::message_agent::{ensure_app_message_agent, EnsureAppMessageAgentOutcome};
+use crate::app_bridge::personal_agent::{ensure_app_personal_agent, EnsureAppPersonalAgentOutcome};
 use crate::registration::AgentRegistrationClient;
 use crate::state::DaemonState;
 use crate::DaemonConfig;
@@ -31,7 +31,7 @@ pub struct IncomingAppControlPayload {
 pub enum AppControlOutcome {
     BootstrapReceived {
         bootstrap: BootstrapProcessOutcome,
-        message_agent: EnsureAppMessageAgentOutcome,
+        personal_agent: EnsureAppPersonalAgentOutcome,
     },
     CapabilitiesReceived {
         capabilities: Vec<String>,
@@ -82,18 +82,18 @@ where
         let identity = state
             .load_user_delegated_identity(&secure_outcome.bootstrap.verification_method)?
             .context("load user delegated identity after bootstrap")?;
-        let message_agent = ensure_app_message_agent(
+        let personal_agent = ensure_app_personal_agent(
             config,
             state,
             registration_client,
             &daemon_agent,
             &identity,
-            &secure_outcome.desired_message_agent,
+            &secure_outcome.desired_personal_agent,
             &secure_outcome.capability_policy,
         )?;
         return Ok(AppControlOutcome::BootstrapReceived {
             bootstrap: secure_outcome.bootstrap,
-            message_agent,
+            personal_agent,
         });
     }
     if is_daemon_bootstrap_payload(&message.payload) {

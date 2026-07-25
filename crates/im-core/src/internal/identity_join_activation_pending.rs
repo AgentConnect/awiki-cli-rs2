@@ -1,0 +1,332 @@
+//! Vault-only crash recovery record for new-device Join activation.
+//!
+//! The pending device private keys and returned access token are replayable
+//! credentials, so they never enter the ordinary Join state file. This local
+//! record is retained until the rootless vNext identity and access token have
+//! both committed successfully.
+
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::internal::platform_secret::SecretBytes;
+use crate::internal::secret_vault::policy::SecretAccessPolicy;
+use crate::internal::secret_vault::record::{SecretKind, SecretMetadata, SecretRef};
+use crate::internal::secret_vault::{SealSecretRequest, SecretVault};
+
+const SCHEMA_VERSION: u32 = 1;
+const KEY_VERSION: u32 = 1;
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PendingJoinActivation {
+    schema_version: u32,
+    pub(crate) join_session_id: String,
+    pub(crate) did: crate::ids::Did,
+    pub(crate) resolved_document: serde_json::Value,
+    pub(crate) authorization:
+        crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization,
+    pub(crate) signing_private_pem: String,
+    pub(crate) e2ee_private_pem: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) access_result:
+        Option<crate::internal::identity_device_join_runtime::DeviceJoinAccessResult>,
+}
+
+impl std::fmt::Debug for PendingJoinActivation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingJoinActivation")
+            .field("schema_version", &self.schema_version)
+            .field("join_session_id", &self.join_session_id)
+            .field("did", &self.did)
+            .field("document", &"<validated-public-document>")
+            .field("authorization", &self.authorization)
+            .field("signing_private_pem", &"<redacted-private-key>")
+            .field("e2ee_private_pem", &"<redacted-private-key>")
+            .field("has_access_result", &self.access_result.is_some())
+            .finish()
+    }
+}
+
+impl PendingJoinActivation {
+    pub(crate) fn new(
+        join_session_id: String,
+        did: crate::ids::Did,
+        resolved_document: serde_json::Value,
+        authorization: crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization,
+        signing_private_pem: String,
+        e2ee_private_pem: String,
+    ) -> crate::ImResult<Self> {
+        let record = Self {
+            schema_version: SCHEMA_VERSION,
+            join_session_id,
+            did,
+            resolved_document,
+            authorization,
+            signing_private_pem,
+            e2ee_private_pem,
+            access_result: None,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub(crate) fn validate(&self) -> crate::ImResult<()> {
+        if self.schema_version != SCHEMA_VERSION
+            || self.join_session_id.trim().is_empty()
+            || self
+                .resolved_document
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                != Some(self.did.as_str())
+            || self.authorization.device.management_ready
+            || self.authorization.device.role
+                != crate::internal::identity_device_state::DeviceAuthorizationRole::Member
+            || self.authorization.device.auth_generation == 0
+            || crate::internal::identity_wire::document::document_hash(&self.resolved_document)?
+                != self.authorization.checkpoint.document_hash
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let signing_private = anp::PrivateKeyMaterial::from_pem(&self.signing_private_pem)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        let e2ee_private = anp::PrivateKeyMaterial::from_pem(&self.e2ee_private_pem)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        let signing_method = find_method(
+            &self.resolved_document,
+            &self.authorization.device.signing_key_id,
+        )?;
+        let e2ee_method = find_method(
+            &self.resolved_document,
+            &self.authorization.device.e2ee_key_id,
+        )?;
+        let signing_public = anp::authentication::extract_public_key(signing_method)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        let e2ee_public = anp::authentication::extract_public_key(e2ee_method)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        if signing_private.public_key().to_pem() != signing_public.to_pem()
+            || e2ee_private.public_key().to_pem() != e2ee_public.to_pem()
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        if let Some(result) = &self.access_result {
+            if result.user_id.trim().is_empty() || result.access_token.trim().is_empty() {
+                return Err(crate::ImError::PermissionDenied);
+            }
+            crate::internal::access_token::validate_device_access_token(
+                &result.access_token,
+                &crate::internal::access_token::ExpectedDeviceAccess {
+                    did: self.did.as_str(),
+                    user_id: &result.user_id,
+                    device_id: &self.authorization.device.device_id,
+                    key_id: &self.authorization.device.signing_key_id,
+                    auth_generation: self.authorization.device.auth_generation,
+                    role: self.authorization.device.role,
+                    management_ready: false,
+                },
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn find_method<'a>(
+    document: &'a serde_json::Value,
+    key_id: &str,
+) -> crate::ImResult<&'a serde_json::Value> {
+    document
+        .get("verificationMethod")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|methods| {
+            methods
+                .iter()
+                .find(|method| method.get("id").and_then(serde_json::Value::as_str) == Some(key_id))
+        })
+        .ok_or(crate::ImError::PermissionDenied)
+}
+
+pub(crate) struct PendingJoinActivationStore {
+    workspace_id: String,
+    device_id: String,
+    vault: std::sync::Arc<dyn SecretVault + Send + Sync>,
+}
+
+impl std::fmt::Debug for PendingJoinActivationStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingJoinActivationStore")
+            .field("workspace_id", &self.workspace_id)
+            .field("device_id", &self.device_id)
+            .field("vault", &"<redacted-secret-vault>")
+            .finish()
+    }
+}
+
+impl PendingJoinActivationStore {
+    pub(crate) fn from_core(core: &crate::core::ImCore) -> crate::ImResult<Self> {
+        if core.inner().identity_secret_storage_policy()
+            != crate::core::IdentitySecretStoragePolicy::VaultRequired
+        {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail:
+                    "new-device Join activation requires IdentitySecretStoragePolicy::VaultRequired"
+                        .to_owned(),
+            });
+        }
+        let context =
+            core.inner()
+                .identity_vault()
+                .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                    detail:
+                        "new-device Join activation requires an available identity secret vault"
+                            .to_owned(),
+                })?;
+        Ok(Self {
+            workspace_id: context.workspace_id().to_owned(),
+            device_id: context.vault_context_device_id().as_str().to_owned(),
+            vault: context.vault(),
+        })
+    }
+
+    pub(crate) fn load(
+        &self,
+        join_session_id: &str,
+        did: &crate::ids::Did,
+    ) -> crate::ImResult<Option<(SecretRef, PendingJoinActivation)>> {
+        let key_id = pending_key_id(join_session_id);
+        let matches = self
+            .vault
+            .list()?
+            .into_iter()
+            .filter(|secret_ref| {
+                secret_ref.workspace_id == self.workspace_id
+                    && secret_ref.device_id == self.device_id
+                    && secret_ref.kind == SecretKind::IdentityJoinActivationPending
+                    && secret_ref.key_id == key_id
+            })
+            .collect::<Vec<_>>();
+        if matches.len() > 1 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let Some(secret_ref) = matches.into_iter().next() else {
+            return Ok(None);
+        };
+        let plaintext = self.vault.open(&secret_ref)?;
+        let record: PendingJoinActivation = serde_json::from_slice(plaintext.expose_secret())
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        record.validate()?;
+        if record.join_session_id != join_session_id || &record.did != did {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(Some((secret_ref, record)))
+    }
+
+    pub(crate) fn save(&self, record: &PendingJoinActivation) -> crate::ImResult<SecretRef> {
+        record.validate()?;
+        let plaintext =
+            serde_json::to_vec(record).map_err(|error| crate::ImError::Serialization {
+                detail: error.to_string(),
+            })?;
+        let secret_ref = self.vault.seal(SealSecretRequest {
+            metadata: SecretMetadata {
+                workspace_id: self.workspace_id.clone(),
+                device_id: self.device_id.clone(),
+                identity_id: Some(identity_suffix(&record.did)),
+                did: Some(record.did.as_str().to_owned()),
+                kind: SecretKind::IdentityJoinActivationPending,
+                key_id: pending_key_id(&record.join_session_id),
+                key_version: KEY_VERSION,
+                policy: SecretAccessPolicy::no_prompt_local_secret(),
+            },
+            plaintext: SecretBytes::from_vec(plaintext.clone()),
+        })?;
+        let opened = self.vault.open(&secret_ref)?;
+        if opened.expose_secret() != plaintext.as_slice() {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(secret_ref)
+    }
+
+    pub(crate) fn delete(&self, secret_ref: &SecretRef) -> crate::ImResult<()> {
+        if secret_ref.workspace_id != self.workspace_id
+            || secret_ref.device_id != self.device_id
+            || secret_ref.kind != SecretKind::IdentityJoinActivationPending
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        self.vault.delete(secret_ref)
+    }
+}
+
+pub(crate) fn service_domain_from_did(did: &crate::ids::Did) -> crate::ImResult<String> {
+    let domain = did
+        .as_str()
+        .strip_prefix("did:wba:")
+        .and_then(|rest| rest.split(':').next())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(crate::ImError::PermissionDenied)?;
+    Ok(domain.to_ascii_lowercase())
+}
+
+pub(crate) fn identity_suffix(did: &crate::ids::Did) -> String {
+    did.as_str()
+        .rsplit(':')
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(did.as_str())
+        .to_owned()
+}
+
+fn pending_key_id(join_session_id: &str) -> String {
+    let digest = Sha256::digest(join_session_id.as_bytes());
+    format!("join-activation-{}", URL_SAFE_NO_PAD.encode(digest))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_redacts_pending_device_private_keys_and_token() {
+        let record_name = std::any::type_name::<PendingJoinActivation>();
+        assert!(record_name.contains("PendingJoinActivation"));
+        let debug = format!(
+            "{:?}",
+            PendingJoinActivation {
+                schema_version: SCHEMA_VERSION,
+                join_session_id: "join-1".to_owned(),
+                did: crate::ids::Did::parse("did:wba:awiki.info:user:alice:e1_root").unwrap(),
+                resolved_document: serde_json::json!({}),
+                authorization:
+                    crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization {
+                        checkpoint:
+                            crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                                document_version: 1,
+                                document_hash: "hash".to_owned(),
+                                registry_version: 1,
+                            },
+                        device:
+                            crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                                device_id: "dev-new".to_owned(),
+                                signing_key_id: "sign".to_owned(),
+                                e2ee_key_id: "e2ee".to_owned(),
+                                status: crate::internal::identity_device_state::DeviceAuthorizationStatus::Active,
+                                role: crate::internal::identity_device_state::DeviceAuthorizationRole::Member,
+                                management_ready: false,
+                                auth_generation: 1,
+                            },
+                    },
+                signing_private_pem: "signing-private-secret".to_owned(),
+                e2ee_private_pem: "e2ee-private-secret".to_owned(),
+                access_result: Some(
+                    crate::internal::identity_device_join_runtime::DeviceJoinAccessResult {
+                        user_id: "user-1".to_owned(),
+                        access_token: "access-token-secret".to_owned(),
+                    },
+                ),
+            }
+        );
+        assert!(!debug.contains("signing-private-secret"));
+        assert!(!debug.contains("e2ee-private-secret"));
+        assert!(!debug.contains("access-token-secret"));
+    }
+}
