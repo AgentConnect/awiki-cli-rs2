@@ -820,6 +820,12 @@ patch / repair wrapper，返回同一个 `ThreadMessageStorePatch` DTO。新的 
 应使用这些 API；旧 `watch_thread_patches(ThreadRef)` / `repair_thread_store(ThreadRef)` 是
 compatibility adapter，不应继续作为 AWiki Me 消息归属判断的主来源。
 
+Flutter/Dart bridge 的 Patch session 在 stream attach 后仍拥有取消能力。对应 stop API
+必须唤醒 idle `next_patch().await`，等待后台 worker 退出后才完成；conversation list、
+conversation timeline 和 legacy thread stream 使用同一生命周期合同。调用方因此可以把
+stream `cancel()` 当作资源释放完成屏障，但业务事务仍不应把 presentation subscription
+清理作为身份删除等 Core 操作的前置条件。
+
 Conversation snapshot、conversation store patch 和 thread message patch DTO 都必须保持
 core-only，不包含 `awiki-me` presentation overlay 字段或 App domain DTO。
 

@@ -588,6 +588,12 @@ Conversation snapshot and patch APIs are non-authoritative acceleration layers o
 - `messages.watch_conversation_timeline_patches(conversation, limit)` / Dart `client.messages.watchConversationTimelinePatches(conversation, limit: ...)` streams versioned `ThreadMessageStorePatch` values for the currently opened canonical conversation timeline.
 - `messages.repair_conversation_timeline_store(conversation, limit)` / Dart `client.messages.repairConversationTimelineStore(conversation, limit: ...)` returns a reset/repair patch for the conversation timeline runtime store.
 - `messages.watch_thread_patches(thread, limit)` / Dart `client.messages.watchThreadPatches(thread, limit: ...)` and `messages.repair_thread_store(thread, limit)` / Dart `client.messages.repairThreadStore(thread, limit: ...)` remain compatibility adapters for CLI / legacy `ThreadRef` paths, not the AWiki Me display-chain owner.
+- Dart bridge patch sessions retain cancellation ownership after the raw Core
+  session moves into the background stream worker. `stopConversationPatchSession`
+  and `stopThreadMessagePatchSession` signal that worker, wake an idle
+  `next_patch().await`, and join it before returning. Conversation, canonical
+  timeline, and compatibility thread streams share this lifecycle; dropping the
+  Dart wrapper aborts any remaining worker as a final resource-safety boundary.
 - Patch notifications are emitted only after the underlying local projection commit succeeds; `snapshot_required=true` or failed sync apply must not emit an authoritative patch.
 - A committed invalidation whose projected items equal the runtime-store state must not increment the store version or emit `Reset`. `Upsert` / `Remove` are used for one-row material changes, `Reset` for material multi-row replacement, and explicit repair/lag paths remain allowed to emit repair/reset patches.
 - Realtime incoming messages follow the same committed-projection rule: a WebSocket hint or decoded event is not authoritative by itself, but once its message projection is committed to SQLite, `im-core` emits conversation and conversation-timeline patches for active subscribers.

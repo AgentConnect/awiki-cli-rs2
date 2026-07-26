@@ -770,6 +770,10 @@ Reliable sync 补充：
   snapshot/patch DTO 的 optional `title` 只表示 committed Group profile display name；
   DTO 必须保持 core-only，不引用 `awiki-me` 的 `ConversationSummary`、`ChatMessage`
   或 presentation overlay 字段。
+- Dart patch stream 的 `cancel()` / 对应 stop API 是一个完成屏障：即使 stream 正在 idle
+  `next_patch()`，也必须唤醒并等待 Rust 后台 worker 退出后返回。raw session 移交后台任务后，
+  stop 能力仍由 Dart bridge session 保留；conversation、conversation timeline 与 legacy
+  thread patch 不得出现“attach 后 stop 失效”的 ownership 状态。
 - conversation/timeline runtime store 只对 material change 递增版本并发 patch。
   committed invalidation 重新投影后若 items 与当前 store 完全相同，则不发事件；
   单项变化发 `upsert/remove`，多项真实变化才回退 `reset`。显式 repair、lag/overflow

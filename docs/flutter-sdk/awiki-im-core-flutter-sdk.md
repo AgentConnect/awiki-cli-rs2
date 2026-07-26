@@ -434,6 +434,13 @@ realtime incoming message becomes patch-visible only after `im-core` has
 committed its SQLite local projection; failed or skipped realtime projection
 does not emit an authoritative conversation/thread patch.
 
+Cancelling any of these Dart patch streams is a native lifecycle barrier. The
+bridge retains a cancellation signal and the Rust worker handle after stream
+attachment, wakes an idle `next_patch()` call, and joins the worker before the
+stop call completes. Conversation-list, conversation-timeline, and legacy
+thread patch streams use the same rule; an attached stream must never make its
+stop API a no-op.
+
 Remote history, conversation catch-up, and realtime incoming messages share one
 Core canonical-ingress gate. A Direct wire DID must resolve to a verified
 Persona before the message row is committed. Until then Core stores the record
