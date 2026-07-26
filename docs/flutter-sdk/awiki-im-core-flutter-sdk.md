@@ -48,8 +48,13 @@ Inspection is read-only. Upgrade performs the Core-owned cross-process lock,
 SQLite online backup (including committed WAL state), shadow migration,
 conservation/invariant validation, and cutover. A missing SQLite file is a fresh
 install and returns `notRequired` without creating files. Ordinary Core open
-continues to fail closed with `local_state_upgrade_required`; hosts must not
-delete, archive, or recreate the database to bypass this gate. Public reports
+continues to fail closed with `local_state_upgrade_required` for the exact
+release/0710 schema 27 source; hosts must not delete, archive, or recreate the
+database to bypass this gate. The canonical pre-open runner owns schema 27 only.
+Post-canonical schemas 28 through the current version return `notRequired` and
+remain available to the ordinary atomic schema migration performed by
+`AwikiImCore.open`; the pre-open runner must not duplicate or block that
+dispatch. Public reports
 contain schema versions, aggregate counts, and owner-scoped legacy-to-canonical
 conversation mappings required by the App overlay migration. They never expose
 backup paths or message content. The mapping remains available after cutover so
@@ -65,7 +70,7 @@ assert(restored.targetSafetyCopyAvailable);
 ```
 
 Restore is not an in-process rollback for an open Core. It only accepts a
-completed canonical-upgrade journal, keeps the schema 28 target as a private
+completed canonical-upgrade journal, keeps the current target as a private
 safety copy, and is idempotent across interruption. The public result exposes
 versions/availability only, never filesystem backup paths.
 

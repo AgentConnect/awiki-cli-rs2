@@ -641,7 +641,7 @@ mod tests {
             format_version: 1,
             upgrade_id: "upgrade-1".to_owned(),
             source_schema_version: 27,
-            target_schema_version: 28,
+            target_schema_version: super::super::schema::SCHEMA_VERSION,
             source_fingerprint: "sha256:test".to_owned(),
             phase: CanonicalUpgradePhase::Detected,
             backup_file: "backups/upgrade-1/im.sqlite".to_owned(),
@@ -718,7 +718,7 @@ VALUES ('owner', 'did:example:owner', 'message-1', 'dm:legacy', 'dm:legacy',
         assert_eq!(
             live.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            28
+            super::super::schema::SCHEMA_VERSION
         );
         let alias_count = live
             .query_row("SELECT COUNT(*) FROM conversation_aliases", [], |row| {
@@ -761,7 +761,7 @@ VALUES ('owner', 'did:example:owner', 'message-1', 'dm:legacy', 'dm:legacy',
             format_version: 1,
             upgrade_id: upgrade_id.to_owned(),
             source_schema_version: 27,
-            target_schema_version: 28,
+            target_schema_version: super::super::schema::SCHEMA_VERSION,
             source_fingerprint: detection.source_fingerprint,
             phase: CanonicalUpgradePhase::CutoverStarted,
             backup_file: format!("backups/{upgrade_id}/im.sqlite"),
@@ -785,7 +785,7 @@ VALUES ('owner', 'did:example:owner', 'message-1', 'dm:legacy', 'dm:legacy',
                 .unwrap()
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            28
+            super::super::schema::SCHEMA_VERSION
         );
     }
 
@@ -823,7 +823,7 @@ VALUES ('owner', 'did:example:owner', 'message-1', 'dm:legacy', 'dm:legacy',
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .unwrap(),
-                28
+                super::super::schema::SCHEMA_VERSION
             );
             let counts = (
                 db.query_row("SELECT COUNT(*) FROM messages", [], |row| {

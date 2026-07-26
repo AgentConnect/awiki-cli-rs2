@@ -212,6 +212,43 @@ mod tests {
     }
 
     #[test]
+    fn post_canonical_schema_migrations_remain_reachable_at_bootstrap() {
+        for source_schema_version in [28, 29, 30] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = LocalStatePaths {
+                sqlite_path: directory.path().join("im.sqlite"),
+            };
+            let connection =
+                crate::internal::local_state::open_writable(&paths.sqlite_path).unwrap();
+            connection
+                .pragma_update(None, "user_version", source_schema_version)
+                .unwrap();
+            drop(connection);
+
+            let inspection = inspect_local_state_upgrade(&paths).unwrap();
+            assert_eq!(
+                inspection.eligibility,
+                LocalStateUpgradeEligibility::NotRequired
+            );
+            assert_eq!(inspection.source_schema_version, source_schema_version);
+            assert_eq!(
+                inspection.target_schema_version,
+                crate::internal::local_state::schema::SCHEMA_VERSION
+            );
+
+            let result = upgrade_local_state(&paths).unwrap();
+            assert_eq!(result.status, LocalStateUpgradeStatus::NotRequired);
+            assert_eq!(result.source_schema_version, source_schema_version);
+
+            let migrated = crate::internal::local_state::open_writable(&paths.sqlite_path).unwrap();
+            assert_eq!(
+                crate::internal::local_state::schema::current_schema_version(&migrated).unwrap(),
+                crate::internal::local_state::schema::SCHEMA_VERSION
+            );
+        }
+    }
+
+    #[test]
     fn completed_target_returns_alias_mapping_for_overlay_resume() {
         let directory = tempfile::tempdir().unwrap();
         let paths = LocalStatePaths {

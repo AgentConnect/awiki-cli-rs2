@@ -185,6 +185,10 @@ cutover 的 journal，将当前 target 保留为 private safety copy 后恢复�
 backup。公共结果只包含 schema、聚合计数、alias mapping 和 backup/safety-copy
 availability，不返回 backup 路径、消息内容或凭证。
 
+pre-open canonical runner 只拥有 schema 27。已经完成 canonical cutover 的 schema
+28 到当前版本必须返回 `not_required`，随后由普通 Core open 的原子 schema migration
+推进到当前版本；pre-open detector 不得复制或抢占普通迁移的版本分派。
+
 P2+ API：
 
 ```rust

@@ -676,14 +676,17 @@ mod tests {
         super::super::source::copy_release_0710_fixture(&source);
         let report = migrate_shadow(&source).unwrap();
         assert_eq!(report.source_schema_version, 27);
-        assert_eq!(report.target_schema_version, 28);
+        assert_eq!(
+            report.target_schema_version,
+            super::super::super::schema::SCHEMA_VERSION
+        );
         assert_eq!(report.migrated_personas, 1);
         assert_eq!(report.unresolved_messages, 0);
 
         let db = Connection::open(&source).unwrap();
         assert_eq!(
             super::super::super::schema::current_schema_version(&db).unwrap(),
-            28
+            super::super::super::schema::SCHEMA_VERSION
         );
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
