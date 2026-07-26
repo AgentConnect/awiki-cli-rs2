@@ -483,9 +483,7 @@ pub(crate) fn static_public_from_document(
                 .find(|method| method.get("id").and_then(serde_json::Value::as_str) == Some(key_id))
         })
         .ok_or(crate::ImError::PermissionDenied)?;
-    match anp::authentication::extract_public_key(method)
-        .map_err(|_| crate::ImError::PermissionDenied)?
-    {
+    match crate::internal::identity_wire::document::extract_identity_public_key(method)? {
         anp::PublicKeyMaterial::X25519(public) => Ok(public),
         _ => Err(crate::ImError::PermissionDenied),
     }

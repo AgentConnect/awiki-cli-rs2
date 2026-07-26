@@ -1501,8 +1501,9 @@ fn promote_join_identity(
     )?;
     let e2ee_private =
         open_private_key(&*vault, e2ee_ref, SecretKind::IdentityE2eeAgreementPrivate)?;
-    let expected_signing_public = extract_join_public_key(&stored.join_request.signing_public_key)?;
-    let expected_e2ee_public = extract_join_public_key(&stored.join_request.e2ee_public_key)?;
+    let expected_signing_public =
+        extract_identity_public_key(&stored.join_request.signing_public_key)?;
+    let expected_e2ee_public = extract_identity_public_key(&stored.join_request.e2ee_public_key)?;
     let signing_public = signing_private.public_key();
     let e2ee_public = e2ee_private.public_key();
     if signing_public.to_pem() != expected_signing_public.to_pem()
@@ -1522,8 +1523,8 @@ fn promote_join_identity(
             })
         })
         .ok_or(crate::ImError::PermissionDenied)?;
-    let root_public = anp::authentication::extract_public_key(root_method)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let root_public =
+        crate::internal::identity_wire::document::extract_identity_public_key(root_method)?;
     if !matches!(root_public, anp::PublicKeyMaterial::Ed25519(_)) {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -2306,7 +2307,7 @@ fn validate_method_binding(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let material = extract_join_public_key(method)?;
+    let material = extract_identity_public_key(method)?;
     if signing && !matches!(material, anp::PublicKeyMaterial::Ed25519(_)) {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -2776,7 +2777,7 @@ fn x25519_shared(
 }
 
 fn x25519_public_from_method(method: &Value) -> crate::ImResult<[u8; 32]> {
-    match extract_join_public_key(method)? {
+    match extract_identity_public_key(method)? {
         anp::PublicKeyMaterial::X25519(value) => Ok(value),
         _ => Err(crate::ImError::PermissionDenied),
     }
@@ -2785,52 +2786,17 @@ fn x25519_public_from_method(method: &Value) -> crate::ImResult<[u8; 32]> {
 fn create_join_verification_method(
     method: &Value,
 ) -> crate::ImResult<anp::authentication::VerificationMethod> {
-    let normalized = normalize_join_okp_method(method)?;
+    let normalized = normalize_identity_okp_method(method)?;
     anp::authentication::create_verification_method(&normalized)
         .map_err(|_| crate::ImError::PermissionDenied)
 }
 
-fn extract_join_public_key(method: &Value) -> crate::ImResult<anp::PublicKeyMaterial> {
-    if method.get("type").and_then(Value::as_str) == Some("JsonWebKey2020")
-        && method.pointer("/publicKeyJwk/kty").and_then(Value::as_str) == Some("OKP")
-        && method.pointer("/publicKeyJwk/crv").and_then(Value::as_str) == Some("X25519")
-    {
-        let bytes = URL_SAFE_NO_PAD
-            .decode(
-                method
-                    .pointer("/publicKeyJwk/x")
-                    .and_then(Value::as_str)
-                    .ok_or(crate::ImError::PermissionDenied)?,
-            )
-            .map_err(|_| crate::ImError::PermissionDenied)?;
-        let bytes: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| crate::ImError::PermissionDenied)?;
-        return Ok(anp::PublicKeyMaterial::X25519(bytes));
-    }
-    let normalized = normalize_join_okp_method(method)?;
-    anp::authentication::extract_public_key(&normalized)
-        .map_err(|_| crate::ImError::PermissionDenied)
+fn extract_identity_public_key(method: &Value) -> crate::ImResult<anp::PublicKeyMaterial> {
+    crate::internal::identity_wire::document::extract_identity_public_key(method)
 }
 
-fn normalize_join_okp_method(method: &Value) -> crate::ImResult<Value> {
-    let mut normalized = method.clone();
-    let object = normalized
-        .as_object_mut()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    if object.get("type").and_then(Value::as_str) != Some("JsonWebKey2020") {
-        return Ok(normalized);
-    }
-    let method_type = match object
-        .get("publicKeyJwk")
-        .and_then(|jwk| jwk.get("crv"))
-        .and_then(Value::as_str)
-    {
-        Some("Ed25519") => "Ed25519VerificationKey2020",
-        _ => return Ok(normalized),
-    };
-    object.insert("type".to_owned(), Value::String(method_type.to_owned()));
-    Ok(normalized)
+fn normalize_identity_okp_method(method: &Value) -> crate::ImResult<Value> {
+    crate::internal::identity_wire::document::normalize_identity_okp_method(method)
 }
 
 fn x25519_public_b64u(public_key: &anp::PublicKeyMaterial) -> crate::ImResult<String> {

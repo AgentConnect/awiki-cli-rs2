@@ -155,8 +155,7 @@ fn validate_request_signing_key(
         .ok_or(crate::ImError::PermissionDenied)?;
     let private_key = anp::PrivateKeyMaterial::from_pem(&material.default_signing_private_key_pem)
         .map_err(|_| crate::ImError::PermissionDenied)?;
-    let public_key = anp::authentication::extract_public_key(method)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let public_key = crate::internal::identity_wire::document::extract_identity_public_key(method)?;
     if private_key.public_key().to_pem() != public_key.to_pem() {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -194,6 +193,7 @@ fn auth_state_from_token(
 mod tests {
     use super::*;
     use crate::internal::key_provider::KeyMaterialProvider;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use serde_json::json;
 
     #[test]
@@ -295,6 +295,48 @@ mod tests {
         let signing = provider.device_request_signing_material().unwrap();
 
         assert_eq!(signing.key_id, generated.device_signing_key_id);
+    }
+
+    #[test]
+    fn explicit_request_signing_key_accepts_vnext_okp_jwk() {
+        let did = "did:wba:awiki.test:user:hosted:e1_root";
+        let key_id = format!("{did}#dev-new-sign");
+        let private =
+            anp::PrivateKeyMaterial::Ed25519(ed25519_dalek::SigningKey::from_bytes(&[42; 32]));
+        let anp::PublicKeyMaterial::Ed25519(public) = private.public_key() else {
+            panic!("test requires Ed25519");
+        };
+        let material = crate::identity::HostedIdentityMaterial {
+            identity_id: "e1_root".to_owned(),
+            did: did.to_owned(),
+            handle: None,
+            display_name: None,
+            did_document: json!({
+                "id": did,
+                "verificationMethod": [{
+                    "id": key_id,
+                    "type": "JsonWebKey2020",
+                    "controller": did,
+                    "publicKeyJwk": {
+                        "kty": "OKP",
+                        "crv": "Ed25519",
+                        "x": URL_SAFE_NO_PAD.encode(public.to_bytes()),
+                    },
+                }],
+                "authentication": [key_id],
+            }),
+            default_signing_private_key_pem: private.to_pem(),
+            e2ee_agreement_private_key_pem: None,
+            auth_token: None,
+        };
+
+        let provider =
+            HostedKeyMaterialProvider::new_for_request_signing_key(&material, &key_id).unwrap();
+
+        assert_eq!(
+            provider.device_request_signing_material().unwrap().key_id,
+            key_id,
+        );
     }
 
     #[test]

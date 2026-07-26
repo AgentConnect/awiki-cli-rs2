@@ -396,7 +396,10 @@ Host 观察到服务端 `consumed` 并不代表本地已经可用。Core 会验�
 Document/Manifest，使用候选设备 signing key 发起新的 DID-WBA `get_me` 请求，并从标准
 `Authentication-Info` 或 `Authorization: Bearer` 响应头取得 access token。只有 exact
 device principal、rootless vNext 身份和 checkpoint 原子落盘后，session 才变为
-`Authorized`。V1 没有 `device_token_issue` 或设备 refresh token。
+`Authorized`。V1 没有 `device_token_issue` 或设备 refresh token。最终 Document 中规范的
+`JsonWebKey2020` OKP Ed25519/X25519 方法由 hosted device auth、Join 实时验证、
+Vault restart-safe activation、Root 流程和 P5 发布共用同一个解析边界，不能由各调用方
+或通用 verification-method decoder 另行解释。
 
 ### 5.2 Management-device root-key transfer
 

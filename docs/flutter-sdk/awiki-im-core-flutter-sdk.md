@@ -176,6 +176,10 @@ host 不接收该身份的动态配置，也不需要处理自定义 profile。
 新设备的 `pollNewDeviceJoin` 在远端仍为 `responseVerified` 时，从本地 restart-safe
 transcript 与 Vault pairing secret 按需重新派生同一 SAS；SAS 本身仍不落盘。这样响应已经
 提交后发生 App 重启或一次无界面轮询，不会让该 Join 永久失去可比较的 SAS。
+远端进入 `consumed` 后，Core 使用与实时 Join 相同的文档解析边界校验最终
+`JsonWebKey2020` OKP Ed25519/X25519 设备方法，再提交 Vault activation record 和本地身份；
+该边界也供 hosted device auth、Root 和 P5 使用，Flutter host 不需要也不能自行转换这些
+verification methods。
 
 用户确认 SAS 一致后，host 调用 `prepareDeviceJoinApproval`，再在真实本地 user presence 后调用
 `confirmDeviceJoinApproval`。approval API 不接受 role，Join 结果固定为 rootless

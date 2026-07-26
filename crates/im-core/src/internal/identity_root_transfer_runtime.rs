@@ -952,8 +952,7 @@ fn validate_root_public(
     {
         return Err(crate::ImError::PermissionDenied);
     }
-    let public = anp::authentication::extract_public_key(matches[0])
-        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let public = crate::internal::identity_wire::document::extract_identity_public_key(matches[0])?;
     if !matches!(public, anp::PublicKeyMaterial::Ed25519(_)) {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -989,8 +988,7 @@ fn validate_root_private_matches_document(
             matches.next().is_none().then_some(method)
         })
         .ok_or(crate::ImError::PermissionDenied)?;
-    let public = anp::authentication::extract_public_key(method)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let public = crate::internal::identity_wire::document::extract_identity_public_key(method)?;
     if private.public_key().to_pem() != public.to_pem() {
         return Err(crate::ImError::PermissionDenied);
     }

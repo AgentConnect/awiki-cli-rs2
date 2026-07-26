@@ -1787,8 +1787,7 @@ fn validate_root_key_material(
         .map_err(|_| crate::ImError::PermissionDenied)?;
     let private = ed25519_dalek::SigningKey::from_bytes(&seed);
     let method = unique_method(document, &envelope.root_key_id)?;
-    let public = anp::authentication::extract_public_key(method)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let public = crate::internal::identity_wire::document::extract_identity_public_key(method)?;
     let anp::PublicKeyMaterial::Ed25519(expected) = &public else {
         return Err(crate::ImError::PermissionDenied);
     };

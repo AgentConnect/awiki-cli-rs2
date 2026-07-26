@@ -180,7 +180,11 @@ then performs a fresh device-signed User Service request and stores the returned
 member access token with the rootless identity. Only after identity, checkpoint,
 and token persistence commit is the Join reported authorized. A request to
 continue as admin starts a separate root-transfer flow; it never changes the
-Join result.
+Join result. Hosted device auth, live Join verification, restart-safe
+activation, Root workflows, and P5 publication use one document-bound decoder
+for canonical vNext `JsonWebKey2020` OKP Ed25519/X25519 methods; no consumer may
+reinterpret those methods through a different generic verification-method
+parser.
 
 Public host DTOs expose only safe session, DID, device, role, status, readiness,
 fingerprint, short-lived local SAS display, and UI-action facts. OTP/account

@@ -100,10 +100,10 @@ impl PendingJoinActivation {
             &self.resolved_document,
             &self.authorization.device.e2ee_key_id,
         )?;
-        let signing_public = anp::authentication::extract_public_key(signing_method)
-            .map_err(|_| crate::ImError::PermissionDenied)?;
-        let e2ee_public = anp::authentication::extract_public_key(e2ee_method)
-            .map_err(|_| crate::ImError::PermissionDenied)?;
+        let signing_public =
+            crate::internal::identity_wire::document::extract_identity_public_key(signing_method)?;
+        let e2ee_public =
+            crate::internal::identity_wire::document::extract_identity_public_key(e2ee_method)?;
         if signing_private.public_key().to_pem() != signing_public.to_pem()
             || e2ee_private.public_key().to_pem() != e2ee_public.to_pem()
         {
@@ -284,6 +284,86 @@ fn pending_key_id(join_session_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_activation_accepts_canonical_join_okp_jwk_methods() {
+        let did = crate::ids::Did::parse("did:wba:awiki.info:user:alice:e1_root").unwrap();
+        let signing_key_id = format!("{}#dev-new-sign", did.as_str());
+        let e2ee_key_id = format!("{}#dev-new-e2ee", did.as_str());
+        let signing_private =
+            anp::PrivateKeyMaterial::Ed25519(ed25519_dalek::SigningKey::from_bytes(&[42; 32]));
+        let e2ee_private =
+            anp::PrivateKeyMaterial::X25519(x25519_dalek::StaticSecret::from([24; 32]));
+        let document = serde_json::json!({
+            "id": did.as_str(),
+            "verificationMethod": [
+                okp_jwk_method(
+                    &signing_key_id,
+                    did.as_str(),
+                    &signing_private.public_key(),
+                ),
+                okp_jwk_method(
+                    &e2ee_key_id,
+                    did.as_str(),
+                    &e2ee_private.public_key(),
+                ),
+            ],
+        });
+        let document_hash =
+            crate::internal::identity_wire::document::document_hash(&document).unwrap();
+
+        let pending = PendingJoinActivation::new(
+            "join-1".to_owned(),
+            did,
+            document,
+            crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization {
+                checkpoint:
+                    crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                        document_version: 2,
+                        document_hash,
+                        registry_version: 2,
+                    },
+                device:
+                    crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                        device_id: "dev-new".to_owned(),
+                        signing_key_id,
+                        e2ee_key_id,
+                        status:
+                            crate::internal::identity_device_state::DeviceAuthorizationStatus::Active,
+                        role:
+                            crate::internal::identity_device_state::DeviceAuthorizationRole::Member,
+                        management_ready: false,
+                        auth_generation: 1,
+                    },
+            },
+            signing_private.to_pem(),
+            e2ee_private.to_pem(),
+        );
+
+        assert!(pending.is_ok());
+    }
+
+    fn okp_jwk_method(
+        key_id: &str,
+        did: &str,
+        public_key: &anp::PublicKeyMaterial,
+    ) -> serde_json::Value {
+        let (curve, bytes) = match public_key {
+            anp::PublicKeyMaterial::Ed25519(key) => ("Ed25519", key.to_bytes().to_vec()),
+            anp::PublicKeyMaterial::X25519(key) => ("X25519", key.to_vec()),
+            _ => panic!("test requires an OKP public key"),
+        };
+        serde_json::json!({
+            "id": key_id,
+            "type": "JsonWebKey2020",
+            "controller": did,
+            "publicKeyJwk": {
+                "kty": "OKP",
+                "crv": curve,
+                "x": URL_SAFE_NO_PAD.encode(bytes),
+            },
+        })
+    }
 
     #[test]
     fn debug_redacts_pending_device_private_keys_and_token() {
