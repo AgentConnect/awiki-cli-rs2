@@ -1,13 +1,15 @@
 use crate::host_runtime::host_notify::{
-    DirectMessageNotificationData, GroupMessageNotificationData, GroupStateChangedNotificationData,
-    HostNotificationAttachmentDownloadAction, HostNotificationAttachmentSummary,
-    HostNotificationData, HostNotificationEvent, HOST_NOTIFICATION_VERSION,
+    DeviceJoinRequestNotificationData, DirectMessageNotificationData, GroupMessageNotificationData,
+    GroupStateChangedNotificationData, HostNotificationAttachmentDownloadAction,
+    HostNotificationAttachmentSummary, HostNotificationData, HostNotificationEvent,
+    HOST_NOTIFICATION_VERSION,
 };
 use crate::host_runtime::host_notify_sink::HostNotifySink;
 use crate::host_runtime::listener::{self, Status};
 use im_core::prelude::{
     AttachmentDownloadAction, AttachmentMessageSummary, GroupUpdateKind, HostNotificationKind,
-    ImEvent, Message, MessageBodyView, MessageReceivedEvent, RealtimeConnectionState, ThreadRef,
+    ImEvent, Message, MessageBodyView, MessageReceivedEvent, RealtimeConnectionState,
+    SystemNotificationChangedEvent, SystemNotificationKind, SystemNotificationState, ThreadRef,
 };
 use std::sync::{Arc, Mutex};
 use time::OffsetDateTime;
@@ -90,9 +92,16 @@ pub fn handle_im_event(
             );
             push_warning(status, &warning);
         }
-        ImEvent::MessageUpdated(_)
-        | ImEvent::LocalNotification(_)
-        | ImEvent::SystemNotificationChanged(_) => {
+        ImEvent::SystemNotificationChanged(event) => {
+            let host_event = host_notification_from_system_notification(event, received_at);
+            if host_event.is_some() {
+                result.route = CliImEventRoute::DeviceJoinRequested;
+                dispatch_host_notification(host_notify_sink, status, host_event, &mut result);
+            } else {
+                result.route = CliImEventRoute::Ignored;
+            }
+        }
+        ImEvent::MessageUpdated(_) | ImEvent::LocalNotification(_) => {
             result.route = CliImEventRoute::Ignored;
         }
     }
@@ -105,6 +114,7 @@ pub enum CliImEventRoute {
     GroupIncoming,
     GroupStateChanged,
     HostNotification,
+    DeviceJoinRequested,
     UnknownNotification,
     ConnectionStateChanged,
     #[default]
@@ -431,6 +441,38 @@ fn host_notification_from_sdk_host_event(
                 subject: title,
                 preview: body,
                 ..DirectMessageNotificationData::default()
+            },
+        )),
+    })
+}
+
+fn host_notification_from_system_notification(
+    event: SystemNotificationChangedEvent,
+    received_at: Option<OffsetDateTime>,
+) -> Option<HostNotificationEvent> {
+    let notification = event.notification;
+    if notification.kind != SystemNotificationKind::JoinRequested
+        || notification.state != SystemNotificationState::Pending
+        || notification.terminal
+        || notification.event_id.trim().is_empty()
+        || notification.join_session_id.trim().is_empty()
+        || notification.did.trim().is_empty()
+    {
+        return None;
+    }
+    Some(HostNotificationEvent {
+        version: HOST_NOTIFICATION_VERSION.to_string(),
+        id: notification.event_id.clone(),
+        topic: "im.device.join.requested".to_string(),
+        received_at: format_go_rfc3339(received_at.unwrap_or_else(OffsetDateTime::now_utc)),
+        data: Some(HostNotificationData::DeviceJoinRequest(
+            DeviceJoinRequestNotificationData {
+                channel: "device".to_string(),
+                event_id: notification.event_id,
+                join_session_id: notification.join_session_id,
+                recipient_did: notification.did,
+                issued_at: notification.issued_at,
+                expires_at: notification.expires_at,
             },
         )),
     })
