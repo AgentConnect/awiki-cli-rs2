@@ -173,6 +173,10 @@ host 不接收该身份的动态配置，也不需要处理自定义 profile。
 纯本地读取，只接受已经进入 `ResponseVerified` 或 `ApprovalPrepared` 的本地管理端 Session；
 它不发起 HTTP/RPC、不轮询远端、不写通知，也不推进 Join 状态。
 
+新设备的 `pollNewDeviceJoin` 在远端仍为 `responseVerified` 时，从本地 restart-safe
+transcript 与 Vault pairing secret 按需重新派生同一 SAS；SAS 本身仍不落盘。这样响应已经
+提交后发生 App 重启或一次无界面轮询，不会让该 Join 永久失去可比较的 SAS。
+
 用户确认 SAS 一致后，host 调用 `prepareDeviceJoinApproval`，再在真实本地 user presence 后调用
 `confirmDeviceJoinApproval`。approval API 不接受 role，Join 结果固定为 rootless
 `member`；Registry 中既有设备的 member/admin role 仍可用于授权设备展示。approval handle

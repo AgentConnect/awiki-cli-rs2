@@ -371,6 +371,11 @@ ResponseVerified/ApprovalPrepared 阶段的纯本地短期读取入口。它只�
 与 Vault 读取 SAS，不发 RPC、不写 System Notification projection，也不推进 Join state。SAS
 不进入 `DeviceJoinRequestNotice`、realtime event、CLI JSON 或 durable notice。
 
+新设备侧 `poll_new_device_join` 在远端保持 `response_verified` 且本地仍为
+`ResponsePrepared` 时，会从 restart-safe transcript 与 Vault pairing secret 重新派生同一
+SAS。该恢复语义不持久化 SAS，也不把它放入远端状态；它保证首次响应提交后即使 host
+重启或先执行了无 UI 的状态轮询，下一次前台调用仍可显示并比较 SAS。
+
 `DeviceJoinAccountVerificationGrant` is a write-only input consumed by
 `begin_new_device_join`; it is not serializable and its `Debug` output is
 redacted. Approval is intentionally split: after the host confirms the

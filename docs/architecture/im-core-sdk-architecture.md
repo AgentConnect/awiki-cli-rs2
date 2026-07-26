@@ -165,9 +165,13 @@ proof and Origin Proof; it must not equal or impersonate `serviceDid`. Core also
 candidate Join Request before exposing it. The admin's first explicit action
 submits claim and encrypted Challenge in one RPC/CAS. The two devices derive
 their six-digit SAS locally. Only the short-lived display value may cross the
-Core-to-host facade; SAS derivation material never does, and neither the SAS nor
-its derivation material enters the network, Outbox, persistence, or logs. After
-host user-presence, approval atomically commits the DID Document, Registry
+Core-to-host facade. Neither the SAS nor the ephemeral pairing shared secret
+enters the network, Outbox, persistence, or logs; restart-safe protocol inputs
+and the pairing-key reference remain in encrypted local Join/Vault state. While
+the remote session remains `response_verified`, the candidate re-derives the
+same SAS from that state on every poll. This closes the
+response-submit/process-crash boundary without persisting the display value.
+After host user-presence, approval atomically commits the DID Document, Registry
 member row, and consumed Join session.
 
 Remote `consumed` is not sufficient local authorization. The candidate resolves

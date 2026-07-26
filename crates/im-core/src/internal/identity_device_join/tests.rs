@@ -294,6 +294,63 @@ fn local_admin_verification_progress_is_phase_gated_and_read_only() {
 }
 
 #[test]
+fn local_new_device_sas_is_restart_safe_and_read_only() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let (core, document, did) = open_ready_admin_core(admin_root.path());
+    let candidate = open_empty_vault_core(candidate_root.path());
+    let document_hash = canonical_hash(&document).unwrap();
+    let started = candidate
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "start-candidate-progress".to_owned(),
+            did,
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    assert!(
+        local_new_device_verification_sas(&candidate, &started.session.join_session_id,).is_err()
+    );
+    let prepared = core
+        .device_join()
+        .prepare_admin_challenge(DeviceJoinAdminPrepareRequest {
+            admin_identity: crate::identity::IdentitySelector::Default,
+            operation_id: "prepare-candidate-progress".to_owned(),
+            join_request: started.join_request,
+            challenge_ttl_seconds: 180,
+            document_version: 7,
+            document_hash: document_hash.clone(),
+        })
+        .unwrap();
+    let responded = candidate
+        .device_join()
+        .respond_as_new_device(DeviceJoinNewDeviceRespondRequest {
+            operation_id: "respond-candidate-progress".to_owned(),
+            challenge: prepared.challenge,
+            admin_did_document: document,
+            document_version: 7,
+            document_hash,
+        })
+        .unwrap();
+    drop(candidate);
+
+    let reopened = open_empty_vault_core(candidate_root.path());
+    let before = JoinStateStore::new(&reopened)
+        .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .unwrap();
+    let recovered =
+        local_new_device_verification_sas(&reopened, &started.session.join_session_id).unwrap();
+    let after = JoinStateStore::new(&reopened)
+        .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(recovered, responded.sas);
+    assert_eq!(before, after, "local SAS read must not rewrite Join state");
+}
+
+#[test]
 fn admin_join_projection_advances_checkpoint_and_is_repeat_safe() {
     let root = tempfile::tempdir().unwrap();
     let (core, document, did) = open_ready_admin_core(root.path());

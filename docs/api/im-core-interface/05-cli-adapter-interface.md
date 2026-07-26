@@ -119,6 +119,11 @@ the corresponding Core facade, while `id device list`, notification-driven
 request listing, start-verification, reject and approval use the selected
 management identity. There is no management-device Join poll or cancel path.
 
+`id device join poll` may re-derive the candidate's SAS while the remote state
+remains `response_verified`, including after a previous non-interactive poll or
+process restart. It displays that value only on a foreground TTY; structured
+JSON remains redacted on every invocation.
+
 `id device join approve` requires a foreground TTY. The user types the locally
 derived SAS and an explicit approval word; the adapter then prepares and
 consumes the one-time approval handle in the same process. The handle is never

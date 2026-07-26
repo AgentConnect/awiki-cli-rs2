@@ -933,7 +933,12 @@ where
                     .session(join_session_id, crate::identity::DeviceJoinSide::NewDevice)?,
                 remote_state: status.state,
                 authorization: None,
-                sas: None,
+                sas: Some(
+                    crate::internal::identity_device_join::local_new_device_verification_sas(
+                        self.core,
+                        join_session_id,
+                    )?,
+                ),
             }),
             DeviceJoinRemoteState::Consumed => {
                 let authorization = status

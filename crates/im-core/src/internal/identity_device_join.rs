@@ -1745,6 +1745,27 @@ pub(crate) fn session(
     summary(&stored)
 }
 
+pub(crate) fn local_new_device_verification_sas(
+    core: &crate::core::ImCore,
+    join_session_id: &str,
+) -> crate::ImResult<String> {
+    let _guard = lock_join_state(core)?;
+    let join_session_id = required("join_session_id", join_session_id)?;
+    let store = JoinStateStore::new(core);
+    let stored = store
+        .load(&join_session_id, DeviceJoinSide::NewDevice)?
+        .ok_or_else(|| crate::ImError::IdentityNotFound {
+            selector: join_session_id.clone(),
+        })?;
+    ensure_not_expired(&stored)?;
+    if stored.phase != DeviceJoinLocalPhase::ResponsePrepared {
+        return Err(invalid_state(
+            "new-device Join response is not ready for SAS display",
+        ));
+    }
+    derive_stored_sas(core, &stored)
+}
+
 pub(crate) fn list_sessions(
     core: &crate::core::ImCore,
 ) -> crate::ImResult<Vec<DeviceJoinSessionSummary>> {
