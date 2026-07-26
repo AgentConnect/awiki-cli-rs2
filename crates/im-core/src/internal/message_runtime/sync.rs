@@ -81,7 +81,6 @@ where
                 result.retention_floor_event_seq = page.retention_floor_event_seq;
                 return Ok(result);
             }
-            reject_invalid_delta_page_shape(&page)?;
             let apply_input = sync_delta_apply_input(self.client, &page)?;
             let outcome = apply_sync_delta_blocking(self.client, apply_input)?;
             result.events_applied = result
@@ -289,7 +288,6 @@ where
                 result.retention_floor_event_seq = page.retention_floor_event_seq;
                 return Ok(result);
             }
-            reject_invalid_delta_page_shape(&page)?;
             let apply_input = sync_delta_apply_input(self.client, &page)?;
             let db = self.client.core_inner().local_state_db().await?;
             let outcome = db.apply_sync_delta(apply_input).await?;
@@ -501,17 +499,6 @@ fn append_backlog_warning(warnings: &mut Vec<String>, backlogged_messages: usize
     if backlogged_messages > 0 {
         warnings.push(format!("identity_unresolved_backlog:{backlogged_messages}"));
     }
-}
-
-fn reject_invalid_delta_page_shape(
-    page: &crate::internal::wire::sync::SyncDeltaPage,
-) -> crate::ImResult<()> {
-    if page.has_more && page.events.is_empty() {
-        return Err(sync_invalid_page(
-            "sync.delta returned has_more=true with no events",
-        ));
-    }
-    Ok(())
 }
 
 fn page_contains_system_notification(page: &crate::internal::wire::sync::SyncDeltaPage) -> bool {

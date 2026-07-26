@@ -1472,6 +1472,17 @@ async fn project_p5_v2_realtime_notification(
         .get_mut("meta")
         .and_then(Value::as_object_mut)
         .ok_or(crate::ImError::PermissionDenied)?;
+    let secure_wire_content_type = meta
+        .get("content_type")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    meta.insert("raw_message_id".to_owned(), Value::String(message_id));
+    if let Some(secure_wire_content_type) = secure_wire_content_type {
+        meta.insert(
+            "secure_wire_content_type".to_owned(),
+            Value::String(secure_wire_content_type),
+        );
+    }
     meta.insert("message_id".to_owned(), Value::String(logical_message_id));
     meta.insert("sender_did".to_owned(), Value::String(sender_did));
     meta.insert(

@@ -290,6 +290,13 @@ consumed or dropped. Raw v2 wire bodies, ciphertext, and control JSON never
 cross the Rust/Dart/CLI/App public boundary and never fall back to a legacy
 plaintext renderer.
 
+Realtime own-sync keeps the current client identity as the local storage owner
+and routes the projected outgoing message to the decrypted `target_did`.
+It must not reinterpret that external target as the local owner or retain the
+same-user wire sender as the Direct peer; the committed wire route, canonical
+Persona conversation, sender/receiver snapshots, and UI hint all use the same
+external peer.
+
 For P6, blocking/async read and realtime share the same internal notice
 consumer. A standard `group.e2ee.notice` is bound to the current owner
 DID/device, resolved against the current P4 group-member DID documents, and
@@ -676,6 +683,12 @@ Schema version 20 adds `sync_state` with owner-scoped checkpoint rows:
 `sync_state` is private local recovery state. Diagnostics should report counts,
 durations, redacted owner/thread identifiers, and checkpoint age rather than raw
 message payloads or sensitive E2EE material.
+
+`sync.delta` is an authenticated exact-device projection over an owner-global
+sequence. The service may omit sibling-targeted or expired rows while advancing
+`next_event_seq`; Core therefore accepts strictly increasing visible sequences
+with gaps and empty advancing pages, counts only visible applied events, and
+commits the returned scan checkpoint atomically with those projections.
 
 ## 15. System Notification Projection
 

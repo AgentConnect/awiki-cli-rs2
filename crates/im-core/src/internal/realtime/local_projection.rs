@@ -43,7 +43,7 @@ pub fn plan_realtime_message_local_projection(
     download_action: Option<&crate::realtime::AttachmentDownloadAction>,
     warnings: &[String],
 ) -> Option<RealtimeMessageLocalProjection> {
-    let owner_did = owner_did_for_message(message, context);
+    let owner_did = context.owner_did.trim().to_string();
     if owner_did.is_empty() || message.id.as_str().trim().is_empty() {
         return None;
     }
@@ -139,20 +139,6 @@ pub fn apply_realtime_message_local_projection(
         .commit()
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     Ok(outcome.stored_messages > 0)
-}
-
-#[cfg(feature = "sqlite")]
-fn owner_did_for_message(
-    message: &crate::messages::Message,
-    context: &RealtimeMessageLocalProjectionContext,
-) -> String {
-    if let Some(receiver) = message.receiver.as_ref() {
-        let receiver = receiver.as_str().trim();
-        if !receiver.is_empty() {
-            return receiver.to_string();
-        }
-    }
-    context.owner_did.trim().to_string()
 }
 
 #[cfg(feature = "sqlite")]
@@ -501,6 +487,75 @@ mod tests {
         assert!(record.is_e2ee);
         assert_eq!(metadata["decryption_state"], "decrypted");
         assert_eq!(metadata["raw_message_id"], "logical-message-12");
+    }
+
+    #[test]
+    fn own_device_sync_keeps_local_owner_and_external_wire_peer() {
+        let message = crate::messages::Message {
+            id: crate::ids::MessageId::parse("logical-own-sync-1").unwrap(),
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:peer", "").unwrap(),
+            ),
+            direction: crate::messages::MessageDirection::Outgoing,
+            sender: crate::ids::PeerRef::parse("did:example:owner", "").unwrap(),
+            receiver: Some(crate::ids::PeerRef::parse("did:example:peer", "").unwrap()),
+            group: None,
+            body: crate::messages::MessageBodyView::Text {
+                text: "synced outbound".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            sent_at: Some("2026-07-26T20:00:00Z".to_owned()),
+            received_at: Some("2026-07-26T20:00:01Z".to_owned()),
+            metadata: crate::messages::MessageMetadata {
+                content_type: Some("text/plain".to_owned()),
+                attributes: vec![
+                    crate::messages::MessageMetadataAttribute {
+                        key: "security".to_owned(),
+                        value: "direct-e2ee".to_owned(),
+                    },
+                    crate::messages::MessageMetadataAttribute {
+                        key: "decryption_state".to_owned(),
+                        value: "decrypted".to_owned(),
+                    },
+                ],
+                ..crate::messages::MessageMetadata::default()
+            },
+        };
+        let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "peer-user",
+            "peer.example",
+        )
+        .unwrap();
+
+        let record = plan_realtime_message_local_projection(
+            &RealtimeMessageLocalProjectionContext {
+                owner_identity_id: "owner-id".to_owned(),
+                owner_did: "did:example:owner".to_owned(),
+                credential_name: "owner".to_owned(),
+                peer_scope: Some(peer_scope.clone()),
+            },
+            &message,
+            None,
+            None,
+            &[],
+        )
+        .unwrap()
+        .into_record();
+
+        assert_eq!(record.owner_did, "did:example:owner");
+        assert_eq!(record.sender_did, "did:example:owner");
+        assert_eq!(record.receiver_did, "did:example:peer");
+        assert_eq!(record.wire_thread_kind, "direct");
+        assert_eq!(record.wire_thread_ref, "did:example:peer");
+        assert_eq!(
+            record.conversation_id,
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &peer_scope
+            )
+        );
+        assert_eq!(record.content, "synced outbound");
+        assert!(record.is_e2ee);
+        assert!(record.is_read);
     }
 
     #[test]

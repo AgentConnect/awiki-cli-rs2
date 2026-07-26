@@ -173,6 +173,49 @@ fn did_document(did: &str, devices: &[DeviceSpec]) -> Value {
     })
 }
 
+#[test]
+fn fetched_prekey_accepts_join_style_okp_jwk_signing_method() {
+    let did = "did:example:joined";
+    let device = DeviceSpec {
+        id: "joined-device",
+        signing_seed: 121,
+        static_seed: 122,
+        signed_prekey_seed: 123,
+        one_time_prekey_seed: 124,
+    };
+    let mut document = did_document(did, &[device]);
+    let signing_key_id = device.signing_key_id(did);
+    let signing_public = match device.signing().public_key() {
+        anp::PublicKeyMaterial::Ed25519(key) => key.to_bytes(),
+        _ => unreachable!(),
+    };
+    let method = document["verificationMethod"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|method| method["id"] == signing_key_id)
+        .unwrap();
+    *method = json!({
+        "id": signing_key_id,
+        "type": "JsonWebKey2020",
+        "controller": did,
+        "publicKeyJwk": {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": URL_SAFE_NO_PAD.encode(signing_public),
+        },
+    });
+    let target = anp::authentication::validate_device_manifest(&document)
+        .unwrap()
+        .unwrap()
+        .devices
+        .into_iter()
+        .next()
+        .unwrap();
+
+    verify_fetched_prekey(&device.fetched(did), &target, did, &document).unwrap();
+}
+
 fn scope(identity_id: &str, did: &str, device: DeviceSpec) -> V2OwnerScope {
     let did_value = crate::ids::Did::parse(did).unwrap();
     V2OwnerScope::from_identity_state(

@@ -723,7 +723,10 @@ pub struct RealtimeSyncHint {
    `next_event_seq` checkpoint。后续权威 Handle projection 会幂等重放对应 backlog；冲突保持
    blocked/conflict-visible，不猜测合并。
 5. 返回 `events_applied`、`pages_fetched` 和 `last_applied_event_seq` 作为诊断和 UI 状态；
-   `last_applied_event_seq` 不是 public checkpoint setter。
+   `events_applied` 只统计本设备实际可见并应用的事件；`last_applied_event_seq` 是服务端扫描后
+   提交的 owner checkpoint，不是 public checkpoint setter。`sync.delta` 按认证设备投影时，
+   服务端会跳过发给兄弟设备或已过期的 owner 事件，因此可见 `event_seq` 允许严格递增但不连续，
+   空事件页也可以在 `next_event_seq` 前进时提交 checkpoint。
 6. 当服务端返回 `snapshot_required=true` 时 fail-closed：不推进 checkpoint、不清空本地
    projection，返回 `snapshot_required=true` 和诊断字段。
 7. `has_more=true` 时可由 runtime 或上层 coordinator 继续调度下一页，但每页仍必须走

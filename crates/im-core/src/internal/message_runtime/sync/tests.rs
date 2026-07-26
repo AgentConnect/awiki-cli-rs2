@@ -480,8 +480,9 @@ async fn sync_delta_snapshot_required_is_fail_closed() {
 }
 
 #[tokio::test]
-async fn sync_delta_invalid_page_rolls_back_message_and_checkpoint() {
-    let fixture = Fixture::new("sync-delta-rollback");
+async fn sync_delta_accepts_sparse_exact_device_projection() {
+    let fixture = Fixture::new("sync-delta-sparse-device-projection");
+    fixture.seed_verified_peer();
     let client = fixture.client();
     let runtime = MessageSyncRuntime::new(
         &client,
@@ -500,20 +501,99 @@ async fn sync_delta_invalid_page_rolls_back_message_and_checkpoint() {
         NoopDirectoryTransport,
     );
 
-    let err = runtime
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest {
+                device_id: Some("device-a".to_owned()),
+                ..crate::messages::SyncDeltaRequest::default()
+            },
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 2);
+    assert_eq!(result.last_applied_event_seq.as_deref(), Some("3"));
+    assert_eq!(fixture.checkpoint().as_deref(), Some("3"));
+    assert_eq!(fixture.message_server_seq("msg-before-gap"), Some(1));
+    assert_eq!(fixture.message_server_seq("msg-after-gap"), Some(3));
+    assert!(committed_sync_invalidations_for_test()
+        .iter()
+        .any(|item| item.checkpoint_event_seq == "3"));
+}
+
+#[tokio::test]
+async fn sync_delta_empty_exact_device_page_advances_before_next_page() {
+    let fixture = Fixture::new("sync-delta-empty-device-page");
+    fixture.seed_verified_peer();
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::clone(&calls),
+            vec![
+                delta_page(Vec::new(), "2", true),
+                delta_page(
+                    vec![message_created_event("sev-4", "4", "msg-visible-4", 4)],
+                    "4",
+                    false,
+                ),
+            ],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest {
+                limit: Some(2),
+                device_id: Some("device-a".to_owned()),
+                reason: Some("exact_device_projection".to_owned()),
+            },
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 1);
+    assert_eq!(result.pages_fetched, 2);
+    assert_eq!(result.last_applied_event_seq.as_deref(), Some("4"));
+    assert_eq!(fixture.checkpoint().as_deref(), Some("4"));
+    assert_eq!(fixture.message_server_seq("msg-visible-4"), Some(4));
+    let calls = calls.borrow();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].params["body"]["since_event_seq"], "0");
+    assert_eq!(calls[1].params["body"]["since_event_seq"], "2");
+}
+
+#[tokio::test]
+async fn sync_delta_rejects_visible_event_ahead_of_server_checkpoint() {
+    let fixture = Fixture::new("sync-delta-event-ahead-of-checkpoint");
+    let client = fixture.client();
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![delta_page(
+                vec![message_created_event("sev-3", "3", "msg-ahead", 3)],
+                "2",
+                false,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let error = runtime
         .sync_delta_async(SyncDeltaInput {
             request: crate::messages::SyncDeltaRequest::default(),
         })
         .await
         .unwrap_err();
 
-    assert!(err.to_string().contains("event_seq gap"));
+    assert!(error.to_string().contains("ahead of next_event_seq"));
     assert_eq!(fixture.checkpoint(), None);
-    assert_eq!(fixture.message_server_seq("msg-before-gap"), None);
-    assert_eq!(fixture.message_server_seq("msg-after-gap"), None);
-    assert!(!committed_sync_invalidations_for_test()
-        .iter()
-        .any(|item| item.checkpoint_event_seq == "3"));
+    assert_eq!(fixture.message_server_seq("msg-ahead"), None);
 }
 
 #[tokio::test]
