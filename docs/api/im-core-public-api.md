@@ -318,6 +318,18 @@ impl IdentityRegistry<'_> {
     pub fn list(&self) -> ImResult<Vec<IdentitySummary>>;
     pub fn default_identity(&self) -> ImResult<Option<IdentitySummary>>;
     pub fn resolve(&self, selector: IdentitySelector) -> ImResult<IdentitySummary>;
+    pub fn delete_local_identity(
+        &self,
+        selector: IdentitySelector,
+    ) -> ImResult<DeleteLocalIdentityResult>;
+    pub fn legacy_upgrade_status(
+        &self,
+        selector: IdentitySelector,
+    ) -> ImResult<LegacyUpgradeStatus>;
+    pub async fn upgrade_legacy_identity_async(
+        &self,
+        selector: IdentitySelector,
+    ) -> ImResult<LegacyUpgradeStatus>;
     pub fn device_summary(
         &self,
         selector: IdentitySelector,
@@ -342,6 +354,20 @@ impl IdentityRegistry<'_> {
         selector: IdentitySelector,
     ) -> ImResult<DefaultIdentityChange>;
 }
+
+pub struct DeleteLocalIdentityResult {
+    pub deleted: IdentitySummary,
+    pub was_default: bool,
+    pub next_default: Option<IdentitySummary>,
+    pub warnings: Vec<String>,
+}
+
+pub enum LegacyUpgradeStatus {
+    Idle,
+    Running,
+    RetryRequired { identity_id: String, code: String },
+    Completed,
+}
 ```
 
 `IdentityDeviceSummary` 是面向产品层的安全投影，只公开协议设备 ID、公开
@@ -353,6 +379,18 @@ Vault 引用、根私钥存在标志或 AWiki 域内的 `document_version`、
 P5/P6 需要精确设备端点时，Core 从持久化 identity index 的当前 active vNext
 authorization 读取 `ProtocolDeviceId`；host 如需展示设备摘要，应调用
 `IdentityRegistry::device_summary`，不得从缺失值推导 `default` 或 sibling 设备。
+
+`delete_local_identity` 是纯本地、crash-safe 的身份退役事务。registry/default
+pointer tombstone 是目录与 Vault 清理之前的权威状态；Core open 会恢复中断阶段，并
+通过永久 identity-ID tombstone 清理由并发尾部任务晚写的 identity-scoped Vault
+records。Host 的 realtime stop、runtime dispose 和任何网络 logout 都不属于该调用的
+成功条件。
+
+Legacy upgrade 是 Core 内部可恢复事务；host 必须等待
+`upgrade_legacy_identity_async` 的 typed status，不得用更短的通用 UI request timeout
+包裹它。`RetryRequired.code` 只返回
+`transport_unavailable|service_error|permission_denied|auth_required|local_state_unavailable|legacy_upgrade_failed`
+之一，既不泄露响应正文，也不会把 native future 仍在执行误判为已取消。
 
 `register_handle` 是唯一注册入口。新注册生成带 bootstrap Manifest 的 DID 和独立设备
 keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest 的旧客户端仍走 Legacy

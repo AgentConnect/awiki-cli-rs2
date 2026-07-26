@@ -84,7 +84,7 @@ impl ImCore {
                 detail: "identity secret storage policy is VaultRequired but no identity secret vault was provided".to_owned(),
             });
         }
-        Ok(Self {
+        let core = Self {
             inner: Arc::new(ImCoreInner {
                 sdk_config,
                 sdk_paths,
@@ -100,7 +100,9 @@ impl ImCore {
                 #[cfg(feature = "sqlite")]
                 local_state_db: OnceCell::new(),
             }),
-        })
+        };
+        crate::internal::identity_retirement::recover_all(&core)?;
+        Ok(core)
     }
 
     pub fn identities(&self) -> crate::identity::IdentityRegistry<'_> {

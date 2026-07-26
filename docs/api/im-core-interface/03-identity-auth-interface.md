@@ -109,6 +109,21 @@ impl IdentityRegistry<'_> {
 
     pub fn resolve(&self, selector: IdentitySelector) -> crate::ImResult<IdentitySummary>;
 
+    pub fn delete_local_identity(
+        &self,
+        selector: IdentitySelector,
+    ) -> crate::ImResult<DeleteLocalIdentityResult>;
+
+    pub fn legacy_upgrade_status(
+        &self,
+        selector: IdentitySelector,
+    ) -> crate::ImResult<LegacyUpgradeStatus>;
+
+    pub async fn upgrade_legacy_identity_async(
+        &self,
+        selector: IdentitySelector,
+    ) -> crate::ImResult<LegacyUpgradeStatus>;
+
     pub fn vault_status(
         &self,
         selector: IdentitySelector,
@@ -142,6 +157,27 @@ impl IdentityRegistry<'_> {
 ```
 
 `load_runtime` 只能是 `pub(crate)`，供 `ImCore::client` 使用。
+
+`delete_local_identity` 是离线、可恢复的本地身份退役事务。成功返回前，Core
+已提交 registry/default pointer tombstone，并删除该 identity ID 精确拥有的目录和
+Vault records；它不等待远端 logout、realtime stop 或 host runtime dispose。Core open
+会恢复中断的退役阶段，并对已完成 tombstone 重放 identity-scoped Vault cleanup，防止
+删除开始前已进入执行的异步任务在删除返回后重新写入凭证。
+
+```rust
+pub struct DeleteLocalIdentityResult {
+    pub deleted: IdentitySummary,
+    pub was_default: bool,
+    pub next_default: Option<IdentitySummary>,
+    pub warnings: Vec<String>,
+}
+```
+
+`LegacyUpgradeStatus::RetryRequired { identity_id, code }` 的 `code` 是安全分类，
+包括 `transport_unavailable`、`service_error`、`permission_denied`、
+`auth_required`、`local_state_unavailable` 和兜底 `legacy_upgrade_failed`。同步 status
+查询与升级调用的即时失败使用同一分类。Host 必须等待 Core 的 typed 结果，不能用较短的
+通用 UI timeout 包裹升级 future；Dart timeout 不会取消 native 事务，会制造并发重试。
 
 `register_handle` 是新旧客户端共用的唯一注册入口。新注册在本地生成带 bootstrap
 Manifest 的 DID 和独立设备 signing/E2EE key，通过同一个 `register` RPC 原子创建

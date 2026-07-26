@@ -1545,16 +1545,25 @@ impl<'a> IdentityStore<'a> {
     }
 
     pub(crate) fn write_default_identity(&self, local_alias: &str) -> crate::ImResult<()> {
+        self.sync_default_identity(Some(local_alias))
+    }
+
+    pub(crate) fn sync_default_identity(&self, local_alias: Option<&str>) -> crate::ImResult<()> {
         let Some(path) = self.paths.default_identity_path.as_deref() else {
             return Ok(());
+        };
+        let Some(local_alias) = local_alias.filter(|value| !value.trim().is_empty()) else {
+            return match fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(crate::ImError::from(error)),
+            };
         };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
             set_private_dir_mode(parent)?;
         }
-        fs::write(path, format!("{local_alias}\n"))?;
-        set_private_file_mode(path)?;
-        Ok(())
+        write_secure_bytes_atomic(path, format!("{local_alias}\n").as_bytes())
     }
 
     pub(crate) fn update_display_name_projection(
@@ -2196,7 +2205,7 @@ fn write_secure_json(path: &Path, payload: &impl Serialize) -> crate::ImResult<(
 /// Root import commits a Vault reference and its non-secret replay record in
 /// one index image. A crash may leave the previous complete image or the new
 /// complete image, but never a truncated JSON registry.
-fn write_secure_bytes_atomic(path: &Path, raw: &[u8]) -> crate::ImResult<()> {
+pub(crate) fn write_secure_bytes_atomic(path: &Path, raw: &[u8]) -> crate::ImResult<()> {
     use std::io::Write as _;
 
     let parent = path
@@ -2737,26 +2746,26 @@ fn create_private_file(path: &Path) -> crate::ImResult<fs::File> {
 }
 
 #[cfg(unix)]
-fn set_private_dir_mode(path: &Path) -> crate::ImResult<()> {
+pub(crate) fn set_private_dir_mode(path: &Path) -> crate::ImResult<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn set_private_dir_mode(_path: &Path) -> crate::ImResult<()> {
+pub(crate) fn set_private_dir_mode(_path: &Path) -> crate::ImResult<()> {
     Ok(())
 }
 
 #[cfg(unix)]
-fn set_private_file_mode(path: &Path) -> crate::ImResult<()> {
+pub(crate) fn set_private_file_mode(path: &Path) -> crate::ImResult<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn set_private_file_mode(_path: &Path) -> crate::ImResult<()> {
+pub(crate) fn set_private_file_mode(_path: &Path) -> crate::ImResult<()> {
     Ok(())
 }
 

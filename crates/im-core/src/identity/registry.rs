@@ -46,35 +46,12 @@ impl<'a> IdentityRegistry<'a> {
         &self,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
-        let paths = &self.core.inner().sdk_paths().identities;
-        let store = crate::internal::identity_store::IdentityStore::new(paths);
-        let index_lock = store.lock_index_mutation()?;
         let mut registry = self.load_registry()?;
         let deleted_index = registry.find_index(selector)?;
         let deleted_entry = registry.entries.remove(deleted_index);
         let deleted = deleted_entry.summary.clone();
         let was_default = deleted.is_default
             || registry.default_alias.as_deref() == deleted_entry.local_alias.as_deref();
-
-        let mut warnings = Vec::new();
-        if let Some(identity_dir_name) = deleted_entry.identity_dir_name() {
-            let identity_dir = store.local_identity_dir(&identity_dir_name)?;
-            match fs::remove_dir_all(&identity_dir) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    warnings.push(format!(
-                        "local identity directory was already missing: {}",
-                        identity_dir.display()
-                    ));
-                }
-                Err(err) => return Err(crate::ImError::from(err)),
-            }
-        } else {
-            warnings.push(format!(
-                "local identity {} did not include a usable directory name",
-                deleted.id.as_str()
-            ));
-        }
 
         if was_default {
             registry.default_alias = registry
@@ -84,32 +61,29 @@ impl<'a> IdentityRegistry<'a> {
         }
         registry.apply_default_flags();
         let next_default = registry.default_identity();
-        let mut index = store.load_index()?;
-        let index_name = index
-            .credentials
-            .iter()
-            .find(|(name, entry)| {
-                deleted_entry.local_alias.as_deref() == Some(name.as_str())
-                    || entry.unique_id == deleted.id.as_str()
-                    || entry.did == deleted.did.as_str()
-            })
-            .map(|(name, _)| name.clone())
-            .ok_or_else(|| crate::ImError::IdentityNotFound {
-                selector: deleted.id.as_str().to_owned(),
-            })?;
-        index.credentials.remove(&index_name);
-        index.default_credential_name = registry.default_alias.clone().unwrap_or_default();
-        store.save_index_locked(&index_lock, index)?;
-        write_default_identity(
-            paths.default_identity_path.as_deref(),
-            registry.default_alias.as_deref(),
+        let local_alias =
+            deleted_entry
+                .local_alias
+                .clone()
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: deleted.id.as_str().to_owned(),
+                })?;
+        let outcome = crate::internal::identity_retirement::retire(
+            self.core,
+            crate::internal::identity_retirement::IdentityRetirementInput {
+                identity_id: deleted.id.as_str().to_owned(),
+                did: deleted.did.as_str().to_owned(),
+                local_alias,
+                identity_dir_name: deleted_entry.identity_dir_name(),
+                next_default_alias: registry.default_alias.clone(),
+            },
         )?;
 
         Ok(super::DeleteLocalIdentityResult {
             deleted,
             was_default,
             next_default,
-            warnings,
+            warnings: outcome.warnings,
         })
     }
 
@@ -168,11 +142,12 @@ impl<'a> IdentityRegistry<'a> {
         let identity = self.resolve_async(selector.clone()).await?;
         match crate::internal::identity_legacy_upgrade_runtime::upgrade(self.core, selector).await {
             Ok(status) => Ok(status),
-            Err(_) => Ok(super::LegacyUpgradeStatus::RetryRequired {
+            Err(error) => Ok(super::LegacyUpgradeStatus::RetryRequired {
                 identity_id: identity.id.as_str().to_owned(),
-                code: self
-                    .legacy_upgrade_failure_code(&identity)
-                    .unwrap_or_else(|| "legacy_upgrade_failed".to_owned()),
+                code: crate::internal::identity_legacy_upgrade_runtime::legacy_upgrade_error_code(
+                    &error,
+                )
+                .to_owned(),
             }),
         }
     }
@@ -220,18 +195,6 @@ impl<'a> IdentityRegistry<'a> {
             Some(_) => super::LegacyUpgradeStatus::Running,
             None => super::LegacyUpgradeStatus::Idle,
         })
-    }
-
-    fn legacy_upgrade_failure_code(&self, identity: &super::IdentitySummary) -> Option<String> {
-        let alias = identity.local_alias.as_deref()?;
-        crate::internal::identity_legacy_upgrade_pending::PendingLegacyUpgradeStore::from_core(
-            self.core,
-        )
-        .ok()?
-        .load(alias)
-        .ok()??
-        .1
-        .failure_code
     }
 
     pub fn vault_status(
@@ -2124,26 +2087,6 @@ fn write_registry(path: &Path, registry: &RegistrySnapshot) -> crate::ImResult<(
         detail: err.to_string(),
     })?;
     fs::write(path, raw)?;
-    Ok(())
-}
-
-fn write_default_identity(path: Option<&Path>, default_alias: Option<&str>) -> crate::ImResult<()> {
-    let Some(path) = path else {
-        return Ok(());
-    };
-    match default_alias {
-        Some(alias) => {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(path, format!("{alias}\n"))?;
-        }
-        None => match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(crate::ImError::from(err)),
-        },
-    }
     Ok(())
 }
 

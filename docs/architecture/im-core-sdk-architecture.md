@@ -192,6 +192,33 @@ grants, Join tokens, pairing private keys, Challenge plaintext, SAS derivation
 material, root plaintext, Object Proof secrets, and internal checkpoints do not
 cross the host facade or CLI output boundary.
 
+Local identity deletion is an offline Core transaction, not a remote logout
+operation. Core first persists a secret-free retirement marker keyed by the
+immutable identity ID, then atomically removes the identity from the registry
+and default pointer before deleting its owned directory and every Vault record
+whose `identity_id` matches exactly. Startup recovery resumes incomplete phases.
+Completed identity-ID tombstones repeat Vault cleanup on later opens so an
+operation admitted before host teardown cannot resurrect credentials after
+deletion returns. Directory deletion additionally verifies the persisted
+identity ID and DID, preventing an old retirement record from deleting a path
+that has since been reused by another identity.
+
+The host must detach its active-session pointer before invoking deletion and
+may stop realtime/dispose runtime only as best-effort cleanup. Network shutdown
+latency is therefore never part of the local deletion result, and a generic UI
+network timeout must not classify this operation.
+
+Legacy upgrade is likewise one Core-owned, resumable lifecycle operation:
+Vault migration, document update, fresh device authentication, Registry
+verification, and local promotion share one pending record. The host awaits the
+typed terminal/retry projection and must not wrap this future in a shorter
+generic request timeout; such a timeout does not cancel the native operation
+and can otherwise start a concurrent retry. Immediate and persisted failures
+use the same safe allowlisted categories (`transport_unavailable`,
+`service_error`, `permission_denied`, `auth_required`,
+`local_state_unavailable`, or `legacy_upgrade_failed`) without exposing
+transport bodies or secret state.
+
 Management-device root transfer reuses the ordinary exact-device P5 v2
 implementation. After eligibility and PreKey/session checks, one explicit user
 confirmation authorizes one target and message ID; V1 does not add a system

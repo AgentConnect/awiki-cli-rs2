@@ -2,6 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use awiki_im_core::prelude::*;
+use awiki_im_core::vault::{
+    DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealSecretRequest,
+    SecretAccessPolicy, SecretBytes, SecretKind, SecretMetadata, SecretVault,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use sha2::{Digest, Sha256};
 
 mod app_sandbox_paths {
     use super::*;
@@ -243,6 +249,81 @@ mod app_sandbox_paths {
         assert!(core.identities().default_identity().unwrap().is_none());
     }
 
+    #[test]
+    fn deleting_identity_removes_vault_records_and_replays_late_cleanup_on_open() {
+        let fixture = AppSandboxFixture::new();
+        let vault = fixture.vault();
+        seal_identity_secret(&vault, "alice-id", "did:example:alice", "alice-auth");
+        seal_identity_secret(&vault, "bob-id", "did:example:bob", "bob-auth");
+        let core = fixture.core_with_vault();
+
+        core.identities()
+            .delete_local_identity(IdentitySelector::LocalAlias("alice".to_string()))
+            .unwrap();
+
+        assert_eq!(
+            vault
+                .list()
+                .unwrap()
+                .into_iter()
+                .filter_map(|secret_ref| secret_ref.identity_id)
+                .collect::<Vec<_>>(),
+            vec!["bob-id"]
+        );
+
+        // Simulate an operation admitted before App session teardown finishing
+        // after the first cleanup pass.
+        seal_identity_secret(&vault, "alice-id", "did:example:alice", "alice-late");
+        drop(core);
+
+        let reopened = fixture.core_with_vault();
+        assert_eq!(
+            vault
+                .list()
+                .unwrap()
+                .into_iter()
+                .filter_map(|secret_ref| secret_ref.identity_id)
+                .collect::<Vec<_>>(),
+            vec!["bob-id"]
+        );
+        assert_eq!(reopened.identities().list().unwrap().len(), 1);
+        assert_eq!(
+            reopened.identities().list().unwrap()[0]
+                .local_alias
+                .as_deref(),
+            Some("bob")
+        );
+    }
+
+    #[test]
+    fn core_open_recovers_prepared_identity_retirement() {
+        let fixture = AppSandboxFixture::new();
+        let marker =
+            fixture.write_prepared_retirement("alice-id", "did:example:alice", "alice", "bob");
+
+        let core = fixture.core();
+
+        assert!(!fixture.identity_dir("alice").exists());
+        assert!(fixture.identity_dir("bob").exists());
+        assert_eq!(fs::read_to_string(fixture.default_path()).unwrap(), "bob\n");
+        assert_eq!(core.identities().list().unwrap().len(), 1);
+        assert_eq!(
+            core.identities().list().unwrap()[0].local_alias.as_deref(),
+            Some("bob")
+        );
+        let marker_json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
+        assert_eq!(marker_json["phase"], "completed");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(marker).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
     struct AppSandboxFixture {
         temp: tempfile::TempDir,
     }
@@ -265,6 +346,30 @@ mod app_sandbox_paths {
 
         fn core(&self) -> ImCore {
             ImCore::new(self.config(), self.paths()).unwrap()
+        }
+
+        fn core_with_vault(&self) -> ImCore {
+            ImCore::new_with_options(
+                self.config(),
+                self.paths(),
+                ImCoreOpenOptions::default().with_identity_secret_vault(
+                    IdentitySecretStoragePolicy::VaultRequired,
+                    ImCoreSecretVaultOptions::new(
+                        DeviceVaultRootKey::from_bytes([7; 32]),
+                        self.vault_dir(),
+                        "app-sandbox-workspace",
+                        "app-sandbox-device",
+                    ),
+                ),
+            )
+            .unwrap()
+        }
+
+        fn vault(&self) -> FileSecretVault {
+            FileSecretVault::new(
+                DeviceVaultRootKey::from_bytes([7; 32]),
+                FileSecretVaultStore::new(self.vault_dir()),
+            )
         }
 
         fn config(&self) -> ImCoreConfig {
@@ -330,6 +435,38 @@ mod app_sandbox_paths {
             self.root().join("runtime").join("tmp")
         }
 
+        fn vault_dir(&self) -> PathBuf {
+            self.root().join("identity-vault")
+        }
+
+        fn write_prepared_retirement(
+            &self,
+            identity_id: &str,
+            did: &str,
+            local_alias: &str,
+            next_default_alias: &str,
+        ) -> PathBuf {
+            let retirement_dir = self.identities_dir().join(".identity-retirements");
+            fs::create_dir_all(&retirement_dir).unwrap();
+            let digest = Sha256::digest(identity_id.as_bytes());
+            let path = retirement_dir.join(format!("{}.json", URL_SAFE_NO_PAD.encode(digest)));
+            fs::write(
+                &path,
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "schema_version": 1,
+                    "identity_id": identity_id,
+                    "did": did,
+                    "local_alias": local_alias,
+                    "identity_dir_name": local_alias,
+                    "next_default_alias": next_default_alias,
+                    "phase": "prepared",
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            path
+        }
+
         fn write_identity_runtime(&self, alias: &str) {
             let identity_dir = self.identity_dir(alias);
             fs::create_dir_all(&identity_dir).unwrap();
@@ -361,6 +498,24 @@ mod app_sandbox_paths {
             )
             .unwrap();
         }
+    }
+
+    fn seal_identity_secret(vault: &FileSecretVault, identity_id: &str, did: &str, key_id: &str) {
+        vault
+            .seal(SealSecretRequest {
+                metadata: SecretMetadata {
+                    workspace_id: "app-sandbox-workspace".to_string(),
+                    device_id: "app-sandbox-device".to_string(),
+                    identity_id: Some(identity_id.to_string()),
+                    did: Some(did.to_string()),
+                    kind: SecretKind::AuthJwt,
+                    key_id: key_id.to_string(),
+                    key_version: 1,
+                    policy: SecretAccessPolicy::no_prompt_local_secret(),
+                },
+                plaintext: SecretBytes::from_vec(b"test-only-secret".to_vec()),
+            })
+            .unwrap();
     }
 
     fn assert_path_check(

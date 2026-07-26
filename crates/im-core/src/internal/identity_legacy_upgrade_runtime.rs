@@ -19,7 +19,7 @@ pub(crate) async fn upgrade(
                 )
             {
                 if let Ok(Some((_, mut pending))) = store.load(alias) {
-                    pending.mark_retry_required(error_code(error));
+                    pending.mark_retry_required(legacy_upgrade_error_code(error));
                     let _ = store.save(&pending);
                 }
             }
@@ -204,7 +204,7 @@ async fn upgrade_inner(
     Ok(crate::identity::LegacyUpgradeStatus::Completed)
 }
 
-fn error_code(error: &crate::ImError) -> &'static str {
+pub(crate) fn legacy_upgrade_error_code(error: &crate::ImError) -> &'static str {
     match error {
         crate::ImError::TransportUnavailable { .. } => "transport_unavailable",
         crate::ImError::Service { .. } => "service_error",
@@ -256,5 +256,30 @@ impl crate::internal::key_provider::KeyMaterialProvider for PendingDeviceProvide
     }
     fn persist_auth_token(&self, _token: &str) -> crate::ImResult<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::legacy_upgrade_error_code;
+
+    #[test]
+    fn failure_codes_preserve_safe_root_cause_categories() {
+        assert_eq!(
+            legacy_upgrade_error_code(&crate::ImError::TransportUnavailable {
+                detail: "redacted".to_owned(),
+            }),
+            "transport_unavailable"
+        );
+        assert_eq!(
+            legacy_upgrade_error_code(&crate::ImError::AuthRequired),
+            "auth_required"
+        );
+        assert_eq!(
+            legacy_upgrade_error_code(&crate::ImError::Serialization {
+                detail: "redacted".to_owned(),
+            }),
+            "legacy_upgrade_failed"
+        );
     }
 }
