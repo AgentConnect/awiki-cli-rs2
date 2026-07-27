@@ -617,6 +617,20 @@ final page = await client.messages.syncConversationAfter(
   `since_event_seq` internally.
 - Rust `im-core` applies all returned events and advances the checkpoint only after
   the local apply transaction succeeds.
+- For an owner-scoped ordinary P3 Direct event that carries metadata but no body,
+  Rust checks the exact `message_id` and `server_seq`, resolves the peer through
+  the authoritative Handle directory, groups missing targets by Direct peer,
+  and hydrates `direct.get_history` from immediately before that peer's earliest
+  missing sequence. The verified peer scope is resolved once per authoritative
+  history page and reused for its messages, avoiding both one history request
+  per metadata event and one directory lookup per message. A later local thread
+  sequence does not satisfy the exact-message check. The checkpoint advances
+  only after every required message in the page is committed; hydration failure
+  leaves it unchanged. This plain-message recovery path does not create or select
+  P5 E2EE. A stable conversation ID remains a presentation/storage route:
+  ordinary Direct history is persisted with immutable `direct + peer DID` wire
+  identity so it can merge with the sender device's local projection without
+  weakening wire-conflict checks.
 - If the service returns `snapshot_required=true`, the SDK returns a failed-closed
   result: no checkpoint advance, no local projection wipe, and diagnostic fields for
   the App to surface a degraded sync state.

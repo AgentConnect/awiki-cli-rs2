@@ -81,7 +81,10 @@ where
                 result.retention_floor_event_seq = page.retention_floor_event_seq;
                 return Ok(result);
             }
-            let apply_input = sync_delta_apply_input(self.client, &page)?;
+            let (hydration_warnings, hydrated_message_ids) =
+                self.hydrate_plain_direct_delta_threads(&page, limit)?;
+            result.warnings.extend(hydration_warnings);
+            let apply_input = sync_delta_apply_input(self.client, &page, &hydrated_message_ids)?;
             let outcome = apply_sync_delta_blocking(self.client, apply_input)?;
             result.events_applied = result
                 .events_applied
@@ -126,82 +129,13 @@ where
         )?
         .unwrap_or_else(|| local_max_server_seq_blocking(self.client, &input.request.thread));
         match input.request.thread {
-            crate::messages::ThreadRef::Direct(peer) => {
-                self.session_provider
-                    .ensure_session(crate::auth::AuthScope::Messaging)?;
-                let peer = crate::internal::message_runtime::read::direct_thread(
-                    peer,
-                    input.resolved_peer_did,
-                )?;
-                let params = crate::internal::wire::history::build_history_rpc_params(
-                    &crate::internal::wire::common::WireIdentity {
-                        did: self.client.did().as_str().to_owned(),
-                    },
-                    crate::internal::wire::history::HistoryWireRequest {
-                        peer_did: peer.resolved_did.clone(),
-                        limit: i64::from(limit),
-                        cursor: Some(after_server_seq.to_string()),
-                        skip: 0,
-                        auth: None,
-                    },
-                )?;
-                let mut raw = self.transport.authenticated_rpc(
-                    MESSAGE_RPC_ENDPOINT,
-                    "direct.get_history",
-                    params,
-                )?;
-                let mut p5_provenance =
-                    crate::internal::message_runtime::read::project_secure_direct_messages_for_peer(
-                        self.client,
-                        &mut raw,
-                        &mut self.directory_transport,
-                        &peer.resolved_did,
-                    );
-                crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
-                    self.client,
-                    &mut raw,
-                    &peer.resolved_did,
-                    &mut p5_provenance,
-                );
-                crate::internal::message_runtime::read::annotate_direct_peer_scopes(
-                    self.client,
-                    &mut raw,
-                    &mut self.directory_transport,
-                    input.peer_scope.as_ref(),
-                    Some(&peer.resolved_did),
-                    Some(&mut p5_provenance),
-                );
-                let page = crate::internal::message_runtime::read::page_from_raw(
-                    self.client,
-                    &raw,
-                    crate::ids::PageLimit(limit),
-                )?;
-                let final_projectable_count = page
-                    .items
-                    .iter()
-                    .filter(|message| {
-                        message
-                            .metadata
-                            .server_sequence
-                            .is_some_and(|sequence| sequence > after_server_seq)
-                    })
-                    .count();
-                crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
-                    &raw,
-                    final_projectable_count,
-                )?;
-                let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                let stored_messages = crate::internal::message_runtime::read::persist_projection(
-                    self.client,
-                    &result.messages,
-                    &p5_provenance,
-                )?;
-                if stored_messages > 0 {
-                    self.client
-                        .emit_committed_message_projection("sync_thread_after");
-                }
-                Ok(result)
-            }
+            crate::messages::ThreadRef::Direct(peer) => self.sync_direct_thread_after(
+                peer,
+                input.resolved_peer_did,
+                input.peer_scope.as_ref(),
+                after_server_seq,
+                limit,
+            ),
             crate::messages::ThreadRef::Group(group) => {
                 self.session_provider
                     .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
@@ -243,6 +177,155 @@ where
                 Err(crate::ImError::unsupported("sync-thread-after-raw-thread"))
             }
         }
+    }
+
+    fn hydrate_plain_direct_delta_threads(
+        &mut self,
+        page: &crate::internal::wire::sync::SyncDeltaPage,
+        limit: u32,
+    ) -> crate::ImResult<(Vec<String>, std::collections::BTreeSet<String>)> {
+        let mut warnings = Vec::new();
+        let mut hydrated_message_ids = std::collections::BTreeSet::new();
+        for (peer_did, targets) in sync_delta_plain_direct_hydration_targets_by_peer(page)? {
+            if direct_delta_targets_are_committed_blocking(self.client, &targets) {
+                continue;
+            }
+            let peer = crate::ids::PeerRef::parse(&peer_did, "")?;
+            let thread = crate::messages::ThreadRef::Direct(peer.clone());
+            let missing_targets = targets
+                .iter()
+                .filter(|target| {
+                    local_message_server_seq_blocking(self.client, &target.message_id)
+                        != Some(target.required_server_seq)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let earliest_required_server_seq = missing_targets
+                .iter()
+                .map(|target| target.required_server_seq)
+                .min()
+                .expect("uncommitted Direct hydration targets must have a sequence");
+            let after_server_seq = local_max_server_seq_blocking(self.client, &thread)
+                .min(earliest_required_server_seq.saturating_sub(1));
+            let mut cursor = after_server_seq;
+            loop {
+                let result = self.sync_direct_thread_after(
+                    peer.clone(),
+                    Some(peer_did.clone()),
+                    None,
+                    cursor,
+                    limit,
+                )?;
+                let failure_detail = projection_backlog_failure_detail(&result.warnings);
+                warnings.extend(result.warnings);
+                if direct_delta_targets_are_committed_blocking(self.client, &targets) {
+                    hydrated_message_ids.extend(
+                        missing_targets
+                            .iter()
+                            .map(|target| target.message_id.clone()),
+                    );
+                    break;
+                }
+                if !result.has_more {
+                    return Err(sync_invalid_page(format!(
+                        "sync.thread_after did not commit the Direct delta projection: {failure_detail}"
+                    )));
+                }
+                let next = result
+                    .next_after_server_seq
+                    .as_deref()
+                    .map(parse_after_server_seq)
+                    .transpose()?
+                    .unwrap_or(cursor);
+                if next <= cursor {
+                    return Err(sync_invalid_page(
+                        "sync.thread_after did not advance while hydrating Direct delta projections",
+                    ));
+                }
+                cursor = next;
+            }
+        }
+        Ok((warnings, hydrated_message_ids))
+    }
+
+    fn sync_direct_thread_after(
+        &mut self,
+        peer: crate::ids::PeerRef,
+        resolved_peer_did: Option<String>,
+        peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+        after_server_seq: i64,
+        limit: u32,
+    ) -> crate::ImResult<crate::messages::SyncThreadAfterResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)?;
+        let peer = crate::internal::message_runtime::read::direct_thread(peer, resolved_peer_did)?;
+        let params = crate::internal::wire::history::build_history_rpc_params(
+            &crate::internal::wire::common::WireIdentity {
+                did: self.client.did().as_str().to_owned(),
+            },
+            crate::internal::wire::history::HistoryWireRequest {
+                peer_did: peer.resolved_did.clone(),
+                limit: i64::from(limit),
+                cursor: Some(after_server_seq.to_string()),
+                skip: 0,
+                auth: None,
+            },
+        )?;
+        let mut raw =
+            self.transport
+                .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)?;
+        let mut p5_provenance =
+            crate::internal::message_runtime::read::project_secure_direct_messages_for_peer(
+                self.client,
+                &mut raw,
+                &mut self.directory_transport,
+                &peer.resolved_did,
+            );
+        crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+            self.client,
+            &mut raw,
+            &peer.resolved_did,
+            &mut p5_provenance,
+        );
+        crate::internal::message_runtime::read::annotate_direct_peer_scopes(
+            self.client,
+            &mut raw,
+            &mut self.directory_transport,
+            peer_scope,
+            Some(&peer.resolved_did),
+            Some(&mut p5_provenance),
+        );
+        let page = crate::internal::message_runtime::read::page_from_raw(
+            self.client,
+            &raw,
+            crate::ids::PageLimit(limit),
+        )?;
+        let final_projectable_count = page
+            .items
+            .iter()
+            .filter(|message| {
+                message
+                    .metadata
+                    .server_sequence
+                    .is_some_and(|sequence| sequence > after_server_seq)
+            })
+            .count();
+        crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+            &raw,
+            final_projectable_count,
+        )?;
+        let mut result = thread_after_result(page.items, after_server_seq, raw, limit)?;
+        let outcome = crate::internal::message_runtime::read::persist_projection(
+            self.client,
+            &result.messages,
+            &p5_provenance,
+        )?;
+        append_projection_backlog_warnings(&mut result.warnings, outcome);
+        if outcome.stored_messages > 0 {
+            self.client
+                .emit_committed_message_projection("sync_thread_after");
+        }
+        Ok(result)
     }
 }
 
@@ -288,7 +371,11 @@ where
                 result.retention_floor_event_seq = page.retention_floor_event_seq;
                 return Ok(result);
             }
-            let apply_input = sync_delta_apply_input(self.client, &page)?;
+            let (hydration_warnings, hydrated_message_ids) = self
+                .hydrate_plain_direct_delta_threads_async(&page, limit)
+                .await?;
+            result.warnings.extend(hydration_warnings);
+            let apply_input = sync_delta_apply_input(self.client, &page, &hydrated_message_ids)?;
             let db = self.client.core_inner().local_state_db().await?;
             let outcome = db.apply_sync_delta(apply_input).await?;
             result.events_applied = result
@@ -338,84 +425,14 @@ where
             };
         match input.request.thread {
             crate::messages::ThreadRef::Direct(peer) => {
-                self.session_provider
-                    .ensure_session(crate::auth::AuthScope::Messaging)
-                    .await?;
-                let peer = crate::internal::message_runtime::read::direct_thread(
+                self.sync_direct_thread_after_async(
                     peer,
                     input.resolved_peer_did,
-                )?;
-                let params = crate::internal::wire::history::build_history_rpc_params(
-                    &crate::internal::wire::common::WireIdentity {
-                        did: self.client.did().as_str().to_owned(),
-                    },
-                    crate::internal::wire::history::HistoryWireRequest {
-                        peer_did: peer.resolved_did.clone(),
-                        limit: i64::from(limit),
-                        cursor: Some(after_server_seq.to_string()),
-                        skip: 0,
-                        auth: None,
-                    },
-                )?;
-                let mut raw = self
-                    .transport
-                    .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
-                    .await?;
-                let mut p5_provenance =
-                    crate::internal::message_runtime::read::project_secure_direct_messages_async_for_peer(
-                        self.client,
-                        &mut raw,
-                        &mut self.directory_transport,
-                        &peer.resolved_did,
-                    )
-                    .await;
-                crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
-                    self.client,
-                    &mut raw,
-                    &peer.resolved_did,
-                    &mut p5_provenance,
-                );
-                crate::internal::message_runtime::read::annotate_direct_peer_scopes_async(
-                    self.client,
-                    &mut raw,
-                    &mut self.directory_transport,
                     input.peer_scope.as_ref(),
-                    Some(&peer.resolved_did),
-                    Some(&mut p5_provenance),
+                    after_server_seq,
+                    limit,
                 )
-                .await;
-                let page = crate::internal::message_runtime::read::page_from_raw(
-                    self.client,
-                    &raw,
-                    crate::ids::PageLimit(limit),
-                )?;
-                let final_projectable_count = page
-                    .items
-                    .iter()
-                    .filter(|message| {
-                        message
-                            .metadata
-                            .server_sequence
-                            .is_some_and(|sequence| sequence > after_server_seq)
-                    })
-                    .count();
-                crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
-                    &raw,
-                    final_projectable_count,
-                )?;
-                let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                let stored_messages =
-                    crate::internal::message_runtime::read::persist_projection_async(
-                        self.client,
-                        &result.messages,
-                        &p5_provenance,
-                    )
-                    .await?;
-                if stored_messages > 0 {
-                    self.client
-                        .emit_committed_message_projection("sync_thread_after");
-                }
-                Ok(result)
+                .await
             }
             crate::messages::ThreadRef::Group(group) => {
                 self.session_provider
@@ -460,6 +477,332 @@ where
             }
         }
     }
+
+    async fn hydrate_plain_direct_delta_threads_async(
+        &mut self,
+        page: &crate::internal::wire::sync::SyncDeltaPage,
+        limit: u32,
+    ) -> crate::ImResult<(Vec<String>, std::collections::BTreeSet<String>)> {
+        let mut warnings = Vec::new();
+        let mut hydrated_message_ids = std::collections::BTreeSet::new();
+        for (peer_did, targets) in sync_delta_plain_direct_hydration_targets_by_peer(page)? {
+            if direct_delta_targets_are_committed_async(self.client, &targets).await {
+                continue;
+            }
+            let peer = crate::ids::PeerRef::parse(&peer_did, "")?;
+            let thread = crate::messages::ThreadRef::Direct(peer.clone());
+            let mut earliest_required_server_seq = None;
+            let mut missing_targets = Vec::new();
+            for target in &targets {
+                if local_message_server_seq_async(self.client, &target.message_id).await
+                    != Some(target.required_server_seq)
+                {
+                    missing_targets.push(target.clone());
+                    earliest_required_server_seq = Some(
+                        earliest_required_server_seq
+                            .map_or(target.required_server_seq, |current: i64| {
+                                current.min(target.required_server_seq)
+                            }),
+                    );
+                }
+            }
+            let earliest_required_server_seq = earliest_required_server_seq
+                .expect("uncommitted Direct hydration targets must have a sequence");
+            let after_server_seq = local_max_server_seq_async(self.client, &thread)
+                .await
+                .min(earliest_required_server_seq.saturating_sub(1));
+            let mut cursor = after_server_seq;
+            loop {
+                let result = self
+                    .sync_direct_thread_after_async(
+                        peer.clone(),
+                        Some(peer_did.clone()),
+                        None,
+                        cursor,
+                        limit,
+                    )
+                    .await?;
+                let failure_detail = projection_backlog_failure_detail(&result.warnings);
+                warnings.extend(result.warnings);
+                if direct_delta_targets_are_committed_async(self.client, &targets).await {
+                    hydrated_message_ids.extend(
+                        missing_targets
+                            .iter()
+                            .map(|target| target.message_id.clone()),
+                    );
+                    break;
+                }
+                if !result.has_more {
+                    return Err(sync_invalid_page(format!(
+                        "sync.thread_after did not commit the Direct delta projection: {failure_detail}"
+                    )));
+                }
+                let next = result
+                    .next_after_server_seq
+                    .as_deref()
+                    .map(parse_after_server_seq)
+                    .transpose()?
+                    .unwrap_or(cursor);
+                if next <= cursor {
+                    return Err(sync_invalid_page(
+                        "sync.thread_after did not advance while hydrating Direct delta projections",
+                    ));
+                }
+                cursor = next;
+            }
+        }
+        Ok((warnings, hydrated_message_ids))
+    }
+
+    async fn sync_direct_thread_after_async(
+        &mut self,
+        peer: crate::ids::PeerRef,
+        resolved_peer_did: Option<String>,
+        peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+        after_server_seq: i64,
+        limit: u32,
+    ) -> crate::ImResult<crate::messages::SyncThreadAfterResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)
+            .await?;
+        let peer = crate::internal::message_runtime::read::direct_thread(peer, resolved_peer_did)?;
+        let params = crate::internal::wire::history::build_history_rpc_params(
+            &crate::internal::wire::common::WireIdentity {
+                did: self.client.did().as_str().to_owned(),
+            },
+            crate::internal::wire::history::HistoryWireRequest {
+                peer_did: peer.resolved_did.clone(),
+                limit: i64::from(limit),
+                cursor: Some(after_server_seq.to_string()),
+                skip: 0,
+                auth: None,
+            },
+        )?;
+        let mut raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
+            .await?;
+        let mut p5_provenance =
+            crate::internal::message_runtime::read::project_secure_direct_messages_async_for_peer(
+                self.client,
+                &mut raw,
+                &mut self.directory_transport,
+                &peer.resolved_did,
+            )
+            .await;
+        crate::internal::message_runtime::read::retain_direct_messages_for_expected_peer(
+            self.client,
+            &mut raw,
+            &peer.resolved_did,
+            &mut p5_provenance,
+        );
+        crate::internal::message_runtime::read::annotate_direct_peer_scopes_async(
+            self.client,
+            &mut raw,
+            &mut self.directory_transport,
+            peer_scope,
+            Some(&peer.resolved_did),
+            Some(&mut p5_provenance),
+        )
+        .await;
+        let page = crate::internal::message_runtime::read::page_from_raw(
+            self.client,
+            &raw,
+            crate::ids::PageLimit(limit),
+        )?;
+        let final_projectable_count = page
+            .items
+            .iter()
+            .filter(|message| {
+                message
+                    .metadata
+                    .server_sequence
+                    .is_some_and(|sequence| sequence > after_server_seq)
+            })
+            .count();
+        crate::internal::message_runtime::read::reject_stalled_scoped_direct_page(
+            &raw,
+            final_projectable_count,
+        )?;
+        let mut result = thread_after_result(page.items, after_server_seq, raw, limit)?;
+        let outcome = crate::internal::message_runtime::read::persist_projection_async(
+            self.client,
+            &result.messages,
+            &p5_provenance,
+        )
+        .await?;
+        append_projection_backlog_warnings(&mut result.warnings, outcome);
+        if outcome.stored_messages > 0 {
+            self.client
+                .emit_committed_message_projection("sync_thread_after");
+        }
+        Ok(result)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DirectDeltaHydrationTarget {
+    peer_did: String,
+    message_id: String,
+    required_server_seq: i64,
+}
+
+fn sync_delta_plain_direct_hydration_targets(
+    page: &crate::internal::wire::sync::SyncDeltaPage,
+) -> crate::ImResult<Vec<DirectDeltaHydrationTarget>> {
+    let mut targets = std::collections::BTreeMap::<(String, String), i64>::new();
+    for event in &page.events {
+        if !sync_delta_is_metadata_only_plain_direct(event) {
+            continue;
+        }
+        let Some(payload) = event.payload.as_object() else {
+            continue;
+        };
+        let message = map_value(payload.get("message"))
+            .or_else(|| map_value(payload.get("latest_message")))
+            .or_else(|| map_value(payload.get("last_message")))
+            .or_else(|| map_value(payload.get("body")));
+        let Some(message) = message else {
+            continue;
+        };
+        if message
+            .get("content")
+            .is_some_and(|content| !content.is_null())
+        {
+            continue;
+        }
+        let thread = map_value(payload.get("thread"));
+        let thread_kind = string_from_object(thread, "kind")
+            .or_else(|| string_from_object(Some(payload), "thread_kind"))
+            .unwrap_or_default();
+        if thread_kind != "direct" {
+            continue;
+        }
+        let peer_did = string_from_object(thread, "peer_did")
+            .or_else(|| string_from_object(thread, "peer"))
+            .unwrap_or_default();
+        if !peer_did.starts_with("did:") {
+            return Err(sync_invalid_page(
+                "metadata-only Direct sync event is missing peer_did",
+            ));
+        }
+        let required_server_seq =
+            decimal_i64_from_object(message, "server_seq").ok_or_else(|| {
+                sync_invalid_page("metadata-only Direct sync event is missing server_seq")
+            })?;
+        let message_id = string_from_object(Some(message), "id")
+            .or_else(|| string_from_object(Some(message), "message_id"))
+            .ok_or_else(|| {
+                sync_invalid_page("metadata-only Direct sync event is missing message id")
+            })?;
+        targets
+            .entry((peer_did, message_id))
+            .and_modify(|current| *current = (*current).max(required_server_seq))
+            .or_insert(required_server_seq);
+    }
+    Ok(targets
+        .into_iter()
+        .map(
+            |((peer_did, message_id), required_server_seq)| DirectDeltaHydrationTarget {
+                peer_did,
+                message_id,
+                required_server_seq,
+            },
+        )
+        .collect())
+}
+
+fn sync_delta_plain_direct_hydration_targets_by_peer(
+    page: &crate::internal::wire::sync::SyncDeltaPage,
+) -> crate::ImResult<std::collections::BTreeMap<String, Vec<DirectDeltaHydrationTarget>>> {
+    let mut targets_by_peer = std::collections::BTreeMap::new();
+    for target in sync_delta_plain_direct_hydration_targets(page)? {
+        targets_by_peer
+            .entry(target.peer_did.clone())
+            .or_insert_with(Vec::new)
+            .push(target);
+    }
+    Ok(targets_by_peer)
+}
+
+fn direct_delta_targets_are_committed_blocking(
+    client: &crate::core::ImClient,
+    targets: &[DirectDeltaHydrationTarget],
+) -> bool {
+    targets.iter().all(|target| {
+        local_message_server_seq_blocking(client, &target.message_id)
+            == Some(target.required_server_seq)
+    })
+}
+
+async fn direct_delta_targets_are_committed_async(
+    client: &crate::core::ImClient,
+    targets: &[DirectDeltaHydrationTarget],
+) -> bool {
+    for target in targets {
+        if local_message_server_seq_async(client, &target.message_id).await
+            != Some(target.required_server_seq)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn sync_delta_is_metadata_only_plain_direct(
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> bool {
+    sync_delta_metadata_only_plain_direct_peer(event).is_some()
+}
+
+fn sync_delta_metadata_only_plain_direct_peer(
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> Option<String> {
+    if !matches!(
+        event.event_type.as_str(),
+        "message.created" | "conversation.updated"
+    ) || sync_delta_contains_v2_e2ee_message(event)
+        || sync_delta_contains_system_notification_message(event)
+    {
+        return None;
+    }
+    let Some(payload) = event.payload.as_object() else {
+        return None;
+    };
+    let thread = map_value(payload.get("thread"));
+    let thread_kind = string_from_object(thread, "kind")
+        .or_else(|| string_from_object(Some(payload), "thread_kind"))
+        .unwrap_or_default();
+    if thread_kind != "direct" {
+        return None;
+    }
+    let peer_did = string_from_object(thread, "peer_did")
+        .or_else(|| string_from_object(thread, "peer"))
+        .filter(|peer| peer.starts_with("did:"))?;
+    let message = map_value(payload.get("message"))
+        .or_else(|| map_value(payload.get("latest_message")))
+        .or_else(|| map_value(payload.get("last_message")))
+        .or_else(|| map_value(payload.get("body")));
+    message
+        .is_some_and(|message| {
+            !message
+                .get("content")
+                .is_some_and(|content| !content.is_null())
+        })
+        .then_some(peer_did)
+}
+
+fn sync_delta_metadata_only_plain_direct_message_id(
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> Option<String> {
+    sync_delta_metadata_only_plain_direct_peer(event)?;
+    let payload = event.payload.as_object()?;
+    let message = map_value(payload.get("message"))
+        .or_else(|| map_value(payload.get("latest_message")))
+        .or_else(|| map_value(payload.get("last_message")))
+        .or_else(|| map_value(payload.get("body")))?;
+    string_from_object(Some(message), "id")
+        .or_else(|| string_from_object(Some(message), "message_id"))
 }
 
 fn sync_thread_after_limit(limit: Option<u32>) -> crate::ImResult<u32> {
@@ -499,6 +842,40 @@ fn append_backlog_warning(warnings: &mut Vec<String>, backlogged_messages: usize
     if backlogged_messages > 0 {
         warnings.push(format!("identity_unresolved_backlog:{backlogged_messages}"));
     }
+}
+
+fn append_projection_backlog_warnings(
+    warnings: &mut Vec<String>,
+    outcome: crate::internal::local_state::inbound_resolution_backlog::RemoteMessageIngestOutcome,
+) {
+    if outcome.resolution_backlogged_messages > 0 {
+        warnings.push(format!(
+            "identity_unresolved_backlog:{}",
+            outcome.resolution_backlogged_messages
+        ));
+    }
+    if outcome.wire_conflict_backlogged_messages > 0 {
+        warnings.push(format!(
+            "message_wire_identity_conflict_backlog:{}",
+            outcome.wire_conflict_backlogged_messages
+        ));
+    }
+}
+
+fn projection_backlog_failure_detail(warnings: &[String]) -> &'static str {
+    if warnings
+        .iter()
+        .any(|warning| warning.starts_with("message_wire_identity_conflict_backlog:"))
+    {
+        return "message_wire_identity_conflict";
+    }
+    if warnings
+        .iter()
+        .any(|warning| warning.starts_with("identity_unresolved_backlog:"))
+    {
+        return "identity_unresolved";
+    }
+    "message_absent_after_history"
 }
 
 fn page_contains_system_notification(page: &crate::internal::wire::sync::SyncDeltaPage) -> bool {
@@ -630,10 +1007,15 @@ async fn load_global_checkpoint_async(_client: &crate::core::ImClient) -> crate:
 fn sync_delta_apply_input(
     client: &crate::core::ImClient,
     page: &crate::internal::wire::sync::SyncDeltaPage,
+    hydrated_plain_direct_message_ids: &std::collections::BTreeSet<String>,
 ) -> crate::ImResult<crate::internal::local_state::sync_state::SyncDeltaApplyInput> {
     let mut events = Vec::with_capacity(page.events.len());
     for event in &page.events {
-        events.push(sync_delta_apply_event(client, event)?);
+        events.push(sync_delta_apply_event(
+            client,
+            event,
+            hydrated_plain_direct_message_ids,
+        )?);
     }
     Ok(
         crate::internal::local_state::sync_state::SyncDeltaApplyInput {
@@ -650,6 +1032,7 @@ fn sync_delta_apply_input(
 fn sync_delta_apply_input(
     _client: &crate::core::ImClient,
     _page: &crate::internal::wire::sync::SyncDeltaPage,
+    _hydrated_plain_direct_message_ids: &std::collections::BTreeSet<String>,
 ) -> crate::ImResult<crate::internal::local_state::sync_state::SyncDeltaApplyInput> {
     Err(crate::ImError::unsupported("sync-delta-local-state"))
 }
@@ -658,6 +1041,7 @@ fn sync_delta_apply_input(
 fn sync_delta_apply_event(
     client: &crate::core::ImClient,
     event: &crate::internal::wire::sync::SyncDeltaEvent,
+    hydrated_plain_direct_message_ids: &std::collections::BTreeSet<String>,
 ) -> crate::ImResult<crate::internal::local_state::sync_state::SyncDeltaApplyEvent> {
     let mut apply = crate::internal::local_state::sync_state::SyncDeltaApplyEvent {
         event_id: event.event_id.clone(),
@@ -674,7 +1058,9 @@ fn sync_delta_apply_event(
         event.event_type.as_str(),
         "message.created" | "conversation.updated"
     ) && (sync_delta_contains_v2_e2ee_message(event)
-        || sync_delta_contains_system_notification_message(event))
+        || sync_delta_contains_system_notification_message(event)
+        || sync_delta_metadata_only_plain_direct_message_id(event)
+            .is_some_and(|message_id| hydrated_plain_direct_message_ids.contains(&message_id)))
     {
         return Ok(apply);
     }
@@ -1328,6 +1714,56 @@ async fn local_max_server_seq_async(
     _thread: &crate::messages::ThreadRef,
 ) -> i64 {
     0
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+fn local_message_server_seq_blocking(
+    client: &crate::core::ImClient,
+    message_id: &str,
+) -> Option<i64> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .ok()?;
+    crate::internal::local_state::messages::message_server_seq(
+        &connection,
+        client.current_identity().id.as_str(),
+        message_id,
+    )
+    .ok()
+    .flatten()
+}
+
+#[cfg(not(all(feature = "sqlite", any(feature = "blocking", test))))]
+fn local_message_server_seq_blocking(
+    _client: &crate::core::ImClient,
+    _message_id: &str,
+) -> Option<i64> {
+    None
+}
+
+#[cfg(feature = "sqlite")]
+async fn local_message_server_seq_async(
+    client: &crate::core::ImClient,
+    message_id: &str,
+) -> Option<i64> {
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .ok()?
+        .message_server_seq(client.current_identity().id.as_str(), message_id)
+        .await
+        .ok()
+        .flatten()
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn local_message_server_seq_async(
+    _client: &crate::core::ImClient,
+    _message_id: &str,
+) -> Option<i64> {
+    None
 }
 
 #[cfg(test)]

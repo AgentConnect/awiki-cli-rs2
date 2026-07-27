@@ -2971,6 +2971,94 @@ async fn direct_inbox_projects_verified_handle_before_persisting_message() {
 }
 
 #[tokio::test]
+async fn direct_page_resolves_expected_peer_scope_once_for_all_messages() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut directory = CountingHandleDirectoryTransport {
+        calls: Rc::clone(&calls),
+    };
+    let mut raw = json!({
+        "messages": [
+            {
+                "id": "msg-page-1",
+                "sender_did": "did:example:bob-new",
+                "receiver_did": "did:example:alice",
+                "content": "first",
+                "content_type": "text/plain"
+            },
+            {
+                "id": "msg-page-2",
+                "sender_did": "did:example:alice",
+                "receiver_did": "did:example:bob-new",
+                "content": "second",
+                "content_type": "text/plain"
+            }
+        ]
+    });
+
+    annotate_direct_peer_scopes_async(
+        &client,
+        &mut raw,
+        &mut directory,
+        None,
+        Some("did:example:bob-new"),
+        None,
+    )
+    .await;
+
+    assert_eq!(calls.borrow().as_slice(), ["lookup"]);
+    for message in raw["messages"].as_array().unwrap() {
+        assert_eq!(message["peer_user_id"], "user-bob");
+        assert_eq!(message["peer_full_handle"], "bob.anpclaw.com");
+        assert_eq!(message["peer_current_did"], "did:example:bob-new");
+    }
+}
+
+#[test]
+fn plain_direct_history_keeps_peer_wire_identity_after_canonical_thread_projection() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let raw = json!({
+        "messages": [{
+            "id": "msg-plain-own-sync-history",
+            "sender_did": "did:example:alice",
+            "receiver_did": "did:example:bob-new",
+            "content": "plain sender history",
+            "content_type": "text/plain",
+            "server_seq": 37,
+            "peer_user_id": "user-bob",
+            "peer_full_handle": "bob.anpclaw.com",
+            "peer_current_did": "did:example:bob-new",
+            "resolved_target_did": "did:example:bob-new"
+        }],
+        "has_more": false
+    });
+    let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
+    assert!(matches!(
+        &page.items[0].thread,
+        crate::messages::ThreadRef::Thread(_)
+    ));
+
+    let records = remote_projection_records(
+        &client,
+        &page.items,
+        &DirectP5ProjectionProvenance::default(),
+    )
+    .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].wire_thread_kind, "direct");
+    assert_eq!(records[0].wire_thread_ref, "did:example:bob-new");
+
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let mut local_projection = records[0].clone();
+    local_projection.content = "local optimistic send".to_owned();
+    local_projection.server_seq = None;
+    crate::internal::local_state::messages::upsert_message(&connection, &local_projection).unwrap();
+    crate::internal::local_state::messages::upsert_message(&connection, &records[0]).unwrap();
+}
+
+#[tokio::test]
 async fn p5_backlog_retries_by_authenticated_wire_and_converges_after_handle_resolution() {
     let fixture = VNextCacheFixture::new();
     let client = fixture.client(true);
@@ -3584,7 +3672,8 @@ async fn fresh_scoped_p5_rejection_then_correct_receive_projects_and_persists() 
     assert_eq!(
         persist_projection_async(&client, &page.items, &provenance)
             .await
-            .unwrap(),
+            .unwrap()
+            .stored_messages,
         1
     );
     let records = client
@@ -5773,6 +5862,34 @@ impl RpcTransport for StaticHandleDirectoryTransport {
 }
 
 impl AsyncRpcTransport for StaticHandleDirectoryTransport {
+    async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+        RpcTransport::rpc(self, endpoint, method, params)
+    }
+}
+
+struct CountingHandleDirectoryTransport {
+    calls: Rc<RefCell<Vec<String>>>,
+}
+
+impl RpcTransport for CountingHandleDirectoryTransport {
+    fn rpc(&mut self, _endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+        self.calls.borrow_mut().push(method.to_owned());
+        let did = params
+            .get("did")
+            .and_then(Value::as_str)
+            .unwrap_or("did:example:bob-new");
+        Ok(json!({
+            "handle": "bob",
+            "full_handle": "bob.anpclaw.com",
+            "did": did,
+            "domain": "anpclaw.com",
+            "status": "active",
+            "user_id": "user-bob"
+        }))
+    }
+}
+
+impl AsyncRpcTransport for CountingHandleDirectoryTransport {
     async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
         RpcTransport::rpc(self, endpoint, method, params)
     }

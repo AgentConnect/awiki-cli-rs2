@@ -37,6 +37,8 @@ pub(crate) struct BacklogSource<'a> {
 pub(crate) struct RemoteMessageIngestOutcome {
     pub(crate) stored_messages: usize,
     pub(crate) backlogged_messages: usize,
+    pub(crate) resolution_backlogged_messages: usize,
+    pub(crate) wire_conflict_backlogged_messages: usize,
 }
 
 pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
@@ -96,6 +98,8 @@ pub(crate) fn ingest_remote_messages(
     let source_event_type = source_event_type.trim();
     let mut stored_messages = 0usize;
     let mut backlogged_messages = 0usize;
+    let mut resolution_backlogged_messages = 0usize;
+    let mut wire_conflict_backlogged_messages = 0usize;
     for record in records {
         match canonicalize_inbound_message(connection, record.clone()) {
             Ok(record) => match super::messages::upsert_message(connection, &record) {
@@ -116,6 +120,8 @@ pub(crate) fn ingest_remote_messages(
                         &error,
                     )?;
                     backlogged_messages = backlogged_messages.saturating_add(1);
+                    wire_conflict_backlogged_messages =
+                        wire_conflict_backlogged_messages.saturating_add(1);
                 }
                 Err(error) => return Err(error),
             },
@@ -133,6 +139,7 @@ pub(crate) fn ingest_remote_messages(
                     &error,
                 )?;
                 backlogged_messages = backlogged_messages.saturating_add(1);
+                resolution_backlogged_messages = resolution_backlogged_messages.saturating_add(1);
             }
             Err(error) => return Err(error),
         }
@@ -140,6 +147,8 @@ pub(crate) fn ingest_remote_messages(
     Ok(RemoteMessageIngestOutcome {
         stored_messages,
         backlogged_messages,
+        resolution_backlogged_messages,
+        wire_conflict_backlogged_messages,
     })
 }
 
@@ -483,6 +492,8 @@ mod tests {
             ingest_remote_messages(&db, std::slice::from_ref(&record), "remote_history").unwrap();
         assert_eq!(first.stored_messages, 0);
         assert_eq!(first.backlogged_messages, 1);
+        assert_eq!(first.resolution_backlogged_messages, 1);
+        assert_eq!(first.wire_conflict_backlogged_messages, 0);
         assert_eq!(repeated, first);
         assert_eq!(pending_count(&db, "owner-a").unwrap(), 1);
         assert_eq!(
@@ -648,6 +659,8 @@ FROM messages WHERE owner_identity_id = 'owner-a' AND msg_id = 'msg-unresolved-1
         let outcome = ingest_remote_messages(&db, &[record], "remote_history").unwrap();
         assert_eq!(outcome.stored_messages, 1);
         assert_eq!(outcome.backlogged_messages, 0);
+        assert_eq!(outcome.resolution_backlogged_messages, 0);
+        assert_eq!(outcome.wire_conflict_backlogged_messages, 0);
         assert_eq!(pending_count(&db, "owner-a").unwrap(), 0);
         let stored_conversation_id: String = db
             .query_row(
@@ -726,11 +739,12 @@ FROM messages WHERE owner_identity_id = 'owner-a' AND msg_id = 'msg-unresolved-1
         }
         .with_resolved_wire_thread("direct", "did:example:peer");
 
-        let outcome =
-            ingest_remote_messages(&db, &[conflicting, valid], "remote_history").unwrap();
+        let outcome = ingest_remote_messages(&db, &[conflicting, valid], "remote_history").unwrap();
 
         assert_eq!(outcome.stored_messages, 1);
         assert_eq!(outcome.backlogged_messages, 1);
+        assert_eq!(outcome.resolution_backlogged_messages, 0);
+        assert_eq!(outcome.wire_conflict_backlogged_messages, 1);
         let existing: (String, String, String) = db
             .query_row(
                 r#"SELECT wire_thread_kind, wire_thread_ref, content

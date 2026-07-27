@@ -736,6 +736,14 @@ Reliable sync 补充：
   调用方不得解析、修改或复用到其他 API。
 - `sync_delta` 是高层可靠同步入口，`since_event_seq` 从 `im-core` Rust/SQLite 内部
   checkpoint 注入，调用方不能传入或推进。
+- 对发送者 owner 投影的普通 P3 Direct 元数据事件，`sync_delta` 按 `message_id + server_seq`
+  检查具体消息；缺失时先通过权威 Handle 目录解析 Persona，再按 Direct peer 批量从该页最早缺失
+  sequence 前一位调用 `direct.get_history` 补齐；同一个权威 history page 的 peer scope 只解析
+  一次，禁止逐事件或逐消息 N+1 拉取。会话中存在更晚消息不代表该消息已存在；只有该 peer 在本页
+  要求的全部指定消息均已提交后才推进 checkpoint。历史页使用稳定 conversationId 展示时，
+  Core 仍以 `direct + peer DID` 保存普通 Direct 的不可变 wire identity，不能把展示 ID 写成
+  `thread` wire identity。该流程不创建 P5 session，也不改变原消息的安全级别；补齐失败时
+  fail closed，保留原 checkpoint。
 - `sync_conversation_after` 是 conversationId-first thread-local 补新 wrapper。新的 App/Dart
   消息显示主路径应使用 `ConversationReadRef.conversation_id`，旧 `sync_thread_after(ThreadRef)`
   只作为 CLI/legacy adapter 或低层调试入口。

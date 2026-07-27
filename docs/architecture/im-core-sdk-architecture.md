@@ -654,6 +654,24 @@ the SDK architecture boundary.
   `inbound_resolution_backlog` before advancing the checkpoint; verified
   Persona projection later performs idempotent replay. Binding conflicts remain
   conflict-visible rather than being guessed or last-write-wins.
+- An ordinary P3 Direct event may be owner-scoped to the sender and contain only
+  message/thread metadata. Core checks the exact `message_id` and `server_seq`,
+  resolves the peer through the authoritative Handle directory, groups missing
+  targets by Direct peer, and hydrates `direct.get_history` from immediately
+  before the earliest missing sequence for that peer. Core resolves the peer
+  scope once for the authoritative history page and reuses the verified result
+  across its messages; it must not issue one history request per metadata event
+  or one directory lookup per message. A later local thread sequence does not
+  prove that an exact message exists. Core advances the global checkpoint only
+  after every required message in the page is committed; an empty, incomplete,
+  or non-advancing history response fails closed. This is sender-side reliable
+  sync for plain messages and must not create a P5 session or otherwise change
+  the original message security level. Canonical conversation IDs are
+  presentation/storage routing aliases, not wire identities: when an
+  authoritative Direct history page is projected through a stable
+  conversation ID, Core still persists the immutable wire identity as
+  `direct + peer DID`. It must not reinterpret that presentation thread as a
+  `thread` wire identity or relax conflict detection to make the merge pass.
 
 `messages.sync_conversation_after()` / Dart `client.messages.syncConversationAfter(...)` is the conversationId-first catch-up API for AWiki Me and the Flutter SDK display chain. It resolves `ConversationReadRef.conversation_id` to the syncable storage thread/ref, uses `after_server_seq`, and does not read or advance the account-level checkpoint. `messages.sync_thread_after()` / Dart `client.messages.syncThreadAfter(...)` remains a legacy / debug adapter. Implementations must not return a locally merged `history_async` page as a catch-up result; they use a raw remote path or strictly filter `server_seq > after_server_seq`.
 

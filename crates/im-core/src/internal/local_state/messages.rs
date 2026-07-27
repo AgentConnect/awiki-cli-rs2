@@ -835,6 +835,27 @@ SELECT EXISTS(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn message_server_seq(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    msg_id: &str,
+) -> crate::ImResult<Option<i64>> {
+    connection
+        .query_row(
+            r#"
+SELECT server_seq
+FROM messages
+WHERE owner_identity_id = ?1 AND msg_id = ?2
+"#,
+            rusqlite::params![owner_identity_id, msg_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .optional()
+        .map(|value| value.flatten())
+        .map_err(super::local_state_unavailable)
+}
+
+#[cfg(feature = "sqlite")]
 fn remove_group_duplicate_rows(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
@@ -4161,10 +4182,7 @@ VALUES (?1, ?2, ?3, ?4, ?4, 0, 'mail.notification', 'mail', '2026-05-21T00:00:00
         .unwrap();
 
         assert_eq!(classified.direct_ids, vec!["direct-1", "missing-1"]);
-        assert_eq!(
-            classified.remote_direct_ids,
-            vec!["direct-1", "missing-1"]
-        );
+        assert_eq!(classified.remote_direct_ids, vec!["direct-1", "missing-1"]);
         assert_eq!(classified.group_ids, vec!["group-1"]);
         assert_eq!(classified.local_only_ids, vec!["mail-1"]);
     }

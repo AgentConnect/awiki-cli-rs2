@@ -219,6 +219,11 @@ enum LocalStateCommand {
         thread: crate::messages::ThreadRef,
         reply: oneshot::Sender<crate::ImResult<Option<i64>>>,
     },
+    MessageServerSeq {
+        owner_identity_id: String,
+        message_id: String,
+        reply: oneshot::Sender<crate::ImResult<Option<i64>>>,
+    },
     ListActiveGroupRefs {
         owner_identity_id: String,
         owner_did: String,
@@ -924,6 +929,21 @@ impl LocalStateDb {
             owner_identity_id: owner_identity_id.into(),
             owner_did: owner_did.into(),
             thread,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn message_server_seq(
+        &self,
+        owner_identity_id: impl Into<String>,
+        message_id: impl Into<String>,
+    ) -> crate::ImResult<Option<i64>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::MessageServerSeq {
+            owner_identity_id: owner_identity_id.into(),
+            message_id: message_id.into(),
             reply,
         })
         .await?;
@@ -1751,6 +1771,18 @@ fn run_actor(
                     &owner_identity_id,
                     &owner_did,
                     &thread,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::MessageServerSeq {
+                owner_identity_id,
+                message_id,
+                reply,
+            } => {
+                let result = super::messages::message_server_seq(
+                    &connection,
+                    &owner_identity_id,
+                    &message_id,
                 );
                 let _ = reply.send(result);
             }
