@@ -1364,6 +1364,7 @@ impl From<im_core::messages::SyncDeltaResult> for DartSyncDeltaResult {
             has_more: value.has_more,
             snapshot_required: value.snapshot_required,
             retention_floor_event_seq: value.retention_floor_event_seq,
+            hydration_required_conversation_ids: value.hydration_required_conversation_ids,
             warnings: value.warnings,
         }
     }

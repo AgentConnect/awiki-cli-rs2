@@ -2,8 +2,10 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 29;
+pub(crate) const SCHEMA_VERSION: i64 = 31;
 pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
+const HYDRATION_SCHEMA_VERSION: i64 = 29;
+const SYNC_SUBJECT_SCHEMA_VERSION: i64 = 30;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
 const CONVERSATION_REGISTRY_SCHEMA_VERSION: i64 = 26;
@@ -255,20 +257,22 @@ CREATE TABLE IF NOT EXISTS attachment_manifest_cache (
 );
 "#;
 
-const SYNC_STATE_SQL: &str = r#"
+const SYNC_STATE_TABLE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS sync_state (
     owner_identity_id TEXT NOT NULL,
-    owner_did         TEXT NOT NULL DEFAULT '',
+    sync_subject_id   TEXT NOT NULL,
     scope             TEXT NOT NULL,
     checkpoint_kind   TEXT NOT NULL,
     event_seq         TEXT NOT NULL DEFAULT '0',
     updated_at        TEXT NOT NULL,
     metadata_json     TEXT,
-    PRIMARY KEY (owner_identity_id, scope, checkpoint_kind)
+    PRIMARY KEY (owner_identity_id, sync_subject_id, scope, checkpoint_kind)
 );
+"#;
 
+const SYNC_STATE_INDEX_SQL: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_sync_state_owner_kind
-ON sync_state(owner_identity_id, checkpoint_kind, updated_at DESC);
+ON sync_state(owner_identity_id, sync_subject_id, checkpoint_kind, updated_at DESC);
 "#;
 
 const THREAD_READ_STATE_SQL: &str = r#"
@@ -529,7 +533,6 @@ const OWNER_REQUIRED_TABLES_V17: &[&str] = &[
 
 const OWNER_DID_SNAPSHOT_TABLES_V17: &[&str] = &[
     "conversation_summaries",
-    "sync_state",
     "contacts",
     "contact_handle_bindings",
     "messages",
@@ -933,7 +936,16 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
         });
     }
     if version == CANONICAL_CONVERSATION_SCHEMA_VERSION {
-        return migrate_schema_28_to_29(connection);
+        migrate_schema_28_to_29(connection)?;
+        migrate_schema_29_to_30(connection)?;
+        return migrate_schema_30_to_31(connection);
+    }
+    if version == HYDRATION_SCHEMA_VERSION {
+        migrate_schema_29_to_30(connection)?;
+        return migrate_schema_30_to_31(connection);
+    }
+    if version == SYNC_SUBJECT_SCHEMA_VERSION {
+        return migrate_schema_30_to_31(connection);
     }
     if version < SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUpgradeRequired {
@@ -960,9 +972,7 @@ pub(super) fn create_schema(
     connection
         .execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL)
         .map_err(super::local_state_unavailable)?;
-    connection
-        .execute_batch(SYNC_STATE_SQL)
-        .map_err(super::local_state_unavailable)?;
+    ensure_sync_state_schema(connection)?;
     connection
         .execute_batch(THREAD_READ_STATE_SQL)
         .map_err(super::local_state_unavailable)?;
@@ -1409,7 +1419,7 @@ fn migrate_schema_28_to_29(connection: &Connection) -> crate::ImResult<()> {
         .execute_batch("SAVEPOINT awiki_schema_29_upgrade")
         .map_err(super::local_state_unavailable)?;
     let result = (|| {
-        set_schema_version(connection, SCHEMA_VERSION)?;
+        set_schema_version(connection, HYDRATION_SCHEMA_VERSION)?;
         create_schema(connection, false)?;
         mark_legacy_hydration_probes(connection)?;
         Ok(())
@@ -1428,6 +1438,160 @@ fn migrate_schema_28_to_29(connection: &Connection) -> crate::ImResult<()> {
             }
         }
     }
+}
+
+fn migrate_schema_29_to_30(connection: &Connection) -> crate::ImResult<()> {
+    connection
+        .execute_batch("SAVEPOINT awiki_schema_30_upgrade")
+        .map_err(super::local_state_unavailable)?;
+    let result = (|| {
+        migrate_sync_state_subject_scope(connection)?;
+        set_schema_version(connection, SYNC_SUBJECT_SCHEMA_VERSION)?;
+        create_schema(connection, false)
+    })();
+    match result {
+        Ok(()) => connection
+            .execute_batch("RELEASE SAVEPOINT awiki_schema_30_upgrade")
+            .map_err(super::local_state_unavailable),
+        Err(error) => {
+            let rollback = connection.execute_batch(
+                "ROLLBACK TO SAVEPOINT awiki_schema_30_upgrade; RELEASE SAVEPOINT awiki_schema_30_upgrade",
+            );
+            match rollback {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(super::local_state_unavailable(rollback_error)),
+            }
+        }
+    }
+}
+
+fn migrate_schema_30_to_31(connection: &Connection) -> crate::ImResult<()> {
+    connection
+        .execute_batch("SAVEPOINT awiki_schema_31_upgrade")
+        .map_err(super::local_state_unavailable)?;
+    let result = (|| {
+        super::messages::repair_legacy_canonical_direct_wire_identities(connection)?;
+        set_schema_version(connection, SCHEMA_VERSION)?;
+        create_schema(connection, false)
+    })();
+    match result {
+        Ok(()) => connection
+            .execute_batch("RELEASE SAVEPOINT awiki_schema_31_upgrade")
+            .map_err(super::local_state_unavailable),
+        Err(error) => {
+            let rollback = connection.execute_batch(
+                "ROLLBACK TO SAVEPOINT awiki_schema_31_upgrade; RELEASE SAVEPOINT awiki_schema_31_upgrade",
+            );
+            match rollback {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(super::local_state_unavailable(rollback_error)),
+            }
+        }
+    }
+}
+
+fn ensure_sync_state_schema(connection: &Connection) -> crate::ImResult<()> {
+    connection
+        .execute_batch(SYNC_STATE_TABLE_SQL)
+        .map_err(super::local_state_unavailable)?;
+    // Schemas before v30 still have owner_did. Their index must remain untouched
+    // until the table is rebuilt inside the versioned migration transaction.
+    if has_column(connection, "sync_state", "sync_subject_id")? {
+        if !sync_state_subject_scope_schema_is_complete(connection)? {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "sync_state subject-scoped schema is incomplete".to_owned(),
+            });
+        }
+        connection
+            .execute_batch(SYNC_STATE_INDEX_SQL)
+            .map_err(super::local_state_unavailable)?;
+    }
+    Ok(())
+}
+
+pub(super) fn migrate_sync_state_subject_scope(connection: &Connection) -> crate::ImResult<()> {
+    ensure_sync_state_schema(connection)?;
+    if has_column(connection, "sync_state", "sync_subject_id")? {
+        return Ok(());
+    }
+
+    connection
+        .execute_batch(
+            r#"
+DROP TABLE IF EXISTS sync_state_v30_new;
+CREATE TABLE sync_state_v30_new (
+    owner_identity_id TEXT NOT NULL,
+    sync_subject_id   TEXT NOT NULL,
+    scope             TEXT NOT NULL,
+    checkpoint_kind   TEXT NOT NULL,
+    event_seq         TEXT NOT NULL DEFAULT '0',
+    updated_at        TEXT NOT NULL,
+    metadata_json     TEXT,
+    PRIMARY KEY (owner_identity_id, sync_subject_id, scope, checkpoint_kind)
+);
+
+INSERT INTO sync_state_v30_new
+    (owner_identity_id, sync_subject_id, scope, checkpoint_kind,
+     event_seq, updated_at, metadata_json)
+SELECT state.owner_identity_id,
+       TRIM(state.owner_did),
+       state.scope,
+       state.checkpoint_kind,
+       state.event_seq,
+       state.updated_at,
+       state.metadata_json
+FROM sync_state AS state
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM identity_did_history AS current_did
+    WHERE current_did.owner_identity_id = state.owner_identity_id
+      AND current_did.status = 'current'
+      AND TRIM(current_did.did) = TRIM(state.owner_did)
+      AND EXISTS (
+          SELECT 1
+          FROM identity_did_history AS previous_did
+          WHERE previous_did.owner_identity_id = state.owner_identity_id
+            AND previous_did.status = 'previous'
+      )
+);
+
+DROP TABLE sync_state;
+ALTER TABLE sync_state_v30_new RENAME TO sync_state;
+CREATE INDEX idx_sync_state_owner_kind
+ON sync_state(owner_identity_id, sync_subject_id, checkpoint_kind, updated_at DESC);
+"#,
+        )
+        .map_err(super::local_state_unavailable)
+}
+
+fn sync_state_subject_scope_schema_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    if has_column(connection, "sync_state", "owner_did")? {
+        return Ok(false);
+    }
+    let mut statement = connection
+        .prepare("PRAGMA table_info(sync_state)")
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+        })
+        .map_err(super::local_state_unavailable)?;
+    let mut primary_key = Vec::new();
+    for row in rows {
+        let (column, position) = row.map_err(super::local_state_unavailable)?;
+        if position > 0 {
+            primary_key.push((position, column));
+        }
+    }
+    primary_key.sort_by_key(|(position, _)| *position);
+    Ok(primary_key.into_iter().map(|(_, column)| column).eq([
+        "owner_identity_id",
+        "sync_subject_id",
+        "scope",
+        "checkpoint_kind",
+    ]
+    .into_iter()
+    .map(str::to_owned)))
 }
 
 fn ensure_group_member_identity_columns(connection: &Connection) -> crate::ImResult<()> {

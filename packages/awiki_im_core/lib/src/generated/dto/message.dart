@@ -1193,6 +1193,7 @@ class DartSyncDeltaResult {
   final bool hasMore;
   final bool snapshotRequired;
   final String? retentionFloorEventSeq;
+  final List<String> hydrationRequiredConversationIds;
   final List<String> warnings;
 
   const DartSyncDeltaResult({
@@ -1202,6 +1203,7 @@ class DartSyncDeltaResult {
     required this.hasMore,
     required this.snapshotRequired,
     this.retentionFloorEventSeq,
+    required this.hydrationRequiredConversationIds,
     required this.warnings,
   });
 
@@ -1213,6 +1215,7 @@ class DartSyncDeltaResult {
       hasMore.hashCode ^
       snapshotRequired.hashCode ^
       retentionFloorEventSeq.hashCode ^
+      hydrationRequiredConversationIds.hashCode ^
       warnings.hashCode;
 
   @override
@@ -1226,6 +1229,8 @@ class DartSyncDeltaResult {
           hasMore == other.hasMore &&
           snapshotRequired == other.snapshotRequired &&
           retentionFloorEventSeq == other.retentionFloorEventSeq &&
+          hydrationRequiredConversationIds ==
+              other.hydrationRequiredConversationIds &&
           warnings == other.warnings;
 }
 

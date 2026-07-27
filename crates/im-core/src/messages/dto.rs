@@ -519,6 +519,12 @@ pub struct SyncDeltaResult {
     pub snapshot_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_floor_event_seq: Option<String>,
+    /// Canonical conversations with durable message hydration gaps.
+    ///
+    /// Callers should reconcile these through `syncConversationAfter`. The
+    /// underlying per-message hydration state remains Core-private.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hydration_required_conversation_ids: Vec<String>,
     pub warnings: Vec<String>,
 }
 

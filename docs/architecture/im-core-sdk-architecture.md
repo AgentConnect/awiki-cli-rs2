@@ -210,7 +210,7 @@ These files describe the SDK public surface and interface-level contracts. They 
 
 ## 11. Durable Conversation Registry And Summary Projection
 
-The SQLite local state keeps `messages` as the durable message projection truth, while current target schema version 29 uses the schema-28 `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
+The SQLite local state keeps `messages` as the durable message projection truth, while current target schema version 31 uses the schema-28 `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
 
 - primary key: `(owner_identity_id, conversation_id)`;
 - hot index: `idx_conversation_summaries_owner_last(owner_identity_id, last_message_at DESC, conversation_id)`;
@@ -317,16 +317,16 @@ validation runner performs the explicit 27→28 cutover. The runner uses a
 cross-process file lock and SQLite Online Backup, performs canonical mapping
 inside a disposable shadow transaction, verifies conservation and canonical
 invariants, and records a resumable redacted journal before replacing the live
-SQLite file set. With a schema-29 Core, the same shadow transaction also adds
-the hydration projection before cutover, so a fresh 27 upgrade lands directly
-on schema 29. An already canonical schema 28 database is upgraded atomically in
+SQLite file set. With a schema-31 Core, the same shadow transaction also adds
+the hydration projection and subject-scoped sync checkpoint before cutover, so
+a fresh 27 upgrade lands directly on schema 31. An already canonical schema 28 database is upgraded atomically in
 place by ordinary Core open; it must not be routed back through the release/0710
 cutover or require App-side deletion/archival.
 The source allowlist is pinned to the exact deployed release/0710 daemon
 artifact, source ref, and schema fingerprint. Its checked-in fixture is built
 by that binary in an isolated state root and contains synthetic rows only.
 After a completed cutover, the pre-open restore API verifies the retained
-backup, keeps the current schema-29 target as a private safety copy, and restores the
+backup, keeps the current schema-31 target as a private safety copy, and restores the
 whole schema 27 file set; partial table-level downgrade is unsupported.
 
 Because summaries contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
@@ -395,6 +395,13 @@ the SDK architecture boundary.
   `inbound_resolution_backlog` before advancing the checkpoint; verified
   Persona projection later performs idempotent replay. Binding conflicts remain
   conflict-visible rather than being guessed or last-write-wins.
+- Local projection ownership and service event-stream ownership are separate.
+  `owner_identity_id` partitions durable data for the stable local identity;
+  `sync_subject_id` identifies the service-owned event stream. The current
+  message service uses canonical DID as `sync_subject_id`, so DID recovery starts
+  the new DID at checkpoint `0` while retaining the old DID checkpoint in its
+  historical namespace. A future stable account subject changes only this
+  mapping, not App APIs or local identity ownership.
 
 `messages.sync_conversation_after()` / Dart `client.messages.syncConversationAfter(...)` is the conversationId-first catch-up API for AWiki Me and the Flutter SDK display chain. It resolves `ConversationReadRef.conversation_id` to the syncable storage thread/ref, uses `after_server_seq`, and does not read or advance the account-level checkpoint. `messages.sync_thread_after()` / Dart `client.messages.syncThreadAfter(...)` remains a legacy / debug adapter. Implementations must not return a locally merged `history_async` page as a catch-up result; they use a raw remote path and strictly filter `server_seq` against the effective gap-aware cursor described below.
 
@@ -421,13 +428,28 @@ the inbound message commit happen in that order in the same local-state actor
 sequence, so a first inbound Direct becomes patch-visible under its canonical
 Persona conversation without briefly materializing a DID conversation.
 
-Schema version 20 adds `sync_state` with owner-scoped checkpoint rows:
+Schema version 20 introduced `sync_state`. Schema 30 makes its event-stream
+ownership explicit:
 
-- key: `(owner_identity_id, scope, checkpoint_kind)`;
-- value: decimal string `event_seq`, plus `owner_did`, `updated_at`, and optional
+- key: `(owner_identity_id, sync_subject_id, scope, checkpoint_kind)`;
+- value: decimal string `event_seq`, plus `updated_at` and optional
   `metadata_json`;
-- index: `idx_sync_state_owner_kind(owner_identity_id, checkpoint_kind,
-  updated_at DESC)`.
+- index: `idx_sync_state_owner_kind(owner_identity_id, sync_subject_id,
+  checkpoint_kind, updated_at DESC)`;
+- DID-history transitions never rewrite `sync_subject_id`. The 29→30 migration
+  preserves explicit previous-DID namespaces and checkpoints for identities
+  with no previous DID. If an owner has any previous DID, a schema-29 row
+  relabeled to the current DID is provenance-ambiguous regardless of timestamp,
+  so it is discarded and that current subject is idempotently resynced from `0`.
+
+Schema 31 repairs one historical projection bug without weakening immutable
+wire conflict handling. A row is eligible only when it has the exact malformed
+canonical-Direct signature (`thread + canonical conversation_id`), its
+sender/receiver snapshots identify exactly one peer DID relative to the stored
+owner DID, and the resolved Direct registry, Persona DID identifier, and
+owner-scoped route all prove the same canonical conversation. Eligible rows are
+rewritten to `direct + peer DID`; ambiguous or conflicting rows remain untouched
+and continue to fail closed during replay.
 
 `sync_state` is private local recovery state. Diagnostics should report counts,
 durations, redacted owner/thread identifiers, and checkpoint age rather than raw

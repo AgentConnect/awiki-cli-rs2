@@ -12,6 +12,7 @@ const EVENT_SEQ_CHECKPOINT: &str = "event_seq";
 pub(crate) struct SyncDeltaApplyInput {
     pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
+    pub(crate) sync_subject_id: String,
     pub(crate) events: Vec<SyncDeltaApplyEvent>,
     pub(crate) next_event_seq: String,
     pub(crate) metadata_json: Option<String>,
@@ -59,7 +60,7 @@ impl SyncDeltaInvalidation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GlobalCheckpoint {
     pub(crate) event_seq: String,
-    pub(crate) owner_did: String,
+    pub(crate) sync_subject_id: String,
     pub(crate) updated_at: String,
     pub(crate) metadata_json: Option<String>,
 }
@@ -68,22 +69,26 @@ pub(crate) struct GlobalCheckpoint {
 pub(crate) fn load_global_checkpoint(
     connection: &Connection,
     owner_identity_id: &str,
+    sync_subject_id: &str,
 ) -> crate::ImResult<Option<GlobalCheckpoint>> {
     crate::internal::local_state::schema::ensure_schema(connection)?;
     let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let sync_subject_id = required("sync_subject_id", sync_subject_id)?;
     let mut statement = connection
         .prepare(
             r#"
-SELECT owner_did, event_seq, updated_at, metadata_json
+SELECT sync_subject_id, event_seq, updated_at, metadata_json
 FROM sync_state
 WHERE owner_identity_id = ?1
-  AND scope = ?2
-  AND checkpoint_kind = ?3"#,
+  AND sync_subject_id = ?2
+  AND scope = ?3
+  AND checkpoint_kind = ?4"#,
         )
         .map_err(super::local_state_unavailable)?;
     let mut rows = statement
         .query(params![
             owner_identity_id,
+            sync_subject_id,
             GLOBAL_SCOPE,
             EVENT_SEQ_CHECKPOINT
         ])
@@ -96,8 +101,8 @@ WHERE owner_identity_id = ?1
         .map_err(super::local_state_unavailable)?;
     parse_decimal_seq(&event_seq)?;
     Ok(Some(GlobalCheckpoint {
-        owner_did: row
-            .get::<_, String>("owner_did")
+        sync_subject_id: row
+            .get::<_, String>("sync_subject_id")
             .map_err(super::local_state_unavailable)?,
         event_seq,
         updated_at: row
@@ -113,29 +118,28 @@ WHERE owner_identity_id = ?1
 pub(crate) fn store_global_checkpoint_tx(
     transaction: &Transaction<'_>,
     owner_identity_id: &str,
-    owner_did: &str,
+    sync_subject_id: &str,
     event_seq: &str,
     metadata_json: Option<&str>,
 ) -> crate::ImResult<()> {
     let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
-    let owner_did = required("owner_did", owner_did)?;
+    let sync_subject_id = required("sync_subject_id", sync_subject_id)?;
     let event_seq = normalize_decimal_seq(event_seq)?;
     let updated_at = now_utc_like();
     transaction
         .execute(
             r#"
 INSERT INTO sync_state
-    (owner_identity_id, owner_did, scope, checkpoint_kind, event_seq, updated_at, metadata_json)
+    (owner_identity_id, sync_subject_id, scope, checkpoint_kind, event_seq, updated_at, metadata_json)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-ON CONFLICT(owner_identity_id, scope, checkpoint_kind)
+ON CONFLICT(owner_identity_id, sync_subject_id, scope, checkpoint_kind)
 DO UPDATE SET
-    owner_did = excluded.owner_did,
     event_seq = excluded.event_seq,
     updated_at = excluded.updated_at,
     metadata_json = excluded.metadata_json"#,
             params![
                 owner_identity_id,
-                owner_did,
+                sync_subject_id,
                 GLOBAL_SCOPE,
                 EVENT_SEQ_CHECKPOINT,
                 event_seq,
@@ -155,9 +159,11 @@ pub(crate) fn apply_sync_delta_tx(
     crate::internal::local_state::schema::ensure_schema(transaction)?;
     let owner_identity_id = required("owner_identity_id", &input.owner_identity_id)?;
     let owner_did = required("owner_did", &input.owner_did)?;
-    let current_checkpoint = load_global_checkpoint(transaction, &owner_identity_id)?
-        .map(|checkpoint| checkpoint.event_seq)
-        .unwrap_or_else(|| "0".to_owned());
+    let sync_subject_id = required("sync_subject_id", &input.sync_subject_id)?;
+    let current_checkpoint =
+        load_global_checkpoint(transaction, &owner_identity_id, &sync_subject_id)?
+            .map(|checkpoint| checkpoint.event_seq)
+            .unwrap_or_else(|| "0".to_owned());
     let current_seq = parse_decimal_seq(&current_checkpoint)?;
     let next_event_seq = normalize_decimal_seq(&input.next_event_seq)
         .map_err(|_| invalid_page("next_event_seq must be a decimal string"))?;
@@ -269,7 +275,7 @@ pub(crate) fn apply_sync_delta_tx(
         return finish_sync_delta_apply(
             transaction,
             owner_identity_id,
-            owner_did,
+            sync_subject_id,
             current_seq,
             next_seq,
             next_event_seq,
@@ -283,7 +289,7 @@ pub(crate) fn apply_sync_delta_tx(
     finish_sync_delta_apply(
         transaction,
         owner_identity_id,
-        owner_did,
+        sync_subject_id,
         current_seq,
         next_seq,
         next_event_seq,
@@ -299,7 +305,7 @@ pub(crate) fn apply_sync_delta_tx(
 fn finish_sync_delta_apply(
     transaction: &Transaction<'_>,
     owner_identity_id: String,
-    owner_did: String,
+    sync_subject_id: String,
     current_seq: u64,
     next_seq: u64,
     next_event_seq: String,
@@ -316,7 +322,7 @@ fn finish_sync_delta_apply(
         store_global_checkpoint_tx(
             transaction,
             &owner_identity_id,
-            &owner_did,
+            &sync_subject_id,
             &next_event_seq,
             metadata_json.as_deref(),
         )?;
@@ -471,9 +477,11 @@ mod tests {
             tx.commit().unwrap();
         }
 
-        let stored = load_global_checkpoint(&db, "alice-id").unwrap().unwrap();
+        let stored = load_global_checkpoint(&db, "alice-id", "did:example:alice")
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.event_seq, "41");
-        assert_eq!(stored.owner_did, "did:example:alice");
+        assert_eq!(stored.sync_subject_id, "did:example:alice");
         assert_eq!(
             stored.metadata_json.as_deref(),
             Some(r#"{"reason":"test"}"#)
@@ -485,13 +493,38 @@ mod tests {
             tx.rollback().unwrap();
         }
 
-        let stored = load_global_checkpoint(&db, "alice-id").unwrap().unwrap();
+        let stored = load_global_checkpoint(&db, "alice-id", "did:example:alice")
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.event_seq, "41");
         assert_eq!(
             stored.metadata_json.as_deref(),
             Some(r#"{"reason":"test"}"#)
         );
-        assert!(load_global_checkpoint(&db, "bob-id").unwrap().is_none());
+        assert!(load_global_checkpoint(&db, "bob-id", "did:example:bob")
+            .unwrap()
+            .is_none());
+
+        {
+            let tx = db.transaction().unwrap();
+            store_global_checkpoint_tx(&tx, "alice-id", "did:example:alice:new", "1", None)
+                .unwrap();
+            tx.commit().unwrap();
+        }
+        assert_eq!(
+            load_global_checkpoint(&db, "alice-id", "did:example:alice")
+                .unwrap()
+                .unwrap()
+                .event_seq,
+            "41"
+        );
+        assert_eq!(
+            load_global_checkpoint(&db, "alice-id", "did:example:alice:new")
+                .unwrap()
+                .unwrap()
+                .event_seq,
+            "1"
+        );
     }
 
     #[test]
@@ -529,6 +562,7 @@ mod tests {
         let input = SyncDeltaApplyInput {
             owner_identity_id: "alice-id".to_owned(),
             owner_did: "did:example:alice".to_owned(),
+            sync_subject_id: "did:example:alice".to_owned(),
             events: vec![SyncDeltaApplyEvent {
                 event_id: "event-1".to_owned(),
                 event_seq: "1".to_owned(),
@@ -546,7 +580,7 @@ mod tests {
         tx.commit().unwrap();
 
         assert_eq!(
-            load_global_checkpoint(&db, "alice-id")
+            load_global_checkpoint(&db, "alice-id", "did:example:alice")
                 .unwrap()
                 .unwrap()
                 .event_seq,

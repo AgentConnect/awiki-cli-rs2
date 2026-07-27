@@ -118,6 +118,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         assert_column_exists(&db, "messages", column);
     }
     assert_column_exists(&db, "contacts", "peer_persona_id");
+    assert_column_exists(&db, "sync_state", "sync_subject_id");
     for (table, key_columns) in [
         ("contacts", vec!["owner_identity_id", "did"]),
         (
@@ -151,7 +152,12 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ),
         (
             "sync_state",
-            vec!["owner_identity_id", "scope", "checkpoint_kind"],
+            vec![
+                "owner_identity_id",
+                "sync_subject_id",
+                "scope",
+                "checkpoint_kind",
+            ],
         ),
         (
             "thread_read_state",
@@ -335,6 +341,317 @@ PRAGMA user_version = 28;
 }
 
 #[test]
+fn local_state_schema_29_scopes_checkpoints_by_subject_and_drops_ambiguous_current_did_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("im.sqlite");
+    {
+        let db = Connection::open(&path).unwrap();
+        ensure_schema(&db).unwrap();
+        db.execute_batch(
+            r#"
+INSERT INTO identity_did_history
+    (owner_identity_id, did, status, first_seen_at, last_seen_at)
+VALUES
+    ('retagged-id', 'did:retagged:old', 'previous', '50', '200'),
+    ('retagged-id', 'did:retagged:new', 'current', '200', '200'),
+    ('same-second-id', 'did:same-second:old', 'previous', '100', '200'),
+    ('same-second-id', 'did:same-second:new', 'current', '200', '200'),
+    ('later-updated-id', 'did:later-updated:old', 'previous', '2026-07-01T00:00:00Z', '2026-07-02T00:00:00Z'),
+    ('later-updated-id', 'did:later-updated:new', 'current', '2026-07-02T00:00:00Z', '2026-07-02T00:00:00Z'),
+    ('stable-id', 'did:stable', 'current', '200', '200'),
+    ('historical-id', 'did:historical:old', 'previous', '50', '200'),
+    ('historical-id', 'did:historical:new', 'current', '200', '200');
+
+DROP TABLE sync_state;
+CREATE TABLE sync_state (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    scope             TEXT NOT NULL,
+    checkpoint_kind   TEXT NOT NULL,
+    event_seq         TEXT NOT NULL DEFAULT '0',
+    updated_at        TEXT NOT NULL,
+    metadata_json     TEXT,
+    PRIMARY KEY (owner_identity_id, scope, checkpoint_kind)
+);
+CREATE INDEX idx_sync_state_owner_kind
+ON sync_state(owner_identity_id, checkpoint_kind, updated_at DESC);
+INSERT INTO sync_state
+    (owner_identity_id, owner_did, scope, checkpoint_kind, event_seq, updated_at)
+VALUES
+    ('retagged-id', 'did:retagged:new', 'global', 'event_seq', '48', '100'),
+    ('same-second-id', 'did:same-second:new', 'global', 'event_seq', '49', '200'),
+    ('later-updated-id', 'did:later-updated:new', 'global', 'event_seq', '50', '2026-07-03T00:00:00Z'),
+    ('stable-id', 'did:stable', 'global', 'event_seq', '12', '100'),
+    ('historical-id', 'did:historical:old', 'global', 'event_seq', '31', '100');
+PRAGMA user_version = 29;
+"#,
+        )
+        .unwrap();
+
+        ensure_schema(&db).unwrap();
+        assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+        assert_primary_key_columns(
+            &db,
+            "sync_state",
+            &[
+                "owner_identity_id",
+                "sync_subject_id",
+                "scope",
+                "checkpoint_kind",
+            ],
+        );
+        for (owner_identity_id, sync_subject_id) in [
+            ("retagged-id", "did:retagged:new"),
+            ("same-second-id", "did:same-second:new"),
+            ("later-updated-id", "did:later-updated:new"),
+        ] {
+            assert!(
+                crate::internal::local_state::sync_state::load_global_checkpoint(
+                    &db,
+                    owner_identity_id,
+                    sync_subject_id,
+                )
+                .unwrap()
+                .is_none()
+            );
+        }
+        for (owner_identity_id, sync_subject_id, expected_seq) in [
+            ("stable-id", "did:stable", "12"),
+            ("historical-id", "did:historical:old", "31"),
+        ] {
+            assert_eq!(
+                crate::internal::local_state::sync_state::load_global_checkpoint(
+                    &db,
+                    owner_identity_id,
+                    sync_subject_id,
+                )
+                .unwrap()
+                .unwrap()
+                .event_seq,
+                expected_seq
+            );
+        }
+    }
+
+    let reopened = Connection::open(&path).unwrap();
+    ensure_schema(&reopened).unwrap();
+    assert_eq!(current_schema_version(&reopened).unwrap(), SCHEMA_VERSION);
+    assert_eq!(
+        crate::internal::local_state::sync_state::load_global_checkpoint(
+            &reopened,
+            "historical-id",
+            "did:historical:old",
+        )
+        .unwrap()
+        .unwrap()
+        .event_seq,
+        "31"
+    );
+    for (owner_identity_id, sync_subject_id) in [
+        ("retagged-id", "did:retagged:new"),
+        ("same-second-id", "did:same-second:new"),
+        ("later-updated-id", "did:later-updated:new"),
+    ] {
+        assert!(
+            crate::internal::local_state::sync_state::load_global_checkpoint(
+                &reopened,
+                owner_identity_id,
+                sync_subject_id,
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+}
+
+#[test]
+fn local_state_schema_29_rejects_partial_subject_scoped_checkpoint_shape() {
+    let db = Connection::open_in_memory().unwrap();
+    ensure_schema(&db).unwrap();
+    db.execute_batch(
+        r#"
+DROP TABLE sync_state;
+CREATE TABLE sync_state (
+    owner_identity_id TEXT NOT NULL,
+    sync_subject_id   TEXT NOT NULL,
+    scope             TEXT NOT NULL,
+    checkpoint_kind   TEXT NOT NULL,
+    event_seq         TEXT NOT NULL DEFAULT '0',
+    updated_at        TEXT NOT NULL,
+    metadata_json     TEXT,
+    PRIMARY KEY (owner_identity_id, scope, checkpoint_kind)
+);
+PRAGMA user_version = 29;
+"#,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        ensure_schema(&db),
+        Err(crate::ImError::LocalStateUnavailable { detail })
+            if detail.contains("sync_state subject-scoped schema is incomplete")
+    ));
+    assert_eq!(
+        current_schema_version(&db).unwrap(),
+        HYDRATION_SCHEMA_VERSION
+    );
+}
+
+#[test]
+fn did_history_transition_does_not_relabel_sync_checkpoint_subject() {
+    let mut db = Connection::open_in_memory().unwrap();
+    ensure_schema(&db).unwrap();
+    record_identity_did_history_transition(
+        &mut db,
+        "alice-id",
+        "did:example:alice:old",
+        &[] as &[&str],
+    )
+    .unwrap();
+    {
+        let tx = db.transaction().unwrap();
+        crate::internal::local_state::sync_state::store_global_checkpoint_tx(
+            &tx,
+            "alice-id",
+            "did:example:alice:old",
+            "48",
+            None,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    let snapshot_counts = record_identity_did_history_transition(
+        &mut db,
+        "alice-id",
+        "did:example:alice:new",
+        &["did:example:alice:old"],
+    )
+    .unwrap();
+
+    assert!(!snapshot_counts.contains_key("sync_state"));
+    assert_eq!(
+        crate::internal::local_state::sync_state::load_global_checkpoint(
+            &db,
+            "alice-id",
+            "did:example:alice:old",
+        )
+        .unwrap()
+        .unwrap()
+        .event_seq,
+        "48"
+    );
+    assert!(
+        crate::internal::local_state::sync_state::load_global_checkpoint(
+            &db,
+            "alice-id",
+            "did:example:alice:new",
+        )
+        .unwrap()
+        .is_none()
+    );
+}
+
+#[test]
+fn local_state_schema_30_repairs_only_provable_canonical_direct_wire_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("im.sqlite");
+    {
+        let mut db = Connection::open(&path).unwrap();
+        ensure_schema(&db).unwrap();
+        let conversation_id = crate::internal::local_state::peer_personas::project_verified_handle(
+            &mut db,
+            "alice-id",
+            "did:example:alice",
+            &crate::directory::HandleLookupResult {
+                handle: crate::ids::Handle::parse("bob.awiki.test", "").unwrap(),
+                did: crate::ids::Did::parse("did:example:bob").unwrap(),
+                user_id: "user-bob".to_owned(),
+                domain: Some("awiki.test".to_owned()),
+                status: Some("active".to_owned()),
+                binding_generation: Some("1".to_owned()),
+                profile: None,
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
+        for (message_id, sender_did, receiver_did, wire_peer_did) in [
+            (
+                "provable-old-wire",
+                "did:example:alice",
+                "did:example:bob",
+                "did:example:bob",
+            ),
+            (
+                "ambiguous-owner-snapshot",
+                "did:example:bob",
+                "did:example:mallory",
+                "did:example:bob",
+            ),
+            (
+                "unverified-peer-snapshot",
+                "did:example:alice",
+                "did:example:mallory",
+                "did:example:mallory",
+            ),
+        ] {
+            crate::internal::local_state::messages::upsert_message(
+                &db,
+                &crate::internal::local_state::messages::MessageRecord {
+                    msg_id: message_id.to_owned(),
+                    owner_identity_id: "alice-id".to_owned(),
+                    owner_did: "did:example:alice".to_owned(),
+                    conversation_id: conversation_id.clone(),
+                    thread_id: conversation_id.clone(),
+                    direction: 1,
+                    sender_did: sender_did.to_owned(),
+                    receiver_did: receiver_did.to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: "schema 30 wire repair fixture".to_owned(),
+                    server_seq: Some(5),
+                    stored_at: "2026-07-26T00:00:00Z".to_owned(),
+                    ..Default::default()
+                }
+                .with_resolved_wire_thread("direct", wire_peer_did),
+            )
+            .unwrap();
+        }
+        db.execute(
+            r#"UPDATE messages
+SET wire_thread_kind = 'thread', wire_thread_ref = conversation_id,
+    wire_identity_resolution_state = 'resolved'
+WHERE msg_id IN ('provable-old-wire', 'ambiguous-owner-snapshot',
+                 'unverified-peer-snapshot')"#,
+            [],
+        )
+        .unwrap();
+        db.pragma_update(None, "user_version", SYNC_SUBJECT_SCHEMA_VERSION)
+            .unwrap();
+
+        ensure_schema(&db).unwrap();
+        assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+        assert_eq!(
+            message_wire_identity(&db, "provable-old-wire"),
+            ("direct".to_owned(), "did:example:bob".to_owned())
+        );
+        for message_id in ["ambiguous-owner-snapshot", "unverified-peer-snapshot"] {
+            assert_eq!(
+                message_wire_identity(&db, message_id),
+                ("thread".to_owned(), conversation_id.clone())
+            );
+        }
+    }
+
+    let reopened = Connection::open(&path).unwrap();
+    ensure_schema(&reopened).unwrap();
+    assert_eq!(current_schema_version(&reopened).unwrap(), SCHEMA_VERSION);
+    assert_eq!(
+        message_wire_identity(&reopened, "provable-old-wire"),
+        ("direct".to_owned(), "did:example:bob".to_owned())
+    );
+}
+
+#[test]
 fn local_state_schema_sync_state_is_created_during_v17_upgrade() {
     let db = Connection::open_in_memory().unwrap();
     create_identity_owned_schema(&db, IdentityOwnedSchemaTableMode::Final).unwrap();
@@ -351,7 +668,12 @@ fn local_state_schema_sync_state_is_created_during_v17_upgrade() {
     assert_primary_key_columns(
         &db,
         "sync_state",
-        &["owner_identity_id", "scope", "checkpoint_kind"],
+        &[
+            "owner_identity_id",
+            "sync_subject_id",
+            "scope",
+            "checkpoint_kind",
+        ],
     );
     assert_primary_key_columns(
         &db,
@@ -996,6 +1318,15 @@ fn hydration_state_for_owner(db: &Connection, owner_identity_id: &str, message_i
         "SELECT hydration_state FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",
         (owner_identity_id, message_id),
         |row| row.get(0),
+    )
+    .unwrap()
+}
+
+fn message_wire_identity(db: &Connection, message_id: &str) -> (String, String) {
+    db.query_row(
+        "SELECT wire_thread_kind, wire_thread_ref FROM messages WHERE msg_id = ?1",
+        [message_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )
     .unwrap()
 }

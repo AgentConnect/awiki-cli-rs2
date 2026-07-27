@@ -29,7 +29,7 @@
 crates/awiki-cli/src/workspace_upgrade/types.rs
 ```
 
-当前 canonical conversation target SQLite schema version 为 `28`，定义在：
+当前 SQLite target schema version 为 `31`；canonical conversation cutover 在 schema `28` 引入，定义在：
 
 ```text
 crates/im-core/src/internal/local_state/schema.rs
@@ -49,17 +49,21 @@ SQLite schema 28 增加 owner-scoped `peer_personas`、`peer_identifiers`、`pee
 
 SQLite schema 29 为内部消息投影增加 `hydration_state`，明确区分已持久化完整正文的 `hydrated`、只由 `sync.delta` 发现 metadata 的 `discovered`，以及需要一次可信远端扫描确认的旧行 `legacy_probe`。timeline 只返回 `hydrated`，conversation activity/unread 仍可由 `discovered` 推进；thread catch-up 必须从最早 hydration gap 之前开始，不能让 metadata 占用 sequence 后永久跳过正文。schema 28 在普通 open 中原子升级到 29，旧 backlog 缺少该字段时按其来源契约恢复状态。
 
+SQLite schema 30 将可靠同步 checkpoint 从业务 `owner_did` snapshot 中拆出，使用 `(owner_identity_id, sync_subject_id, scope, checkpoint_kind)` 分区。当前 message service 的 `sync_subject_id` 是 canonical DID；DID recovery 不改写旧 subject 的 checkpoint，新 DID 第一次从 `0` 拉取。29→30 迁移重建私有 `sync_state`：保留未轮换身份的 checkpoint 和明确属于 previous DID 的历史 namespace；同一 owner 只要存在 previous DID，旧表中被标为 current DID 的 checkpoint 就因缺少 provenance 而一律失效，并从 `0` 幂等补同步，不依赖秒级时间戳猜测其来源。
+
+SQLite schema 31 修复旧版本已经写入的 canonical Direct WireIdentity 错误。迁移只接受 `wire_thread_kind=thread`、`wire_thread_ref=conversation_id` 的精确旧错误形态，并要求消息 sender/receiver snapshot、resolved Direct registry、Persona DID identifier 与 owner-scoped direct route 同时证明同一个 peer DID 和 canonical conversation；满足时改为 `direct + peer DID`。证据不完整、跨 Persona 或 route 冲突的行保持不变，后续可靠重放仍按 `message_wire_identity_conflict` fail closed，不删除消息、不重置 checkpoint。
+
 0710 migration 在创建 canonical Direct/Group registry row 后必须立即把对应 legacy registry row 标记为 `merged + resolved`，包括没有首条消息的空会话；不能依赖 message migration 顺带完成。已经离群或被移除的 Group 迁移为 `left + resolved` 且保持非 active，历史 alias 仍直接指向该 canonical row，不允许升级过程重新激活群会话。
 
-release/0710 的生产 SQLite schema 27 不允许在普通 `open_writable` 中原地自动 bump。当前 Core 在 migration runner 接管前返回 typed `local_state_upgrade_required`，避免在一致性 backup、shadow migration 和 validation gate 完成前修改 source DB。正式 27→当前 schema 29 runner 位于 `crates/im-core/src/internal/local_state/canonical_upgrade/`：只读 structural preflight 和 schema fingerprint 通过后获取跨进程文件锁，使用 SQLite Online Backup API（包含已提交 WAL）生成并复验 backup，再创建独立 shadow。部分 target schema、未知 source schema、source fingerprint 变化和 integrity check 失败均 fail closed，且不修改 source。
+release/0710 的生产 SQLite schema 27 不允许在普通 `open_writable` 中原地自动 bump。当前 Core 在 migration runner 接管前返回 typed `local_state_upgrade_required`，避免在一致性 backup、shadow migration 和 validation gate 完成前修改 source DB。正式 27→当前 schema 31 runner 位于 `crates/im-core/src/internal/local_state/canonical_upgrade/`：只读 structural preflight 和 schema fingerprint 通过后获取跨进程文件锁，使用 SQLite Online Backup API（包含已提交 WAL）生成并复验 backup，再创建独立 shadow。部分 target schema、未知 source schema、source fingerprint 变化和 integrity check 失败均 fail closed，且不修改 source。
 
 当前只接受实际部署到 `awiki.info` 的 release/0710 daemon 0.1.76：source ref `d7c853a986a29e0c0457284a6b2c3d81ec637e10`、artifact SHA-256 `3134862f360acb73ca61867fe7d547f4ecd100369ba2bd4153d724251b45ce95`、schema fingerprint `sha256:0b8b6b902f8460ff1ea6c122d6b8b687722890136d9b7adb6e52d9d636ef6690`。脱敏 fixture 位于 `crates/im-core/tests/fixtures/release_0710/`，由 `scripts/generate_release_0710_fixture.py` 调用该发布二进制的 `init-state` 在隔离目录生成 schema 后，只写入确定性的 synthetic rows；未复制线上数据库、身份、消息、凭证或密钥。新增可支持的生产 fingerprint 必须逐个审计并显式加入白名单，不能放宽为任意 schema 27。
 
-canonical upgrade journal 只记录 upgrade ID、schema/fingerprint、相对 artifact 名和阶段，不记录 owner DID、消息内容、凭证或密钥。升级阶段固定为 `detected → preflight_passed → backup_verified → shadow_migrated → validation_passed → cutover_started → completed`；恢复阶段为 `restore_started → restored`。runner 在 shadow transaction 中先增加 target 物理字段，再从 0710 verified route 建 Persona/identifier/alias、按 Group DID 收敛群会话、回填 immutable WireIdentity、保留 unresolved 行、重建 summary 并迁移 read-state canonical reference。validation 对 message、outbox、read、contacts、Handle bindings、groups、members、group rebind/P6 jobs、DID history、relationship 和 sync facts 做逐行 hash/计数守恒，检查空会话、WireIdentity 完整性、SQLite integrity 和 canonical invariant doctor；全部通过后才设置当前 schema 29 并进入 cutover。
+canonical upgrade journal 只记录 upgrade ID、schema/fingerprint、相对 artifact 名和阶段，不记录 owner DID、消息内容、凭证或密钥。升级阶段固定为 `detected → preflight_passed → backup_verified → shadow_migrated → validation_passed → cutover_started → completed`；恢复阶段为 `restore_started → restored`。runner 在 shadow transaction 中先增加 target 物理字段，再从 0710 verified route 建 Persona/identifier/alias、按 Group DID 收敛群会话、回填 immutable WireIdentity、保留 unresolved 行、重建 summary 并迁移 read-state canonical reference。validation 对 message、outbox、read、contacts、Handle bindings、groups、members、group rebind/P6 jobs、DID history、relationship 和旧 sync facts 做逐行 hash/计数守恒，检查空会话、WireIdentity 完整性、SQLite integrity 和 canonical invariant doctor；守恒通过后在同一 shadow transaction 中迁移 subject-scoped checkpoint，最后设置 schema 31 并进入 cutover。
 
-cutover 先把完整 live SQLite file set 移到 owner-scope upgrade 目录的 rollback artifact，再把已验证 shadow 放到原路径。`cutover_started` 中断后，下一次 runner 会优先完成已验证 shadow，或在 shadow 不可用时恢复 rollback；backup 始终保留。相同 source/journal 可重复执行，已经完成 canonical cutover 的 schema 28/29 再次调用返回 NotRequired，不重复创建 alias、消息或 outbox；schema 28 的 hydration 升级由普通 open 原子完成。
+cutover 先把完整 live SQLite file set 移到 owner-scope upgrade 目录的 rollback artifact，再把已验证 shadow 放到原路径。`cutover_started` 中断后，下一次 runner 会优先完成已验证 shadow，或在 shadow 不可用时恢复 rollback；backup 始终保留。相同 source/journal 可重复执行，已经完成 canonical cutover 的 schema 28/29/30/31 再次调用返回 NotRequired，不重复创建 alias、消息或 outbox；schema 28 的 hydration、checkpoint 与 WireIdentity 修复由普通 open 依次原子完成。
 
-`restore_local_state_backup` / Dart `AwikiImCore.restoreLocalStateBackup` 是 Core 未打开时使用的完整降级入口。它只接受 journal 已完成 cutover 的已验证 backup，先把当前 schema 29 SQLite file set 保存为 private safety copy，再恢复并复验 schema 27；中断后可以按 journal 幂等续跑。旧 0710 二进制不得直接打开 schema 28/29，也不得按表回写或局部降级。
+`restore_local_state_backup` / Dart `AwikiImCore.restoreLocalStateBackup` 是 Core 未打开时使用的完整降级入口。它只接受 journal 已完成 cutover 的已验证 backup，先把当前 schema 31 SQLite file set 保存为 private safety copy，再恢复并复验 schema 27；中断后可以按 journal 幂等续跑。旧 0710 二进制不得直接打开 schema 28/29/30/31，也不得按表回写或局部降级。
 
 ## 3. 工作区路径
 
@@ -285,9 +289,10 @@ awiki-cli id import-v1
 
 `sync_state` 是 `im-core` 内部可靠同步状态，不是 CLI/App/Dart public API：
 
-- 主键为 `(owner_identity_id, scope, checkpoint_kind)`。
-- `event_seq` 保存账号级 reliable sync checkpoint 的十进制字符串。
-- `owner_did`、`updated_at` 和 `metadata_json` 只用于诊断、兼容和后续扩展。
+- schema 30 主键为 `(owner_identity_id, sync_subject_id, scope, checkpoint_kind)`。
+- `event_seq` 保存该服务端同步主体 reliable sync checkpoint 的十进制字符串。
+- 当前 `sync_subject_id` 是 canonical DID，它是服务端事件流 owner，不是可随身份恢复改写的业务 snapshot；未来服务端提供稳定 account subject 时只替换该映射。
+- `updated_at` 和 `metadata_json` 只用于诊断、兼容和后续扩展。
 - `sync.delta` 由 Rust runtime 从 `sync_state` 读取 checkpoint，服务端事件页成功应用到
   本地 SQLite 后再在同一事务中推进 checkpoint。
 - Dart SDK、Flutter App、CLI adapter 不暴露 checkpoint load/store，不允许调用方传

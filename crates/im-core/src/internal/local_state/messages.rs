@@ -81,10 +81,48 @@ impl MessageRecord {
         self
     }
 
-    pub(crate) fn with_wire_thread_ref(self, thread: &crate::messages::ThreadRef) -> Self {
-        let (kind, reference) = crate::messages::thread_ref_parts(thread);
+    pub(crate) fn with_wire_identity_from_message(
+        self,
+        owner_did: &str,
+        message: &crate::messages::Message,
+    ) -> Self {
+        let (kind, reference) = wire_thread_parts_from_message(owner_did, message);
         self.with_resolved_wire_thread(kind, reference)
     }
+}
+
+fn wire_thread_parts_from_message(
+    owner_did: &str,
+    message: &crate::messages::Message,
+) -> (&'static str, String) {
+    match &message.thread {
+        crate::messages::ThreadRef::Direct(peer) => ("direct", peer.as_str().to_owned()),
+        crate::messages::ThreadRef::Group(group) => ("group", group.as_str().to_owned()),
+        crate::messages::ThreadRef::Thread(thread) => {
+            if let Some(group) = message.group.as_ref() {
+                return ("group", group.as_str().to_owned());
+            }
+            if thread.as_str().starts_with("dm:peer-scope:v1:") {
+                if let Some(peer_did) = direct_wire_peer_did(owner_did, message) {
+                    return ("direct", peer_did);
+                }
+            }
+            ("thread", thread.as_str().to_owned())
+        }
+    }
+}
+
+fn direct_wire_peer_did(owner_did: &str, message: &crate::messages::Message) -> Option<String> {
+    let owner_did = owner_did.trim();
+    [
+        Some(message.sender.as_str()),
+        message.receiver.as_ref().map(crate::ids::PeerRef::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .find(|candidate| candidate.starts_with("did:") && *candidate != owner_did)
+    .map(str::to_owned)
 }
 
 #[cfg(feature = "sqlite")]
@@ -245,6 +283,132 @@ WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
         });
     }
     Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Debug)]
+struct LegacyCanonicalDirectWireCandidate {
+    owner_identity_id: String,
+    message_id: String,
+    owner_did: String,
+    conversation_id: String,
+    sender_did: String,
+    receiver_did: String,
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn repair_legacy_canonical_direct_wire_identities(
+    connection: &rusqlite::Connection,
+) -> crate::ImResult<usize> {
+    let candidates = {
+        let mut statement = connection
+            .prepare(
+                r#"SELECT owner_identity_id, msg_id, owner_did, conversation_id,
+                          sender_did, receiver_did
+FROM messages
+WHERE conversation_id LIKE 'dm:peer-scope:v1:%'
+  AND wire_thread_kind = 'thread'
+  AND wire_thread_ref = conversation_id
+  AND wire_identity_resolution_state = 'resolved'
+  AND TRIM(COALESCE(group_id, '')) = ''
+  AND TRIM(COALESCE(group_did, '')) = ''"#,
+            )
+            .map_err(super::local_state_unavailable)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(LegacyCanonicalDirectWireCandidate {
+                    owner_identity_id: row.get(0)?,
+                    message_id: row.get(1)?,
+                    owner_did: row.get(2)?,
+                    conversation_id: row.get(3)?,
+                    sender_did: row.get(4)?,
+                    receiver_did: row.get(5)?,
+                })
+            })
+            .map_err(super::local_state_unavailable)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(super::local_state_unavailable)?
+    };
+
+    let mut repaired = 0usize;
+    for candidate in candidates {
+        let owner_did = candidate.owner_did.trim();
+        let sender_did = candidate.sender_did.trim();
+        let receiver_did = candidate.receiver_did.trim();
+        let peer_did = match (sender_did == owner_did, receiver_did == owner_did) {
+            (true, false) => receiver_did,
+            (false, true) => sender_did,
+            _ => continue,
+        };
+        if crate::ids::Did::parse(owner_did).is_err() || crate::ids::Did::parse(peer_did).is_err() {
+            continue;
+        }
+
+        let registry_persona_id = connection
+            .query_row(
+                r#"SELECT peer_persona_id
+FROM conversation_registry
+WHERE owner_identity_id = ?1
+  AND conversation_id = ?2
+  AND thread_kind = 'direct'
+  AND resolution_state = 'resolved'
+  AND TRIM(COALESCE(peer_persona_id, '')) <> ''"#,
+                (
+                    candidate.owner_identity_id.as_str(),
+                    candidate.conversation_id.as_str(),
+                ),
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(super::local_state_unavailable)?;
+        let Some(registry_persona_id) = registry_persona_id else {
+            continue;
+        };
+        let Ok(Some(route)) = super::direct_peer_routes::get(
+            connection,
+            &candidate.owner_identity_id,
+            &candidate.conversation_id,
+        ) else {
+            continue;
+        };
+        if route.peer_persona_id.as_deref().map(str::trim) != Some(registry_persona_id.trim()) {
+            continue;
+        }
+        let Ok(Some(resolved_peer)) = super::peer_personas::resolve_by_did(
+            connection,
+            &candidate.owner_identity_id,
+            peer_did,
+        ) else {
+            continue;
+        };
+        if resolved_peer.peer_persona_id != registry_persona_id
+            || resolved_peer.conversation_id != candidate.conversation_id
+        {
+            continue;
+        }
+
+        repaired += connection
+            .execute(
+                r#"UPDATE messages
+SET wire_thread_kind = 'direct',
+    wire_thread_ref = ?1,
+    wire_identity_resolution_state = 'resolved'
+WHERE owner_identity_id = ?2
+  AND msg_id = ?3
+  AND conversation_id = ?4
+  AND wire_thread_kind = 'thread'
+  AND wire_thread_ref = conversation_id
+  AND wire_identity_resolution_state = 'resolved'"#,
+                rusqlite::params![
+                    peer_did,
+                    candidate.owner_identity_id,
+                    candidate.message_id,
+                    candidate.conversation_id,
+                ],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
+    Ok(repaired)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1844,6 +2008,35 @@ WHERE owner_identity_id = ?
         default_after_server_seq: hydration_gap_after_server_seq.or(max_server_seq),
         hydration_gap_after_server_seq,
     })
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn hydration_required_conversation_ids(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+) -> crate::ImResult<Vec<String>> {
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT DISTINCT m.conversation_id
+FROM messages m
+JOIN conversation_registry r
+  ON r.owner_identity_id = m.owner_identity_id
+ AND r.conversation_id = m.conversation_id
+WHERE m.owner_identity_id = ?1
+  AND m.hydration_state <> 'hydrated'
+  AND TRIM(m.conversation_id) <> ''
+  AND r.is_active = 1
+  AND r.resolution_state = 'resolved'
+ORDER BY m.conversation_id"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map([owner_identity_id], |row| row.get::<_, String>(0))
+        .map_err(super::local_state_unavailable)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(super::local_state_unavailable)
 }
 
 #[cfg(feature = "sqlite")]
@@ -4091,6 +4284,81 @@ mod tests {
             ..MessageRecord::default()
         }
         .with_resolved_wire_thread("direct", "did:example:peer")
+    }
+
+    fn wire_identity_message(
+        thread: crate::messages::ThreadRef,
+        sender_did: &str,
+        receiver_did: Option<&str>,
+        group_did: Option<&str>,
+    ) -> crate::messages::Message {
+        crate::messages::Message {
+            id: crate::ids::MessageId::parse("wire-message-dto-1").unwrap(),
+            thread,
+            direction: crate::messages::MessageDirection::Incoming,
+            sender: crate::ids::PeerRef::parse(sender_did, "").unwrap(),
+            receiver: receiver_did.map(|did| crate::ids::PeerRef::parse(did, "").unwrap()),
+            group: group_did.map(|did| crate::ids::GroupRef::parse(did).unwrap()),
+            body: crate::messages::MessageBodyView::Payload {
+                payload: serde_json::json!({"type": "wire-identity-test"}),
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: crate::messages::MessageMetadata::default(),
+        }
+    }
+
+    #[test]
+    fn canonical_direct_projection_keeps_peer_did_as_wire_identity() {
+        let canonical_thread = crate::messages::ThreadRef::Thread(
+            crate::ids::ThreadId::parse("dm:peer-scope:v1:canonical").unwrap(),
+        );
+        for (sender_did, receiver_did) in [
+            ("did:example:peer", "did:example:owner"),
+            ("did:example:owner", "did:example:peer"),
+        ] {
+            let message = wire_identity_message(
+                canonical_thread.clone(),
+                sender_did,
+                Some(receiver_did),
+                None,
+            );
+            let record = MessageRecord::default()
+                .with_wire_identity_from_message("did:example:owner", &message);
+
+            assert_eq!(record.wire_thread_kind, "direct");
+            assert_eq!(record.wire_thread_ref, "did:example:peer");
+            assert_eq!(record.wire_identity_resolution_state, "resolved");
+        }
+    }
+
+    #[test]
+    fn raw_thread_and_group_projection_keep_their_protocol_identity() {
+        let raw_thread = wire_identity_message(
+            crate::messages::ThreadRef::Thread(
+                crate::ids::ThreadId::parse("compatibility-thread-1").unwrap(),
+            ),
+            "did:example:peer",
+            Some("did:example:owner"),
+            None,
+        );
+        let raw_record = MessageRecord::default()
+            .with_wire_identity_from_message("did:example:owner", &raw_thread);
+        assert_eq!(raw_record.wire_thread_kind, "thread");
+        assert_eq!(raw_record.wire_thread_ref, "compatibility-thread-1");
+
+        let group = wire_identity_message(
+            crate::messages::ThreadRef::Thread(
+                crate::ids::ThreadId::parse("canonical-group-projection").unwrap(),
+            ),
+            "did:example:peer",
+            None,
+            Some("did:example:group"),
+        );
+        let group_record =
+            MessageRecord::default().with_wire_identity_from_message("did:example:owner", &group);
+        assert_eq!(group_record.wire_thread_kind, "group");
+        assert_eq!(group_record.wire_thread_ref, "did:example:group");
     }
 
     #[test]

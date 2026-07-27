@@ -2030,7 +2030,7 @@ pub(crate) fn message_record_from_message(
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
-    .with_wire_thread_ref(&message.thread))
+    .with_wire_identity_from_message(client.did().as_str(), message))
 }
 
 #[cfg(feature = "sqlite")]

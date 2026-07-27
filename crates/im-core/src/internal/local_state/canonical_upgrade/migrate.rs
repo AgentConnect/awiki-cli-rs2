@@ -77,6 +77,7 @@ pub(super) fn migrate_shadow(path: &Path) -> crate::ImResult<CanonicalUpgradeRep
     report.unresolved_messages = migrated.unresolved_messages;
     migrate_read_state_aliases(&transaction)?;
     super::super::conversation_summaries::rebuild_all(&transaction)?;
+    super::super::messages::repair_legacy_canonical_direct_wire_identities(&transaction)?;
     report.alias_count = transaction
         .query_row("SELECT COUNT(*) FROM conversation_aliases", [], |row| {
             row.get::<_, i64>(0)
@@ -85,6 +86,10 @@ pub(super) fn migrate_shadow(path: &Path) -> crate::ImResult<CanonicalUpgradeRep
         .map(|value| u64::try_from(value).unwrap_or_default())?;
 
     super::validate::validate_migrated_shadow(&transaction, &source_snapshot)?;
+    // Conservation is validated against the untouched release/0710 checkpoint
+    // shape first. The private checkpoint table can then move to its subject-
+    // scoped ownership model without weakening the canonical data checks.
+    super::super::schema::migrate_sync_state_subject_scope(&transaction)?;
     super::super::schema::set_schema_version(&transaction, super::super::schema::SCHEMA_VERSION)?;
     transaction
         .commit()
@@ -688,6 +693,19 @@ mod tests {
             super::super::super::schema::current_schema_version(&db).unwrap(),
             crate::internal::local_state::schema::SCHEMA_VERSION
         );
+        let sync_state_columns = db
+            .prepare("PRAGMA table_info(sync_state)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(sync_state_columns
+            .iter()
+            .any(|column| column == "sync_subject_id"));
+        assert!(!sync_state_columns
+            .iter()
+            .any(|column| column == "owner_did"));
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
                 .get::<_, i64>(0))

@@ -70,7 +70,7 @@ pub fn plan_realtime_message_local_projection(
         record: crate::internal::local_state::messages::MessageRecord {
             msg_id: message.id.as_str().to_string(),
             owner_identity_id: context.owner_identity_id.trim().to_string(),
-            owner_did,
+            owner_did: owner_did.clone(),
             conversation_id: conversation_id.clone(),
             thread_id: conversation_id,
             direction: direction_value(&message.direction),
@@ -97,7 +97,7 @@ pub fn plan_realtime_message_local_projection(
             credential_name: context.credential_name.trim().to_string(),
             ..crate::internal::local_state::messages::MessageRecord::default()
         }
-        .with_wire_thread_ref(&message.thread),
+        .with_wire_identity_from_message(&owner_did, message),
     })
 }
 

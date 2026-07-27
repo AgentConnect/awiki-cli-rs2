@@ -7514,8 +7514,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartSyncDeltaResult dco_decode_dart_sync_delta_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return DartSyncDeltaResult(
       eventsApplied: dco_decode_u_32(arr[0]),
       pagesFetched: dco_decode_u_32(arr[1]),
@@ -7523,7 +7523,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       hasMore: dco_decode_bool(arr[3]),
       snapshotRequired: dco_decode_bool(arr[4]),
       retentionFloorEventSeq: dco_decode_opt_String(arr[5]),
-      warnings: dco_decode_list_String(arr[6]),
+      hydrationRequiredConversationIds: dco_decode_list_String(arr[6]),
+      warnings: dco_decode_list_String(arr[7]),
     );
   }
 
@@ -11215,6 +11216,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_hasMore = sse_decode_bool(deserializer);
     var var_snapshotRequired = sse_decode_bool(deserializer);
     var var_retentionFloorEventSeq = sse_decode_opt_String(deserializer);
+    var var_hydrationRequiredConversationIds = sse_decode_list_String(
+      deserializer,
+    );
     var var_warnings = sse_decode_list_String(deserializer);
     return DartSyncDeltaResult(
       eventsApplied: var_eventsApplied,
@@ -11223,6 +11227,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       hasMore: var_hasMore,
       snapshotRequired: var_snapshotRequired,
       retentionFloorEventSeq: var_retentionFloorEventSeq,
+      hydrationRequiredConversationIds: var_hydrationRequiredConversationIds,
       warnings: var_warnings,
     );
   }
@@ -14595,6 +14600,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.hasMore, serializer);
     sse_encode_bool(self.snapshotRequired, serializer);
     sse_encode_opt_String(self.retentionFloorEventSeq, serializer);
+    sse_encode_list_String(self.hydrationRequiredConversationIds, serializer);
     sse_encode_list_String(self.warnings, serializer);
   }
 

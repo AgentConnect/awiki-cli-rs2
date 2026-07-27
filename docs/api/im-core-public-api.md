@@ -144,8 +144,10 @@ cutover 的 journal，将当前 target 保留为 private safety copy 后恢复�
 backup。公共结果只包含 schema、聚合计数、alias mapping 和 backup/safety-copy
 availability，不返回 backup 路径、消息内容或凭证。
 
-当前 target 为 schema 29。既有 schema 28 已经完成 canonical conversation cutover，
-普通 Core open 会在单个 SQLite 事务内自动补充 hydration projection 并升级到 29；host
+当前 target 为 schema 31。既有 schema 28 已经完成 canonical conversation cutover，
+普通 Core open 会依次原子补充 schema 29 hydration projection 与 schema 30 subject-scoped
+reliable checkpoint，并在 schema 31 只修复能够由 resolved Direct registry、Persona
+identifier 和 owner-scoped route 共同证明的旧错误 WireIdentity；host
 不得把 schema 28 再送入 release/0710 runner，也不需要删除、归档或重建数据库。
 
 P2+ API：
@@ -318,8 +320,10 @@ impl IdentityService<'_> {
 `IdentityRegistry::recover_handle` 的 OTP 完成阶段默认执行 canonical
 `local-finalize`。当 SDK 生成新的 DID 时，调用方不能绕过该阶段：同一完整 Handle
 的本地身份继续使用原有稳定 `IdentityId`，旧/新 DID 写入
-`identity_did_history`，同一 owner 下的 `owner_did` snapshot 被刷新，并为仍绑定旧 DID
-的 Handle-backed 群成员写入幂等 `group_rebind_outbox` 任务。CLI 与 Dart facade
+`identity_did_history`，同一 owner 下的业务 `owner_did` snapshot 被刷新，但
+`sync_state.sync_subject_id` 不被改写；当前服务端按 DID 拥有事件流，因此新 DID 从独立的
+checkpoint `0` 开始同步。Core 同时为仍绑定旧 DID 的 Handle-backed 群成员写入幂等
+`group_rebind_outbox` 任务。CLI 与 Dart facade
 共享这一语义；host 不得自行把恢复结果保存成新的 owner identity。
 
 `generated_identity` 仅保留给显式提供密钥材料且本地不存在同 Handle 身份的低层调用者。
@@ -530,13 +534,21 @@ Reliable sync 补充：
   `activity_at` 与 `conversation_id` 排序键，比 offset 更能抵抗新增消息或排序变化。
   调用方不得解析、修改或复用到其他 API。
 - `sync_delta` 是高层可靠同步入口，`since_event_seq` 从 `im-core` Rust/SQLite 内部
-  checkpoint 注入，调用方不能传入或推进。
+  checkpoint 注入，调用方不能传入或推进。checkpoint 按稳定 `owner_identity_id` 与服务端
+  `sync_subject_id` 双重分区；当前 `sync_subject_id` 是 canonical DID，不能在 DID recovery
+  时继承旧 DID 的 event sequence。
 - `sync_conversation_after` 是 conversationId-first thread-local 补新 wrapper。新的 App/Dart
   消息显示主路径应使用 `ConversationReadRef.conversation_id`，旧 `sync_thread_after(ThreadRef)`
   只作为 CLI/legacy adapter 或低层调试入口。
 - `sync.delta` 的 metadata-only message discovery 可以先更新会话活动和未读数，但不会作为
   完整 Message 暴露给 local timeline。`discovered` / `hydrated` / migration-only
-  `legacy_probe` 都是 Core 私有持久化状态，不新增 public DTO 字段，host 不得自行保存或推断。
+  `legacy_probe` 都是 Core 私有持久化状态，不作为每条 Message 的 public DTO 字段暴露，host
+  不得自行保存或推断。
+- `SyncDeltaResult.hydration_required_conversation_ids` 返回当前 owner 下所有仍有 durable
+  hydration gap、且 registry 为 active/resolved 的 canonical conversation。该列表从本地 SQLite
+  当前状态计算，不只包含本次 delta 事件；host 必须逐个调用 `sync_conversation_after` 并完整翻页，
+  然后重新读取 committed conversation summary。补齐失败不回滚已提交 checkpoint，下一次
+  `sync_delta` 会继续返回同一 conversation 供重试。
 - `after_server_seq` 是补新提示。若 Core 存在更早的 durable hydration gap，blocking/async
   路径都会使用 `min(requested_after, earliest_gap - 1)`；未显式传值时同样从最早 gap 前开始，
   无 gap 才使用本地最大 sequence。结果中的过滤和 `next_after_server_seq` 均以这个 effective

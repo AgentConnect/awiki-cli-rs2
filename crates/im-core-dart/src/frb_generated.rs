@@ -9374,6 +9374,7 @@ impl SseDecode for crate::dto::message::DartSyncDeltaResult {
         let mut var_hasMore = <bool>::sse_decode(deserializer);
         let mut var_snapshotRequired = <bool>::sse_decode(deserializer);
         let mut var_retentionFloorEventSeq = <Option<String>>::sse_decode(deserializer);
+        let mut var_hydrationRequiredConversationIds = <Vec<String>>::sse_decode(deserializer);
         let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
         return crate::dto::message::DartSyncDeltaResult {
             events_applied: var_eventsApplied,
@@ -9382,6 +9383,7 @@ impl SseDecode for crate::dto::message::DartSyncDeltaResult {
             has_more: var_hasMore,
             snapshot_required: var_snapshotRequired,
             retention_floor_event_seq: var_retentionFloorEventSeq,
+            hydration_required_conversation_ids: var_hydrationRequiredConversationIds,
             warnings: var_warnings,
         };
     }
@@ -13892,6 +13894,9 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartSyncDeltaResult 
             self.has_more.into_into_dart().into_dart(),
             self.snapshot_required.into_into_dart().into_dart(),
             self.retention_floor_event_seq.into_into_dart().into_dart(),
+            self.hydration_required_conversation_ids
+                .into_into_dart()
+                .into_dart(),
             self.warnings.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -16171,6 +16176,7 @@ impl SseEncode for crate::dto::message::DartSyncDeltaResult {
         <bool>::sse_encode(self.has_more, serializer);
         <bool>::sse_encode(self.snapshot_required, serializer);
         <Option<String>>::sse_encode(self.retention_floor_event_seq, serializer);
+        <Vec<String>>::sse_encode(self.hydration_required_conversation_ids, serializer);
         <Vec<String>>::sse_encode(self.warnings, serializer);
     }
 }

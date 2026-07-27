@@ -40,7 +40,12 @@ enum LocalStateCommand {
     },
     LoadGlobalCheckpoint {
         owner_identity_id: String,
+        sync_subject_id: String,
         reply: oneshot::Sender<crate::ImResult<Option<super::sync_state::GlobalCheckpoint>>>,
+    },
+    ListHydrationRequiredConversationIds {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<Vec<String>>>,
     },
     ApplySyncDelta {
         input: super::sync_state::SyncDeltaApplyInput,
@@ -461,9 +466,24 @@ impl LocalStateDb {
     pub(crate) async fn load_global_checkpoint(
         &self,
         owner_identity_id: impl Into<String>,
+        sync_subject_id: impl Into<String>,
     ) -> crate::ImResult<Option<super::sync_state::GlobalCheckpoint>> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::LoadGlobalCheckpoint {
+            owner_identity_id: owner_identity_id.into(),
+            sync_subject_id: sync_subject_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn hydration_required_conversation_ids(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<Vec<String>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListHydrationRequiredConversationIds {
             owner_identity_id: owner_identity_id.into(),
             reply,
         })
@@ -1359,10 +1379,24 @@ fn run_actor(
             }
             LocalStateCommand::LoadGlobalCheckpoint {
                 owner_identity_id,
+                sync_subject_id,
                 reply,
             } => {
-                let result =
-                    super::sync_state::load_global_checkpoint(&connection, &owner_identity_id);
+                let result = super::sync_state::load_global_checkpoint(
+                    &connection,
+                    &owner_identity_id,
+                    &sync_subject_id,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListHydrationRequiredConversationIds {
+                owner_identity_id,
+                reply,
+            } => {
+                let result = super::messages::hydration_required_conversation_ids(
+                    &connection,
+                    &owner_identity_id,
+                );
                 let _ = reply.send(result);
             }
             LocalStateCommand::ApplySyncDelta { input, reply } => {

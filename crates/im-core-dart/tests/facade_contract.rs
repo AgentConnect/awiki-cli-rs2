@@ -28,7 +28,10 @@ fn local_state_upgrade_inspection_is_available_before_core_open() {
         awiki_im_core::dto::local_state_upgrade::DartLocalStateUpgradeEligibility::NotRequired
     );
     assert_eq!(inspection.source_schema_version, 0);
-    assert_eq!(inspection.target_schema_version, 28);
+    assert_eq!(
+        inspection.target_schema_version,
+        im_core::compat::local_state::SCHEMA_VERSION
+    );
 }
 
 #[test]
@@ -176,6 +179,7 @@ fn sync_delta_result_preserves_diagnostics_without_next_checkpoint_setter() {
         has_more: false,
         snapshot_required: true,
         retention_floor_event_seq: Some("10".to_string()),
+        hydration_required_conversation_ids: vec!["dm:peer-scope:v1:alice-bob".to_string()],
         warnings: vec!["snapshot required".to_string()],
     };
 
@@ -186,6 +190,10 @@ fn sync_delta_result_preserves_diagnostics_without_next_checkpoint_setter() {
     assert!(!dart.has_more);
     assert!(dart.snapshot_required);
     assert_eq!(dart.retention_floor_event_seq.as_deref(), Some("10"));
+    assert_eq!(
+        dart.hydration_required_conversation_ids,
+        vec!["dm:peer-scope:v1:alice-bob"]
+    );
     assert_eq!(dart.warnings, vec!["snapshot required"]);
 }
 

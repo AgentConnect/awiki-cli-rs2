@@ -568,7 +568,7 @@ fn group_message_record(
         credential_name: credential_name(scope),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
-    .with_wire_thread_ref(&message.thread)
+    .with_wire_identity_from_message(&scope.owner_did, message)
 }
 
 #[cfg(feature = "sqlite")]

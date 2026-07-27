@@ -65,13 +65,15 @@ assert(restored.targetSafetyCopyAvailable);
 ```
 
 Restore is not an in-process rollback for an open Core. It only accepts a
-completed canonical-upgrade journal, keeps the current schema-29 target as a private
+completed canonical-upgrade journal, keeps the current schema-31 target as a private
 safety copy, and is idempotent across interruption. The public result exposes
 versions/availability only, never filesystem backup paths.
 
 Schema 28 stores have already completed the canonical-conversation cutover.
-Ordinary Core open upgrades them atomically in place to schema 29 to add the
-private message-hydration projection; applications must not invoke the
+Ordinary Core open upgrades them in place through schemas 29, 30, and 31 to add
+the private message-hydration projection, subject-scoped reliable checkpoint,
+and the strictly proven legacy canonical-Direct WireIdentity repair;
+applications must not invoke the
 release/0710 runner again or delete/archive local state for this additive step.
 
 ## DTO policy
@@ -179,7 +181,7 @@ These display fields are UI metadata only. They must not be used for routing, au
 
 ## Local-first message reads
 
-`client.messages.conversations(...)` returns durable local conversations from `im-core`. Current schema version 29 reads conversation existence from the schema-28 `conversation_registry` and left-joins the message-derived `conversation_summaries`, so a validated empty conversation remains visible. Protocol/control records (including group lifecycle records) do not materialize a message summary; until the first user-visible message, `messageCount` remains `0` and `lastMessage` remains `null`. The API is paged: pass `cursor: page.nextCursor` to continue, and stop when `hasMore` is false or `nextCursor` is null. A single page is capped at 100 items by `PageLimit::new`. The cursor is opaque and follows `activity_at DESC, conversation_id DESC`; callers must not parse it or treat it as an offset.
+`client.messages.conversations(...)` returns durable local conversations from `im-core`. Current schema version 31 reads conversation existence from the schema-28 `conversation_registry` and left-joins the message-derived `conversation_summaries`, so a validated empty conversation remains visible. Protocol/control records (including group lifecycle records) do not materialize a message summary; until the first user-visible message, `messageCount` remains `0` and `lastMessage` remains `null`. The API is paged: pass `cursor: page.nextCursor` to continue, and stop when `hasMore` is false or `nextCursor` is null. A single page is capped at 100 items by `PageLimit::new`. The cursor is opaque and follows `activity_at DESC, conversation_id DESC`; callers must not parse it or treat it as an offset.
 
 Before opening a newly resolved Direct conversation or a newly created/joined Group conversation, commit its existence:
 
@@ -415,6 +417,10 @@ final page = await client.messages.syncConversationAfter(
 `syncDelta` semantics:
 
 - Rust `im-core` reads the current global message checkpoint from local SQLite.
+- The checkpoint is partitioned by stable local `ownerIdentityId` and the
+  service event-stream subject. The current service uses canonical DID as that
+  subject, so a recovered DID starts at `0` and never inherits the old DID's
+  event sequence.
 - Rust `im-core` sends `sync.delta` to the home message service and injects
   `since_event_seq` internally.
 - Rust `im-core` applies all returned events and advances the checkpoint only after
@@ -422,6 +428,15 @@ final page = await client.messages.syncConversationAfter(
 - If the service returns `snapshot_required=true`, the SDK returns a failed-closed
   result: no checkpoint advance, no local projection wipe, and diagnostic fields for
   the App to surface a degraded sync state.
+- `hydrationRequiredConversationIds` contains every active, resolved canonical
+  conversation that still has a durable metadata-only message gap for the current
+  owner identity. It is derived from SQLite after the delta transaction, not only
+  from events in the current response, so a later `syncDelta` returns the same
+  conversation again until hydration succeeds.
+- Hosts must page `syncConversationAfter` for each returned conversation until
+  `hasMore` is false, then reload the committed local conversation summaries before
+  publishing final unread/preview state. A hydration failure does not roll back the
+  reliable checkpoint; the durable hint makes the next sync retryable.
 - Dart callers can choose `limit` and `reason`; they cannot choose or store the
   reliable checkpoint.
 

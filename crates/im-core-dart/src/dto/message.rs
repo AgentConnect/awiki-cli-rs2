@@ -284,6 +284,7 @@ pub struct DartSyncDeltaResult {
     pub has_more: bool,
     pub snapshot_required: bool,
     pub retention_floor_event_seq: Option<String>,
+    pub hydration_required_conversation_ids: Vec<String>,
     pub warnings: Vec<String>,
 }
 

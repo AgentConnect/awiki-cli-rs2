@@ -104,6 +104,8 @@ where
                 result.last_applied_event_seq.as_deref(),
             )?;
             if !page.has_more {
+                result.hydration_required_conversation_ids =
+                    hydration_required_conversation_ids_blocking(self.client)?;
                 return Ok(result);
             }
         }
@@ -298,6 +300,8 @@ where
                 result.last_applied_event_seq.as_deref(),
             )?;
             if !page.has_more {
+                result.hydration_required_conversation_ids =
+                    hydration_required_conversation_ids_async(self.client).await?;
                 return Ok(result);
             }
         }
@@ -466,6 +470,7 @@ fn empty_sync_delta_result() -> crate::messages::SyncDeltaResult {
         has_more: false,
         snapshot_required: false,
         retention_floor_event_seq: None,
+        hydration_required_conversation_ids: Vec::new(),
         warnings: Vec::new(),
     }
 }
@@ -553,6 +558,7 @@ fn load_global_checkpoint_blocking(client: &crate::core::ImClient) -> crate::ImR
         crate::internal::local_state::sync_state::load_global_checkpoint(
             &connection,
             client.current_identity().id.as_str(),
+            &current_sync_subject_id(client),
         )?
         .map(|checkpoint| checkpoint.event_seq)
         .unwrap_or_else(|| "0".to_owned()),
@@ -583,6 +589,26 @@ fn apply_sync_delta_blocking(
     Ok(outcome)
 }
 
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+fn hydration_required_conversation_ids_blocking(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<Vec<String>> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    crate::internal::local_state::messages::hydration_required_conversation_ids(
+        &connection,
+        client.current_identity().id.as_str(),
+    )
+}
+
+#[cfg(not(all(feature = "sqlite", any(feature = "blocking", test))))]
+fn hydration_required_conversation_ids_blocking(
+    _client: &crate::core::ImClient,
+) -> crate::ImResult<Vec<String>> {
+    Err(crate::ImError::unsupported("sync-delta-local-state"))
+}
+
 #[cfg(not(all(feature = "sqlite", any(feature = "blocking", test))))]
 fn apply_sync_delta_blocking(
     _client: &crate::core::ImClient,
@@ -595,10 +621,29 @@ fn apply_sync_delta_blocking(
 async fn load_global_checkpoint_async(client: &crate::core::ImClient) -> crate::ImResult<String> {
     let db = client.core_inner().local_state_db().await?;
     Ok(db
-        .load_global_checkpoint(client.current_identity().id.as_str())
+        .load_global_checkpoint(
+            client.current_identity().id.as_str(),
+            current_sync_subject_id(client),
+        )
         .await?
         .map(|checkpoint| checkpoint.event_seq)
         .unwrap_or_else(|| "0".to_owned()))
+}
+
+#[cfg(feature = "sqlite")]
+async fn hydration_required_conversation_ids_async(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<Vec<String>> {
+    let db = client.core_inner().local_state_db().await?;
+    db.hydration_required_conversation_ids(client.current_identity().id.as_str())
+        .await
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn hydration_required_conversation_ids_async(
+    _client: &crate::core::ImClient,
+) -> crate::ImResult<Vec<String>> {
+    Err(crate::ImError::unsupported("sync-delta-local-state"))
 }
 
 #[cfg(not(feature = "sqlite"))]
@@ -619,11 +664,19 @@ fn sync_delta_apply_input(
         crate::internal::local_state::sync_state::SyncDeltaApplyInput {
             owner_identity_id: client.current_identity().id.as_str().to_owned(),
             owner_did: client.did().as_str().to_owned(),
+            sync_subject_id: current_sync_subject_id(client),
             events,
             next_event_seq: page.next_event_seq.clone(),
             metadata_json: Some(sync_delta_checkpoint_metadata(page)),
         },
     )
+}
+
+// The current message service owns reliable event streams by canonical DID.
+// Keep that server-side subject explicit so a future stable account subject can
+// replace this mapping without changing local identity ownership semantics.
+fn current_sync_subject_id(client: &crate::core::ImClient) -> String {
+    client.did().as_str().to_owned()
 }
 
 #[cfg(not(feature = "sqlite"))]

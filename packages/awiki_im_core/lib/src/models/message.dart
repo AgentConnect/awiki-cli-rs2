@@ -343,6 +343,7 @@ class SyncDeltaResult {
     required this.hasMore,
     required this.snapshotRequired,
     this.retentionFloorEventSeq,
+    this.hydrationRequiredConversationIds = const [],
     this.warnings = const [],
   });
 
@@ -352,6 +353,7 @@ class SyncDeltaResult {
   final bool hasMore;
   final bool snapshotRequired;
   final String? retentionFloorEventSeq;
+  final List<String> hydrationRequiredConversationIds;
   final List<String> warnings;
 }
 

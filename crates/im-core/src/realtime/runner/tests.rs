@@ -155,9 +155,12 @@ fn realtime_gap_hint_projection_does_not_write_sync_checkpoint() {
 
     assert!(outcome.warnings.is_empty());
     let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
-    let checkpoint =
-        crate::internal::local_state::sync_state::load_global_checkpoint(&connection, "alice")
-            .unwrap();
+    let checkpoint = crate::internal::local_state::sync_state::load_global_checkpoint(
+        &connection,
+        "alice",
+        client.did().as_str(),
+    )
+    .unwrap();
     assert!(checkpoint.is_none());
 }
 

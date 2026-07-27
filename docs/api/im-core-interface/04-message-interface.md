@@ -691,7 +691,7 @@ pub struct RealtimeSyncHint {
 
 `sync_delta(request)` 行为：
 
-1. 从本地 SQLite `sync_state` 读取当前 owner 的 checkpoint。
+1. 从本地 SQLite `sync_state` 读取当前 `owner_identity_id + sync_subject_id` 的 checkpoint。`owner_identity_id` 是稳定的本地业务 owner，`sync_subject_id` 是服务端事件流主体；当前 message service 使用 canonical DID 作为 subject，因此 DID recovery 后新 DID 从 `0` 开始，不能继承旧 DID sequence。
 2. 调用服务端 `sync.delta`，wire request 中的 `since_event_seq` 只能由 Rust runtime
    注入，public API 调用方不能传入。
 3. `limit`、`device_id`、`reason` 只作为分页和诊断输入；`reason` 是字符串，不是封闭

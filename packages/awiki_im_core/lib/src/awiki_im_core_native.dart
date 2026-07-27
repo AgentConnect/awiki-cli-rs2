@@ -2705,6 +2705,7 @@ extension on gen_message.DartSyncDeltaResult {
     hasMore: hasMore,
     snapshotRequired: snapshotRequired,
     retentionFloorEventSeq: retentionFloorEventSeq,
+    hydrationRequiredConversationIds: hydrationRequiredConversationIds,
     warnings: warnings,
   );
 }
