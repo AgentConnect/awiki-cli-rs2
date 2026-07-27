@@ -34,6 +34,7 @@ pub(crate) struct AttachmentUploadCredentials {
     pub identity_name: String,
     pub did_document: Option<Value>,
     pub key1_private_pem: String,
+    pub verification_method: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -318,6 +319,7 @@ where
             did: self.client.did().as_str().to_string(),
             did_document: credentials.did_document,
             key1_private_pem: credentials.key1_private_pem,
+            verification_method: credentials.verification_method,
         };
         let (method, params) = match target {
             ResolvedAttachmentTarget::Direct { target_did, .. } => (
@@ -576,6 +578,7 @@ where
             did: self.client.did().as_str().to_string(),
             did_document: credentials.did_document,
             key1_private_pem: credentials.key1_private_pem,
+            verification_method: credentials.verification_method,
         };
         let (method, params) = match target {
             ResolvedAttachmentTarget::Direct { target_did, .. } => (
@@ -1095,11 +1098,12 @@ fn load_credentials(
 ) -> crate::ImResult<AttachmentUploadCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let key1_private_pem = runtime.key_provider.device_request_signing_private_pem()?;
+    let signing = runtime.key_provider.device_request_signing_material()?;
     Ok(AttachmentUploadCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        key1_private_pem,
+        key1_private_pem: signing.private_key_pem,
+        verification_method: Some(signing.key_id),
     })
 }
 
@@ -1108,11 +1112,12 @@ async fn load_credentials_async(
 ) -> crate::ImResult<AttachmentUploadCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let key1_private_pem = runtime.key_provider.device_request_signing_private_pem()?;
+    let signing = runtime.key_provider.device_request_signing_material()?;
     Ok(AttachmentUploadCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        key1_private_pem,
+        key1_private_pem: signing.private_key_pem,
+        verification_method: Some(signing.key_id),
     })
 }
 

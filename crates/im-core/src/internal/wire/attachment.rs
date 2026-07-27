@@ -43,6 +43,7 @@ pub(crate) struct AttachmentSigningIdentity {
     pub did: String,
     pub did_document: Option<Value>,
     pub key1_private_pem: String,
+    pub verification_method: Option<String>,
 }
 
 pub(crate) fn build_attachment_create_slot_rpc_params(
@@ -466,7 +467,7 @@ fn build_signed_attachment_send_rpc_params(
             identity_name: identity.identity_name.clone(),
             did_document: identity.did_document.clone(),
             key1_private_pem: identity.key1_private_pem.clone(),
-            verification_method: None,
+            verification_method: identity.verification_method.clone(),
         },
         &payload,
     )?;

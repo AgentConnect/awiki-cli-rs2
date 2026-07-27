@@ -1210,6 +1210,7 @@ impl Fixture {
             identity_name: "alice".to_string(),
             key1_private_pem: bundle.private_key_pem("key-1").unwrap().to_string(),
             did_document: Some(bundle.did_document),
+            verification_method: None,
         }
     }
 }

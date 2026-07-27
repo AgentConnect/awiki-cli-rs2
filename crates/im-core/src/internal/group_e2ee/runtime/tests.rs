@@ -1144,6 +1144,7 @@ impl Fixture {
             identity_name: "alice".to_owned(),
             did_document: Some(bundle.did_document),
             key1_private_pem,
+            verification_method: None,
         }
     }
 }

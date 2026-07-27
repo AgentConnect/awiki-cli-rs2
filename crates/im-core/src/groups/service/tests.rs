@@ -351,6 +351,7 @@ impl Fixture {
             identity_name: "alice".to_owned(),
             did_document: Some(self.did_bundle.did_document.clone()),
             key1_private_pem,
+            verification_method: None,
         }
     }
 }

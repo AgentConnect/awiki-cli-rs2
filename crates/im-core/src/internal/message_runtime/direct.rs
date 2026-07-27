@@ -177,12 +177,12 @@ fn load_credentials(
     if let Some(delegated) = delegated {
         return delegated_credentials(client, delegated, did_document);
     }
-    let key1_private_pem = read_default_private_key(client)?;
+    let signing = runtime.key_provider.device_request_signing_material()?;
     Ok(DirectTextCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        key1_private_pem,
-        verification_method: None,
+        key1_private_pem: signing.private_key_pem,
+        verification_method: Some(signing.key_id),
         logical_sender_did: None,
     })
 }
@@ -196,21 +196,14 @@ async fn load_credentials_async(
     if let Some(delegated) = delegated {
         return delegated_credentials_async(client, delegated, did_document).await;
     }
-    let key1_private_pem = runtime.key_provider.device_request_signing_private_pem()?;
+    let signing = runtime.key_provider.device_request_signing_material()?;
     Ok(DirectTextCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        key1_private_pem,
-        verification_method: None,
+        key1_private_pem: signing.private_key_pem,
+        verification_method: Some(signing.key_id),
         logical_sender_did: None,
     })
-}
-
-fn read_default_private_key(client: &crate::core::ImClient) -> crate::ImResult<String> {
-    client
-        .runtime()
-        .key_provider
-        .device_request_signing_private_pem()
 }
 
 fn delegated_credentials(
@@ -974,6 +967,73 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn joined_device_direct_send_uses_its_exact_request_signing_key() {
+        let fixture = Fixture::new();
+        let generated =
+            crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+                "awiki.test",
+                "joined-direct",
+                None,
+                None,
+            )
+            .unwrap();
+        let mut did_document = generated.did_document;
+        let authentication = did_document["authentication"].as_array_mut().unwrap();
+        authentication.insert(0, json!(generated.root_key_id));
+        let expected_key_id = generated.device_signing_key_id.clone();
+        let client = fixture
+            .core()
+            .client_with_identity_material_and_signing_key_id(
+                crate::identity::HostedIdentityMaterial {
+                    identity_id: generated.unique_id,
+                    did: generated.did.as_str().to_owned(),
+                    handle: None,
+                    display_name: None,
+                    did_document,
+                    default_signing_private_key_pem: generated.device_signing_private_pem,
+                    e2ee_agreement_private_key_pem: Some(generated.device_e2ee_private_pem),
+                    auth_token: Some("joined-device-token".to_owned()),
+                },
+                &expected_key_id,
+            )
+            .unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "message_id": "msg-joined-direct",
+                    "operation_id": "op-joined-direct",
+                    "target_did": "did:example:bob",
+                    "accepted_at": "2026-07-27T00:00:00Z",
+                    "delivery_state": "accepted"
+                }),
+            },
+        )
+        .send_async(DirectTextSend {
+            request: direct_text_request(
+                "did:example:bob",
+                "hello from joined device",
+                crate::messages::MessageKind::Text,
+            ),
+            resolved_target_did: None,
+            credentials: None,
+        })
+        .await
+        .unwrap();
+
+        let calls = calls.borrow();
+        let signature_input = calls[0].params["auth"]["origin_proof"]["signatureInput"]
+            .as_str()
+            .unwrap();
+        assert!(signature_input.contains(&format!("keyid=\"{expected_key_id}\"")));
+    }
+
     #[test]
     fn messages_direct_text_sender_uses_delegated_signing_options() {
         let fixture = Fixture::new();
@@ -1371,6 +1431,14 @@ mod tests {
         }
 
         fn client(&self) -> crate::core::ImClient {
+            self.core()
+                .client(crate::identity::IdentitySelector::LocalAlias(
+                    "alice".to_string(),
+                ))
+                .unwrap()
+        }
+
+        fn core(&self) -> crate::core::ImCore {
             crate::core::ImCore::new(
                 crate::ImCoreConfig {
                     service_base_url: crate::ServiceEndpoint::parse("https://example.test")
@@ -1399,10 +1467,6 @@ mod tests {
                     },
                 },
             )
-            .unwrap()
-            .client(crate::identity::IdentitySelector::LocalAlias(
-                "alice".to_string(),
-            ))
             .unwrap()
         }
 

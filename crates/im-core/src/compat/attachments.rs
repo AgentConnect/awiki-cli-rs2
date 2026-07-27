@@ -324,5 +324,6 @@ fn internal_signing_identity(
         did: identity.did.clone(),
         did_document: identity.did_document.clone(),
         key1_private_pem: identity.key1_private_pem.clone(),
+        verification_method: None,
     }
 }

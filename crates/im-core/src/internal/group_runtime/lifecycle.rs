@@ -16,6 +16,7 @@ pub(crate) struct GroupLifecycleCredentials {
     pub identity_name: String,
     pub did_document: Option<Value>,
     pub key1_private_pem: String,
+    pub verification_method: Option<String>,
 }
 
 impl<'a, P, T> GroupLifecycleRuntime<'a, P, T> {
@@ -173,7 +174,7 @@ where
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
                 key1_private_pem: credentials.key1_private_pem,
-                verification_method: None,
+                verification_method: credentials.verification_method,
             },
             &payload,
         )?;
@@ -358,7 +359,7 @@ where
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
                 key1_private_pem: credentials.key1_private_pem,
-                verification_method: None,
+                verification_method: credentials.verification_method,
             },
             &payload,
         )?;
@@ -381,11 +382,12 @@ where
 fn load_credentials(client: &crate::core::ImClient) -> crate::ImResult<GroupLifecycleCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let key1_private_pem = runtime.key_provider.device_request_signing_private_pem()?;
+    let signing = runtime.key_provider.device_request_signing_material()?;
     Ok(GroupLifecycleCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        key1_private_pem,
+        key1_private_pem: signing.private_key_pem,
+        verification_method: Some(signing.key_id),
     })
 }
 
@@ -394,11 +396,12 @@ async fn load_credentials_async(
 ) -> crate::ImResult<GroupLifecycleCredentials> {
     let runtime = client.runtime();
     let did_document = runtime.key_provider.optional_did_document()?;
-    let key1_private_pem = runtime.key_provider.device_request_signing_private_pem()?;
+    let signing = runtime.key_provider.device_request_signing_material()?;
     Ok(GroupLifecycleCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
-        key1_private_pem,
+        key1_private_pem: signing.private_key_pem,
+        verification_method: Some(signing.key_id),
     })
 }
 
@@ -1120,6 +1123,7 @@ mod tests {
                 identity_name: "alice".to_string(),
                 did_document: Some(bundle.did_document),
                 key1_private_pem,
+                verification_method: None,
             }
         }
     }
