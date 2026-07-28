@@ -764,7 +764,10 @@ Reliable sync 补充：
   `auth_revoked`。没有第二个 public recover API，raw token、cursor/anchor、cutoff、policy
   limit、snapshot 返回数量都不得进入 Rust public DTO、Dart/Flutter、CLI、App、SQLite 或日志。
   snapshot 合并当前 read/Group 状态和最近普通消息，但不得删除更早的本地消息；receipts、
-  projections、cursor 和 recovery completion 在同一 SQLite 事务提交。
+  projections、cursor 和 recovery completion 在同一 SQLite 事务提交。Core 按 owner
+  串行化 `sync_now`，并在事务内对 previous cursor、recovery-id hash、anchor 和 phase 做
+  CAS；过期并发恢复不能回退 cursor。Snapshot response 必须是 closed schema，消息时间不得
+  早于服务端 cutoff，event ID/seq 不得重复，read/Group timestamp 必须严格合法。
 - `committed_incoming_messages` 只包含 post-snapshot/live delta 实际提交的 incoming messages；
   snapshot hydration 与 realtime hint 不进入该列表。
 - 本地 read watermark 更新与 durable `read_state_mark_read` outbox enqueue 是同一 SQLite
@@ -773,11 +776,19 @@ Reliable sync 补充：
   auth-generation 验证的远端 read-state event 必须在同一事务内执行 MAX merge、更新 read
   projection 并 ack 已覆盖的 outbox。v2 retry 必须把同一个 outbox `operation_id` 放在
   ANP `meta.operation_id`；body 只保留 `user_did`、`thread { kind, thread_key }` 和 watermark
-  字段，不发送 account/device/origin selector，也不重复发送 body `operation_id`。
+  字段，不发送 account/device/origin selector，也不重复发送 body `operation_id`。发送前
+  必须 claim exact operation；同 aggregate 的 in-flight predecessor 会阻挡 successor。
+  成功响应必须 closed-schema 回显相同 DID/thread，并满足
+  `remote_acknowledged=true`、`pending_remote_ack=false`、`partial=false`、
+  且 server watermark 不低于发送值，才可提交本地 ACK。`fallback_used` 只描述服务端
+  采用的兼容路径，不削弱上述最终 ACK 条件。transport、
+  parse、协议验证或本地 ACK transaction 失败都必须把 claim 退回 `retryable`。
 - Direct read state 可以暂时只引用服务端不透明 `conversation_ref`，即使 48 小时/500 条
   snapshot window 内没有建立 canonical conversation 的消息，也允许把该状态存入 owner-scoped
   durable backlog 并提交 snapshot/cursor。后续普通消息建立精确 remote-thread binding 时，
   Core 在同一事务 replay 并删除 backlog；不得根据 DID 猜测 canonical conversation。
+- `message.read_state_updated` 必须显式携带 `thread_kind`；Core 不根据 thread key 猜测。
+  只有 read state 的 delta/snapshot 也必须在事务提交后产生对应 conversation/thread patch。
 - `ensure_conversation(ConversationReadRef)` 幂等提交空会话存在性。Direct 必须已有
   owner-scoped canonical route，Group 必须已有 active membership；校验失败不写入。
 - `conversations(ConversationQuery)` 从 committed `conversation_registry` 左连接

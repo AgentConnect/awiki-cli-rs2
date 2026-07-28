@@ -795,6 +795,14 @@ public, Dart, Flutter, CLI, or App boundary and is never persisted. Startup
 changes an interrupted recovery to `retryable` while retaining the original
 cursor, so the next `syncNow` obtains a fresh process-local token.
 
+Core serializes `syncNow` per `owner_identity_id`. Snapshot commit additionally
+uses a SQLite compare-and-swap fence over the exact previous epoch/cursor,
+recovery-id hash, authorized anchor, and `applying` phase; a stale or concurrent
+workflow cannot replace a newer cursor. Snapshot parsing is closed-schema and
+rejects unknown top-level/policy/exclusion/read/Group fields, duplicate event
+IDs or sequences, messages before the server cutoff, and malformed state
+timestamps. Core does not calculate or widen the 48-hour/500-message policy.
+
 The existing `sync_state` table remains the active checkpoint for the v1
 `sync.delta` compatibility implementation; v2 `syncNow` uses
 `message_sync_state`. Schemas 28, 29, 30, and 31 migrate atomically through 32
@@ -850,4 +858,14 @@ Conversation-level read state is separate from reliable sync checkpoints:
   The wire thread is resolved by `im-core` to direct / group; raw canonical storage
   `conversation_id` values are never serialized as `kind: "thread"`. Legacy direct
   `inbox.mark_read(message_ids)` remains only as fallback for unsupported services.
-- `message.read_state_updated` sync events are not emitted by the current service-compatible phase. Adding that event requires first making stable clients treat the type as known or explicitly ignore-safe, because unknown required `sync.delta` events fail closed.
+- A v2 read outbox operation is claimed before transport send. Its operation ID
+  and payload remain immutable while in flight; a higher watermark creates a
+  blocked successor. Core clears `pending_remote_ack` only after a closed-schema
+  response echoes the exact DID/thread, reports a non-partial final remote ack,
+  and returns a server watermark at least as high as the sent watermark. Every
+  transport, decode, validation, or local-commit failure returns the claim to
+  `retryable`.
+- `message.read_state_updated` is a required known v2 event. `thread_kind` is
+  mandatory and is never inferred from a thread key. A read-only delta or
+  snapshot emits a committed conversation/thread invalidation after the read
+  projection transaction succeeds.

@@ -670,6 +670,11 @@ final page = await client.messages.syncConversationAfter(
 - The raw recovery token remains on the Rust process stack only and is never
   written to SQLite or logs. Dart cannot observe or persist the token, recovery
   cursor/anchor, cutoff, policy limit, or returned snapshot count.
+- Core serializes recovery per owner and commits a snapshot only when the
+  previous cursor, recovery-id hash, authorized anchor, and recovery phase still
+  match in SQLite. Snapshot decoding is closed-schema, rejects duplicate
+  event IDs/sequences and pre-cutoff messages, and never lets Dart choose the
+  48-hour/500-message policy.
 - `committedIncomingMessages` contains only incoming messages whose projection
   transaction committed, with `CommittedMessageSource.liveDelta`; realtime
   hints and snapshot hydration never appear in this list.
@@ -681,12 +686,20 @@ final page = await client.messages.syncConversationAfter(
   projections, and acknowledges covered outbox entries. Every retry reuses the
   outbox operation ID as ANP `meta.operation_id`; the v2 body carries only the
   user DID, opaque `{ kind, thread_key }`, and watermark fields, with no
-  account/device/origin selector or duplicate body operation ID.
+  account/device/origin selector or duplicate body operation ID. Before send,
+  Core claims the exact operation; an in-flight predecessor blocks its
+  successor. Core accepts an ACK only when the closed response echoes the exact
+  DID/thread, is final and non-partial, and its server watermark covers the sent
+  watermark. Transport, parse, validation, and local-commit failures all return
+  the claim to retryable state.
 - An unresolved Direct read state is durably keyed by its opaque service
   conversation reference. Snapshot/cursor commit is allowed even when no recent
   message establishes the canonical local conversation; the first later
   ordinary message binding replays and removes the backlog in the same
   transaction. Core never guesses this binding from a DID.
+- `message.read_state_updated` requires an explicit `thread_kind`; read-only
+  sync commits publish the same conversation/thread patch contract as message
+  pages, so Flutter never needs to poll or merge read state itself.
 - `syncDelta` retains the earlier v1 checkpoint behavior and remains isolated
   from the v2 cursor.
 
