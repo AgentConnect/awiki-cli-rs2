@@ -1,7 +1,18 @@
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::BTreeSet;
 
 pub(crate) const APPLIED_EVENT_MIN_RECEIPTS_PER_OWNER: i64 = 10_000;
 pub(crate) const APPLIED_EVENT_SAFETY_WINDOW: u32 = 1_000;
+
+pub(crate) const SYNC_INSTALLATION_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS sync_installation_state (
+    owner_identity_id   TEXT PRIMARY KEY,
+    client_instance_id  TEXT NOT NULL UNIQUE,
+    created_at          INTEGER NOT NULL,
+    CHECK (length(trim(owner_identity_id)) > 0),
+    CHECK (length(trim(client_instance_id)) > 0)
+);
+"#;
 
 pub(crate) const SYNC_V2_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS identity_account_bindings (
@@ -289,10 +300,97 @@ pub(crate) struct LocalMutationRecord {
     pub(crate) updated_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BootstrapApplyInputV2 {
+    pub(crate) binding: IdentityAccountBinding,
+    pub(crate) state: MessageSyncState,
+    pub(crate) groups: Vec<super::groups::GroupRecord>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DeltaApplyEventV2 {
+    pub(crate) event_id: String,
+    pub(crate) event_seq: String,
+    pub(crate) event_type: String,
+    pub(crate) messages: Vec<super::messages::MessageRecord>,
+    pub(crate) groups: Vec<super::groups::GroupRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeltaApplyInputV2 {
+    pub(crate) owner_identity_id: String,
+    pub(crate) owner_did: String,
+    pub(crate) account_id: String,
+    pub(crate) protocol_device_id: String,
+    pub(crate) device_auth_generation: String,
+    pub(crate) stream_epoch: String,
+    pub(crate) next_scan_seq: String,
+    pub(crate) server_time: String,
+    pub(crate) events: Vec<DeltaApplyEventV2>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DeltaApplyOutcomeV2 {
+    pub(crate) applied_event_ids: Vec<String>,
+    pub(crate) projected_message_event_ids: Vec<String>,
+    pub(crate) duplicate_events: usize,
+    pub(crate) backlogged_messages: usize,
+    pub(crate) invalidation: super::sync_state::SyncDeltaInvalidation,
+}
+
 pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
     connection
         .execute_batch(SYNC_V2_SCHEMA_SQL)
+        .map_err(super::local_state_unavailable)?;
+    create_installation_schema(connection)
+}
+
+pub(crate) fn create_installation_schema(connection: &Connection) -> crate::ImResult<()> {
+    connection
+        .execute_batch(SYNC_INSTALLATION_SCHEMA_SQL)
         .map_err(super::local_state_unavailable)
+}
+
+pub(crate) fn load_or_create_sync_client_instance_id(
+    connection: &Connection,
+    owner_identity_id: &str,
+) -> crate::ImResult<String> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    if let Some(client_instance_id) = connection
+        .query_row(
+            "SELECT client_instance_id
+             FROM sync_installation_state
+             WHERE owner_identity_id = ?1",
+            [owner_identity_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+    {
+        validate_required("client_instance_id", &client_instance_id)?;
+        return Ok(client_instance_id);
+    }
+    use base64::Engine as _;
+    use rand::RngCore as _;
+    let mut random = [0_u8; 24];
+    rand::rngs::OsRng
+        .try_fill_bytes(&mut random)
+        .map_err(|error| crate::ImError::Internal {
+            message: format!("generate sync client installation id: {error}"),
+        })?;
+    let client_instance_id = format!(
+        "core-installation-{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random)
+    );
+    connection
+        .execute(
+            "INSERT INTO sync_installation_state
+                 (owner_identity_id, client_instance_id, created_at)
+             VALUES (?1, ?2, ?3)",
+            params![owner_identity_id, client_instance_id, unix_time_i64()],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(client_instance_id)
 }
 
 pub(crate) fn upsert_identity_account_binding(
@@ -459,7 +557,16 @@ pub(crate) fn bootstrap_message_sync_state(
     let transaction = connection
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
-    transaction
+    upsert_bootstrap_state(&transaction, state)?;
+    complete_active_recovery(&transaction, state)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn upsert_bootstrap_state(
+    connection: &Connection,
+    state: &MessageSyncState,
+) -> crate::ImResult<()> {
+    connection
         .execute(
             r#"
 INSERT INTO message_sync_state
@@ -496,12 +603,19 @@ DO UPDATE SET
             ],
         )
         .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+fn complete_active_recovery(
+    connection: &Connection,
+    state: &MessageSyncState,
+) -> crate::ImResult<()> {
     // An explicit server-authorized bootstrap supersedes any interrupted
     // owner-scoped recovery, including one anchored in an older epoch or
     // device authorization generation. Keep the terminal diagnostic row, but
     // ensure pruning and restart recovery can no longer treat its old anchor
     // as active.
-    transaction
+    connection
         .execute(
             r#"
 UPDATE sync_recovery_state
@@ -514,7 +628,222 @@ WHERE owner_identity_id = ?1
             params![state.owner_identity_id, state.scan_seq, state.updated_at],
         )
         .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+pub(crate) fn apply_bootstrap_v2(
+    connection: &Connection,
+    input: BootstrapApplyInputV2,
+) -> crate::ImResult<()> {
+    validate_binding(&input.binding)?;
+    validate_message_sync_state(&input.state)?;
+    if input.binding.owner_identity_id != input.state.owner_identity_id
+        || input.binding.account_id != input.state.account_id
+        || input.binding.protocol_device_id != input.state.protocol_device_id
+        || input.binding.device_auth_generation != input.state.device_auth_generation
+    {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "sync bootstrap state does not match its active account binding".to_owned(),
+        });
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    upsert_identity_account_binding(&transaction, &input.binding)?;
+    for group in input.groups {
+        validate_group_owner(&group, &input.binding.owner_identity_id)?;
+        super::groups::upsert_group(&transaction, group)?;
+    }
+    upsert_bootstrap_state(&transaction, &input.state)?;
+    complete_active_recovery(&transaction, &input.state)?;
     transaction.commit().map_err(super::local_state_unavailable)
+}
+
+pub(crate) fn apply_delta_v2(
+    connection: &Connection,
+    input: DeltaApplyInputV2,
+) -> crate::ImResult<DeltaApplyOutcomeV2> {
+    validate_required("owner_identity_id", &input.owner_identity_id)?;
+    validate_required("owner_did", &input.owner_did)?;
+    validate_required("account_id", &input.account_id)?;
+    validate_required("protocol_device_id", &input.protocol_device_id)?;
+    validate_positive_decimal("device_auth_generation", &input.device_auth_generation)?;
+    validate_positive_decimal("stream_epoch", &input.stream_epoch)?;
+    validate_decimal("next_scan_seq", &input.next_scan_seq)?;
+    validate_required("server_time", &input.server_time)?;
+
+    let mut event_ids = BTreeSet::new();
+    let mut event_seqs = BTreeSet::new();
+    for event in &input.events {
+        validate_required("event_id", &event.event_id)?;
+        validate_positive_decimal("event_seq", &event.event_seq)?;
+        validate_required("event_type", &event.event_type)?;
+        if !event_ids.insert(event.event_id.as_str()) {
+            return Err(sync_error(
+                "SYNC_INVALID_PAGE",
+                "delta apply contains a duplicate event_id",
+            ));
+        }
+        if !event_seqs.insert(event.event_seq.as_str()) {
+            return Err(sync_error(
+                "SYNC_INVALID_PAGE",
+                "delta apply contains a duplicate event_seq",
+            ));
+        }
+        if compare_decimal(&event.event_seq, &input.next_scan_seq)? == std::cmp::Ordering::Greater {
+            return Err(sync_error(
+                "SYNC_INVALID_PAGE",
+                "visible event is ahead of next scan cursor",
+            ));
+        }
+    }
+
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    let binding = load_identity_account_binding(&transaction, &input.owner_identity_id)?
+        .ok_or_else(|| crate::ImError::IdentityBindingConflict {
+            detail: "v2 delta requires an active account binding".to_owned(),
+        })?;
+    if binding.account_id != input.account_id
+        || binding.protocol_device_id != input.protocol_device_id
+        || binding.device_auth_generation != input.device_auth_generation
+    {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "v2 delta binding does not match the active account device".to_owned(),
+        });
+    }
+    let current = match load_message_sync_state(&transaction, &input.owner_identity_id)? {
+        MessageSyncStateAccess::Ready(state) => state,
+        MessageSyncStateAccess::BootstrapRequired(_) => {
+            return Err(sync_error(
+                "SYNC_BOOTSTRAP_REQUIRED",
+                "v2 delta cannot apply before bootstrap",
+            ));
+        }
+    };
+    if current.stream_epoch != input.stream_epoch {
+        return Err(sync_error(
+            "SYNC_CURSOR_EPOCH_MISMATCH",
+            "v2 delta stream epoch does not match the local cursor",
+        ));
+    }
+    if compare_decimal(&input.next_scan_seq, &current.scan_seq)? == std::cmp::Ordering::Less {
+        return Err(sync_error(
+            "SYNC_CURSOR_REGRESSION",
+            "v2 delta next cursor is behind the local cursor",
+        ));
+    }
+
+    let mut events = input.events;
+    events.sort_by(|left, right| {
+        decimal_order(&left.event_seq, &right.event_seq)
+            .then_with(|| left.event_id.cmp(&right.event_id))
+    });
+    let now = unix_time_i64();
+    let mut applied_event_ids = Vec::new();
+    let mut projected_message_event_ids = Vec::new();
+    let mut duplicate_events = 0usize;
+    let mut messages = Vec::new();
+    let mut groups = Vec::new();
+    for event in events {
+        let event_id = event.event_id.clone();
+        let inserted = record_applied_event(
+            &transaction,
+            &AppliedEventReceipt {
+                owner_identity_id: input.owner_identity_id.clone(),
+                event_id: event.event_id.clone(),
+                stream_epoch: input.stream_epoch.clone(),
+                event_seq: event.event_seq.clone(),
+                applied_at: now,
+            },
+        )?;
+        if !inserted {
+            duplicate_events = duplicate_events.saturating_add(1);
+            continue;
+        }
+        let mut projected_message = false;
+        for message in event.messages {
+            let message = super::inbound_resolution_backlog::canonicalize_inbound_message(
+                &transaction,
+                message,
+            )?;
+            messages.push(message);
+            projected_message = true;
+        }
+        for group in event.groups {
+            validate_group_owner(&group, &input.owner_identity_id)?;
+            if group_state_is_stale(&transaction, &group)? {
+                continue;
+            }
+            groups.push(group);
+        }
+        applied_event_ids.push(event_id.clone());
+        if projected_message {
+            projected_message_event_ids.push(event_id);
+        }
+    }
+
+    let mut invalidation = v2_invalidation(
+        &input.owner_identity_id,
+        &input.owner_did,
+        &input.next_scan_seq,
+        &messages,
+        &groups,
+    );
+    if !messages.is_empty() {
+        let touched = super::messages::upsert_messages_with_touched(&transaction, &messages)?;
+        let mut conversation_ids = invalidation
+            .conversation_ids
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let mut thread_ids = invalidation.thread_ids.into_iter().collect::<BTreeSet<_>>();
+        for (_, conversation_id) in touched {
+            if !conversation_id.trim().is_empty() {
+                conversation_ids.insert(conversation_id.clone());
+                thread_ids.insert(conversation_id);
+            }
+        }
+        invalidation.conversation_ids = conversation_ids.into_iter().collect();
+        invalidation.thread_ids = thread_ids.into_iter().collect();
+    }
+    for group in groups {
+        super::groups::upsert_group(&transaction, group)?;
+    }
+
+    let next_state = MessageSyncState {
+        owner_identity_id: input.owner_identity_id.clone(),
+        account_id: input.account_id,
+        protocol_device_id: input.protocol_device_id,
+        device_auth_generation: input.device_auth_generation,
+        stream_epoch: input.stream_epoch,
+        scan_seq: input.next_scan_seq,
+        bootstrap_state: "active".to_owned(),
+        last_server_time: Some(input.server_time),
+        last_success_at: Some(now),
+        last_error_code: None,
+        metadata_json: None,
+        updated_at: now,
+    };
+    match advance_message_sync_state(&transaction, &next_state)? {
+        MessageSyncStateAccess::Ready(_) => {}
+        MessageSyncStateAccess::BootstrapRequired(_) => {
+            return Err(sync_error(
+                "SYNC_BOOTSTRAP_REQUIRED",
+                "v2 cursor was fenced while applying the page",
+            ));
+        }
+    }
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(DeltaApplyOutcomeV2 {
+        applied_event_ids,
+        projected_message_event_ids,
+        duplicate_events,
+        backlogged_messages: 0,
+        invalidation,
+    })
 }
 
 pub(crate) fn load_message_sync_state(
@@ -1098,6 +1427,136 @@ fn validate_local_mutation_status(value: &str) -> crate::ImResult<()> {
     ))
 }
 
+fn validate_group_owner(
+    group: &super::groups::GroupRecord,
+    owner_identity_id: &str,
+) -> crate::ImResult<()> {
+    if group.owner_identity_id == owner_identity_id {
+        Ok(())
+    } else {
+        Err(crate::ImError::IdentityBindingConflict {
+            detail: "group sync fact belongs to a different local owner".to_owned(),
+        })
+    }
+}
+
+fn group_state_is_stale(
+    connection: &Connection,
+    group: &super::groups::GroupRecord,
+) -> crate::ImResult<bool> {
+    let next_version = metadata_decimal(&group.metadata, "group_state_version")?;
+    let Some(next_version) = next_version else {
+        return Ok(false);
+    };
+    let existing_metadata = connection
+        .query_row(
+            "SELECT metadata FROM groups
+             WHERE owner_identity_id = ?1 AND group_id = ?2",
+            params![group.owner_identity_id, group.group_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+        .flatten();
+    let Some(existing_metadata) = existing_metadata else {
+        return Ok(false);
+    };
+    let Some(existing_version) = metadata_decimal(&existing_metadata, "group_state_version")?
+    else {
+        return Ok(false);
+    };
+    Ok(compare_decimal(&next_version, &existing_version)? != std::cmp::Ordering::Greater)
+}
+
+fn metadata_decimal(raw: &str, key: &str) -> crate::ImResult<Option<String>> {
+    let Some(value) = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get(key).cloned())
+    else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_str() else {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            format!("group metadata {key} must be a decimal string"),
+        ));
+    };
+    validate_decimal(key, value).map_err(|_| {
+        sync_error(
+            "SYNC_INVALID_PAGE",
+            format!("group metadata {key} must be a canonical decimal string"),
+        )
+    })?;
+    Ok(Some(value.to_owned()))
+}
+
+fn v2_invalidation(
+    owner_identity_id: &str,
+    owner_did: &str,
+    scan_seq: &str,
+    messages: &[super::messages::MessageRecord],
+    groups: &[super::groups::GroupRecord],
+) -> super::sync_state::SyncDeltaInvalidation {
+    let mut conversation_ids = BTreeSet::new();
+    let mut thread_ids = BTreeSet::new();
+    let mut group_ids = BTreeSet::new();
+    let mut group_dids = BTreeSet::new();
+    for message in messages {
+        if !message.conversation_id.trim().is_empty() {
+            conversation_ids.insert(message.conversation_id.clone());
+        }
+        if !message.thread_id.trim().is_empty() {
+            thread_ids.insert(message.thread_id.clone());
+        }
+    }
+    for group in groups {
+        if !group.group_id.trim().is_empty() {
+            group_ids.insert(group.group_id.clone());
+        }
+        if !group.group_did.trim().is_empty() {
+            group_dids.insert(group.group_did.clone());
+            let conversation_id =
+                super::owner_scope::group_conversation_id(group.group_did.as_str());
+            conversation_ids.insert(conversation_id.clone());
+            thread_ids.insert(conversation_id);
+        }
+    }
+    super::sync_state::SyncDeltaInvalidation {
+        owner_identity_id: owner_identity_id.to_owned(),
+        owner_did: owner_did.to_owned(),
+        reason: "sync_v2_delta".to_owned(),
+        checkpoint_event_seq: scan_seq.to_owned(),
+        conversation_ids: conversation_ids.into_iter().collect(),
+        thread_ids: thread_ids.into_iter().collect(),
+        group_ids: group_ids.into_iter().collect(),
+        group_dids: group_dids.into_iter().collect(),
+    }
+}
+
+fn decimal_order(left: &str, right: &str) -> std::cmp::Ordering {
+    left.len()
+        .cmp(&right.len())
+        .then_with(|| left.as_bytes().cmp(right.as_bytes()))
+}
+
+fn unix_time_i64() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .try_into()
+        .unwrap_or(i64::MAX)
+}
+
+fn sync_error(code: &str, message: impl Into<String>) -> crate::ImError {
+    crate::ImError::Service {
+        status_code: None,
+        code: Some(code.to_owned()),
+        message: message.into(),
+        data: None,
+    }
+}
+
 fn validate_required(field: &str, value: &str) -> crate::ImResult<()> {
     if value.trim().is_empty() || value.trim() != value {
         return Err(crate::ImError::invalid_input(
@@ -1132,7 +1591,7 @@ pub(crate) fn validate_positive_decimal(field: &str, value: &str) -> crate::ImRe
     Ok(())
 }
 
-fn compare_decimal(left: &str, right: &str) -> crate::ImResult<std::cmp::Ordering> {
+pub(crate) fn compare_decimal(left: &str, right: &str) -> crate::ImResult<std::cmp::Ordering> {
     validate_decimal("left_decimal", left)?;
     validate_decimal("right_decimal", right)?;
     Ok(left
@@ -1243,6 +1702,229 @@ mod tests {
         assert_eq!(
             load_message_sync_state(&db, &binding.owner_identity_id).unwrap(),
             MessageSyncStateAccess::Ready(state)
+        );
+    }
+
+    #[test]
+    fn sync_client_instance_id_reuses_failed_retry_and_changes_with_new_database() {
+        let first_file = tempfile::NamedTempFile::new().unwrap();
+        let (first, retry) = {
+            let db = Connection::open(first_file.path()).unwrap();
+            create_schema(&db).unwrap();
+            (
+                load_or_create_sync_client_instance_id(&db, "owner-1").unwrap(),
+                load_or_create_sync_client_instance_id(&db, "owner-1").unwrap(),
+            )
+        };
+        assert_eq!(
+            retry, first,
+            "a failed bootstrap retry must reuse its anchor"
+        );
+        let reopened = {
+            let db = Connection::open(first_file.path()).unwrap();
+            create_schema(&db).unwrap();
+            load_or_create_sync_client_instance_id(&db, "owner-1").unwrap()
+        };
+        assert_eq!(reopened, first);
+        assert!(first.starts_with("core-installation-"));
+        for forbidden in ["owner-1", "account-1", "device-1"] {
+            assert!(!first.contains(forbidden));
+        }
+        let other_owner = {
+            let db = Connection::open(first_file.path()).unwrap();
+            create_schema(&db).unwrap();
+            load_or_create_sync_client_instance_id(&db, "owner-2").unwrap()
+        };
+        assert_ne!(other_owner, first);
+
+        let second_file = tempfile::NamedTempFile::new().unwrap();
+        let second = {
+            let db = Connection::open(second_file.path()).unwrap();
+            create_schema(&db).unwrap();
+            load_or_create_sync_client_instance_id(&db, "owner-1").unwrap()
+        };
+        assert_ne!(second, first);
+    }
+
+    #[test]
+    fn v2_required_resolution_failure_rolls_back_receipt_and_cursor() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let state = MessageSyncState {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            account_id: binding.account_id.clone(),
+            protocol_device_id: binding.protocol_device_id.clone(),
+            device_auth_generation: binding.device_auth_generation.clone(),
+            stream_epoch: "1".to_owned(),
+            scan_seq: "10".to_owned(),
+            bootstrap_state: "active".to_owned(),
+            last_server_time: None,
+            last_success_at: Some(1),
+            last_error_code: None,
+            metadata_json: None,
+            updated_at: 1,
+        };
+        bootstrap_message_sync_state(&db, &state).unwrap();
+        let unresolved = super::super::messages::MessageRecord {
+            msg_id: "message-11".to_owned(),
+            owner_identity_id: binding.owner_identity_id.clone(),
+            owner_did: binding.current_did.clone(),
+            conversation_id: "dm:did:example:unknown".to_owned(),
+            thread_id: "dm:did:example:unknown".to_owned(),
+            direction: 0,
+            sender_did: "did:example:unknown".to_owned(),
+            receiver_did: binding.current_did.clone(),
+            content_type: "text/plain".to_owned(),
+            content: "hello".to_owned(),
+            sent_at: "2026-07-28T10:00:00Z".to_owned(),
+            stored_at: "2026-07-28T10:00:00Z".to_owned(),
+            credential_name: binding.owner_identity_id.clone(),
+            ..super::super::messages::MessageRecord::default()
+        }
+        .with_resolved_wire_thread("direct", "did:example:unknown");
+
+        assert!(matches!(
+            apply_delta_v2(
+                &db,
+                DeltaApplyInputV2 {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    owner_did: binding.current_did.clone(),
+                    account_id: binding.account_id.clone(),
+                    protocol_device_id: binding.protocol_device_id.clone(),
+                    device_auth_generation: binding.device_auth_generation.clone(),
+                    stream_epoch: "1".to_owned(),
+                    next_scan_seq: "11".to_owned(),
+                    server_time: "2026-07-28T10:00:00Z".to_owned(),
+                    events: vec![DeltaApplyEventV2 {
+                        event_id: "event-11".to_owned(),
+                        event_seq: "11".to_owned(),
+                        event_type: "message.created".to_owned(),
+                        messages: vec![unresolved],
+                        groups: Vec::new(),
+                    }],
+                }
+            ),
+            Err(crate::ImError::IdentityUnresolved { .. })
+        ));
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sync_applied_events
+                 WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap(),
+            MessageSyncStateAccess::Ready(state)
+        );
+    }
+
+    #[test]
+    fn v2_empty_sparse_page_advances_scan_cursor_atomically() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let state = MessageSyncState {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            account_id: binding.account_id.clone(),
+            protocol_device_id: binding.protocol_device_id.clone(),
+            device_auth_generation: binding.device_auth_generation.clone(),
+            stream_epoch: "1".to_owned(),
+            scan_seq: "10".to_owned(),
+            bootstrap_state: "active".to_owned(),
+            last_server_time: None,
+            last_success_at: Some(1),
+            last_error_code: None,
+            metadata_json: None,
+            updated_at: 1,
+        };
+        bootstrap_message_sync_state(&db, &state).unwrap();
+
+        let outcome = apply_delta_v2(
+            &db,
+            DeltaApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                next_scan_seq: "25".to_owned(),
+                server_time: "2026-07-28T10:00:00Z".to_owned(),
+                events: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert!(outcome.applied_event_ids.is_empty());
+        let MessageSyncStateAccess::Ready(advanced) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("empty sparse page must leave the v2 cursor ready");
+        };
+        assert_eq!(advanced.scan_seq, "25");
+    }
+
+    #[test]
+    fn v2_bootstrap_failure_rolls_back_binding_group_and_cursor() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        let state = MessageSyncState {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            account_id: binding.account_id.clone(),
+            protocol_device_id: binding.protocol_device_id.clone(),
+            device_auth_generation: binding.device_auth_generation.clone(),
+            stream_epoch: "1".to_owned(),
+            scan_seq: "10".to_owned(),
+            bootstrap_state: "tail_bootstrapped".to_owned(),
+            last_server_time: Some("2026-07-28T10:00:00Z".to_owned()),
+            last_success_at: Some(1),
+            last_error_code: None,
+            metadata_json: None,
+            updated_at: 1,
+        };
+        let invalid_group = super::super::groups::GroupRecord {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            group_id: "did:example:group".to_owned(),
+            group_did: "did:example:group".to_owned(),
+            owner_did: String::new(),
+            ..super::super::groups::GroupRecord::default()
+        };
+
+        assert!(apply_bootstrap_v2(
+            &db,
+            BootstrapApplyInputV2 {
+                binding: binding.clone(),
+                state,
+                groups: vec![invalid_group],
+            }
+        )
+        .is_err());
+        assert_eq!(
+            load_identity_account_binding(&db, &binding.owner_identity_id).unwrap(),
+            None
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM groups", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM message_sync_state", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
         );
     }
 

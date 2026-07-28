@@ -64,8 +64,8 @@ Future<T> _mapNativeErrors<T>(Future<T> Function() action) async {
       capability: error.capability,
       serviceCode: error.serviceCode,
       serviceDataJson: error.serviceDataJson,
-      deviceRevokeOutcomeCategory:
-          error.deviceRevokeOutcomeCategory?._toModel(),
+      deviceRevokeOutcomeCategory: error.deviceRevokeOutcomeCategory
+          ?._toModel(),
     );
   }
 }
@@ -1053,6 +1053,20 @@ class MessageApi {
       () => gen_messages.syncDelta(
         client: _client._inner,
         request: request._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<MessageSyncOutcome> syncNow(MessageSyncRequest request) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_messages.syncNow(
+        client: _client._inner,
+        request: gen_message.DartMessageSyncRequest(
+          reason: request.reason,
+          limit: request.limit,
+        ),
       ),
     );
     return result._toModel();
@@ -3181,6 +3195,52 @@ extension on gen_message.DartSyncDeltaResult {
     hasMore: hasMore,
     snapshotRequired: snapshotRequired,
     retentionFloorEventSeq: retentionFloorEventSeq,
+    warnings: warnings,
+  );
+}
+
+extension on gen_message.DartMessageSyncStatus {
+  MessageSyncStatus _toModel() => switch (this) {
+    gen_message.DartMessageSyncStatus.idle => MessageSyncStatus.idle,
+    gen_message.DartMessageSyncStatus.changed => MessageSyncStatus.changed,
+    gen_message.DartMessageSyncStatus.recoveryRequired =>
+      MessageSyncStatus.recoveryRequired,
+    gen_message.DartMessageSyncStatus.retryableFailure =>
+      MessageSyncStatus.retryableFailure,
+    gen_message.DartMessageSyncStatus.authRevoked =>
+      MessageSyncStatus.authRevoked,
+  };
+}
+
+extension on gen_message.DartCommittedMessageSource {
+  CommittedMessageSource _toModel() => switch (this) {
+    gen_message.DartCommittedMessageSource.liveDelta =>
+      CommittedMessageSource.liveDelta,
+  };
+}
+
+extension on gen_message.DartCommittedIncomingMessage {
+  CommittedIncomingMessage _toModel() => CommittedIncomingMessage(
+    eventId: eventId,
+    logicalMessageId: logicalMessageId,
+    source: source._toModel(),
+    direction: direction._toModel(),
+    message: message._toModel(),
+  );
+}
+
+extension on gen_message.DartMessageSyncOutcome {
+  MessageSyncOutcome _toModel() => MessageSyncOutcome(
+    status: status._toModel(),
+    eventsApplied: eventsApplied,
+    pagesFetched: pagesFetched,
+    messagesHydrated: messagesHydrated,
+    duplicatesSkipped: duplicatesSkipped,
+    changedConversationIds: changedConversationIds,
+    committedIncomingMessages: committedIncomingMessages
+        .map((message) => message._toModel())
+        .toList(),
+    errorCode: errorCode,
     warnings: warnings,
   );
 }

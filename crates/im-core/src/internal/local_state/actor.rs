@@ -13,6 +13,10 @@ enum LocalStateCommand {
     CurrentSchemaVersion {
         reply: oneshot::Sender<crate::ImResult<i64>>,
     },
+    LoadOrCreateSyncClientInstanceId {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<String>>,
+    },
     UpsertIdentityAccountBinding {
         binding: super::sync_v2::IdentityAccountBinding,
         reply: oneshot::Sender<crate::ImResult<()>>,
@@ -23,6 +27,10 @@ enum LocalStateCommand {
     },
     BootstrapMessageSyncState {
         state: super::sync_v2::MessageSyncState,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    ApplyBootstrapV2 {
+        input: super::sync_v2::BootstrapApplyInputV2,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
     LoadMessageSyncState {
@@ -85,6 +93,10 @@ enum LocalStateCommand {
     ApplySyncDelta {
         input: super::sync_state::SyncDeltaApplyInput,
         reply: oneshot::Sender<crate::ImResult<super::sync_state::SyncDeltaApplyOutcome>>,
+    },
+    ApplySyncDeltaV2 {
+        input: super::sync_v2::DeltaApplyInputV2,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2>>,
     },
     ApplySystemNotification {
         input: crate::internal::system_notification::store::SystemNotificationApplyInput,
@@ -489,6 +501,19 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
+    pub(crate) async fn load_or_create_sync_client_instance_id(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<String> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadOrCreateSyncClientInstanceId {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn upsert_identity_account_binding(
         &self,
         binding: super::sync_v2::IdentityAccountBinding,
@@ -518,6 +543,16 @@ impl LocalStateDb {
     ) -> crate::ImResult<()> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::BootstrapMessageSyncState { state, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn apply_bootstrap_v2(
+        &self,
+        input: super::sync_v2::BootstrapApplyInputV2,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ApplyBootstrapV2 { input, reply })
             .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
@@ -666,6 +701,16 @@ impl LocalStateDb {
     ) -> crate::ImResult<super::sync_state::SyncDeltaApplyOutcome> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::ApplySyncDelta { input, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn apply_sync_delta_v2(
+        &self,
+        input: super::sync_v2::DeltaApplyInputV2,
+    ) -> crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ApplySyncDeltaV2 { input, reply })
             .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
@@ -1561,6 +1606,16 @@ fn run_actor(
                 let result = super::schema::current_schema_version(&connection);
                 let _ = reply.send(result);
             }
+            LocalStateCommand::LoadOrCreateSyncClientInstanceId {
+                owner_identity_id,
+                reply,
+            } => {
+                let result = super::sync_v2::load_or_create_sync_client_instance_id(
+                    &connection,
+                    &owner_identity_id,
+                );
+                let _ = reply.send(result);
+            }
             LocalStateCommand::UpsertIdentityAccountBinding { binding, reply } => {
                 let result = super::sync_v2::upsert_identity_account_binding(&connection, &binding);
                 let _ = reply.send(result);
@@ -1575,6 +1630,10 @@ fn run_actor(
             }
             LocalStateCommand::BootstrapMessageSyncState { state, reply } => {
                 let result = super::sync_v2::bootstrap_message_sync_state(&connection, &state);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ApplyBootstrapV2 { input, reply } => {
+                let result = super::sync_v2::apply_bootstrap_v2(&connection, input);
                 let _ = reply.send(result);
             }
             LocalStateCommand::LoadMessageSyncState {
@@ -1685,6 +1744,10 @@ fn run_actor(
             }
             LocalStateCommand::ApplySyncDelta { input, reply } => {
                 let result = apply_sync_delta(&mut connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ApplySyncDeltaV2 { input, reply } => {
+                let result = super::sync_v2::apply_delta_v2(&connection, input);
                 let _ = reply.send(result);
             }
             LocalStateCommand::ApplySystemNotification { input, reply } => {

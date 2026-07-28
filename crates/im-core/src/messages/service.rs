@@ -3076,6 +3076,52 @@ impl<'a> MessageService<'a> {
         .await
     }
 
+    pub fn sync_now(
+        &self,
+        request: super::MessageSyncRequest,
+    ) -> crate::ImResult<super::MessageSyncOutcome> {
+        #[cfg(feature = "blocking")]
+        {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| crate::ImError::Internal {
+                    message: format!("build message sync runtime: {error}"),
+                })?;
+            runtime.block_on(self.sync_now_async(request))
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported("sync-now"))
+        }
+    }
+
+    pub async fn sync_now_async(
+        &self,
+        request: super::MessageSyncRequest,
+    ) -> crate::ImResult<super::MessageSyncOutcome> {
+        let result = crate::internal::message_runtime::sync_v2::MessageSyncRuntimeV2::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .sync_now(request)
+        .await;
+        match result {
+            Ok(outcome) => Ok(outcome),
+            Err(error) => {
+                if let Some(outcome) =
+                    crate::internal::message_runtime::sync_v2::failure_outcome(&error)
+                {
+                    Ok(outcome)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
     pub fn conversations(
         &self,
         query: super::ConversationQuery,

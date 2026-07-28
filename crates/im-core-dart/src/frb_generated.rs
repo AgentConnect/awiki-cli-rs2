@@ -45,7 +45,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1534184390;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 2113074029;
 
 // Section: executor
 
@@ -6960,6 +6960,66 @@ fn wire__crate__api__messages__sync_delta_impl(
         },
     )
 }
+fn wire__crate__api__messages__sync_now_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "sync_now",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
+            >>::sse_decode(&mut deserializer);
+            let api_request =
+                <crate::dto::message::DartMessageSyncRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let mut api_client_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_client,
+                                    0,
+                                    false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_client_guard =
+                                        Some(api_client.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_client_guard = api_client_guard.unwrap();
+                        let output_ok =
+                            crate::api::messages::sync_now(&*api_client_guard, api_request).await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__messages__sync_thread_after_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -7978,6 +8038,37 @@ impl SseDecode for crate::dto::auth::DartAuthStatus {
             expires_at: var_expiresAt,
             needs_refresh: var_needsRefresh,
             warnings: var_warnings,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartCommittedIncomingMessage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_eventId = <String>::sse_decode(deserializer);
+        let mut var_logicalMessageId = <String>::sse_decode(deserializer);
+        let mut var_source =
+            <crate::dto::message::DartCommittedMessageSource>::sse_decode(deserializer);
+        let mut var_direction =
+            <crate::dto::message::DartMessageDirection>::sse_decode(deserializer);
+        let mut var_message = <crate::dto::message::DartMessage>::sse_decode(deserializer);
+        return crate::dto::message::DartCommittedIncomingMessage {
+            event_id: var_eventId,
+            logical_message_id: var_logicalMessageId,
+            source: var_source,
+            direction: var_direction,
+            message: var_message,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartCommittedMessageSource {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::message::DartCommittedMessageSource::LiveDelta,
+            _ => unreachable!("Invalid variant for DartCommittedMessageSource: {}", inner),
         };
     }
 }
@@ -10203,6 +10294,60 @@ impl SseDecode for crate::dto::message::DartMessageSecurityMode {
     }
 }
 
+impl SseDecode for crate::dto::message::DartMessageSyncOutcome {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_status = <crate::dto::message::DartMessageSyncStatus>::sse_decode(deserializer);
+        let mut var_eventsApplied = <u32>::sse_decode(deserializer);
+        let mut var_pagesFetched = <u32>::sse_decode(deserializer);
+        let mut var_messagesHydrated = <u32>::sse_decode(deserializer);
+        let mut var_duplicatesSkipped = <u32>::sse_decode(deserializer);
+        let mut var_changedConversationIds = <Vec<String>>::sse_decode(deserializer);
+        let mut var_committedIncomingMessages =
+            <Vec<crate::dto::message::DartCommittedIncomingMessage>>::sse_decode(deserializer);
+        let mut var_errorCode = <Option<String>>::sse_decode(deserializer);
+        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
+        return crate::dto::message::DartMessageSyncOutcome {
+            status: var_status,
+            events_applied: var_eventsApplied,
+            pages_fetched: var_pagesFetched,
+            messages_hydrated: var_messagesHydrated,
+            duplicates_skipped: var_duplicatesSkipped,
+            changed_conversation_ids: var_changedConversationIds,
+            committed_incoming_messages: var_committedIncomingMessages,
+            error_code: var_errorCode,
+            warnings: var_warnings,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartMessageSyncRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_reason = <String>::sse_decode(deserializer);
+        let mut var_limit = <Option<u32>>::sse_decode(deserializer);
+        return crate::dto::message::DartMessageSyncRequest {
+            reason: var_reason,
+            limit: var_limit,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartMessageSyncStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::message::DartMessageSyncStatus::Idle,
+            1 => crate::dto::message::DartMessageSyncStatus::Changed,
+            2 => crate::dto::message::DartMessageSyncStatus::RecoveryRequired,
+            3 => crate::dto::message::DartMessageSyncStatus::RetryableFailure,
+            4 => crate::dto::message::DartMessageSyncStatus::AuthRevoked,
+            _ => unreachable!("Invalid variant for DartMessageSyncStatus: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::dto::message::DartMessageTarget {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -11136,6 +11281,20 @@ impl SseDecode for Vec<String> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<String>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::dto::message::DartCommittedIncomingMessage> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(
+                <crate::dto::message::DartCommittedIncomingMessage>::sse_decode(deserializer),
+            );
         }
         return ans_;
     }
@@ -12196,50 +12355,51 @@ fn pde_ffi_dispatcher_primary_impl(
             data_len,
         ),
         114 => wire__crate__api__messages__sync_delta_impl(port, ptr, rust_vec_len, data_len),
-        115 => {
+        115 => wire__crate__api__messages__sync_now_impl(port, ptr, rust_vec_len, data_len),
+        116 => {
             wire__crate__api__messages__sync_thread_after_impl(port, ptr, rust_vec_len, data_len)
         }
-        116 => wire__crate__api__messages__thread_message_patch_stream_impl(
+        117 => wire__crate__api__messages__thread_message_patch_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        117 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
-        118 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
-        119 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
-        120 => wire__crate__api__identity__upgrade_legacy_identity_impl(
+        118 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
+        119 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
+        120 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
+        121 => wire__crate__api__identity__upgrade_legacy_identity_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        121 => wire__crate__api__local_state_upgrade__upgrade_local_state_impl(
+        122 => wire__crate__api__local_state_upgrade__upgrade_local_state_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        122 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
-        123 => wire__crate__api__identity__verify_identity_vault_impl(
+        123 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
+        124 => wire__crate__api__identity__verify_identity_vault_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        124 => wire__crate__api__messages__watch_conversation_patches_impl(
+        125 => wire__crate__api__messages__watch_conversation_patches_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        125 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
+        126 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        126 => {
+        127 => {
             wire__crate__api__messages__watch_thread_patches_impl(port, ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),
@@ -12532,6 +12692,50 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::auth::DartAuthStatus>
     for crate::dto::auth::DartAuthStatus
 {
     fn into_into_dart(self) -> crate::dto::auth::DartAuthStatus {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartCommittedIncomingMessage {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.event_id.into_into_dart().into_dart(),
+            self.logical_message_id.into_into_dart().into_dart(),
+            self.source.into_into_dart().into_dart(),
+            self.direction.into_into_dart().into_dart(),
+            self.message.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartCommittedIncomingMessage
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartCommittedIncomingMessage>
+    for crate::dto::message::DartCommittedIncomingMessage
+{
+    fn into_into_dart(self) -> crate::dto::message::DartCommittedIncomingMessage {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartCommittedMessageSource {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::LiveDelta => 0.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartCommittedMessageSource
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartCommittedMessageSource>
+    for crate::dto::message::DartCommittedMessageSource
+{
+    fn into_into_dart(self) -> crate::dto::message::DartCommittedMessageSource {
         self
     }
 }
@@ -15332,6 +15536,81 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessageSecurityM
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageSyncOutcome {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.status.into_into_dart().into_dart(),
+            self.events_applied.into_into_dart().into_dart(),
+            self.pages_fetched.into_into_dart().into_dart(),
+            self.messages_hydrated.into_into_dart().into_dart(),
+            self.duplicates_skipped.into_into_dart().into_dart(),
+            self.changed_conversation_ids.into_into_dart().into_dart(),
+            self.committed_incoming_messages
+                .into_into_dart()
+                .into_dart(),
+            self.error_code.into_into_dart().into_dart(),
+            self.warnings.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartMessageSyncOutcome
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessageSyncOutcome>
+    for crate::dto::message::DartMessageSyncOutcome
+{
+    fn into_into_dart(self) -> crate::dto::message::DartMessageSyncOutcome {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageSyncRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.reason.into_into_dart().into_dart(),
+            self.limit.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartMessageSyncRequest
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessageSyncRequest>
+    for crate::dto::message::DartMessageSyncRequest
+{
+    fn into_into_dart(self) -> crate::dto::message::DartMessageSyncRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageSyncStatus {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Idle => 0.into_dart(),
+            Self::Changed => 1.into_dart(),
+            Self::RecoveryRequired => 2.into_dart(),
+            Self::RetryableFailure => 3.into_dart(),
+            Self::AuthRevoked => 4.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartMessageSyncStatus
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartMessageSyncStatus>
+    for crate::dto::message::DartMessageSyncStatus
+{
+    fn into_into_dart(self) -> crate::dto::message::DartMessageSyncStatus {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMessageTarget {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -16734,6 +17013,32 @@ impl SseEncode for crate::dto::auth::DartAuthStatus {
         <Option<String>>::sse_encode(self.expires_at, serializer);
         <bool>::sse_encode(self.needs_refresh, serializer);
         <Vec<String>>::sse_encode(self.warnings, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartCommittedIncomingMessage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.event_id, serializer);
+        <String>::sse_encode(self.logical_message_id, serializer);
+        <crate::dto::message::DartCommittedMessageSource>::sse_encode(self.source, serializer);
+        <crate::dto::message::DartMessageDirection>::sse_encode(self.direction, serializer);
+        <crate::dto::message::DartMessage>::sse_encode(self.message, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartCommittedMessageSource {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::message::DartCommittedMessageSource::LiveDelta => 0,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 
@@ -18406,6 +18711,51 @@ impl SseEncode for crate::dto::message::DartMessageSecurityMode {
     }
 }
 
+impl SseEncode for crate::dto::message::DartMessageSyncOutcome {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::dto::message::DartMessageSyncStatus>::sse_encode(self.status, serializer);
+        <u32>::sse_encode(self.events_applied, serializer);
+        <u32>::sse_encode(self.pages_fetched, serializer);
+        <u32>::sse_encode(self.messages_hydrated, serializer);
+        <u32>::sse_encode(self.duplicates_skipped, serializer);
+        <Vec<String>>::sse_encode(self.changed_conversation_ids, serializer);
+        <Vec<crate::dto::message::DartCommittedIncomingMessage>>::sse_encode(
+            self.committed_incoming_messages,
+            serializer,
+        );
+        <Option<String>>::sse_encode(self.error_code, serializer);
+        <Vec<String>>::sse_encode(self.warnings, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartMessageSyncRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.reason, serializer);
+        <Option<u32>>::sse_encode(self.limit, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartMessageSyncStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::message::DartMessageSyncStatus::Idle => 0,
+                crate::dto::message::DartMessageSyncStatus::Changed => 1,
+                crate::dto::message::DartMessageSyncStatus::RecoveryRequired => 2,
+                crate::dto::message::DartMessageSyncStatus::RetryableFailure => 3,
+                crate::dto::message::DartMessageSyncStatus::AuthRevoked => 4,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::dto::message::DartMessageTarget {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -19065,6 +19415,16 @@ impl SseEncode for Vec<String> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <String>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::dto::message::DartCommittedIncomingMessage> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::dto::message::DartCommittedIncomingMessage>::sse_encode(item, serializer);
         }
     }
 }

@@ -355,6 +355,63 @@ class SyncDeltaResult {
   final List<String> warnings;
 }
 
+class MessageSyncRequest {
+  const MessageSyncRequest({required this.reason, this.limit});
+
+  final String reason;
+  final int? limit;
+}
+
+enum MessageSyncStatus {
+  idle,
+  changed,
+  recoveryRequired,
+  retryableFailure,
+  authRevoked,
+}
+
+enum CommittedMessageSource { liveDelta }
+
+class CommittedIncomingMessage {
+  const CommittedIncomingMessage({
+    required this.eventId,
+    required this.logicalMessageId,
+    required this.source,
+    required this.direction,
+    required this.message,
+  });
+
+  final String eventId;
+  final String logicalMessageId;
+  final CommittedMessageSource source;
+  final MessageDirection direction;
+  final Message message;
+}
+
+class MessageSyncOutcome {
+  const MessageSyncOutcome({
+    required this.status,
+    required this.eventsApplied,
+    required this.pagesFetched,
+    required this.messagesHydrated,
+    required this.duplicatesSkipped,
+    this.changedConversationIds = const [],
+    this.committedIncomingMessages = const [],
+    this.errorCode,
+    this.warnings = const [],
+  });
+
+  final MessageSyncStatus status;
+  final int eventsApplied;
+  final int pagesFetched;
+  final int messagesHydrated;
+  final int duplicatesSkipped;
+  final List<String> changedConversationIds;
+  final List<CommittedIncomingMessage> committedIncomingMessages;
+  final String? errorCode;
+  final List<String> warnings;
+}
+
 class ConversationListSnapshot {
   const ConversationListSnapshot({
     required this.formatVersion,

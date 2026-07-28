@@ -523,6 +523,46 @@ pub struct SyncDeltaResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageSyncRequest {
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSyncStatus {
+    Idle,
+    Changed,
+    RecoveryRequired,
+    RetryableFailure,
+    AuthRevoked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommittedIncomingMessage {
+    pub event_id: String,
+    pub logical_message_id: String,
+    pub source: String,
+    pub direction: MessageDirection,
+    pub message: Message,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageSyncOutcome {
+    pub status: MessageSyncStatus,
+    pub events_applied: u32,
+    pub pages_fetched: u32,
+    pub messages_hydrated: u32,
+    pub duplicates_skipped: u32,
+    pub changed_conversation_ids: Vec<String>,
+    pub committed_incoming_messages: Vec<CommittedIncomingMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationListSnapshot {
     pub format_version: u32,
     pub im_schema_version: i64,

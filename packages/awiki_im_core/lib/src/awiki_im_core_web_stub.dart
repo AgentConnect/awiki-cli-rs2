@@ -289,6 +289,10 @@ class MessageApi {
     throw _unsupported();
   }
 
+  Future<MessageSyncOutcome> syncNow(MessageSyncRequest request) async {
+    throw _unsupported();
+  }
+
   Future<SyncThreadAfterResult> syncThreadAfter(
     SyncThreadAfterRequest request,
   ) async {

@@ -31,15 +31,17 @@ use crate::dto::{
         DartRootKeyTransferSendResult,
     },
     message::{
-        DartConversation, DartConversationAlias, DartConversationAliasSource,
-        DartConversationIdentity, DartConversationIdentityScope, DartConversationListSnapshot,
+        DartCommittedIncomingMessage, DartCommittedMessageSource, DartConversation,
+        DartConversationAlias, DartConversationAliasSource, DartConversationIdentity,
+        DartConversationIdentityScope, DartConversationListSnapshot,
         DartConversationMigrationState, DartConversationPage, DartConversationResolutionState,
         DartConversationSnapshotItem, DartConversationSnapshotMessage,
         DartConversationSnapshotMessageBody, DartConversationStorageThreadRef,
         DartConversationStorePatch, DartMarkReadResult, DartMarkThreadReadResult, DartMessage,
         DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
-        DartMessageMetadataAttribute, DartMessagePage, DartReadWatermark, DartSendMessageResult,
-        DartSyncDeltaResult, DartSyncThreadAfterResult, DartThreadMessageStorePatch,
+        DartMessageMetadataAttribute, DartMessagePage, DartMessageSyncOutcome,
+        DartMessageSyncStatus, DartReadWatermark, DartSendMessageResult, DartSyncDeltaResult,
+        DartSyncThreadAfterResult, DartThreadMessageStorePatch,
     },
     profile::DartUserProfile,
     realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint},
@@ -1643,6 +1645,51 @@ impl From<im_core::messages::SyncDeltaResult> for DartSyncDeltaResult {
             has_more: value.has_more,
             snapshot_required: value.snapshot_required,
             retention_floor_event_seq: value.retention_floor_event_seq,
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncStatus> for DartMessageSyncStatus {
+    fn from(value: im_core::messages::MessageSyncStatus) -> Self {
+        match value {
+            im_core::messages::MessageSyncStatus::Idle => Self::Idle,
+            im_core::messages::MessageSyncStatus::Changed => Self::Changed,
+            im_core::messages::MessageSyncStatus::RecoveryRequired => Self::RecoveryRequired,
+            im_core::messages::MessageSyncStatus::RetryableFailure => Self::RetryableFailure,
+            im_core::messages::MessageSyncStatus::AuthRevoked => Self::AuthRevoked,
+        }
+    }
+}
+
+impl From<im_core::messages::CommittedIncomingMessage> for DartCommittedIncomingMessage {
+    fn from(value: im_core::messages::CommittedIncomingMessage) -> Self {
+        debug_assert_eq!(value.source, "live_delta");
+        Self {
+            event_id: value.event_id,
+            logical_message_id: value.logical_message_id,
+            source: DartCommittedMessageSource::LiveDelta,
+            direction: value.direction.into(),
+            message: value.message.into(),
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncOutcome> for DartMessageSyncOutcome {
+    fn from(value: im_core::messages::MessageSyncOutcome) -> Self {
+        Self {
+            status: value.status.into(),
+            events_applied: value.events_applied,
+            pages_fetched: value.pages_fetched,
+            messages_hydrated: value.messages_hydrated,
+            duplicates_skipped: value.duplicates_skipped,
+            changed_conversation_ids: value.changed_conversation_ids,
+            committed_incoming_messages: value
+                .committed_incoming_messages
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            error_code: value.error_code,
             warnings: value.warnings,
         }
     }

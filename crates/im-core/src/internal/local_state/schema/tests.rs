@@ -28,6 +28,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("table", "direct_e2ee_one_time_prekeys"),
         ("table", "attachment_manifest_cache"),
         ("table", "sync_state"),
+        ("table", "sync_installation_state"),
         ("table", "identity_account_bindings"),
         ("table", "message_sync_state"),
         ("table", "sync_applied_events"),
@@ -162,6 +163,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
             "sync_state",
             vec!["owner_identity_id", "scope", "checkpoint_kind"],
         ),
+        ("sync_installation_state", vec!["owner_identity_id"]),
         ("identity_account_bindings", vec!["owner_identity_id"]),
         ("message_sync_state", vec!["owner_identity_id"]),
         ("sync_applied_events", vec!["owner_identity_id", "event_id"]),
@@ -769,7 +771,7 @@ fn local_state_schema_atomically_upgrades_v28_with_system_notification_tables() 
         assert_eq!(count, 1);
     }
     assert_common_v28_data_preserved(&db);
-    assert_v32_sync_foundation_exists(&db);
+    assert_v33_sync_foundation_exists(&db);
 }
 
 #[test]
@@ -795,7 +797,7 @@ fn local_state_schema_atomically_upgrades_v29_with_root_import_tables() {
     }
     assert_common_v28_data_preserved(&db);
     assert_v29_notification_data_preserved(&db);
-    assert_v32_sync_foundation_exists(&db);
+    assert_v33_sync_foundation_exists(&db);
 }
 
 #[test]
@@ -826,7 +828,7 @@ fn local_state_schema_atomically_upgrades_v30_with_p5_retirement_boundary() {
     assert_v30_root_import_data_preserved(&db);
     assert_direct_v2_ordinary_data_preserved(&db);
     assert_retired_direct_v2_private_data_removed(&db);
-    assert_v32_sync_foundation_exists(&db);
+    assert_v33_sync_foundation_exists(&db);
 }
 
 #[test]
@@ -841,7 +843,7 @@ fn local_state_schema_upgrades_true_v31_fixture_and_is_idempotent() {
     assert_v30_root_import_data_preserved(&db);
     assert_direct_v2_ordinary_data_preserved(&db);
     assert_retired_direct_v2_private_data_removed(&db);
-    assert_v32_sync_foundation_exists(&db);
+    assert_v33_sync_foundation_exists(&db);
 
     ensure_schema(&db).unwrap();
     assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
@@ -863,6 +865,43 @@ fn local_state_schema_upgrades_true_v31_fixture_and_is_idempotent() {
             .unwrap();
         assert_eq!(count, 1);
     }
+}
+
+#[test]
+fn local_state_schema_upgrades_true_v32_fixture_to_v33_and_is_idempotent() {
+    let db = Connection::open_in_memory().unwrap();
+    install_v32_fixture(&db);
+
+    assert_eq!(current_schema_version(&db).unwrap(), 32);
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'sync_installation_state'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0,
+        "a true v32 fixture must not contain the v33 installation table"
+    );
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), 33);
+    assert_v33_sync_foundation_exists(&db);
+    assert_eq!(
+        db.query_row(
+            "SELECT scan_seq FROM message_sync_state
+             WHERE owner_identity_id = 'owner-v32'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "42"
+    );
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), 33);
+    assert_v33_sync_foundation_exists(&db);
 }
 
 #[test]
@@ -1088,6 +1127,35 @@ VALUES ('owner-legacy', 'did:example:legacy', 'device-1', 'message-old', 'device
     db.pragma_update(None, "user_version", 31).unwrap();
 }
 
+fn install_v32_fixture(db: &Connection) {
+    install_v31_fixture(db);
+    db.execute_batch(crate::internal::local_state::sync_v2::SYNC_V2_SCHEMA_SQL)
+        .unwrap();
+    db.execute(
+        r#"
+INSERT INTO identity_account_bindings
+    (owner_identity_id, account_id, handle_scope, current_did, device_id,
+     identity_generation, device_auth_generation, created_at, updated_at)
+VALUES
+    ('owner-v32', 'account-v32', NULL, 'did:example:v32', 'device-v32',
+     '1', '1', 1, 1)"#,
+        [],
+    )
+    .unwrap();
+    db.execute(
+        r#"
+INSERT INTO message_sync_state
+    (owner_identity_id, account_id, device_id, device_auth_generation,
+     stream_epoch, scan_seq, bootstrap_state, updated_at)
+VALUES
+    ('owner-v32', 'account-v32', 'device-v32', '1',
+     '1', '42', 'active', 1)"#,
+        [],
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 32).unwrap();
+}
+
 /// Historical v28 schema builder, copied from the v28 create path at
 /// `0e543604`. It deliberately does not call the current `create_schema`,
 /// because doing so and merely rewriting `user_version` would manufacture
@@ -1159,6 +1227,7 @@ fn install_complete_v28_schema(db: &Connection) {
     for later_table in [
         "system_notification_receipts",
         "identity_root_import_completion_v1",
+        "sync_installation_state",
         "identity_account_bindings",
         "message_sync_state",
     ] {
@@ -1468,8 +1537,9 @@ fn assert_retired_direct_v2_private_data_removed(db: &Connection) {
     assert_eq!(retired_pending, 0);
 }
 
-fn assert_v32_sync_foundation_exists(db: &Connection) {
+fn assert_v33_sync_foundation_exists(db: &Connection) {
     for table in [
+        "sync_installation_state",
         "identity_account_bindings",
         "message_sync_state",
         "sync_applied_events",

@@ -153,7 +153,7 @@ fn local_state_upgrade_inspection_is_available_before_core_open() {
         awiki_im_core::dto::local_state_upgrade::DartLocalStateUpgradeEligibility::NotRequired
     );
     assert_eq!(inspection.source_schema_version, 0);
-    assert_eq!(inspection.target_schema_version, 32);
+    assert_eq!(inspection.target_schema_version, 33);
 }
 
 #[test]
@@ -333,6 +333,45 @@ fn sync_delta_result_preserves_diagnostics_without_next_checkpoint_setter() {
     assert!(dart.snapshot_required);
     assert_eq!(dart.retention_floor_event_seq.as_deref(), Some("10"));
     assert_eq!(dart.warnings, vec!["snapshot required"]);
+}
+
+#[test]
+fn sync_now_bridge_exposes_only_high_level_v2_outcome() {
+    let request = awiki_im_core::dto::message::DartMessageSyncRequest {
+        reason: "websocket_hint".to_owned(),
+        limit: Some(100),
+    };
+    let request_debug = format!("{request:?}");
+    assert!(request_debug.contains("websocket_hint"));
+    for forbidden in [
+        "account_id",
+        "device_id",
+        "cursor",
+        "stream_epoch",
+        "scan_seq",
+    ] {
+        assert!(!request_debug.contains(forbidden));
+    }
+
+    let core = im_core::messages::MessageSyncOutcome {
+        status: im_core::messages::MessageSyncStatus::RecoveryRequired,
+        events_applied: 0,
+        pages_fetched: 1,
+        messages_hydrated: 0,
+        duplicates_skipped: 0,
+        changed_conversation_ids: Vec::new(),
+        committed_incoming_messages: Vec::new(),
+        error_code: Some("SYNC_RECOVERY_REQUIRED".to_owned()),
+        warnings: vec!["recovery is not available in Stage 2".to_owned()],
+    };
+    let dart: awiki_im_core::dto::message::DartMessageSyncOutcome = core.into();
+    assert!(matches!(
+        dart.status,
+        awiki_im_core::dto::message::DartMessageSyncStatus::RecoveryRequired
+    ));
+    assert_eq!(dart.pages_fetched, 1);
+    assert_eq!(dart.error_code.as_deref(), Some("SYNC_RECOVERY_REQUIRED"));
+    assert!(dart.committed_incoming_messages.is_empty());
 }
 
 #[test]

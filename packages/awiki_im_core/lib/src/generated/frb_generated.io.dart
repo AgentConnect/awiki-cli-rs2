@@ -295,6 +295,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartMessage dco_decode_box_autoadd_dart_message(dynamic raw);
 
   @protected
+  DartMessageSyncRequest dco_decode_box_autoadd_dart_message_sync_request(
+    dynamic raw,
+  );
+
+  @protected
   DartProfilePatch dco_decode_box_autoadd_dart_profile_patch(dynamic raw);
 
   @protected
@@ -401,6 +406,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartAuthStatus dco_decode_dart_auth_status(dynamic raw);
+
+  @protected
+  DartCommittedIncomingMessage dco_decode_dart_committed_incoming_message(
+    dynamic raw,
+  );
+
+  @protected
+  DartCommittedMessageSource dco_decode_dart_committed_message_source(
+    dynamic raw,
+  );
 
   @protected
   DartConversation dco_decode_dart_conversation(dynamic raw);
@@ -824,6 +839,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartMessageSecurityMode dco_decode_dart_message_security_mode(dynamic raw);
 
   @protected
+  DartMessageSyncOutcome dco_decode_dart_message_sync_outcome(dynamic raw);
+
+  @protected
+  DartMessageSyncRequest dco_decode_dart_message_sync_request(dynamic raw);
+
+  @protected
+  DartMessageSyncStatus dco_decode_dart_message_sync_status(dynamic raw);
+
+  @protected
   DartMessageTarget dco_decode_dart_message_target(dynamic raw);
 
   @protected
@@ -974,6 +998,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String> dco_decode_list_String(dynamic raw);
+
+  @protected
+  List<DartCommittedIncomingMessage>
+  dco_decode_list_dart_committed_incoming_message(dynamic raw);
 
   @protected
   List<DartConversation> dco_decode_list_dart_conversation(dynamic raw);
@@ -1458,6 +1486,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartMessage sse_decode_box_autoadd_dart_message(SseDeserializer deserializer);
 
   @protected
+  DartMessageSyncRequest sse_decode_box_autoadd_dart_message_sync_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartProfilePatch sse_decode_box_autoadd_dart_profile_patch(
     SseDeserializer deserializer,
   );
@@ -1594,6 +1627,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartAuthStatus sse_decode_dart_auth_status(SseDeserializer deserializer);
+
+  @protected
+  DartCommittedIncomingMessage sse_decode_dart_committed_incoming_message(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartCommittedMessageSource sse_decode_dart_committed_message_source(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartConversation sse_decode_dart_conversation(SseDeserializer deserializer);
@@ -2119,6 +2162,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartMessageSyncOutcome sse_decode_dart_message_sync_outcome(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageSyncRequest sse_decode_dart_message_sync_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageSyncStatus sse_decode_dart_message_sync_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartMessageTarget sse_decode_dart_message_target(
     SseDeserializer deserializer,
   );
@@ -2331,6 +2389,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
+
+  @protected
+  List<DartCommittedIncomingMessage>
+  sse_decode_list_dart_committed_incoming_message(SseDeserializer deserializer);
 
   @protected
   List<DartConversation> sse_decode_list_dart_conversation(
@@ -2895,6 +2957,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_message_sync_request(
+    DartMessageSyncRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_profile_patch(
     DartProfilePatch self,
     SseSerializer serializer,
@@ -3053,6 +3121,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_auth_status(
     DartAuthStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_committed_incoming_message(
+    DartCommittedIncomingMessage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_committed_message_source(
+    DartCommittedMessageSource self,
     SseSerializer serializer,
   );
 
@@ -3702,6 +3782,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_message_sync_outcome(
+    DartMessageSyncOutcome self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_sync_request(
+    DartMessageSyncRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_sync_status(
+    DartMessageSyncStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_message_target(
     DartMessageTarget self,
     SseSerializer serializer,
@@ -3958,6 +4056,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_dart_committed_incoming_message(
+    List<DartCommittedIncomingMessage> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_dart_conversation(

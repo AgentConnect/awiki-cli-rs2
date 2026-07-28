@@ -897,7 +897,7 @@ fn reject_has_more_without_checkpoint_progress(
     Ok(())
 }
 
-fn emit_committed_sync_invalidation(
+pub(super) fn emit_committed_sync_invalidation(
     client: &crate::core::ImClient,
     invalidation: &crate::internal::local_state::sync_state::SyncDeltaInvalidation,
 ) {
@@ -1256,7 +1256,7 @@ fn sync_delta_group_profile_system_message_record(
 }
 
 #[cfg(feature = "sqlite")]
-fn sync_delta_message_from_payload(
+pub(super) fn sync_delta_message_from_payload(
     client: &crate::core::ImClient,
     event: &crate::internal::wire::sync::SyncDeltaEvent,
     require_message: bool,
@@ -1413,8 +1413,21 @@ fn is_payload_content_type(content_type: &str) -> bool {
 }
 
 #[cfg(feature = "sqlite")]
-fn sync_delta_group_record(
+pub(super) fn sync_delta_group_record(
     client: &crate::core::ImClient,
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> crate::ImResult<crate::internal::local_state::groups::GroupRecord> {
+    sync_delta_group_record_for_owner(
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        event,
+    )
+}
+
+#[cfg(feature = "sqlite")]
+pub(super) fn sync_delta_group_record_for_owner(
+    owner_identity_id: &str,
+    owner_did: &str,
     event: &crate::internal::wire::sync::SyncDeltaEvent,
 ) -> crate::ImResult<crate::internal::local_state::groups::GroupRecord> {
     let payload = event
@@ -1433,8 +1446,11 @@ fn sync_delta_group_record(
     let profile = group.and_then(|group| map_value(group.get("profile")));
     let subject_did = string_from_object(membership, "subject_did").unwrap_or_default();
     let membership_status = string_from_object(membership, "status")
-        .filter(|_| subject_did.trim() == client.did().as_str())
-        .unwrap_or_else(|| "active".to_owned());
+        .filter(|_| subject_did.trim() == owner_did)
+        .unwrap_or_default();
+    let my_role = string_from_object(membership, "role")
+        .filter(|_| subject_did.trim().is_empty() || subject_did.trim() == owner_did)
+        .unwrap_or_default();
     let mut metadata = Map::new();
     metadata.insert(
         "source".to_owned(),
@@ -1475,8 +1491,8 @@ fn sync_delta_group_record(
     );
 
     Ok(crate::internal::local_state::groups::GroupRecord {
-        owner_identity_id: client.current_identity().id.as_str().to_owned(),
-        owner_did: client.did().as_str().to_owned(),
+        owner_identity_id: owner_identity_id.to_owned(),
+        owner_did: owner_did.to_owned(),
         group_id: group_did.trim().to_owned(),
         group_did: group_did.trim().to_owned(),
         name: string_from_object(profile, "display_name")
@@ -1488,12 +1504,13 @@ fn sync_delta_group_record(
         rules: string_from_object(profile, "rules").unwrap_or_default(),
         message_prompt: string_from_object(profile, "message_prompt").unwrap_or_default(),
         doc_url: string_from_object(profile, "doc_url").unwrap_or_default(),
+        my_role,
         membership_status,
         last_synced_seq: group_event_seq,
         remote_updated_at: event.created_at.clone().unwrap_or_default(),
         stored_at: event.created_at.clone().unwrap_or_default(),
         metadata: Value::Object(metadata).to_string(),
-        credential_name: client.current_identity().id.as_str().to_owned(),
+        credential_name: owner_identity_id.to_owned(),
         ..crate::internal::local_state::groups::GroupRecord::default()
     })
 }

@@ -133,6 +133,14 @@ Future<DartSyncDeltaResult> syncDelta({
   request: request,
 );
 
+Future<DartMessageSyncOutcome> syncNow({
+  required ArcDartImClient client,
+  required DartMessageSyncRequest request,
+}) => RustLib.instance.api.crateApiMessagesSyncNow(
+  client: client,
+  request: request,
+);
+
 Future<DartSyncThreadAfterResult> syncThreadAfter({
   required ArcDartImClient client,
   required DartSyncThreadAfterRequest request,
