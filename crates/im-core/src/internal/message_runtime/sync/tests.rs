@@ -1002,6 +1002,8 @@ async fn sync_delta_has_more_duplicate_page_without_progress_is_invalid() {
 async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
     let fixture = Fixture::new("thread-after-direct");
     let conversation_id = fixture.seed_verified_peer();
+    fixture.seed_sync_thread_binding(&conversation_id, "conversation-ref-bob", "direct");
+    fixture.store_checkpoint("77");
     let client = fixture.client();
     fixture.seed_message(
         "local-direct-newest",
@@ -1043,6 +1045,7 @@ async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
                 "messages": [
                     {
                         "id": "remote-old",
+                        "thread_kind": "direct",
                         "sender_did": "did:example:bob",
                         "receiver_did": "did:example:alice",
                         "content": "old",
@@ -1051,6 +1054,7 @@ async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
                     },
                     {
                         "id": "remote-new-44",
+                        "thread_kind": "direct",
                         "sender_did": "did:example:bob",
                         "receiver_did": "did:example:alice",
                         "content": "new 44",
@@ -1059,6 +1063,7 @@ async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
                     },
                     {
                         "id": "remote-new-43",
+                        "thread_kind": "direct",
                         "sender_did": "did:example:bob",
                         "receiver_did": "did:example:alice",
                         "content": "new 43",
@@ -1067,13 +1072,16 @@ async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
                     },
                     {
                         "id": "remote-no-seq",
+                        "thread_kind": "direct",
                         "sender_did": "did:example:bob",
                         "receiver_did": "did:example:alice",
                         "content": "no seq",
                         "content_type": "text/plain"
                     }
                 ],
-                "has_more": false
+                "next_after_server_seq": "44",
+                "has_more": false,
+                "warnings": []
             })],
         ),
         NoopDirectoryTransport,
@@ -1089,7 +1097,13 @@ async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
                 limit: Some(10),
             },
             resolved_peer_did: Some("did:example:bob".to_owned()),
-            peer_scope: None,
+            peer_scope: Some(
+                crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                    "user-bob",
+                    "bob.awiki.test",
+                )
+                .unwrap(),
+            ),
         })
         .await
         .unwrap();
@@ -1106,9 +1120,17 @@ async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
     assert!(!result.has_more);
     let calls = calls.borrow();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].method, "direct.get_history");
-    assert_eq!(calls[0].params["body"]["since_seq"], "42");
+    assert_eq!(calls[0].method, "sync.thread_after");
+    assert_eq!(
+        calls[0].params["body"],
+        json!({
+            "thread_key": "conversation-ref-bob",
+            "after_server_seq": "42",
+            "limit": 10
+        })
+    );
     assert_eq!(calls[0].params["body"]["limit"], 10);
+    assert_eq!(fixture.checkpoint().as_deref(), Some("77"));
     match patch_session.next_patch().await {
         Some(crate::messages::ThreadMessageStorePatch::Reset { items, .. }) => {
             assert!(items
@@ -1125,10 +1147,12 @@ async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
 #[tokio::test]
 async fn sync_thread_after_explicit_after_seq_does_not_return_old_history_page_items() {
     let fixture = Fixture::new("thread-after-explicit");
+    let conversation_id = fixture.seed_verified_peer();
+    fixture.seed_sync_thread_binding(&conversation_id, "conversation-ref-bob", "direct");
     let client = fixture.client();
     fixture.seed_message(
         "local-direct-would-merge",
-        "dm:did:example:bob",
+        &conversation_id,
         "",
         Some(99),
         "did:example:bob",
@@ -1144,6 +1168,7 @@ async fn sync_thread_after_explicit_after_seq_does_not_return_old_history_page_i
                 "messages": [
                     {
                         "id": "remote-old-1",
+                        "thread_kind": "direct",
                         "sender_did": "did:example:bob",
                         "receiver_did": "did:example:alice",
                         "content": "old 1",
@@ -1152,6 +1177,7 @@ async fn sync_thread_after_explicit_after_seq_does_not_return_old_history_page_i
                     },
                     {
                         "id": "remote-new-8",
+                        "thread_kind": "direct",
                         "sender_did": "did:example:bob",
                         "receiver_did": "did:example:alice",
                         "content": "new 8",
@@ -1159,7 +1185,9 @@ async fn sync_thread_after_explicit_after_seq_does_not_return_old_history_page_i
                         "server_seq": 8
                     }
                 ],
-                "has_more": false
+                "next_after_server_seq": "8",
+                "has_more": false,
+                "warnings": []
             })],
         ),
         NoopDirectoryTransport,
@@ -1175,7 +1203,13 @@ async fn sync_thread_after_explicit_after_seq_does_not_return_old_history_page_i
                 limit: None,
             },
             resolved_peer_did: Some("did:example:bob".to_owned()),
-            peer_scope: None,
+            peer_scope: Some(
+                crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                    "user-bob",
+                    "bob.awiki.test",
+                )
+                .unwrap(),
+            ),
         })
         .await
         .unwrap();
@@ -1184,9 +1218,57 @@ async fn sync_thread_after_explicit_after_seq_does_not_return_old_history_page_i
     assert_eq!(result.messages[0].id.as_str(), "remote-new-8");
     assert_eq!(result.next_after_server_seq.as_deref(), Some("8"));
     let calls = calls.borrow();
-    assert_eq!(calls[0].method, "direct.get_history");
-    assert_eq!(calls[0].params["body"]["since_seq"], "7");
+    assert_eq!(calls[0].method, "sync.thread_after");
+    assert_eq!(
+        calls[0].params["body"]["thread_key"],
+        "conversation-ref-bob"
+    );
+    assert_eq!(calls[0].params["body"]["after_server_seq"], "7");
     assert_eq!(calls[0].params["body"]["limit"], 100);
+}
+
+#[tokio::test]
+async fn sync_thread_after_direct_fails_before_rpc_without_durable_binding() {
+    let fixture = Fixture::new("thread-after-direct-unbound");
+    fixture.seed_verified_peer();
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(Rc::clone(&calls), Vec::new()),
+        NoopDirectoryTransport,
+    );
+
+    let error = runtime
+        .sync_thread_after_async(SyncThreadAfterInput {
+            request: crate::messages::SyncThreadAfterRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                after_server_seq: Some("0".to_owned()),
+                limit: Some(10),
+            },
+            resolved_peer_did: Some("did:example:bob".to_owned()),
+            peer_scope: Some(
+                crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                    "user-bob",
+                    "bob.awiki.test",
+                )
+                .unwrap(),
+            ),
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::ImError::Service {
+            code: Some(code),
+            ..
+        } if code == "SYNC_THREAD_BINDING_REQUIRED"
+    ));
+    assert!(calls.borrow().is_empty());
 }
 
 #[tokio::test]
@@ -1203,6 +1285,7 @@ async fn sync_thread_after_group_uses_raw_group_messages_since_seq() {
                 "messages": [
                     {
                         "id": "group-old",
+                        "thread_kind": "group",
                         "group_did": "did:example:group",
                         "sender_did": "did:example:bob",
                         "content": "old",
@@ -1211,6 +1294,7 @@ async fn sync_thread_after_group_uses_raw_group_messages_since_seq() {
                     },
                     {
                         "id": "group-new",
+                        "thread_kind": "group",
                         "group_did": "did:example:group",
                         "sender_did": "did:example:bob",
                         "content": "new",
@@ -1218,6 +1302,7 @@ async fn sync_thread_after_group_uses_raw_group_messages_since_seq() {
                         "group_event_seq": 6
                     }
                 ],
+                "next_after_server_seq": "6",
                 "has_more": true,
                 "warnings": ["partial"]
             })],
@@ -1254,9 +1339,72 @@ async fn sync_thread_after_group_uses_raw_group_messages_since_seq() {
     assert_eq!(result.warnings, vec!["partial"]);
     let calls = calls.borrow();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].method, "group.list_messages");
-    assert_eq!(calls[0].params["body"]["group_did"], "did:example:group");
-    assert_eq!(calls[0].params["body"]["since_seq"], "5");
+    assert_eq!(calls[0].method, "sync.thread_after");
+    assert_eq!(
+        calls[0].params["body"],
+        json!({
+            "thread_key": "did:example:group",
+            "after_server_seq": "5",
+            "limit": 50
+        })
+    );
+}
+
+#[test]
+fn sync_thread_after_blocking_uses_v2_rpc_without_advancing_account_cursor() {
+    let fixture = Fixture::new("thread-after-blocking-group");
+    fixture.store_checkpoint("91");
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::clone(&calls),
+            vec![json!({
+                "messages": [{
+                    "id": "group-blocking-new",
+                    "thread_kind": "group",
+                    "group_did": "did:example:group",
+                    "sender_did": "did:example:bob",
+                    "content": "new",
+                    "content_type": "text/plain",
+                    "group_event_seq": 12
+                }],
+                "next_after_server_seq": "12",
+                "has_more": false,
+                "warnings": []
+            })],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_thread_after(SyncThreadAfterInput {
+            request: crate::messages::SyncThreadAfterRequest {
+                thread: crate::messages::ThreadRef::Group(
+                    crate::ids::GroupRef::parse("did:example:group").unwrap(),
+                ),
+                after_server_seq: Some("11".to_owned()),
+                limit: Some(25),
+            },
+            resolved_peer_did: None,
+            peer_scope: None,
+        })
+        .unwrap();
+
+    assert_eq!(result.messages.len(), 1);
+    assert_eq!(fixture.checkpoint().as_deref(), Some("91"));
+    let calls = calls.borrow();
+    assert_eq!(calls[0].method, "sync.thread_after");
+    assert_eq!(
+        calls[0].params["body"],
+        json!({
+            "thread_key": "did:example:group",
+            "after_server_seq": "11",
+            "limit": 25
+        })
+    );
 }
 
 #[test]
@@ -1481,6 +1629,41 @@ impl Fixture {
             },
         )
         .unwrap()
+    }
+
+    fn seed_sync_thread_binding(
+        &self,
+        conversation_id: &str,
+        remote_thread_key: &str,
+        thread_kind: &str,
+    ) {
+        let db = crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
+        crate::internal::local_state::sync_v2::upsert_identity_account_binding(
+            &db,
+            &crate::internal::local_state::sync_v2::IdentityAccountBinding {
+                owner_identity_id: "alice-id".to_owned(),
+                account_id: "account-alice".to_owned(),
+                handle_scope: Some("alice.awiki.test".to_owned()),
+                current_did: "did:example:alice".to_owned(),
+                protocol_device_id: "device-alice".to_owned(),
+                identity_generation: "1".to_owned(),
+                device_auth_generation: "1".to_owned(),
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        crate::internal::local_state::sync_v2::upsert_sync_thread_binding(
+            &db,
+            &crate::internal::local_state::sync_v2::SyncThreadBinding {
+                owner_identity_id: "alice-id".to_owned(),
+                remote_thread_key: remote_thread_key.to_owned(),
+                thread_kind: thread_kind.to_owned(),
+                conversation_id: conversation_id.to_owned(),
+                updated_at: 1,
+            },
+        )
+        .unwrap();
     }
 
     fn seed_message(
@@ -1848,4 +2031,48 @@ fn group_member_changed_event(event_id: &str, event_seq: &str, group_event_seq: 
             }
         }
     })
+}
+
+#[test]
+fn thread_after_client_defense_keeps_only_ordinary_plain_rows() {
+    let mut direct = json!({
+        "messages": [
+            {"id": "plain", "security_profile": "transport-protected"},
+            {"id": "p5", "security_profile": "anp.direct.e2ee.v2"},
+            {
+                "id": "device-copy",
+                "security_profile": "transport-protected",
+                "recipient_device_id": "device-2"
+            }
+        ]
+    });
+    super::retain_ordinary_plain_wire_messages(&mut direct, "direct");
+    assert_eq!(
+        direct
+            .get("messages")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|row| row.get("id").and_then(Value::as_str).unwrap())
+            .collect::<Vec<_>>(),
+        vec!["plain"]
+    );
+
+    let mut group = json!({
+        "messages": [
+            {"id": "plain", "security_profile": "transport-protected", "subject_method": "group.send"},
+            {"id": "mls", "security_profile": "transport-protected", "subject_method": "group.e2ee.send"}
+        ]
+    });
+    super::retain_ordinary_plain_wire_messages(&mut group, "group");
+    assert_eq!(
+        group
+            .get("messages")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|row| row.get("id").and_then(Value::as_str).unwrap())
+            .collect::<Vec<_>>(),
+        vec!["plain"]
+    );
 }

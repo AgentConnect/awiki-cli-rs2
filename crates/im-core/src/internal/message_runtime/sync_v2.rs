@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::internal::auth::session::AsyncSessionProvider;
 use crate::internal::message_runtime::read::MESSAGE_RPC_ENDPOINT;
@@ -49,17 +50,19 @@ where
         let binding = self.client.active_sync_account_binding().await?;
         let db = self.client.core_inner().local_state_db().await?;
         let owner_identity_id = binding.owner_identity_id.clone();
+        let mut result = empty_outcome();
         let mut state = match db
             .load_message_sync_state(owner_identity_id.clone())
             .await?
         {
             crate::internal::local_state::sync_v2::MessageSyncStateAccess::Ready(state) => state,
             crate::internal::local_state::sync_v2::MessageSyncStateAccess::BootstrapRequired(_) => {
-                self.bootstrap(&db, &binding).await?
+                self.bootstrap(&db, &binding, &mut result).await?
             }
         };
 
-        let mut result = empty_outcome();
+        self.drain_read_outbox(&db, &binding).await?;
+        let mut recovery_token_retries = 0_u8;
         loop {
             let cursor = crate::internal::wire::sync_v2::SyncCursorV2 {
                 stream_epoch: state.stream_epoch.clone(),
@@ -71,19 +74,51 @@ where
                 limit,
                 reason,
             )?;
-            let raw = match self
+            let raw = self
                 .transport
                 .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.delta", params)
-                .await
-            {
-                Err(error) if error_code(&error) == Some("SYNC_RECOVERY_REQUIRED") => {
-                    result.status = crate::messages::MessageSyncStatus::RecoveryRequired;
-                    result.error_code = Some("SYNC_RECOVERY_REQUIRED".to_owned());
-                    return Ok(result);
+                .await?;
+            let page = match crate::internal::wire::sync_v2::parse_delta_response(&raw)? {
+                crate::internal::wire::sync_v2::SyncDeltaResponseV2::Delta(page) => page,
+                crate::internal::wire::sync_v2::SyncDeltaResponseV2::RecoveryRequired(recovery) => {
+                    match self
+                        .recover_snapshot(&db, &binding, &state, &recovery, &mut result)
+                        .await
+                    {
+                        Ok(next) => {
+                            state = next;
+                            recovery_token_retries = 0;
+                            continue;
+                        }
+                        Err(error)
+                            if matches!(
+                                error_code(&error),
+                                Some("SYNC_RECOVERY_TOKEN_INVALID" | "SYNC_RECOVERY_TOKEN_EXPIRED")
+                            ) && recovery_token_retries < 1 =>
+                        {
+                            recovery_token_retries += 1;
+                            self.persist_recovery_failure(
+                                &db,
+                                &binding.owner_identity_id,
+                                &state,
+                                error_code(&error).unwrap_or("SYNC_RECOVERY_RETRY"),
+                            )
+                            .await?;
+                            continue;
+                        }
+                        Err(error) => {
+                            self.persist_recovery_failure(
+                                &db,
+                                &binding.owner_identity_id,
+                                &state,
+                                error_code(&error).unwrap_or("SYNC_RECOVERY_FAILED"),
+                            )
+                            .await?;
+                            return Err(error);
+                        }
+                    }
                 }
-                other => other?,
             };
-            let page = crate::internal::wire::sync_v2::parse_delta(&raw)?;
             validate_page_binding(&page, &binding, &state)?;
             result.pages_fetched = result.pages_fetched.saturating_add(1);
             result.warnings.extend(page.warnings.clone());
@@ -183,10 +218,299 @@ where
         }
     }
 
+    async fn drain_read_outbox(
+        &mut self,
+        db: &crate::internal::local_state::actor::LocalStateDb,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+    ) -> crate::ImResult<()> {
+        for _ in 0..16 {
+            let now = unix_time_i64();
+            let Some(record) = db
+                .claim_next_read_mutation(&binding.owner_identity_id, now)
+                .await?
+            else {
+                break;
+            };
+            let payload: Value = serde_json::from_str(&record.payload_json).map_err(|error| {
+                sync_error(
+                    "SYNC_LOCAL_OUTBOX_CORRUPT",
+                    format!("read outbox payload is invalid: {error}"),
+                )
+            })?;
+            let field = |name: &str| {
+                payload
+                    .get(name)
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| {
+                        sync_error(
+                            "SYNC_LOCAL_OUTBOX_CORRUPT",
+                            format!("read outbox payload is missing {name}"),
+                        )
+                    })
+            };
+            let thread_kind = field("thread_kind")?;
+            let thread_id = field("thread_id")?;
+            let remote_thread_key = field("remote_thread_key")?;
+            let seq = field("read_watermark_seq")?;
+            let thread = if thread_kind == "group" {
+                crate::messages::ThreadRef::Group(crate::ids::GroupRef::parse(&thread_id)?)
+            } else {
+                crate::messages::ThreadRef::Thread(crate::ids::ThreadId::parse(&thread_id)?)
+            };
+            let params = crate::internal::wire::read_state::build_mark_read_state_rpc_params(
+                &wire_identity(self.client),
+                crate::internal::wire::read_state::MarkReadStateWireRequest {
+                    thread: thread.clone(),
+                    read_up_to_server_seq: Some(seq.clone()),
+                    read_up_to_message_id: payload
+                        .get("read_watermark_message_id")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
+                    client_observed_at: payload
+                        .get("read_watermark_at")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
+                    fallback_max_message_ids: None,
+                    device_id: Some(binding.protocol_device_id.clone()),
+                    operation_id: Some(record.operation_id.clone()),
+                    remote_thread_key: Some(remote_thread_key),
+                },
+            )?;
+            let response = match self
+                .transport
+                .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "read_state.mark_read", params)
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    db.retry_local_mutation(
+                        &binding.owner_identity_id,
+                        &record.mutation_id,
+                        error_code(&error).unwrap_or("READ_STATE_RETRY"),
+                        now.saturating_add(5),
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            };
+            let acknowledged_seq = response
+                .get("read_watermark_server_seq")
+                .and_then(Value::as_str)
+                .map(|value| {
+                    crate::internal::local_state::sync_v2::validate_decimal(
+                        "read_watermark_server_seq",
+                        value,
+                    )
+                    .map(|()| value.to_owned())
+                })
+                .transpose()?
+                .unwrap_or(seq);
+            db.mark_thread_read_watermark(
+                &binding.owner_identity_id,
+                &binding.current_did,
+                crate::internal::local_state::messages::MarkThreadReadWatermarkInput {
+                    thread,
+                    read_watermark_message_id: response
+                        .get("read_watermark_message_id")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .or_else(|| {
+                            payload
+                                .get("read_watermark_message_id")
+                                .and_then(Value::as_str)
+                                .map(ToOwned::to_owned)
+                        }),
+                    read_watermark_seq: Some(acknowledged_seq),
+                    read_watermark_at: response
+                        .get("read_at")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .or_else(|| {
+                            payload
+                                .get("read_watermark_at")
+                                .and_then(Value::as_str)
+                                .map(ToOwned::to_owned)
+                        }),
+                    pending_remote_ack: false,
+                },
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn recover_snapshot(
+        &mut self,
+        db: &crate::internal::local_state::actor::LocalStateDb,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        previous: &crate::internal::local_state::sync_v2::MessageSyncState,
+        recovery: &crate::internal::wire::sync_v2::SyncRecoveryV2,
+        result: &mut crate::messages::MessageSyncOutcome,
+    ) -> crate::ImResult<crate::internal::local_state::sync_v2::MessageSyncState> {
+        let now = unix_time_i64();
+        db.upsert_sync_recovery_state(crate::internal::local_state::sync_v2::RecoveryState {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            mode: "compact_recovery".to_owned(),
+            requested_from_epoch: previous.stream_epoch.clone(),
+            requested_from_seq: previous.scan_seq.clone(),
+            recovery_id_hash: Some(hex_sha256(&recovery.recovery_id)),
+            snapshot_scan_seq: Some(recovery.snapshot_scan_seq.clone()),
+            status: "downloading".to_owned(),
+            retry_count: 0,
+            last_error_code: None,
+            started_at: now,
+            updated_at: now,
+        })
+        .await?;
+        let params = crate::internal::wire::sync_v2::build_snapshot_params(
+            &wire_identity(self.client),
+            recovery,
+        )?;
+        let raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.snapshot", params)
+            .await?;
+        let snapshot = crate::internal::wire::sync_v2::parse_snapshot(&raw)?;
+        if snapshot.account_id != binding.account_id
+            || snapshot.device_id != binding.protocol_device_id
+        {
+            return Err(sync_error(
+                "SYNC_ACCOUNT_BINDING_MISMATCH",
+                "sync.snapshot response does not match the active account device",
+            ));
+        }
+        if snapshot.snapshot_cursor.stream_epoch != recovery.stream_epoch
+            || snapshot.snapshot_cursor.scan_seq != recovery.snapshot_scan_seq
+        {
+            return Err(sync_error(
+                "SYNC_INVALID_SNAPSHOT",
+                "sync.snapshot cursor does not match the authorized recovery anchor",
+            ));
+        }
+        db.upsert_sync_recovery_state(crate::internal::local_state::sync_v2::RecoveryState {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            mode: "compact_recovery".to_owned(),
+            requested_from_epoch: previous.stream_epoch.clone(),
+            requested_from_seq: previous.scan_seq.clone(),
+            recovery_id_hash: Some(hex_sha256(&recovery.recovery_id)),
+            snapshot_scan_seq: Some(recovery.snapshot_scan_seq.clone()),
+            status: "applying".to_owned(),
+            retry_count: 0,
+            last_error_code: None,
+            started_at: now,
+            updated_at: unix_time_i64(),
+        })
+        .await?;
+
+        let mut public_messages = BTreeMap::new();
+        let events = snapshot
+            .recent_plain_messages
+            .iter()
+            .map(|item| {
+                reduce_event(
+                    self.client,
+                    &item.event,
+                    Some(&item.message),
+                    &mut public_messages,
+                )
+            })
+            .collect::<crate::ImResult<Vec<_>>>()?;
+        let groups = snapshot
+            .groups
+            .iter()
+            .enumerate()
+            .map(|(index, group)| {
+                baseline_group_record(self.client, group, &snapshot.server_time, index)
+            })
+            .collect::<crate::ImResult<Vec<_>>>()?;
+        let read_states = snapshot
+            .read_states
+            .iter()
+            .map(read_state_from_snapshot)
+            .collect::<crate::ImResult<Vec<_>>>()?;
+        let outcome = db
+            .apply_sync_snapshot_v2(
+                crate::internal::local_state::sync_v2::SnapshotApplyInputV2 {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    owner_did: binding.current_did.clone(),
+                    account_id: binding.account_id.clone(),
+                    protocol_device_id: binding.protocol_device_id.clone(),
+                    device_auth_generation: binding.device_auth_generation.clone(),
+                    stream_epoch: snapshot.snapshot_cursor.stream_epoch.clone(),
+                    snapshot_scan_seq: snapshot.snapshot_cursor.scan_seq.clone(),
+                    server_time: snapshot.server_time.clone(),
+                    events,
+                    groups,
+                    read_states,
+                },
+            )
+            .await?;
+        result.pages_fetched = result.pages_fetched.saturating_add(1);
+        result.messages_hydrated = result.messages_hydrated.saturating_add(
+            u32::try_from(snapshot.recent_plain_messages.len()).unwrap_or(u32::MAX),
+        );
+        result.events_applied = result
+            .events_applied
+            .saturating_add(u32::try_from(outcome.applied_event_ids.len()).unwrap_or(u32::MAX));
+        result.duplicates_skipped = result
+            .duplicates_skipped
+            .saturating_add(u32::try_from(outcome.duplicate_events).unwrap_or(u32::MAX));
+        result
+            .changed_conversation_ids
+            .extend(outcome.invalidation.conversation_ids.clone());
+        super::sync::emit_committed_sync_invalidation(self.client, &outcome.invalidation);
+        Ok(crate::internal::local_state::sync_v2::MessageSyncState {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            account_id: binding.account_id.clone(),
+            protocol_device_id: binding.protocol_device_id.clone(),
+            device_auth_generation: binding.device_auth_generation.clone(),
+            stream_epoch: snapshot.snapshot_cursor.stream_epoch,
+            scan_seq: snapshot.snapshot_cursor.scan_seq,
+            bootstrap_state: "active".to_owned(),
+            last_server_time: Some(snapshot.server_time),
+            last_success_at: Some(unix_time_i64()),
+            last_error_code: None,
+            metadata_json: Some("{\"mode\":\"compact_recovery\"}".to_owned()),
+            updated_at: unix_time_i64(),
+        })
+    }
+
+    async fn persist_recovery_failure(
+        &self,
+        db: &crate::internal::local_state::actor::LocalStateDb,
+        owner_identity_id: &str,
+        previous: &crate::internal::local_state::sync_v2::MessageSyncState,
+        code: &str,
+    ) -> crate::ImResult<()> {
+        let now = unix_time_i64();
+        let current = db.load_sync_recovery_state(owner_identity_id).await?;
+        db.upsert_sync_recovery_state(crate::internal::local_state::sync_v2::RecoveryState {
+            owner_identity_id: owner_identity_id.to_owned(),
+            mode: "compact_recovery".to_owned(),
+            requested_from_epoch: previous.stream_epoch.clone(),
+            requested_from_seq: previous.scan_seq.clone(),
+            recovery_id_hash: current
+                .as_ref()
+                .and_then(|state| state.recovery_id_hash.clone()),
+            snapshot_scan_seq: current
+                .as_ref()
+                .and_then(|state| state.snapshot_scan_seq.clone()),
+            status: "retryable".to_owned(),
+            retry_count: current.map_or(1, |state| state.retry_count.saturating_add(1)),
+            last_error_code: Some(code.to_owned()),
+            started_at: now,
+            updated_at: now,
+        })
+        .await
+    }
+
     async fn bootstrap(
         &mut self,
         db: &crate::internal::local_state::actor::LocalStateDb,
         binding: &crate::identity::ActiveSyncAccountBinding,
+        result: &mut crate::messages::MessageSyncOutcome,
     ) -> crate::ImResult<crate::internal::local_state::sync_v2::MessageSyncState> {
         let client_instance_id = db
             .load_or_create_sync_client_instance_id(&binding.owner_identity_id)
@@ -199,7 +523,60 @@ where
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.bootstrap", params)
             .await?;
-        let bootstrap = crate::internal::wire::sync_v2::parse_bootstrap(&raw)?;
+        let response = crate::internal::wire::sync_v2::parse_bootstrap_response(&raw)?;
+        if let crate::internal::wire::sync_v2::SyncBootstrapResponseV2::RecoveryRequired {
+            account_id,
+            device_id,
+            recovery,
+        } = &response
+        {
+            if account_id != &binding.account_id || device_id != &binding.protocol_device_id {
+                return Err(sync_error(
+                    "SYNC_ACCOUNT_BINDING_MISMATCH",
+                    "sync.bootstrap recovery does not match the active account device",
+                ));
+            }
+            let now = unix_time_i64();
+            db.upsert_identity_account_binding(
+                crate::internal::local_state::sync_v2::IdentityAccountBinding {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    account_id: binding.account_id.clone(),
+                    handle_scope: self
+                        .client
+                        .handle()
+                        .map(|handle| handle.as_str().to_owned()),
+                    current_did: binding.current_did.clone(),
+                    protocol_device_id: binding.protocol_device_id.clone(),
+                    identity_generation: binding.identity_generation.clone(),
+                    device_auth_generation: binding.device_auth_generation.clone(),
+                    created_at: now,
+                    updated_at: now,
+                },
+            )
+            .await?;
+            let previous = crate::internal::local_state::sync_v2::MessageSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: recovery.stream_epoch.clone(),
+                scan_seq: "0".to_owned(),
+                bootstrap_state: "uninitialized".to_owned(),
+                last_server_time: None,
+                last_success_at: None,
+                last_error_code: None,
+                metadata_json: None,
+                updated_at: now,
+            };
+            let state = self
+                .recover_snapshot(db, binding, &previous, recovery, result)
+                .await?;
+            return Ok(state);
+        }
+        let crate::internal::wire::sync_v2::SyncBootstrapResponseV2::TailOnly(bootstrap) = response
+        else {
+            unreachable!("bootstrap response variants were handled")
+        };
         if bootstrap.account_id != binding.account_id
             || bootstrap.device_id != binding.protocol_device_id
         {
@@ -215,6 +592,11 @@ where
             .map(|(index, group)| {
                 baseline_group_record(self.client, group, &bootstrap.server_time, index)
             })
+            .collect::<crate::ImResult<Vec<_>>>()?;
+        let read_states = bootstrap
+            .read_state_baseline
+            .iter()
+            .map(read_state_from_snapshot)
             .collect::<crate::ImResult<Vec<_>>>()?;
         let now = unix_time_i64();
         let state = crate::internal::local_state::sync_v2::MessageSyncState {
@@ -249,6 +631,7 @@ where
                 },
                 state: state.clone(),
                 groups,
+                read_states,
             },
         )
         .await?;
@@ -264,7 +647,10 @@ fn reduce_event(
 ) -> crate::ImResult<crate::internal::local_state::sync_v2::DeltaApplyEventV2> {
     if matches!(
         event.event_type.as_str(),
-        "message.created" | "group.member_changed" | "group.profile_updated"
+        "message.created"
+            | "message.read_state_updated"
+            | "group.member_changed"
+            | "group.profile_updated"
     ) && event.ignore_safe
     {
         return Err(sync_error(
@@ -304,14 +690,45 @@ fn reduce_event(
                     "message.created has no exact hydrated ordinary message",
                 )
             })?;
+            let expected_thread_kind = if message_kind == "group_plain" {
+                "group"
+            } else {
+                "direct"
+            };
+            if hydrated_message.get("thread_kind").and_then(Value::as_str)
+                != Some(expected_thread_kind)
+            {
+                return Err(sync_error(
+                    "SYNC_INVALID_PAGE",
+                    "hydrated message thread_kind conflicts with event message_kind",
+                ));
+            }
             let synthetic = hydrated_v1_event(event, hydrated_message)?;
             let mut message =
                 super::sync::sync_delta_message_from_payload(client, &synthetic, true)?;
             message.direction = event_direction(event)?;
             add_v2_metadata(&mut message, event);
             let record = super::local_projection::message_record_from_message(client, &message)?;
+            let remote_thread_key = event.thread_key.as_deref().ok_or_else(|| {
+                sync_error(
+                    "SYNC_INVALID_PAGE",
+                    "message.created is missing its remote thread key",
+                )
+            })?;
+            apply
+                .thread_bindings
+                .push(crate::internal::local_state::sync_v2::SyncThreadBinding {
+                    owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                    remote_thread_key: remote_thread_key.to_owned(),
+                    thread_kind: expected_thread_kind.to_owned(),
+                    conversation_id: record.conversation_id.clone(),
+                    updated_at: unix_time_i64(),
+                });
             apply.messages.push(record);
             public_messages.insert(event.event_id.clone(), message);
+        }
+        "message.read_state_updated" => {
+            apply.read_states.push(read_state_from_event(event)?);
         }
         "group.member_changed" | "group.profile_updated" => {
             validate_group_state_version(event)?;
@@ -496,6 +913,7 @@ fn add_v2_metadata(
                 .get("client_message_id")
                 .and_then(Value::as_str),
         ),
+        ("remote_thread_key", event.thread_key.as_deref()),
     ] {
         if let Some(value) = value {
             message
@@ -507,6 +925,155 @@ fn add_v2_metadata(
                 });
         }
     }
+}
+
+fn read_state_from_event(
+    event: &crate::internal::wire::sync_v2::SyncEventV2,
+) -> crate::ImResult<crate::internal::local_state::sync_v2::ReadStateApplyV2> {
+    let remote_thread_key = event.thread_key.as_deref().ok_or_else(|| {
+        sync_error(
+            "SYNC_INVALID_PAGE",
+            "read state event is missing envelope thread_key",
+        )
+    })?;
+    let payload_thread_key = event
+        .payload
+        .get("thread_key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            sync_error(
+                "SYNC_INVALID_PAGE",
+                "read state event is missing payload thread_key",
+            )
+        })?;
+    if payload_thread_key != remote_thread_key {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "read state payload thread key conflicts with its envelope",
+        ));
+    }
+    let thread_kind = event
+        .payload
+        .get("thread_kind")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            if remote_thread_key.starts_with("did:") {
+                "group"
+            } else {
+                "direct"
+            }
+        });
+    if !matches!(thread_kind, "direct" | "group") {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "read state thread_kind must be direct or group",
+        ));
+    }
+    let state_version = event.state_version.as_deref().ok_or_else(|| {
+        sync_error(
+            "SYNC_INVALID_PAGE",
+            "read state event is missing envelope state_version",
+        )
+    })?;
+    let payload_version = event
+        .payload
+        .get("state_version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            sync_error(
+                "SYNC_INVALID_PAGE",
+                "read state event is missing payload state_version",
+            )
+        })?;
+    if payload_version != state_version {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "read state version conflicts with its event envelope",
+        ));
+    }
+    let read_watermark_seq = event
+        .payload
+        .get("read_up_to_thread_seq")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            sync_error(
+                "SYNC_INVALID_PAGE",
+                "read state event is missing its ordinary thread watermark",
+            )
+        })?
+        .to_owned();
+    crate::internal::local_state::sync_v2::validate_decimal(
+        "read_up_to_thread_seq",
+        &read_watermark_seq,
+    )?;
+    Ok(crate::internal::local_state::sync_v2::ReadStateApplyV2 {
+        remote_thread_key: remote_thread_key.to_owned(),
+        thread_kind: thread_kind.to_owned(),
+        read_watermark_seq,
+        read_watermark_message_id: event
+            .payload
+            .get("read_up_to_message_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        state_version: state_version.to_owned(),
+        occurred_at: event.occurred_at.clone(),
+    })
+}
+
+fn read_state_from_snapshot(
+    value: &Value,
+) -> crate::ImResult<crate::internal::local_state::sync_v2::ReadStateApplyV2> {
+    let object = value.as_object().ok_or_else(|| {
+        sync_error(
+            "SYNC_INVALID_SNAPSHOT",
+            "snapshot read state must be an object",
+        )
+    })?;
+    let required = |field: &str| {
+        object
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty() && value.trim() == *value)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| {
+                sync_error(
+                    "SYNC_INVALID_SNAPSHOT",
+                    format!("snapshot read state is missing {field}"),
+                )
+            })
+    };
+    let thread_kind = required("thread_kind")?;
+    if !matches!(thread_kind.as_str(), "direct" | "group") {
+        return Err(sync_error(
+            "SYNC_INVALID_SNAPSHOT",
+            "snapshot read state thread_kind must be direct or group",
+        ));
+    }
+    let read_watermark_seq = required("read_up_to_thread_seq")?;
+    let state_version = required("state_version")?;
+    crate::internal::local_state::sync_v2::validate_decimal(
+        "read_up_to_thread_seq",
+        &read_watermark_seq,
+    )?;
+    crate::internal::local_state::sync_v2::validate_positive_decimal(
+        "state_version",
+        &state_version,
+    )?;
+    Ok(crate::internal::local_state::sync_v2::ReadStateApplyV2 {
+        remote_thread_key: required("thread_key")?,
+        thread_kind,
+        read_watermark_seq,
+        read_watermark_message_id: object
+            .get("read_up_to_message_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        state_version,
+        occurred_at: object
+            .get("updated_at")
+            .and_then(Value::as_str)
+            .unwrap_or("1970-01-01T00:00:00Z")
+            .to_owned(),
+    })
 }
 
 fn validate_group_state_version(
@@ -700,7 +1267,8 @@ pub(crate) fn failure_outcome(
     let (status, code) = match error {
         crate::ImError::AuthRequired
         | crate::ImError::SessionExpired
-        | crate::ImError::PermissionDenied => (
+        | crate::ImError::PermissionDenied
+        | crate::ImError::IdentityBindingConflict { .. } => (
             crate::messages::MessageSyncStatus::AuthRevoked,
             "AUTH_REVOKED".to_owned(),
         ),
@@ -710,6 +1278,21 @@ pub(crate) fn failure_outcome(
             (
                 crate::messages::MessageSyncStatus::RecoveryRequired,
                 "SYNC_RECOVERY_REQUIRED".to_owned(),
+            )
+        }
+        crate::ImError::Service { code, .. }
+            if matches!(
+                code.as_deref(),
+                Some(
+                    "SYNC_ACCOUNT_BINDING_MISMATCH"
+                        | "SYNC_DEVICE_BINDING_MISMATCH"
+                        | "SYNC_AUTH_GENERATION_MISMATCH"
+                )
+            ) =>
+        {
+            (
+                crate::messages::MessageSyncStatus::AuthRevoked,
+                code.clone().unwrap_or_else(|| "AUTH_REVOKED".to_owned()),
             )
         }
         crate::ImError::TransportUnavailable { .. }
@@ -747,6 +1330,11 @@ fn unix_time_i64() -> i64 {
         .unwrap_or(i64::MAX)
 }
 
+fn hex_sha256(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn sync_error(code: &str, message: impl Into<String>) -> crate::ImError {
     crate::ImError::Service {
         status_code: None,
@@ -759,7 +1347,12 @@ fn sync_error(code: &str, message: impl Into<String>) -> crate::ImError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::internal::auth::session::SessionProvider;
+    use crate::vault::{DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore};
+    use std::cell::RefCell;
     use std::collections::VecDeque;
+    use std::rc::Rc;
+    use std::sync::Arc;
 
     struct Fixture {
         root: std::path::PathBuf,
@@ -841,6 +1434,1247 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    struct SyncSnapshotFixture {
+        root: std::path::PathBuf,
+    }
+
+    impl SyncSnapshotFixture {
+        const VAULT_SEED: [u8; 32] = [73_u8; 32];
+        const WORKSPACE_ID: &'static str = "sync-snapshot-workspace";
+        const VAULT_DEVICE_ID: &'static str = "sync-snapshot-vault-device";
+
+        fn new(prefix: &str) -> Self {
+            use crate::internal::identity_device_state::{
+                DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
+                IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
+                IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+            };
+            use crate::internal::identity_store::{
+                IdentityStore, SaveIdentityInput, SaveIdentityKeyMode, SaveIdentitySecretStorage,
+            };
+
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "im-core-sync-snapshot-{prefix}-{}-{nanos}",
+                std::process::id()
+            ));
+            let paths = Self::paths(&root);
+            std::fs::create_dir_all(&paths.identities.identity_root_dir).unwrap();
+            let did = crate::ids::Did::parse("did:wba:awiki.test:alice:e1_root").unwrap();
+            let signing_key_id = format!("{}#dev-a-sign", did.as_str());
+            let e2ee_key_id = format!("{}#dev-a-e2ee", did.as_str());
+            let vault = Arc::new(FileSecretVault::new(
+                DeviceVaultRootKey::from_bytes(Self::VAULT_SEED),
+                FileSecretVaultStore::new(root.join("vault")),
+            ));
+            IdentityStore::new(&paths.identities)
+                .save_identity_with_secret_storage(
+                    SaveIdentityInput {
+                        local_alias: "alice".to_owned(),
+                        did: did.clone(),
+                        unique_id: "alice-id".to_owned(),
+                        user_id: "account-alice".to_owned(),
+                        display_name: "Alice".to_owned(),
+                        handle: "alice".to_owned(),
+                        full_handle: "alice.awiki.test".to_owned(),
+                        binding_generation: Some("1".to_owned()),
+                        jwt_token: "test-device-token".to_owned(),
+                        did_document: Some(json!({"id": did.as_str()})),
+                        key_mode: SaveIdentityKeyMode::VNext {
+                            root_key_id: format!("{}#key-1", did.as_str()),
+                            device_signing_key_id: signing_key_id.clone(),
+                            device_e2ee_key_id: e2ee_key_id.clone(),
+                        },
+                        device_state: Some(IdentityDeviceState {
+                            schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                            mode: IdentityDeviceMode::VNext,
+                            authorization: Some(DeviceAuthorizationProjection {
+                                protocol_device_id: crate::ids::ProtocolDeviceId::parse("dev-a")
+                                    .unwrap(),
+                                signing_key_id,
+                                e2ee_key_id,
+                                status: DeviceAuthorizationStatus::Active,
+                                role: DeviceAuthorizationRole::Member,
+                                management_ready: false,
+                                auth_generation: 1,
+                            }),
+                            checkpoint: Some(IdentityInternalCheckpoint {
+                                document_version: 1,
+                                document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                                    .to_owned(),
+                                registry_version: 1,
+                            }),
+                        }),
+                        key1_private_pem: "root-private".to_owned(),
+                        key1_public_pem: "root-public".to_owned(),
+                        e2ee_signing_private_pem: "device-signing-private".to_owned(),
+                        e2ee_agreement_private_pem: "device-e2ee-private".to_owned(),
+                        daemon_subkey_package: None,
+                        make_default: true,
+                    },
+                    SaveIdentitySecretStorage::Vault {
+                        workspace_id: Self::WORKSPACE_ID.to_owned(),
+                        device_id: Self::VAULT_DEVICE_ID.to_owned(),
+                        vault,
+                    },
+                )
+                .unwrap();
+            Self { root }
+        }
+
+        fn paths(root: &std::path::Path) -> crate::ImCorePaths {
+            crate::ImCorePaths {
+                identities: crate::paths::IdentityRegistryPaths {
+                    identity_root_dir: root.join("identities"),
+                    registry_path: root.join("identities").join("registry.json"),
+                    default_identity_path: Some(root.join("identities").join("default")),
+                },
+                local_state: crate::paths::LocalStatePaths {
+                    sqlite_path: root.join("local").join("im.sqlite"),
+                },
+                runtime: crate::paths::RuntimePaths {
+                    cache_dir: root.join("cache"),
+                    temp_dir: root.join("tmp"),
+                },
+            }
+        }
+
+        fn client(&self) -> crate::core::ImClient {
+            crate::core::ImCore::new_with_options(
+                crate::ImCoreConfig {
+                    service_base_url: crate::ServiceEndpoint::parse("https://example.test")
+                        .unwrap(),
+                    did_domain: "awiki.test".to_owned(),
+                    user_service_endpoint: None,
+                    message_service_endpoint: None,
+                    mail_service_endpoint: None,
+                    anp_service_endpoint: None,
+                    anp_service_did: None,
+                    ca_bundle: None,
+                    transport_policy: crate::MessageTransportPolicy::HttpOnly,
+                },
+                Self::paths(&self.root),
+                crate::ImCoreOpenOptions::default().with_identity_secret_vault(
+                    crate::IdentitySecretStoragePolicy::VaultRequired,
+                    crate::ImCoreSecretVaultOptions::new(
+                        DeviceVaultRootKey::from_bytes(Self::VAULT_SEED),
+                        self.root.join("vault"),
+                        Self::WORKSPACE_ID,
+                        Self::VAULT_DEVICE_ID,
+                    ),
+                ),
+            )
+            .unwrap()
+            .client(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap()
+        }
+
+        fn sqlite_path(&self) -> std::path::PathBuf {
+            self.root.join("local").join("im.sqlite")
+        }
+
+        fn has_message_content(&self, content: &str) -> bool {
+            rusqlite::Connection::open(self.sqlite_path())
+                .unwrap()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM messages WHERE content = ?1)",
+                    [content],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+        }
+    }
+
+    impl Drop for SyncSnapshotFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[derive(Clone)]
+    struct ReadySyncSnapshotSessionProvider;
+
+    impl SessionProvider for ReadySyncSnapshotSessionProvider {
+        fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            assert_eq!(scope, crate::auth::AuthScope::Messaging);
+            Ok(crate::auth::SessionBundle {
+                subject: crate::ids::Did::parse("did:wba:awiki.test:alice:e1_root")?,
+                scope,
+                expires_at: None,
+                refreshed: false,
+                bearer_token: None,
+            })
+        }
+
+        fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            unreachable!("sync snapshot tests never refresh the session")
+        }
+
+        fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            unreachable!("sync snapshot tests never inspect session status")
+        }
+    }
+
+    impl AsyncSessionProvider for ReadySyncSnapshotSessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            SessionProvider::ensure_session(self, scope)
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            SessionProvider::refresh_session(self)
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            SessionProvider::status(self)
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct SyncSnapshotCall {
+        method: String,
+        params: Value,
+    }
+
+    struct SyncSnapshotTransport {
+        calls: Rc<RefCell<Vec<SyncSnapshotCall>>>,
+        responses: VecDeque<crate::ImResult<Value>>,
+    }
+
+    impl SyncSnapshotTransport {
+        fn queued(
+            calls: Rc<RefCell<Vec<SyncSnapshotCall>>>,
+            responses: Vec<crate::ImResult<Value>>,
+        ) -> Self {
+            Self {
+                calls,
+                responses: responses.into(),
+            }
+        }
+    }
+
+    impl AsyncAuthenticatedRpcTransport for SyncSnapshotTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            assert_eq!(endpoint, MESSAGE_RPC_ENDPOINT);
+            self.calls.borrow_mut().push(SyncSnapshotCall {
+                method: method.to_owned(),
+                params,
+            });
+            self.responses
+                .pop_front()
+                .expect("queued sync snapshot response")
+        }
+    }
+
+    fn sync_snapshot_request() -> crate::messages::MessageSyncRequest {
+        crate::messages::MessageSyncRequest {
+            reason: "app_resume".to_owned(),
+            limit: Some(100),
+        }
+    }
+
+    fn sync_snapshot_recovery(
+        recovery_id: &str,
+        token: &str,
+        stream_epoch: &str,
+        snapshot_scan_seq: &str,
+    ) -> Value {
+        json!({
+            "mode": "compact_recovery_required",
+            "server_time": "2026-07-28T12:00:03Z",
+            "events": [],
+            "next_cursor": null,
+            "has_more": false,
+            "recovery": {
+                "recovery_id": recovery_id,
+                "token": token,
+                "stream_epoch": stream_epoch,
+                "snapshot_scan_seq": snapshot_scan_seq,
+                "message_cutoff": "2026-07-26T12:00:03Z",
+                "message_limit": 500,
+                "expires_at": "2026-07-28T12:10:03Z"
+            },
+            "warnings": []
+        })
+    }
+
+    fn sync_snapshot_bootstrap_recovery(
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        recovery_id: &str,
+        token: &str,
+        stream_epoch: &str,
+        snapshot_scan_seq: &str,
+    ) -> Value {
+        json!({
+            "mode": "compact_recovery_required",
+            "account_id": binding.account_id,
+            "device_id": binding.protocol_device_id,
+            "recovery": {
+                "recovery_id": recovery_id,
+                "token": token,
+                "stream_epoch": stream_epoch,
+                "snapshot_scan_seq": snapshot_scan_seq,
+                "message_cutoff": "2026-07-26T12:00:03Z",
+                "message_limit": 500,
+                "expires_at": "2026-07-28T12:10:03Z"
+            }
+        })
+    }
+
+    fn sync_snapshot_delta(stream_epoch: &str, next_scan_seq: &str, events: Vec<Value>) -> Value {
+        json!({
+            "mode": "delta",
+            "server_time": "2026-07-28T12:00:05Z",
+            "events": events,
+            "next_cursor": {
+                "stream_epoch": stream_epoch,
+                "scan_seq": next_scan_seq
+            },
+            "has_more": false,
+            "recovery": null,
+            "warnings": []
+        })
+    }
+
+    fn sync_snapshot_message_event(
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        event_id: &str,
+        stream_epoch: &str,
+        event_seq: &str,
+        message_id: &str,
+        group_did: &str,
+    ) -> Value {
+        json!({
+            "event_id": event_id,
+            "stream_epoch": stream_epoch,
+            "event_seq": event_seq,
+            "event_type": "message.created",
+            "schema_version": 1,
+            "ignore_safe": false,
+            "account_id": binding.account_id,
+            "recipient_device_id": null,
+            "origin_did": "did:example:bob",
+            "origin_device_id": "device-bob",
+            "aggregate_kind": "group_message",
+            "aggregate_id": message_id,
+            "state_version": null,
+            "thread_key": group_did,
+            "occurred_at": "2026-07-28T12:00:04Z",
+            "payload": {
+                "message_kind": "group_plain",
+                "direction": "incoming",
+                "group_did": group_did,
+                "sender_did_snapshot": "did:example:bob",
+                "recipient_did_snapshot": binding.current_did,
+                "client_message_id": message_id
+            },
+            "source": {}
+        })
+    }
+
+    fn sync_snapshot_message(
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        message_id: &str,
+        group_did: &str,
+        server_seq: &str,
+        content: &str,
+    ) -> Value {
+        json!({
+            "id": message_id,
+            "thread_kind": "group",
+            "group_did": group_did,
+            "sender_did": "did:example:bob",
+            "receiver_did": binding.current_did,
+            "content_type": "text/plain",
+            "content": content,
+            "server_seq": server_seq,
+            "created_at": "2026-07-28T12:00:04Z",
+            "client_msg_id": message_id
+        })
+    }
+
+    fn sync_snapshot_response(
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        stream_epoch: &str,
+        snapshot_scan_seq: &str,
+        recent_plain_messages: Vec<Value>,
+    ) -> Value {
+        json!({
+            "mode": "compact_recovery",
+            "account_id": binding.account_id,
+            "device_id": binding.protocol_device_id,
+            "server_time": "2026-07-28T12:00:04Z",
+            "snapshot_cursor": {
+                "stream_epoch": stream_epoch,
+                "scan_seq": snapshot_scan_seq
+            },
+            "read_states": [],
+            "groups": [],
+            "message_policy": {
+                "server_cutoff": "2026-07-26T12:00:03Z",
+                "max_logical_messages": 500,
+                "returned_logical_messages": recent_plain_messages.len()
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true
+            },
+            "recent_plain_messages": recent_plain_messages
+        })
+    }
+
+    async fn seed_sync_snapshot_ready_state(
+        client: &crate::core::ImClient,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        stream_epoch: &str,
+        scan_seq: &str,
+    ) {
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .bootstrap_message_sync_state(crate::internal::local_state::sync_v2::MessageSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: stream_epoch.to_owned(),
+                scan_seq: scan_seq.to_owned(),
+                bootstrap_state: "active".to_owned(),
+                last_server_time: None,
+                last_success_at: Some(1),
+                last_error_code: None,
+                metadata_json: None,
+                updated_at: 1,
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn seed_sync_snapshot_message(
+        client: &crate::core::ImClient,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        message_id: &str,
+        group_did: &str,
+        content: &str,
+    ) {
+        let conversation_id =
+            crate::internal::local_state::owner_scope::group_conversation_id(group_did);
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .store_messages(vec![
+                crate::internal::local_state::messages::MessageRecord {
+                    msg_id: message_id.to_owned(),
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    owner_did: binding.current_did.clone(),
+                    conversation_id: conversation_id.clone(),
+                    wire_thread_kind: "group".to_owned(),
+                    wire_thread_ref: group_did.to_owned(),
+                    wire_identity_resolution_state: "resolved".to_owned(),
+                    thread_id: conversation_id,
+                    direction: 0,
+                    sender_did: "did:example:bob".to_owned(),
+                    receiver_did: binding.current_did.clone(),
+                    group_id: group_did.to_owned(),
+                    group_did: group_did.to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: content.to_owned(),
+                    server_seq: Some(1),
+                    sent_at: "2026-07-20T00:00:00Z".to_owned(),
+                    stored_at: "2026-07-20T00:00:00Z".to_owned(),
+                    ..Default::default()
+                },
+            ])
+            .await
+            .unwrap();
+    }
+
+    async fn seed_sync_read_direct_message(
+        client: &crate::core::ImClient,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        message_id: &str,
+        conversation_id: &str,
+        server_seq: i64,
+    ) {
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .store_messages(vec![
+                crate::internal::local_state::messages::MessageRecord {
+                    msg_id: message_id.to_owned(),
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    owner_did: binding.current_did.clone(),
+                    conversation_id: conversation_id.to_owned(),
+                    wire_thread_kind: "direct".to_owned(),
+                    wire_thread_ref: "did:example:bob".to_owned(),
+                    wire_identity_resolution_state: "resolved".to_owned(),
+                    thread_id: conversation_id.to_owned(),
+                    direction: 0,
+                    sender_did: "did:example:bob".to_owned(),
+                    receiver_did: binding.current_did.clone(),
+                    content_type: "text/plain".to_owned(),
+                    content: format!("direct message {server_seq}"),
+                    server_seq: Some(server_seq),
+                    sent_at: "2026-07-28T12:00:00Z".to_owned(),
+                    stored_at: "2026-07-28T12:00:00Z".to_owned(),
+                    ..Default::default()
+                },
+            ])
+            .await
+            .unwrap();
+    }
+
+    async fn apply_sync_read_thread_binding(
+        client: &crate::core::ImClient,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        event_id: &str,
+        event_seq: &str,
+        remote_thread_key: &str,
+        conversation_id: &str,
+    ) {
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .apply_sync_delta_v2(crate::internal::local_state::sync_v2::DeltaApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                next_scan_seq: event_seq.to_owned(),
+                server_time: "2026-07-28T12:00:01Z".to_owned(),
+                events: vec![crate::internal::local_state::sync_v2::DeltaApplyEventV2 {
+                    event_id: event_id.to_owned(),
+                    event_seq: event_seq.to_owned(),
+                    event_type: "message.created".to_owned(),
+                    thread_bindings: vec![
+                        crate::internal::local_state::sync_v2::SyncThreadBinding {
+                            owner_identity_id: binding.owner_identity_id.clone(),
+                            remote_thread_key: remote_thread_key.to_owned(),
+                            thread_kind: "direct".to_owned(),
+                            conversation_id: conversation_id.to_owned(),
+                            updated_at: 1,
+                        },
+                    ],
+                    ..Default::default()
+                }],
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn load_sync_snapshot_state(
+        client: &crate::core::ImClient,
+        owner_identity_id: &str,
+    ) -> crate::internal::local_state::sync_v2::MessageSyncState {
+        let crate::internal::local_state::sync_v2::MessageSyncStateAccess::Ready(state) = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .load_message_sync_state(owner_identity_id.to_owned())
+            .await
+            .unwrap()
+        else {
+            panic!("expected ready message sync state");
+        };
+        state
+    }
+
+    #[tokio::test]
+    async fn sync_snapshot_recovery_preserves_old_messages_and_only_commits_post_anchor_delta() {
+        let fixture = SyncSnapshotFixture::new("preserve-and-post-anchor");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        seed_sync_snapshot_message(
+            &client,
+            &binding,
+            "message-before-recovery",
+            "did:example:sync-snapshot-old",
+            "must survive compact recovery",
+        )
+        .await;
+
+        let snapshot_event = sync_snapshot_message_event(
+            &binding,
+            "event-snapshot-19",
+            "2",
+            "19",
+            "message-from-snapshot",
+            "did:example:sync-snapshot-recovered",
+        );
+        let snapshot_message = sync_snapshot_message(
+            &binding,
+            "message-from-snapshot",
+            "did:example:sync-snapshot-recovered",
+            "19",
+            "snapshot ordinary message",
+        );
+        let live_event = sync_snapshot_message_event(
+            &binding,
+            "event-live-21",
+            "2",
+            "21",
+            "message-after-anchor",
+            "did:example:sync-snapshot-live",
+        );
+        let live_message = sync_snapshot_message(
+            &binding,
+            "message-after-anchor",
+            "did:example:sync-snapshot-live",
+            "21",
+            "post-anchor ordinary message",
+        );
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let transport = SyncSnapshotTransport::queued(
+            Rc::clone(&calls),
+            vec![
+                Ok(sync_snapshot_recovery(
+                    "recovery-preserve",
+                    "snapshot-token-preserve",
+                    "2",
+                    "20",
+                )),
+                Ok(sync_snapshot_response(
+                    &binding,
+                    "2",
+                    "20",
+                    vec![json!({
+                        "event": snapshot_event,
+                        "message": snapshot_message
+                    })],
+                )),
+                Ok(sync_snapshot_delta("2", "22", vec![live_event])),
+                Ok(json!({
+                    "items": [{
+                        "event_id": "event-live-21",
+                        "message": live_message
+                    }],
+                    "unavailable": []
+                })),
+            ],
+        );
+
+        let outcome =
+            MessageSyncRuntimeV2::new(&client, ReadySyncSnapshotSessionProvider, transport)
+                .sync_now(sync_snapshot_request())
+                .await
+                .unwrap();
+
+        assert!(fixture.has_message_content("must survive compact recovery"));
+        assert!(fixture.has_message_content("snapshot ordinary message"));
+        assert!(fixture.has_message_content("post-anchor ordinary message"));
+        let state = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;
+        assert_eq!(
+            (state.stream_epoch.as_str(), state.scan_seq.as_str()),
+            ("2", "22")
+        );
+        assert_eq!(outcome.committed_incoming_messages.len(), 1);
+        assert_eq!(
+            outcome.committed_incoming_messages[0].event_id,
+            "event-live-21"
+        );
+        assert_eq!(
+            outcome.committed_incoming_messages[0].logical_message_id,
+            "message-after-anchor"
+        );
+        assert_eq!(outcome.committed_incoming_messages[0].source, "live_delta");
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "sync.delta",
+                "sync.snapshot",
+                "sync.delta",
+                "message.get_batch"
+            ]
+        );
+        assert_eq!(
+            calls[0].params.pointer("/body/cursor/scan_seq"),
+            Some(&json!("10"))
+        );
+        assert_eq!(
+            calls[2].params.pointer("/body/cursor/scan_seq"),
+            Some(&json!("20"))
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_snapshot_parse_failure_preserves_cursor_projection_and_emits_no_patch() {
+        let fixture = SyncSnapshotFixture::new("parse-failure");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        seed_sync_snapshot_message(
+            &client,
+            &binding,
+            "message-before-invalid-snapshot",
+            "did:example:sync-snapshot-failed",
+            "original projection",
+        )
+        .await;
+        let snapshot_event = sync_snapshot_message_event(
+            &binding,
+            "event-invalid-snapshot",
+            "2",
+            "19",
+            "message-invalid-snapshot",
+            "did:example:sync-snapshot-failed",
+        );
+        let snapshot_message = sync_snapshot_message(
+            &binding,
+            "message-invalid-snapshot",
+            "did:example:sync-snapshot-failed",
+            "19",
+            "must not commit",
+        );
+        let mut invalid_snapshot = sync_snapshot_response(
+            &binding,
+            "2",
+            "20",
+            vec![json!({
+                "event": snapshot_event,
+                "message": snapshot_message
+            })],
+        );
+        invalid_snapshot["message_policy"]["max_logical_messages"] = json!(499);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let error = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![
+                    Ok(sync_snapshot_recovery(
+                        "recovery-invalid",
+                        "snapshot-token-invalid",
+                        "2",
+                        "20",
+                    )),
+                    Ok(invalid_snapshot),
+                ],
+            ),
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::ImError::Service {
+                code: Some(code),
+                ..
+            } if code == "SYNC_INVALID_PAGE"
+        ));
+        let state = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;
+        assert_eq!(
+            (state.stream_epoch.as_str(), state.scan_seq.as_str()),
+            ("1", "10")
+        );
+        assert!(fixture.has_message_content("original projection"));
+        assert!(!fixture.has_message_content("must not commit"));
+        let failed_conversation = crate::internal::local_state::owner_scope::group_conversation_id(
+            "did:example:sync-snapshot-failed",
+        );
+        assert!(
+            !super::super::sync::committed_sync_invalidations_for_test()
+                .iter()
+                .any(|invalidation| invalidation.conversation_ids.contains(&failed_conversation)),
+            "failed snapshot must not emit a committed projection patch"
+        );
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["sync.delta", "sync.snapshot"]
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_snapshot_missing_state_bootstrap_recovery_closes_with_delta_ack() {
+        let fixture = SyncSnapshotFixture::new("bootstrap-recovery");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![
+                    Ok(sync_snapshot_bootstrap_recovery(
+                        &binding,
+                        "recovery-bootstrap",
+                        "snapshot-token-bootstrap",
+                        "3",
+                        "40",
+                    )),
+                    Ok(sync_snapshot_response(&binding, "3", "40", vec![])),
+                    Ok(sync_snapshot_delta("3", "41", vec![])),
+                ],
+            ),
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.status, crate::messages::MessageSyncStatus::Idle);
+        let state = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;
+        assert_eq!(
+            (state.stream_epoch.as_str(), state.scan_seq.as_str()),
+            ("3", "41")
+        );
+        assert_eq!(state.bootstrap_state, "active");
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["sync.bootstrap", "sync.snapshot", "sync.delta"]
+        );
+        assert!(calls[0]
+            .params
+            .pointer("/body/client_instance_id")
+            .and_then(Value::as_str)
+            .is_some());
+        assert_eq!(
+            calls[2].params.pointer("/body/cursor"),
+            Some(&json!({"stream_epoch": "3", "scan_seq": "40"}))
+        );
+        assert!(calls[2]
+            .params
+            .pointer("/body/client_instance_id")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn sync_snapshot_invalid_and_expired_tokens_redelta_once_and_restart_from_original_cursor(
+    ) {
+        let fixture = SyncSnapshotFixture::new("token-retry");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let first_calls = Rc::new(RefCell::new(Vec::new()));
+        let error = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&first_calls),
+                vec![
+                    Ok(sync_snapshot_recovery(
+                        "recovery-token-invalid",
+                        "RAW_SYNC_TOKEN_INVALID",
+                        "2",
+                        "20",
+                    )),
+                    Err(sync_error(
+                        "SYNC_RECOVERY_TOKEN_INVALID",
+                        "recovery token was invalid",
+                    )),
+                    Ok(sync_snapshot_recovery(
+                        "recovery-token-expired",
+                        "RAW_SYNC_TOKEN_EXPIRED",
+                        "2",
+                        "20",
+                    )),
+                    Err(sync_error(
+                        "SYNC_RECOVERY_TOKEN_EXPIRED",
+                        "replacement recovery token expired",
+                    )),
+                ],
+            ),
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::ImError::Service {
+                code: Some(code),
+                ..
+            } if code == "SYNC_RECOVERY_TOKEN_EXPIRED"
+        ));
+        let failed_state = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;
+        assert_eq!(
+            (
+                failed_state.stream_epoch.as_str(),
+                failed_state.scan_seq.as_str()
+            ),
+            ("1", "10")
+        );
+        {
+            let calls = first_calls.borrow();
+            assert_eq!(
+                calls
+                    .iter()
+                    .map(|call| call.method.as_str())
+                    .collect::<Vec<_>>(),
+                ["sync.delta", "sync.snapshot", "sync.delta", "sync.snapshot"]
+            );
+            assert_eq!(
+                calls[0].params.pointer("/body/cursor/scan_seq"),
+                Some(&json!("10"))
+            );
+            assert_eq!(
+                calls[2].params.pointer("/body/cursor/scan_seq"),
+                Some(&json!("10"))
+            );
+        }
+
+        let restart_calls = Rc::new(RefCell::new(Vec::new()));
+        let restart_outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&restart_calls),
+                vec![
+                    Ok(sync_snapshot_recovery(
+                        "recovery-token-restart",
+                        "RAW_SYNC_TOKEN_RESTART",
+                        "2",
+                        "20",
+                    )),
+                    Ok(sync_snapshot_response(&binding, "2", "20", vec![])),
+                    Ok(sync_snapshot_delta("2", "21", vec![])),
+                ],
+            ),
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(
+            restart_outcome.status,
+            crate::messages::MessageSyncStatus::Idle
+        );
+        let restart_calls = restart_calls.borrow();
+        assert_eq!(
+            restart_calls[0].params.pointer("/body/cursor/scan_seq"),
+            Some(&json!("10")),
+            "restart must request a fresh recovery authorization from the durable cursor"
+        );
+        let state = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;
+        assert_eq!(
+            (state.stream_epoch.as_str(), state.scan_seq.as_str()),
+            ("2", "21")
+        );
+
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        let persisted_recovery: String = connection
+            .query_row(
+                "SELECT mode || '|' || requested_from_epoch || '|' ||
+                        requested_from_seq || '|' || COALESCE(recovery_id_hash, '') || '|' ||
+                        COALESCE(snapshot_scan_seq, '') || '|' || status || '|' ||
+                        COALESCE(last_error_code, '')
+                 FROM sync_recovery_state
+                 WHERE owner_identity_id = ?1",
+                [binding.owner_identity_id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        for raw_token in [
+            "RAW_SYNC_TOKEN_INVALID",
+            "RAW_SYNC_TOKEN_EXPIRED",
+            "RAW_SYNC_TOKEN_RESTART",
+        ] {
+            assert!(
+                !persisted_recovery.contains(raw_token),
+                "SQLite recovery state must not contain raw recovery tokens"
+            );
+        }
+        assert!(persisted_recovery.contains(&hex_sha256("recovery-token-restart")));
+    }
+
+    #[tokio::test]
+    async fn sync_read_outbox_unbound_local_mark_waits_for_exact_binding_then_drains() {
+        let fixture = SyncSnapshotFixture::new("read-outbox-late-binding");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let conversation_id = "dm:peer-scope:v1:alice:bob";
+        seed_sync_read_direct_message(&client, &binding, "message-read-30", conversation_id, 30)
+            .await;
+        let local = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .mark_thread_read_watermark(
+                binding.owner_identity_id.clone(),
+                binding.current_did.clone(),
+                crate::internal::local_state::messages::MarkThreadReadWatermarkInput {
+                    thread: crate::messages::ThreadRef::Thread(
+                        crate::ids::ThreadId::parse(conversation_id).unwrap(),
+                    ),
+                    read_watermark_message_id: Some("message-read-30".to_owned()),
+                    read_watermark_seq: Some("30".to_owned()),
+                    read_watermark_at: Some("2026-07-28T12:00:02Z".to_owned()),
+                    pending_remote_ack: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(local.remote_thread_key, None);
+        assert_eq!(local.outbox_operation_id, None);
+        {
+            let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT pending_remote_ack FROM thread_read_state
+                         WHERE owner_identity_id = ?1 AND conversation_id = ?2",
+                        [binding.owner_identity_id.as_str(), conversation_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM local_mutation_outbox
+                         WHERE owner_identity_id = ?1",
+                        [binding.owner_identity_id.as_str()],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                0,
+                "an unresolved Direct conversation must not guess a remote DID/thread key"
+            );
+        }
+
+        apply_sync_read_thread_binding(
+            &client,
+            &binding,
+            "event-read-binding-11",
+            "11",
+            "remote-thread-key-exact-bob",
+            conversation_id,
+        )
+        .await;
+        let operation_id = {
+            let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+            let rows = connection
+                .prepare(
+                    "SELECT operation_id, aggregate_id,
+                            json_extract(payload_json, '$.read_watermark_seq')
+                     FROM local_mutation_outbox
+                     WHERE owner_identity_id = ?1
+                       AND status NOT IN ('committed', 'permanent_failure')",
+                )
+                .unwrap()
+                .query_map([binding.owner_identity_id.as_str()], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].1, "remote-thread-key-exact-bob");
+            assert_eq!(rows[0].2, "30");
+            rows[0].0.clone()
+        };
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![
+                    Ok(json!({
+                        "read_watermark_server_seq": "30",
+                        "read_watermark_message_id": "message-read-30",
+                        "read_at": "2026-07-28T12:00:03Z"
+                    })),
+                    Ok(sync_snapshot_delta("1", "12", vec![])),
+                ],
+            ),
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["read_state.mark_read", "sync.delta"]
+        );
+        assert_eq!(
+            calls[0].params.pointer("/body/thread"),
+            Some(&json!({
+                "kind": "direct",
+                "thread_key": "remote-thread-key-exact-bob"
+            }))
+        );
+        assert_eq!(
+            calls[0].params.pointer("/meta/operation_id"),
+            Some(&json!(operation_id))
+        );
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status FROM local_mutation_outbox
+                     WHERE owner_identity_id = ?1",
+                    [binding.owner_identity_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "committed"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT pending_remote_ack FROM thread_read_state
+                     WHERE owner_identity_id = ?1 AND conversation_id = ?2",
+                    [binding.owner_identity_id.as_str(), conversation_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_read_outbox_drain_merges_higher_service_watermark_without_regression() {
+        let fixture = SyncSnapshotFixture::new("read-outbox-higher-service-watermark");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let conversation_id = "dm:peer-scope:v1:alice:bob-higher";
+        seed_sync_read_direct_message(&client, &binding, "message-read-low", conversation_id, 30)
+            .await;
+        seed_sync_read_direct_message(&client, &binding, "message-read-high", conversation_id, 50)
+            .await;
+        apply_sync_read_thread_binding(
+            &client,
+            &binding,
+            "event-read-binding-higher-11",
+            "11",
+            "remote-thread-key-higher-bob",
+            conversation_id,
+        )
+        .await;
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .mark_thread_read_watermark(
+                binding.owner_identity_id.clone(),
+                binding.current_did.clone(),
+                crate::internal::local_state::messages::MarkThreadReadWatermarkInput {
+                    thread: crate::messages::ThreadRef::Thread(
+                        crate::ids::ThreadId::parse(conversation_id).unwrap(),
+                    ),
+                    read_watermark_message_id: Some("message-read-low".to_owned()),
+                    read_watermark_seq: Some("30".to_owned()),
+                    read_watermark_at: Some("2026-07-28T12:00:02Z".to_owned()),
+                    pending_remote_ack: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::new(RefCell::new(Vec::new())),
+                vec![
+                    Ok(json!({
+                        "read_watermark_server_seq": "50",
+                        "read_watermark_message_id": "message-read-high",
+                        "read_at": "2026-07-28T12:00:09Z"
+                    })),
+                    Ok(sync_snapshot_delta("1", "12", vec![])),
+                ],
+            ),
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        let projected = connection
+            .query_row(
+                "SELECT read_watermark_seq, read_watermark_message_id,
+                        read_watermark_at, pending_remote_ack
+                 FROM thread_read_state
+                 WHERE owner_identity_id = ?1 AND conversation_id = ?2",
+                [binding.owner_identity_id.as_str(), conversation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            projected,
+            (
+                "50".to_owned(),
+                "message-read-high".to_owned(),
+                "2026-07-28T12:00:09Z".to_owned(),
+                0
+            )
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status FROM local_mutation_outbox
+                     WHERE owner_identity_id = ?1",
+                    [binding.owner_identity_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "committed"
+        );
     }
 
     struct BatchTransport {

@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 33;
+pub(crate) const SCHEMA_VERSION: i64 = 34;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
 const CONVERSATION_REGISTRY_SCHEMA_VERSION: i64 = 26;
@@ -11,6 +11,7 @@ const ROOT_IMPORT_COORDINATOR_SCHEMA_VERSION: i64 = 30;
 const LEGACY_PRIVATE_DELIVERY_RETIREMENT_SCHEMA_VERSION: i64 = 31;
 const MULTI_DEVICE_SYNC_FOUNDATION_SCHEMA_VERSION: i64 = 32;
 const SYNC_INSTALLATION_ID_SCHEMA_VERSION: i64 = 33;
+const READ_RECOVERY_SCHEMA_VERSION: i64 = 34;
 
 pub(crate) const ROOT_IMPORT_COORDINATOR_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS identity_root_import_completion_v1 (
@@ -338,6 +339,7 @@ CREATE TABLE IF NOT EXISTS thread_read_state (
     read_watermark_at          TEXT,
     pending_remote_ack         INTEGER NOT NULL DEFAULT 0,
     remote_ack_at              TEXT,
+    remote_state_version       TEXT,
     updated_at                 TEXT NOT NULL,
     PRIMARY KEY (owner_identity_id, thread_scope, thread_id)
 );
@@ -987,8 +989,12 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
+    if version == READ_RECOVERY_SCHEMA_VERSION - 1 {
+        return migrate_v33_to_v34(connection);
+    }
     if version == SYNC_INSTALLATION_ID_SCHEMA_VERSION - 1 {
-        return migrate_v32_to_v33(connection);
+        migrate_v32_to_v33(connection)?;
+        return ensure_schema(connection);
     }
     if version == MULTI_DEVICE_SYNC_FOUNDATION_SCHEMA_VERSION - 1 {
         migrate_v31_to_v32(connection)?;
@@ -1075,6 +1081,23 @@ fn migrate_v32_to_v33(connection: &Connection) -> crate::ImResult<()> {
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
+fn migrate_v33_to_v34(connection: &Connection) -> crate::ImResult<()> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    ensure_column(
+        &transaction,
+        "thread_read_state",
+        "remote_state_version",
+        "TEXT",
+    )?;
+    transaction
+        .execute_batch(super::sync_v2::READ_RECOVERY_SCHEMA_SQL)
+        .map_err(super::local_state_unavailable)?;
+    set_schema_version(&transaction, READ_RECOVERY_SCHEMA_VERSION)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
 pub(crate) fn current_schema_version(connection: &Connection) -> crate::ImResult<i64> {
     connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -1104,6 +1127,12 @@ pub(super) fn create_schema(
     connection
         .execute_batch(THREAD_READ_STATE_SQL)
         .map_err(super::local_state_unavailable)?;
+    ensure_column(
+        connection,
+        "thread_read_state",
+        "remote_state_version",
+        "TEXT",
+    )?;
     connection
         .execute_batch(MESSAGE_IDENTITY_ALIASES_SQL)
         .map_err(super::local_state_unavailable)?;

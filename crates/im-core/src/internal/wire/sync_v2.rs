@@ -20,8 +20,19 @@ pub(crate) struct SyncBootstrapV2 {
     pub(crate) device_id: String,
     pub(crate) server_time: String,
     pub(crate) cursor: SyncCursorV2,
+    pub(crate) read_state_baseline: Vec<Value>,
     pub(crate) group_state_baseline: Vec<Value>,
     pub(crate) warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SyncBootstrapResponseV2 {
+    TailOnly(SyncBootstrapV2),
+    RecoveryRequired {
+        account_id: String,
+        device_id: String,
+        recovery: SyncRecoveryV2,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +42,38 @@ pub(crate) struct SyncDeltaPageV2 {
     pub(crate) next_cursor: SyncCursorV2,
     pub(crate) has_more: bool,
     pub(crate) warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SyncDeltaResponseV2 {
+    Delta(SyncDeltaPageV2),
+    RecoveryRequired(SyncRecoveryV2),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncRecoveryV2 {
+    pub(crate) recovery_id: String,
+    pub(crate) token: String,
+    pub(crate) stream_epoch: String,
+    pub(crate) snapshot_scan_seq: String,
+    pub(crate) expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SyncSnapshotV2 {
+    pub(crate) account_id: String,
+    pub(crate) device_id: String,
+    pub(crate) server_time: String,
+    pub(crate) snapshot_cursor: SyncCursorV2,
+    pub(crate) read_states: Vec<Value>,
+    pub(crate) groups: Vec<Value>,
+    pub(crate) recent_plain_messages: Vec<SnapshotPlainMessageV2>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SnapshotPlainMessageV2 {
+    pub(crate) event: SyncEventV2,
+    pub(crate) message: Value,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -121,17 +164,133 @@ pub(crate) fn build_message_get_batch_params(
     }))
 }
 
+pub(crate) fn build_snapshot_params(
+    identity: &WireIdentity,
+    recovery: &SyncRecoveryV2,
+) -> crate::ImResult<Value> {
+    let did = required_string("identity.did", identity.did.as_str())?;
+    let recovery_id = required_string("recovery_id", &recovery.recovery_id)?;
+    let token = required_string("token", &recovery.token)?;
+    Ok(json!({
+        "meta": common::local_meta(&did, SYNC_V2_PROFILE),
+        "body": {
+            "recovery_id": recovery_id,
+            "token": token
+        }
+    }))
+}
+
+pub(crate) fn build_thread_after_params(
+    identity: &WireIdentity,
+    thread_key: &str,
+    after_server_seq: &str,
+    limit: u32,
+) -> crate::ImResult<Value> {
+    let did = required_string("identity.did", identity.did.as_str())?;
+    let thread_key = required_string("thread_key", thread_key)?;
+    crate::internal::local_state::sync_v2::validate_decimal("after_server_seq", after_server_seq)?;
+    let limit = validate_limit(limit)?;
+    Ok(json!({
+        "meta": common::local_meta(&did, SYNC_V2_PROFILE),
+        "body": {
+            "thread_key": thread_key,
+            "after_server_seq": after_server_seq,
+            "limit": limit
+        }
+    }))
+}
+
+pub(crate) fn validate_thread_after_response(
+    raw: &Value,
+    expected_thread_kind: &str,
+) -> crate::ImResult<()> {
+    if !matches!(expected_thread_kind, "direct" | "group") {
+        return Err(crate::ImError::invalid_input(
+            Some("thread_kind".to_owned()),
+            "thread_kind must be direct or group",
+        ));
+    }
+    let response = object(raw, "sync.thread_after response")?;
+    let expected_fields = ["messages", "next_after_server_seq", "has_more", "warnings"];
+    if response.len() != expected_fields.len()
+        || expected_fields
+            .iter()
+            .any(|field| !response.contains_key(*field))
+    {
+        return Err(invalid_page(
+            "sync.thread_after response fields do not match the v2 contract",
+        ));
+    }
+    let messages = response
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_page("messages must be an array"))?;
+    for message in messages {
+        let message = object(message, "sync.thread_after message")?;
+        if canonical_string_field(message, "thread_kind")? != expected_thread_kind {
+            return Err(invalid_page(
+                "sync.thread_after message thread_kind does not match the requested thread",
+            ));
+        }
+    }
+    decimal_field(response, "next_after_server_seq")?;
+    response
+        .get("has_more")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| invalid_page("has_more must be a boolean"))?;
+    warnings(response.get("warnings"))?;
+    Ok(())
+}
+
 pub(crate) fn parse_bootstrap(raw: &Value) -> crate::ImResult<SyncBootstrapV2> {
+    match parse_bootstrap_response(raw)? {
+        SyncBootstrapResponseV2::TailOnly(bootstrap) => Ok(bootstrap),
+        SyncBootstrapResponseV2::RecoveryRequired { .. } => Err(sync_error(
+            "SYNC_RECOVERY_REQUIRED",
+            "sync.bootstrap requires compact recovery",
+        )),
+    }
+}
+
+pub(crate) fn parse_bootstrap_response(raw: &Value) -> crate::ImResult<SyncBootstrapResponseV2> {
     let object = object(raw, "sync.bootstrap response")?;
+    if object.get("mode").and_then(Value::as_str) == Some("compact_recovery_required") {
+        let recovery = self::object(
+            object
+                .get("recovery")
+                .ok_or_else(|| invalid_page("bootstrap recovery is required"))?,
+            "bootstrap recovery",
+        )?;
+        canonical_string_field(recovery, "message_cutoff")?;
+        let message_limit = recovery
+            .get("message_limit")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| invalid_page("message_limit must be a positive integer"))?;
+        if message_limit == 0 || message_limit > 500 {
+            return Err(invalid_page("message_limit must be between 1 and 500"));
+        }
+        return Ok(SyncBootstrapResponseV2::RecoveryRequired {
+            account_id: canonical_string_field(object, "account_id")?,
+            device_id: canonical_string_field(object, "device_id")?,
+            recovery: SyncRecoveryV2 {
+                recovery_id: canonical_string_field(recovery, "recovery_id")?,
+                token: canonical_string_field(recovery, "token")?,
+                stream_epoch: positive_decimal_field(recovery, "stream_epoch")?,
+                snapshot_scan_seq: decimal_field(recovery, "snapshot_scan_seq")?,
+                expires_at: canonical_string_field(recovery, "expires_at")?,
+            },
+        });
+    }
     exact_mode(object, "tail_only")?;
     let read_state_baseline = object
         .get("read_state_baseline")
         .and_then(Value::as_array)
         .ok_or_else(|| invalid_page("read_state_baseline must be an array"))?;
-    if !read_state_baseline.is_empty() {
-        return Err(invalid_page(
-            "Stage 2 sync.bootstrap read_state_baseline must be empty",
-        ));
+    for state in read_state_baseline {
+        if !state.is_object() {
+            return Err(invalid_page("read_state_baseline items must be objects"));
+        }
+        reject_e2ee_value(state)?;
     }
     let groups = object
         .get("group_state_baseline")
@@ -144,7 +303,7 @@ pub(crate) fn parse_bootstrap(raw: &Value) -> crate::ImResult<SyncBootstrapV2> {
         }
         reject_e2ee_value(group)?;
     }
-    Ok(SyncBootstrapV2 {
+    Ok(SyncBootstrapResponseV2::TailOnly(SyncBootstrapV2 {
         account_id: canonical_string_field(object, "account_id")?,
         device_id: canonical_string_field(object, "device_id")?,
         server_time: canonical_string_field(object, "server_time")?,
@@ -153,18 +312,67 @@ pub(crate) fn parse_bootstrap(raw: &Value) -> crate::ImResult<SyncBootstrapV2> {
                 .get("cursor")
                 .ok_or_else(|| invalid_page("cursor is required"))?,
         )?,
+        read_state_baseline: read_state_baseline.clone(),
         group_state_baseline: groups,
         warnings: warnings(object.get("warnings"))?,
-    })
+    }))
 }
 
 pub(crate) fn parse_delta(raw: &Value) -> crate::ImResult<SyncDeltaPageV2> {
+    match parse_delta_response(raw)? {
+        SyncDeltaResponseV2::Delta(page) => Ok(page),
+        SyncDeltaResponseV2::RecoveryRequired(_) => Err(sync_error(
+            "SYNC_RECOVERY_REQUIRED",
+            "sync.delta requires compact recovery",
+        )),
+    }
+}
+
+pub(crate) fn parse_delta_response(raw: &Value) -> crate::ImResult<SyncDeltaResponseV2> {
     let object = object(raw, "sync.delta response")?;
-    exact_mode(object, "delta")?;
+    match object.get("mode").and_then(Value::as_str) {
+        Some("compact_recovery_required") => {
+            let events = object
+                .get("events")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid_page("events must be an array"))?;
+            if !events.is_empty()
+                || object.get("next_cursor") != Some(&Value::Null)
+                || object.get("has_more").and_then(Value::as_bool) != Some(false)
+            {
+                return Err(invalid_page(
+                    "compact recovery response must not carry events or a next cursor",
+                ));
+            }
+            let recovery = self::object(
+                object
+                    .get("recovery")
+                    .ok_or_else(|| invalid_page("recovery is required"))?,
+                "sync recovery",
+            )?;
+            // Validate the server-owned policy fields without retaining them beyond
+            // the private wire decoder.
+            canonical_string_field(recovery, "message_cutoff")?;
+            let message_limit = recovery
+                .get("message_limit")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| invalid_page("message_limit must be a positive integer"))?;
+            if message_limit == 0 || message_limit > 500 {
+                return Err(invalid_page("message_limit must be between 1 and 500"));
+            }
+            return Ok(SyncDeltaResponseV2::RecoveryRequired(SyncRecoveryV2 {
+                recovery_id: canonical_string_field(recovery, "recovery_id")?,
+                token: canonical_string_field(recovery, "token")?,
+                stream_epoch: positive_decimal_field(recovery, "stream_epoch")?,
+                snapshot_scan_seq: decimal_field(recovery, "snapshot_scan_seq")?,
+                expires_at: canonical_string_field(recovery, "expires_at")?,
+            }));
+        }
+        Some("delta") => {}
+        _ => return Err(invalid_page("sync.delta response has an unsupported mode")),
+    }
     if !matches!(object.get("recovery"), None | Some(Value::Null)) {
-        return Err(invalid_page(
-            "Stage 2 sync.delta must not return an inline recovery secret",
-        ));
+        return Err(invalid_page("delta response recovery must be null"));
     }
     let events = object
         .get("events")
@@ -183,7 +391,7 @@ pub(crate) fn parse_delta(raw: &Value) -> crate::ImResult<SyncDeltaPageV2> {
             return Err(invalid_page("sync.delta contains a duplicate event_seq"));
         }
     }
-    Ok(SyncDeltaPageV2 {
+    Ok(SyncDeltaResponseV2::Delta(SyncDeltaPageV2 {
         server_time: canonical_string_field(object, "server_time")?,
         events,
         next_cursor: parse_cursor(
@@ -196,6 +404,138 @@ pub(crate) fn parse_delta(raw: &Value) -> crate::ImResult<SyncDeltaPageV2> {
             .and_then(Value::as_bool)
             .ok_or_else(|| invalid_page("has_more must be a boolean"))?,
         warnings: warnings(object.get("warnings"))?,
+    }))
+}
+
+pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
+    let object = object(raw, "sync.snapshot response")?;
+    exact_mode(object, "compact_recovery")?;
+    let account_id = canonical_string_field(object, "account_id")?;
+    let device_id = canonical_string_field(object, "device_id")?;
+    let server_time = canonical_timestamp_field(object, "server_time")?;
+    let snapshot_cursor = parse_cursor(
+        object
+            .get("snapshot_cursor")
+            .ok_or_else(|| invalid_page("snapshot_cursor is required"))?,
+    )?;
+    let excluded = self::object(
+        object
+            .get("excluded")
+            .ok_or_else(|| invalid_page("excluded is required"))?,
+        "snapshot excluded",
+    )?;
+    if excluded.get("e2ee_messages").and_then(Value::as_bool) != Some(true)
+        || excluded
+            .get("plain_messages_before_cutoff")
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
+        return Err(invalid_page(
+            "snapshot must explicitly exclude E2EE and pre-cutoff messages",
+        ));
+    }
+    let policy = self::object(
+        object
+            .get("message_policy")
+            .ok_or_else(|| invalid_page("message_policy is required"))?,
+        "snapshot message policy",
+    )?;
+    canonical_timestamp_field(policy, "server_cutoff")?;
+    let max_logical_messages = policy
+        .get("max_logical_messages")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| invalid_page("max_logical_messages must be an integer"))?;
+    if max_logical_messages != 500 {
+        return Err(invalid_page(
+            "max_logical_messages must equal the frozen value 500",
+        ));
+    }
+    let returned_logical_messages = policy
+        .get("returned_logical_messages")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| invalid_page("returned_logical_messages must be an integer"))?;
+    if returned_logical_messages > 500 {
+        return Err(invalid_page(
+            "returned_logical_messages must not exceed 500",
+        ));
+    }
+    let recent_plain_messages = object
+        .get("recent_plain_messages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_page("recent_plain_messages must be an array"))?
+        .iter()
+        .map(|item| {
+            let item = self::object(item, "snapshot plain message")?;
+            if item.len() != 2 || !item.contains_key("event") || !item.contains_key("message") {
+                return Err(invalid_page(
+                    "snapshot plain message must contain exactly event and message",
+                ));
+            }
+            let event = parse_event(
+                item.get("event")
+                    .ok_or_else(|| invalid_page("snapshot message event is required"))?,
+            )?;
+            if event.event_type != "message.created" {
+                return Err(invalid_page(
+                    "snapshot message event must be message.created",
+                ));
+            }
+            if event.account_id != account_id
+                || event.stream_epoch != snapshot_cursor.stream_epoch
+                || event.recipient_device_id.is_some()
+                || crate::internal::local_state::sync_v2::compare_decimal(
+                    &event.event_seq,
+                    &snapshot_cursor.scan_seq,
+                )? == std::cmp::Ordering::Greater
+            {
+                return Err(invalid_page(
+                    "snapshot message event is outside the account/epoch/anchor boundary",
+                ));
+            }
+            let message = item
+                .get("message")
+                .filter(|value| value.is_object())
+                .cloned()
+                .ok_or_else(|| invalid_page("snapshot message must be an object"))?;
+            reject_e2ee_value(&message)?;
+            validate_message_kind_matches_hydration(&event, &message)?;
+            Ok(SnapshotPlainMessageV2 { event, message })
+        })
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    if recent_plain_messages.len() > 500 {
+        return Err(invalid_page(
+            "snapshot contains more than 500 ordinary messages",
+        ));
+    }
+    if returned_logical_messages != recent_plain_messages.len() as u64 {
+        return Err(invalid_page(
+            "returned_logical_messages does not match recent_plain_messages",
+        ));
+    }
+    let read_states = object
+        .get("read_states")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_page("read_states must be an array"))?
+        .clone();
+    let groups = object
+        .get("groups")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_page("groups must be an array"))?
+        .clone();
+    for value in read_states.iter().chain(groups.iter()) {
+        if !value.is_object() {
+            return Err(invalid_page("snapshot state items must be objects"));
+        }
+        reject_e2ee_value(value)?;
+    }
+    Ok(SyncSnapshotV2 {
+        account_id,
+        device_id,
+        server_time,
+        snapshot_cursor,
+        read_states,
+        groups,
+        recent_plain_messages,
     })
 }
 
@@ -487,6 +827,42 @@ fn canonical_string_field(
         .and_then(|value| required_string(field, value))
 }
 
+fn canonical_timestamp_field(
+    object: &Map<String, Value>,
+    field: &'static str,
+) -> crate::ImResult<String> {
+    let value = canonical_string_field(object, field)?;
+    time::OffsetDateTime::parse(&value, &time::format_description::well_known::Rfc3339)
+        .map_err(|_| invalid_page(format!("{field} must be an RFC 3339 timestamp")))?;
+    Ok(value)
+}
+
+fn validate_message_kind_matches_hydration(
+    event: &SyncEventV2,
+    message: &Value,
+) -> crate::ImResult<()> {
+    let event_kind = event
+        .payload
+        .get("message_kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_page("message.created payload is missing message_kind"))?;
+    let expected_thread_kind = match event_kind {
+        "direct_plain" => "direct",
+        "group_plain" => "group",
+        _ => {
+            return Err(invalid_page(
+                "snapshot message event is not an ordinary Direct/Group message",
+            ))
+        }
+    };
+    if message.get("thread_kind").and_then(Value::as_str) != Some(expected_thread_kind) {
+        return Err(invalid_page(
+            "snapshot message thread_kind conflicts with its event message_kind",
+        ));
+    }
+    Ok(())
+}
+
 fn optional_canonical_string_field(
     object: &Map<String, Value>,
     field: &'static str,
@@ -556,6 +932,15 @@ fn invalid_page(message: impl Into<String>) -> crate::ImError {
     crate::ImError::Service {
         status_code: None,
         code: Some("SYNC_INVALID_PAGE".to_owned()),
+        message: message.into(),
+        data: None,
+    }
+}
+
+fn sync_error(code: &str, message: impl Into<String>) -> crate::ImError {
+    crate::ImError::Service {
+        status_code: None,
+        code: Some(code.to_owned()),
         message: message.into(),
         data: None,
     }
@@ -680,17 +1065,194 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_rejects_read_state_and_e2ee_baselines_in_stage_two() {
-        assert!(parse_bootstrap(&json!({
+    fn bootstrap_accepts_plain_current_read_state_baseline_in_stage_three() {
+        let parsed = parse_bootstrap(&json!({
             "mode": "tail_only",
             "account_id": "account-1",
             "device_id": "device-1",
             "server_time": "2026-07-28T10:00:00Z",
             "cursor": {"stream_epoch": "1", "scan_seq": "10"},
-            "read_state_baseline": [{"thread_key": "direct-1"}],
+            "read_state_baseline": [{
+                "thread_kind": "direct",
+                "thread_key": "direct-1",
+                "read_up_to_thread_seq": "9",
+                "state_version": "2"
+            }],
             "group_state_baseline": [],
             "warnings": []
         }))
+        .unwrap();
+        assert_eq!(parsed.read_state_baseline.len(), 1);
+    }
+
+    #[test]
+    fn thread_after_v2_has_exact_private_body_and_strict_response_shape() {
+        let params = build_thread_after_params(
+            &WireIdentity {
+                did: "did:example:alice".to_owned(),
+            },
+            "conversation-ref-1",
+            "42",
+            100,
+        )
+        .unwrap();
+        assert_eq!(
+            params["body"],
+            json!({
+                "thread_key": "conversation-ref-1",
+                "after_server_seq": "42",
+                "limit": 100
+            })
+        );
+        assert!(validate_thread_after_response(
+            &json!({
+                "messages": [{"thread_kind": "direct"}],
+                "next_after_server_seq": "43",
+                "has_more": false,
+                "warnings": []
+            }),
+            "direct"
+        )
+        .is_ok());
+        assert!(validate_thread_after_response(
+            &json!({
+                "messages": [{"thread_kind": "group"}],
+                "next_after_server_seq": "43",
+                "has_more": false,
+                "warnings": []
+            }),
+            "direct"
+        )
         .is_err());
+    }
+
+    #[test]
+    fn recovery_and_snapshot_keep_policy_and_token_inside_private_wire_types() {
+        let recovery = match parse_delta_response(&json!({
+            "mode": "compact_recovery_required",
+            "server_time": "2026-07-28T12:00:03Z",
+            "events": [],
+            "next_cursor": null,
+            "has_more": false,
+            "recovery": {
+                "recovery_id": "recovery-123",
+                "token": "opaque-secret",
+                "stream_epoch": "2",
+                "snapshot_scan_seq": "15020",
+                "message_cutoff": "2026-07-26T12:00:03Z",
+                "message_limit": 500,
+                "expires_at": "2026-07-28T12:10:03Z"
+            },
+            "warnings": []
+        }))
+        .unwrap()
+        {
+            SyncDeltaResponseV2::RecoveryRequired(recovery) => recovery,
+            SyncDeltaResponseV2::Delta(_) => panic!("expected recovery"),
+        };
+        let params = build_snapshot_params(
+            &WireIdentity {
+                did: "did:example:alice".to_owned(),
+            },
+            &recovery,
+        )
+        .unwrap();
+        assert_eq!(params.pointer("/body/token"), Some(&json!("opaque-secret")));
+
+        let snapshot = parse_snapshot(&json!({
+            "mode": "compact_recovery",
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "server_time": "2026-07-28T12:00:04Z",
+            "snapshot_cursor": {"stream_epoch": "2", "scan_seq": "15020"},
+            "read_states": [],
+            "groups": [],
+            "recent_plain_messages": [],
+            "message_policy": {
+                "server_cutoff": "2026-07-26T12:00:03Z",
+                "max_logical_messages": 500,
+                "returned_logical_messages": 0
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true
+            }
+        }))
+        .unwrap();
+        assert_eq!(snapshot.snapshot_cursor.scan_seq, "15020");
+        assert!(snapshot.recent_plain_messages.is_empty());
+    }
+
+    #[test]
+    fn snapshot_rejects_non_frozen_limit_and_inconsistent_returned_count() {
+        let base = json!({
+            "mode": "compact_recovery",
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "server_time": "2026-07-28T12:00:04Z",
+            "snapshot_cursor": {"stream_epoch": "2", "scan_seq": "10"},
+            "read_states": [],
+            "groups": [],
+            "recent_plain_messages": [],
+            "message_policy": {
+                "server_cutoff": "2026-07-26T12:00:03Z",
+                "max_logical_messages": 500,
+                "returned_logical_messages": 0
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true
+            }
+        });
+        let mut wrong_limit = base.clone();
+        wrong_limit["message_policy"]["max_logical_messages"] = json!(499);
+        assert!(parse_snapshot(&wrong_limit).is_err());
+
+        let mut wrong_count = base.clone();
+        wrong_count["message_policy"]["returned_logical_messages"] = json!(1);
+        assert!(parse_snapshot(&wrong_count).is_err());
+
+        let mut invalid_cutoff = base;
+        invalid_cutoff["message_policy"]["server_cutoff"] = json!("not-a-timestamp");
+        assert!(parse_snapshot(&invalid_cutoff).is_err());
+    }
+
+    #[test]
+    fn snapshot_rejects_device_targeted_or_kind_mismatched_message_envelopes() {
+        let mut snapshot_event = event("event-snapshot-1", "10");
+        snapshot_event["stream_epoch"] = json!("2");
+        snapshot_event["account_id"] = json!("account-1");
+        snapshot_event["payload"]["message_kind"] = json!("direct_plain");
+        let base = json!({
+            "mode": "compact_recovery",
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "server_time": "2026-07-28T12:00:04Z",
+            "snapshot_cursor": {"stream_epoch": "2", "scan_seq": "10"},
+            "read_states": [],
+            "groups": [],
+            "recent_plain_messages": [{
+                "event": snapshot_event,
+                "message": {"thread_kind": "direct"}
+            }],
+            "message_policy": {
+                "server_cutoff": "2026-07-26T12:00:03Z",
+                "max_logical_messages": 500,
+                "returned_logical_messages": 1
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true
+            }
+        });
+        assert!(parse_snapshot(&base).is_ok());
+
+        let mut targeted = base.clone();
+        targeted["recent_plain_messages"][0]["event"]["recipient_device_id"] = json!("device-1");
+        assert!(parse_snapshot(&targeted).is_err());
+
+        let mut kind_mismatch = base;
+        kind_mismatch["recent_plain_messages"][0]["message"]["thread_kind"] = json!("group");
+        assert!(parse_snapshot(&kind_mismatch).is_err());
     }
 }

@@ -34,6 +34,8 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("table", "sync_applied_events"),
         ("table", "sync_recovery_state"),
         ("table", "local_mutation_outbox"),
+        ("table", "sync_thread_bindings"),
+        ("table", "sync_remote_read_states"),
         ("table", "thread_read_state"),
         ("table", "message_identity_aliases"),
         ("table", "direct_peer_routes"),
@@ -68,6 +70,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     assert_index_exists(&db, "sync_applied_events_applied_at_idx");
     assert_index_exists(&db, "sync_recovery_state_status_idx");
     assert_index_exists(&db, "local_mutation_outbox_drain_idx");
+    assert_index_exists(&db, "sync_thread_bindings_conversation_idx");
     assert_index_exists(&db, "idx_thread_read_state_owner_pending");
     assert_index_exists(&db, "idx_thread_read_state_owner_conversation");
     assert_index_exists(&db, "idx_message_identity_aliases_owner_canonical");
@@ -868,7 +871,7 @@ fn local_state_schema_upgrades_true_v31_fixture_and_is_idempotent() {
 }
 
 #[test]
-fn local_state_schema_upgrades_true_v32_fixture_to_v33_and_is_idempotent() {
+fn local_state_schema_upgrades_true_v32_fixture_through_v34_and_is_idempotent() {
     let db = Connection::open_in_memory().unwrap();
     install_v32_fixture(&db);
 
@@ -886,7 +889,7 @@ fn local_state_schema_upgrades_true_v32_fixture_to_v33_and_is_idempotent() {
     );
 
     ensure_schema(&db).unwrap();
-    assert_eq!(current_schema_version(&db).unwrap(), 33);
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
     assert_v33_sync_foundation_exists(&db);
     assert_eq!(
         db.query_row(
@@ -900,7 +903,7 @@ fn local_state_schema_upgrades_true_v32_fixture_to_v33_and_is_idempotent() {
     );
 
     ensure_schema(&db).unwrap();
-    assert_eq!(current_schema_version(&db).unwrap(), 33);
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
     assert_v33_sync_foundation_exists(&db);
 }
 

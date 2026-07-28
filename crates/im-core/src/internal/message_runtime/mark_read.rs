@@ -162,6 +162,8 @@ where
                     .unwrap_or(&input.request.thread),
                 effective_watermark.as_ref(),
                 input.request.fallback_max_message_ids,
+                local_result.outbox_operation_id.as_deref(),
+                local_result.remote_thread_key.as_deref(),
             ) {
                 Ok(response) => {
                     warnings.extend(warnings_from_raw(&response));
@@ -169,10 +171,12 @@ where
                     let fallback_used = bool_value(response.get("fallback_used"), false);
                     let pending_remote_ack = bool_value(response.get("pending_remote_ack"), false);
                     if !pending_remote_ack {
+                        let acknowledged =
+                            acknowledged_read_watermark(&response, effective_watermark.as_ref());
                         let _ = mark_thread_read_watermark_local(
                             self.client,
                             &input.request.thread,
-                            effective_watermark.as_ref(),
+                            acknowledged.as_ref(),
                             false,
                         );
                     }
@@ -354,6 +358,8 @@ where
                     .unwrap_or(&input.request.thread),
                 effective_watermark.as_ref(),
                 input.request.fallback_max_message_ids,
+                local_result.outbox_operation_id.as_deref(),
+                local_result.remote_thread_key.as_deref(),
             )
             .await
             {
@@ -363,10 +369,12 @@ where
                     let fallback_used = bool_value(response.get("fallback_used"), false);
                     let pending_remote_ack = bool_value(response.get("pending_remote_ack"), false);
                     if !pending_remote_ack {
+                        let acknowledged =
+                            acknowledged_read_watermark(&response, effective_watermark.as_ref());
                         let _ = mark_thread_read_watermark_local_async(
                             self.client,
                             &input.request.thread,
-                            effective_watermark.as_ref(),
+                            acknowledged.as_ref(),
                             false,
                         )
                         .await;
@@ -702,6 +710,35 @@ fn bool_value(value: Option<&Value>, fallback: bool) -> bool {
     }
 }
 
+fn acknowledged_read_watermark(
+    response: &Value,
+    requested: Option<&crate::messages::ReadWatermark>,
+) -> Option<crate::messages::ReadWatermark> {
+    let read_seq = response
+        .get("read_watermark_server_seq")
+        .and_then(Value::as_str)
+        .and_then(|value| {
+            crate::internal::local_state::sync_state::normalize_decimal_seq(value).ok()
+        })
+        .or_else(|| requested.and_then(|watermark| watermark.last_read_thread_seq.clone()));
+    let message_id = response
+        .get("read_watermark_message_id")
+        .and_then(Value::as_str)
+        .and_then(|value| crate::ids::MessageId::parse(value).ok())
+        .or_else(|| requested.and_then(|watermark| watermark.last_read_message_id.clone()));
+    let read_at = response
+        .get("read_at")
+        .and_then(Value::as_str)
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&chrono::Utc))
+        .or_else(|| requested.and_then(|watermark| watermark.read_at));
+    (read_seq.is_some() || message_id.is_some()).then_some(crate::messages::ReadWatermark {
+        last_read_message_id: message_id,
+        last_read_thread_seq: read_seq,
+        read_at,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct LegacyThreadFallbackResult {
     message_ids: Vec<crate::ids::MessageId>,
@@ -822,7 +859,7 @@ fn mark_thread_read_watermark_local(
     let connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
-    crate::internal::local_state::messages::mark_thread_read_watermark_for_owner_identity(
+    crate::internal::local_state::sync_v2::mark_thread_read_and_update_outbox(
         &connection,
         client.current_identity().id.as_str(),
         client.did().as_str(),
@@ -908,6 +945,8 @@ fn mark_read_state_remote_sync<P, T>(
     thread: &crate::messages::ThreadRef,
     watermark: Option<&crate::messages::ReadWatermark>,
     fallback_max_message_ids: Option<u32>,
+    operation_id: Option<&str>,
+    remote_thread_key: Option<&str>,
 ) -> crate::ImResult<Value>
 where
     P: SessionProvider,
@@ -934,6 +973,8 @@ where
             client_observed_at: watermark.read_at.map(|value| value.to_rfc3339()),
             fallback_max_message_ids,
             device_id: client.current_identity().device_id.clone(),
+            operation_id: operation_id.map(ToOwned::to_owned),
+            remote_thread_key: remote_thread_key.map(ToOwned::to_owned),
         },
     )?;
     transport.authenticated_rpc(
@@ -950,6 +991,8 @@ async fn mark_read_state_remote_async<P, T>(
     thread: &crate::messages::ThreadRef,
     watermark: Option<&crate::messages::ReadWatermark>,
     fallback_max_message_ids: Option<u32>,
+    operation_id: Option<&str>,
+    remote_thread_key: Option<&str>,
 ) -> crate::ImResult<Value>
 where
     P: AsyncSessionProvider,
@@ -978,6 +1021,8 @@ where
             client_observed_at: watermark.read_at.map(|value| value.to_rfc3339()),
             fallback_max_message_ids,
             device_id: client.current_identity().device_id.clone(),
+            operation_id: operation_id.map(ToOwned::to_owned),
+            remote_thread_key: remote_thread_key.map(ToOwned::to_owned),
         },
     )?;
     transport

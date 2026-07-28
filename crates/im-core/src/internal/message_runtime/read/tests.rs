@@ -3888,6 +3888,17 @@ async fn sync_runtime_fresh_p5_mixed_page_rejects_wrong_peer_and_reopens_exactly
         "runtime-sync-bob.example",
     )
     .unwrap();
+    seed_sync_thread_binding_for_test(&client, &bob_scope, "conversation-ref-runtime-bob");
+    let mallory_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "runtime-sync-mallory-user",
+        "runtime-sync-mallory.example",
+    )
+    .unwrap();
+    seed_sync_thread_binding_for_test(&client, &mallory_scope, "conversation-ref-runtime-mallory");
+    let mut wrong_wire = wrong_wire;
+    wrong_wire["thread_kind"] = json!("direct");
+    let mut correct_wire = correct_wire;
+    correct_wire["thread_kind"] = json!("direct");
     let request = || crate::internal::message_runtime::sync::SyncThreadAfterInput {
         request: crate::messages::SyncThreadAfterRequest {
             thread: crate::messages::ThreadRef::Direct(
@@ -3907,7 +3918,9 @@ async fn sync_runtime_fresh_p5_mixed_page_rejects_wrong_peer_and_reopens_exactly
             calls: Rc::new(RefCell::new(Vec::new())),
             response: json!({
                 "messages": [wrong_wire.clone(), correct_wire.clone()],
-                "has_more": false
+                "next_after_server_seq": "52",
+                "has_more": false,
+                "warnings": []
             }),
         },
         NoopDirectoryTransport,
@@ -3915,8 +3928,7 @@ async fn sync_runtime_fresh_p5_mixed_page_rejects_wrong_peer_and_reopens_exactly
     .sync_thread_after_async(request())
     .await
     .unwrap();
-    assert_eq!(first.messages.len(), 1);
-    assert_eq!(first.messages[0].id.as_str(), "runtime-sync-correct");
+    assert!(first.messages.is_empty());
 
     let reopened = fixture.client();
     let replay = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
@@ -3926,7 +3938,9 @@ async fn sync_runtime_fresh_p5_mixed_page_rejects_wrong_peer_and_reopens_exactly
             calls: Rc::new(RefCell::new(Vec::new())),
             response: json!({
                 "messages": [wrong_wire.clone(), correct_wire],
-                "has_more": false
+                "next_after_server_seq": "52",
+                "has_more": false,
+                "warnings": []
             }),
         },
         NoopDirectoryTransport,
@@ -3934,8 +3948,7 @@ async fn sync_runtime_fresh_p5_mixed_page_rejects_wrong_peer_and_reopens_exactly
     .sync_thread_after_async(request())
     .await
     .unwrap();
-    assert_eq!(replay.messages.len(), 1);
-    assert_eq!(replay.messages[0].id.as_str(), "runtime-sync-correct");
+    assert!(replay.messages.is_empty());
 
     let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
     let records =
@@ -3945,8 +3958,7 @@ async fn sync_runtime_fresh_p5_mixed_page_rejects_wrong_peer_and_reopens_exactly
             &[correct_wire_id],
         )
         .unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].msg_id, "runtime-sync-correct");
+    assert!(records.is_empty());
     drop(connection);
 
     let mallory = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
@@ -3954,7 +3966,12 @@ async fn sync_runtime_fresh_p5_mixed_page_rejects_wrong_peer_and_reopens_exactly
         ReadyAnyReadSessionProvider,
         RecordingTransport {
             calls: Rc::new(RefCell::new(Vec::new())),
-            response: json!({"messages": [wrong_wire], "has_more": false}),
+            response: json!({
+                "messages": [wrong_wire],
+                "next_after_server_seq": "51",
+                "has_more": false,
+                "warnings": []
+            }),
         },
         NoopDirectoryTransport,
     )
@@ -3968,19 +3985,12 @@ async fn sync_runtime_fresh_p5_mixed_page_rejects_wrong_peer_and_reopens_exactly
                 limit: Some(20),
             },
             resolved_peer_did: Some(MALLORY_DID.to_owned()),
-            peer_scope: Some(
-                crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                    "runtime-sync-mallory-user",
-                    "runtime-sync-mallory.example",
-                )
-                .unwrap(),
-            ),
+            peer_scope: Some(mallory_scope),
         },
     )
     .await
     .unwrap();
-    assert_eq!(mallory.messages.len(), 1);
-    assert_eq!(mallory.messages[0].id.as_str(), "runtime-sync-wrong");
+    assert!(mallory.messages.is_empty());
 }
 
 #[tokio::test]
@@ -4027,12 +4037,29 @@ async fn scoped_history_and_sync_fail_closed_on_nonadvancing_wrong_peer_page() {
         crate::ImError::IdentityBindingConflict { .. }
     ));
 
+    let bob_scope =
+        crate::internal::local_state::owner_scope::DirectPeerScope::new("user-bob", "bob.example")
+            .unwrap();
+    seed_sync_thread_binding_for_test(&client, &bob_scope, "conversation-ref-bob");
     let sync_error = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
         &client,
         ReadyAnyReadSessionProvider,
         RecordingTransport {
             calls: Rc::new(RefCell::new(Vec::new())),
-            response,
+            response: json!({
+                "messages": [{
+                    "id": "wrong-peer-page",
+                    "thread_kind": "direct",
+                    "sender_did": "did:example:mallory",
+                    "receiver_did": "did:example:alice",
+                    "content": "wrong peer",
+                    "content_type": "text/plain",
+                    "server_seq": 7
+                }],
+                "next_after_server_seq": "7",
+                "has_more": true,
+                "warnings": []
+            }),
         },
         NoopDirectoryTransport,
     )
@@ -4046,7 +4073,7 @@ async fn scoped_history_and_sync_fail_closed_on_nonadvancing_wrong_peer_page() {
                 limit: Some(20),
             },
             resolved_peer_did: Some("did:example:bob".to_owned()),
-            peer_scope: None,
+            peer_scope: Some(bob_scope),
         },
     )
     .await
@@ -4233,20 +4260,22 @@ async fn scoped_history_mixed_page_keeps_and_persists_requested_peer_once() {
 async fn history_and_sync_reject_authenticated_p5_for_unrequested_peer() {
     let fixture = VNextCacheFixture::new();
     let client = fixture.client(true);
-    let incoming_wire = ordinary_p5_cache_message(
+    let mut incoming_wire = ordinary_p5_cache_message(
         "wire-p5-wrong-history-peer",
         "did:example:mallory",
         "device-mallory",
         &fixture.did,
         &fixture.device_id,
     );
-    let own_sync_wire = json_rpc_p5_cache_message(ordinary_p5_cache_message(
+    let mut own_sync_wire = json_rpc_p5_cache_message(ordinary_p5_cache_message(
         "wire-p5-wrong-history-own-sync",
         &fixture.did,
         "device-alice-sender",
         &fixture.did,
         &fixture.device_id,
     ));
+    incoming_wire["thread_kind"] = json!("direct");
+    own_sync_wire["thread_kind"] = json!("direct");
     let owner_identity_id = client.current_identity().id.as_str().to_owned();
     client
         .core_inner()
@@ -4287,9 +4316,12 @@ async fn history_and_sync_reject_authenticated_p5_for_unrequested_peer() {
         "bob.anpclaw.com",
     )
     .unwrap();
+    seed_sync_thread_binding_for_test(&client, &requested_scope, "conversation-ref-bob-new");
     let response = json!({
         "messages": [incoming_wire.clone(), own_sync_wire.clone()],
-        "has_more": false
+        "next_after_server_seq": "1",
+        "has_more": false,
+        "warnings": []
     });
 
     let history = MessageReadRuntime::new(
@@ -4509,13 +4541,53 @@ async fn sync_thread_after_duplicate_instance_cannot_persist_p5_provenance() {
     let fixture = VNextCacheFixture::new();
     let client = fixture.client(true);
     let message_id = "msg-p5-thread-after-collision";
-    let wire = ordinary_p5_cache_message(
+    let mut wire = ordinary_p5_cache_message(
         message_id,
         "did:example:bob-new",
         "device-bob",
         &fixture.did,
         &fixture.device_id,
     );
+    wire["thread_kind"] = json!("direct");
+    let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-bob",
+        "bob.anpclaw.com",
+    )
+    .unwrap();
+    let conversation_id =
+        crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+            &peer_scope,
+        );
+    let db = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    crate::internal::local_state::sync_v2::upsert_identity_account_binding(
+        &db,
+        &crate::internal::local_state::sync_v2::IdentityAccountBinding {
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            account_id: "account-read-cache".to_owned(),
+            handle_scope: Some("read-cache.awiki.test".to_owned()),
+            current_did: fixture.did.clone(),
+            protocol_device_id: fixture.device_id.clone(),
+            identity_generation: "1".to_owned(),
+            device_auth_generation: "1".to_owned(),
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .unwrap();
+    crate::internal::local_state::sync_v2::upsert_sync_thread_binding(
+        &db,
+        &crate::internal::local_state::sync_v2::SyncThreadBinding {
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            remote_thread_key: "conversation-ref-bob".to_owned(),
+            thread_kind: "direct".to_owned(),
+            conversation_id,
+            updated_at: 1,
+        },
+    )
+    .unwrap();
     client
         .core_inner()
         .local_state_db()
@@ -4531,6 +4603,7 @@ async fn sync_thread_after_duplicate_instance_cannot_persist_p5_provenance() {
         .unwrap();
     let injected = json!({
         "message_id": message_id,
+        "thread_kind": "direct",
         "sender_did": "did:example:bob-new",
         "receiver_did": &fixture.did,
         "content": "service injected thread plaintext",
@@ -4564,7 +4637,12 @@ async fn sync_thread_after_duplicate_instance_cannot_persist_p5_provenance() {
         ReadyAnyReadSessionProvider,
         RecordingTransport {
             calls: Rc::new(RefCell::new(Vec::new())),
-            response: json!({"messages": [wire.clone(), injected], "has_more": false}),
+            response: json!({
+                "messages": [wire.clone(), injected],
+                "next_after_server_seq": "3",
+                "has_more": false,
+                "warnings": []
+            }),
         },
         NoopDirectoryTransport,
     )
@@ -4578,7 +4656,7 @@ async fn sync_thread_after_duplicate_instance_cannot_persist_p5_provenance() {
                 limit: Some(20),
             },
             resolved_peer_did: Some("did:example:bob-new".to_owned()),
-            peer_scope: None,
+            peer_scope: Some(peer_scope),
         },
     )
     .await
@@ -5954,6 +6032,50 @@ impl AsyncRpcTransport for ProfileFallbackDirectoryTransport {
     async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
         RpcTransport::rpc(self, endpoint, method, params)
     }
+}
+
+fn seed_sync_thread_binding_for_test(
+    client: &crate::core::ImClient,
+    peer_scope: &crate::internal::local_state::owner_scope::DirectPeerScope,
+    remote_thread_key: &str,
+) {
+    let db = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    crate::internal::local_state::sync_v2::upsert_identity_account_binding(
+        &db,
+        &crate::internal::local_state::sync_v2::IdentityAccountBinding {
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            account_id: format!("test-account-{}", client.current_identity().id.as_str()),
+            handle_scope: client.handle().map(|handle| handle.as_str().to_owned()),
+            current_did: client.did().as_str().to_owned(),
+            protocol_device_id: client
+                .current_identity()
+                .device_id
+                .clone()
+                .unwrap_or_else(|| "test-device".to_owned()),
+            identity_generation: "1".to_owned(),
+            device_auth_generation: "1".to_owned(),
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .unwrap();
+    crate::internal::local_state::sync_v2::upsert_sync_thread_binding(
+        &db,
+        &crate::internal::local_state::sync_v2::SyncThreadBinding {
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            remote_thread_key: remote_thread_key.to_owned(),
+            thread_kind: "direct".to_owned(),
+            conversation_id:
+                crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                    peer_scope,
+                ),
+            updated_at: 1,
+        },
+    )
+    .unwrap();
 }
 
 struct Fixture {

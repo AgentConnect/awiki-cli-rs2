@@ -12,6 +12,8 @@ pub(crate) struct MarkReadStateWireRequest {
     pub(crate) client_observed_at: Option<String>,
     pub(crate) fallback_max_message_ids: Option<u32>,
     pub(crate) device_id: Option<String>,
+    pub(crate) operation_id: Option<String>,
+    pub(crate) remote_thread_key: Option<String>,
 }
 
 pub(crate) fn build_mark_read_state_rpc_params(
@@ -19,7 +21,23 @@ pub(crate) fn build_mark_read_state_rpc_params(
     request: MarkReadStateWireRequest,
 ) -> crate::ImResult<Value> {
     let user_did = required_string("user_did", identity.did.as_str())?;
-    let thread = thread_to_wire(request.thread)?;
+    let remote_thread_key = request
+        .remote_thread_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let thread = match remote_thread_key {
+        Some(thread_key) => {
+            let kind = match &request.thread {
+                crate::messages::ThreadRef::Group(_) => "group",
+                crate::messages::ThreadRef::Direct(_) | crate::messages::ThreadRef::Thread(_) => {
+                    "direct"
+                }
+            };
+            json!({"kind": kind, "thread_key": thread_key})
+        }
+        None => thread_to_wire(request.thread)?,
+    };
     let read_up_to_server_seq = request
         .read_up_to_server_seq
         .as_deref()
@@ -66,17 +84,36 @@ pub(crate) fn build_mark_read_state_rpc_params(
             json!(limit.clamp(1, 500)),
         );
     }
-    if let Some(device_id) = request
-        .device_id
+    let operation_id = request
+        .operation_id
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        body.insert("device_id".to_owned(), Value::String(device_id.to_owned()));
+        .filter(|value| !value.is_empty());
+    if remote_thread_key.is_none() {
+        if let Some(device_id) = request
+            .device_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            body.insert("device_id".to_owned(), Value::String(device_id.to_owned()));
+        }
+        if let Some(operation_id) = operation_id {
+            body.insert(
+                "operation_id".to_owned(),
+                Value::String(operation_id.to_owned()),
+            );
+        }
     }
 
+    let mut meta = common::local_meta(&user_did, READ_STATE_PROFILE);
+    if remote_thread_key.is_some() {
+        if let Some(operation_id) = operation_id {
+            meta["operation_id"] = Value::String(operation_id.to_owned());
+        }
+    }
     Ok(json!({
-        "meta": common::local_meta(&user_did, READ_STATE_PROFILE),
+        "meta": meta,
         "body": body,
     }))
 }
@@ -148,6 +185,8 @@ mod tests {
                 client_observed_at: None,
                 fallback_max_message_ids: None,
                 device_id: None,
+                operation_id: None,
+                remote_thread_key: None,
             },
         )
         .unwrap_err();
@@ -159,5 +198,43 @@ mod tests {
                 ..
             } if field == "thread"
         ));
+    }
+
+    #[test]
+    fn v2_remote_thread_uses_stable_meta_operation_without_body_selectors() {
+        let params = build_mark_read_state_rpc_params(
+            &WireIdentity {
+                did: "did:example:alice".to_owned(),
+            },
+            MarkReadStateWireRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                read_up_to_server_seq: Some("42".to_owned()),
+                read_up_to_message_id: Some("message-42".to_owned()),
+                client_observed_at: Some("2026-07-28T12:00:00Z".to_owned()),
+                fallback_max_message_ids: Some(100),
+                device_id: Some("must-not-be-sent".to_owned()),
+                operation_id: Some("op-read-stable".to_owned()),
+                remote_thread_key: Some("conversation-ref-bob".to_owned()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(params["meta"]["operation_id"], "op-read-stable");
+        assert_eq!(
+            params["body"],
+            json!({
+                "user_did": "did:example:alice",
+                "thread": {
+                    "kind": "direct",
+                    "thread_key": "conversation-ref-bob"
+                },
+                "read_up_to_server_seq": "42",
+                "read_up_to_message_id": "message-42",
+                "client_observed_at": "2026-07-28T12:00:00Z",
+                "fallback_max_message_ids": 100
+            })
+        );
     }
 }

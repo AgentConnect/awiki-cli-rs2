@@ -1,3 +1,4 @@
+use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::BTreeSet;
 
@@ -11,6 +12,41 @@ CREATE TABLE IF NOT EXISTS sync_installation_state (
     created_at          INTEGER NOT NULL,
     CHECK (length(trim(owner_identity_id)) > 0),
     CHECK (length(trim(client_instance_id)) > 0)
+);
+"#;
+
+pub(crate) const READ_RECOVERY_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS sync_thread_bindings (
+    owner_identity_id       TEXT NOT NULL,
+    remote_thread_key       TEXT NOT NULL,
+    thread_kind             TEXT NOT NULL,
+    conversation_id         TEXT NOT NULL,
+    updated_at              INTEGER NOT NULL,
+    PRIMARY KEY (owner_identity_id, remote_thread_key),
+    CHECK (thread_kind IN ('direct', 'group')),
+    CHECK (length(trim(remote_thread_key)) > 0),
+    CHECK (length(trim(conversation_id)) > 0),
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS sync_thread_bindings_conversation_idx
+ON sync_thread_bindings(owner_identity_id, conversation_id);
+
+CREATE TABLE IF NOT EXISTS sync_remote_read_states (
+    owner_identity_id          TEXT NOT NULL,
+    remote_thread_key          TEXT NOT NULL,
+    thread_kind                TEXT NOT NULL,
+    read_watermark_seq         TEXT NOT NULL,
+    read_watermark_message_id  TEXT,
+    state_version              TEXT NOT NULL,
+    occurred_at                TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, remote_thread_key),
+    CHECK (thread_kind IN ('direct', 'group')),
+    FOREIGN KEY (owner_identity_id)
+        REFERENCES identity_account_bindings(owner_identity_id)
+        ON DELETE CASCADE
 );
 "#;
 
@@ -305,6 +341,7 @@ pub(crate) struct BootstrapApplyInputV2 {
     pub(crate) binding: IdentityAccountBinding,
     pub(crate) state: MessageSyncState,
     pub(crate) groups: Vec<super::groups::GroupRecord>,
+    pub(crate) read_states: Vec<ReadStateApplyV2>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -314,6 +351,63 @@ pub(crate) struct DeltaApplyEventV2 {
     pub(crate) event_type: String,
     pub(crate) messages: Vec<super::messages::MessageRecord>,
     pub(crate) groups: Vec<super::groups::GroupRecord>,
+    pub(crate) thread_bindings: Vec<SyncThreadBinding>,
+    pub(crate) read_states: Vec<ReadStateApplyV2>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncThreadBinding {
+    pub(crate) owner_identity_id: String,
+    pub(crate) remote_thread_key: String,
+    pub(crate) thread_kind: String,
+    pub(crate) conversation_id: String,
+    pub(crate) updated_at: i64,
+}
+
+pub(crate) fn load_sync_thread_binding_for_conversation(
+    connection: &Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+    thread_kind: &str,
+) -> crate::ImResult<Option<SyncThreadBinding>> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    validate_required("conversation_id", conversation_id)?;
+    if !matches!(thread_kind, "direct" | "group") {
+        return Err(sync_error(
+            "SYNC_THREAD_KIND_INVALID",
+            "thread_kind must be direct or group",
+        ));
+    }
+    connection
+        .query_row(
+            "SELECT owner_identity_id, remote_thread_key, thread_kind,
+                    conversation_id, updated_at
+             FROM sync_thread_bindings
+             WHERE owner_identity_id = ?1 AND conversation_id = ?2
+               AND thread_kind = ?3",
+            params![owner_identity_id, conversation_id, thread_kind],
+            |row| {
+                Ok(SyncThreadBinding {
+                    owner_identity_id: row.get(0)?,
+                    remote_thread_key: row.get(1)?,
+                    thread_kind: row.get(2)?,
+                    conversation_id: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReadStateApplyV2 {
+    pub(crate) remote_thread_key: String,
+    pub(crate) thread_kind: String,
+    pub(crate) read_watermark_seq: String,
+    pub(crate) read_watermark_message_id: Option<String>,
+    pub(crate) state_version: String,
+    pub(crate) occurred_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -338,9 +432,27 @@ pub(crate) struct DeltaApplyOutcomeV2 {
     pub(crate) invalidation: super::sync_state::SyncDeltaInvalidation,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotApplyInputV2 {
+    pub(crate) owner_identity_id: String,
+    pub(crate) owner_did: String,
+    pub(crate) account_id: String,
+    pub(crate) protocol_device_id: String,
+    pub(crate) device_auth_generation: String,
+    pub(crate) stream_epoch: String,
+    pub(crate) snapshot_scan_seq: String,
+    pub(crate) server_time: String,
+    pub(crate) events: Vec<DeltaApplyEventV2>,
+    pub(crate) groups: Vec<super::groups::GroupRecord>,
+    pub(crate) read_states: Vec<ReadStateApplyV2>,
+}
+
 pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
     connection
         .execute_batch(SYNC_V2_SCHEMA_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(READ_RECOVERY_SCHEMA_SQL)
         .map_err(super::local_state_unavailable)?;
     create_installation_schema(connection)
 }
@@ -654,6 +766,14 @@ pub(crate) fn apply_bootstrap_v2(
         validate_group_owner(&group, &input.binding.owner_identity_id)?;
         super::groups::upsert_group(&transaction, group)?;
     }
+    for read_state in input.read_states {
+        apply_remote_read_state(
+            &transaction,
+            &input.binding.owner_identity_id,
+            &input.binding.current_did,
+            &read_state,
+        )?;
+    }
     upsert_bootstrap_state(&transaction, &input.state)?;
     complete_active_recovery(&transaction, &input.state)?;
     transaction.commit().map_err(super::local_state_unavailable)
@@ -746,6 +866,8 @@ pub(crate) fn apply_delta_v2(
     let mut duplicate_events = 0usize;
     let mut messages = Vec::new();
     let mut groups = Vec::new();
+    let mut thread_bindings = Vec::new();
+    let mut read_states = Vec::new();
     for event in events {
         let event_id = event.event_id.clone();
         let inserted = record_applied_event(
@@ -778,6 +900,8 @@ pub(crate) fn apply_delta_v2(
             }
             groups.push(group);
         }
+        thread_bindings.extend(event.thread_bindings);
+        read_states.extend(event.read_states);
         applied_event_ids.push(event_id.clone());
         if projected_message {
             projected_message_event_ids.push(event_id);
@@ -810,6 +934,17 @@ pub(crate) fn apply_delta_v2(
     for group in groups {
         super::groups::upsert_group(&transaction, group)?;
     }
+    for binding in thread_bindings {
+        upsert_sync_thread_binding(&transaction, &binding)?;
+    }
+    for read_state in read_states {
+        apply_remote_read_state(
+            &transaction,
+            &input.owner_identity_id,
+            &input.owner_did,
+            &read_state,
+        )?;
+    }
 
     let next_state = MessageSyncState {
         owner_identity_id: input.owner_identity_id.clone(),
@@ -834,6 +969,159 @@ pub(crate) fn apply_delta_v2(
             ));
         }
     }
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(DeltaApplyOutcomeV2 {
+        applied_event_ids,
+        projected_message_event_ids,
+        duplicate_events,
+        backlogged_messages: 0,
+        invalidation,
+    })
+}
+
+pub(crate) fn apply_snapshot_v2(
+    connection: &Connection,
+    input: SnapshotApplyInputV2,
+) -> crate::ImResult<DeltaApplyOutcomeV2> {
+    validate_required("owner_identity_id", &input.owner_identity_id)?;
+    validate_required("owner_did", &input.owner_did)?;
+    validate_required("account_id", &input.account_id)?;
+    validate_required("protocol_device_id", &input.protocol_device_id)?;
+    validate_positive_decimal("device_auth_generation", &input.device_auth_generation)?;
+    validate_positive_decimal("stream_epoch", &input.stream_epoch)?;
+    validate_decimal("snapshot_scan_seq", &input.snapshot_scan_seq)?;
+    validate_required("server_time", &input.server_time)?;
+
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    let binding = load_identity_account_binding(&transaction, &input.owner_identity_id)?
+        .ok_or_else(|| crate::ImError::IdentityBindingConflict {
+            detail: "snapshot requires an active account binding".to_owned(),
+        })?;
+    if binding.account_id != input.account_id
+        || binding.protocol_device_id != input.protocol_device_id
+        || binding.device_auth_generation != input.device_auth_generation
+    {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "snapshot binding does not match the active account device".to_owned(),
+        });
+    }
+
+    let now = unix_time_i64();
+    let mut events = input.events;
+    events.sort_by(|left, right| {
+        decimal_order(&left.event_seq, &right.event_seq)
+            .then_with(|| left.event_id.cmp(&right.event_id))
+    });
+    let mut applied_event_ids = Vec::new();
+    let mut projected_message_event_ids = Vec::new();
+    let mut duplicate_events = 0usize;
+    let mut messages = Vec::new();
+    let mut groups = input.groups;
+    let mut thread_bindings = Vec::new();
+    let mut read_states = input.read_states;
+    for event in events {
+        if compare_decimal(&event.event_seq, &input.snapshot_scan_seq)?
+            == std::cmp::Ordering::Greater
+        {
+            return Err(sync_error(
+                "SYNC_INVALID_SNAPSHOT",
+                "snapshot event is ahead of its anchor",
+            ));
+        }
+        let inserted = record_applied_event(
+            &transaction,
+            &AppliedEventReceipt {
+                owner_identity_id: input.owner_identity_id.clone(),
+                event_id: event.event_id.clone(),
+                stream_epoch: input.stream_epoch.clone(),
+                event_seq: event.event_seq.clone(),
+                applied_at: now,
+            },
+        )?;
+        if !inserted {
+            duplicate_events = duplicate_events.saturating_add(1);
+            continue;
+        }
+        if !event.messages.is_empty() {
+            projected_message_event_ids.push(event.event_id.clone());
+        }
+        for message in event.messages {
+            messages.push(
+                super::inbound_resolution_backlog::canonicalize_inbound_message(
+                    &transaction,
+                    message,
+                )?,
+            );
+        }
+        groups.extend(event.groups);
+        thread_bindings.extend(event.thread_bindings);
+        read_states.extend(event.read_states);
+        applied_event_ids.push(event.event_id);
+    }
+
+    let mut invalidation = v2_invalidation(
+        &input.owner_identity_id,
+        &input.owner_did,
+        &input.snapshot_scan_seq,
+        &messages,
+        &groups,
+    );
+    if !messages.is_empty() {
+        let touched = super::messages::upsert_messages_with_touched(&transaction, &messages)?;
+        let mut conversation_ids = invalidation
+            .conversation_ids
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let mut thread_ids = invalidation.thread_ids.into_iter().collect::<BTreeSet<_>>();
+        for (_, conversation_id) in touched {
+            if !conversation_id.trim().is_empty() {
+                conversation_ids.insert(conversation_id.clone());
+                thread_ids.insert(conversation_id);
+            }
+        }
+        invalidation.conversation_ids = conversation_ids.into_iter().collect();
+        invalidation.thread_ids = thread_ids.into_iter().collect();
+    }
+    for group in groups {
+        validate_group_owner(&group, &input.owner_identity_id)?;
+        if !group_state_is_stale(&transaction, &group)? {
+            super::groups::upsert_group(&transaction, group)?;
+        }
+    }
+    for binding in thread_bindings {
+        upsert_sync_thread_binding(&transaction, &binding)?;
+    }
+    for read_state in read_states {
+        apply_remote_read_state(
+            &transaction,
+            &input.owner_identity_id,
+            &input.owner_did,
+            &read_state,
+        )?;
+    }
+
+    let next_state = MessageSyncState {
+        owner_identity_id: input.owner_identity_id,
+        account_id: input.account_id,
+        protocol_device_id: input.protocol_device_id,
+        device_auth_generation: input.device_auth_generation,
+        stream_epoch: input.stream_epoch,
+        scan_seq: input.snapshot_scan_seq,
+        bootstrap_state: "active".to_owned(),
+        last_server_time: Some(input.server_time),
+        last_success_at: Some(now),
+        last_error_code: None,
+        metadata_json: Some("{\"mode\":\"compact_recovery\"}".to_owned()),
+        updated_at: now,
+    };
+    // Snapshot is the one server-authorized boundary allowed to replace an
+    // epoch/cursor while preserving existing local message rows.
+    upsert_bootstrap_state(&transaction, &next_state)?;
+    complete_active_recovery(&transaction, &next_state)?;
     transaction
         .commit()
         .map_err(super::local_state_unavailable)?;
@@ -1249,6 +1537,567 @@ WHERE owner_identity_id = ?1"#,
         .map_err(super::local_state_unavailable)
 }
 
+pub(crate) fn mark_thread_read_and_update_outbox(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    input: super::messages::MarkThreadReadWatermarkInput,
+) -> crate::ImResult<super::messages::MarkThreadReadWatermarkResult> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    let pending_remote_ack = input.pending_remote_ack;
+    let mut result = super::messages::mark_thread_read_watermark_for_owner_identity(
+        &transaction,
+        owner_identity_id,
+        owner_did,
+        input,
+    )?;
+    let Some(seq) = result.read_watermark_seq.as_deref() else {
+        transaction
+            .commit()
+            .map_err(super::local_state_unavailable)?;
+        return Ok(result);
+    };
+    let remote_thread_key = transaction
+        .query_row(
+            "SELECT remote_thread_key
+             FROM sync_thread_bindings
+             WHERE owner_identity_id = ?1 AND conversation_id = ?2",
+            params![owner_identity_id, result.conversation_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+        .or_else(|| (result.thread_scope == "group").then(|| result.thread_id.clone()));
+    result.remote_thread_key = remote_thread_key.clone();
+    let has_sync_binding =
+        load_identity_account_binding(&transaction, owner_identity_id)?.is_some();
+    if pending_remote_ack && has_sync_binding && remote_thread_key.is_some() {
+        let remote_thread_key = remote_thread_key
+            .as_deref()
+            .expect("read outbox branch requires a remote thread key");
+        result.outbox_operation_id = Some(upsert_read_outbox(
+            &transaction,
+            owner_identity_id,
+            &result.thread_scope,
+            &result.thread_id,
+            remote_thread_key,
+            seq,
+            result.read_watermark_message_id.as_deref(),
+            result.read_watermark_at.as_deref(),
+        )?);
+    } else if !pending_remote_ack && has_sync_binding {
+        let Some(remote_thread_key) = remote_thread_key.as_deref() else {
+            transaction
+                .commit()
+                .map_err(super::local_state_unavailable)?;
+            return Ok(result);
+        };
+        acknowledge_read_outbox(
+            &transaction,
+            owner_identity_id,
+            &remote_thread_key,
+            seq,
+            unix_time_i64(),
+        )?;
+    }
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(result)
+}
+
+fn upsert_read_outbox(
+    connection: &Connection,
+    owner_identity_id: &str,
+    thread_kind: &str,
+    thread_id: &str,
+    remote_thread_key: &str,
+    read_watermark_seq: &str,
+    read_watermark_message_id: Option<&str>,
+    read_watermark_at: Option<&str>,
+) -> crate::ImResult<String> {
+    validate_decimal("read_watermark_seq", read_watermark_seq)?;
+    let existing = connection
+        .query_row(
+            "SELECT mutation_id, operation_id, payload_json
+             FROM local_mutation_outbox
+             WHERE owner_identity_id = ?1 AND aggregate_id = ?2
+               AND status = 'pending' AND attempt_count = 0
+             ORDER BY created_at DESC, mutation_id DESC LIMIT 1",
+            params![owner_identity_id, remote_thread_key],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let now = unix_time_i64();
+    let payload = serde_json::json!({
+        "thread_kind": thread_kind,
+        "thread_id": thread_id,
+        "remote_thread_key": remote_thread_key,
+        "read_watermark_seq": read_watermark_seq,
+        "read_watermark_message_id": read_watermark_message_id,
+        "read_watermark_at": read_watermark_at,
+    });
+    if let Some((mutation_id, operation_id, current_payload)) = existing {
+        let current: serde_json::Value =
+            serde_json::from_str(&current_payload).map_err(|error| {
+                sync_error(
+                    "SYNC_LOCAL_OUTBOX_CORRUPT",
+                    format!("read outbox payload is invalid: {error}"),
+                )
+            })?;
+        let current_seq = current
+            .get("read_watermark_seq")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("0");
+        if compare_decimal(read_watermark_seq, current_seq)? == std::cmp::Ordering::Greater {
+            connection
+                .execute(
+                    "UPDATE local_mutation_outbox
+                     SET payload_json = ?1, updated_at = ?2
+                     WHERE owner_identity_id = ?3 AND mutation_id = ?4",
+                    params![payload.to_string(), now, owner_identity_id, mutation_id],
+                )
+                .map_err(super::local_state_unavailable)?;
+        }
+        return Ok(operation_id);
+    }
+
+    let operation_id = random_local_id("op-read");
+    enqueue_local_mutation(
+        connection,
+        &LocalMutationRecord {
+            owner_identity_id: owner_identity_id.to_owned(),
+            mutation_id: random_local_id("read"),
+            operation_id: operation_id.clone(),
+            mutation_type: "read_state_mark_read".to_owned(),
+            aggregate_id: remote_thread_key.to_owned(),
+            payload_json: payload.to_string(),
+            status: "pending".to_owned(),
+            attempt_count: 0,
+            retry_at: None,
+            in_flight_since: None,
+            last_error_code: None,
+            created_at: now,
+            updated_at: now,
+        },
+    )?;
+    Ok(operation_id)
+}
+
+fn random_local_id(prefix: &str) -> String {
+    let mut bytes = [0_u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let suffix = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{prefix}-{suffix}")
+}
+
+pub(crate) fn upsert_sync_thread_binding(
+    connection: &Connection,
+    binding: &SyncThreadBinding,
+) -> crate::ImResult<()> {
+    validate_required("owner_identity_id", &binding.owner_identity_id)?;
+    validate_required("remote_thread_key", &binding.remote_thread_key)?;
+    validate_required("conversation_id", &binding.conversation_id)?;
+    if !matches!(binding.thread_kind.as_str(), "direct" | "group") {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "sync thread binding kind must be direct or group",
+        ));
+    }
+    let conflict = connection
+        .query_row(
+            "SELECT thread_kind, conversation_id
+             FROM sync_thread_bindings
+             WHERE owner_identity_id = ?1 AND remote_thread_key = ?2",
+            params![binding.owner_identity_id, binding.remote_thread_key],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    if conflict.as_ref().is_some_and(|current| {
+        current != &(binding.thread_kind.clone(), binding.conversation_id.clone())
+    }) {
+        return Err(sync_error(
+            "SYNC_THREAD_BINDING_CONFLICT",
+            "remote thread key cannot be rebound to another canonical conversation",
+        ));
+    }
+    connection
+        .execute(
+            "INSERT INTO sync_thread_bindings
+                (owner_identity_id, remote_thread_key, thread_kind, conversation_id, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(owner_identity_id, remote_thread_key) DO UPDATE SET
+                updated_at = excluded.updated_at",
+            params![
+                binding.owner_identity_id,
+                binding.remote_thread_key,
+                binding.thread_kind,
+                binding.conversation_id,
+                binding.updated_at,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    if let Some(state) = load_remote_read_state(
+        connection,
+        &binding.owner_identity_id,
+        &binding.remote_thread_key,
+    )? {
+        let owner_did = connection
+            .query_row(
+                "SELECT current_did FROM identity_account_bindings
+                 WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(super::local_state_unavailable)?;
+        project_remote_read_state(
+            connection,
+            &binding.owner_identity_id,
+            &owner_did,
+            &state,
+            &(binding.thread_kind.clone(), binding.conversation_id.clone()),
+        )?;
+    }
+    let pending_local = connection
+        .query_row(
+            "SELECT thread_scope, thread_id, read_watermark_seq,
+                    read_watermark_message_id, read_watermark_at
+             FROM thread_read_state
+             WHERE owner_identity_id = ?1
+               AND conversation_id = ?2
+               AND thread_scope = ?3
+               AND pending_remote_ack = 1
+               AND read_watermark_seq IS NOT NULL
+             ORDER BY updated_at DESC
+             LIMIT 1",
+            params![
+                binding.owner_identity_id,
+                binding.conversation_id,
+                binding.thread_kind
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    if let Some((thread_kind, thread_id, seq, message_id, read_at)) = pending_local {
+        upsert_read_outbox(
+            connection,
+            &binding.owner_identity_id,
+            &thread_kind,
+            &thread_id,
+            &binding.remote_thread_key,
+            &seq,
+            message_id.as_deref(),
+            read_at.as_deref(),
+        )?;
+    }
+    Ok(())
+}
+
+fn apply_remote_read_state(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    state: &ReadStateApplyV2,
+) -> crate::ImResult<()> {
+    validate_required("remote_thread_key", &state.remote_thread_key)?;
+    validate_decimal("read_watermark_seq", &state.read_watermark_seq)?;
+    validate_positive_decimal("state_version", &state.state_version)?;
+    let current_remote =
+        load_remote_read_state(connection, owner_identity_id, &state.remote_thread_key)?;
+    if let Some(current) = current_remote.as_ref() {
+        match compare_decimal(&state.state_version, &current.state_version)? {
+            std::cmp::Ordering::Less => return Ok(()),
+            std::cmp::Ordering::Equal => {
+                if current != state {
+                    return Err(sync_error(
+                        "SYNC_READ_STATE_CONFLICT",
+                        "equal read state versions carry conflicting content",
+                    ));
+                }
+                return Ok(());
+            }
+            std::cmp::Ordering::Greater => {}
+        }
+    }
+    connection
+        .execute(
+            "INSERT INTO sync_remote_read_states
+                (owner_identity_id, remote_thread_key, thread_kind,
+                 read_watermark_seq, read_watermark_message_id, state_version, occurred_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(owner_identity_id, remote_thread_key) DO UPDATE SET
+                thread_kind = excluded.thread_kind,
+                read_watermark_seq = excluded.read_watermark_seq,
+                read_watermark_message_id = excluded.read_watermark_message_id,
+                state_version = excluded.state_version,
+                occurred_at = excluded.occurred_at",
+            params![
+                owner_identity_id,
+                state.remote_thread_key,
+                state.thread_kind,
+                state.read_watermark_seq,
+                state.read_watermark_message_id,
+                state.state_version,
+                state.occurred_at,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    let binding = connection
+        .query_row(
+            "SELECT thread_kind, conversation_id
+             FROM sync_thread_bindings
+             WHERE owner_identity_id = ?1 AND remote_thread_key = ?2",
+            params![owner_identity_id, state.remote_thread_key],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+        .or_else(|| {
+            (state.thread_kind == "group")
+                .then(|| ("group".to_owned(), state.remote_thread_key.clone()))
+        });
+    let Some(binding) = binding else {
+        return Ok(());
+    };
+    project_remote_read_state(connection, owner_identity_id, owner_did, state, &binding)
+}
+
+fn project_remote_read_state(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    state: &ReadStateApplyV2,
+    binding: &(String, String),
+) -> crate::ImResult<()> {
+    if binding.0 != state.thread_kind {
+        return Err(sync_error(
+            "SYNC_THREAD_BINDING_CONFLICT",
+            "read state thread kind conflicts with the local binding",
+        ));
+    }
+    let current = super::read_state::get_thread_read_state(
+        connection,
+        owner_identity_id,
+        &binding.0,
+        &binding.1,
+    )?;
+    if let Some(current_version) = current
+        .as_ref()
+        .and_then(|record| record.remote_state_version.as_deref())
+    {
+        match compare_decimal(&state.state_version, current_version)? {
+            std::cmp::Ordering::Less => {
+                connection
+                    .execute(
+                        "DELETE FROM sync_remote_read_states
+                         WHERE owner_identity_id = ?1 AND remote_thread_key = ?2",
+                        params![owner_identity_id, state.remote_thread_key],
+                    )
+                    .map_err(super::local_state_unavailable)?;
+                return Ok(());
+            }
+            std::cmp::Ordering::Equal => {
+                let current_seq = current
+                    .as_ref()
+                    .and_then(|record| record.read_watermark_seq.as_deref())
+                    .unwrap_or("0");
+                if compare_decimal(&state.read_watermark_seq, current_seq)?
+                    == std::cmp::Ordering::Greater
+                {
+                    return Err(sync_error(
+                        "SYNC_READ_STATE_CONFLICT",
+                        "equal remote read versions carry a higher conflicting watermark",
+                    ));
+                }
+                connection
+                    .execute(
+                        "DELETE FROM sync_remote_read_states
+                         WHERE owner_identity_id = ?1 AND remote_thread_key = ?2",
+                        params![owner_identity_id, state.remote_thread_key],
+                    )
+                    .map_err(super::local_state_unavailable)?;
+                return Ok(());
+            }
+            std::cmp::Ordering::Greater => {}
+        }
+    }
+    let local_seq = current
+        .as_ref()
+        .and_then(|record| record.read_watermark_seq.as_deref())
+        .unwrap_or("0");
+    let pending_remote_ack =
+        compare_decimal(local_seq, &state.read_watermark_seq)? == std::cmp::Ordering::Greater;
+    let thread = if binding.0 == "group" {
+        crate::messages::ThreadRef::Group(crate::ids::GroupRef::parse(binding.1.clone())?)
+    } else {
+        crate::messages::ThreadRef::Thread(crate::ids::ThreadId::parse(binding.1.clone())?)
+    };
+    let _ = super::messages::mark_thread_read_watermark_for_owner_identity(
+        connection,
+        owner_identity_id,
+        owner_did,
+        super::messages::MarkThreadReadWatermarkInput {
+            thread,
+            read_watermark_message_id: state.read_watermark_message_id.clone(),
+            read_watermark_seq: Some(state.read_watermark_seq.clone()),
+            read_watermark_at: Some(state.occurred_at.clone()),
+            pending_remote_ack,
+        },
+    )?;
+    let remote_advances_local =
+        compare_decimal(&state.read_watermark_seq, local_seq)? == std::cmp::Ordering::Greater;
+    let effective_seq = if remote_advances_local {
+        state.read_watermark_seq.clone()
+    } else {
+        local_seq.to_owned()
+    };
+    let effective_message_id = if remote_advances_local {
+        state.read_watermark_message_id.clone()
+    } else {
+        current
+            .as_ref()
+            .and_then(|record| record.read_watermark_message_id.clone())
+    };
+    super::read_state::replace_thread_read_state(
+        connection,
+        &super::read_state::ThreadReadStateRecord {
+            owner_identity_id: owner_identity_id.to_owned(),
+            owner_did: owner_did.to_owned(),
+            thread_scope: binding.0.clone(),
+            thread_id: binding.1.clone(),
+            conversation_id: binding.1.clone(),
+            read_watermark_message_id: effective_message_id,
+            read_watermark_seq: Some(effective_seq),
+            read_watermark_at: Some(state.occurred_at.clone()),
+            pending_remote_ack,
+            remote_ack_at: (!pending_remote_ack).then(|| state.occurred_at.clone()),
+            remote_state_version: Some(state.state_version.clone()),
+            updated_at: state.occurred_at.clone(),
+        },
+    )?;
+    acknowledge_read_outbox(
+        connection,
+        owner_identity_id,
+        &state.remote_thread_key,
+        &state.read_watermark_seq,
+        unix_time_i64(),
+    )?;
+    connection
+        .execute(
+            "DELETE FROM sync_remote_read_states
+             WHERE owner_identity_id = ?1 AND remote_thread_key = ?2",
+            params![owner_identity_id, state.remote_thread_key],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+fn load_remote_read_state(
+    connection: &Connection,
+    owner_identity_id: &str,
+    remote_thread_key: &str,
+) -> crate::ImResult<Option<ReadStateApplyV2>> {
+    connection
+        .query_row(
+            "SELECT remote_thread_key, thread_kind, read_watermark_seq,
+                    read_watermark_message_id, state_version, occurred_at
+             FROM sync_remote_read_states
+             WHERE owner_identity_id = ?1 AND remote_thread_key = ?2",
+            params![owner_identity_id, remote_thread_key],
+            |row| {
+                Ok(ReadStateApplyV2 {
+                    remote_thread_key: row.get(0)?,
+                    thread_kind: row.get(1)?,
+                    read_watermark_seq: row.get(2)?,
+                    read_watermark_message_id: row.get(3)?,
+                    state_version: row.get(4)?,
+                    occurred_at: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)
+}
+
+fn acknowledge_read_outbox(
+    connection: &Connection,
+    owner_identity_id: &str,
+    aggregate_id: &str,
+    acknowledged_seq: &str,
+    now: i64,
+) -> crate::ImResult<()> {
+    let mut statement = connection
+        .prepare(
+            "SELECT mutation_id, payload_json
+             FROM local_mutation_outbox
+             WHERE owner_identity_id = ?1 AND aggregate_id = ?2
+               AND status NOT IN ('committed', 'permanent_failure')",
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(params![owner_identity_id, aggregate_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(super::local_state_unavailable)?;
+    let mut committed = Vec::new();
+    for row in rows {
+        let (mutation_id, payload) = row.map_err(super::local_state_unavailable)?;
+        let payload: serde_json::Value = serde_json::from_str(&payload).map_err(|error| {
+            sync_error(
+                "SYNC_LOCAL_OUTBOX_CORRUPT",
+                format!("read outbox payload is invalid: {error}"),
+            )
+        })?;
+        let seq = payload
+            .get("read_watermark_seq")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                sync_error(
+                    "SYNC_LOCAL_OUTBOX_CORRUPT",
+                    "read outbox payload has no watermark",
+                )
+            })?;
+        if compare_decimal(seq, acknowledged_seq)? != std::cmp::Ordering::Greater {
+            committed.push(mutation_id);
+        }
+    }
+    drop(statement);
+    for mutation_id in committed {
+        connection
+            .execute(
+                "UPDATE local_mutation_outbox
+                 SET status = 'committed', in_flight_since = NULL,
+                     retry_at = NULL, last_error_code = NULL, updated_at = ?1
+                 WHERE owner_identity_id = ?2 AND mutation_id = ?3",
+                params![now, owner_identity_id, mutation_id],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn enqueue_local_mutation(
     connection: &Connection,
     record: &LocalMutationRecord,
@@ -1334,6 +2183,70 @@ WHERE owner_identity_id = ?1 AND mutation_id = ?2"#,
         )
         .optional()
         .map_err(super::local_state_unavailable)
+}
+
+pub(crate) fn claim_next_read_mutation(
+    connection: &Connection,
+    owner_identity_id: &str,
+    now: i64,
+) -> crate::ImResult<Option<LocalMutationRecord>> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    let next = transaction
+        .query_row(
+            "SELECT mutation_id
+             FROM local_mutation_outbox
+             WHERE owner_identity_id = ?1
+               AND status IN ('pending', 'retryable')
+               AND (retry_at IS NULL OR retry_at <= ?2)
+             ORDER BY created_at, mutation_id
+             LIMIT 1",
+            params![owner_identity_id, now],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some(mutation_id) = next else {
+        transaction
+            .commit()
+            .map_err(super::local_state_unavailable)?;
+        return Ok(None);
+    };
+    transaction
+        .execute(
+            "UPDATE local_mutation_outbox
+             SET status = 'in_flight', attempt_count = attempt_count + 1,
+                 in_flight_since = ?1, updated_at = ?1
+             WHERE owner_identity_id = ?2 AND mutation_id = ?3",
+            params![now, owner_identity_id, mutation_id],
+        )
+        .map_err(super::local_state_unavailable)?;
+    let record = load_local_mutation(&transaction, owner_identity_id, &mutation_id)?;
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(record)
+}
+
+pub(crate) fn retry_local_mutation(
+    connection: &Connection,
+    owner_identity_id: &str,
+    mutation_id: &str,
+    error_code: &str,
+    retry_at: i64,
+) -> crate::ImResult<()> {
+    connection
+        .execute(
+            "UPDATE local_mutation_outbox
+             SET status = 'retryable', in_flight_since = NULL,
+                 retry_at = ?1, last_error_code = ?2, updated_at = ?1
+             WHERE owner_identity_id = ?3 AND mutation_id = ?4
+               AND status = 'in_flight'",
+            params![retry_at, error_code, owner_identity_id, mutation_id],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
 }
 
 pub(crate) fn recover_interrupted_work(
@@ -1804,6 +2717,8 @@ mod tests {
                         event_type: "message.created".to_owned(),
                         messages: vec![unresolved],
                         groups: Vec::new(),
+                        thread_bindings: Vec::new(),
+                        read_states: Vec::new(),
                     }],
                 }
             ),
@@ -1906,6 +2821,7 @@ mod tests {
                 binding: binding.clone(),
                 state,
                 groups: vec![invalid_group],
+                read_states: Vec::new(),
             }
         )
         .is_err());
@@ -2394,6 +3310,231 @@ mod tests {
             )
             .unwrap(),
             APPLIED_EVENT_MIN_RECEIPTS_PER_OWNER
+        );
+    }
+
+    #[test]
+    fn snapshot_unbound_direct_read_state_commits_and_replays_after_message_binding() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        bootstrap_message_sync_state(
+            &db,
+            &MessageSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                scan_seq: "10".to_owned(),
+                bootstrap_state: "active".to_owned(),
+                last_server_time: None,
+                last_success_at: Some(1),
+                last_error_code: None,
+                metadata_json: None,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let remote_read = ReadStateApplyV2 {
+            remote_thread_key: "dconv-old-outside-window".to_owned(),
+            thread_kind: "direct".to_owned(),
+            read_watermark_seq: "991".to_owned(),
+            read_watermark_message_id: Some("msg-991".to_owned()),
+            state_version: "38".to_owned(),
+            occurred_at: "2026-07-28T10:00:00Z".to_owned(),
+        };
+        apply_snapshot_v2(
+            &db,
+            SnapshotApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                snapshot_scan_seq: "50".to_owned(),
+                server_time: "2026-07-28T10:00:01Z".to_owned(),
+                events: Vec::new(),
+                groups: Vec::new(),
+                read_states: vec![remote_read],
+            },
+        )
+        .unwrap();
+        let MessageSyncStateAccess::Ready(snapshot_state) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("snapshot must commit its anchor");
+        };
+        assert_eq!(snapshot_state.scan_seq, "50");
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sync_remote_read_states
+                 WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1,
+            "a current read state outside the 48h/500 message window must be backlogged"
+        );
+
+        apply_delta_v2(
+            &db,
+            DeltaApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                next_scan_seq: "51".to_owned(),
+                server_time: "2026-07-28T10:00:02Z".to_owned(),
+                events: vec![DeltaApplyEventV2 {
+                    event_id: "event-51".to_owned(),
+                    event_seq: "51".to_owned(),
+                    event_type: "message.created".to_owned(),
+                    thread_bindings: vec![SyncThreadBinding {
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        remote_thread_key: "dconv-old-outside-window".to_owned(),
+                        thread_kind: "direct".to_owned(),
+                        conversation_id: "dm:peer-scope:v1:alice:bob".to_owned(),
+                        updated_at: 2,
+                    }],
+                    ..DeltaApplyEventV2::default()
+                }],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sync_remote_read_states
+                 WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0,
+            "binding establishment must replay and remove the unresolved read backlog"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT read_watermark_seq, remote_state_version
+                 FROM thread_read_state
+                 WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap(),
+            ("991".to_owned(), "38".to_owned())
+        );
+    }
+
+    #[test]
+    fn read_outbox_coalesces_unsent_watermark_and_preserves_in_flight_successor() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        upsert_sync_thread_binding(
+            &db,
+            &SyncThreadBinding {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                remote_thread_key: "dconv-outbox-bob".to_owned(),
+                thread_kind: "direct".to_owned(),
+                conversation_id: "dm:peer-scope:v1:alice:bob".to_owned(),
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO messages
+                (msg_id, owner_identity_id, owner_did, thread_id, conversation_id,
+                 wire_thread_kind, wire_thread_ref, wire_identity_resolution_state,
+                 server_seq, stored_at)
+             VALUES ('msg-30', ?1, ?2, 'dm:peer-scope:v1:alice:bob',
+                     'dm:peer-scope:v1:alice:bob', 'direct', 'did:example:bob',
+                     'resolved', 30, '2026-07-28T10:00:00Z')",
+            params![binding.owner_identity_id, binding.current_did],
+        )
+        .unwrap();
+        let mark = |seq: &str| {
+            mark_thread_read_and_update_outbox(
+                &db,
+                &binding.owner_identity_id,
+                &binding.current_did,
+                super::super::messages::MarkThreadReadWatermarkInput {
+                    thread: crate::messages::ThreadRef::Thread(
+                        crate::ids::ThreadId::parse("dm:peer-scope:v1:alice:bob").unwrap(),
+                    ),
+                    read_watermark_message_id: None,
+                    read_watermark_seq: Some(seq.to_owned()),
+                    read_watermark_at: Some("2026-07-28T10:00:00Z".to_owned()),
+                    pending_remote_ack: true,
+                },
+            )
+            .unwrap()
+        };
+        let first = mark("10");
+        let second = mark("20");
+        assert_eq!(first.outbox_operation_id, second.outbox_operation_id);
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM local_mutation_outbox
+                 WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT json_extract(payload_json, '$.read_watermark_seq')
+                 FROM local_mutation_outbox",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "20"
+        );
+        db.execute(
+            "UPDATE local_mutation_outbox
+             SET status = 'in_flight', attempt_count = 1, in_flight_since = 2",
+            [],
+        )
+        .unwrap();
+        let successor = mark("30");
+        assert_ne!(successor.outbox_operation_id, first.outbox_operation_id);
+        let rows = db
+            .prepare(
+                "SELECT status, json_extract(payload_json, '$.read_watermark_seq')
+                 FROM local_mutation_outbox ORDER BY created_at, mutation_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains(&("in_flight".to_owned(), "20".to_owned())));
+        assert!(rows.contains(&("pending".to_owned(), "30".to_owned())));
+
+        recover_interrupted_work(&db, 3).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM local_mutation_outbox
+                 WHERE status = 'retryable' AND in_flight_since IS NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
         );
     }
 }
