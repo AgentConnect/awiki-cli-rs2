@@ -614,19 +614,20 @@ SQLite, WebSocket frames, `since_event_seq`, `next_event_seq`, or checkpoint
 load/store primitives.
 
 Schema 32 introduces Core-private v2 binding, cursor, applied-event receipt,
-recovery, and read-mutation outbox tables. This stage does not expose those rows
-or a manual cursor API to Dart, and it does not yet switch the existing
-`syncDelta` facade away from its current Core-owned checkpoint. In particular,
-the first v2 outbox supports read-state acknowledgement only; message edit,
-recall, delete, and tombstone synchronization are outside this phase.
+recovery, and read-mutation outbox tables; schema 33 adds the private per-owner
+bootstrap installation ID. `syncNow` is the v2 ordinary
+Direct/Group main path; none of those rows, account/device binding, or a manual
+cursor API is exposed to Dart. `syncDelta` remains a separate v1 compatibility
+facade. Message edit, recall, delete, tombstone, read-state, snapshot recovery,
+Push, and E2EE/MLS multi-device synchronization are outside this stage.
 
 Expected public shape:
 
 ```dart
-final delta = await client.messages.syncDelta(
-  const SyncDeltaRequest(
+final outcome = await client.messages.syncNow(
+  const MessageSyncRequest(
     limit: 100,
-    reason: 'app_resumed',
+    reason: 'app_resume',
   ),
 );
 
@@ -641,13 +642,29 @@ final page = await client.messages.syncConversationAfter(
 );
 ```
 
-`syncDelta` semantics:
+`syncNow` semantics:
 
-- Rust `im-core` reads the current global message checkpoint from local SQLite.
-- Rust `im-core` sends `sync.delta` to the home message service and injects
-  `since_event_seq` internally.
-- Rust `im-core` applies all returned events and advances the checkpoint only after
-  the local apply transaction succeeds.
+- Rust `im-core` reads the active account/device binding and v2 cursor from
+  private SQLite; Dart supplies only `reason` and optional `limit`.
+- When fenced or missing, Rust runs tail-only `sync.bootstrap` and atomically
+  commits binding, Group baseline, and cursor.
+- Rust exactly hydrates all required `message.created` events through
+  `message.get_batch` in ordered chunks of 8, leaving compact-JSON
+  framing/escaping headroom under the service's 16 MiB hard response budget,
+  then atomically commits receipts, canonical local projections, and the next
+  cursor only after all chunks are complete.
+- Required hydration, schema, canonical identity, or route failure leaves both
+  receipt and cursor unchanged. `SYNC_RECOVERY_REQUIRED` is returned only as the
+  typed high-level `MessageSyncStatus.recoveryRequired`; this stage does not
+  expose a recovery token or perform snapshot recovery.
+- `committedIncomingMessages` contains only incoming messages whose projection
+  transaction committed, with `CommittedMessageSource.liveDelta`; realtime
+  hints alone never appear in this list.
+- `syncDelta` retains the earlier v1 checkpoint behavior and remains isolated
+  from the v2 cursor.
+
+`syncDelta` compatibility semantics:
+
 - For an owner-scoped ordinary P3 Direct event that carries metadata but no body,
   Rust checks the exact `message_id` and `server_seq`, resolves the peer through
   the authoritative Handle directory, groups missing targets by Direct peer,
@@ -665,8 +682,8 @@ final page = await client.messages.syncConversationAfter(
 - If the service returns `snapshot_required=true`, the SDK returns a failed-closed
   result: no checkpoint advance, no local projection wipe, and diagnostic fields for
   the App to surface a degraded sync state.
-- Dart callers can choose `limit` and `reason`; they cannot choose or store the
-  reliable checkpoint.
+- Dart callers can choose only documented safe controls; they cannot choose or
+  store either reliable checkpoint.
 
 `syncConversationAfter` semantics:
 

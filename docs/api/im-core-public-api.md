@@ -686,6 +686,7 @@ impl MessageService<'_> {
         query: LocalHistoryQuery,
     ) -> ImResult<Page<Message>>;
     pub fn sync_delta(&self, request: SyncDeltaRequest) -> ImResult<SyncDeltaResult>;
+    pub fn sync_now(&self, request: MessageSyncRequest) -> ImResult<MessageSyncOutcome>;
     pub fn sync_thread_after(
         &self,
         request: SyncThreadAfterRequest,
@@ -745,6 +746,17 @@ impl MessageService<'_> {
 
 Reliable sync 补充：
 
+- `sync_now(MessageSyncRequest { reason, limit })` 是 v2 普通 Direct/Group 主链路。
+  account、device、cursor 均由 Core 内部从 active binding 和 SQLite 获取，public outcome
+  只暴露高层状态、计数、changed conversation IDs、已提交 incoming message 和诊断。
+  `sync.bootstrap` 的 binding/Group baseline/cursor，以及每页 `sync.delta` 的 receipt、
+  exact-hydrated projection/cursor 均在单个 SQLite 事务提交；必需 hydration、schema、
+  canonical identity 或 route 解析失败时整页回滚，cursor 与 receipt 不变。
+  `message.get_batch` 服务端使用 16 MiB hard response budget；Core 固定按请求顺序每 8 个
+  event ID 分批，为 compact JSON 封装与转义保留余量。任一批次出现 unavailable 时整页不应用。
+  bootstrap 的 `client_instance_id` 是 Core 为每个本地 owner 在同步 SQLite 首次生成并先持久化
+  的随机不透明值：请求丢失/失败重试和重启复用，清库/新 DB 自动变化，不能由 owner/account/
+  device 稳定标识派生。
 - `ensure_conversation(ConversationReadRef)` 幂等提交空会话存在性。Direct 必须已有
   owner-scoped canonical route，Group 必须已有 active membership；校验失败不写入。
 - `conversations(ConversationQuery)` 从 committed `conversation_registry` 左连接
@@ -757,8 +769,8 @@ Reliable sync 补充：
   独立于 `last_message_at`，因此无消息会话也有稳定排序键。cursor 内部保存上一页最后一条
   `activity_at` 与 `conversation_id` 排序键，比 offset 更能抵抗新增消息或排序变化。
   调用方不得解析、修改或复用到其他 API。
-- `sync_delta` 是高层可靠同步入口，`since_event_seq` 从 `im-core` Rust/SQLite 内部
-  checkpoint 注入，调用方不能传入或推进。
+- `sync_delta` 保留为 v1 compatibility 高层入口，`since_event_seq` 从 `im-core`
+  Rust/SQLite 内部 checkpoint 注入，调用方不能传入或推进；它与 v2 cursor 不得互转或共用。
 - 对发送者 owner 投影的普通 P3 Direct 元数据事件，`sync_delta` 按 `message_id + server_seq`
   检查具体消息；缺失时先通过权威 Handle 目录解析 Persona，再按 Direct peer 批量从该页最早缺失
   sequence 前一位调用 `direct.get_history` 补齐；同一个权威 history page 的 peer scope 只解析

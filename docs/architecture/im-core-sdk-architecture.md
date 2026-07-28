@@ -671,13 +671,30 @@ the SDK architecture boundary.
 
 `im-core` Rust/SQLite owns the global reliable checkpoint:
 
+- `messages.sync_now()` / Dart `client.messages.syncNow(...)` are the v2 ordinary
+  Direct/Group main path. Rust derives account/device binding internally,
+  bootstraps a tail-only cursor and Group baseline when required, exactly
+  hydrates every required `message.created` through `message.get_batch`, and
+  commits event receipts, canonical projection changes, and the next v2 cursor
+  in one SQLite transaction. Required hydration, schema, identity, or route
+  failure rolls back the whole page and does not write a receipt or advance the
+  cursor. Although the wire method accepts at most 100 event IDs and the service
+  enforces a 16 MiB hard response budget, Core uses ordered chunks of 8 to leave
+  headroom for compact-JSON framing and escaping; any unavailable item in any
+  chunk aborts the full delta page.
+- Before the first bootstrap for a local owner, Core persists a cryptographically
+  random opaque `client_instance_id` in the local sync database. Lost responses,
+  process restarts, and retries reuse it; a new/cleared local database generates
+  a different value. It is not derived from owner, account, or device identity
+  and is never exposed through the SDK.
 - `messages.sync_delta()` / Dart `client.messages.syncDelta(...)` are high-level
-  calls. Rust reads the current checkpoint from local `sync_state`, injects
+  v1 compatibility calls. Rust reads the current checkpoint from local `sync_state`, injects
   `since_event_seq` into the wire request, applies the returned page, and writes
   the new checkpoint only after the local apply transaction succeeds.
 - Public Rust, Dart, Flutter, CLI, and App APIs must not expose
-  `loadGlobalCheckpoint`, `storeGlobalCheckpoint`, raw `since_event_seq`, raw
-  `next_event_seq`, or equivalent manual checkpoint advance.
+  account/device binding, `loadGlobalCheckpoint`, `storeGlobalCheckpoint`, raw
+  v1/v2 cursors, raw `since_event_seq`, raw `next_event_seq`, or equivalent
+  manual checkpoint advance. The v1 and v2 cursor stores remain isolated.
 - `snapshot_required=true` is fail-closed until a documented repair API exists:
   no checkpoint advance and no local projection wipe.
 - An identity-unresolved inbound message is not a failed apply and is never
@@ -750,12 +767,19 @@ the current `sync_delta()` wire behavior:
   `read_state_mark_read`. Message edit, recall, delete, tombstone, and generic
   message-send mutations are not part of this phase.
 
-The existing `sync_state` table remains the active checkpoint for the existing
-`sync.delta` implementation until a later protocol step switches the runtime to
-`message_sync_state`. Schemas 28, 29, 30, and 31 migrate atomically to 32;
-schema 27 remains owned exclusively by the explicit pre-open canonical upgrade
-gate. Startup recovery changes interrupted recovery/apply and in-flight read
-mutations to retryable state without advancing a cursor.
+Schema 33 adds the per-owner `sync_installation_state` row used to persist the
+opaque bootstrap `client_instance_id`. A true schema-32 database upgrades
+atomically to 33 before bootstrap; keeping this as an explicit version boundary
+also makes older schema-32 binaries reject the newer database instead of
+silently treating it as downgrade-compatible.
+
+The existing `sync_state` table remains the active checkpoint for the v1
+`sync.delta` compatibility implementation; v2 `syncNow` uses
+`message_sync_state`. Schemas 28, 29, 30, and 31 migrate atomically through 32
+to 33, and a true schema-32 database migrates through the dedicated 32-to-33
+step. Schema 27 remains owned exclusively by the explicit pre-open canonical
+upgrade gate. Startup recovery changes interrupted recovery/apply and in-flight
+read mutations to retryable state without advancing a cursor.
 
 `sync.delta` is an authenticated exact-device projection over an owner-global
 sequence. The service may omit sibling-targeted or expired rows while advancing
