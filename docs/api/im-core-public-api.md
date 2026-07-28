@@ -757,6 +757,27 @@ Reliable sync 补充：
   bootstrap 的 `client_instance_id` 是 Core 为每个本地 owner 在同步 SQLite 首次生成并先持久化
   的随机不透明值：请求丢失/失败重试和重启复用，清库/新 DB 自动变化，不能由 owner/account/
   device 稳定标识派生。
+- `sync_now` 在一次调用内闭合 compact recovery：
+  delta（或 existing-device bootstrap）→ 只存在于 Rust 进程栈的不透明 token →
+  snapshot 严格校验/原子 merge → post-anchor delta。成功只返回既有 `changed` / `idle`；
+  snapshot 或 post-anchor delta 失败返回 `retryable_failure`，授权或 generation fence 返回
+  `auth_revoked`。没有第二个 public recover API，raw token、cursor/anchor、cutoff、policy
+  limit、snapshot 返回数量都不得进入 Rust public DTO、Dart/Flutter、CLI、App、SQLite 或日志。
+  snapshot 合并当前 read/Group 状态和最近普通消息，但不得删除更早的本地消息；receipts、
+  projections、cursor 和 recovery completion 在同一 SQLite 事务提交。
+- `committed_incoming_messages` 只包含 post-snapshot/live delta 实际提交的 incoming messages；
+  snapshot hydration 与 realtime hint 不进入该列表。
+- 本地 read watermark 更新与 durable `read_state_mark_read` outbox enqueue 是同一 SQLite
+  事务。尚未发送的条目按最大 watermark 合并；已 in-flight payload 不可修改，更高 watermark
+  创建 successor；启动恢复把 stale in-flight 改为 retryable。服务响应或经过 account/device/
+  auth-generation 验证的远端 read-state event 必须在同一事务内执行 MAX merge、更新 read
+  projection 并 ack 已覆盖的 outbox。v2 retry 必须把同一个 outbox `operation_id` 放在
+  ANP `meta.operation_id`；body 只保留 `user_did`、`thread { kind, thread_key }` 和 watermark
+  字段，不发送 account/device/origin selector，也不重复发送 body `operation_id`。
+- Direct read state 可以暂时只引用服务端不透明 `conversation_ref`，即使 48 小时/500 条
+  snapshot window 内没有建立 canonical conversation 的消息，也允许把该状态存入 owner-scoped
+  durable backlog 并提交 snapshot/cursor。后续普通消息建立精确 remote-thread binding 时，
+  Core 在同一事务 replay 并删除 backlog；不得根据 DID 猜测 canonical conversation。
 - `ensure_conversation(ConversationReadRef)` 幂等提交空会话存在性。Direct 必须已有
   owner-scoped canonical route，Group 必须已有 active membership；校验失败不写入。
 - `conversations(ConversationQuery)` 从 committed `conversation_registry` 左连接
@@ -781,7 +802,12 @@ Reliable sync 补充：
   fail closed，保留原 checkpoint。
 - `sync_conversation_after` 是 conversationId-first thread-local 补新 wrapper。新的 App/Dart
   消息显示主路径应使用 `ConversationReadRef.conversation_id`，旧 `sync_thread_after(ThreadRef)`
-  只作为 CLI/legacy adapter 或低层调试入口。
+  只作为 CLI/legacy adapter 或低层调试入口。Core 对服务返回页还要执行 ordinary-only
+  防御过滤：E2EE、MLS、device-ciphertext 行即使被服务错误返回也不得进入本地普通消息投影。
+  blocking/async 均调用 account-authorized `sync.thread_after`；private body 严格只有
+  `thread_key`、`after_server_seq`、`limit`。Direct 的 `thread_key` 只能来自 owner-scoped
+  durable canonical-conversation binding，缺失时 fail closed，禁止用 peer DID 猜测；Group
+  使用 Group DID。该路径只提交本地 message facts/projection，不推进 account cursor。
 - `local_conversation_timeline` 读取 `conversation_id` 对应的 committed SQLite projection，
   是 App local-first timeline 的事实源；远端 history/backfill 结果只有持久化到 projection
   后才能成为 UI 可见事实。

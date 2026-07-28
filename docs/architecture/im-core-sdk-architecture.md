@@ -721,7 +721,7 @@ the SDK architecture boundary.
   `direct + peer DID`. It must not reinterpret that presentation thread as a
   `thread` wire identity or relax conflict detection to make the merge pass.
 
-`messages.sync_conversation_after()` / Dart `client.messages.syncConversationAfter(...)` is the conversationId-first catch-up API for AWiki Me and the Flutter SDK display chain. It resolves `ConversationReadRef.conversation_id` to the syncable storage thread/ref, uses `after_server_seq`, and does not read or advance the account-level checkpoint. `messages.sync_thread_after()` / Dart `client.messages.syncThreadAfter(...)` remains a legacy / debug adapter. Implementations must not return a locally merged `history_async` page as a catch-up result; they use a raw remote path or strictly filter `server_seq > after_server_seq`.
+`messages.sync_conversation_after()` / Dart `client.messages.syncConversationAfter(...)` is the conversationId-first catch-up API for AWiki Me and the Flutter SDK display chain. It resolves `ConversationReadRef.conversation_id` to the syncable storage thread/ref, uses `after_server_seq`, and does not read or advance the account-level checkpoint. `messages.sync_thread_after()` / Dart `client.messages.syncThreadAfter(...)` remains a legacy / debug adapter. Both blocking and async Core paths call the account-authorized, plain-only service `sync.thread_after` method with exactly `thread_key`, `after_server_seq`, and `limit` in the request body. Direct uses the durable owner-scoped `sync_thread_bindings` conversation reference and fails closed when no authoritative binding exists; it never substitutes a peer DID. Group uses the Group DID as its thread key. Implementations must not return a locally merged `history_async` page as a catch-up result and must strictly filter `server_seq > after_server_seq`.
 
 Realtime notification parsing may expose a readonly `RealtimeSyncHint` from the
 top-level WebSocket `sync` member. The hint is scheduling metadata for
@@ -773,13 +773,35 @@ atomically to 33 before bootstrap; keeping this as an explicit version boundary
 also makes older schema-32 binaries reject the newer database instead of
 silently treating it as downgrade-compatible.
 
+Schema 34 completes the ordinary read/recovery boundary. Owner-scoped
+`sync_thread_bindings` maps the service's opaque Direct `conversation_ref` or
+Group thread key to exactly one canonical local conversation; Core never guesses
+that mapping from a DID. `sync_remote_read_states` is a durable unresolved
+Direct read-state backlog. Snapshot/delta may advance after transactionally
+storing a current read state whose recent message was outside the 48-hour/500
+message window; a later ordinary message binding replays and removes that
+backlog in the same transaction. `thread_read_state.remote_state_version`
+provides monotonic stale/conflict rejection.
+
+`syncNow` closes compact recovery inside one call:
+delta (or existing-device bootstrap recovery) → process-local opaque token →
+snapshot validation/atomic merge → post-anchor delta. Snapshot application
+merges current read/Group state and recent ordinary messages without deleting
+older local messages, commits receipts/projections/cursor/recovery completion in
+one SQLite transaction, and returns only the existing high-level `changed` or
+`idle` terminal outcome after the post-anchor delta succeeds. A raw token,
+cursor, cutoff, policy limit, or returned snapshot count never crosses the Rust
+public, Dart, Flutter, CLI, or App boundary and is never persisted. Startup
+changes an interrupted recovery to `retryable` while retaining the original
+cursor, so the next `syncNow` obtains a fresh process-local token.
+
 The existing `sync_state` table remains the active checkpoint for the v1
 `sync.delta` compatibility implementation; v2 `syncNow` uses
 `message_sync_state`. Schemas 28, 29, 30, and 31 migrate atomically through 32
-to 33, and a true schema-32 database migrates through the dedicated 32-to-33
-step. Schema 27 remains owned exclusively by the explicit pre-open canonical
-upgrade gate. Startup recovery changes interrupted recovery/apply and in-flight
-read mutations to retryable state without advancing a cursor.
+to 34; a true schema-32 database migrates through the dedicated 32-to-33 and
+33-to-34 steps. Schema 27 remains owned exclusively by the explicit pre-open
+canonical upgrade gate. Startup recovery changes interrupted recovery/apply and
+in-flight read mutations to retryable state without advancing a cursor.
 
 `sync.delta` is an authenticated exact-device projection over an owner-global
 sequence. The service may omit sibling-targeted or expired rows while advancing

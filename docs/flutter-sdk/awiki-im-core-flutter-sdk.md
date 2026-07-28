@@ -615,11 +615,13 @@ load/store primitives.
 
 Schema 32 introduces Core-private v2 binding, cursor, applied-event receipt,
 recovery, and read-mutation outbox tables; schema 33 adds the private per-owner
-bootstrap installation ID. `syncNow` is the v2 ordinary
-Direct/Group main path; none of those rows, account/device binding, or a manual
-cursor API is exposed to Dart. `syncDelta` remains a separate v1 compatibility
-facade. Message edit, recall, delete, tombstone, read-state, snapshot recovery,
-Push, and E2EE/MLS multi-device synchronization are outside this stage.
+bootstrap installation ID. Schema 34 adds owner-scoped remote thread bindings,
+the unresolved Direct read-state backlog, and monotonic remote read-state
+versions. `syncNow` is the v2 ordinary Direct/Group main path; none of those
+rows, account/device binding, cursor, recovery token, snapshot cutoff/limit, or
+snapshot count is exposed to Dart. `syncDelta` remains a separate v1
+compatibility facade. Message edit, recall, delete, tombstone, Push, and
+E2EE/MLS multi-device synchronization remain outside this stage.
 
 Expected public shape:
 
@@ -646,20 +648,45 @@ final page = await client.messages.syncConversationAfter(
 
 - Rust `im-core` reads the active account/device binding and v2 cursor from
   private SQLite; Dart supplies only `reason` and optional `limit`.
-- When fenced or missing, Rust runs tail-only `sync.bootstrap` and atomically
-  commits binding, Group baseline, and cursor.
+- When fenced or missing, Rust runs `sync.bootstrap`. A new device takes the
+  tail-only path and atomically commits binding, Group/read baseline, and cursor.
+  An existing-device upgrade may instead enter compact recovery without first
+  inventing a local cursor.
 - Rust exactly hydrates all required `message.created` events through
   `message.get_batch` in ordered chunks of 8, leaving compact-JSON
   framing/escaping headroom under the service's 16 MiB hard response budget,
   then atomically commits receipts, canonical local projections, and the next
   cursor only after all chunks are complete.
 - Required hydration, schema, canonical identity, or route failure leaves both
-  receipt and cursor unchanged. `SYNC_RECOVERY_REQUIRED` is returned only as the
-  typed high-level `MessageSyncStatus.recoveryRequired`; this stage does not
-  expose a recovery token or perform snapshot recovery.
+  receipt and cursor unchanged.
+- A compact-recovery response is handled inside the same call:
+  delta/bootstrap → process-local opaque token → strict snapshot validation and
+  atomic merge → post-anchor delta. The snapshot merges current Direct/Group
+  read state, active Group state, and recent ordinary messages without deleting
+  older local messages. The successful call ends in the existing
+  `MessageSyncStatus.changed` or `MessageSyncStatus.idle`; snapshot or
+  post-anchor failure ends in `retryableFailure`, while an authorization or
+  generation fence ends in `authRevoked`. There is no second recover API.
+- The raw recovery token remains on the Rust process stack only and is never
+  written to SQLite or logs. Dart cannot observe or persist the token, recovery
+  cursor/anchor, cutoff, policy limit, or returned snapshot count.
 - `committedIncomingMessages` contains only incoming messages whose projection
   transaction committed, with `CommittedMessageSource.liveDelta`; realtime
-  hints alone never appear in this list.
+  hints and snapshot hydration never appear in this list.
+- Local read advancement and durable outbox enqueue are one SQLite transaction.
+  Unsent entries coalesce to their maximum watermark; an in-flight payload is
+  immutable and a higher watermark creates a successor. Startup changes stale
+  in-flight rows to retryable. A service response or authenticated remote
+  read-state event atomically MAX-merges the watermark, updates message
+  projections, and acknowledges covered outbox entries. Every retry reuses the
+  outbox operation ID as ANP `meta.operation_id`; the v2 body carries only the
+  user DID, opaque `{ kind, thread_key }`, and watermark fields, with no
+  account/device/origin selector or duplicate body operation ID.
+- An unresolved Direct read state is durably keyed by its opaque service
+  conversation reference. Snapshot/cursor commit is allowed even when no recent
+  message establishes the canonical local conversation; the first later
+  ordinary message binding replays and removes the backlog in the same
+  transaction. Core never guesses this binding from a DID.
 - `syncDelta` retains the earlier v1 checkpoint behavior and remains isolated
   from the v2 cursor.
 
@@ -688,11 +715,20 @@ final page = await client.messages.syncConversationAfter(
 `syncConversationAfter` semantics:
 
 - It is a thread-local freshness API for direct/group chat surfaces.
+- Blocking and async Core use the account-authorized, plain-only
+  `sync.thread_after` service method. The private request body contains exactly
+  `thread_key`, `after_server_seq`, and `limit`; no account, device, peer DID, or
+  Group DID selector is accepted. Direct resolves `thread_key` only through the
+  durable canonical-conversation binding and fails closed if that authoritative
+  binding is absent; Group uses its Group DID as the thread key.
 - `afterServerSeq` is a thread-local message sequence, not the account-level
   `event_seq`.
 - It does not read or advance the reliable global checkpoint.
 - The returned page must contain only `server_seq > afterServerSeq` messages in
   ascending `server_seq` order.
+- Core defensively admits only ordinary plaintext Direct/Group messages.
+  E2EE/MLS/device-ciphertext rows are discarded even if a service page includes
+  them.
 - Returned messages are not UI truth until `im-core` persists them to the local
   projection and the App reloads/repairs through the conversation timeline.
 `syncThreadAfter(ThreadRef)` remains a compatibility wrapper and should not be the
