@@ -40,6 +40,7 @@ pub(crate) struct SaveIdentityInput {
     pub(crate) display_name: String,
     pub(crate) handle: String,
     pub(crate) full_handle: String,
+    pub(crate) binding_generation: Option<String>,
     pub(crate) jwt_token: String,
     pub(crate) did_document: Option<Value>,
     pub(crate) key_mode: SaveIdentityKeyMode,
@@ -135,6 +136,7 @@ pub(crate) struct StoredIdentity {
     pub(crate) display_name: String,
     pub(crate) handle: String,
     pub(crate) full_handle: String,
+    pub(crate) binding_generation: Option<String>,
     pub(crate) created_at: String,
     pub(crate) jwt_token: String,
     pub(crate) is_default: bool,
@@ -301,6 +303,11 @@ impl<'a> IdentityStore<'a> {
                 ));
             }
         }
+        input.binding_generation = merge_identity_binding_generation(
+            index.credentials.get(&local_alias),
+            input.did.as_str(),
+            input.binding_generation.as_deref(),
+        )?;
         let identity_dir = self.local_identity_dir(&dir_name)?;
         let created_at = index
             .credentials
@@ -348,6 +355,7 @@ impl<'a> IdentityStore<'a> {
                 display_name: input.display_name.clone(),
                 handle: input.handle.clone(),
                 full_handle: input.full_handle.clone(),
+                binding_generation: input.binding_generation.clone(),
             },
         )?;
         if vault_metadata.is_none() {
@@ -424,6 +432,7 @@ impl<'a> IdentityStore<'a> {
                 .get(&local_alias)
                 .and_then(|entry| entry.device_state.clone())
         });
+        let binding_generation = input.binding_generation.clone();
         index.credentials.insert(
             local_alias.clone(),
             IndexEntry {
@@ -435,6 +444,7 @@ impl<'a> IdentityStore<'a> {
                 name: input.display_name.clone(),
                 handle: input.handle.clone(),
                 full_handle: input.full_handle.clone(),
+                binding_generation: binding_generation.clone(),
                 created_at: created_at.clone(),
                 is_default,
                 vault_migration: vault_metadata,
@@ -454,6 +464,7 @@ impl<'a> IdentityStore<'a> {
             display_name: input.display_name,
             handle: input.handle,
             full_handle: input.full_handle,
+            binding_generation,
             created_at,
             jwt_token: input.jwt_token,
             is_default,
@@ -1544,6 +1555,76 @@ impl<'a> IdentityStore<'a> {
         self.save_index_locked(&lock, index)
     }
 
+    pub(crate) fn save_binding_generation(
+        &self,
+        local_alias: &str,
+        expected_identity_id: &str,
+        expected_did: &str,
+        expected_full_handle: &str,
+        binding_generation: &str,
+    ) -> crate::ImResult<()> {
+        let local_alias = local_alias.trim();
+        let expected_identity_id = expected_identity_id.trim();
+        let expected_did = expected_did.trim();
+        let expected_full_handle = expected_full_handle.trim();
+        let generation =
+            anp::wns::BindingGeneration::new(binding_generation.to_owned()).map_err(|_| {
+                crate::ImError::invalid_input(
+                    Some("binding_generation".to_owned()),
+                    "binding_generation must be a canonical positive decimal string",
+                )
+            })?;
+        if local_alias.is_empty()
+            || expected_identity_id.is_empty()
+            || expected_did.is_empty()
+            || expected_full_handle.is_empty()
+        {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "cannot persist a Handle generation without an exact local identity"
+                    .to_owned(),
+            });
+        }
+        let lock = self.lock_index_mutation()?;
+        let mut index = self.load_index()?;
+        let entry = index.credentials.get_mut(local_alias).ok_or_else(|| {
+            crate::ImError::IdentityNotFound {
+                selector: local_alias.to_owned(),
+            }
+        })?;
+        if entry.unique_id.trim() != expected_identity_id
+            || entry.did.trim() != expected_did
+            || entry.full_handle.trim() != expected_full_handle
+        {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "authoritative Handle binding does not match the active local identity"
+                    .to_owned(),
+            });
+        }
+        if let Some(previous) = entry.binding_generation.as_deref() {
+            let previous = anp::wns::BindingGeneration::new(previous.to_owned()).map_err(|_| {
+                crate::ImError::IdentityBindingConflict {
+                    detail: "stored Handle binding generation is not canonical".to_owned(),
+                }
+            })?;
+            if generation < previous {
+                return Err(crate::ImError::IdentityBindingConflict {
+                    detail: "authoritative Handle binding generation moved backwards".to_owned(),
+                });
+            }
+        }
+        let dir_name = entry.dir_name.clone();
+        let identity_path = self.local_identity_dir(&dir_name)?.join(IDENTITY_FILE_NAME);
+        update_identity_payload_binding_generation(
+            &identity_path,
+            expected_identity_id,
+            expected_did,
+            expected_full_handle,
+            generation.as_str(),
+        )?;
+        entry.binding_generation = Some(generation.to_string());
+        self.save_index_locked(&lock, index)
+    }
+
     pub(crate) fn write_default_identity(&self, local_alias: &str) -> crate::ImResult<()> {
         self.sync_default_identity(Some(local_alias))
     }
@@ -1846,6 +1927,8 @@ pub(crate) struct IndexEntry {
     pub(crate) handle: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) full_handle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) binding_generation: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) created_at: String,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -1962,6 +2045,8 @@ struct IdentityPayload {
     handle: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     full_handle: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binding_generation: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1984,6 +2069,10 @@ struct SdkIdentityRecord {
     display_name: Option<String>,
     #[serde(default)]
     local_alias: Option<String>,
+    #[serde(default)]
+    user_id: String,
+    #[serde(default)]
+    binding_generation: Option<String>,
     #[serde(default)]
     is_default: bool,
 }
@@ -2040,9 +2129,11 @@ fn sdk_registry_to_index(file: SdkRegistryFile) -> IndexPayload {
                 .to_string(),
                 did: record.did,
                 unique_id: record.id,
+                user_id: record.user_id,
                 name: record.display_name.unwrap_or_default(),
                 handle,
                 full_handle,
+                binding_generation: record.binding_generation,
                 is_default: record.is_default,
                 ..IndexEntry::default()
             },
@@ -2073,9 +2164,110 @@ fn normalize_index_payload(mut payload: IndexPayload) -> crate::ImResult<IndexPa
         if let Some(entry) = payload.credentials.get_mut(&name) {
             entry.credential_name = name.clone();
             entry.is_default = default_name == name;
+            if let Some(generation) = entry.binding_generation.as_deref() {
+                anp::wns::BindingGeneration::new(generation.to_owned()).map_err(|_| {
+                    crate::ImError::invalid_input(
+                        Some(format!(
+                            "identity_registry.credentials.{name}.binding_generation"
+                        )),
+                        "binding_generation must be a canonical positive decimal string",
+                    )
+                })?;
+            }
         }
     }
     Ok(payload)
+}
+
+fn merge_identity_binding_generation(
+    existing: Option<&IndexEntry>,
+    incoming_did: &str,
+    incoming_generation: Option<&str>,
+) -> crate::ImResult<Option<String>> {
+    let incoming = incoming_generation
+        .map(|value| {
+            anp::wns::BindingGeneration::new(value.to_owned()).map_err(|_| {
+                crate::ImError::invalid_input(
+                    Some("binding_generation".to_owned()),
+                    "binding_generation must be a canonical positive decimal string",
+                )
+            })
+        })
+        .transpose()?;
+    let Some(existing) = existing else {
+        return Ok(incoming.map(|generation| generation.to_string()));
+    };
+    let previous = existing
+        .binding_generation
+        .as_deref()
+        .map(|value| {
+            anp::wns::BindingGeneration::new(value.to_owned()).map_err(|_| {
+                crate::ImError::IdentityBindingConflict {
+                    detail: "stored Handle binding generation is not canonical".to_owned(),
+                }
+            })
+        })
+        .transpose()?;
+    let resolved = incoming.or_else(|| previous.clone());
+    if matches!((&resolved, &previous), (Some(current), Some(prior)) if current < prior) {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "Handle binding generation moved backwards".to_owned(),
+        });
+    }
+    let generation_advanced = matches!(
+        (&resolved, &previous),
+        (Some(current), Some(prior)) if current > prior
+    ) || matches!((&resolved, &previous), (Some(_), None));
+    if !generation_advanced && existing.did.trim() != incoming_did.trim() {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "identity DID changed without a newer Handle binding generation".to_owned(),
+        });
+    }
+    Ok(resolved.map(|generation| generation.to_string()))
+}
+
+fn update_identity_payload_binding_generation(
+    path: &Path,
+    expected_identity_id: &str,
+    expected_did: &str,
+    expected_full_handle: &str,
+    binding_generation: &str,
+) -> crate::ImResult<()> {
+    let raw = fs::read(path).map_err(|error| crate::ImError::CredentialFileUnreadable {
+        path_kind: "identity".to_owned(),
+        detail: error.to_string(),
+    })?;
+    let mut payload =
+        serde_json::from_slice::<Value>(&raw).map_err(|error| crate::ImError::Serialization {
+            detail: error.to_string(),
+        })?;
+    let object =
+        payload
+            .as_object_mut()
+            .ok_or_else(|| crate::ImError::IdentityBindingConflict {
+                detail: "identity.json is not an object".to_owned(),
+            })?;
+    let matches_expected = [
+        ("unique_id", expected_identity_id),
+        ("did", expected_did),
+        ("full_handle", expected_full_handle),
+    ]
+    .into_iter()
+    .all(|(field, expected)| object.get(field).and_then(Value::as_str) == Some(expected));
+    if !matches_expected {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "identity.json does not match the active local identity".to_owned(),
+        });
+    }
+    object.insert(
+        "binding_generation".to_owned(),
+        Value::String(binding_generation.to_owned()),
+    );
+    let encoded =
+        serde_json::to_vec_pretty(&payload).map_err(|error| crate::ImError::Serialization {
+            detail: error.to_string(),
+        })?;
+    write_secure_bytes_atomic(path, &encoded)
 }
 
 fn stored_handle_fields(handle: &str, full_handle: &str, did: &str) -> (String, String) {
@@ -2862,6 +3054,7 @@ mod tests {
                 display_name: "Alice".to_owned(),
                 handle: "alice".to_owned(),
                 full_handle: "alice.awiki.info".to_owned(),
+                binding_generation: None,
                 jwt_token: "token".to_owned(),
                 did_document: Some(json!({"id": did})),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,
@@ -3012,6 +3205,7 @@ mod tests {
                 display_name: "Alice".to_owned(),
                 handle: "alice".to_owned(),
                 full_handle: "alice.example".to_owned(),
+                binding_generation: None,
                 jwt_token: "jwt-secret-value".to_owned(),
                 did_document: Some(json!({"id": "did:example:alice"})),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,
@@ -3120,6 +3314,7 @@ mod tests {
                 display_name: "Alice".to_owned(),
                 handle: "alice".to_owned(),
                 full_handle: "alice.example".to_owned(),
+                binding_generation: None,
                 jwt_token: "jwt-secret-value".to_owned(),
                 did_document: Some(json!({"id": "did:example:alice"})),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,
@@ -3191,6 +3386,7 @@ mod tests {
                     display_name: "Alice".to_owned(),
                     handle: "alice".to_owned(),
                     full_handle: "alice.example".to_owned(),
+                    binding_generation: None,
                     jwt_token: "jwt-secret-value".to_owned(),
                     did_document: Some(json!({"id": "did:example:alice"})),
                     key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,
@@ -3343,6 +3539,7 @@ mod tests {
                     display_name: "Alice".to_owned(),
                     handle: "alice".to_owned(),
                     full_handle: "alice.awiki.info".to_owned(),
+                    binding_generation: None,
                     jwt_token: "device-token".to_owned(),
                     did_document: Some(json!({"id": did.as_str()})),
                     key_mode: SaveIdentityKeyMode::VNext {
@@ -3433,6 +3630,7 @@ mod tests {
                     display_name: "Alice member".to_owned(),
                     handle: "alice".to_owned(),
                     full_handle: "alice.awiki.info".to_owned(),
+                    binding_generation: None,
                     jwt_token: "device-token".to_owned(),
                     did_document: Some(json!({"id": did.as_str()})),
                     key_mode: SaveIdentityKeyMode::VNext {
@@ -3675,6 +3873,7 @@ mod tests {
                     display_name: "Alice member".to_owned(),
                     handle: "alice".to_owned(),
                     full_handle: "alice.awiki.info".to_owned(),
+                    binding_generation: None,
                     jwt_token: "member-token".to_owned(),
                     did_document: Some(json!({"id": did.as_str()})),
                     key_mode: SaveIdentityKeyMode::VNext {
@@ -3784,6 +3983,7 @@ mod tests {
                     display_name: "Alice".to_owned(),
                     handle: "alice".to_owned(),
                     full_handle: "alice.example".to_owned(),
+                    binding_generation: None,
                     jwt_token: "jwt-secret-value".to_owned(),
                     did_document: Some(json!({"id": "did:example:alice"})),
                     key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,
@@ -3866,6 +4066,213 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_identity_save_keeps_binding_generation_monotonic_and_projections_equal() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        let first_generation = "18446744073709551616000000000000000001";
+        let next_generation = "18446744073709551616000000000000000002";
+        let input = |did: &str, generation: Option<&str>| SaveIdentityInput {
+            local_alias: "alice".to_owned(),
+            did: crate::ids::Did::parse(did).unwrap(),
+            unique_id: "alice-id".to_owned(),
+            user_id: "account-alice".to_owned(),
+            display_name: "Alice".to_owned(),
+            handle: "alice".to_owned(),
+            full_handle: "alice.awiki.test".to_owned(),
+            binding_generation: generation.map(str::to_owned),
+            jwt_token: "token".to_owned(),
+            did_document: Some(json!({"id": did})),
+            key_mode: SaveIdentityKeyMode::LegacyKey1,
+            device_state: None,
+            key1_private_pem: "private".to_owned(),
+            key1_public_pem: "public".to_owned(),
+            e2ee_signing_private_pem: "signing".to_owned(),
+            e2ee_agreement_private_pem: "agreement".to_owned(),
+            daemon_subkey_package: None,
+            make_default: true,
+        };
+        let identity_generation = || {
+            let index = store.load_index().unwrap();
+            let entry = &index.credentials["alice"];
+            let payload: Value = serde_json::from_slice(
+                &std::fs::read(
+                    paths
+                        .identity_root_dir
+                        .join(&entry.dir_name)
+                        .join(IDENTITY_FILE_NAME),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            (
+                entry.did.clone(),
+                entry.binding_generation.clone(),
+                payload["did"].as_str().unwrap().to_owned(),
+                payload["binding_generation"].as_str().map(str::to_owned),
+            )
+        };
+
+        store
+            .save_identity(input("did:example:alice-old", Some(first_generation)))
+            .unwrap();
+        assert_eq!(
+            identity_generation(),
+            (
+                "did:example:alice-old".to_owned(),
+                Some(first_generation.to_owned()),
+                "did:example:alice-old".to_owned(),
+                Some(first_generation.to_owned()),
+            )
+        );
+
+        let inherited = store
+            .save_identity(input("did:example:alice-old", None))
+            .unwrap();
+        assert_eq!(
+            inherited.binding_generation.as_deref(),
+            Some(first_generation)
+        );
+        assert_eq!(
+            identity_generation().1,
+            identity_generation().3,
+            "identity.json and the registry index must inherit the same generation"
+        );
+
+        for rejected in [
+            input("did:example:alice-old", Some("7")),
+            input("did:example:alice-new", Some(first_generation)),
+        ] {
+            assert!(matches!(
+                store.save_identity(rejected),
+                Err(crate::ImError::IdentityBindingConflict { .. })
+            ));
+            assert_eq!(
+                identity_generation(),
+                (
+                    "did:example:alice-old".to_owned(),
+                    Some(first_generation.to_owned()),
+                    "did:example:alice-old".to_owned(),
+                    Some(first_generation.to_owned()),
+                )
+            );
+        }
+
+        store
+            .save_identity(input("did:example:alice-new", Some(next_generation)))
+            .unwrap();
+        assert_eq!(
+            identity_generation(),
+            (
+                "did:example:alice-new".to_owned(),
+                Some(next_generation.to_owned()),
+                "did:example:alice-new".to_owned(),
+                Some(next_generation.to_owned()),
+            )
+        );
+    }
+
+    #[test]
+    fn identity_save_without_generation_cannot_silently_replace_the_did() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        let input = |did: &str| SaveIdentityInput {
+            local_alias: "alice".to_owned(),
+            did: crate::ids::Did::parse(did).unwrap(),
+            unique_id: "alice-id".to_owned(),
+            user_id: "account-alice".to_owned(),
+            display_name: "Alice".to_owned(),
+            handle: "alice".to_owned(),
+            full_handle: "alice.awiki.test".to_owned(),
+            binding_generation: None,
+            jwt_token: "token".to_owned(),
+            did_document: Some(json!({"id": did})),
+            key_mode: SaveIdentityKeyMode::LegacyKey1,
+            device_state: None,
+            key1_private_pem: "private".to_owned(),
+            key1_public_pem: "public".to_owned(),
+            e2ee_signing_private_pem: "signing".to_owned(),
+            e2ee_agreement_private_pem: "agreement".to_owned(),
+            daemon_subkey_package: None,
+            make_default: true,
+        };
+
+        store.save_identity(input("did:example:alice-old")).unwrap();
+        assert!(matches!(
+            store.save_identity(input("did:example:alice-new")),
+            Err(crate::ImError::IdentityBindingConflict { .. })
+        ));
+        assert_eq!(
+            store.load_index().unwrap().credentials["alice"].did,
+            "did:example:alice-old"
+        );
+    }
+
+    #[test]
+    fn authoritative_generation_save_updates_identity_json_and_index_together() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = IdentityStore::new(&paths);
+        let did = "did:example:alice";
+        store
+            .save_identity(SaveIdentityInput {
+                local_alias: "alice".to_owned(),
+                did: crate::ids::Did::parse(did).unwrap(),
+                unique_id: "alice-id".to_owned(),
+                user_id: "account-alice".to_owned(),
+                display_name: "Alice".to_owned(),
+                handle: "alice".to_owned(),
+                full_handle: "alice.awiki.test".to_owned(),
+                binding_generation: None,
+                jwt_token: "token".to_owned(),
+                did_document: Some(json!({"id": did})),
+                key_mode: SaveIdentityKeyMode::LegacyKey1,
+                device_state: None,
+                key1_private_pem: "private".to_owned(),
+                key1_public_pem: "public".to_owned(),
+                e2ee_signing_private_pem: "signing".to_owned(),
+                e2ee_agreement_private_pem: "agreement".to_owned(),
+                daemon_subkey_package: None,
+                make_default: true,
+            })
+            .unwrap();
+        let generation = "18446744073709551616000000000000000003";
+
+        store
+            .save_binding_generation("alice", "alice-id", did, "alice.awiki.test", generation)
+            .unwrap();
+
+        let index = store.load_index().unwrap();
+        let entry = &index.credentials["alice"];
+        let payload: Value = serde_json::from_slice(
+            &std::fs::read(
+                paths
+                    .identity_root_dir
+                    .join(&entry.dir_name)
+                    .join(IDENTITY_FILE_NAME),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(entry.binding_generation.as_deref(), Some(generation));
+        assert_eq!(
+            payload["binding_generation"].as_str(),
+            entry.binding_generation.as_deref()
+        );
+        assert!(matches!(
+            store.save_binding_generation("alice", "alice-id", did, "alice.awiki.test", "2",),
+            Err(crate::ImError::IdentityBindingConflict { .. })
+        ));
+        assert_eq!(
+            store.load_index().unwrap().credentials["alice"]
+                .binding_generation
+                .as_deref(),
+            Some(generation)
+        );
+    }
+
+    #[test]
     fn legacy_promotion_preserves_key_refs_and_legacy_p5_p6_state() {
         #[cfg(feature = "group-e2ee")]
         use crate::internal::group_e2ee::provider::GroupMlsProvider;
@@ -3907,6 +4314,7 @@ mod tests {
                     display_name: "Alice".to_owned(),
                     handle: "alice".to_owned(),
                     full_handle: "alice.example.test".to_owned(),
+                    binding_generation: None,
                     jwt_token: "legacy-token".to_owned(),
                     did_document: Some(legacy.did_document.clone()),
                     key_mode: SaveIdentityKeyMode::LegacyKey1,
@@ -4240,6 +4648,7 @@ mod tests {
             display_name: "Alice".to_owned(),
             handle: "alice".to_owned(),
             full_handle: "alice.example".to_owned(),
+            binding_generation: None,
             jwt_token: "jwt".to_owned(),
             did_document: Some(json!({"id": did})),
             key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,

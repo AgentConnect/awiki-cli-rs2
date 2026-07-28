@@ -95,6 +95,24 @@ class IdentitySummary {
   final List<String> missing;
 }
 
+class ActiveSyncAccountBinding {
+  const ActiveSyncAccountBinding({
+    required this.ownerIdentityId,
+    required this.accountId,
+    required this.currentDid,
+    required this.protocolDeviceId,
+    required this.identityGeneration,
+    required this.deviceAuthGeneration,
+  });
+
+  final String ownerIdentityId;
+  final String accountId;
+  final String currentDid;
+  final String protocolDeviceId;
+  final String identityGeneration;
+  final String deviceAuthGeneration;
+}
+
 enum IdentityDeviceMode { legacy, vNext }
 
 enum IdentityDeviceRole { member, admin }
@@ -301,6 +319,7 @@ class DaemonSubkeyAuthorizationRevokeResult {
 class HandleRegistrationResult {
   const HandleRegistrationResult({
     this.identity,
+    this.accountId,
     required this.handle,
     required this.method,
     required this.state,
@@ -310,6 +329,7 @@ class HandleRegistrationResult {
   });
 
   final IdentitySummary? identity;
+  final String? accountId;
   final String handle;
   final String method;
   final String state;

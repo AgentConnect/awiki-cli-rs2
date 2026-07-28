@@ -16,16 +16,16 @@ use crate::dto::{
         DartGroupRebindRecoverySummary, DartGroupSnapshot, DartGroupSummary,
     },
     identity::{
-        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
-        DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt,
-        DartDeviceJoinAuthorizationStatus, DartDeviceJoinAuthorizedDeviceSummary,
-        DartDeviceJoinPhase, DartDeviceJoinProgress, DartDeviceJoinRegistrySnapshot,
-        DartDeviceJoinRemoteState, DartDeviceJoinRequestNotice, DartDeviceJoinRole,
-        DartDeviceJoinSessionSummary, DartDeviceJoinSide, DartDeviceRevokeResult,
-        DartDeviceRevokeStatus, DartHandleRegistrationJoinRequired, DartHandleRegistrationResult,
-        DartIdentityDeviceMode, DartIdentityDeviceReadiness, DartIdentityDeviceRole,
-        DartIdentityDeviceSummary, DartIdentitySecretStorageBackend, DartIdentitySummary,
-        DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
+        DartActiveSyncAccountBinding, DartDaemonSubkeyAuthorizationRevokeResult,
+        DartDaemonSubkeyPrivatePackage, DartDefaultIdentityChange, DartDeleteLocalIdentityResult,
+        DartDeviceJoinApprovalPrompt, DartDeviceJoinAuthorizationStatus,
+        DartDeviceJoinAuthorizedDeviceSummary, DartDeviceJoinPhase, DartDeviceJoinProgress,
+        DartDeviceJoinRegistrySnapshot, DartDeviceJoinRemoteState, DartDeviceJoinRequestNotice,
+        DartDeviceJoinRole, DartDeviceJoinSessionSummary, DartDeviceJoinSide,
+        DartDeviceRevokeResult, DartDeviceRevokeStatus, DartHandleRegistrationJoinRequired,
+        DartHandleRegistrationResult, DartIdentityDeviceMode, DartIdentityDeviceReadiness,
+        DartIdentityDeviceRole, DartIdentityDeviceSummary, DartIdentitySecretStorageBackend,
+        DartIdentitySummary, DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
         DartIdentityVaultVerificationReport, DartLegacyUpgradeStatus, DartRootKeyTransferError,
         DartRootKeyTransferPreparation, DartRootKeyTransferRecipientSummary,
         DartRootKeyTransferSendResult,
@@ -289,6 +289,19 @@ impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
                 .into_iter()
                 .map(identity_missing_item_to_string)
                 .collect(),
+        }
+    }
+}
+
+impl From<im_core::identity::ActiveSyncAccountBinding> for DartActiveSyncAccountBinding {
+    fn from(value: im_core::identity::ActiveSyncAccountBinding) -> Self {
+        Self {
+            owner_identity_id: value.owner_identity_id,
+            account_id: value.account_id,
+            current_did: value.current_did,
+            protocol_device_id: value.protocol_device_id,
+            identity_generation: value.identity_generation,
+            device_auth_generation: value.device_auth_generation,
         }
     }
 }
@@ -608,6 +621,7 @@ impl From<im_core::identity::HandleRegistrationResult> for DartHandleRegistratio
     fn from(value: im_core::identity::HandleRegistrationResult) -> Self {
         Self {
             identity: value.identity.map(Into::into),
+            account_id: value.account_id,
             handle: value.handle.as_str().to_string(),
             method: registration_method_to_string(value.method),
             state: registration_state_to_string(value.state),
@@ -1949,7 +1963,8 @@ fn realtime_subscription_to_string(value: im_core::realtime::RealtimeSubscriptio
 #[cfg(test)]
 mod tests {
     use super::{
-        realtime_event_to_dart, DartGroupSummary, DartHandleRegistrationResult, DartRelationStatus,
+        realtime_event_to_dart, DartActiveSyncAccountBinding, DartGroupSummary,
+        DartHandleRegistrationResult, DartRelationStatus,
     };
     use im_core::{
         directory::RelationshipStatus,
@@ -1973,6 +1988,7 @@ mod tests {
         let mapped =
             DartHandleRegistrationResult::from(im_core::identity::HandleRegistrationResult {
                 identity: None,
+                account_id: None,
                 handle: im_core::ids::Handle::parse("alice.example.test", "").unwrap(),
                 method: im_core::identity::RegistrationMethod::Phone,
                 state: im_core::identity::HandleRegistrationState::JoinRequired,
@@ -1986,11 +2002,34 @@ mod tests {
 
         assert_eq!(mapped.state, "join_required");
         assert!(mapped.identity.is_none());
+        assert!(mapped.account_id.is_none());
         let join_required = mapped.join_required.expect("typed Join result");
         assert_eq!(join_required.did, "did:wba:example.test:existing");
         assert_eq!(
             join_required.account_verification_token,
             "single-use-account-verification"
+        );
+    }
+
+    #[test]
+    fn active_sync_binding_mapping_preserves_unbounded_decimal_generations() {
+        let mapped =
+            DartActiveSyncAccountBinding::from(im_core::identity::ActiveSyncAccountBinding {
+                owner_identity_id: "owner-alice".to_owned(),
+                account_id: "account-alice".to_owned(),
+                current_did: "did:wba:awiki.info:user:alice".to_owned(),
+                protocol_device_id: "device-desktop".to_owned(),
+                identity_generation: "184467440737095516160000000000000000001".to_owned(),
+                device_auth_generation: "184467440737095516160000000000000000002".to_owned(),
+            });
+
+        assert_eq!(
+            mapped.identity_generation,
+            "184467440737095516160000000000000000001"
+        );
+        assert_eq!(
+            mapped.device_auth_generation,
+            "184467440737095516160000000000000000002"
         );
     }
 

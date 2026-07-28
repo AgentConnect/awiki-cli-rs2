@@ -269,6 +269,21 @@ fn register_handle_command_result(
         "method": method,
         "verification_state": verification_state,
     });
+    if result.state == HandleRegistrationState::Registered {
+        let account_id = result
+            .account_id
+            .as_deref()
+            .filter(|value| !value.is_empty() && value.trim() == *value)
+            .ok_or_else(|| {
+                ExitError::new(
+                    "identity_binding_unavailable",
+                    1,
+                    "registered identity is missing its authoritative account id",
+                    "Retry registration reconciliation; do not infer the account from a token or DID.",
+                )
+            })?;
+        data["account_id"] = json!(account_id);
+    }
     if let Some(identity) = result.identity.as_ref() {
         data["identity"] = json!(cli_identity_summary_from_sdk(identity, &[]));
     }
@@ -2001,5 +2016,81 @@ fn trimmed_optional(value: &str) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registration_request() -> RegisterHandleRequest {
+        RegisterHandleRequest {
+            local_alias: Some("alice".to_owned()),
+            requested_handle: Handle::parse("alice.awiki.test", "").unwrap(),
+            verification: VerificationInput::AlreadyVerified,
+            invite_code: None,
+            profile: InitialProfile {
+                display_name: Some("Alice".to_owned()),
+                avatar_url: None,
+            },
+            make_default: true,
+        }
+    }
+
+    #[test]
+    fn registered_result_without_account_id_fails_closed_even_with_join_metadata() {
+        let error = register_handle_command_result(
+            HandleRegistrationResult {
+                identity: None,
+                account_id: None,
+                handle: Handle::parse("alice.awiki.test", "").unwrap(),
+                method: RegistrationMethod::AlreadyVerified,
+                state: HandleRegistrationState::Registered,
+                join_required: Some(im_core::identity::HandleRegistrationJoinRequired {
+                    did: Did::parse("did:wba:awiki.test:alice:e1_root").unwrap(),
+                    account_verification_token: "verification-token".to_owned(),
+                }),
+                default_identity_change: None,
+                warnings: Vec::new(),
+            },
+            &registration_request(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.exit_code, 1);
+        assert_eq!(error.detail.code, "identity_binding_unavailable");
+        assert!(error.detail.message.contains("authoritative account id"));
+    }
+
+    #[test]
+    fn join_required_result_does_not_infer_or_emit_an_account_id() {
+        let result = register_handle_command_result(
+            HandleRegistrationResult {
+                identity: None,
+                account_id: None,
+                handle: Handle::parse("alice.awiki.test", "").unwrap(),
+                method: RegistrationMethod::AlreadyVerified,
+                state: HandleRegistrationState::JoinRequired,
+                join_required: Some(im_core::identity::HandleRegistrationJoinRequired {
+                    did: Did::parse("did:wba:awiki.test:alice:e1_root").unwrap(),
+                    account_verification_token: "verification-token".to_owned(),
+                }),
+                default_identity_change: None,
+                warnings: Vec::new(),
+            },
+            &registration_request(),
+        )
+        .unwrap();
+
+        assert_eq!(result.data["action"], "join_device");
+        assert!(result.data.get("account_id").is_none());
+        assert_eq!(
+            result.data["join_required"]["did"],
+            "did:wba:awiki.test:alice:e1_root"
+        );
+        assert_eq!(
+            result.data["join_required"]["account_verification_token"],
+            "verification-token"
+        );
     }
 }

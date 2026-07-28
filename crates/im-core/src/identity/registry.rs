@@ -1149,6 +1149,7 @@ impl IdentityRegistry<'_> {
             .unwrap_or_else(|| summary.id.as_str());
         let identity_dir = identity_root.join(identity_dir_name);
         let key_provider = self.key_provider_for_entry(identity_dir.clone(), entry, &summary)?;
+        let sync_account = sync_account_seed(entry)?;
         Ok(crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: summary.clone(),
             did_document_path: first_existing_path(
@@ -1168,6 +1169,7 @@ impl IdentityRegistry<'_> {
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id: summary.id,
                 current_did: summary.did,
+                sync_account,
             },
         })
     }
@@ -1190,6 +1192,7 @@ impl IdentityRegistry<'_> {
             .unwrap_or_else(|| summary.id.as_str());
         let identity_dir = identity_root.join(identity_dir_name);
         let key_provider = self.key_provider_for_entry(identity_dir.clone(), entry, &summary)?;
+        let sync_account = sync_account_seed(entry)?;
         Ok(crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: summary.clone(),
             did_document_path: first_existing_path_async(
@@ -1212,6 +1215,7 @@ impl IdentityRegistry<'_> {
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id: summary.id,
                 current_did: summary.did,
+                sync_account,
             },
         })
     }
@@ -1850,6 +1854,8 @@ fn resolve_from_registry(
 struct RegistryEntry {
     local_alias: Option<String>,
     dir_name: Option<String>,
+    user_id: String,
+    binding_generation: Option<String>,
     summary: super::IdentitySummary,
     vault_migration: Option<crate::internal::identity_store::IdentityVaultMigrationMetadata>,
     device_state: Option<crate::internal::identity_device_state::IdentityDeviceState>,
@@ -1896,6 +1902,55 @@ impl RegistryEntry {
     }
 }
 
+fn sync_account_seed(
+    entry: Option<&RegistryEntry>,
+) -> crate::ImResult<Option<crate::internal::identity_runtime::SyncAccountSeed>> {
+    let Some(entry) = entry else {
+        return Ok(None);
+    };
+    let Some(device_state) = entry.device_state.as_ref() else {
+        return Ok(None);
+    };
+    if device_state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext {
+        return Ok(None);
+    }
+    let Some(authorization) = device_state.authorization.as_ref() else {
+        return Ok(None);
+    };
+    let account_id = entry.user_id.trim();
+    if account_id.is_empty() {
+        return Ok(None);
+    }
+    if account_id != entry.user_id {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "identity index account id is not canonical".to_owned(),
+        });
+    }
+    let identity_generation = entry
+        .binding_generation
+        .as_deref()
+        .map(|generation| {
+            anp::wns::BindingGeneration::new(generation.to_owned())
+                .map(|generation| generation.to_string())
+                .map_err(|_| crate::ImError::IdentityBindingConflict {
+                    detail: "identity index Handle generation is not canonical".to_owned(),
+                })
+        })
+        .transpose()?;
+    Ok(Some(
+        crate::internal::identity_runtime::SyncAccountSeed::new(
+            account_id.to_owned(),
+            identity_generation,
+            // DeviceAuthorizationProjection is the frozen signed v1 token /
+            // registry boundary and therefore remains u64. Convert exactly
+            // once here; the v2 public DTO, runtime context, actor commands,
+            // and SQLite repositories keep the generation as a canonical
+            // decimal String and never narrow it back to u64.
+            authorization.auth_generation.to_string(),
+        ),
+    ))
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct SdkRegistryFile {
     #[serde(default)]
@@ -1921,6 +1976,12 @@ struct SdkIdentityRecord {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     local_alias: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "String::is_empty")]
+    user_id: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binding_generation: Option<String>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     device_id: Option<String>,
@@ -1967,6 +2028,8 @@ struct LegacyIdentityRecord {
     #[serde(default)]
     full_handle: String,
     #[serde(default)]
+    binding_generation: Option<String>,
+    #[serde(default)]
     is_default: bool,
     #[serde(default)]
     vault_migration: Option<crate::internal::identity_store::IdentityVaultMigrationMetadata>,
@@ -2012,6 +2075,8 @@ fn sdk_registry_snapshot(file: SdkRegistryFile) -> crate::ImResult<RegistrySnaps
         entries.push(RegistryEntry {
             local_alias,
             dir_name,
+            user_id: record.user_id,
+            binding_generation: record.binding_generation,
             summary: super::IdentitySummary {
                 id: crate::ids::IdentityId::parse(record.id)?,
                 did,
@@ -2067,6 +2132,8 @@ fn write_registry(path: &Path, registry: &RegistrySnapshot) -> crate::ImResult<(
                     .local_alias
                     .clone()
                     .or_else(|| entry.summary.local_alias.clone()),
+                user_id: entry.user_id.clone(),
+                binding_generation: entry.binding_generation.clone(),
                 device_id: entry.summary.device_id.clone(),
                 is_default: entry.summary.is_default,
                 ready_for_auth: entry.summary.readiness.ready_for_auth,
@@ -2123,6 +2190,8 @@ fn legacy_registry_snapshot(file: LegacyRegistryFile) -> crate::ImResult<Registr
         entries.push(RegistryEntry {
             local_alias: Some(alias.clone()),
             dir_name: Some(dir_name),
+            user_id: record.user_id,
+            binding_generation: record.binding_generation,
             summary: super::IdentitySummary {
                 id: crate::ids::IdentityId::parse(id)?,
                 did,
@@ -2299,6 +2368,8 @@ mod tests {
         SecretMetadata, SecretVault,
     };
     use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
 
     #[test]
     fn identity_registry_rejects_duplicate_live_did() {
@@ -2375,8 +2446,8 @@ mod tests {
         assert_registry_error_contains(err, "default identity alias");
     }
 
-    #[test]
-    fn vnext_device_summary_is_ready_and_excludes_internal_checkpoint() {
+    #[tokio::test]
+    async fn vnext_device_summary_and_sync_binding_use_exact_persisted_identifiers() {
         use crate::internal::identity_device_state::{
             DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
             IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
@@ -2386,6 +2457,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let paths = test_paths(root.path());
         let registry_path = paths.identities.registry_path.clone();
+        let local_state_path = paths.local_state.sqlite_path.clone();
         let vault_dir = root.path().join("vault");
         let did = crate::ids::Did::parse("did:wba:awiki.info:alice:e1_root").unwrap();
         let signing_key_id = format!("{}#dev-a-sign", did.as_str());
@@ -2404,6 +2476,7 @@ mod tests {
                     display_name: "Alice".to_owned(),
                     handle: "alice".to_owned(),
                     full_handle: "alice.awiki.info".to_owned(),
+                    binding_generation: Some("184467440737095516160000000000000000001".to_owned()),
                     jwt_token: "device-token".to_owned(),
                     did_document: Some(json!({"id": did.as_str()})),
                     key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
@@ -2493,6 +2566,54 @@ mod tests {
         assert!(!public_json.contains("root_private"));
         assert!(!public_json.contains("vault"));
 
+        let active_binding = core
+            .client(crate::identity::IdentitySelector::Default)
+            .unwrap()
+            .active_sync_account_binding()
+            .await
+            .unwrap();
+        assert_eq!(
+            active_binding,
+            crate::identity::ActiveSyncAccountBinding {
+                owner_identity_id: "alice-id".to_owned(),
+                account_id: "user-1".to_owned(),
+                current_did: did.as_str().to_owned(),
+                protocol_device_id: "dev-a".to_owned(),
+                identity_generation: "184467440737095516160000000000000000001".to_owned(),
+                device_auth_generation: "1".to_owned(),
+            }
+        );
+        let persisted_binding = rusqlite::Connection::open(local_state_path)
+            .unwrap()
+            .query_row(
+                "SELECT owner_identity_id, account_id, current_did, device_id,
+                        identity_generation, device_auth_generation
+                 FROM identity_account_bindings",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            persisted_binding,
+            (
+                active_binding.owner_identity_id,
+                active_binding.account_id,
+                active_binding.current_did,
+                active_binding.protocol_device_id,
+                active_binding.identity_generation,
+                active_binding.device_auth_generation,
+            )
+        );
+
         let mut registry_json: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
         registry_json["credentials"]["alice"]
@@ -2516,6 +2637,220 @@ mod tests {
                 missing: vec!["vnext_device_state".to_owned()],
             }
         );
+    }
+
+    #[tokio::test]
+    async fn active_sync_binding_fetches_missing_generation_from_wns_and_persists_both_projections()
+    {
+        use crate::internal::identity_device_state::{
+            DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
+            IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
+            IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let generation = "184467440737095516160000000000000000099";
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 2048];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "WNS request closed before headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let request = String::from_utf8_lossy(&request);
+            assert!(
+                request.starts_with("GET /.well-known/handle/alice "),
+                "unexpected WNS request: {request}"
+            );
+            let body = format!(
+                r#"{{"handle":"alice.awiki.test","did":"did:wba:awiki.test:alice:e1_root","status":"active","binding_generation":"{generation}"}}"#
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+            stream.flush().unwrap();
+        });
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let vault_dir = root.path().join("vault");
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([55_u8; 32]),
+            FileSecretVaultStore::new(&vault_dir),
+        ));
+        let did = crate::ids::Did::parse("did:wba:awiki.test:alice:e1_root").unwrap();
+        let signing_key_id = format!("{}#dev-a-sign", did.as_str());
+        let e2ee_key_id = format!("{}#dev-a-e2ee", did.as_str());
+        crate::internal::identity_store::IdentityStore::new(&paths.identities)
+            .save_identity_with_secret_storage(
+                crate::internal::identity_store::SaveIdentityInput {
+                    local_alias: "alice".to_owned(),
+                    did: did.clone(),
+                    unique_id: "alice-id".to_owned(),
+                    user_id: "account-alice".to_owned(),
+                    display_name: "Alice".to_owned(),
+                    handle: "alice".to_owned(),
+                    full_handle: "alice.awiki.test".to_owned(),
+                    binding_generation: None,
+                    jwt_token: "device-token".to_owned(),
+                    did_document: Some(json!({"id": did.as_str()})),
+                    key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
+                        root_key_id: format!("{}#key-1", did.as_str()),
+                        device_signing_key_id: signing_key_id.clone(),
+                        device_e2ee_key_id: e2ee_key_id.clone(),
+                    },
+                    device_state: Some(IdentityDeviceState {
+                        schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                        mode: IdentityDeviceMode::VNext,
+                        authorization: Some(DeviceAuthorizationProjection {
+                            protocol_device_id: crate::ids::ProtocolDeviceId::parse("dev-a")
+                                .unwrap(),
+                            signing_key_id,
+                            e2ee_key_id,
+                            status: DeviceAuthorizationStatus::Active,
+                            role: DeviceAuthorizationRole::Member,
+                            management_ready: false,
+                            auth_generation: 9,
+                        }),
+                        checkpoint: Some(IdentityInternalCheckpoint {
+                            document_version: 2,
+                            document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                                .to_owned(),
+                            registry_version: 2,
+                        }),
+                    }),
+                    key1_private_pem: "root-private".to_owned(),
+                    key1_public_pem: "root-public".to_owned(),
+                    e2ee_signing_private_pem: "device-signing-private".to_owned(),
+                    e2ee_agreement_private_pem: "device-e2ee-private".to_owned(),
+                    daemon_subkey_package: None,
+                    make_default: true,
+                },
+                crate::internal::identity_store::SaveIdentitySecretStorage::Vault {
+                    workspace_id: "workspace-a".to_owned(),
+                    device_id: "vault-a".to_owned(),
+                    vault,
+                },
+            )
+            .unwrap();
+        let mut config = test_config();
+        config.service_base_url =
+            crate::ServiceEndpoint::parse(format!("http://{address}")).unwrap();
+        config.user_service_endpoint = Some(config.service_base_url.clone());
+        let core = crate::ImCore::new_with_options(
+            config,
+            paths.clone(),
+            crate::ImCoreOpenOptions::default().with_identity_secret_vault(
+                crate::IdentitySecretStoragePolicy::VaultRequired,
+                crate::ImCoreSecretVaultOptions::new(
+                    DeviceVaultRootKey::from_bytes([55_u8; 32]),
+                    &vault_dir,
+                    "workspace-a",
+                    "vault-a",
+                ),
+            ),
+        )
+        .unwrap();
+
+        let binding = core
+            .client(crate::identity::IdentitySelector::Default)
+            .unwrap()
+            .active_sync_account_binding()
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(binding.identity_generation, generation);
+        assert_eq!(binding.device_auth_generation, "9");
+        let index = crate::internal::identity_store::IdentityStore::new(&paths.identities)
+            .load_index()
+            .unwrap();
+        let entry = &index.credentials["alice"];
+        assert_eq!(entry.binding_generation.as_deref(), Some(generation));
+        let identity: Value = serde_json::from_slice(
+            &std::fs::read(
+                paths
+                    .identities
+                    .identity_root_dir
+                    .join(&entry.dir_name)
+                    .join("identity.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(identity["binding_generation"].as_str(), Some(generation));
+    }
+
+    #[tokio::test]
+    async fn legacy_and_hosted_clients_fail_closed_for_active_sync_binding() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        crate::internal::identity_store::IdentityStore::new(&paths.identities)
+            .save_identity(crate::internal::identity_store::SaveIdentityInput {
+                local_alias: "legacy".to_owned(),
+                did: crate::ids::Did::parse("did:example:legacy").unwrap(),
+                unique_id: "legacy-id".to_owned(),
+                user_id: "account-legacy".to_owned(),
+                display_name: "Legacy".to_owned(),
+                handle: "legacy".to_owned(),
+                full_handle: "legacy.awiki.test".to_owned(),
+                binding_generation: Some("1".to_owned()),
+                jwt_token: "legacy-token".to_owned(),
+                did_document: Some(json!({"id": "did:example:legacy"})),
+                key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,
+                device_state: None,
+                key1_private_pem: "legacy-private".to_owned(),
+                key1_public_pem: "legacy-public".to_owned(),
+                e2ee_signing_private_pem: String::new(),
+                e2ee_agreement_private_pem: "legacy-agreement".to_owned(),
+                daemon_subkey_package: None,
+                make_default: true,
+            })
+            .unwrap();
+        let core = crate::ImCore::new(test_config(), paths).unwrap();
+        let legacy_error = core
+            .client(crate::identity::IdentitySelector::Default)
+            .unwrap()
+            .active_sync_account_binding()
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            legacy_error,
+            crate::ImError::UnsupportedCapability { capability }
+                if capability == "active-sync-account-binding"
+        ));
+
+        let hosted_did = "did:wba:awiki.test:agent:hosted:e1_demo";
+        let hosted_error = core
+            .client_with_identity_material(crate::identity::HostedIdentityMaterial {
+                identity_id: "hosted-id".to_owned(),
+                did: hosted_did.to_owned(),
+                handle: Some("hosted.awiki.test".to_owned()),
+                display_name: Some("Hosted".to_owned()),
+                did_document: json!({"id": hosted_did}),
+                default_signing_private_key_pem: "hosted-signing".to_owned(),
+                e2ee_agreement_private_key_pem: Some("hosted-agreement".to_owned()),
+                auth_token: None,
+            })
+            .unwrap()
+            .active_sync_account_binding()
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            hosted_error,
+            crate::ImError::UnsupportedCapability { capability }
+                if capability == "active-sync-account-binding"
+        ));
     }
 
     #[test]
@@ -2838,6 +3173,7 @@ mod tests {
                 display_name: "Alice".to_owned(),
                 handle: "alice".to_owned(),
                 full_handle: "alice.example".to_owned(),
+                binding_generation: None,
                 jwt_token: "jwt-secret-value".to_owned(),
                 did_document: Some(json!({"id": "did:example:alice"})),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,

@@ -125,6 +125,9 @@ impl ImClient {
     pub fn current_identity(&self) -> &IdentitySummary;
     pub fn did(&self) -> &Did;
     pub fn handle(&self) -> Option<&Handle>;
+    pub async fn active_sync_account_binding(
+        &self,
+    ) -> ImResult<ActiveSyncAccountBinding>;
 
     pub fn auth(&self) -> AuthService<'_>;
     pub fn messages(&self) -> MessageService<'_>;
@@ -310,6 +313,15 @@ pub struct IdentityDeviceSummary {
     pub blocked_reason: Option<String>,
 }
 
+pub struct ActiveSyncAccountBinding {
+    pub owner_identity_id: String,
+    pub account_id: String,
+    pub current_did: String,
+    pub protocol_device_id: String,
+    pub identity_generation: String,
+    pub device_auth_generation: String,
+}
+
 pub struct IdentityRegistry<'a> {
     core: &'a ImCore,
 }
@@ -380,6 +392,16 @@ P5/P6 需要精确设备端点时，Core 从持久化 identity index 的当前 a
 authorization 读取 `ProtocolDeviceId`；host 如需展示设备摘要，应调用
 `IdentityRegistry::device_summary`，不得从缺失值推导 `default` 或 sibling 设备。
 
+`ImClient::active_sync_account_binding()` 是消息同步唯一可用的账号绑定来源。
+`account_id` 必须来自 identity index 的稳定 `user_id`，
+`protocol_device_id` 必须来自当前 active vNext authorization；
+`identity_generation` 来自注册结果或经过 full Handle/current DID 校验的权威 WNS
+文档，缺失时异步补查并持久化。Legacy、hosted、缺失账号、缺失设备授权均
+fail closed；网络不可用、权威数据不一致和本地绑定冲突保留各自 typed error，
+不得回退到 `IdentitySummary.device_id`、DID、Vault context device id 或常量 `1`。
+两个 generation 和后续 cursor 都以 canonical decimal string 暴露，以支持超过
+`u64` 的值而不损失精度。
+
 `delete_local_identity` 是纯本地、crash-safe 的身份退役事务。registry/default
 pointer tombstone 是目录与 Vault 清理之前的权威状态；Core open 会恢复中断阶段，并
 通过永久 identity-ID tombstone 清理由并发尾部任务晚写的 identity-scoped Vault
@@ -397,7 +419,8 @@ keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest
 兼容。Handle 已存在时返回 typed `join_required`，不创建第二个身份，host 使用其中的一次性
 account verification grant 进入 Device Join。新注册本地提交后必须发布 exact-device P5
 PreKey Bundle；失败保留同一 PendingRegistration 精确重试。公共 DTO 不暴露私钥、pending、
-内部 checkpoint 或 refresh token。
+内部 checkpoint 或 refresh token。`HandleRegistrationResult.account_id` 仅在
+`registered` 结果中返回服务端 canonical `user_id`；`join_required` 不伪造账号 ID。
 
 ### 5.1 Device Join host facade
 

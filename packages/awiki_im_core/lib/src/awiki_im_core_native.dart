@@ -605,6 +605,14 @@ class AwikiImClient {
   Stream<RealtimeConnectionState> get connectionStates =>
       _connectionStatesController.stream;
 
+  Future<ActiveSyncAccountBinding> activeSyncAccountBinding() async {
+    _ensureNotDisposed();
+    final binding = await _mapNativeErrors(
+      () => gen_identity_api.activeSyncAccountBinding(client: _inner),
+    );
+    return binding._toModel();
+  }
+
   Future<void> dispose() async {
     if (_disposed) return;
     await realtime.stop();
@@ -2234,12 +2242,24 @@ extension on gen_identity.DartDaemonSubkeyAuthorizationRevokeResult {
 extension on gen_identity.DartHandleRegistrationResult {
   HandleRegistrationResult _toModel() => HandleRegistrationResult(
     identity: identity?._toModel(),
+    accountId: accountId,
     handle: handle,
     method: method,
     state: state,
     joinRequired: joinRequired?._toModel(),
     defaultIdentityChange: defaultIdentityChange?._toModel(),
     warnings: warnings,
+  );
+}
+
+extension on gen_identity.DartActiveSyncAccountBinding {
+  ActiveSyncAccountBinding _toModel() => ActiveSyncAccountBinding(
+    ownerIdentityId: ownerIdentityId,
+    accountId: accountId,
+    currentDid: currentDid,
+    protocolDeviceId: protocolDeviceId,
+    identityGeneration: identityGeneration,
+    deviceAuthGeneration: deviceAuthGeneration,
   );
 }
 

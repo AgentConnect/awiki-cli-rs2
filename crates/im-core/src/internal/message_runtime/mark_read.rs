@@ -1029,12 +1029,7 @@ where
     let mut remote_acknowledged = false;
     let mut raw = None;
     if !remote_direct_ids.is_empty() {
-        match mark_direct_ids_remote_sync(
-            client,
-            session_provider,
-            transport,
-            &remote_direct_ids,
-        ) {
+        match mark_direct_ids_remote_sync(client, session_provider, transport, &remote_direct_ids) {
             Ok((_updated, response)) => {
                 warnings.extend(warnings_from_raw(&response));
                 raw = Some(response);
@@ -1095,13 +1090,8 @@ where
     let mut remote_acknowledged = false;
     let mut raw = None;
     if !remote_direct_ids.is_empty() {
-        match mark_direct_ids_remote_async(
-            client,
-            session_provider,
-            transport,
-            &remote_direct_ids,
-        )
-        .await
+        match mark_direct_ids_remote_async(client, session_provider, transport, &remote_direct_ids)
+            .await
         {
             Ok((_updated, response)) => {
                 warnings.extend(warnings_from_raw(&response));

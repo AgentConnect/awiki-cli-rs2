@@ -219,6 +219,37 @@ use the same safe allowlisted categories (`transport_unavailable`,
 `local_state_unavailable`, or `legacy_upgrade_failed`) without exposing
 transport bodies or secret state.
 
+### 4.2 Stable account binding for message sync
+
+Every local vNext client has one fail-closed sync identity projection:
+
+```text
+owner_identity_id     <- immutable local identity ID
+account_id            <- identity index user_id
+current_did           <- current local DID snapshot
+protocol_device_id    <- current active vNext authorization
+identity_generation   <- Handle binding_generation
+device_auth_generation <- current device authorization generation
+```
+
+`ImClient::active_sync_account_binding()` is the only public boundary that
+materializes these six values together. It does not use
+`IdentitySummary.device_id`, a vault-context device id, a DID-derived account
+key, or a constant generation. When an older identity index has no
+`binding_generation`, Core performs an authoritative public WNS lookup,
+verifies the exact full Handle and current DID, persists the returned
+generation, and only then returns the binding. Transport failure remains a
+typed transport error; malformed or mismatched authority data fails closed.
+Legacy and hosted clients return unsupported rather than receiving a guessed
+binding.
+
+Both generations are canonical positive decimal strings and are never narrowed
+to a machine integer. The local binding reducer is monotonic: neither
+generation may move backwards, `current_did` cannot change at the same
+`identity_generation`, and a DID rotation is accepted only with a newer
+identity generation. The `(account_id, protocol_device_id)` pair cannot be
+rebound to another local owner.
+
 Management-device root transfer reuses the ordinary exact-device P5 v2
 implementation. After eligibility and PreKey/session checks, one explicit user
 confirmation authorizes one target and message ID; V1 does not add a system
@@ -701,6 +732,30 @@ Schema version 20 adds `sync_state` with owner-scoped checkpoint rows:
 `sync_state` is private local recovery state. Diagnostics should report counts,
 durations, redacted owner/thread identifiers, and checkpoint age rather than raw
 message payloads or sensitive E2EE material.
+
+Schema 32 freezes the next reliable-sync persistence boundary without changing
+the current `sync_delta()` wire behavior:
+
+- `identity_account_bindings` stores the exact six-part vNext binding and
+  monotonic generation fences.
+- `message_sync_state` is a separate v2 cursor row bound to the exact account,
+  protocol device, and device authorization generation. No row or cursor is
+  invented before an explicit bootstrap.
+- `sync_applied_events` stores idempotency receipts with bounded pruning that
+  retains at least 10,000 recent receipts per owner and protects the active
+  recovery window.
+- `sync_recovery_state` stores restart-safe recovery metadata and hashes only;
+  raw recovery tokens are forbidden.
+- `local_mutation_outbox` initially admits only
+  `read_state_mark_read`. Message edit, recall, delete, tombstone, and generic
+  message-send mutations are not part of this phase.
+
+The existing `sync_state` table remains the active checkpoint for the existing
+`sync.delta` implementation until a later protocol step switches the runtime to
+`message_sync_state`. Schemas 28, 29, 30, and 31 migrate atomically to 32;
+schema 27 remains owned exclusively by the explicit pre-open canonical upgrade
+gate. Startup recovery changes interrupted recovery/apply and in-flight read
+mutations to retryable state without advancing a cursor.
 
 `sync.delta` is an authenticated exact-device projection over an owner-global
 sequence. The service may omit sibling-targeted or expired rows while advancing

@@ -6061,6 +6061,7 @@ impl VNextCacheFixture {
                     display_name: "Read cache".to_owned(),
                     handle: "read-cache".to_owned(),
                     full_handle: "read-cache.awiki.test".to_owned(),
+                    binding_generation: None,
                     jwt_token: "test-device-token".to_owned(),
                     did_document: Some(generated.did_document.clone()),
                     key_mode: SaveIdentityKeyMode::VNext {

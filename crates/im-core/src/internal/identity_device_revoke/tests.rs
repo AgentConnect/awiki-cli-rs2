@@ -786,6 +786,7 @@ fn scenario(
                 display_name: "Alice".to_owned(),
                 handle: LOCAL_ALIAS.to_owned(),
                 full_handle: "alice.awiki.test".to_owned(),
+                binding_generation: None,
                 jwt_token: "device-token".to_owned(),
                 did_document: Some(document.clone()),
                 key_mode: SaveIdentityKeyMode::VNext {

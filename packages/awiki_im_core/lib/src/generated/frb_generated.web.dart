@@ -380,6 +380,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt dco_decode_box_autoadd_u_64(dynamic raw);
 
   @protected
+  DartActiveSyncAccountBinding dco_decode_dart_active_sync_account_binding(
+    dynamic raw,
+  );
+
+  @protected
   DartAttachmentDestination dco_decode_dart_attachment_destination(dynamic raw);
 
   @protected
@@ -1560,6 +1565,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
+  DartActiveSyncAccountBinding sse_decode_dart_active_sync_account_binding(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartAttachmentDestination sse_decode_dart_attachment_destination(
@@ -3008,6 +3018,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_dart_active_sync_account_binding(
+    DartActiveSyncAccountBinding self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_dart_attachment_destination(

@@ -341,12 +341,27 @@ pub struct InitialProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleRegistrationResult {
     pub identity: Option<IdentitySummary>,
+    pub account_id: Option<String>,
     pub handle: crate::ids::Handle,
     pub method: RegistrationMethod,
     pub state: HandleRegistrationState,
     pub join_required: Option<HandleRegistrationJoinRequired>,
     pub default_identity_change: Option<DefaultIdentityChange>,
     pub warnings: Vec<String>,
+}
+
+/// Read-only, secret-free binding used to scope account synchronization.
+///
+/// Every field is derived and validated by Core. Hosts cannot construct or
+/// override the active binding used by sync.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveSyncAccountBinding {
+    pub owner_identity_id: String,
+    pub account_id: String,
+    pub current_did: String,
+    pub protocol_device_id: String,
+    pub identity_generation: String,
+    pub device_auth_generation: String,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

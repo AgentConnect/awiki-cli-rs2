@@ -9,6 +9,45 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'identity.freezed.dart';
 
+class DartActiveSyncAccountBinding {
+  final String ownerIdentityId;
+  final String accountId;
+  final String currentDid;
+  final String protocolDeviceId;
+  final String identityGeneration;
+  final String deviceAuthGeneration;
+
+  const DartActiveSyncAccountBinding({
+    required this.ownerIdentityId,
+    required this.accountId,
+    required this.currentDid,
+    required this.protocolDeviceId,
+    required this.identityGeneration,
+    required this.deviceAuthGeneration,
+  });
+
+  @override
+  int get hashCode =>
+      ownerIdentityId.hashCode ^
+      accountId.hashCode ^
+      currentDid.hashCode ^
+      protocolDeviceId.hashCode ^
+      identityGeneration.hashCode ^
+      deviceAuthGeneration.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartActiveSyncAccountBinding &&
+          runtimeType == other.runtimeType &&
+          ownerIdentityId == other.ownerIdentityId &&
+          accountId == other.accountId &&
+          currentDid == other.currentDid &&
+          protocolDeviceId == other.protocolDeviceId &&
+          identityGeneration == other.identityGeneration &&
+          deviceAuthGeneration == other.deviceAuthGeneration;
+}
+
 class DartDaemonSubkeyAuthorizationRevokeResult {
   final String userDid;
   final String verificationMethod;
@@ -447,6 +486,7 @@ class DartHandleRegistrationJoinRequired {
 
 class DartHandleRegistrationResult {
   final DartIdentitySummary? identity;
+  final String? accountId;
   final String handle;
   final String method;
   final String state;
@@ -456,6 +496,7 @@ class DartHandleRegistrationResult {
 
   const DartHandleRegistrationResult({
     this.identity,
+    this.accountId,
     required this.handle,
     required this.method,
     required this.state,
@@ -467,6 +508,7 @@ class DartHandleRegistrationResult {
   @override
   int get hashCode =>
       identity.hashCode ^
+      accountId.hashCode ^
       handle.hashCode ^
       method.hashCode ^
       state.hashCode ^
@@ -480,6 +522,7 @@ class DartHandleRegistrationResult {
       other is DartHandleRegistrationResult &&
           runtimeType == other.runtimeType &&
           identity == other.identity &&
+          accountId == other.accountId &&
           handle == other.handle &&
           method == other.method &&
           state == other.state &&

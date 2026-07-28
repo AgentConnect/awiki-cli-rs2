@@ -1548,6 +1548,7 @@ fn promote_join_identity(
             display_name: handle.clone(),
             handle,
             full_handle,
+            binding_generation: None,
             jwt_token: access.access_token.clone(),
             did_document: Some(pending.resolved_document.clone()),
             key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {

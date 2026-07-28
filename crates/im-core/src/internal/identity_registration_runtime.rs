@@ -48,6 +48,7 @@ impl<'a, T> IdentityRegistrationRuntime<'a, T> {
     ) -> crate::identity::HandleRegistrationResult {
         crate::identity::HandleRegistrationResult {
             identity: None,
+            account_id: None,
             handle,
             method,
             state,
@@ -661,6 +662,7 @@ fn parse_register_outcome(
             "handle",
             "domain",
             "full_handle",
+            "binding_generation",
         ],
     )?;
     let did = required_string(&raw, "did")?;
@@ -670,6 +672,10 @@ fn parse_register_outcome(
     let handle = required_string(&raw, "handle")?;
     let domain = required_string(&raw, "domain")?;
     let full_handle = required_string(&raw, "full_handle")?;
+    let binding_generation =
+        anp::wns::BindingGeneration::new(required_string(&raw, "binding_generation")?.to_owned())
+            .map_err(|_| crate::ImError::PermissionDenied)?
+            .to_string();
     if did != pending.generated.did.as_str()
         || handle != pending.target_handle
         || domain != pending.target_domain
@@ -696,6 +702,7 @@ fn parse_register_outcome(
             user_id,
             handle,
             full_handle,
+            binding_generation,
             access_token,
         },
     ))
@@ -717,6 +724,7 @@ fn join_required_result(
     Ok(IdentityRegistrationRuntimeResult {
         sdk_result: crate::identity::HandleRegistrationResult {
             identity: None,
+            account_id: None,
             handle,
             method: registration_method(&request.verification),
             state: crate::identity::HandleRegistrationState::JoinRequired,
@@ -734,6 +742,7 @@ fn apply_registration_reconciliation(
 ) -> crate::ImResult<()> {
     let crate::internal::transport::PendingRegistrationReconciliation::Committed {
         user_id,
+        binding_generation,
         access_token,
     } = reconciliation
     else {
@@ -757,6 +766,7 @@ fn apply_registration_reconciliation(
             user_id,
             handle: pending.target_handle.clone(),
             full_handle: format!("{}.{}", pending.target_handle, pending.target_domain),
+            binding_generation,
             access_token,
         },
     );
@@ -820,6 +830,7 @@ fn registration_save_input(
         display_name: pending.display_name.clone(),
         handle: remote.handle.clone(),
         full_handle: remote.full_handle.clone(),
+        binding_generation: Some(remote.binding_generation.clone()),
         jwt_token: remote.access_token.clone(),
         did_document: Some(pending.generated.did_document.clone()),
         key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
@@ -880,6 +891,14 @@ fn registration_result(
     Ok(IdentityRegistrationRuntimeResult {
         sdk_result: crate::identity::HandleRegistrationResult {
             identity: Some(identity.clone()),
+            account_id: Some(
+                pending
+                    .remote_result
+                    .as_ref()
+                    .ok_or(crate::ImError::PermissionDenied)?
+                    .user_id
+                    .clone(),
+            ),
             handle,
             method,
             state: crate::identity::HandleRegistrationState::Registered,
@@ -1156,6 +1175,7 @@ mod tests {
                     Ok(
                         crate::internal::transport::PendingRegistrationReconciliation::Committed {
                             user_id: "user-1".to_owned(),
+                            binding_generation: "1".to_owned(),
                             access_token: access_token(pending, &key_id),
                         },
                     )
@@ -1258,6 +1278,7 @@ mod tests {
                 "handle": "alice",
                 "domain": "example.test",
                 "full_handle": "alice.example.test",
+                "binding_generation": "1",
                 "access_token": token,
             }),
         )
@@ -1320,6 +1341,7 @@ mod tests {
             &mut pending,
             crate::internal::transport::PendingRegistrationReconciliation::Committed {
                 user_id: "user-1".to_owned(),
+                binding_generation: "1".to_owned(),
                 access_token: token,
             },
         )

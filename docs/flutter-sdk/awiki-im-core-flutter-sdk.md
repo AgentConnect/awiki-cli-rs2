@@ -82,6 +82,11 @@ Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitiv
 
 The SDK exposes `registerHandleWithPhone`, `registerHandleWithEmail`, and `recoverHandle` on `AwikiImCore`. These calls are core-level identity registry operations that map to `im-core` public identity DTOs; they do not depend on any `awiki-me` account gateway or UI model.
 
+A successful registered result exposes `HandleRegistrationResult.accountId`,
+which is the canonical User Service account ID persisted by Core. A
+`join_required` result leaves `accountId` null; Flutter/App code must not decode
+JWT claims or substitute a DID to manufacture it.
+
 `recoverHandle` always requests the same canonical local-finalize behavior as the CLI. A
 successful recovery of an existing full Handle rotates its DID without changing the stable local
 identity ID, records old/current DID history, refreshes owner-DID snapshots, and enqueues any
@@ -151,6 +156,25 @@ final device = await core.identityDeviceSummary(selector);
 The result distinguishes legacy/member/admin readiness and exposes only the
 protocol device ID and public key IDs. It intentionally omits Vault references,
 root-key presence flags, and internal Document/Registry/auth checkpoints.
+
+For a native vNext client, the stable message-sync binding is obtained only
+through:
+
+```dart
+final binding = await client.activeSyncAccountBinding();
+```
+
+`ActiveSyncAccountBinding` contains exactly
+`ownerIdentityId`, `accountId`, `currentDid`, `protocolDeviceId`,
+`identityGeneration`, and `deviceAuthGeneration`. Generations remain decimal
+`String` values and must not be parsed as Dart `int`. Core may perform an
+authoritative WNS lookup when an upgraded identity has no persisted Handle
+generation, so the API is asynchronous. Legacy/hosted identities, missing
+authoritative state, offline lookup failure, and binding mismatch all fail
+closed; App adapters must surface the typed error and must not derive a
+fallback from `IdentitySummary.deviceId`, DID, or local vault settings. Flutter
+Web exposes the same method shape but throws `UnsupportedError` because no
+native Core exists.
 
 ## Multi-device Join
 
@@ -588,6 +612,13 @@ must route visible conversations by `ConversationReadRef.conversationId`.
 Reliable sync is exposed as high-level async message APIs. The Dart SDK must not expose
 SQLite, WebSocket frames, `since_event_seq`, `next_event_seq`, or checkpoint
 load/store primitives.
+
+Schema 32 introduces Core-private v2 binding, cursor, applied-event receipt,
+recovery, and read-mutation outbox tables. This stage does not expose those rows
+or a manual cursor API to Dart, and it does not yet switch the existing
+`syncDelta` facade away from its current Core-owned checkpoint. In particular,
+the first v2 outbox supports read-state acknowledgement only; message edit,
+recall, delete, and tombstone synchronization are outside this phase.
 
 Expected public shape:
 

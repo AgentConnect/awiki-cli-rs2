@@ -200,6 +200,10 @@ class AwikiImClient {
 
   RootKeyTransferApi get rootKeyTransfer => RootKeyTransferApi._();
 
+  Future<ActiveSyncAccountBinding> activeSyncAccountBinding() async {
+    throw _unsupported();
+  }
+
   Future<void> dispose() async {}
 }
 

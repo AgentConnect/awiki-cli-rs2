@@ -781,9 +781,7 @@ fn registration_response(request: &str) -> String {
     let key_id = device["signing_key_id"]
         .as_str()
         .expect("registration manifest signing_key_id");
-    let handle = params["handle"]
-        .as_str()
-        .expect("registration handle");
+    let handle = params["handle"].as_str().expect("registration handle");
     let domain = did
         .strip_prefix("did:wba:")
         .and_then(|suffix| suffix.split(':').next())
@@ -821,6 +819,7 @@ fn registration_response(request: &str) -> String {
             "handle": handle,
             "domain": domain,
             "full_handle": format!("{handle}.{domain}"),
+            "binding_generation": "1",
         },
         "id": rpc["id"].clone(),
     })
@@ -1004,11 +1003,7 @@ impl TestServer {
                     let Some(stream) = stream else {
                         break;
                     };
-                    handle_connection(
-                        stream,
-                        &server_requests,
-                        TestResponse::prekey_publication(),
-                    );
+                    handle_connection(stream, &server_requests, TestResponse::prekey_publication());
                 }
             }
         });

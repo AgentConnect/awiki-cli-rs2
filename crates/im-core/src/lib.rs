@@ -43,9 +43,9 @@ pub use crate::email::EmailService;
 pub use crate::error::{DeviceRevokeOutcomeCategory, IdentityVaultFailure, ImError, ImResult};
 pub use crate::groups::GroupService;
 pub use crate::identity::{
-    DeleteLocalIdentityResult, HostedIdentityMaterial, IdentitySecretStorageBackend,
-    IdentitySelector, IdentitySummary, IdentityVaultMigrationReport, IdentityVaultStatus,
-    IdentityVaultVerificationReport,
+    ActiveSyncAccountBinding, DeleteLocalIdentityResult, HostedIdentityMaterial,
+    IdentitySecretStorageBackend, IdentitySelector, IdentitySummary, IdentityVaultMigrationReport,
+    IdentityVaultStatus, IdentityVaultVerificationReport,
 };
 #[cfg(feature = "sqlite")]
 pub use crate::local_state_upgrade::{

@@ -203,6 +203,7 @@ impl ImCore {
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id,
                 current_did: did,
+                sync_account: None,
             },
         };
         Ok(ImClient::new(self.inner.clone(), runtime))
