@@ -349,6 +349,12 @@ fn sync_now_bridge_exposes_only_high_level_v2_outcome() {
         "cursor",
         "stream_epoch",
         "scan_seq",
+        "recovery_id",
+        "token",
+        "snapshot_scan_seq",
+        "server_cutoff",
+        "message_limit",
+        "returned_logical_messages",
     ] {
         assert!(!request_debug.contains(forbidden));
     }
@@ -362,7 +368,7 @@ fn sync_now_bridge_exposes_only_high_level_v2_outcome() {
         changed_conversation_ids: Vec::new(),
         committed_incoming_messages: Vec::new(),
         error_code: Some("SYNC_RECOVERY_REQUIRED".to_owned()),
-        warnings: vec!["recovery is not available in Stage 2".to_owned()],
+        warnings: vec!["recovery details remain Core-private".to_owned()],
     };
     let dart: awiki_im_core::dto::message::DartMessageSyncOutcome = core.into();
     assert!(matches!(

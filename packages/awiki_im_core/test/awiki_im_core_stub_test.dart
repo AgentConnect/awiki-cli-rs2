@@ -355,6 +355,8 @@ void main() {
     expect(v2Outcome.status, MessageSyncStatus.recoveryRequired);
     expect(v2Outcome.errorCode, 'SYNC_RECOVERY_REQUIRED');
     expect(v2Outcome.committedIncomingMessages, isEmpty);
+    expect(MessageSyncStatus.retryableFailure, isNotNull);
+    expect(MessageSyncStatus.authRevoked, isNotNull);
 
     const deltaRequest = SyncDeltaRequest(
       limit: 100,

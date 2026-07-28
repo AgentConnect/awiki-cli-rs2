@@ -409,6 +409,22 @@ pub(crate) fn parse_delta_response(raw: &Value) -> crate::ImResult<SyncDeltaResp
 
 pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
     let object = object(raw, "sync.snapshot response")?;
+    exact_fields(
+        object,
+        &[
+            "mode",
+            "account_id",
+            "device_id",
+            "server_time",
+            "snapshot_cursor",
+            "read_states",
+            "groups",
+            "recent_plain_messages",
+            "message_policy",
+            "excluded",
+        ],
+        "sync.snapshot response",
+    )?;
     exact_mode(object, "compact_recovery")?;
     let account_id = canonical_string_field(object, "account_id")?;
     let device_id = canonical_string_field(object, "device_id")?;
@@ -422,6 +438,11 @@ pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
         object
             .get("excluded")
             .ok_or_else(|| invalid_page("excluded is required"))?,
+        "snapshot excluded",
+    )?;
+    exact_fields(
+        excluded,
+        &["e2ee_messages", "plain_messages_before_cutoff"],
         "snapshot excluded",
     )?;
     if excluded.get("e2ee_messages").and_then(Value::as_bool) != Some(true)
@@ -440,7 +461,18 @@ pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
             .ok_or_else(|| invalid_page("message_policy is required"))?,
         "snapshot message policy",
     )?;
-    canonical_timestamp_field(policy, "server_cutoff")?;
+    exact_fields(
+        policy,
+        &[
+            "server_cutoff",
+            "max_logical_messages",
+            "returned_logical_messages",
+        ],
+        "snapshot message policy",
+    )?;
+    let server_cutoff = canonical_timestamp_field(policy, "server_cutoff")?;
+    let server_cutoff = chrono::DateTime::parse_from_rfc3339(&server_cutoff)
+        .map_err(|_| invalid_page("server_cutoff must be an RFC3339 timestamp"))?;
     let max_logical_messages = policy
         .get("max_logical_messages")
         .and_then(Value::as_u64)
@@ -459,6 +491,8 @@ pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
             "returned_logical_messages must not exceed 500",
         ));
     }
+    let mut event_ids = BTreeSet::new();
+    let mut event_seqs = BTreeSet::new();
     let recent_plain_messages = object
         .get("recent_plain_messages")
         .and_then(Value::as_array)
@@ -480,6 +514,13 @@ pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
                     "snapshot message event must be message.created",
                 ));
             }
+            if !event_ids.insert(event.event_id.clone())
+                || !event_seqs.insert(event.event_seq.clone())
+            {
+                return Err(invalid_page(
+                    "snapshot message event_id and event_seq must be unique",
+                ));
+            }
             if event.account_id != account_id
                 || event.stream_epoch != snapshot_cursor.stream_epoch
                 || event.recipient_device_id.is_some()
@@ -497,6 +538,20 @@ pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
                 .filter(|value| value.is_object())
                 .cloned()
                 .ok_or_else(|| invalid_page("snapshot message must be an object"))?;
+            let accepted_at = message
+                .get("accepted_at")
+                .or_else(|| message.get("created_at"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    invalid_page("snapshot message requires accepted_at or created_at")
+                })?;
+            let accepted_at = chrono::DateTime::parse_from_rfc3339(accepted_at)
+                .map_err(|_| invalid_page("snapshot message timestamp must be RFC3339"))?;
+            if accepted_at < server_cutoff {
+                return Err(invalid_page(
+                    "snapshot message timestamp is before message_policy.server_cutoff",
+                ));
+            }
             reject_e2ee_value(&message)?;
             validate_message_kind_matches_hydration(&event, &message)?;
             Ok(SnapshotPlainMessageV2 { event, message })
@@ -516,12 +571,56 @@ pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
         .get("read_states")
         .and_then(Value::as_array)
         .ok_or_else(|| invalid_page("read_states must be an array"))?
-        .clone();
+        .iter()
+        .map(|value| {
+            let state = self::object(value, "snapshot read state")?;
+            exact_fields(
+                state,
+                &[
+                    "thread_kind",
+                    "thread_key",
+                    "read_up_to_thread_seq",
+                    "read_up_to_message_id",
+                    "state_version",
+                    "updated_by_device_id",
+                    "updated_at",
+                ],
+                "snapshot read state",
+            )?;
+            canonical_timestamp_field(state, "updated_at")?;
+            optional_canonical_string_field(state, "read_up_to_message_id")?;
+            optional_canonical_string_field(state, "updated_by_device_id")?;
+            Ok(value.clone())
+        })
+        .collect::<crate::ImResult<Vec<_>>>()?;
     let groups = object
         .get("groups")
         .and_then(Value::as_array)
         .ok_or_else(|| invalid_page("groups must be an array"))?
-        .clone();
+        .iter()
+        .map(|value| {
+            let state = self::object(value, "snapshot group state")?;
+            exact_fields(
+                state,
+                &[
+                    "group_did",
+                    "host_service_did",
+                    "creator_did",
+                    "group_state_version",
+                    "group_event_seq",
+                    "required_security_profile",
+                    "group_profile",
+                    "member_role",
+                    "membership_status",
+                    "member_count",
+                    "updated_at",
+                ],
+                "snapshot group state",
+            )?;
+            canonical_timestamp_field(state, "updated_at")?;
+            Ok(value.clone())
+        })
+        .collect::<crate::ImResult<Vec<_>>>()?;
     for value in read_states.iter().chain(groups.iter()) {
         if !value.is_object() {
             return Err(invalid_page("snapshot state items must be objects"));
@@ -537,6 +636,19 @@ pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
         groups,
         recent_plain_messages,
     })
+}
+
+fn exact_fields(
+    object: &Map<String, Value>,
+    expected: &[&str],
+    label: &str,
+) -> crate::ImResult<()> {
+    if object.len() != expected.len() || expected.iter().any(|field| !object.contains_key(*field)) {
+        return Err(invalid_page(format!(
+            "{label} must contain exactly the frozen fields"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn parse_message_batch(
@@ -1233,7 +1345,10 @@ mod tests {
             "groups": [],
             "recent_plain_messages": [{
                 "event": snapshot_event,
-                "message": {"thread_kind": "direct"}
+                "message": {
+                    "thread_kind": "direct",
+                    "created_at": "2026-07-28T12:00:03Z"
+                }
             }],
             "message_policy": {
                 "server_cutoff": "2026-07-26T12:00:03Z",
@@ -1254,5 +1369,109 @@ mod tests {
         let mut kind_mismatch = base;
         kind_mismatch["recent_plain_messages"][0]["message"]["thread_kind"] = json!("group");
         assert!(parse_snapshot(&kind_mismatch).is_err());
+    }
+
+    #[test]
+    fn snapshot_rejects_pre_cutoff_duplicates_and_unknown_fields() {
+        let mut snapshot_event = event("event-snapshot-1", "10");
+        snapshot_event["stream_epoch"] = json!("2");
+        snapshot_event["account_id"] = json!("account-1");
+        snapshot_event["payload"]["message_kind"] = json!("direct_plain");
+        let base = json!({
+            "mode": "compact_recovery",
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "server_time": "2026-07-28T12:00:04Z",
+            "snapshot_cursor": {"stream_epoch": "2", "scan_seq": "10"},
+            "read_states": [],
+            "groups": [],
+            "recent_plain_messages": [{
+                "event": snapshot_event,
+                "message": {
+                    "thread_kind": "direct",
+                    "created_at": "2026-07-26T12:00:03Z"
+                }
+            }],
+            "message_policy": {
+                "server_cutoff": "2026-07-26T12:00:03Z",
+                "max_logical_messages": 500,
+                "returned_logical_messages": 1
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true
+            }
+        });
+        assert!(parse_snapshot(&base).is_ok(), "cutoff is inclusive");
+
+        let mut before_cutoff = base.clone();
+        before_cutoff["recent_plain_messages"][0]["message"]["created_at"] =
+            json!("2026-07-26T12:00:02Z");
+        assert!(parse_snapshot(&before_cutoff).is_err());
+
+        let mut duplicate = base.clone();
+        let duplicate_item = duplicate["recent_plain_messages"][0].clone();
+        duplicate["recent_plain_messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate_item);
+        duplicate["message_policy"]["returned_logical_messages"] = json!(2);
+        assert!(parse_snapshot(&duplicate).is_err());
+
+        let mut unknown = base;
+        unknown["message_policy"]["client_override"] = json!(true);
+        assert!(parse_snapshot(&unknown).is_err());
+    }
+
+    #[test]
+    fn snapshot_read_state_is_closed_and_requires_timestamp() {
+        let base = json!({
+            "mode": "compact_recovery",
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "server_time": "2026-07-28T12:00:04Z",
+            "snapshot_cursor": {"stream_epoch": "2", "scan_seq": "10"},
+            "read_states": [{
+                "thread_kind": "direct",
+                "thread_key": "dconv-read-1",
+                "read_up_to_thread_seq": "9",
+                "read_up_to_message_id": null,
+                "state_version": "2",
+                "updated_by_device_id": "device-1",
+                "updated_at": "2026-07-28T12:00:00Z"
+            }],
+            "groups": [],
+            "recent_plain_messages": [],
+            "message_policy": {
+                "server_cutoff": "2026-07-26T12:00:03Z",
+                "max_logical_messages": 500,
+                "returned_logical_messages": 0
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true
+            }
+        });
+        assert!(parse_snapshot(&base).is_ok());
+
+        let mut malformed = base.clone();
+        malformed["read_states"][0]["updated_at"] = json!("not-a-timestamp");
+        assert!(parse_snapshot(&malformed).is_err());
+
+        let mut invalid_message_id = base.clone();
+        invalid_message_id["read_states"][0]["read_up_to_message_id"] = json!(42);
+        assert!(parse_snapshot(&invalid_message_id).is_err());
+
+        let mut invalid_device_id = base.clone();
+        invalid_device_id["read_states"][0]["updated_by_device_id"] = json!({"id": "device-1"});
+        assert!(parse_snapshot(&invalid_device_id).is_err());
+
+        let mut nullable = base.clone();
+        nullable["read_states"][0]["updated_by_device_id"] = Value::Null;
+        assert!(parse_snapshot(&nullable).is_ok());
+
+        let mut unknown = base;
+        unknown["read_states"][0]["recovery_token"] = json!("forbidden");
+        assert!(parse_snapshot(&unknown).is_err());
     }
 }

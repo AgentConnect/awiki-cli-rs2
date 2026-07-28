@@ -439,6 +439,10 @@ pub(crate) struct SnapshotApplyInputV2 {
     pub(crate) account_id: String,
     pub(crate) protocol_device_id: String,
     pub(crate) device_auth_generation: String,
+    pub(crate) expected_stream_epoch: String,
+    pub(crate) expected_scan_seq: String,
+    pub(crate) allow_missing_previous: bool,
+    pub(crate) recovery_id_hash: String,
     pub(crate) stream_epoch: String,
     pub(crate) snapshot_scan_seq: String,
     pub(crate) server_time: String,
@@ -908,13 +912,18 @@ pub(crate) fn apply_delta_v2(
         }
     }
 
+    for binding in thread_bindings {
+        upsert_sync_thread_binding(&transaction, &binding)?;
+    }
     let mut invalidation = v2_invalidation(
+        &transaction,
         &input.owner_identity_id,
         &input.owner_did,
         &input.next_scan_seq,
         &messages,
         &groups,
-    );
+        &read_states,
+    )?;
     if !messages.is_empty() {
         let touched = super::messages::upsert_messages_with_touched(&transaction, &messages)?;
         let mut conversation_ids = invalidation
@@ -933,9 +942,6 @@ pub(crate) fn apply_delta_v2(
     }
     for group in groups {
         super::groups::upsert_group(&transaction, group)?;
-    }
-    for binding in thread_bindings {
-        upsert_sync_thread_binding(&transaction, &binding)?;
     }
     for read_state in read_states {
         apply_remote_read_state(
@@ -990,6 +996,9 @@ pub(crate) fn apply_snapshot_v2(
     validate_required("account_id", &input.account_id)?;
     validate_required("protocol_device_id", &input.protocol_device_id)?;
     validate_positive_decimal("device_auth_generation", &input.device_auth_generation)?;
+    validate_positive_decimal("expected_stream_epoch", &input.expected_stream_epoch)?;
+    validate_decimal("expected_scan_seq", &input.expected_scan_seq)?;
+    validate_required("recovery_id_hash", &input.recovery_id_hash)?;
     validate_positive_decimal("stream_epoch", &input.stream_epoch)?;
     validate_decimal("snapshot_scan_seq", &input.snapshot_scan_seq)?;
     validate_required("server_time", &input.server_time)?;
@@ -1008,6 +1017,31 @@ pub(crate) fn apply_snapshot_v2(
         return Err(crate::ImError::IdentityBindingConflict {
             detail: "snapshot binding does not match the active account device".to_owned(),
         });
+    }
+    match load_message_sync_state_row(&transaction, &input.owner_identity_id)? {
+        Some(current)
+            if current.stream_epoch == input.expected_stream_epoch
+                && current.scan_seq == input.expected_scan_seq => {}
+        None if input.allow_missing_previous && input.expected_scan_seq == "0" => {}
+        _ => {
+            return Err(sync_error(
+                "SYNC_SNAPSHOT_CAS_FAILED",
+                "snapshot cursor changed while recovery was in flight",
+            ))
+        }
+    }
+    let recovery = load_recovery_state(&transaction, &input.owner_identity_id)?
+        .ok_or_else(|| sync_error("SYNC_SNAPSHOT_CAS_FAILED", "snapshot recovery is missing"))?;
+    if recovery.recovery_id_hash.as_deref() != Some(input.recovery_id_hash.as_str())
+        || recovery.snapshot_scan_seq.as_deref() != Some(input.snapshot_scan_seq.as_str())
+        || recovery.requested_from_epoch != input.expected_stream_epoch
+        || recovery.requested_from_seq != input.expected_scan_seq
+        || recovery.status != "applying"
+    {
+        return Err(sync_error(
+            "SYNC_SNAPSHOT_CAS_FAILED",
+            "snapshot recovery authorization changed before commit",
+        ));
     }
 
     let now = unix_time_i64();
@@ -1063,13 +1097,18 @@ pub(crate) fn apply_snapshot_v2(
         applied_event_ids.push(event.event_id);
     }
 
+    for binding in thread_bindings {
+        upsert_sync_thread_binding(&transaction, &binding)?;
+    }
     let mut invalidation = v2_invalidation(
+        &transaction,
         &input.owner_identity_id,
         &input.owner_did,
         &input.snapshot_scan_seq,
         &messages,
         &groups,
-    );
+        &read_states,
+    )?;
     if !messages.is_empty() {
         let touched = super::messages::upsert_messages_with_touched(&transaction, &messages)?;
         let mut conversation_ids = invalidation
@@ -1091,9 +1130,6 @@ pub(crate) fn apply_snapshot_v2(
         if !group_state_is_stale(&transaction, &group)? {
             super::groups::upsert_group(&transaction, group)?;
         }
-    }
-    for binding in thread_bindings {
-        upsert_sync_thread_binding(&transaction, &binding)?;
     }
     for read_state in read_states {
         apply_remote_read_state(
@@ -1547,6 +1583,9 @@ pub(crate) fn mark_thread_read_and_update_outbox(
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
     let pending_remote_ack = input.pending_remote_ack;
+    let acknowledged_remote_seq = (!pending_remote_ack)
+        .then(|| input.read_watermark_seq.clone())
+        .flatten();
     let mut result = super::messages::mark_thread_read_watermark_for_owner_identity(
         &transaction,
         owner_identity_id,
@@ -1598,9 +1637,30 @@ pub(crate) fn mark_thread_read_and_update_outbox(
             &transaction,
             owner_identity_id,
             &remote_thread_key,
-            seq,
+            acknowledged_remote_seq.as_deref().unwrap_or(seq),
             unix_time_i64(),
         )?;
+        let still_pending = transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM local_mutation_outbox
+                    WHERE owner_identity_id = ?1 AND aggregate_id = ?2
+                      AND status NOT IN ('committed', 'permanent_failure')
+                 )",
+                params![owner_identity_id, remote_thread_key],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(super::local_state_unavailable)?;
+        if still_pending {
+            transaction
+                .execute(
+                    "UPDATE thread_read_state
+                     SET pending_remote_ack = 1, remote_ack_at = NULL
+                     WHERE owner_identity_id = ?1 AND conversation_id = ?2",
+                    params![owner_identity_id, result.conversation_id],
+                )
+                .map_err(super::local_state_unavailable)?;
+        }
     }
     transaction
         .commit()
@@ -2200,6 +2260,12 @@ pub(crate) fn claim_next_read_mutation(
              WHERE owner_identity_id = ?1
                AND status IN ('pending', 'retryable')
                AND (retry_at IS NULL OR retry_at <= ?2)
+               AND NOT EXISTS (
+                   SELECT 1 FROM local_mutation_outbox predecessor
+                   WHERE predecessor.owner_identity_id = local_mutation_outbox.owner_identity_id
+                     AND predecessor.aggregate_id = local_mutation_outbox.aggregate_id
+                     AND predecessor.status = 'in_flight'
+               )
              ORDER BY created_at, mutation_id
              LIMIT 1",
             params![owner_identity_id, now],
@@ -2222,6 +2288,67 @@ pub(crate) fn claim_next_read_mutation(
             params![now, owner_identity_id, mutation_id],
         )
         .map_err(super::local_state_unavailable)?;
+    let record = load_local_mutation(&transaction, owner_identity_id, &mutation_id)?;
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(record)
+}
+
+pub(crate) fn claim_read_mutation_by_operation_id(
+    connection: &Connection,
+    owner_identity_id: &str,
+    operation_id: &str,
+    now: i64,
+) -> crate::ImResult<Option<LocalMutationRecord>> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    validate_required("operation_id", operation_id)?;
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    let mutation_id = transaction
+        .query_row(
+            "SELECT candidate.mutation_id
+             FROM local_mutation_outbox candidate
+             WHERE candidate.owner_identity_id = ?1
+               AND candidate.operation_id = ?2
+               AND candidate.status IN ('pending', 'retryable')
+               AND (candidate.retry_at IS NULL OR candidate.retry_at <= ?3)
+               AND NOT EXISTS (
+                   SELECT 1 FROM local_mutation_outbox predecessor
+                   WHERE predecessor.owner_identity_id = candidate.owner_identity_id
+                     AND predecessor.aggregate_id = candidate.aggregate_id
+                     AND predecessor.status = 'in_flight'
+                     AND predecessor.mutation_id <> candidate.mutation_id
+               )
+             LIMIT 1",
+            params![owner_identity_id, operation_id, now],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let Some(mutation_id) = mutation_id else {
+        transaction
+            .commit()
+            .map_err(super::local_state_unavailable)?;
+        return Ok(None);
+    };
+    let updated = transaction
+        .execute(
+            "UPDATE local_mutation_outbox
+             SET status = 'in_flight', attempt_count = attempt_count + 1,
+                 retry_at = NULL, in_flight_since = ?1, updated_at = ?1
+             WHERE owner_identity_id = ?2 AND mutation_id = ?3
+               AND status IN ('pending', 'retryable')",
+            params![now, owner_identity_id, mutation_id],
+        )
+        .map_err(super::local_state_unavailable)?;
+    if updated != 1 {
+        return Err(sync_error(
+            "SYNC_LOCAL_OUTBOX_CONFLICT",
+            "read outbox claim lost its operation",
+        ));
+    }
     let record = load_local_mutation(&transaction, owner_identity_id, &mutation_id)?;
     transaction
         .commit()
@@ -2404,12 +2531,14 @@ fn metadata_decimal(raw: &str, key: &str) -> crate::ImResult<Option<String>> {
 }
 
 fn v2_invalidation(
+    connection: &Connection,
     owner_identity_id: &str,
     owner_did: &str,
     scan_seq: &str,
     messages: &[super::messages::MessageRecord],
     groups: &[super::groups::GroupRecord],
-) -> super::sync_state::SyncDeltaInvalidation {
+    read_states: &[ReadStateApplyV2],
+) -> crate::ImResult<super::sync_state::SyncDeltaInvalidation> {
     let mut conversation_ids = BTreeSet::new();
     let mut thread_ids = BTreeSet::new();
     let mut group_ids = BTreeSet::new();
@@ -2434,7 +2563,26 @@ fn v2_invalidation(
             thread_ids.insert(conversation_id);
         }
     }
-    super::sync_state::SyncDeltaInvalidation {
+    for read_state in read_states {
+        let conversation_id = connection
+            .query_row(
+                "SELECT conversation_id
+                 FROM sync_thread_bindings
+                 WHERE owner_identity_id = ?1 AND remote_thread_key = ?2",
+                params![owner_identity_id, read_state.remote_thread_key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(super::local_state_unavailable)?
+            .or_else(|| {
+                (read_state.thread_kind == "group").then(|| read_state.remote_thread_key.clone())
+            });
+        if let Some(conversation_id) = conversation_id.filter(|value| !value.trim().is_empty()) {
+            conversation_ids.insert(conversation_id.clone());
+            thread_ids.insert(conversation_id);
+        }
+    }
+    Ok(super::sync_state::SyncDeltaInvalidation {
         owner_identity_id: owner_identity_id.to_owned(),
         owner_did: owner_did.to_owned(),
         reason: "sync_v2_delta".to_owned(),
@@ -2443,7 +2591,7 @@ fn v2_invalidation(
         thread_ids: thread_ids.into_iter().collect(),
         group_ids: group_ids.into_iter().collect(),
         group_dids: group_dids.into_iter().collect(),
-    }
+    })
 }
 
 fn decimal_order(left: &str, right: &str) -> std::cmp::Ordering {
@@ -3338,6 +3486,23 @@ mod tests {
             },
         )
         .unwrap();
+        upsert_recovery_state(
+            &db,
+            &RecoveryState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                mode: "compact_recovery".to_owned(),
+                requested_from_epoch: "1".to_owned(),
+                requested_from_seq: "10".to_owned(),
+                recovery_id_hash: Some("recovery-hash".to_owned()),
+                snapshot_scan_seq: Some("50".to_owned()),
+                status: "applying".to_owned(),
+                retry_count: 0,
+                last_error_code: None,
+                started_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
         let remote_read = ReadStateApplyV2 {
             remote_thread_key: "dconv-old-outside-window".to_owned(),
             thread_kind: "direct".to_owned(),
@@ -3354,6 +3519,10 @@ mod tests {
                 account_id: binding.account_id.clone(),
                 protocol_device_id: binding.protocol_device_id.clone(),
                 device_auth_generation: binding.device_auth_generation.clone(),
+                expected_stream_epoch: "1".to_owned(),
+                expected_scan_seq: "10".to_owned(),
+                allow_missing_previous: false,
+                recovery_id_hash: "recovery-hash".to_owned(),
                 stream_epoch: "1".to_owned(),
                 snapshot_scan_seq: "50".to_owned(),
                 server_time: "2026-07-28T10:00:01Z".to_owned(),
@@ -3501,12 +3670,17 @@ mod tests {
             .unwrap(),
             "20"
         );
-        db.execute(
-            "UPDATE local_mutation_outbox
-             SET status = 'in_flight', attempt_count = 1, in_flight_since = 2",
-            [],
+        let claimed = claim_read_mutation_by_operation_id(
+            &db,
+            &binding.owner_identity_id,
+            first.outbox_operation_id.as_deref().unwrap(),
+            2,
         )
+        .unwrap()
         .unwrap();
+        assert!(claimed
+            .payload_json
+            .contains("\"read_watermark_seq\":\"20\""));
         let successor = mark("30");
         assert_ne!(successor.outbox_operation_id, first.outbox_operation_id);
         let rows = db
@@ -3524,6 +3698,17 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows.contains(&("in_flight".to_owned(), "20".to_owned())));
         assert!(rows.contains(&("pending".to_owned(), "30".to_owned())));
+        assert!(
+            claim_read_mutation_by_operation_id(
+                &db,
+                &binding.owner_identity_id,
+                successor.outbox_operation_id.as_deref().unwrap(),
+                2,
+            )
+            .unwrap()
+            .is_none(),
+            "successor must wait until its in-flight predecessor is acknowledged"
+        );
 
         recover_interrupted_work(&db, 3).unwrap();
         assert_eq!(
@@ -3536,5 +3721,158 @@ mod tests {
             .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn read_only_delta_invalidates_its_bound_conversation() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        bootstrap_message_sync_state(
+            &db,
+            &MessageSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                scan_seq: "10".to_owned(),
+                bootstrap_state: "active".to_owned(),
+                last_server_time: None,
+                last_success_at: Some(1),
+                last_error_code: None,
+                metadata_json: None,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let conversation_id = "dm:peer-scope:v1:alice:read-only";
+        let outcome = apply_delta_v2(
+            &db,
+            DeltaApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                next_scan_seq: "11".to_owned(),
+                server_time: "2026-07-28T10:00:01Z".to_owned(),
+                events: vec![DeltaApplyEventV2 {
+                    event_id: "event-read-only-11".to_owned(),
+                    event_seq: "11".to_owned(),
+                    event_type: "message.read_state_updated".to_owned(),
+                    thread_bindings: vec![SyncThreadBinding {
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        remote_thread_key: "dconv-read-only".to_owned(),
+                        thread_kind: "direct".to_owned(),
+                        conversation_id: conversation_id.to_owned(),
+                        updated_at: 1,
+                    }],
+                    read_states: vec![ReadStateApplyV2 {
+                        remote_thread_key: "dconv-read-only".to_owned(),
+                        thread_kind: "direct".to_owned(),
+                        read_watermark_seq: "9".to_owned(),
+                        read_watermark_message_id: None,
+                        state_version: "2".to_owned(),
+                        occurred_at: "2026-07-28T10:00:00Z".to_owned(),
+                    }],
+                    ..DeltaApplyEventV2::default()
+                }],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            outcome.invalidation.conversation_ids,
+            vec![conversation_id.to_owned()]
+        );
+        assert_eq!(
+            outcome.invalidation.thread_ids,
+            vec![conversation_id.to_owned()]
+        );
+    }
+
+    #[test]
+    fn snapshot_cas_rejects_a_concurrent_cursor_advance() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let state = MessageSyncState {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            account_id: binding.account_id.clone(),
+            protocol_device_id: binding.protocol_device_id.clone(),
+            device_auth_generation: binding.device_auth_generation.clone(),
+            stream_epoch: "1".to_owned(),
+            scan_seq: "10".to_owned(),
+            bootstrap_state: "active".to_owned(),
+            last_server_time: None,
+            last_success_at: Some(1),
+            last_error_code: None,
+            metadata_json: None,
+            updated_at: 1,
+        };
+        bootstrap_message_sync_state(&db, &state).unwrap();
+        upsert_recovery_state(
+            &db,
+            &RecoveryState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                mode: "compact_recovery".to_owned(),
+                requested_from_epoch: "1".to_owned(),
+                requested_from_seq: "10".to_owned(),
+                recovery_id_hash: Some("recovery-hash-cas".to_owned()),
+                snapshot_scan_seq: Some("20".to_owned()),
+                status: "applying".to_owned(),
+                retry_count: 0,
+                last_error_code: None,
+                started_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let mut concurrently_advanced = state;
+        concurrently_advanced.scan_seq = "11".to_owned();
+        concurrently_advanced.updated_at = 2;
+        assert!(matches!(
+            advance_message_sync_state(&db, &concurrently_advanced).unwrap(),
+            MessageSyncStateAccess::Ready(_)
+        ));
+        let error = apply_snapshot_v2(
+            &db,
+            SnapshotApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                expected_stream_epoch: "1".to_owned(),
+                expected_scan_seq: "10".to_owned(),
+                allow_missing_previous: false,
+                recovery_id_hash: "recovery-hash-cas".to_owned(),
+                stream_epoch: "1".to_owned(),
+                snapshot_scan_seq: "20".to_owned(),
+                server_time: "2026-07-28T10:00:02Z".to_owned(),
+                events: Vec::new(),
+                groups: Vec::new(),
+                read_states: Vec::new(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::ImError::Service {
+                code: Some(code),
+                ..
+            } if code == "SYNC_SNAPSHOT_CAS_FAILED"
+        ));
+        let MessageSyncStateAccess::Ready(current) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("concurrent cursor must remain ready");
+        };
+        assert_eq!(current.scan_seq, "11");
     }
 }

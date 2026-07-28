@@ -80,6 +80,12 @@ enum LocalStateCommand {
         now: i64,
         reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::LocalMutationRecord>>>,
     },
+    ClaimReadMutationByOperationId {
+        owner_identity_id: String,
+        operation_id: String,
+        now: i64,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::LocalMutationRecord>>>,
+    },
     RetryLocalMutation {
         owner_identity_id: String,
         mutation_id: String,
@@ -704,6 +710,23 @@ impl LocalStateDb {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::ClaimNextReadMutation {
             owner_identity_id: owner_identity_id.into(),
+            now,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn claim_read_mutation_by_operation_id(
+        &self,
+        owner_identity_id: impl Into<String>,
+        operation_id: impl Into<String>,
+        now: i64,
+    ) -> crate::ImResult<Option<super::sync_v2::LocalMutationRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ClaimReadMutationByOperationId {
+            owner_identity_id: owner_identity_id.into(),
+            operation_id: operation_id.into(),
             now,
             reply,
         })
@@ -1799,6 +1822,20 @@ fn run_actor(
             } => {
                 let result =
                     super::sync_v2::claim_next_read_mutation(&connection, &owner_identity_id, now);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ClaimReadMutationByOperationId {
+                owner_identity_id,
+                operation_id,
+                now,
+                reply,
+            } => {
+                let result = super::sync_v2::claim_read_mutation_by_operation_id(
+                    &connection,
+                    &owner_identity_id,
+                    &operation_id,
+                    now,
+                );
                 let _ = reply.send(result);
             }
             LocalStateCommand::RetryLocalMutation {

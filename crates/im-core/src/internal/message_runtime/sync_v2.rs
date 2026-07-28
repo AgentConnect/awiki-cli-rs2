@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -48,6 +49,8 @@ where
             ));
         }
         let binding = self.client.active_sync_account_binding().await?;
+        let owner_lock = owner_sync_lock(&binding.owner_identity_id);
+        let _owner_guard = owner_lock.lock().await;
         let db = self.client.core_inner().local_state_db().await?;
         let owner_identity_id = binding.owner_identity_id.clone();
         let mut result = empty_outcome();
@@ -231,113 +234,125 @@ where
             else {
                 break;
             };
-            let payload: Value = serde_json::from_str(&record.payload_json).map_err(|error| {
-                sync_error(
-                    "SYNC_LOCAL_OUTBOX_CORRUPT",
-                    format!("read outbox payload is invalid: {error}"),
+            if let Err(error) = self.send_claimed_read_mutation(db, binding, &record).await {
+                db.retry_local_mutation(
+                    &binding.owner_identity_id,
+                    &record.mutation_id,
+                    error_code(&error).unwrap_or("READ_STATE_RETRY"),
+                    now.saturating_add(5),
                 )
-            })?;
-            let field = |name: &str| {
-                payload
-                    .get(name)
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.trim().is_empty())
-                    .map(ToOwned::to_owned)
-                    .ok_or_else(|| {
-                        sync_error(
-                            "SYNC_LOCAL_OUTBOX_CORRUPT",
-                            format!("read outbox payload is missing {name}"),
-                        )
-                    })
-            };
-            let thread_kind = field("thread_kind")?;
-            let thread_id = field("thread_id")?;
-            let remote_thread_key = field("remote_thread_key")?;
-            let seq = field("read_watermark_seq")?;
-            let thread = if thread_kind == "group" {
-                crate::messages::ThreadRef::Group(crate::ids::GroupRef::parse(&thread_id)?)
-            } else {
-                crate::messages::ThreadRef::Thread(crate::ids::ThreadId::parse(&thread_id)?)
-            };
-            let params = crate::internal::wire::read_state::build_mark_read_state_rpc_params(
-                &wire_identity(self.client),
-                crate::internal::wire::read_state::MarkReadStateWireRequest {
-                    thread: thread.clone(),
-                    read_up_to_server_seq: Some(seq.clone()),
-                    read_up_to_message_id: payload
-                        .get("read_watermark_message_id")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    client_observed_at: payload
-                        .get("read_watermark_at")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    fallback_max_message_ids: None,
-                    device_id: Some(binding.protocol_device_id.clone()),
-                    operation_id: Some(record.operation_id.clone()),
-                    remote_thread_key: Some(remote_thread_key),
-                },
-            )?;
-            let response = match self
-                .transport
-                .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "read_state.mark_read", params)
-                .await
-            {
-                Ok(response) => response,
-                Err(error) => {
-                    db.retry_local_mutation(
-                        &binding.owner_identity_id,
-                        &record.mutation_id,
-                        error_code(&error).unwrap_or("READ_STATE_RETRY"),
-                        now.saturating_add(5),
-                    )
-                    .await?;
-                    return Err(error);
-                }
-            };
-            let acknowledged_seq = response
-                .get("read_watermark_server_seq")
-                .and_then(Value::as_str)
-                .map(|value| {
-                    crate::internal::local_state::sync_v2::validate_decimal(
-                        "read_watermark_server_seq",
-                        value,
-                    )
-                    .map(|()| value.to_owned())
-                })
-                .transpose()?
-                .unwrap_or(seq);
-            db.mark_thread_read_watermark(
-                &binding.owner_identity_id,
-                &binding.current_did,
-                crate::internal::local_state::messages::MarkThreadReadWatermarkInput {
-                    thread,
-                    read_watermark_message_id: response
-                        .get("read_watermark_message_id")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                        .or_else(|| {
-                            payload
-                                .get("read_watermark_message_id")
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned)
-                        }),
-                    read_watermark_seq: Some(acknowledged_seq),
-                    read_watermark_at: response
-                        .get("read_at")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                        .or_else(|| {
-                            payload
-                                .get("read_watermark_at")
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned)
-                        }),
-                    pending_remote_ack: false,
-                },
-            )
-            .await?;
+                .await?;
+                return Err(error);
+            }
         }
+        Ok(())
+    }
+
+    async fn send_claimed_read_mutation(
+        &mut self,
+        db: &crate::internal::local_state::actor::LocalStateDb,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        record: &crate::internal::local_state::sync_v2::LocalMutationRecord,
+    ) -> crate::ImResult<()> {
+        let payload: Value = serde_json::from_str(&record.payload_json).map_err(|error| {
+            sync_error(
+                "SYNC_LOCAL_OUTBOX_CORRUPT",
+                format!("read outbox payload is invalid: {error}"),
+            )
+        })?;
+        let field = |name: &str| {
+            payload
+                .get(name)
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| {
+                    sync_error(
+                        "SYNC_LOCAL_OUTBOX_CORRUPT",
+                        format!("read outbox payload is missing {name}"),
+                    )
+                })
+        };
+        let thread_kind = field("thread_kind")?;
+        let thread_id = field("thread_id")?;
+        let remote_thread_key = field("remote_thread_key")?;
+        let requested_seq = field("read_watermark_seq")?;
+        crate::internal::local_state::sync_v2::validate_decimal(
+            "read_watermark_seq",
+            &requested_seq,
+        )?;
+        let thread = match thread_kind.as_str() {
+            "group" => crate::messages::ThreadRef::Group(crate::ids::GroupRef::parse(&thread_id)?),
+            "direct" => {
+                crate::messages::ThreadRef::Thread(crate::ids::ThreadId::parse(&thread_id)?)
+            }
+            _ => {
+                return Err(sync_error(
+                    "SYNC_LOCAL_OUTBOX_CORRUPT",
+                    "read outbox thread_kind must be direct or group",
+                ))
+            }
+        };
+        let expected_thread = crate::internal::wire::read_state::read_state_thread_to_wire(
+            &thread,
+            Some(&remote_thread_key),
+        )?;
+        let params = crate::internal::wire::read_state::build_mark_read_state_rpc_params(
+            &wire_identity(self.client),
+            crate::internal::wire::read_state::MarkReadStateWireRequest {
+                thread: thread.clone(),
+                read_up_to_server_seq: Some(requested_seq.clone()),
+                read_up_to_message_id: payload
+                    .get("read_watermark_message_id")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                client_observed_at: payload
+                    .get("read_watermark_at")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                fallback_max_message_ids: None,
+                device_id: Some(binding.protocol_device_id.clone()),
+                operation_id: Some(record.operation_id.clone()),
+                remote_thread_key: Some(remote_thread_key),
+            },
+        )?;
+        let raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "read_state.mark_read", params)
+            .await?;
+        let response = crate::internal::wire::read_state::parse_mark_read_state_response(
+            &raw,
+            &binding.current_did,
+            &expected_thread,
+        )?;
+        let acknowledged_seq = response
+            .read_watermark_server_seq
+            .as_deref()
+            .ok_or_else(|| incomplete_read_ack("read ACK has no server watermark"))?;
+        if !response.remote_acknowledged
+            || response.pending_remote_ack
+            || response.partial
+            || crate::internal::local_state::sync_v2::compare_decimal(
+                acknowledged_seq,
+                &requested_seq,
+            )? == std::cmp::Ordering::Less
+        {
+            return Err(incomplete_read_ack(
+                "read ACK is not final or is below the sent watermark",
+            ));
+        }
+        db.mark_thread_read_watermark(
+            &binding.owner_identity_id,
+            &binding.current_did,
+            crate::internal::local_state::messages::MarkThreadReadWatermarkInput {
+                thread,
+                read_watermark_message_id: response.read_watermark_message_id,
+                read_watermark_seq: Some(acknowledged_seq.to_owned()),
+                read_watermark_at: Some(response.read_at),
+                pending_remote_ack: false,
+            },
+        )
+        .await?;
         Ok(())
     }
 
@@ -438,6 +453,10 @@ where
                     account_id: binding.account_id.clone(),
                     protocol_device_id: binding.protocol_device_id.clone(),
                     device_auth_generation: binding.device_auth_generation.clone(),
+                    expected_stream_epoch: previous.stream_epoch.clone(),
+                    expected_scan_seq: previous.scan_seq.clone(),
+                    allow_missing_previous: previous.bootstrap_state == "uninitialized",
+                    recovery_id_hash: hex_sha256(&recovery.recovery_id),
                     stream_epoch: snapshot.snapshot_cursor.stream_epoch.clone(),
                     snapshot_scan_seq: snapshot.snapshot_cursor.scan_seq.clone(),
                     server_time: snapshot.server_time.clone(),
@@ -956,13 +975,12 @@ fn read_state_from_event(
         .payload
         .get("thread_kind")
         .and_then(Value::as_str)
-        .unwrap_or_else(|| {
-            if remote_thread_key.starts_with("did:") {
-                "group"
-            } else {
-                "direct"
-            }
-        });
+        .ok_or_else(|| {
+            sync_error(
+                "SYNC_INVALID_PAGE",
+                "read state event is missing payload thread_kind",
+            )
+        })?;
     if !matches!(thread_kind, "direct" | "group") {
         return Err(sync_error(
             "SYNC_INVALID_PAGE",
@@ -1042,6 +1060,16 @@ fn read_state_from_snapshot(
                 )
             })
     };
+    let nullable_string = |field: &str| match object.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.trim().is_empty() && value.trim() == value => {
+            Ok(Some(value.clone()))
+        }
+        Some(_) => Err(sync_error(
+            "SYNC_INVALID_SNAPSHOT",
+            format!("snapshot read state {field} must be a canonical string or null"),
+        )),
+    };
     let thread_kind = required("thread_kind")?;
     if !matches!(thread_kind.as_str(), "direct" | "group") {
         return Err(sync_error(
@@ -1059,19 +1087,24 @@ fn read_state_from_snapshot(
         "state_version",
         &state_version,
     )?;
+    let read_watermark_message_id = nullable_string("read_up_to_message_id")?;
+    nullable_string("updated_by_device_id")?;
     Ok(crate::internal::local_state::sync_v2::ReadStateApplyV2 {
         remote_thread_key: required("thread_key")?,
         thread_kind,
         read_watermark_seq,
-        read_watermark_message_id: object
-            .get("read_up_to_message_id")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
+        read_watermark_message_id,
         state_version,
         occurred_at: object
             .get("updated_at")
             .and_then(Value::as_str)
-            .unwrap_or("1970-01-01T00:00:00Z")
+            .filter(|value| chrono::DateTime::parse_from_rfc3339(value).is_ok())
+            .ok_or_else(|| {
+                sync_error(
+                    "SYNC_INVALID_SNAPSHOT",
+                    "snapshot read state updated_at must be RFC3339",
+                )
+            })?
             .to_owned(),
     })
 }
@@ -1180,7 +1213,11 @@ fn normalize_baseline_group(value: &Value, owner_did: &str) -> Value {
     if let Some(status) = object.get("membership_status") {
         membership.insert("status".to_owned(), status.clone());
     }
-    if let Some(role) = object.get("role").or_else(|| object.get("membership_role")) {
+    if let Some(role) = object
+        .get("member_role")
+        .or_else(|| object.get("role"))
+        .or_else(|| object.get("membership_role"))
+    {
         membership.insert("role".to_owned(), role.clone());
     }
     json!({
@@ -1330,6 +1367,19 @@ fn unix_time_i64() -> i64 {
         .unwrap_or(i64::MAX)
 }
 
+fn owner_sync_lock(owner_identity_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: OnceLock<StdMutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+        OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(|| StdMutex::new(BTreeMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    locks
+        .entry(owner_identity_id.to_owned())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
 fn hex_sha256(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -1342,6 +1392,10 @@ fn sync_error(code: &str, message: impl Into<String>) -> crate::ImError {
         message: message.into(),
         data: None,
     }
+}
+
+fn incomplete_read_ack(message: impl Into<String>) -> crate::ImError {
+    sync_error("READ_STATE_INCOMPLETE_ACK", message)
 }
 
 #[cfg(test)]
@@ -1749,6 +1803,31 @@ mod tests {
             },
             "has_more": false,
             "recovery": null,
+            "warnings": []
+        })
+    }
+
+    fn sync_read_ack(
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        thread_key: &str,
+        seq: &str,
+        message_id: &str,
+        read_at: &str,
+    ) -> Value {
+        json!({
+            "user_did": binding.current_did,
+            "thread": {"kind": "direct", "thread_key": thread_key},
+            "updated_count": 0,
+            "remote_acknowledged": true,
+            "partial": false,
+            "fallback_used": false,
+            "pending_remote_ack": false,
+            "read_watermark_server_seq": seq,
+            "previous_read_watermark_server_seq": Value::Null,
+            "read_watermark_message_id": message_id,
+            "advanced": true,
+            "read_at": read_at,
+            "unread_count": Value::Null,
             "warnings": []
         })
     }
@@ -2520,11 +2599,13 @@ mod tests {
             SyncSnapshotTransport::queued(
                 Rc::clone(&calls),
                 vec![
-                    Ok(json!({
-                        "read_watermark_server_seq": "30",
-                        "read_watermark_message_id": "message-read-30",
-                        "read_at": "2026-07-28T12:00:03Z"
-                    })),
+                    Ok(sync_read_ack(
+                        &binding,
+                        "remote-thread-key-exact-bob",
+                        "30",
+                        "message-read-30",
+                        "2026-07-28T12:00:03Z",
+                    )),
                     Ok(sync_snapshot_delta("1", "12", vec![])),
                 ],
             ),
@@ -2624,11 +2705,13 @@ mod tests {
             SyncSnapshotTransport::queued(
                 Rc::new(RefCell::new(Vec::new())),
                 vec![
-                    Ok(json!({
-                        "read_watermark_server_seq": "50",
-                        "read_watermark_message_id": "message-read-high",
-                        "read_at": "2026-07-28T12:00:09Z"
-                    })),
+                    Ok(sync_read_ack(
+                        &binding,
+                        "remote-thread-key-higher-bob",
+                        "50",
+                        "message-read-high",
+                        "2026-07-28T12:00:09Z",
+                    )),
                     Ok(sync_snapshot_delta("1", "12", vec![])),
                 ],
             ),
@@ -2677,6 +2760,134 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn sync_read_outbox_pseudo_ack_returns_claim_to_retryable() {
+        let fixture = SyncSnapshotFixture::new("read-outbox-pseudo-ack");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let conversation_id = "dm:peer-scope:v1:alice:pseudo-ack";
+        seed_sync_read_direct_message(
+            &client,
+            &binding,
+            "message-read-pseudo",
+            conversation_id,
+            30,
+        )
+        .await;
+        apply_sync_read_thread_binding(
+            &client,
+            &binding,
+            "event-read-binding-pseudo",
+            "11",
+            "remote-thread-key-pseudo",
+            conversation_id,
+        )
+        .await;
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .mark_thread_read_watermark(
+                binding.owner_identity_id.clone(),
+                binding.current_did.clone(),
+                crate::internal::local_state::messages::MarkThreadReadWatermarkInput {
+                    thread: crate::messages::ThreadRef::Thread(
+                        crate::ids::ThreadId::parse(conversation_id).unwrap(),
+                    ),
+                    read_watermark_message_id: Some("message-read-pseudo".to_owned()),
+                    read_watermark_seq: Some("30".to_owned()),
+                    read_watermark_at: Some("2026-07-28T12:00:02Z".to_owned()),
+                    pending_remote_ack: true,
+                },
+            )
+            .await
+            .unwrap();
+        let mut pseudo_ack = sync_read_ack(
+            &binding,
+            "remote-thread-key-pseudo",
+            "30",
+            "message-read-pseudo",
+            "2026-07-28T12:00:03Z",
+        );
+        pseudo_ack["remote_acknowledged"] = json!(false);
+        pseudo_ack["pending_remote_ack"] = json!(true);
+        let error = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(Rc::new(RefCell::new(Vec::new())), vec![Ok(pseudo_ack)]),
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::ImError::Service {
+                code: Some(code),
+                ..
+            } if code == "READ_STATE_INCOMPLETE_ACK"
+        ));
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        let state = connection
+            .query_row(
+                "SELECT status, in_flight_since, last_error_code
+                 FROM local_mutation_outbox
+                 WHERE owner_identity_id = ?1",
+                [binding.owner_identity_id.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            state,
+            (
+                "retryable".to_owned(),
+                None,
+                "READ_STATE_INCOMPLETE_ACK".to_owned(),
+            )
+        );
+    }
+
+    #[test]
+    fn read_state_event_requires_explicit_thread_kind() {
+        let event = crate::internal::wire::sync_v2::SyncEventV2 {
+            event_id: "event-read-kind-required".to_owned(),
+            stream_epoch: "1".to_owned(),
+            event_seq: "1".to_owned(),
+            event_type: "message.read_state_updated".to_owned(),
+            schema_version: 1,
+            ignore_safe: false,
+            account_id: "account-1".to_owned(),
+            recipient_device_id: None,
+            origin_did: Some("did:example:alice".to_owned()),
+            origin_device_id: Some("device-1".to_owned()),
+            aggregate_kind: "conversation_read_state".to_owned(),
+            aggregate_id: "dconv-kind-required".to_owned(),
+            state_version: Some("1".to_owned()),
+            thread_key: Some("dconv-kind-required".to_owned()),
+            occurred_at: "2026-07-28T12:00:00Z".to_owned(),
+            payload: json!({
+                "thread_key": "dconv-kind-required",
+                "state_version": "1",
+                "read_up_to_thread_seq": "10"
+            }),
+            source: None,
+        };
+        assert!(matches!(
+            read_state_from_event(&event),
+            Err(crate::ImError::Service {
+                code: Some(code),
+                ..
+            }) if code == "SYNC_INVALID_PAGE"
+        ));
+    }
+
     struct BatchTransport {
         responses: VecDeque<Value>,
         calls: Vec<Vec<String>>,
@@ -2709,14 +2920,19 @@ mod tests {
         let normalized = normalize_baseline_group(
             &json!({
                 "group_did": "did:example:group",
+                "host_service_did": "did:example:message-service",
+                "creator_did": "did:example:alice",
                 "group_state_version": "17",
                 "group_event_seq": "23",
+                "required_security_profile": "plaintext",
                 "group_profile": {
                     "display_name": "Stage Two",
                     "description": "ordinary group"
                 },
+                "member_role": "admin",
                 "membership_status": "active",
-                "role": "admin"
+                "member_count": 3,
+                "updated_at": "2026-07-28T10:00:00Z"
             }),
             "did:example:alice",
         );
@@ -2750,23 +2966,46 @@ mod tests {
     fn flat_group_bootstrap_profile_is_persisted_in_group_projection() {
         let fixture = Fixture::new("group-baseline");
         let client = fixture.client();
-        let group = baseline_group_record(
-            &client,
-            &json!({
+        let snapshot = crate::internal::wire::sync_v2::parse_snapshot(&json!({
+            "mode": "compact_recovery",
+            "account_id": "alice-account",
+            "device_id": "alice-device",
+            "server_time": "2026-07-28T10:00:00Z",
+            "snapshot_cursor": {
+                "stream_epoch": "2",
+                "scan_seq": "23"
+            },
+            "read_states": [],
+            "groups": [{
                 "group_did": "did:example:group",
+                "host_service_did": "did:example:message-service",
+                "creator_did": "did:example:alice",
                 "group_state_version": "17",
                 "group_event_seq": "23",
+                "required_security_profile": "plaintext",
                 "group_profile": {
                     "display_name": "Stage Two",
                     "description": "ordinary group"
                 },
+                "member_role": "admin",
                 "membership_status": "active",
-                "role": "admin"
-            }),
-            "2026-07-28T10:00:00Z",
-            0,
-        )
+                "member_count": 3,
+                "updated_at": "2026-07-28T10:00:00Z"
+            }],
+            "recent_plain_messages": [],
+            "message_policy": {
+                "server_cutoff": "2026-07-26T10:00:00Z",
+                "max_logical_messages": 500,
+                "returned_logical_messages": 0
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true
+            }
+        }))
         .unwrap();
+        let group =
+            baseline_group_record(&client, &snapshot.groups[0], &snapshot.server_time, 0).unwrap();
         let db = rusqlite::Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         crate::internal::local_state::groups::upsert_group(&db, group).unwrap();
