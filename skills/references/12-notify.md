@@ -15,7 +15,7 @@ This file is a **workflow reference**, not an entry Skill. Load it only when the
   - dry-run, structured success checks, and one-send-per-state rules
 - Not implemented:
   - a Coding Agent lifecycle hook that guarantees invocation
-  - proof that AWiki Me displayed the message or notification banner
+  - automated proof that AWiki Me received the message or displayed a background system notification
   - automatic delivery after the Coding Agent process exits unexpectedly
 
 This is a best-effort Agent workflow. The Skill can guide an Agent to send a notification, but it cannot guarantee execution when the Agent is killed, crashes, or does not load this reference.
@@ -151,7 +151,7 @@ This workflow proves only:
 Coding Agent -> awiki-cli msg send -> server acceptance
 ```
 
-The complete user-visible path additionally requires AWiki Me to receive and project the message, show an in-App banner while foregrounded, and show a system notification while backgrounded. Those App behaviors are outside this Skill contract.
+The complete user-visible path additionally requires AWiki Me to receive and project the message, remain quiet while foregrounded, and show a system notification while backgrounded. Foreground message/task state remains available in the App without an extra notification banner. Those App behaviors are outside this Skill contract.
 
 For guaranteed terminal-event production, add a Coding Agent lifecycle hook or Daemon status-event integration in a later phase. Do not describe this Skill-only workflow as guaranteed notification delivery.
 
