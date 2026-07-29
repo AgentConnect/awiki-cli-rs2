@@ -5,10 +5,27 @@ use tokio::sync::broadcast;
 const DEFAULT_LIMIT: u32 = 200;
 const PATCH_BUFFER: usize = 128;
 
+fn subscribe_before_seed<T: Clone, F>(
+    sender: &broadcast::Sender<T>,
+    projection: &Mutex<()>,
+    seed: F,
+) -> crate::ImResult<(broadcast::Receiver<T>, Vec<T>)>
+where
+    F: FnOnce() -> crate::ImResult<Vec<T>>,
+{
+    let receiver = sender.subscribe();
+    let _projection_guard = projection
+        .lock()
+        .expect("conversation projection lock poisoned");
+    let initial = seed()?;
+    Ok((receiver, initial))
+}
+
 #[derive(Debug)]
 pub(crate) struct ConversationStore {
     owner_identity_id: String,
     owner_did: String,
+    projection: Mutex<()>,
     state: Mutex<ConversationStoreState>,
     sender: broadcast::Sender<crate::messages::ConversationStorePatch>,
 }
@@ -26,6 +43,7 @@ impl ConversationStore {
         Arc::new(Self {
             owner_identity_id: client.current_identity().id.as_str().to_owned(),
             owner_did: client.did().as_str().to_owned(),
+            projection: Mutex::new(()),
             state: Mutex::new(ConversationStoreState::default()),
             sender,
         })
@@ -36,19 +54,12 @@ impl ConversationStore {
         client: &crate::core::ImClient,
     ) -> crate::ImResult<crate::messages::ConversationPatchSession> {
         self.ensure_owner(client)?;
-        let mut initial = Vec::new();
-        if let Some(snapshot) =
-            crate::internal::snapshot::conversation_snapshot::load_for_client(client)?
-        {
-            let items = snapshot.items;
-            let unread_total = unread_total(&items);
-            let patch = self.replace_items(items, unread_total);
-            initial.push(patch);
-        }
-        initial.push(self.repair_from_client(client)?);
+        let (receiver, initial) = subscribe_before_seed(&self.sender, &self.projection, || {
+            Ok(vec![self.repair_from_client_locked(client)?])
+        })?;
         Ok(crate::messages::ConversationPatchSession::new(
             self.clone(),
-            self.sender.subscribe(),
+            receiver,
             initial,
         ))
     }
@@ -58,6 +69,17 @@ impl ConversationStore {
         client: &crate::core::ImClient,
     ) -> crate::ImResult<crate::messages::ConversationStorePatch> {
         self.ensure_owner(client)?;
+        let _projection_guard = self
+            .projection
+            .lock()
+            .expect("conversation projection lock poisoned");
+        self.repair_from_client_locked(client)
+    }
+
+    fn repair_from_client_locked(
+        &self,
+        client: &crate::core::ImClient,
+    ) -> crate::ImResult<crate::messages::ConversationStorePatch> {
         let items = committed_items(client)?;
         let unread_total = unread_total(&items);
         Ok(self.replace_items(items, unread_total))
@@ -75,6 +97,10 @@ impl ConversationStore {
         {
             return;
         }
+        let _projection_guard = self
+            .projection
+            .lock()
+            .expect("conversation projection lock poisoned");
         let patch = match committed_items(client) {
             Ok(items) => self.diff_committed_items(items),
             Err(_) => Some(self.repair_required_patch("committed_projection_unavailable")),
@@ -92,6 +118,10 @@ impl ConversationStore {
         if self.ensure_owner(client).is_err() {
             return;
         }
+        let _projection_guard = self
+            .projection
+            .lock()
+            .expect("conversation projection lock poisoned");
         let patch = match committed_items(client) {
             Ok(items) => self.diff_committed_items(items),
             Err(_) => Some(self.repair_required_patch(reason)),
@@ -269,6 +299,284 @@ fn committed_items(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn subscribe_before_seed_keeps_exactly_one_commit_during_seed() {
+        let (sender, _) = broadcast::channel(4);
+        let projection = Mutex::new(());
+        let (mut receiver, initial) = subscribe_before_seed(&sender, &projection, || {
+            sender.send("committed").unwrap();
+            Ok(vec!["seed"])
+        })
+        .unwrap();
+
+        assert_eq!(initial, vec!["seed"]);
+        assert_eq!(receiver.recv().await.unwrap(), "committed");
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn seed_version_fences_the_commit_already_represented_by_seed() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let store = ConversationStore::new_for_client(&client);
+        let receiver = store.sender.subscribe();
+        let during_seed = store.repair_required_patch("during_seed");
+        store.sender.send(during_seed).unwrap();
+        let seed = store.repair_required_patch("seed_after_commit");
+        let mut session =
+            crate::messages::ConversationPatchSession::new(store.clone(), receiver, vec![seed]);
+
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ConversationStorePatch::RepairRequired {
+                version: 2,
+                reason,
+                ..
+            }) if reason == "seed_after_commit"
+        ));
+        let after_seed = store.repair_required_patch("after_seed");
+        store.sender.send(after_seed).unwrap();
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ConversationStorePatch::RepairRequired {
+                version: 3,
+                reason,
+                ..
+            }) if reason == "after_seed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn watch_ignores_stale_redb_and_delivers_one_canonical_initial_reset() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        crate::internal::message_runtime::local_projection::persist_direct_outgoing_result(
+            &client,
+            "did:example:bob",
+            None,
+            None,
+            &send_result("canonical-live"),
+        )
+        .unwrap();
+        crate::internal::snapshot::conversation_snapshot::save_for_client(
+            &client,
+            vec![item(
+                "dm:persona:stale",
+                "direct",
+                "did:example:stale",
+                "stale-redb",
+                1,
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            crate::internal::snapshot::conversation_snapshot::load_for_client(&client)
+                .unwrap()
+                .unwrap()
+                .items[0]
+                .last_message
+                .as_ref()
+                .unwrap()
+                .id,
+            "stale-redb"
+        );
+
+        let mut session = client.messages().watch_conversation_patches().unwrap();
+        let initial = session.next_patch().await.expect("canonical initial reset");
+
+        assert!(matches!(
+            initial,
+            crate::messages::ConversationStorePatch::Reset { items, .. }
+                if items.len() == 1
+                    && items[0].last_message.as_ref().map(|message| message.id.as_str())
+                        == Some("canonical-live")
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), session.next_patch())
+                .await
+                .is_err(),
+            "bound watch must not deliver a second redb-derived initial reset"
+        );
+    }
+
+    #[tokio::test]
+    async fn seed_first_serializes_commit_projection_without_regression() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let store = ConversationStore::new_for_client(&client);
+        let old_items = vec![item("dm:persona:a", "direct", "a", "old", 1)];
+        let committed_items = vec![item("dm:persona:a", "direct", "a", "new", 0)];
+        let canonical = Arc::new(Mutex::new(old_items.clone()));
+        let seed_read = Arc::new(std::sync::Barrier::new(2));
+        let release_seed = Arc::new(std::sync::Barrier::new(2));
+
+        let seed_store = store.clone();
+        let seed_canonical = canonical.clone();
+        let seed_read_worker = seed_read.clone();
+        let release_seed_worker = release_seed.clone();
+        let seed_worker = std::thread::spawn(move || {
+            subscribe_before_seed(&seed_store.sender, &seed_store.projection, || {
+                let items = seed_canonical
+                    .lock()
+                    .expect("canonical conversation fixture lock poisoned")
+                    .clone();
+                seed_read_worker.wait();
+                release_seed_worker.wait();
+                let unread_total = unread_total(&items);
+                Ok(vec![seed_store.replace_items(items, unread_total)])
+            })
+            .unwrap()
+        });
+
+        seed_read.wait();
+        *canonical
+            .lock()
+            .expect("canonical conversation fixture lock poisoned") = committed_items.clone();
+
+        let callback_store = store.clone();
+        let callback_canonical = canonical.clone();
+        let (callback_done_tx, callback_done_rx) = std::sync::mpsc::channel();
+        let callback_worker = std::thread::spawn(move || {
+            let _projection_guard = callback_store
+                .projection
+                .lock()
+                .expect("conversation projection lock poisoned");
+            let items = callback_canonical
+                .lock()
+                .expect("canonical conversation fixture lock poisoned")
+                .clone();
+            if let Some(patch) = callback_store.diff_committed_items(items) {
+                let _ = callback_store.sender.send(patch);
+            }
+            callback_done_tx.send(()).unwrap();
+        });
+
+        assert!(
+            callback_done_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "commit callback must not overtake a seed holding the projection lock"
+        );
+        release_seed.wait();
+        let (receiver, initial) = seed_worker.join().unwrap();
+        callback_done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        callback_worker.join().unwrap();
+
+        let mut session =
+            crate::messages::ConversationPatchSession::new(store.clone(), receiver, initial);
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ConversationStorePatch::Reset { items, .. })
+                if items == old_items
+        ));
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ConversationStorePatch::Upsert { item, .. })
+                if item == committed_items[0]
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), session.next_patch())
+                .await
+                .is_err(),
+            "the commit represented after the seed must be delivered exactly once"
+        );
+        assert_eq!(
+            store
+                .state
+                .lock()
+                .expect("conversation store lock poisoned")
+                .items,
+            committed_items,
+            "the callback must re-read canonical state after the seed and must not regress it"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_first_is_fenced_by_newer_seed_without_duplicate_delivery() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let store = ConversationStore::new_for_client(&client);
+        let committed_items = vec![item("dm:persona:a", "direct", "a", "new", 0)];
+        let canonical = Arc::new(Mutex::new(committed_items.clone()));
+        let receiver = store.sender.subscribe();
+        let callback_locked = Arc::new(std::sync::Barrier::new(2));
+        let release_callback = Arc::new(std::sync::Barrier::new(2));
+
+        let callback_store = store.clone();
+        let callback_canonical = canonical.clone();
+        let callback_locked_worker = callback_locked.clone();
+        let release_callback_worker = release_callback.clone();
+        let callback_worker = std::thread::spawn(move || {
+            let _projection_guard = callback_store
+                .projection
+                .lock()
+                .expect("conversation projection lock poisoned");
+            let items = callback_canonical
+                .lock()
+                .expect("canonical conversation fixture lock poisoned")
+                .clone();
+            if let Some(patch) = callback_store.diff_committed_items(items) {
+                let _ = callback_store.sender.send(patch);
+            }
+            callback_locked_worker.wait();
+            release_callback_worker.wait();
+        });
+
+        callback_locked.wait();
+        let seed_store = store.clone();
+        let seed_canonical = canonical.clone();
+        let seed_started = Arc::new(std::sync::Barrier::new(2));
+        let seed_started_worker = seed_started.clone();
+        let seed_worker = std::thread::spawn(move || {
+            seed_started_worker.wait();
+            let _projection_guard = seed_store
+                .projection
+                .lock()
+                .expect("conversation projection lock poisoned");
+            let items = seed_canonical
+                .lock()
+                .expect("canonical conversation fixture lock poisoned")
+                .clone();
+            let unread_total = unread_total(&items);
+            vec![seed_store.replace_items(items, unread_total)]
+        });
+        seed_started.wait();
+        release_callback.wait();
+        callback_worker.join().unwrap();
+        let initial = seed_worker.join().unwrap();
+
+        let mut session =
+            crate::messages::ConversationPatchSession::new(store.clone(), receiver, initial);
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ConversationStorePatch::Reset {
+                version: 2,
+                items,
+                ..
+            }) if items == committed_items
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), session.next_patch())
+                .await
+                .is_err(),
+            "the older queued callback patch must be fenced by the seed"
+        );
+        assert_eq!(
+            store
+                .state
+                .lock()
+                .expect("conversation store lock poisoned")
+                .items,
+            committed_items,
+            "a callback that wins the projection lock must remain represented by the seed"
+        );
+    }
 
     #[test]
     fn conversation_store_diff_emits_upsert_for_single_changed_item() {

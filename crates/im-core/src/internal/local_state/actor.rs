@@ -58,6 +58,18 @@ enum LocalStateCommand {
         max_delete: u32,
         reply: oneshot::Sender<crate::ImResult<usize>>,
     },
+    LoadSyncDiagnostics {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::SyncDiagnosticsState>>,
+    },
+    CleanupTerminalSyncState {
+        owner_identity_id: String,
+        current_stream_epoch: String,
+        current_scan_seq: String,
+        max_delete: u32,
+        now: i64,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::SyncCleanupOutcome>>,
+    },
     UpsertSyncRecoveryState {
         state: super::sync_v2::RecoveryState,
         reply: oneshot::Sender<crate::ImResult<()>>,
@@ -648,6 +660,40 @@ impl LocalStateDb {
             current_stream_epoch: current_stream_epoch.into(),
             current_scan_seq: current_scan_seq.into(),
             max_delete,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_sync_diagnostics(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<super::sync_v2::SyncDiagnosticsState> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadSyncDiagnostics {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn cleanup_terminal_sync_state(
+        &self,
+        owner_identity_id: impl Into<String>,
+        current_stream_epoch: impl Into<String>,
+        current_scan_seq: impl Into<String>,
+        max_delete: u32,
+        now: i64,
+    ) -> crate::ImResult<super::sync_v2::SyncCleanupOutcome> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::CleanupTerminalSyncState {
+            owner_identity_id: owner_identity_id.into(),
+            current_stream_epoch: current_stream_epoch.into(),
+            current_scan_seq: current_scan_seq.into(),
+            max_delete,
+            now,
             reply,
         })
         .await?;
@@ -1785,6 +1831,31 @@ fn run_actor(
                     &current_stream_epoch,
                     &current_scan_seq,
                     max_delete,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadSyncDiagnostics {
+                owner_identity_id,
+                reply,
+            } => {
+                let result = super::sync_v2::load_sync_diagnostics(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::CleanupTerminalSyncState {
+                owner_identity_id,
+                current_stream_epoch,
+                current_scan_seq,
+                max_delete,
+                now,
+                reply,
+            } => {
+                let result = super::sync_v2::cleanup_terminal_sync_state(
+                    &connection,
+                    &owner_identity_id,
+                    &current_stream_epoch,
+                    &current_scan_seq,
+                    max_delete,
+                    now,
                 );
                 let _ = reply.send(result);
             }

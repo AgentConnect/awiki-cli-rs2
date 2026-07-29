@@ -562,6 +562,45 @@ pub struct MessageSyncOutcome {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSyncMode {
+    Uninitialized,
+    Idle,
+    Recovering,
+    Retryable,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSyncDirtyDomain {
+    Messages,
+    ReadState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSyncRetryState {
+    None,
+    Pending,
+    InFlight,
+    Scheduled,
+    PermanentFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageSyncDiagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_at: Option<String>,
+    pub mode: MessageSyncMode,
+    pub pending_mutation_count: u32,
+    pub dirty_domains: Vec<MessageSyncDirtyDomain>,
+    pub retry_state: MessageSyncRetryState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_retry_at: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationListSnapshot {
     pub format_version: u32,
@@ -667,6 +706,7 @@ pub struct ConversationPatchSession {
     pub(crate) store: Arc<crate::internal::runtime_store::conversation_store::ConversationStore>,
     pub(crate) receiver: tokio::sync::broadcast::Receiver<ConversationStorePatch>,
     pub(crate) initial: VecDeque<ConversationStorePatch>,
+    last_delivered_version: u64,
     closed: bool,
 }
 
@@ -680,6 +720,7 @@ impl ConversationPatchSession {
             store,
             receiver,
             initial: initial.into(),
+            last_delivered_version: 0,
             closed: false,
         }
     }
@@ -688,14 +729,27 @@ impl ConversationPatchSession {
         if self.closed {
             return None;
         }
-        if let Some(patch) = self.initial.pop_front() {
-            return Some(patch);
+        while let Some(patch) = self.initial.pop_front() {
+            let version = conversation_patch_version(&patch);
+            if version > self.last_delivered_version {
+                self.last_delivered_version = version;
+                return Some(patch);
+            }
         }
         loop {
             match self.receiver.recv().await {
-                Ok(patch) => return Some(patch),
+                Ok(patch) => {
+                    let version = conversation_patch_version(&patch);
+                    if version <= self.last_delivered_version {
+                        continue;
+                    }
+                    self.last_delivered_version = version;
+                    return Some(patch);
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    return Some(self.store.repair_required_patch("subscriber_lag"));
+                    let patch = self.store.repair_required_patch("subscriber_lag");
+                    self.last_delivered_version = conversation_patch_version(&patch);
+                    return Some(patch);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
             }
@@ -715,6 +769,7 @@ pub struct ThreadMessagePatchSession {
     pub(crate) initial: VecDeque<ThreadMessageStorePatch>,
     pub(crate) thread: ThreadRef,
     pub(crate) limit: u32,
+    last_delivered_version: u64,
     closed: bool,
 }
 
@@ -732,6 +787,7 @@ impl ThreadMessagePatchSession {
             initial: initial.into(),
             thread,
             limit,
+            last_delivered_version: 0,
             closed: false,
         }
     }
@@ -740,19 +796,32 @@ impl ThreadMessagePatchSession {
         if self.closed {
             return None;
         }
-        if let Some(patch) = self.initial.pop_front() {
-            return Some(patch);
+        while let Some(patch) = self.initial.pop_front() {
+            let version = thread_message_patch_version(&patch);
+            if version > self.last_delivered_version {
+                self.last_delivered_version = version;
+                return Some(patch);
+            }
         }
         loop {
             match self.receiver.recv().await {
-                Ok(patch) if thread_patch_matches(&patch, &self.thread) => return Some(patch),
+                Ok(patch) if thread_patch_matches(&patch, &self.thread) => {
+                    let version = thread_message_patch_version(&patch);
+                    if version <= self.last_delivered_version {
+                        continue;
+                    }
+                    self.last_delivered_version = version;
+                    return Some(patch);
+                }
                 Ok(_) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    return Some(self.store.repair_required_patch(
+                    let patch = self.store.repair_required_patch(
                         &self.thread,
                         self.limit,
                         "subscriber_lag",
-                    ));
+                    );
+                    self.last_delivered_version = thread_message_patch_version(&patch);
+                    return Some(patch);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
             }
@@ -763,6 +832,25 @@ impl ThreadMessagePatchSession {
         self.closed = true;
         self.receiver.resubscribe();
         Ok(())
+    }
+}
+
+fn conversation_patch_version(patch: &ConversationStorePatch) -> u64 {
+    match patch {
+        ConversationStorePatch::Reset { version, .. }
+        | ConversationStorePatch::Upsert { version, .. }
+        | ConversationStorePatch::Remove { version, .. }
+        | ConversationStorePatch::Reorder { version, .. }
+        | ConversationStorePatch::RepairRequired { version, .. } => *version,
+    }
+}
+
+fn thread_message_patch_version(patch: &ThreadMessageStorePatch) -> u64 {
+    match patch {
+        ThreadMessageStorePatch::Reset { version, .. }
+        | ThreadMessageStorePatch::Upsert { version, .. }
+        | ThreadMessageStorePatch::Remove { version, .. }
+        | ThreadMessageStorePatch::RepairRequired { version, .. } => *version,
     }
 }
 

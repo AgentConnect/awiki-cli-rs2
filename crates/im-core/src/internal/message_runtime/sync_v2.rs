@@ -216,7 +216,7 @@ where
                     } else {
                         crate::messages::MessageSyncStatus::Changed
                     };
-                return Ok(result);
+                return Ok(best_effort_cleanup(&db, &state, result).await);
             }
         }
     }
@@ -480,7 +480,7 @@ where
             .changed_conversation_ids
             .extend(outcome.invalidation.conversation_ids.clone());
         super::sync::emit_committed_sync_invalidation(self.client, &outcome.invalidation);
-        Ok(crate::internal::local_state::sync_v2::MessageSyncState {
+        let next = crate::internal::local_state::sync_v2::MessageSyncState {
             owner_identity_id: binding.owner_identity_id.clone(),
             account_id: binding.account_id.clone(),
             protocol_device_id: binding.protocol_device_id.clone(),
@@ -493,7 +493,9 @@ where
             last_error_code: None,
             metadata_json: Some("{\"mode\":\"compact_recovery\"}".to_owned()),
             updated_at: unix_time_i64(),
-        })
+        };
+        let next = best_effort_cleanup(db, &next, next.clone()).await;
+        Ok(next)
     }
 
     async fn persist_recovery_failure(
@@ -1367,6 +1369,30 @@ fn unix_time_i64() -> i64 {
         .unwrap_or(i64::MAX)
 }
 
+async fn best_effort_cleanup<T>(
+    db: &crate::internal::local_state::actor::LocalStateDb,
+    state: &crate::internal::local_state::sync_v2::MessageSyncState,
+    successful_sync: T,
+) -> T {
+    let cleanup_result = db
+        .cleanup_terminal_sync_state(
+            state.owner_identity_id.clone(),
+            state.stream_epoch.clone(),
+            state.scan_seq.clone(),
+            crate::internal::local_state::sync_v2::SYNC_CLEANUP_BATCH_SIZE,
+            unix_time_i64(),
+        )
+        .await;
+    preserve_success_after_cleanup(successful_sync, cleanup_result)
+}
+
+fn preserve_success_after_cleanup<T>(
+    successful_sync: T,
+    _cleanup_result: crate::ImResult<crate::internal::local_state::sync_v2::SyncCleanupOutcome>,
+) -> T {
+    successful_sync
+}
+
 fn owner_sync_lock(owner_identity_id: &str) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: OnceLock<StdMutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>> =
         OnceLock::new();
@@ -1488,6 +1514,22 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn cleanup_failure_does_not_replace_a_successful_sync_outcome() {
+        let successful_sync = crate::messages::MessageSyncOutcome {
+            status: crate::messages::MessageSyncStatus::Changed,
+            events_applied: 3,
+            ..empty_outcome()
+        };
+        let cleanup_failure = Err(crate::ImError::LocalStateUnavailable {
+            detail: "forced cleanup failure".to_owned(),
+        });
+
+        let preserved = preserve_success_after_cleanup(successful_sync.clone(), cleanup_failure);
+
+        assert_eq!(preserved, successful_sync);
     }
 
     struct SyncSnapshotFixture {

@@ -4,6 +4,8 @@ use std::collections::BTreeSet;
 
 pub(crate) const APPLIED_EVENT_MIN_RECEIPTS_PER_OWNER: i64 = 10_000;
 pub(crate) const APPLIED_EVENT_SAFETY_WINDOW: u32 = 1_000;
+pub(crate) const SYNC_CLEANUP_BATCH_SIZE: u32 = 256;
+pub(crate) const TERMINAL_SYNC_STATE_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
 
 pub(crate) const SYNC_INSTALLATION_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS sync_installation_state (
@@ -334,6 +336,26 @@ pub(crate) struct LocalMutationRecord {
     pub(crate) last_error_code: Option<String>,
     pub(crate) created_at: i64,
     pub(crate) updated_at: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SyncDiagnosticsState {
+    pub(crate) last_success_at: Option<i64>,
+    pub(crate) bootstrap_state: Option<String>,
+    pub(crate) recovery_status: Option<String>,
+    pub(crate) pending_mutation_count: u32,
+    pub(crate) pending_count: u32,
+    pub(crate) in_flight_count: u32,
+    pub(crate) retryable_count: u32,
+    pub(crate) permanent_failure_count: u32,
+    pub(crate) next_retry_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SyncCleanupOutcome {
+    pub(crate) applied_events_deleted: usize,
+    pub(crate) terminal_mutations_deleted: usize,
+    pub(crate) terminal_recovery_deleted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1482,6 +1504,157 @@ LIMIT ?4"#,
             .map_err(super::local_state_unavailable)?;
     }
     Ok(event_ids.len())
+}
+
+pub(crate) fn load_sync_diagnostics(
+    connection: &Connection,
+    owner_identity_id: &str,
+) -> crate::ImResult<SyncDiagnosticsState> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    let sync_state = connection
+        .query_row(
+            "SELECT last_success_at, bootstrap_state
+             FROM message_sync_state
+             WHERE owner_identity_id = ?1",
+            [owner_identity_id],
+            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let recovery_status = connection
+        .query_row(
+            "SELECT status FROM sync_recovery_state WHERE owner_identity_id = ?1",
+            [owner_identity_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    let (pending_count, in_flight_count, retryable_count, permanent_failure_count, next_retry_at) =
+        connection
+            .query_row(
+                "SELECT
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'in_flight' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'retryable' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'permanent_failure' THEN 1 ELSE 0 END),
+                    MIN(CASE WHEN status = 'retryable' THEN retry_at ELSE NULL END)
+                 FROM local_mutation_outbox
+                 WHERE owner_identity_id = ?1",
+                [owner_identity_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(4)?,
+                    ))
+                },
+            )
+            .map_err(super::local_state_unavailable)?;
+    let pending_mutation_count = pending_count
+        .saturating_add(in_flight_count)
+        .saturating_add(retryable_count);
+    Ok(SyncDiagnosticsState {
+        last_success_at: sync_state.as_ref().and_then(|state| state.0),
+        bootstrap_state: sync_state.map(|state| state.1),
+        recovery_status,
+        pending_mutation_count: u32::try_from(pending_mutation_count).unwrap_or(u32::MAX),
+        pending_count: u32::try_from(pending_count).unwrap_or(u32::MAX),
+        in_flight_count: u32::try_from(in_flight_count).unwrap_or(u32::MAX),
+        retryable_count: u32::try_from(retryable_count).unwrap_or(u32::MAX),
+        permanent_failure_count: u32::try_from(permanent_failure_count).unwrap_or(u32::MAX),
+        next_retry_at,
+    })
+}
+
+pub(crate) fn cleanup_terminal_sync_state(
+    connection: &Connection,
+    owner_identity_id: &str,
+    current_stream_epoch: &str,
+    current_scan_seq: &str,
+    max_delete: u32,
+    now: i64,
+) -> crate::ImResult<SyncCleanupOutcome> {
+    validate_required("owner_identity_id", owner_identity_id)?;
+    validate_positive_decimal("stream_epoch", current_stream_epoch)?;
+    validate_decimal("scan_seq", current_scan_seq)?;
+    if max_delete == 0 {
+        return Ok(SyncCleanupOutcome::default());
+    }
+    let retention_cutoff = now.saturating_sub(TERMINAL_SYNC_STATE_RETENTION_SECONDS);
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    let applied_events_deleted = prune_applied_events(
+        &transaction,
+        owner_identity_id,
+        current_stream_epoch,
+        current_scan_seq,
+        max_delete,
+    )?;
+    let remaining_after_receipts =
+        max_delete.saturating_sub(u32::try_from(applied_events_deleted).unwrap_or(u32::MAX));
+    let terminal_mutations_deleted = transaction
+        .execute(
+            "DELETE FROM local_mutation_outbox
+             WHERE rowid IN (
+                 SELECT rowid
+                 FROM local_mutation_outbox
+                 WHERE owner_identity_id = ?1
+                   AND status IN ('committed', 'permanent_failure')
+                   AND updated_at <= ?2
+                 ORDER BY updated_at, mutation_id
+                 LIMIT ?3
+             )",
+            params![
+                owner_identity_id,
+                retention_cutoff,
+                i64::from(remaining_after_receipts)
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    let has_recovery_budget = usize::try_from(max_delete)
+        .map(|limit| applied_events_deleted.saturating_add(terminal_mutations_deleted) < limit)
+        .unwrap_or(false);
+    let terminal_recovery_deleted =
+        if let Some(recovery) = load_recovery_state(&transaction, owner_identity_id)? {
+            let anchor_is_covered =
+                matches!(recovery.status.as_str(), "completed" | "permanent_failure")
+                    && recovery.updated_at <= retention_cutoff
+                    && compare_stream_position(
+                        &recovery.requested_from_epoch,
+                        recovery
+                            .snapshot_scan_seq
+                            .as_deref()
+                            .unwrap_or(&recovery.requested_from_seq),
+                        current_stream_epoch,
+                        current_scan_seq,
+                    )? != std::cmp::Ordering::Greater;
+            if has_recovery_budget && anchor_is_covered {
+                transaction
+                    .execute(
+                        "DELETE FROM sync_recovery_state
+                         WHERE owner_identity_id = ?1
+                           AND status IN ('completed', 'permanent_failure')",
+                        [owner_identity_id],
+                    )
+                    .map_err(super::local_state_unavailable)?
+                    == 1
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(SyncCleanupOutcome {
+        applied_events_deleted,
+        terminal_mutations_deleted,
+        terminal_recovery_deleted,
+    })
 }
 
 pub(crate) fn upsert_recovery_state(
@@ -3248,6 +3421,302 @@ mod tests {
             record_applied_event(&db, &conflicting),
             Err(crate::ImError::IdentityBindingConflict { .. })
         ));
+    }
+
+    #[test]
+    fn cleanup_keeps_recent_terminal_and_all_live_sync_work() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let now = TERMINAL_SYNC_STATE_RETENTION_SECONDS + 10_000;
+        let records = [
+            ("old-committed", "committed", 1),
+            ("old-permanent", "permanent_failure", 1),
+            ("recent-committed", "committed", now),
+            ("live-pending", "pending", 1),
+            ("live-in-flight", "in_flight", 1),
+            ("live-retryable", "retryable", 1),
+        ];
+        for (index, (id, status, updated_at)) in records.into_iter().enumerate() {
+            enqueue_local_mutation(
+                &db,
+                &LocalMutationRecord {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    mutation_id: id.to_owned(),
+                    operation_id: format!("operation-{index}"),
+                    mutation_type: "read_state_mark_read".to_owned(),
+                    aggregate_id: format!("dm:{index}"),
+                    payload_json: "{}".to_owned(),
+                    status: status.to_owned(),
+                    attempt_count: 0,
+                    retry_at: (status == "retryable").then_some(2),
+                    in_flight_since: (status == "in_flight").then_some(2),
+                    last_error_code: None,
+                    created_at: updated_at,
+                    updated_at,
+                },
+            )
+            .unwrap();
+        }
+        upsert_recovery_state(
+            &db,
+            &RecoveryState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                mode: "compact_recovery".to_owned(),
+                requested_from_epoch: "1".to_owned(),
+                requested_from_seq: "10".to_owned(),
+                recovery_id_hash: Some("hash".to_owned()),
+                snapshot_scan_seq: Some("20".to_owned()),
+                status: "completed".to_owned(),
+                retry_count: 0,
+                last_error_code: None,
+                started_at: 1,
+                updated_at: now,
+            },
+        )
+        .unwrap();
+
+        let diagnostics = load_sync_diagnostics(&db, &binding.owner_identity_id).unwrap();
+        assert_eq!(diagnostics.pending_mutation_count, 3);
+        assert_eq!(diagnostics.pending_count, 1);
+        assert_eq!(diagnostics.in_flight_count, 1);
+        assert_eq!(diagnostics.retryable_count, 1);
+        assert_eq!(diagnostics.permanent_failure_count, 1);
+        assert_eq!(diagnostics.next_retry_at, Some(2));
+        assert_eq!(diagnostics.recovery_status.as_deref(), Some("completed"));
+
+        let first =
+            cleanup_terminal_sync_state(&db, &binding.owner_identity_id, "1", "5000", 100, now)
+                .unwrap();
+        assert_eq!(first.terminal_mutations_deleted, 2);
+        assert!(!first.terminal_recovery_deleted);
+        let remaining = db
+            .prepare(
+                "SELECT mutation_id FROM local_mutation_outbox
+                 WHERE owner_identity_id = ?1 ORDER BY mutation_id",
+            )
+            .unwrap()
+            .query_map([&binding.owner_identity_id], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            remaining,
+            vec![
+                "live-in-flight",
+                "live-pending",
+                "live-retryable",
+                "recent-committed"
+            ]
+        );
+
+        db.execute(
+            "UPDATE sync_recovery_state SET updated_at = 1
+             WHERE owner_identity_id = ?1",
+            [&binding.owner_identity_id],
+        )
+        .unwrap();
+        let second =
+            cleanup_terminal_sync_state(&db, &binding.owner_identity_id, "1", "5000", 100, now)
+                .unwrap();
+        assert!(second.terminal_recovery_deleted);
+        assert!(load_recovery_state(&db, &binding.owner_identity_id)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn cleanup_total_batch_never_exceeds_the_production_limit() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let transaction = db.unchecked_transaction().unwrap();
+        {
+            let mut insert = transaction
+                .prepare(
+                    "INSERT INTO sync_applied_events
+                         (owner_identity_id, event_id, stream_epoch, event_seq, applied_at)
+                     VALUES (?1, ?2, '1', ?3, 1)",
+                )
+                .unwrap();
+            for seq in 1..=10_100_i64 {
+                insert
+                    .execute(params![
+                        binding.owner_identity_id,
+                        format!("event-{seq}"),
+                        seq.to_string()
+                    ])
+                    .unwrap();
+            }
+        }
+        transaction.commit().unwrap();
+        for index in 0..=SYNC_CLEANUP_BATCH_SIZE {
+            enqueue_local_mutation(
+                &db,
+                &LocalMutationRecord {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    mutation_id: format!("old-terminal-{index:03}"),
+                    operation_id: format!("operation-{index:03}"),
+                    mutation_type: "read_state_mark_read".to_owned(),
+                    aggregate_id: format!("dm:{index}"),
+                    payload_json: "{}".to_owned(),
+                    status: "committed".to_owned(),
+                    attempt_count: 0,
+                    retry_at: None,
+                    in_flight_since: None,
+                    last_error_code: None,
+                    created_at: 1,
+                    updated_at: 1,
+                },
+            )
+            .unwrap();
+        }
+        upsert_recovery_state(
+            &db,
+            &RecoveryState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                mode: "compact_recovery".to_owned(),
+                requested_from_epoch: "1".to_owned(),
+                requested_from_seq: "1".to_owned(),
+                recovery_id_hash: Some("hash".to_owned()),
+                snapshot_scan_seq: Some("1".to_owned()),
+                status: "completed".to_owned(),
+                retry_count: 0,
+                last_error_code: None,
+                started_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+
+        let outcome = cleanup_terminal_sync_state(
+            &db,
+            &binding.owner_identity_id,
+            "1",
+            "20000",
+            SYNC_CLEANUP_BATCH_SIZE,
+            TERMINAL_SYNC_STATE_RETENTION_SECONDS + 10,
+        )
+        .unwrap();
+        let total_deleted = outcome
+            .applied_events_deleted
+            .saturating_add(outcome.terminal_mutations_deleted)
+            .saturating_add(usize::from(outcome.terminal_recovery_deleted));
+
+        assert_eq!(total_deleted, SYNC_CLEANUP_BATCH_SIZE as usize);
+        assert!(total_deleted <= SYNC_CLEANUP_BATCH_SIZE as usize);
+        assert_eq!(outcome.applied_events_deleted, 100);
+        assert_eq!(outcome.terminal_mutations_deleted, 156);
+        assert!(!outcome.terminal_recovery_deleted);
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM local_mutation_outbox
+                 WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            101
+        );
+        assert!(load_recovery_state(&db, &binding.owner_identity_id)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn cleanup_seven_day_boundary_is_inclusive_and_keeps_newer_rows() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let retention_cutoff = 10_000;
+        let now = retention_cutoff + TERMINAL_SYNC_STATE_RETENTION_SECONDS;
+        for (mutation_id, updated_at) in [
+            ("exactly-seven-days-old", retention_cutoff),
+            ("inside-seven-days", retention_cutoff + 1),
+        ] {
+            enqueue_local_mutation(
+                &db,
+                &LocalMutationRecord {
+                    owner_identity_id: binding.owner_identity_id.clone(),
+                    mutation_id: mutation_id.to_owned(),
+                    operation_id: format!("operation-{mutation_id}"),
+                    mutation_type: "read_state_mark_read".to_owned(),
+                    aggregate_id: format!("dm:{mutation_id}"),
+                    payload_json: "{}".to_owned(),
+                    status: "committed".to_owned(),
+                    attempt_count: 0,
+                    retry_at: None,
+                    in_flight_since: None,
+                    last_error_code: None,
+                    created_at: updated_at,
+                    updated_at,
+                },
+            )
+            .unwrap();
+        }
+
+        let outcome =
+            cleanup_terminal_sync_state(&db, &binding.owner_identity_id, "1", "5000", 10, now)
+                .unwrap();
+
+        assert_eq!(outcome.terminal_mutations_deleted, 1);
+        assert_eq!(
+            db.query_row(
+                "SELECT mutation_id FROM local_mutation_outbox
+                 WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "inside-seven-days"
+        );
+    }
+
+    #[test]
+    fn cleanup_keeps_recovery_anchor_ahead_of_current_cursor() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        create_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        upsert_recovery_state(
+            &db,
+            &RecoveryState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                mode: "compact_recovery".to_owned(),
+                requested_from_epoch: "2".to_owned(),
+                requested_from_seq: "1".to_owned(),
+                recovery_id_hash: Some("hash".to_owned()),
+                snapshot_scan_seq: None,
+                status: "completed".to_owned(),
+                retry_count: 0,
+                last_error_code: None,
+                started_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+
+        let outcome = cleanup_terminal_sync_state(
+            &db,
+            &binding.owner_identity_id,
+            "1",
+            "999999",
+            100,
+            TERMINAL_SYNC_STATE_RETENTION_SECONDS + 10,
+        )
+        .unwrap();
+
+        assert!(!outcome.terminal_recovery_deleted);
+        assert!(load_recovery_state(&db, &binding.owner_identity_id)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

@@ -1596,6 +1596,165 @@ WHERE owner_identity_id = 'alice-id' AND outbox_id = 'outbox-actor'"#,
     }
 }
 
+fn sync_diagnostics_from_state(
+    state: crate::internal::local_state::sync_v2::SyncDiagnosticsState,
+) -> crate::messages::MessageSyncDiagnostics {
+    use crate::messages::{MessageSyncDirtyDomain, MessageSyncMode, MessageSyncRetryState};
+
+    let mode = match state.recovery_status.as_deref() {
+        Some("recovering" | "downloading" | "applying") => MessageSyncMode::Recovering,
+        Some("retryable") => MessageSyncMode::Retryable,
+        Some("permanent_failure") => MessageSyncMode::Blocked,
+        _ => match state.bootstrap_state.as_deref() {
+            None | Some("uninitialized") => MessageSyncMode::Uninitialized,
+            Some("recovering") => MessageSyncMode::Recovering,
+            Some("blocked") => MessageSyncMode::Blocked,
+            _ => MessageSyncMode::Idle,
+        },
+    };
+    let retry_state = if state.in_flight_count > 0 {
+        MessageSyncRetryState::InFlight
+    } else if state.retryable_count > 0 {
+        MessageSyncRetryState::Scheduled
+    } else if state.pending_count > 0 {
+        MessageSyncRetryState::Pending
+    } else if state.permanent_failure_count > 0 {
+        MessageSyncRetryState::PermanentFailure
+    } else {
+        MessageSyncRetryState::None
+    };
+    let mut dirty_domains = Vec::new();
+    if !matches!(mode, MessageSyncMode::Idle) {
+        dirty_domains.push(MessageSyncDirtyDomain::Messages);
+    }
+    if state.pending_mutation_count > 0 || state.permanent_failure_count > 0 {
+        dirty_domains.push(MessageSyncDirtyDomain::ReadState);
+    }
+    crate::messages::MessageSyncDiagnostics {
+        last_success_at: state.last_success_at.and_then(unix_seconds_to_rfc3339),
+        mode,
+        pending_mutation_count: state.pending_mutation_count,
+        dirty_domains,
+        retry_state,
+        next_retry_at: state.next_retry_at.and_then(unix_seconds_to_rfc3339),
+    }
+}
+
+fn unix_seconds_to_rfc3339(value: i64) -> Option<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(value, 0)
+        .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
+#[cfg(test)]
+mod sync_diagnostics_tests {
+    use crate::internal::local_state::sync_v2::SyncDiagnosticsState;
+    use crate::messages::{MessageSyncMode, MessageSyncRetryState};
+
+    #[test]
+    fn diagnostics_mode_covers_every_public_state() {
+        let cases = [
+            (None, None, MessageSyncMode::Uninitialized),
+            (Some("active"), None, MessageSyncMode::Idle),
+            (
+                Some("active"),
+                Some("applying"),
+                MessageSyncMode::Recovering,
+            ),
+            (
+                Some("active"),
+                Some("retryable"),
+                MessageSyncMode::Retryable,
+            ),
+            (
+                Some("active"),
+                Some("permanent_failure"),
+                MessageSyncMode::Blocked,
+            ),
+        ];
+
+        for (bootstrap_state, recovery_status, expected) in cases {
+            let diagnostics = super::sync_diagnostics_from_state(SyncDiagnosticsState {
+                bootstrap_state: bootstrap_state.map(str::to_owned),
+                recovery_status: recovery_status.map(str::to_owned),
+                ..Default::default()
+            });
+            assert_eq!(
+                diagnostics.mode, expected,
+                "unexpected mode for bootstrap={bootstrap_state:?}, recovery={recovery_status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostics_retry_state_has_explicit_precedence() {
+        let cases = [
+            ((0, 0, 0, 0), MessageSyncRetryState::None),
+            ((1, 0, 0, 1), MessageSyncRetryState::Pending),
+            ((1, 0, 1, 1), MessageSyncRetryState::Scheduled),
+            ((1, 1, 1, 1), MessageSyncRetryState::InFlight),
+            ((0, 0, 0, 1), MessageSyncRetryState::PermanentFailure),
+        ];
+
+        for ((pending, in_flight, retryable, permanent), expected) in cases {
+            let diagnostics = super::sync_diagnostics_from_state(SyncDiagnosticsState {
+                bootstrap_state: Some("active".to_owned()),
+                pending_mutation_count: pending + in_flight + retryable,
+                pending_count: pending,
+                in_flight_count: in_flight,
+                retryable_count: retryable,
+                permanent_failure_count: permanent,
+                ..Default::default()
+            });
+            assert_eq!(
+                diagnostics.retry_state, expected,
+                "unexpected retry state for pending={pending}, in_flight={in_flight}, \
+                 retryable={retryable}, permanent={permanent}"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostics_are_typed_and_explicitly_redacted() {
+        let diagnostics = super::sync_diagnostics_from_state(SyncDiagnosticsState {
+            last_success_at: Some(1_784_800_000),
+            bootstrap_state: Some("active".to_owned()),
+            recovery_status: Some("retryable".to_owned()),
+            pending_mutation_count: 2,
+            pending_count: 1,
+            retryable_count: 1,
+            next_retry_at: Some(1_784_800_060),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            diagnostics.dirty_domains,
+            vec![
+                crate::messages::MessageSyncDirtyDomain::Messages,
+                crate::messages::MessageSyncDirtyDomain::ReadState,
+            ]
+        );
+        let encoded = serde_json::to_string(&diagnostics).unwrap();
+        for forbidden in [
+            "cursor",
+            "stream_epoch",
+            "scan_seq",
+            "owner_identity_id",
+            "recovery_id_hash",
+            "message_content",
+            "account_id",
+            "device_id",
+            "payload",
+            "token",
+            "message_body",
+        ] {
+            assert!(
+                !encoded.contains(forbidden),
+                "diagnostics leaked forbidden field {forbidden}"
+            );
+        }
+    }
+}
+
 impl<'a> MessageService<'a> {
     pub(crate) fn new(client: &'a crate::core::ImClient) -> Self {
         Self { client }
@@ -3120,6 +3279,30 @@ impl<'a> MessageService<'a> {
                 }
             }
         }
+    }
+
+    pub fn sync_diagnostics(&self) -> crate::ImResult<super::MessageSyncDiagnostics> {
+        #[cfg(feature = "blocking")]
+        {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| crate::ImError::Internal {
+                    message: format!("build message sync diagnostics runtime: {error}"),
+                })?;
+            runtime.block_on(self.sync_diagnostics_async())
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            Err(crate::ImError::unsupported("sync-diagnostics"))
+        }
+    }
+
+    pub async fn sync_diagnostics_async(&self) -> crate::ImResult<super::MessageSyncDiagnostics> {
+        let owner_identity_id = self.client.current_identity().id.as_str().to_owned();
+        let db = self.client.core_inner().local_state_db().await?;
+        let state = db.load_sync_diagnostics(owner_identity_id).await?;
+        Ok(sync_diagnostics_from_state(state))
     }
 
     pub fn conversations(
