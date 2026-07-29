@@ -1792,14 +1792,43 @@ pub(crate) fn mark_thread_read_and_update_outbox(
         let remote_thread_key = remote_thread_key
             .as_deref()
             .expect("read outbox branch requires a remote thread key");
+        let Some((remote_seq, remote_message_id)) = ordinary_read_outbox_target(
+            &transaction,
+            owner_identity_id,
+            &result.thread_scope,
+            &result.conversation_id,
+            seq,
+            result.read_watermark_message_id.as_deref(),
+        )?
+        else {
+            if result.thread_scope == "group" {
+                transaction
+                    .execute(
+                        "UPDATE thread_read_state
+                         SET pending_remote_ack = 0, remote_ack_at = NULL
+                         WHERE owner_identity_id = ?1 AND conversation_id = ?2",
+                        params![owner_identity_id, result.conversation_id],
+                    )
+                    .map_err(super::local_state_unavailable)?;
+                result.remote_ack_applicable = false;
+                transaction
+                    .commit()
+                    .map_err(super::local_state_unavailable)?;
+                return Ok(result);
+            }
+            return Err(sync_error(
+                "SYNC_LOCAL_OUTBOX_CORRUPT",
+                "ordinary Direct read watermark has no remote target",
+            ));
+        };
         result.outbox_operation_id = Some(upsert_read_outbox(
             &transaction,
             owner_identity_id,
             &result.thread_scope,
             &result.thread_id,
             remote_thread_key,
-            seq,
-            result.read_watermark_message_id.as_deref(),
+            &remote_seq,
+            remote_message_id.as_deref(),
             result.read_watermark_at.as_deref(),
         )?);
     } else if !pending_remote_ack && has_sync_binding {
@@ -1842,6 +1871,70 @@ pub(crate) fn mark_thread_read_and_update_outbox(
         .commit()
         .map_err(super::local_state_unavailable)?;
     Ok(result)
+}
+
+fn ordinary_read_outbox_target(
+    connection: &Connection,
+    owner_identity_id: &str,
+    thread_kind: &str,
+    conversation_id: &str,
+    read_watermark_seq: &str,
+    read_watermark_message_id: Option<&str>,
+) -> crate::ImResult<Option<(String, Option<String>)>> {
+    if thread_kind == "group" {
+        return ordinary_group_read_target(
+            connection,
+            owner_identity_id,
+            conversation_id,
+            read_watermark_seq,
+        )
+        .map(|target| target.map(|(seq, message_id)| (seq, Some(message_id))));
+    }
+    Ok(Some((
+        read_watermark_seq.to_owned(),
+        read_watermark_message_id.map(str::to_owned),
+    )))
+}
+
+fn ordinary_group_read_target(
+    connection: &Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+    read_watermark_seq: &str,
+) -> crate::ImResult<Option<(String, String)>> {
+    validate_decimal("read_watermark_seq", read_watermark_seq)?;
+    connection
+        .query_row(
+            r#"
+            SELECT server_seq, raw_message_id
+            FROM (
+                SELECT server_seq,
+                       CASE
+                           WHEN json_valid(COALESCE(metadata, ''))
+                           THEN NULLIF(
+                               TRIM(json_extract(metadata, '$.raw_message_id')),
+                               ''
+                           )
+                           ELSE NULL
+                       END AS raw_message_id
+                FROM messages
+                WHERE owner_identity_id = ?1
+                  AND COALESCE(NULLIF(conversation_id, ''), thread_id) = ?2
+                  AND wire_thread_kind = 'group'
+                  AND hydration_state = 'hydrated'
+                  AND COALESCE(is_e2ee, 0) = 0
+                  AND server_seq IS NOT NULL
+                  AND server_seq <= CAST(?3 AS INTEGER)
+            ) AS candidate
+            WHERE raw_message_id IS NOT NULL
+            ORDER BY server_seq DESC
+            LIMIT 1
+            "#,
+            params![owner_identity_id, conversation_id, read_watermark_seq],
+            |row| Ok((row.get::<_, i64>(0)?.to_string(), row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)
 }
 
 fn upsert_read_outbox(
@@ -2037,16 +2130,34 @@ pub(crate) fn upsert_sync_thread_binding(
         .optional()
         .map_err(super::local_state_unavailable)?;
     if let Some((thread_kind, thread_id, seq, message_id, read_at)) = pending_local {
-        upsert_read_outbox(
+        if let Some((remote_seq, remote_message_id)) = ordinary_read_outbox_target(
             connection,
             &binding.owner_identity_id,
             &thread_kind,
-            &thread_id,
-            &binding.remote_thread_key,
+            &binding.conversation_id,
             &seq,
             message_id.as_deref(),
-            read_at.as_deref(),
-        )?;
+        )? {
+            upsert_read_outbox(
+                connection,
+                &binding.owner_identity_id,
+                &thread_kind,
+                &thread_id,
+                &binding.remote_thread_key,
+                &remote_seq,
+                remote_message_id.as_deref(),
+                read_at.as_deref(),
+            )?;
+        } else if thread_kind == "group" {
+            connection
+                .execute(
+                    "UPDATE thread_read_state
+                     SET pending_remote_ack = 0, remote_ack_at = NULL
+                     WHERE owner_identity_id = ?1 AND conversation_id = ?2",
+                    params![binding.owner_identity_id, binding.conversation_id],
+                )
+                .map_err(super::local_state_unavailable)?;
+        }
     }
     Ok(())
 }
@@ -4085,13 +4196,49 @@ mod tests {
     }
 
     #[test]
-    fn group_read_outbox_uses_raw_group_did_as_remote_thread_key() {
+    fn group_read_outbox_and_binding_recovery_use_latest_ordinary_message() {
         let db = Connection::open_in_memory().unwrap();
         db.pragma_update(None, "foreign_keys", "ON").unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         let binding = binding();
         upsert_identity_account_binding(&db, &binding).unwrap();
         let group_did = "did:wba:awiki.info:groups:group-read-outbox";
+        let conversation_id = format!("group:{group_did}");
+        db.execute(
+            "INSERT INTO messages
+                (msg_id, owner_identity_id, owner_did, thread_id, conversation_id,
+                 wire_thread_kind, wire_thread_ref, wire_identity_resolution_state,
+                 server_seq, hydration_state, is_e2ee, metadata, stored_at)
+             VALUES (?1, ?2, ?3, ?4, ?4, 'group', ?5, 'resolved',
+                     30, 'hydrated', 0, ?6, '2026-07-28T10:00:00Z')",
+            params![
+                format!("{group_did}:30"),
+                binding.owner_identity_id,
+                binding.current_did,
+                conversation_id,
+                group_did,
+                serde_json::json!({"raw_message_id": "msg-group-30"}).to_string(),
+            ],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO messages
+                (msg_id, owner_identity_id, owner_did, thread_id, conversation_id,
+                 wire_thread_kind, wire_thread_ref, wire_identity_resolution_state,
+                 content_type, server_seq, hydration_state, is_e2ee, metadata, stored_at)
+             VALUES (?1, ?2, ?3, ?4, ?4, 'group', ?5, 'resolved',
+                     'application/json', 31, 'hydrated', 0, ?6,
+                     '2026-07-28T10:00:01Z')",
+            params![
+                format!("{group_did}:31"),
+                binding.owner_identity_id,
+                binding.current_did,
+                conversation_id,
+                group_did,
+                serde_json::json!({"group_event_seq": "31"}).to_string(),
+            ],
+        )
+        .unwrap();
 
         let result = mark_thread_read_and_update_outbox(
             &db,
@@ -4102,26 +4249,120 @@ mod tests {
                     crate::ids::GroupRef::parse(group_did).unwrap(),
                 ),
                 read_watermark_message_id: None,
-                read_watermark_seq: Some("30".to_owned()),
+                read_watermark_seq: Some("31".to_owned()),
                 read_watermark_at: Some("2026-07-28T10:00:00Z".to_owned()),
                 pending_remote_ack: true,
             },
         )
         .unwrap();
 
-        assert_eq!(result.conversation_id, format!("group:{group_did}"));
+        assert_eq!(result.conversation_id, conversation_id);
         assert_eq!(result.remote_thread_key.as_deref(), Some(group_did));
+        assert!(result.remote_ack_applicable);
+        upsert_sync_thread_binding(
+            &db,
+            &SyncThreadBinding {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                remote_thread_key: group_did.to_owned(),
+                thread_kind: "group".to_owned(),
+                conversation_id: conversation_id.clone(),
+                updated_at: 1,
+            },
+        )
+        .unwrap();
         assert_eq!(
             db.query_row(
                 "SELECT aggregate_id || '|' ||
-                        json_extract(payload_json, '$.remote_thread_key')
+                        json_extract(payload_json, '$.remote_thread_key') || '|' ||
+                        json_extract(payload_json, '$.read_watermark_seq') || '|' ||
+                        json_extract(payload_json, '$.read_watermark_message_id')
                  FROM local_mutation_outbox
                  WHERE owner_identity_id = ?1",
                 [&binding.owner_identity_id],
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-            format!("{group_did}|{group_did}")
+            format!("{group_did}|{group_did}|30|msg-group-30")
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM local_mutation_outbox
+                 WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1,
+            "binding recovery must not create an unnormalized successor"
+        );
+    }
+
+    #[test]
+    fn group_control_event_read_does_not_enqueue_ordinary_remote_watermark() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let group_did = "did:wba:awiki.info:groups:group-control-read";
+        let conversation_id = format!("group:{group_did}");
+        db.execute(
+            "INSERT INTO messages
+                (msg_id, owner_identity_id, owner_did, thread_id, conversation_id,
+                 wire_thread_kind, wire_thread_ref, wire_identity_resolution_state,
+                 content_type, server_seq, hydration_state, is_e2ee, metadata, stored_at)
+             VALUES (?1, ?2, ?3, ?4, ?4, 'group', ?5, 'resolved',
+                     'application/json', 2, 'hydrated', 0, ?6,
+                     '2026-07-28T10:00:00Z')",
+            params![
+                format!("{group_did}:2"),
+                binding.owner_identity_id,
+                binding.current_did,
+                conversation_id,
+                group_did,
+                serde_json::json!({"group_event_seq": "2"}).to_string(),
+            ],
+        )
+        .unwrap();
+
+        let result = mark_thread_read_and_update_outbox(
+            &db,
+            &binding.owner_identity_id,
+            &binding.current_did,
+            super::super::messages::MarkThreadReadWatermarkInput {
+                thread: crate::messages::ThreadRef::Group(
+                    crate::ids::GroupRef::parse(group_did).unwrap(),
+                ),
+                read_watermark_message_id: None,
+                read_watermark_seq: Some("2".to_owned()),
+                read_watermark_at: Some("2026-07-28T10:00:00Z".to_owned()),
+                pending_remote_ack: true,
+            },
+        )
+        .unwrap();
+
+        assert!(!result.remote_ack_applicable);
+        assert_eq!(result.outbox_operation_id, None);
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM local_mutation_outbox
+                 WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT pending_remote_ack
+                 FROM thread_read_state
+                 WHERE owner_identity_id = ?1 AND conversation_id = ?2",
+                params![binding.owner_identity_id, conversation_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap(),
+            false
         );
     }
 

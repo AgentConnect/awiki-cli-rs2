@@ -159,6 +159,24 @@ where
             self.client
                 .emit_committed_conversation_projection("local_mark_thread_read_watermark");
         }
+        if !local_result.remote_ack_applicable {
+            return Ok(MarkThreadReadRuntimeResult {
+                sdk_result: crate::messages::MarkThreadReadResult {
+                    updated_count: u32_count_i64(local_result.updated_count),
+                    remote_acknowledged: false,
+                    partial: false,
+                    fallback_used: false,
+                    pending_remote_ack: false,
+                    effective_watermark,
+                    legacy_message_ids: Vec::new(),
+                    warnings,
+                },
+                raw: None,
+                direct_ids: Vec::new(),
+                group_ids: Vec::new(),
+                local_only_ids: Vec::new(),
+            });
+        }
         let claimed =
             claim_read_send_sync(self.client, local_result.outbox_operation_id.as_deref())?;
         if local_result.outbox_operation_id.is_some() && claimed.is_none() {
@@ -450,6 +468,24 @@ where
         if local_result.updated_count > 0 {
             self.client
                 .emit_committed_conversation_projection("local_mark_thread_read_watermark");
+        }
+        if !local_result.remote_ack_applicable {
+            return Ok(MarkThreadReadRuntimeResult {
+                sdk_result: crate::messages::MarkThreadReadResult {
+                    updated_count: u32_count_i64(local_result.updated_count),
+                    remote_acknowledged: false,
+                    partial: false,
+                    fallback_used: false,
+                    pending_remote_ack: false,
+                    effective_watermark,
+                    legacy_message_ids: Vec::new(),
+                    warnings,
+                },
+                raw: None,
+                direct_ids: Vec::new(),
+                group_ids: Vec::new(),
+                local_only_ids: Vec::new(),
+            });
         }
         let claimed =
             claim_read_send_async(self.client, local_result.outbox_operation_id.as_deref()).await?;

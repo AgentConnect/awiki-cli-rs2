@@ -1860,6 +1860,7 @@ pub(crate) struct MarkThreadReadWatermarkResult {
     pub(crate) advanced: bool,
     pub(crate) outbox_operation_id: Option<String>,
     pub(crate) remote_thread_key: Option<String>,
+    pub(crate) remote_ack_applicable: bool,
 }
 
 #[cfg(feature = "sqlite")]
@@ -2424,6 +2425,7 @@ pub(crate) fn mark_thread_read_watermark_for_owner_identity(
         advanced,
         outbox_operation_id: None,
         remote_thread_key: None,
+        remote_ack_applicable: true,
     })
 }
 
