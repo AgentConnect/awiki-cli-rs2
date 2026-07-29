@@ -323,7 +323,7 @@ where
         append_projection_backlog_warnings(&mut result.warnings, outcome);
         if outcome.stored_messages > 0 {
             self.client
-                .emit_committed_message_projection("sync_thread_after");
+                .emit_committed_local_message_projection("sync_thread_after");
         }
         Ok(result)
     }
@@ -401,7 +401,7 @@ where
         append_projection_backlog_warnings(&mut result.warnings, outcome);
         if outcome.stored_messages > 0 {
             self.client
-                .emit_committed_message_projection("sync_thread_after");
+                .emit_committed_local_message_projection("sync_thread_after");
         }
         Ok(result)
     }
@@ -711,7 +711,7 @@ where
         append_projection_backlog_warnings(&mut result.warnings, outcome);
         if outcome.stored_messages > 0 {
             self.client
-                .emit_committed_message_projection("sync_thread_after");
+                .emit_committed_local_message_projection("sync_thread_after");
         }
         Ok(result)
     }
@@ -794,7 +794,7 @@ where
         append_projection_backlog_warnings(&mut result.warnings, outcome);
         if outcome.stored_messages > 0 {
             self.client
-                .emit_committed_message_projection("sync_thread_after");
+                .emit_committed_local_message_projection("sync_thread_after");
         }
         Ok(result)
     }

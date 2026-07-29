@@ -207,6 +207,11 @@ async fn sync_delta_backlogs_unresolved_direct_before_advancing_checkpoint() {
 async fn sync_delta_hydrates_metadata_only_outbound_direct_before_checkpoint() {
     let fixture = Fixture::new("sync-delta-outbound-thread-hydration");
     let client = fixture.client();
+    let mut conversation_patches = client.messages().watch_conversation_patches().unwrap();
+    assert!(matches!(
+        conversation_patches.next_patch().await,
+        Some(crate::messages::ConversationStorePatch::Reset { .. })
+    ));
     let calls = Rc::new(RefCell::new(Vec::new()));
     let runtime = MessageSyncRuntime::new(
         &client,
@@ -263,6 +268,19 @@ async fn sync_delta_hydrates_metadata_only_outbound_direct_before_checkpoint() {
         fixture.message_content("msg-outbound-1").as_deref(),
         Some("outbound body from authoritative history")
     );
+    let patch = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        conversation_patches.next_patch(),
+    )
+    .await
+    .expect("Direct hydration must emit a conversation patch")
+    .expect("conversation patch stream must remain open");
+    assert!(matches!(
+        patch,
+        crate::messages::ConversationStorePatch::Upsert { item, .. }
+            if item.last_message.as_ref().map(|message| message.id.as_str())
+                == Some("msg-outbound-1")
+    ));
     let calls = calls.borrow();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].method, "sync.delta");
