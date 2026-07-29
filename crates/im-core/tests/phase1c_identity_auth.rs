@@ -4,13 +4,14 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anp::authentication::verification_methods::extract_public_key;
 use anp::authentication::{create_did_wba_document, DidDocumentOptions};
 use anp::proof::{verify_w3c_proof, ProofVerificationOptions};
 use awiki_im_core::prelude::*;
 use awiki_im_core::vault::DeviceVaultRootKey;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
 
 static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -131,16 +132,15 @@ fn plan_default_identity_change_returns_previous_and_next() {
 
 #[tokio::test]
 async fn register_handle_returns_identity_and_default_change() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "did": "did:wba:awiki.test:carol:e1_registered",
-        "user_id": "user-carol",
-        "handle": "carol",
-        "full_handle": "carol.awiki.test",
-        "access_token": "jwt-carol"
-    }))]);
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result(),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
     let fixture = Fixture::new();
     let base_url = server.base_url().to_owned();
-    let core = fixture.core_async_with_base_url(&base_url).await;
+    let core = fixture
+        .core_async_with_base_url_vault_required(&base_url, [40_u8; 32])
+        .await;
 
     let result = core
         .identities()
@@ -169,7 +169,7 @@ async fn register_handle_returns_identity_and_default_change() {
     assert!(result.default_identity_change.is_some());
 
     let requests = server.join();
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].method, "POST");
     assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
     let body = requests[0].json_body();
@@ -177,21 +177,21 @@ async fn register_handle_returns_identity_and_default_change() {
     assert_eq!(body["params"]["handle"], "carol");
     assert!(body["params"]["did_document"].is_object());
     assert!(!requests[0].headers.contains_key("authorization"));
+    assert_prekey_publication_request(&requests[1]);
 }
 
 #[cfg(feature = "mcp-trusted-registration")]
 #[tokio::test]
 async fn register_handle_with_service_bearer_adds_authorization_header() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "did": "did:wba:awiki.test:mcp:e1_registered",
-        "user_id": "user-mcp",
-        "handle": "mcp",
-        "full_handle": "mcp.awiki.test",
-        "access_token": "jwt-mcp"
-    }))]);
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result(),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
     let fixture = Fixture::new();
     let base_url = server.base_url().to_owned();
-    let core = fixture.core_async_with_base_url(&base_url).await;
+    let core = fixture
+        .core_async_with_base_url_vault_required(&base_url, [41_u8; 32])
+        .await;
 
     let result = core
         .identities()
@@ -214,27 +214,27 @@ async fn register_handle_with_service_bearer_adds_authorization_header() {
 
     assert_eq!(result.state, HandleRegistrationState::Registered);
     let requests = server.join();
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
     assert_eq!(
         requests[0].headers.get("authorization").map(String::as_str),
         Some("Bearer internal-token")
     );
     assert_eq!(requests[0].json_body()["method"], "register");
+    assert_prekey_publication_request(&requests[1]);
 }
 
 #[tokio::test]
 async fn register_handle_async_returns_identity_and_default_change() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "did": "did:wba:awiki.test:dana:e1_registered",
-        "user_id": "user-dana",
-        "handle": "dana",
-        "full_handle": "dana.awiki.test",
-        "access_token": "jwt-dana"
-    }))]);
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result(),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
     let fixture = Fixture::new();
     let base_url = server.base_url();
-    let core = fixture.core_async_with_base_url(base_url).await;
+    let core = fixture
+        .core_async_with_base_url_vault_required(base_url, [42_u8; 32])
+        .await;
 
     let result = core
         .identities()
@@ -263,26 +263,27 @@ async fn register_handle_async_returns_identity_and_default_change() {
     assert!(result.default_identity_change.is_some());
 
     let requests = server.join();
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].method, "POST");
     assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
     let body = requests[0].json_body();
     assert_eq!(body["method"], "register");
     assert_eq!(body["params"]["handle"], "dana");
     assert!(body["params"]["did_document"].is_object());
+    assert_prekey_publication_request(&requests[1]);
 }
 
 #[tokio::test]
 async fn register_handle_generates_and_saves_daemon_subkey_package() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "user_id": "user-daemon",
-        "handle": "daemon",
-        "full_handle": "daemon.awiki.test",
-        "access_token": "jwt-daemon"
-    }))]);
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result(),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
     let fixture = Fixture::new();
     let base_url = server.base_url().to_owned();
-    let core = fixture.core_async_with_base_url(&base_url).await;
+    let core = fixture
+        .core_async_with_base_url_vault_required(&base_url, [43_u8; 32])
+        .await;
 
     let result = core
         .identities()
@@ -364,16 +365,15 @@ async fn register_handle_generates_and_saves_daemon_subkey_package() {
         ),
         "DID Document proof must remain valid after APP-side daemon subkey registration"
     );
+    assert_prekey_publication_request(&requests[1]);
 }
 
 #[tokio::test]
 async fn register_handle_vault_required_persists_identity_without_plaintext() {
-    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "user_id": "user-secure",
-        "handle": "secure",
-        "full_handle": "secure.awiki.test",
-        "access_token": "jwt-secure-register"
-    }))]);
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result(),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
     let fixture = Fixture::new();
     let base_url = server.base_url().to_owned();
     let core = fixture
@@ -418,11 +418,12 @@ async fn register_handle_vault_required_persists_identity_without_plaintext() {
         .starts_with("-----BEGIN PRIVATE KEY-----"));
     assert_secure_identity_dir_has_no_plaintext(
         &fixture.root.join("identities").join(identity.id.as_str()),
-        "jwt-secure-register",
+        "phase1c-secure-access-token",
     );
 
     let requests = server.join();
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
+    assert_prekey_publication_request(&requests[1]);
 }
 
 #[tokio::test]
@@ -655,7 +656,16 @@ async fn register_phone_without_otp_returns_pending_otp_state() {
     assert_eq!(requests[0].path, "/user-service/handle/rpc");
     let body = requests[0].json_body();
     assert_eq!(body["method"], "send_otp");
-    assert_eq!(body["params"], json!({ "phone": "+15551234567" }));
+    assert_eq!(
+        body["params"],
+        json!({
+            "phone": "+15551234567",
+            "purpose": "awiki.identity.register.v1",
+            "handle": "carol",
+            "domain": "awiki.test",
+            "full_handle": "carol.awiki.test",
+        })
+    );
 }
 
 #[tokio::test]
@@ -1018,6 +1028,15 @@ fn assert_secure_identity_dir_has_no_plaintext(identity_dir: &Path, token_marker
     }
 }
 
+fn assert_prekey_publication_request(request: &CapturedHttp) {
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.path, "/im/rpc");
+    let body = request.json_body();
+    assert_eq!(body["method"], "direct.e2ee.publish_prekey_bundle");
+    assert!(body["params"].get("auth").is_none());
+    assert_eq!(body["params"]["meta"]["target"]["kind"], "service");
+}
+
 fn collect_text_files(root: &Path) -> String {
     let mut out = String::new();
     collect_text_files_inner(root, &mut out);
@@ -1287,6 +1306,102 @@ impl ExpectedHttp {
             "id": "req-1",
             "result": result,
         }))
+    }
+
+    fn registration_result() -> Self {
+        Self {
+            status_code: 200,
+            body: Value::Null,
+            responder: Some(Box::new(|request| {
+                let rpc = request.json_body();
+                let params = &rpc["params"];
+                let document = &params["did_document"];
+                let did = document["id"]
+                    .as_str()
+                    .expect("registration DID document id");
+                let device = &document["deviceManifest"]["devices"][0];
+                let device_id = device["device_id"]
+                    .as_str()
+                    .expect("registration manifest device_id");
+                let key_id = device["signing_key_id"]
+                    .as_str()
+                    .expect("registration manifest signing_key_id");
+                let handle = params["handle"].as_str().expect("registration handle");
+                let domain = did
+                    .strip_prefix("did:wba:")
+                    .and_then(|suffix| suffix.split(':').next())
+                    .expect("registration DID domain");
+                let user_id = format!("user-{handle}");
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let claims = json!({
+                    "iss": "user-service",
+                    "aud": ["awiki-user-service", "awiki-message-service"],
+                    "sub": did,
+                    "type": "access",
+                    "purpose": "awiki.device.access.v1",
+                    "did": did,
+                    "user_id": user_id,
+                    "device_id": device_id,
+                    "key_id": key_id,
+                    "auth_generation": 1,
+                    "scopes": ["device:manage", "device:read", "message:connect"],
+                    "iat": now,
+                    "nbf": now,
+                    "exp": now + 3600,
+                    "jti": format!("registration-{device_id}"),
+                });
+                let access_token = format!(
+                    "e30.{}.phase1c-{handle}-access-token",
+                    URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+                );
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": rpc["id"].clone(),
+                    "result": {
+                        "state": "registered",
+                        "did": did,
+                        "user_id": user_id,
+                        "message": "Registration successful",
+                        "access_token": access_token,
+                        "handle": handle,
+                        "domain": domain,
+                        "full_handle": format!("{handle}.{domain}"),
+                        "binding_generation": "1",
+                    },
+                })
+            })),
+        }
+    }
+
+    fn prekey_publication_result() -> Self {
+        Self {
+            status_code: 200,
+            body: Value::Null,
+            responder: Some(Box::new(|request| {
+                let rpc = request.json_body();
+                let body = &rpc["params"]["body"];
+                let bundle = &body["prekey_bundle"];
+                let published_opk_count = body["one_time_prekeys"]
+                    .as_array()
+                    .map(Vec::len)
+                    .expect("P5 publish one_time_prekeys");
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": rpc["id"].clone(),
+                    "result": {
+                        "published": true,
+                        "owner_did": bundle["owner_did"].clone(),
+                        "owner_device_id": bundle["owner_device_id"].clone(),
+                        "bundle_id": bundle["bundle_id"].clone(),
+                        "published_at": "2026-07-29T00:00:00Z",
+                        "published_opk_count": published_opk_count,
+                    },
+                })
+            })),
+        }
     }
 }
 
