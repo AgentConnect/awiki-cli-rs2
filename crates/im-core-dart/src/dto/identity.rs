@@ -127,6 +127,18 @@ pub struct DartDeviceJoinAuthorizedDeviceSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDeviceRegistryAuthorizedDeviceSummary {
+    pub protocol_device_id: String,
+    pub signing_key_id: String,
+    pub e2ee_key_id: String,
+    pub status: DartDeviceJoinAuthorizationStatus,
+    pub role: DartDeviceJoinRole,
+    pub management_ready: bool,
+    pub is_current: bool,
+    pub auth_generation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinRequestNotice {
     pub event_id: String,
     pub join_session_id: String,
@@ -143,7 +155,8 @@ pub struct DartDeviceJoinRequestNotice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinRegistrySnapshot {
     pub did: String,
-    pub devices: Vec<DartDeviceJoinAuthorizedDeviceSummary>,
+    pub registry_version: String,
+    pub devices: Vec<DartDeviceRegistryAuthorizedDeviceSummary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -7018,12 +7018,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
     return DartDeviceJoinRegistrySnapshot(
       did: dco_decode_String(arr[0]),
-      devices: dco_decode_list_dart_device_join_authorized_device_summary(
-        arr[1],
+      registryVersion: dco_decode_String(arr[1]),
+      devices: dco_decode_list_dart_device_registry_authorized_device_summary(
+        arr[2],
       ),
     );
   }
@@ -7094,6 +7095,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartDeviceJoinSide dco_decode_dart_device_join_side(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return DartDeviceJoinSide.values[raw as int];
+  }
+
+  @protected
+  DartDeviceRegistryAuthorizedDeviceSummary
+  dco_decode_dart_device_registry_authorized_device_summary(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    return DartDeviceRegistryAuthorizedDeviceSummary(
+      protocolDeviceId: dco_decode_String(arr[0]),
+      signingKeyId: dco_decode_String(arr[1]),
+      e2EeKeyId: dco_decode_String(arr[2]),
+      status: dco_decode_dart_device_join_authorization_status(arr[3]),
+      role: dco_decode_dart_device_join_role(arr[4]),
+      managementReady: dco_decode_bool(arr[5]),
+      isCurrent: dco_decode_bool(arr[6]),
+      authGeneration: dco_decode_String(arr[7]),
+    );
   }
 
   @protected
@@ -9006,15 +9026,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  List<DartDeviceJoinAuthorizedDeviceSummary>
-  dco_decode_list_dart_device_join_authorized_device_summary(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>)
-        .map(dco_decode_dart_device_join_authorized_device_summary)
-        .toList();
-  }
-
-  @protected
   List<DartDeviceJoinRequestNotice>
   dco_decode_list_dart_device_join_request_notice(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -9029,6 +9040,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>)
         .map(dco_decode_dart_device_join_session_summary)
+        .toList();
+  }
+
+  @protected
+  List<DartDeviceRegistryAuthorizedDeviceSummary>
+  dco_decode_list_dart_device_registry_authorized_device_summary(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_dart_device_registry_authorized_device_summary)
         .toList();
   }
 
@@ -10844,11 +10864,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_did = sse_decode_String(deserializer);
+    var var_registryVersion = sse_decode_String(deserializer);
     var var_devices =
-        sse_decode_list_dart_device_join_authorized_device_summary(
+        sse_decode_list_dart_device_registry_authorized_device_summary(
           deserializer,
         );
-    return DartDeviceJoinRegistrySnapshot(did: var_did, devices: var_devices);
+    return DartDeviceJoinRegistrySnapshot(
+      did: var_did,
+      registryVersion: var_registryVersion,
+      devices: var_devices,
+    );
   }
 
   @protected
@@ -10935,6 +10960,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return DartDeviceJoinSide.values[inner];
+  }
+
+  @protected
+  DartDeviceRegistryAuthorizedDeviceSummary
+  sse_decode_dart_device_registry_authorized_device_summary(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_protocolDeviceId = sse_decode_String(deserializer);
+    var var_signingKeyId = sse_decode_String(deserializer);
+    var var_e2EeKeyId = sse_decode_String(deserializer);
+    var var_status = sse_decode_dart_device_join_authorization_status(
+      deserializer,
+    );
+    var var_role = sse_decode_dart_device_join_role(deserializer);
+    var var_managementReady = sse_decode_bool(deserializer);
+    var var_isCurrent = sse_decode_bool(deserializer);
+    var var_authGeneration = sse_decode_String(deserializer);
+    return DartDeviceRegistryAuthorizedDeviceSummary(
+      protocolDeviceId: var_protocolDeviceId,
+      signingKeyId: var_signingKeyId,
+      e2EeKeyId: var_e2EeKeyId,
+      status: var_status,
+      role: var_role,
+      managementReady: var_managementReady,
+      isCurrent: var_isCurrent,
+      authGeneration: var_authGeneration,
+    );
   }
 
   @protected
@@ -13402,23 +13455,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  List<DartDeviceJoinAuthorizedDeviceSummary>
-  sse_decode_list_dart_device_join_authorized_device_summary(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <DartDeviceJoinAuthorizedDeviceSummary>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(
-        sse_decode_dart_device_join_authorized_device_summary(deserializer),
-      );
-    }
-    return ans_;
-  }
-
-  @protected
   List<DartDeviceJoinRequestNotice>
   sse_decode_list_dart_device_join_request_notice(
     SseDeserializer deserializer,
@@ -13444,6 +13480,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <DartDeviceJoinSessionSummary>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_dart_device_join_session_summary(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<DartDeviceRegistryAuthorizedDeviceSummary>
+  sse_decode_list_dart_device_registry_authorized_device_summary(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <DartDeviceRegistryAuthorizedDeviceSummary>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(
+        sse_decode_dart_device_registry_authorized_device_summary(deserializer),
+      );
     }
     return ans_;
   }
@@ -15390,7 +15443,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.did, serializer);
-    sse_encode_list_dart_device_join_authorized_device_summary(
+    sse_encode_String(self.registryVersion, serializer);
+    sse_encode_list_dart_device_registry_authorized_device_summary(
       self.devices,
       serializer,
     );
@@ -15462,6 +15516,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_device_registry_authorized_device_summary(
+    DartDeviceRegistryAuthorizedDeviceSummary self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.protocolDeviceId, serializer);
+    sse_encode_String(self.signingKeyId, serializer);
+    sse_encode_String(self.e2EeKeyId, serializer);
+    sse_encode_dart_device_join_authorization_status(self.status, serializer);
+    sse_encode_dart_device_join_role(self.role, serializer);
+    sse_encode_bool(self.managementReady, serializer);
+    sse_encode_bool(self.isCurrent, serializer);
+    sse_encode_String(self.authGeneration, serializer);
   }
 
   @protected
@@ -17278,18 +17348,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  void sse_encode_list_dart_device_join_authorized_device_summary(
-    List<DartDeviceJoinAuthorizedDeviceSummary> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_dart_device_join_authorized_device_summary(item, serializer);
-    }
-  }
-
-  @protected
   void sse_encode_list_dart_device_join_request_notice(
     List<DartDeviceJoinRequestNotice> self,
     SseSerializer serializer,
@@ -17310,6 +17368,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_dart_device_join_session_summary(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_dart_device_registry_authorized_device_summary(
+    List<DartDeviceRegistryAuthorizedDeviceSummary> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_dart_device_registry_authorized_device_summary(
+        item,
+        serializer,
+      );
     }
   }
 

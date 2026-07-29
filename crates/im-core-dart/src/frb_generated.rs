@@ -8706,12 +8706,14 @@ impl SseDecode for crate::dto::identity::DartDeviceJoinRegistrySnapshot {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_did = <String>::sse_decode(deserializer);
+        let mut var_registryVersion = <String>::sse_decode(deserializer);
         let mut var_devices =
-            <Vec<crate::dto::identity::DartDeviceJoinAuthorizedDeviceSummary>>::sse_decode(
+            <Vec<crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary>>::sse_decode(
                 deserializer,
             );
         return crate::dto::identity::DartDeviceJoinRegistrySnapshot {
             did: var_did,
+            registry_version: var_registryVersion,
             devices: var_devices,
         };
     }
@@ -8815,6 +8817,31 @@ impl SseDecode for crate::dto::identity::DartDeviceJoinSide {
             0 => crate::dto::identity::DartDeviceJoinSide::NewDevice,
             1 => crate::dto::identity::DartDeviceJoinSide::Admin,
             _ => unreachable!("Invalid variant for DartDeviceJoinSide: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_protocolDeviceId = <String>::sse_decode(deserializer);
+        let mut var_signingKeyId = <String>::sse_decode(deserializer);
+        let mut var_e2EeKeyId = <String>::sse_decode(deserializer);
+        let mut var_status =
+            <crate::dto::identity::DartDeviceJoinAuthorizationStatus>::sse_decode(deserializer);
+        let mut var_role = <crate::dto::identity::DartDeviceJoinRole>::sse_decode(deserializer);
+        let mut var_managementReady = <bool>::sse_decode(deserializer);
+        let mut var_isCurrent = <bool>::sse_decode(deserializer);
+        let mut var_authGeneration = <String>::sse_decode(deserializer);
+        return crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary {
+            protocol_device_id: var_protocolDeviceId,
+            signing_key_id: var_signingKeyId,
+            e2ee_key_id: var_e2EeKeyId,
+            status: var_status,
+            role: var_role,
+            management_ready: var_managementReady,
+            is_current: var_isCurrent,
+            auth_generation: var_authGeneration,
         };
     }
 }
@@ -11342,22 +11369,6 @@ impl SseDecode for Vec<crate::dto::message::DartConversationSnapshotItem> {
     }
 }
 
-impl SseDecode for Vec<crate::dto::identity::DartDeviceJoinAuthorizedDeviceSummary> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut len_ = <i32>::sse_decode(deserializer);
-        let mut ans_ = Vec::with_capacity(len_ as usize);
-        for idx_ in 0..len_ {
-            ans_.push(
-                <crate::dto::identity::DartDeviceJoinAuthorizedDeviceSummary>::sse_decode(
-                    deserializer,
-                ),
-            );
-        }
-        return ans_;
-    }
-}
-
 impl SseDecode for Vec<crate::dto::identity::DartDeviceJoinRequestNotice> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -11380,6 +11391,22 @@ impl SseDecode for Vec<crate::dto::identity::DartDeviceJoinSessionSummary> {
         for idx_ in 0..len_ {
             ans_.push(
                 <crate::dto::identity::DartDeviceJoinSessionSummary>::sse_decode(deserializer),
+            );
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(
+                <crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary>::sse_decode(
+                    deserializer,
+                ),
             );
         }
         return ans_;
@@ -13487,6 +13514,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartDeviceJoinRegis
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.did.into_into_dart().into_dart(),
+            self.registry_version.into_into_dart().into_dart(),
             self.devices.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -13643,6 +13671,37 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartDeviceJoinSide>
     for crate::dto::identity::DartDeviceJoinSide
 {
     fn into_into_dart(self) -> crate::dto::identity::DartDeviceJoinSide {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.protocol_device_id.into_into_dart().into_dart(),
+            self.signing_key_id.into_into_dart().into_dart(),
+            self.e2ee_key_id.into_into_dart().into_dart(),
+            self.status.into_into_dart().into_dart(),
+            self.role.into_into_dart().into_dart(),
+            self.management_ready.into_into_dart().into_dart(),
+            self.is_current.into_into_dart().into_dart(),
+            self.auth_generation.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary,
+    > for crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary
+{
+    fn into_into_dart(self) -> crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary {
         self
     }
 }
@@ -17536,7 +17595,8 @@ impl SseEncode for crate::dto::identity::DartDeviceJoinRegistrySnapshot {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.did, serializer);
-        <Vec<crate::dto::identity::DartDeviceJoinAuthorizedDeviceSummary>>::sse_encode(
+        <String>::sse_encode(self.registry_version, serializer);
+        <Vec<crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary>>::sse_encode(
             self.devices,
             serializer,
         );
@@ -17637,6 +17697,23 @@ impl SseEncode for crate::dto::identity::DartDeviceJoinSide {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.protocol_device_id, serializer);
+        <String>::sse_encode(self.signing_key_id, serializer);
+        <String>::sse_encode(self.e2ee_key_id, serializer);
+        <crate::dto::identity::DartDeviceJoinAuthorizationStatus>::sse_encode(
+            self.status,
+            serializer,
+        );
+        <crate::dto::identity::DartDeviceJoinRole>::sse_encode(self.role, serializer);
+        <bool>::sse_encode(self.management_ready, serializer);
+        <bool>::sse_encode(self.is_current, serializer);
+        <String>::sse_encode(self.auth_generation, serializer);
     }
 }
 
@@ -19459,18 +19536,6 @@ impl SseEncode for Vec<crate::dto::message::DartConversationSnapshotItem> {
     }
 }
 
-impl SseEncode for Vec<crate::dto::identity::DartDeviceJoinAuthorizedDeviceSummary> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i32>::sse_encode(self.len() as _, serializer);
-        for item in self {
-            <crate::dto::identity::DartDeviceJoinAuthorizedDeviceSummary>::sse_encode(
-                item, serializer,
-            );
-        }
-    }
-}
-
 impl SseEncode for Vec<crate::dto::identity::DartDeviceJoinRequestNotice> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -19487,6 +19552,18 @@ impl SseEncode for Vec<crate::dto::identity::DartDeviceJoinSessionSummary> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::dto::identity::DartDeviceJoinSessionSummary>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary>::sse_encode(
+                item, serializer,
+            );
         }
     }
 }

@@ -187,10 +187,19 @@ reinterpret those methods through a different generic verification-method
 parser.
 
 Public host DTOs expose only safe session, DID, device, role, status, readiness,
-fingerprint, short-lived local SAS display, and UI-action facts. OTP/account
-grants, Join tokens, pairing private keys, Challenge plaintext, SAS derivation
-material, root plaintext, Object Proof secrets, and internal checkpoints do not
-cross the host facade or CLI output boundary.
+fingerprint, short-lived local SAS display, and UI-action facts. The explicit
+Device Registry read snapshot additionally exposes `registry_version` and each
+device's `auth_generation` as canonical decimal strings so an App can replace
+its display-only account-state cache monotonically. Those values do not
+authorize Join, revoke, or root transfer; all security actions still perform a
+fresh Core Registry read. The current User Service Registry stores both values
+as `u64`; Core converts them to decimal strings before the Dart/Flutter boundary
+so no Dart or JavaScript numeric representation can narrow them. Join
+session/progress DTOs continue to exclude them.
+OTP/account grants, Join tokens, pairing private keys, Challenge plaintext, SAS
+derivation material, root plaintext, Object Proof secrets, document
+version/hash, and other internal checkpoints do not cross the host facade or
+CLI output boundary.
 
 Local identity deletion is an offline Core transaction, not a remote logout
 operation. Core first persists a secret-free retirement marker keyed by the

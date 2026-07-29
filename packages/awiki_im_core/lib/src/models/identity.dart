@@ -413,6 +413,28 @@ class DeviceJoinAuthorizedDeviceSummary {
   final bool isCurrent;
 }
 
+class DeviceRegistryAuthorizedDeviceSummary {
+  const DeviceRegistryAuthorizedDeviceSummary({
+    required this.protocolDeviceId,
+    required this.signingKeyId,
+    required this.e2eeKeyId,
+    required this.status,
+    required this.role,
+    required this.managementReady,
+    required this.isCurrent,
+    required this.authGeneration,
+  });
+
+  final String protocolDeviceId;
+  final String signingKeyId;
+  final String e2eeKeyId;
+  final DeviceJoinAuthorizationStatus status;
+  final DeviceJoinRole role;
+  final bool managementReady;
+  final bool isCurrent;
+  final String authGeneration;
+}
+
 class DeviceJoinRequestNotice {
   const DeviceJoinRequestNotice({
     required this.eventId,
@@ -448,10 +470,15 @@ class DeviceJoinRequestNotice {
 }
 
 class DeviceJoinRegistrySnapshot {
-  const DeviceJoinRegistrySnapshot({required this.did, required this.devices});
+  const DeviceJoinRegistrySnapshot({
+    required this.did,
+    required this.registryVersion,
+    required this.devices,
+  });
 
   final String did;
-  final List<DeviceJoinAuthorizedDeviceSummary> devices;
+  final String registryVersion;
+  final List<DeviceRegistryAuthorizedDeviceSummary> devices;
 }
 
 enum DeviceJoinRejectReason { userRejected, sasMismatch }

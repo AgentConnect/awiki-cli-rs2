@@ -1039,6 +1039,51 @@ fn device_revoke_result_maps_only_safe_product_state() {
 }
 
 #[test]
+fn device_registry_snapshot_maps_decimal_versions_on_the_registry_only_surface() {
+    let snapshot = im_core::identity::DeviceJoinRegistrySnapshot {
+        did: im_core::ids::Did::parse("did:wba:example.test:alice").expect("did"),
+        registry_version: u64::MAX.to_string(),
+        devices: vec![im_core::identity::DeviceRegistryAuthorizedDeviceSummary {
+            protocol_device_id: im_core::ids::ProtocolDeviceId::parse("device-current")
+                .expect("device id"),
+            signing_key_id: "did:wba:example.test:alice#device-current-sign".to_owned(),
+            e2ee_key_id: "did:wba:example.test:alice#device-current-e2ee".to_owned(),
+            status: im_core::identity::DeviceJoinAuthorizationStatus::Active,
+            role: im_core::identity::DeviceJoinRole::Admin,
+            management_ready: true,
+            is_current: true,
+            auth_generation: u64::MAX.to_string(),
+        }],
+    };
+
+    let mapped: awiki_im_core::dto::identity::DartDeviceJoinRegistrySnapshot = snapshot.into();
+    assert_eq!(mapped.registry_version, u64::MAX.to_string());
+    assert_eq!(mapped.devices.len(), 1);
+    assert_eq!(mapped.devices[0].auth_generation, u64::MAX.to_string());
+    assert!(mapped.devices[0].is_current);
+}
+
+#[test]
+fn generated_registry_bridge_keeps_versions_as_strings() {
+    let generated = include_str!("../src/frb_generated.rs");
+    let snapshot_decoder = generated
+        .split("impl SseDecode for crate::dto::identity::DartDeviceJoinRegistrySnapshot")
+        .nth(1)
+        .and_then(|source| source.split("impl SseDecode").next())
+        .expect("generated Registry snapshot decoder");
+    assert!(snapshot_decoder.contains("let mut var_registryVersion = <String>::sse_decode"));
+    assert!(!snapshot_decoder.contains("var_registryVersion = <u64>::sse_decode"));
+
+    let device_decoder = generated
+        .split("impl SseDecode for crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary")
+        .nth(1)
+        .and_then(|source| source.split("impl SseDecode").next())
+        .expect("generated Registry device decoder");
+    assert!(device_decoder.contains("let mut var_authGeneration = <String>::sse_decode"));
+    assert!(!device_decoder.contains("var_authGeneration = <u64>::sse_decode"));
+}
+
+#[test]
 fn identity_vault_status_maps_without_secret_refs() {
     let core_status = im_core::identity::IdentityVaultStatus {
         identity: im_core::identity::IdentitySummary {

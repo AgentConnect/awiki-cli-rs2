@@ -12,6 +12,8 @@
 //! 3. Plan attachment ticket requests through the production runtime so Profile, service target,
 //!    and per-device wire message authorization remain identical to normal downloads.
 //! 4. Keep stdout/stderr free of credentials and cryptographic state.
+//! 5. Account-state probes may return canonical versions and bounded match counts only; they
+//!    never return account IDs, DIDs, device IDs, profile values, or bearer tokens.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -47,6 +49,8 @@ const MAX_RPC_RESPONSE_BYTES: usize = 512 * 1024;
 const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TIMEOUT_MS: u64 = 300_000;
 const RPC_PATH: &str = "/im/rpc";
+const ACCOUNT_STATE_RPC_PATH: &str = "/user-service/account-state/rpc";
+const DID_AUTH_RPC_PATH: &str = "/user-service/did-auth/rpc";
 
 const INVALID_REQUEST: &str = "probe.invalid_request";
 const INVALID_STATE: &str = "probe.invalid_state";
@@ -80,6 +84,11 @@ enum Action {
     HoldDownloadTicket(AttachmentTicketParams),
     ProbeDownloadTicket(AttachmentTicketParams),
     ProbePrekey(PrekeyParams),
+    AccountStateManifest,
+    AccountStateAgent(AgentSnapshotParams),
+    AccountStateStatus(AgentStatusParams),
+    AccountStateProfile(ProfileSnapshotParams),
+    AccountStateRegistry(RegistrySnapshotParams),
     RedeemHeldTicket { expected_digest_b64u: String },
     Shutdown,
 }
@@ -94,6 +103,25 @@ struct AttachmentTicketParams {
 struct PrekeyParams {
     target_did: String,
     target_device_id: String,
+}
+
+struct AgentSnapshotParams {
+    agent_did: String,
+    expected_active_state: String,
+    expected_display_name: String,
+}
+
+struct AgentStatusParams {
+    agent_did: String,
+}
+
+struct ProfileSnapshotParams {
+    expected_nick_name: String,
+}
+
+struct RegistrySnapshotParams {
+    target_device_id: String,
+    expected_status: String,
 }
 
 #[derive(Clone, Copy)]
@@ -124,7 +152,10 @@ struct Probe {
     _client: Option<im_core::ImClient>,
     http: reqwest::Client,
     bearer: Zeroizing<String>,
+    user_bearer: Zeroizing<String>,
     message_rpc_url: reqwest::Url,
+    account_state_rpc_url: reqwest::Url,
+    did_auth_rpc_url: reqwest::Url,
     websocket_url: String,
     ca_bundle: Option<String>,
     local_did: String,
@@ -255,6 +286,17 @@ impl Probe {
             .client_async(im_core::IdentitySelector::Default)
             .await
             .map_err(|_| ProbeFailure::Runtime)?;
+        let mut user_session = client
+            .auth()
+            .ensure_session_async(im_core::auth::AuthScope::UserProfile)
+            .await
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let user_bearer = user_session
+            .bearer_token
+            .take()
+            .filter(|value| !value.trim().is_empty())
+            .map(Zeroizing::new)
+            .ok_or(ProbeFailure::Runtime)?;
         let mut session = client
             .auth()
             .ensure_session_async(im_core::auth::AuthScope::Messaging)
@@ -277,6 +319,18 @@ impl Probe {
         ))
         .map_err(|_| ProbeFailure::Runtime)?;
         validate_service_url(&message_rpc_url)?;
+        let account_state_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
+            &resolved.user_service_endpoint,
+            ACCOUNT_STATE_RPC_PATH,
+        ))
+        .map_err(|_| ProbeFailure::Runtime)?;
+        validate_service_url(&account_state_rpc_url)?;
+        let did_auth_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
+            &resolved.user_service_endpoint,
+            DID_AUTH_RPC_PATH,
+        ))
+        .map_err(|_| ProbeFailure::Runtime)?;
+        validate_service_url(&did_auth_rpc_url)?;
         let websocket_url = im_core::realtime::realtime_client_construction_plan(
             &resolved.message_service_endpoint,
         )
@@ -290,7 +344,10 @@ impl Probe {
             _client: Some(client),
             http,
             bearer,
+            user_bearer,
             message_rpc_url,
+            account_state_rpc_url,
+            did_auth_rpc_url,
             websocket_url,
             ca_bundle,
             local_did,
@@ -376,6 +433,52 @@ impl Probe {
                     Ok((result_with_code("available", false, code), false))
                 }
             },
+            Action::AccountStateManifest => {
+                let result = self
+                    .required_user_rpc(
+                        &self.account_state_rpc_url,
+                        "account_state.manifest_get",
+                        json!({}),
+                    )
+                    .await?;
+                Ok((closed_manifest_result(&result)?, false))
+            }
+            Action::AccountStateAgent(params) => {
+                let result = self
+                    .required_user_rpc(
+                        &self.account_state_rpc_url,
+                        "account_state.agent_inventory_get",
+                        json!({}),
+                    )
+                    .await?;
+                Ok((closed_agent_result(&result, &params)?, false))
+            }
+            Action::AccountStateStatus(params) => {
+                let result = self
+                    .required_user_rpc(
+                        &self.account_state_rpc_url,
+                        "account_state.agent_status_get",
+                        json!({}),
+                    )
+                    .await?;
+                Ok((closed_agent_status_result(&result, &params)?, false))
+            }
+            Action::AccountStateProfile(params) => {
+                let result = self
+                    .required_user_rpc(
+                        &self.account_state_rpc_url,
+                        "account_state.profile_get",
+                        json!({}),
+                    )
+                    .await?;
+                Ok((closed_profile_result(&result, &params)?, false))
+            }
+            Action::AccountStateRegistry(params) => {
+                let result = self
+                    .required_user_rpc(&self.did_auth_rpc_url, "device_registry_get", json!({}))
+                    .await?;
+                Ok((closed_registry_result(&result, &params)?, false))
+            }
             Action::RedeemHeldTicket {
                 expected_digest_b64u,
             } => {
@@ -603,6 +706,32 @@ impl Probe {
         method: &'static str,
         params: Value,
     ) -> Result<RpcOutcome<T>, ProbeFailure> {
+        self.rpc_to(&self.message_rpc_url, &self.bearer, method, params)
+            .await
+    }
+
+    async fn required_user_rpc(
+        &self,
+        endpoint: &reqwest::Url,
+        method: &'static str,
+        params: Value,
+    ) -> Result<Value, ProbeFailure> {
+        match self
+            .rpc_to(endpoint, &self.user_bearer, method, params)
+            .await?
+        {
+            RpcOutcome::Success(result) => Ok(result),
+            RpcOutcome::Rejected(_) => Err(ProbeFailure::Transport),
+        }
+    }
+
+    async fn rpc_to<T: DeserializeOwned>(
+        &self,
+        endpoint: &reqwest::Url,
+        bearer: &Zeroizing<String>,
+        method: &'static str,
+        params: Value,
+    ) -> Result<RpcOutcome<T>, ProbeFailure> {
         let payload = json!({
             "jsonrpc": "2.0",
             "id": "system-test-probe",
@@ -610,11 +739,11 @@ impl Probe {
             "params": params,
         });
         let payload = serde_json::to_vec(&payload).map_err(|_| ProbeFailure::Runtime)?;
-        let mut authorization = reqwest_authorization_header(&self.bearer)?;
+        let mut authorization = reqwest_authorization_header(bearer)?;
         authorization.set_sensitive(true);
         let response = self
             .http
-            .post(self.message_rpc_url.clone())
+            .post(endpoint.clone())
             .header(REQWEST_AUTHORIZATION, authorization)
             .header(CONTENT_TYPE, "application/json")
             .body(payload)
@@ -805,6 +934,18 @@ fn parse_request(raw: &str) -> Result<ProbeRequest, ProbeFailure> {
             Action::ProbeDownloadTicket(parse_attachment_ticket_params(params)?)
         }
         "probe_prekey" => Action::ProbePrekey(parse_prekey_params(params)?),
+        "account_state_manifest" => {
+            require_exact_keys(params, &[])?;
+            Action::AccountStateManifest
+        }
+        "account_state_agent" => Action::AccountStateAgent(parse_agent_snapshot_params(params)?),
+        "account_state_status" => Action::AccountStateStatus(parse_agent_status_params(params)?),
+        "account_state_profile" => {
+            Action::AccountStateProfile(parse_profile_snapshot_params(params)?)
+        }
+        "account_state_registry" => {
+            Action::AccountStateRegistry(parse_registry_snapshot_params(params)?)
+        }
         "redeem_held_ticket" => {
             require_exact_keys(params, &["expected_digest_b64u"])?;
             let expected_digest_b64u = required_string(params, "expected_digest_b64u", 64)?;
@@ -854,6 +995,68 @@ fn parse_prekey_params(params: &Map<String, Value>) -> Result<PrekeyParams, Prob
     Ok(PrekeyParams {
         target_did,
         target_device_id,
+    })
+}
+
+fn parse_agent_snapshot_params(
+    params: &Map<String, Value>,
+) -> Result<AgentSnapshotParams, ProbeFailure> {
+    require_exact_keys(
+        params,
+        &[
+            "agent_did",
+            "expected_active_state",
+            "expected_display_name",
+        ],
+    )?;
+    let agent_did = required_string(params, "agent_did", 2048)?;
+    im_core::ids::Did::parse(&agent_did).map_err(|_| ProbeFailure::InvalidRequest)?;
+    let expected_active_state = required_string(params, "expected_active_state", 32)?;
+    if !matches!(
+        expected_active_state.as_str(),
+        "active" | "inactive" | "revoked" | "archived"
+    ) {
+        return Err(ProbeFailure::InvalidRequest);
+    }
+    Ok(AgentSnapshotParams {
+        agent_did,
+        expected_active_state,
+        expected_display_name: required_string(params, "expected_display_name", 512)?,
+    })
+}
+
+fn parse_agent_status_params(
+    params: &Map<String, Value>,
+) -> Result<AgentStatusParams, ProbeFailure> {
+    require_exact_keys(params, &["agent_did"])?;
+    let agent_did = required_string(params, "agent_did", 2048)?;
+    im_core::ids::Did::parse(&agent_did).map_err(|_| ProbeFailure::InvalidRequest)?;
+    Ok(AgentStatusParams { agent_did })
+}
+
+fn parse_profile_snapshot_params(
+    params: &Map<String, Value>,
+) -> Result<ProfileSnapshotParams, ProbeFailure> {
+    require_exact_keys(params, &["expected_nick_name"])?;
+    Ok(ProfileSnapshotParams {
+        expected_nick_name: required_string(params, "expected_nick_name", 512)?,
+    })
+}
+
+fn parse_registry_snapshot_params(
+    params: &Map<String, Value>,
+) -> Result<RegistrySnapshotParams, ProbeFailure> {
+    require_exact_keys(params, &["expected_status", "target_device_id"])?;
+    let target_device_id = required_string(params, "target_device_id", 512)?;
+    im_core::ids::ProtocolDeviceId::parse(&target_device_id)
+        .map_err(|_| ProbeFailure::InvalidRequest)?;
+    let expected_status = required_string(params, "expected_status", 32)?;
+    if !matches!(expected_status.as_str(), "active" | "revoked") {
+        return Err(ProbeFailure::InvalidRequest);
+    }
+    Ok(RegistrySnapshotParams {
+        target_device_id,
+        expected_status,
     })
 }
 
@@ -921,6 +1124,192 @@ fn result_with_code(key: &str, value: bool, code: Option<&'static str>) -> Value
         result.insert("anp_code".to_owned(), Value::String(code.to_owned()));
     }
     Value::Object(result)
+}
+
+fn closed_manifest_result(result: &Value) -> Result<Value, ProbeFailure> {
+    let object = result.as_object().ok_or(ProbeFailure::Runtime)?;
+    required_response_string(object, "account_id")?;
+    let current_did = required_response_string(object, "current_did")?;
+    im_core::ids::Did::parse(current_did).map_err(|_| ProbeFailure::Runtime)?;
+    required_response_string(object, "server_time")?;
+    let versions = object
+        .get("versions")
+        .and_then(Value::as_object)
+        .ok_or(ProbeFailure::Runtime)?;
+    Ok(json!({
+        "identity_generation": canonical_decimal_string(object, "identity_generation")?,
+        "profile_version": canonical_decimal_string(versions, "profile")?,
+        "agent_inventory_version": canonical_decimal_string(versions, "agent_inventory")?,
+        "agent_status_version": canonical_decimal_string(versions, "agent_status")?,
+        "device_registry_version": canonical_decimal_string(versions, "device_registry")?,
+    }))
+}
+
+fn closed_agent_result(
+    result: &Value,
+    params: &AgentSnapshotParams,
+) -> Result<Value, ProbeFailure> {
+    let object = result.as_object().ok_or(ProbeFailure::Runtime)?;
+    required_response_string(object, "account_id")?;
+    let agents = object
+        .get("agents")
+        .and_then(Value::as_array)
+        .ok_or(ProbeFailure::Runtime)?;
+    let mut active_count = 0_u64;
+    let mut inactive_count = 0_u64;
+    let mut revoked_count = 0_u64;
+    let mut archived_count = 0_u64;
+    let mut match_count = 0_u64;
+    let mut matched_expected = false;
+    for agent in agents {
+        let agent = agent.as_object().ok_or(ProbeFailure::Runtime)?;
+        let agent_did = required_response_string(agent, "agent_did")?;
+        im_core::ids::Did::parse(agent_did).map_err(|_| ProbeFailure::Runtime)?;
+        let active_state = required_response_string(agent, "active_state")?;
+        match active_state {
+            "active" => active_count += 1,
+            "inactive" => inactive_count += 1,
+            "revoked" => revoked_count += 1,
+            "archived" => archived_count += 1,
+            _ => return Err(ProbeFailure::Runtime),
+        }
+        let display_name = required_response_string(agent, "display_name")?;
+        if agent_did == params.agent_did {
+            match_count += 1;
+            matched_expected |= active_state == params.expected_active_state
+                && display_name == params.expected_display_name;
+        }
+    }
+    Ok(json!({
+        "inventory_version": canonical_decimal_string(object, "inventory_version")?,
+        "total_count": bounded_count(agents.len())?,
+        "match_count": match_count,
+        "active_count": active_count,
+        "inactive_count": inactive_count,
+        "revoked_count": revoked_count,
+        "archived_count": archived_count,
+        "matched_expected": matched_expected,
+    }))
+}
+
+fn closed_agent_status_result(
+    result: &Value,
+    params: &AgentStatusParams,
+) -> Result<Value, ProbeFailure> {
+    let object = result.as_object().ok_or(ProbeFailure::Runtime)?;
+    required_response_string(object, "account_id")?;
+    let statuses = object
+        .get("statuses")
+        .and_then(Value::as_array)
+        .ok_or(ProbeFailure::Runtime)?;
+    let mut match_count = 0_u64;
+    for status in statuses {
+        let status = status.as_object().ok_or(ProbeFailure::Runtime)?;
+        let agent_did = required_response_string(status, "agent_did")?;
+        im_core::ids::Did::parse(agent_did).map_err(|_| ProbeFailure::Runtime)?;
+        if agent_did == params.agent_did {
+            match_count += 1;
+        }
+    }
+    Ok(json!({
+        "agent_status_version": canonical_decimal_string(object, "agent_status_version")?,
+        "total_count": bounded_count(statuses.len())?,
+        "match_count": match_count,
+    }))
+}
+
+fn closed_profile_result(
+    result: &Value,
+    params: &ProfileSnapshotParams,
+) -> Result<Value, ProbeFailure> {
+    let object = result.as_object().ok_or(ProbeFailure::Runtime)?;
+    required_response_string(object, "account_id")?;
+    let profile = object
+        .get("profile")
+        .and_then(Value::as_object)
+        .ok_or(ProbeFailure::Runtime)?;
+    let nick_name = required_response_string(profile, "nick_name")?;
+    Ok(json!({
+        "profile_version": canonical_decimal_string(object, "profile_version")?,
+        "matched_expected": nick_name == params.expected_nick_name,
+    }))
+}
+
+fn closed_registry_result(
+    result: &Value,
+    params: &RegistrySnapshotParams,
+) -> Result<Value, ProbeFailure> {
+    let object = result.as_object().ok_or(ProbeFailure::Runtime)?;
+    let did = required_response_string(object, "did")?;
+    im_core::ids::Did::parse(did).map_err(|_| ProbeFailure::Runtime)?;
+    let checkpoint = object
+        .get("checkpoint")
+        .and_then(Value::as_object)
+        .ok_or(ProbeFailure::Runtime)?;
+    let registry_version = canonical_u64(checkpoint, "registry_version")?.to_string();
+    let devices = object
+        .get("devices")
+        .and_then(Value::as_array)
+        .ok_or(ProbeFailure::Runtime)?;
+    let mut match_count = 0_u64;
+    let mut matched_expected = false;
+    for device in devices {
+        let device = device.as_object().ok_or(ProbeFailure::Runtime)?;
+        let device_id = required_response_string(device, "device_id")?;
+        let status = required_response_string(device, "status")?;
+        if !matches!(status, "active" | "revoked") {
+            return Err(ProbeFailure::Runtime);
+        }
+        if device_id == params.target_device_id {
+            match_count += 1;
+            matched_expected |= status == params.expected_status;
+        }
+    }
+    Ok(json!({
+        "registry_version": registry_version,
+        "total_count": bounded_count(devices.len())?,
+        "match_count": match_count,
+        "matched_expected": matched_expected,
+    }))
+}
+
+fn required_response_string<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+) -> Result<&'a str, ProbeFailure> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .filter(|value| !value.chars().any(char::is_control))
+        .ok_or(ProbeFailure::Runtime)
+}
+
+fn canonical_decimal_string(
+    object: &Map<String, Value>,
+    key: &str,
+) -> Result<String, ProbeFailure> {
+    let value = required_response_string(object, key)?;
+    if value == "0"
+        || (value.as_bytes().first().is_some_and(u8::is_ascii_digit)
+            && !value.starts_with('0')
+            && value.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        Ok(value.to_owned())
+    } else {
+        Err(ProbeFailure::Runtime)
+    }
+}
+
+fn canonical_u64(object: &Map<String, Value>, key: &str) -> Result<u64, ProbeFailure> {
+    object
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or(ProbeFailure::Runtime)
+}
+
+fn bounded_count(value: usize) -> Result<u64, ProbeFailure> {
+    u64::try_from(value).map_err(|_| ProbeFailure::Runtime)
 }
 
 fn redeem_result(digest_matches: bool, replay_rejected: bool, code: Option<&'static str>) -> Value {
@@ -1252,7 +1641,14 @@ mod tests {
             _client: None,
             http,
             bearer: Zeroizing::new(TOKEN_SECRET.to_owned()),
+            user_bearer: Zeroizing::new(TOKEN_SECRET.to_owned()),
             message_rpc_url: rpc_url,
+            account_state_rpc_url: reqwest::Url::parse(&format!(
+                "{base_url}{ACCOUNT_STATE_RPC_PATH}"
+            ))
+            .expect("fake account-state RPC URL"),
+            did_auth_rpc_url: reqwest::Url::parse(&format!("{base_url}{DID_AUTH_RPC_PATH}"))
+                .expect("fake DID-auth RPC URL"),
             websocket_url: base_url.replacen("http://", "ws://", 1),
             ca_bundle: None,
             local_did: LOCAL_DID.to_owned(),
@@ -1264,6 +1660,100 @@ mod tests {
             ws: None,
             held_ticket: None,
         }
+    }
+
+    #[test]
+    fn account_state_actions_and_results_are_closed_and_secret_free() {
+        let manifest =
+            match parse_request(r#"{"id":10,"action":"account_state_manifest","params":{}}"#) {
+                Ok(request) => request,
+                Err(_) => panic!("closed manifest action"),
+            };
+        assert!(matches!(manifest.action, Action::AccountStateManifest));
+
+        let agent = match parse_request(
+            r#"{"id":11,"action":"account_state_agent","params":{"agent_did":"did:wba:example.test:agent:runtime","expected_active_state":"revoked","expected_display_name":"Runtime"}}"#,
+        ) {
+            Ok(request) => request,
+            Err(_) => panic!("closed agent action"),
+        };
+        assert!(matches!(agent.action, Action::AccountStateAgent(_)));
+
+        let extra = match parse_request(
+            r#"{"id":12,"action":"account_state_manifest","params":{"account_id":"secret"}}"#,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("manifest selectors must be rejected"),
+        };
+        assert_eq!(extra.code(), INVALID_REQUEST);
+
+        let manifest_result = match closed_manifest_result(&json!({
+            "account_id": "account-secret",
+            "current_did": LOCAL_DID,
+            "identity_generation": "8",
+            "versions": {
+                "profile": "21",
+                "agent_inventory": "44",
+                "agent_status": "813",
+                "device_registry": "12"
+            },
+            "server_time": "2026-07-28T12:00:00Z"
+        })) {
+            Ok(result) => result,
+            Err(_) => panic!("closed manifest result"),
+        };
+        assert_eq!(
+            manifest_result,
+            json!({
+                "identity_generation": "8",
+                "profile_version": "21",
+                "agent_inventory_version": "44",
+                "agent_status_version": "813",
+                "device_registry_version": "12"
+            })
+        );
+
+        let agent_result = match closed_agent_result(
+            &json!({
+                "account_id": "account-secret",
+                "inventory_version": "44",
+                "agents": [
+                    {
+                        "agent_did": "did:wba:example.test:agent:runtime",
+                        "active_state": "revoked",
+                        "display_name": "Runtime",
+                        "profile_summary": {"secret": SERVER_ERROR_SECRET}
+                    }
+                ]
+            }),
+            &AgentSnapshotParams {
+                agent_did: "did:wba:example.test:agent:runtime".to_owned(),
+                expected_active_state: "revoked".to_owned(),
+                expected_display_name: "Runtime".to_owned(),
+            },
+        ) {
+            Ok(result) => result,
+            Err(_) => panic!("closed agent result"),
+        };
+        assert_eq!(
+            agent_result,
+            json!({
+                "inventory_version": "44",
+                "total_count": 1,
+                "match_count": 1,
+                "active_count": 0,
+                "inactive_count": 0,
+                "revoked_count": 1,
+                "archived_count": 0,
+                "matched_expected": true
+            })
+        );
+
+        let serialized = serde_json::to_string(&(manifest_result, agent_result))
+            .expect("serialize closed output");
+        assert!(!serialized.contains("account-secret"));
+        assert!(!serialized.contains(LOCAL_DID));
+        assert!(!serialized.contains(SERVER_ERROR_SECRET));
     }
 
     fn attachment_action(id: u64, action: &str, object_uri: &str) -> String {

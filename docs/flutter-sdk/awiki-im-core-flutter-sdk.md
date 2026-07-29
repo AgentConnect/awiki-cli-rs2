@@ -217,7 +217,16 @@ verification methods。
 
 Join model 只暴露安全的 Session、设备、Registry role/status、expiry、请求生命周期和短期 SAS
 事实，不暴露 OTP/Join token、完整 Join Request/proof、pairing/private key、shared secret、
-root material、Challenge/ciphertext 或 AWiki 内部 Document/Registry/auth 版本与 hash。
+root material、Challenge/ciphertext 或 Document version/hash。Join session/progress 也不暴露
+Registry/auth generation。
+
+显式 `identityDeviceRegistry` 返回的 `DeviceJoinRegistrySnapshot` 是唯一例外：它以 decimal
+`String` 返回 `registryVersion`，其专用 `DeviceRegistryAuthorizedDeviceSummary` 以 decimal
+`String` 返回 `authGeneration`。App 只能用它们做 display-only account-state cache 的单调替换，
+不能据此授权 Join、revoke 或 root transfer；安全动作仍必须调用 fresh Core。两个版本都不得
+转换为 Dart `int`。User Service 当前以 `u64` 维护这两个权威值；Rust facade 必须在跨 FFI
+之前转换成十进制字符串，生成的 DCO/SSE codec 也必须使用 `String` 编解码。
+
 SAS 只允许短暂存在于 `DeviceJoinProgress`，不得进入 `DeviceJoinRequestNotice`、realtime event、
 持久化 DTO 或日志；相关模型的字符串与 Debug 输出必须保持脱敏。
 `system_notification_changed` 只携带 event ID、闭合 notification type 和可靠同步 hint，不透传

@@ -30,7 +30,7 @@ pub use self::join::{
     DeviceJoinAuthorizedDeviceSummary, DeviceJoinBeginRequest, DeviceJoinConfirmApprovalRequest,
     DeviceJoinLocalPhase, DeviceJoinProgress, DeviceJoinRegistrySnapshot, DeviceJoinRejectReason,
     DeviceJoinRemoteState, DeviceJoinRequestNotice, DeviceJoinRole, DeviceJoinService,
-    DeviceJoinSessionView, DeviceJoinSide,
+    DeviceJoinSessionView, DeviceJoinSide, DeviceRegistryAuthorizedDeviceSummary,
 };
 pub(crate) use self::join::{
     DeviceJoinAdminPrepareRequest, DeviceJoinAdminPrepareResult, DeviceJoinAdminVerifyRequest,

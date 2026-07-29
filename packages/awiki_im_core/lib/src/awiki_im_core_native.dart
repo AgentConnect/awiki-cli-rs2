@@ -2047,6 +2047,15 @@ extension on gen_identity.DartDeviceJoinRole {
   };
 }
 
+extension on gen_identity.DartDeviceJoinAuthorizationStatus {
+  DeviceJoinAuthorizationStatus _toModel() => switch (this) {
+    gen_identity.DartDeviceJoinAuthorizationStatus.active =>
+      DeviceJoinAuthorizationStatus.active,
+    gen_identity.DartDeviceJoinAuthorizationStatus.revoked =>
+      DeviceJoinAuthorizationStatus.revoked,
+  };
+}
+
 extension on gen_identity.DartDeviceJoinSessionSummary {
   DeviceJoinSessionSummary _toModel() => DeviceJoinSessionSummary(
     joinSessionId: joinSessionId,
@@ -2080,12 +2089,7 @@ extension on gen_identity.DartDeviceJoinAuthorizedDeviceSummary {
         protocolDeviceId: protocolDeviceId,
         signingKeyId: signingKeyId,
         e2eeKeyId: e2EeKeyId,
-        status: switch (status) {
-          gen_identity.DartDeviceJoinAuthorizationStatus.active =>
-            DeviceJoinAuthorizationStatus.active,
-          gen_identity.DartDeviceJoinAuthorizationStatus.revoked =>
-            DeviceJoinAuthorizationStatus.revoked,
-        },
+        status: status._toModel(),
         role: role._toModel(),
         managementReady: managementReady,
         isCurrent: isCurrent,
@@ -2110,8 +2114,23 @@ extension on gen_identity.DartDeviceJoinRequestNotice {
 extension on gen_identity.DartDeviceJoinRegistrySnapshot {
   DeviceJoinRegistrySnapshot _toModel() => DeviceJoinRegistrySnapshot(
     did: did,
+    registryVersion: registryVersion,
     devices: devices.map((device) => device._toModel()).toList(),
   );
+}
+
+extension on gen_identity.DartDeviceRegistryAuthorizedDeviceSummary {
+  DeviceRegistryAuthorizedDeviceSummary _toModel() =>
+      DeviceRegistryAuthorizedDeviceSummary(
+        protocolDeviceId: protocolDeviceId,
+        signingKeyId: signingKeyId,
+        e2eeKeyId: e2EeKeyId,
+        status: status._toModel(),
+        role: role._toModel(),
+        managementReady: managementReady,
+        isCurrent: isCurrent,
+        authGeneration: authGeneration,
+      );
 }
 
 extension on gen_identity.DartDeviceJoinRemoteState {

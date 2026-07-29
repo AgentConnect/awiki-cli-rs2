@@ -1,5 +1,7 @@
 use awiki_im_core::identity::{
-    DeviceJoinAccountVerificationGrant, DeviceJoinLocalPhase, DeviceJoinSessionView, DeviceJoinSide,
+    DeviceJoinAccountVerificationGrant, DeviceJoinAuthorizationStatus,
+    DeviceJoinAuthorizedDeviceSummary, DeviceJoinLocalPhase, DeviceJoinRole, DeviceJoinSessionView,
+    DeviceJoinSide, DeviceRegistryAuthorizedDeviceSummary,
 };
 use awiki_im_core::{
     IdentityRegistryPaths, ImCore, ImCoreConfig, ImCorePaths, LocalStatePaths, RuntimePaths,
@@ -84,6 +86,44 @@ fn host_session_projection_excludes_internal_join_checkpoints() {
             "unexpected field {forbidden}"
         );
     }
+}
+
+#[test]
+fn registry_generation_uses_a_dedicated_public_projection() {
+    let did = awiki_im_core::ids::Did::parse("did:wba:example.test:alice").unwrap();
+    let protocol_device_id = awiki_im_core::ids::ProtocolDeviceId::parse("device-current").unwrap();
+    let join_device = DeviceJoinAuthorizedDeviceSummary {
+        protocol_device_id: protocol_device_id.clone(),
+        signing_key_id: format!("{}#device-current-sign", did.as_str()),
+        e2ee_key_id: format!("{}#device-current-e2ee", did.as_str()),
+        status: DeviceJoinAuthorizationStatus::Active,
+        role: DeviceJoinRole::Admin,
+        management_ready: true,
+        is_current: true,
+    };
+    let registry_device = DeviceRegistryAuthorizedDeviceSummary {
+        protocol_device_id,
+        signing_key_id: format!("{}#device-current-sign", did.as_str()),
+        e2ee_key_id: format!("{}#device-current-e2ee", did.as_str()),
+        status: DeviceJoinAuthorizationStatus::Active,
+        role: DeviceJoinRole::Admin,
+        management_ready: true,
+        is_current: true,
+        auth_generation: u64::MAX.to_string(),
+    };
+
+    let join_json = serde_json::to_value(join_device).unwrap();
+    let registry_json = serde_json::to_value(registry_device).unwrap();
+    assert!(join_json.get("auth_generation").is_none());
+    assert_eq!(
+        registry_json
+            .get("auth_generation")
+            .and_then(serde_json::Value::as_str),
+        Some("18446744073709551615")
+    );
+    assert!(registry_json
+        .get("auth_generation")
+        .is_some_and(serde_json::Value::is_string));
 }
 
 #[test]

@@ -450,12 +450,37 @@ process-local handle; after real local user presence,
 same session/admin invalidates the previous unused handle; an in-flight
 confirmation cannot be replaced.
 
-`DeviceJoinSessionView`, progress, Registry, device, and pending summaries are
-safe projections. They exclude account/Join tokens, pairing secrets/private
-keys, root material, challenge/ciphertext details, `document_version`,
-`document_hash`, `registry_version`, and `auth_generation`. Those version and
-hash fields are AWiki domain-internal concurrency state, not cross-domain ANP
-fields and not host-facing Join DTOs.
+`DeviceJoinSessionView`、progress 和 pending summaries 是安全投影，不包含
+account/Join token、pairing secret/private key、root material、challenge/ciphertext
+细节、`document_version`、`document_hash`、`registry_version` 或
+`auth_generation`。
+
+显式 Registry 读取是唯一例外：`DeviceJoinRegistrySnapshot.registry_version` 和
+`DeviceRegistryAuthorizedDeviceSummary.auth_generation` 以 canonical decimal
+string 暴露，用于 App 的 display-only account-state cache 做单调版本替换。它们不是
+跨域 ANP 字段，也不能授权 Join、revoke 或 root transfer；这些安全动作必须继续通过
+Core fresh Registry 校验。User Service 当前的权威 Registry 实现以 `u64` 维护这两个值，
+但 Rust→Dart→Flutter 边界必须先转换为十进制 `String`，不能让 Dart/JavaScript 数值表示参与
+传输或比较。Registry snapshot 仍不暴露 document version/hash。
+
+```rust
+pub struct DeviceJoinRegistrySnapshot {
+    pub did: Did,
+    pub registry_version: String,
+    pub devices: Vec<DeviceRegistryAuthorizedDeviceSummary>,
+}
+
+pub struct DeviceRegistryAuthorizedDeviceSummary {
+    pub protocol_device_id: ProtocolDeviceId,
+    pub signing_key_id: String,
+    pub e2ee_key_id: String,
+    pub status: DeviceJoinAuthorizationStatus,
+    pub role: DeviceJoinRole,
+    pub management_ready: bool,
+    pub is_current: bool,
+    pub auth_generation: String,
+}
+```
 
 Host 观察到服务端 `consumed` 并不代表本地已经可用。Core 会验证最终 DID
 Document/Manifest，使用候选设备 signing key 发起新的 DID-WBA `get_me` 请求，并从标准

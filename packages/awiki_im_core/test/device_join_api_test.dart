@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:awiki_im_core/awiki_im_core.dart';
 import 'package:test/test.dart';
 
@@ -60,6 +62,60 @@ void main() {
     expect(session.joinSessionId, 'join-safe-id');
     expect(session.toString(), isNot(contains('document_hash')));
     expect(session.toString(), isNot(contains('registry_version')));
+  });
+
+  test('registry snapshot keeps monotonic versions as decimal strings', () {
+    const snapshot = DeviceJoinRegistrySnapshot(
+      did: 'did:wba:example.test:alice',
+      registryVersion: '18446744073709551615',
+      devices: [
+        DeviceRegistryAuthorizedDeviceSummary(
+          protocolDeviceId: 'device-current',
+          signingKeyId: 'did:wba:example.test:alice#device-current-sign',
+          e2eeKeyId: 'did:wba:example.test:alice#device-current-e2ee',
+          status: DeviceJoinAuthorizationStatus.active,
+          role: DeviceJoinRole.admin,
+          managementReady: true,
+          isCurrent: true,
+          authGeneration: '18446744073709551615',
+        ),
+      ],
+    );
+
+    expect(snapshot.registryVersion, '18446744073709551615');
+    expect(snapshot.devices.single.authGeneration, '18446744073709551615');
+    expect(snapshot.devices.single.isCurrent, isTrue);
+  });
+
+  test('generated Registry bridge preserves String version fields', () {
+    final generatedDto = File(
+      'lib/src/generated/dto/identity.dart',
+    ).readAsStringSync();
+    final generatedBridge = File(
+      'lib/src/generated/frb_generated.dart',
+    ).readAsStringSync();
+    final nativeFacade = File(
+      'lib/src/awiki_im_core_native.dart',
+    ).readAsStringSync();
+
+    expect(generatedDto, contains('final String registryVersion;'));
+    expect(generatedDto, contains('final String authGeneration;'));
+    expect(
+      generatedDto,
+      contains('List<DartDeviceRegistryAuthorizedDeviceSummary> devices;'),
+    );
+    expect(generatedDto, isNot(contains('final int registryVersion;')));
+    expect(generatedDto, isNot(contains('final int authGeneration;')));
+    expect(
+      generatedBridge,
+      contains('registryVersion: dco_decode_String(arr[1])'),
+    );
+    expect(
+      generatedBridge,
+      contains('authGeneration: dco_decode_String(arr[7])'),
+    );
+    expect(nativeFacade, contains('registryVersion: registryVersion'));
+    expect(nativeFacade, contains('authGeneration: authGeneration'));
   });
 
   test('verified request notice exposes only host-safe fields', () {

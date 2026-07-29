@@ -306,15 +306,18 @@ class DartDeviceJoinProgress {
 
 class DartDeviceJoinRegistrySnapshot {
   final String did;
-  final List<DartDeviceJoinAuthorizedDeviceSummary> devices;
+  final String registryVersion;
+  final List<DartDeviceRegistryAuthorizedDeviceSummary> devices;
 
   const DartDeviceJoinRegistrySnapshot({
     required this.did,
+    required this.registryVersion,
     required this.devices,
   });
 
   @override
-  int get hashCode => did.hashCode ^ devices.hashCode;
+  int get hashCode =>
+      did.hashCode ^ registryVersion.hashCode ^ devices.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -322,6 +325,7 @@ class DartDeviceJoinRegistrySnapshot {
       other is DartDeviceJoinRegistrySnapshot &&
           runtimeType == other.runtimeType &&
           did == other.did &&
+          registryVersion == other.registryVersion &&
           devices == other.devices;
 }
 
@@ -434,6 +438,53 @@ class DartDeviceJoinSessionSummary {
 }
 
 enum DartDeviceJoinSide { newDevice, admin }
+
+class DartDeviceRegistryAuthorizedDeviceSummary {
+  final String protocolDeviceId;
+  final String signingKeyId;
+  final String e2EeKeyId;
+  final DartDeviceJoinAuthorizationStatus status;
+  final DartDeviceJoinRole role;
+  final bool managementReady;
+  final bool isCurrent;
+  final String authGeneration;
+
+  const DartDeviceRegistryAuthorizedDeviceSummary({
+    required this.protocolDeviceId,
+    required this.signingKeyId,
+    required this.e2EeKeyId,
+    required this.status,
+    required this.role,
+    required this.managementReady,
+    required this.isCurrent,
+    required this.authGeneration,
+  });
+
+  @override
+  int get hashCode =>
+      protocolDeviceId.hashCode ^
+      signingKeyId.hashCode ^
+      e2EeKeyId.hashCode ^
+      status.hashCode ^
+      role.hashCode ^
+      managementReady.hashCode ^
+      isCurrent.hashCode ^
+      authGeneration.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDeviceRegistryAuthorizedDeviceSummary &&
+          runtimeType == other.runtimeType &&
+          protocolDeviceId == other.protocolDeviceId &&
+          signingKeyId == other.signingKeyId &&
+          e2EeKeyId == other.e2EeKeyId &&
+          status == other.status &&
+          role == other.role &&
+          managementReady == other.managementReady &&
+          isCurrent == other.isCurrent &&
+          authGeneration == other.authGeneration;
+}
 
 /// Safe host projection. Internal checkpoints, documents, proofs and
 /// generations remain inside Core.

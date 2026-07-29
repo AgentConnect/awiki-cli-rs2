@@ -22,13 +22,13 @@ use crate::dto::{
         DartDeviceJoinAuthorizedDeviceSummary, DartDeviceJoinPhase, DartDeviceJoinProgress,
         DartDeviceJoinRegistrySnapshot, DartDeviceJoinRemoteState, DartDeviceJoinRequestNotice,
         DartDeviceJoinRole, DartDeviceJoinSessionSummary, DartDeviceJoinSide,
-        DartDeviceRevokeResult, DartDeviceRevokeStatus, DartHandleRegistrationJoinRequired,
-        DartHandleRegistrationResult, DartIdentityDeviceMode, DartIdentityDeviceReadiness,
-        DartIdentityDeviceRole, DartIdentityDeviceSummary, DartIdentitySecretStorageBackend,
-        DartIdentitySummary, DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
-        DartIdentityVaultVerificationReport, DartLegacyUpgradeStatus, DartRootKeyTransferError,
-        DartRootKeyTransferPreparation, DartRootKeyTransferRecipientSummary,
-        DartRootKeyTransferSendResult,
+        DartDeviceRegistryAuthorizedDeviceSummary, DartDeviceRevokeResult, DartDeviceRevokeStatus,
+        DartHandleRegistrationJoinRequired, DartHandleRegistrationResult, DartIdentityDeviceMode,
+        DartIdentityDeviceReadiness, DartIdentityDeviceRole, DartIdentityDeviceSummary,
+        DartIdentitySecretStorageBackend, DartIdentitySummary, DartIdentityVaultMigrationReport,
+        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartLegacyUpgradeStatus,
+        DartRootKeyTransferError, DartRootKeyTransferPreparation,
+        DartRootKeyTransferRecipientSummary, DartRootKeyTransferSendResult,
     },
     message::{
         DartCommittedIncomingMessage, DartCommittedMessageSource, DartConversation,
@@ -200,6 +200,30 @@ impl From<im_core::identity::DeviceJoinAuthorizedDeviceSummary>
     }
 }
 
+impl From<im_core::identity::DeviceRegistryAuthorizedDeviceSummary>
+    for DartDeviceRegistryAuthorizedDeviceSummary
+{
+    fn from(value: im_core::identity::DeviceRegistryAuthorizedDeviceSummary) -> Self {
+        Self {
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            signing_key_id: value.signing_key_id,
+            e2ee_key_id: value.e2ee_key_id,
+            status: match value.status {
+                im_core::identity::DeviceJoinAuthorizationStatus::Active => {
+                    DartDeviceJoinAuthorizationStatus::Active
+                }
+                im_core::identity::DeviceJoinAuthorizationStatus::Revoked => {
+                    DartDeviceJoinAuthorizationStatus::Revoked
+                }
+            },
+            role: dart_device_join_role(value.role),
+            management_ready: value.management_ready,
+            is_current: value.is_current,
+            auth_generation: value.auth_generation,
+        }
+    }
+}
+
 impl From<im_core::identity::DeviceJoinRequestNotice> for DartDeviceJoinRequestNotice {
     fn from(value: im_core::identity::DeviceJoinRequestNotice) -> Self {
         Self {
@@ -221,6 +245,7 @@ impl From<im_core::identity::DeviceJoinRegistrySnapshot> for DartDeviceJoinRegis
     fn from(value: im_core::identity::DeviceJoinRegistrySnapshot) -> Self {
         Self {
             did: value.did.as_str().to_owned(),
+            registry_version: value.registry_version,
             devices: value.devices.into_iter().map(Into::into).collect(),
         }
     }
