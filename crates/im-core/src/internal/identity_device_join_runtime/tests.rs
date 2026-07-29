@@ -66,6 +66,7 @@ fn open_ready_admin_core(root: &Path) -> (crate::ImCore, serde_json::Value, crat
                 display_name: "Alice".to_owned(),
                 handle: "alice".to_owned(),
                 full_handle: "alice.awiki.test".to_owned(),
+                binding_generation: None,
                 jwt_token: "access-token".to_owned(),
                 did_document: Some(generated.did_document.clone()),
                 key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {

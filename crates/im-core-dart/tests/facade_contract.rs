@@ -9,6 +9,50 @@ fn dart_error_unsupported_has_stable_code() {
 }
 
 #[test]
+fn dart_profile_mapping_keeps_account_and_wns_versions_independent() {
+    let mut core =
+        im_core::identity::Profile::new(im_core::ids::Did::parse("did:example:alice").unwrap());
+    core.profile_version = Some("18446744073709551616".to_owned());
+    core.version_id = Some("wns-profile-7".to_owned());
+
+    let mapped = awiki_im_core::dto::profile::DartUserProfile::from(core);
+
+    assert_eq!(
+        mapped.profile_version.as_deref(),
+        Some("18446744073709551616")
+    );
+    assert_eq!(mapped.version_id.as_deref(), Some("wns-profile-7"));
+}
+
+#[test]
+fn dart_message_sync_diagnostics_mapping_is_typed_and_redacted() {
+    let mapped = awiki_im_core::dto::message::DartMessageSyncDiagnostics::from(
+        im_core::messages::MessageSyncDiagnostics {
+            last_success_at: Some("2026-07-29T00:00:00Z".to_owned()),
+            mode: im_core::messages::MessageSyncMode::Retryable,
+            pending_mutation_count: 2,
+            dirty_domains: vec![
+                im_core::messages::MessageSyncDirtyDomain::Messages,
+                im_core::messages::MessageSyncDirtyDomain::ReadState,
+            ],
+            retry_state: im_core::messages::MessageSyncRetryState::Scheduled,
+            next_retry_at: Some("2026-07-29T00:01:00Z".to_owned()),
+        },
+    );
+
+    assert_eq!(
+        mapped.mode,
+        awiki_im_core::dto::message::DartMessageSyncMode::Retryable
+    );
+    assert_eq!(mapped.pending_mutation_count, 2);
+    assert_eq!(
+        mapped.retry_state,
+        awiki_im_core::dto::message::DartMessageSyncRetryState::Scheduled
+    );
+    assert_eq!(mapped.dirty_domains.len(), 2);
+}
+
+#[test]
 fn dart_device_revoke_outcome_is_structured() {
     let error =
         awiki_im_core::dto::error::DartImError::from(im_core::ImError::DeviceRevokeOutcome {
@@ -336,6 +380,51 @@ fn sync_delta_result_preserves_diagnostics_without_next_checkpoint_setter() {
     assert!(dart.snapshot_required);
     assert_eq!(dart.retention_floor_event_seq.as_deref(), Some("10"));
     assert_eq!(dart.warnings, vec!["snapshot required"]);
+}
+
+#[test]
+fn sync_now_bridge_exposes_only_high_level_v2_outcome() {
+    let request = awiki_im_core::dto::message::DartMessageSyncRequest {
+        reason: "websocket_hint".to_owned(),
+        limit: Some(100),
+    };
+    let request_debug = format!("{request:?}");
+    assert!(request_debug.contains("websocket_hint"));
+    for forbidden in [
+        "account_id",
+        "device_id",
+        "cursor",
+        "stream_epoch",
+        "scan_seq",
+        "recovery_id",
+        "token",
+        "snapshot_scan_seq",
+        "server_cutoff",
+        "message_limit",
+        "returned_logical_messages",
+    ] {
+        assert!(!request_debug.contains(forbidden));
+    }
+
+    let core = im_core::messages::MessageSyncOutcome {
+        status: im_core::messages::MessageSyncStatus::RecoveryRequired,
+        events_applied: 0,
+        pages_fetched: 1,
+        messages_hydrated: 0,
+        duplicates_skipped: 0,
+        changed_conversation_ids: Vec::new(),
+        committed_incoming_messages: Vec::new(),
+        error_code: Some("SYNC_RECOVERY_REQUIRED".to_owned()),
+        warnings: vec!["recovery details remain Core-private".to_owned()],
+    };
+    let dart: awiki_im_core::dto::message::DartMessageSyncOutcome = core.into();
+    assert!(matches!(
+        dart.status,
+        awiki_im_core::dto::message::DartMessageSyncStatus::RecoveryRequired
+    ));
+    assert_eq!(dart.pages_fetched, 1);
+    assert_eq!(dart.error_code.as_deref(), Some("SYNC_RECOVERY_REQUIRED"));
+    assert!(dart.committed_incoming_messages.is_empty());
 }
 
 #[test]
@@ -994,6 +1083,51 @@ fn device_revoke_result_maps_only_safe_product_state() {
     ] {
         assert!(!debug.contains(forbidden));
     }
+}
+
+#[test]
+fn device_registry_snapshot_maps_decimal_versions_on_the_registry_only_surface() {
+    let snapshot = im_core::identity::DeviceJoinRegistrySnapshot {
+        did: im_core::ids::Did::parse("did:wba:example.test:alice").expect("did"),
+        registry_version: u64::MAX.to_string(),
+        devices: vec![im_core::identity::DeviceRegistryAuthorizedDeviceSummary {
+            protocol_device_id: im_core::ids::ProtocolDeviceId::parse("device-current")
+                .expect("device id"),
+            signing_key_id: "did:wba:example.test:alice#device-current-sign".to_owned(),
+            e2ee_key_id: "did:wba:example.test:alice#device-current-e2ee".to_owned(),
+            status: im_core::identity::DeviceJoinAuthorizationStatus::Active,
+            role: im_core::identity::DeviceJoinRole::Admin,
+            management_ready: true,
+            is_current: true,
+            auth_generation: u64::MAX.to_string(),
+        }],
+    };
+
+    let mapped: awiki_im_core::dto::identity::DartDeviceJoinRegistrySnapshot = snapshot.into();
+    assert_eq!(mapped.registry_version, u64::MAX.to_string());
+    assert_eq!(mapped.devices.len(), 1);
+    assert_eq!(mapped.devices[0].auth_generation, u64::MAX.to_string());
+    assert!(mapped.devices[0].is_current);
+}
+
+#[test]
+fn generated_registry_bridge_keeps_versions_as_strings() {
+    let generated = include_str!("../src/frb_generated.rs");
+    let snapshot_decoder = generated
+        .split("impl SseDecode for crate::dto::identity::DartDeviceJoinRegistrySnapshot")
+        .nth(1)
+        .and_then(|source| source.split("impl SseDecode").next())
+        .expect("generated Registry snapshot decoder");
+    assert!(snapshot_decoder.contains("let mut var_registryVersion = <String>::sse_decode"));
+    assert!(!snapshot_decoder.contains("var_registryVersion = <u64>::sse_decode"));
+
+    let device_decoder = generated
+        .split("impl SseDecode for crate::dto::identity::DartDeviceRegistryAuthorizedDeviceSummary")
+        .nth(1)
+        .and_then(|source| source.split("impl SseDecode").next())
+        .expect("generated Registry device decoder");
+    assert!(device_decoder.contains("let mut var_authGeneration = <String>::sse_decode"));
+    assert!(!device_decoder.contains("var_authGeneration = <u64>::sse_decode"));
 }
 
 #[test]

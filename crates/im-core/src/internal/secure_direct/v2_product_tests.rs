@@ -360,6 +360,7 @@ impl RuntimeP5TestClientFixture {
                     display_name: "Runtime P5 test".to_owned(),
                     handle: label.to_owned(),
                     full_handle: format!("{label}.awiki.test"),
+                    binding_generation: None,
                     jwt_token: "runtime-p5-device-token".to_owned(),
                     did_document: Some(generated.did_document.clone()),
                     key_mode: SaveIdentityKeyMode::VNext {

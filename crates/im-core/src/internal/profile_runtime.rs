@@ -194,6 +194,7 @@ pub(crate) fn profile_from_value(
     let profile_uri = string_value(raw, &["profile_uri", "profile_url"]);
     let subject_type = string_value(raw, &["subject_type"]);
     let updated_at = string_value(raw, &["updated", "updated_at", "update_time", "updatedAt"]);
+    let profile_version = profile_version_value(raw)?;
     let version_id = string_value(raw, &["versionId", "version_id"]);
     let ttl = u64_value(raw.get("ttl"));
     let proof = raw.get("proof").cloned();
@@ -212,11 +213,29 @@ pub(crate) fn profile_from_value(
         profile_uri,
         subject_type,
         updated_at,
+        profile_version,
         version_id,
         ttl,
         proof,
         metadata,
     })
+}
+
+fn profile_version_value(raw: &Value) -> crate::ImResult<Option<String>> {
+    let Some(value) = raw.get("profile_version") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Value::String(value) = value else {
+        return Err(crate::ImError::invalid_input(
+            Some("profile_version".to_owned()),
+            "profile_version must be a canonical non-negative decimal string",
+        ));
+    };
+    crate::internal::local_state::sync_v2::validate_decimal("profile_version", value)?;
+    Ok(Some(value.clone()))
 }
 
 fn string_value(raw: &Value, keys: &[&str]) -> Option<String> {
@@ -388,5 +407,34 @@ fn metadata_value(value: Option<&Value>) -> Vec<crate::identity::ProfileAttribut
             })
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::profile_version_value;
+    use serde_json::json;
+
+    #[test]
+    fn profile_version_requires_an_independent_canonical_decimal_string() {
+        assert_eq!(
+            profile_version_value(&json!({
+                "profile_version": "0",
+                "versionId": "wns-profile-7"
+            }))
+            .unwrap()
+            .as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            profile_version_value(&json!({ "versionId": "wns-profile-7" })).unwrap(),
+            None
+        );
+        assert_eq!(
+            profile_version_value(&json!({ "profile_version": null })).unwrap(),
+            None
+        );
+        assert!(profile_version_value(&json!({ "profile_version": "01" })).is_err());
+        assert!(profile_version_value(&json!({ "profile_version": 1 })).is_err());
     }
 }

@@ -347,6 +347,24 @@ pub struct DeviceJoinAuthorizedDeviceSummary {
     pub is_current: bool,
 }
 
+/// Registry-only device projection.
+///
+/// Unlike Join progress, an authoritative Registry snapshot carries the
+/// device authorization generation required for monotonic account-state cache
+/// replacement. The generation remains a canonical decimal string at the
+/// public boundary and must not be used by hosts to authorize device actions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceRegistryAuthorizedDeviceSummary {
+    pub protocol_device_id: crate::ids::ProtocolDeviceId,
+    pub signing_key_id: String,
+    pub e2ee_key_id: String,
+    pub status: DeviceJoinAuthorizationStatus,
+    pub role: DeviceJoinRole,
+    pub management_ready: bool,
+    pub is_current: bool,
+    pub auth_generation: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceJoinRequestNotice {
     pub event_id: String,
@@ -364,7 +382,8 @@ pub struct DeviceJoinRequestNotice {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceJoinRegistrySnapshot {
     pub did: crate::ids::Did,
-    pub devices: Vec<DeviceJoinAuthorizedDeviceSummary>,
+    pub registry_version: String,
+    pub devices: Vec<DeviceRegistryAuthorizedDeviceSummary>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -879,11 +898,36 @@ fn public_registry(
 ) -> crate::ImResult<DeviceJoinRegistrySnapshot> {
     Ok(DeviceJoinRegistrySnapshot {
         did: value.did,
+        registry_version: value.checkpoint.registry_version.to_string(),
         devices: value
             .devices
             .into_iter()
-            .map(|device| public_device(device, current))
+            .map(|device| public_registry_device(device, current))
             .collect::<crate::ImResult<Vec<_>>>()?,
+    })
+}
+
+fn public_registry_device(
+    value: crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary,
+    current: Option<&crate::ids::ProtocolDeviceId>,
+) -> crate::ImResult<DeviceRegistryAuthorizedDeviceSummary> {
+    let protocol_device_id = crate::ids::ProtocolDeviceId::parse(&value.device_id)?;
+    Ok(DeviceRegistryAuthorizedDeviceSummary {
+        is_current: current.is_some_and(|current| current == &protocol_device_id),
+        protocol_device_id,
+        signing_key_id: value.signing_key_id,
+        e2ee_key_id: value.e2ee_key_id,
+        status: match value.status {
+            crate::internal::identity_device_state::DeviceAuthorizationStatus::Active => {
+                DeviceJoinAuthorizationStatus::Active
+            }
+            crate::internal::identity_device_state::DeviceAuthorizationStatus::Revoked => {
+                DeviceJoinAuthorizationStatus::Revoked
+            }
+        },
+        role: public_role(value.role),
+        management_ready: value.management_ready,
+        auth_generation: value.auth_generation.to_string(),
     })
 }
 
@@ -1067,5 +1111,55 @@ mod tests {
                 expected_current
             );
         }
+    }
+
+    #[test]
+    fn registry_projection_exposes_decimal_versions_without_expanding_join_progress() {
+        let snapshot = public_registry(
+            crate::internal::identity_device_join_runtime::DeviceJoinRemoteRegistry {
+                did: crate::ids::Did::parse("did:wba:awiki.test:user:alice:e1_test").unwrap(),
+                checkpoint:
+                    crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                        document_version: 9,
+                        document_hash: "sha256:document".to_owned(),
+                        registry_version: u64::MAX,
+                    },
+                devices: vec![
+                    crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                        device_id: "dev-current".to_owned(),
+                        signing_key_id:
+                            "did:wba:awiki.test:user:alice:e1_test#dev-current-sign".to_owned(),
+                        e2ee_key_id:
+                            "did:wba:awiki.test:user:alice:e1_test#dev-current-e2ee".to_owned(),
+                        status:
+                            crate::internal::identity_device_state::DeviceAuthorizationStatus::Active,
+                        role:
+                            crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
+                        management_ready: true,
+                        auth_generation: u64::MAX,
+                    },
+                ],
+            },
+            Some(&crate::ids::ProtocolDeviceId::parse("dev-current").unwrap()),
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.registry_version, u64::MAX.to_string());
+        assert_eq!(snapshot.devices[0].auth_generation, u64::MAX.to_string());
+        assert!(snapshot.devices[0].is_current);
+
+        let json = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(
+            json.get("registry_version")
+                .and_then(serde_json::Value::as_str),
+            Some("18446744073709551615")
+        );
+        assert_eq!(
+            json.pointer("/devices/0/auth_generation")
+                .and_then(serde_json::Value::as_str),
+            Some("18446744073709551615")
+        );
+        assert!(json.get("document_version").is_none());
+        assert!(json.get("document_hash").is_none());
     }
 }

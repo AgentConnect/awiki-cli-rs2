@@ -29,37 +29,6 @@ ON sync_state(owner_identity_id, checkpoint_kind, updated_at DESC);
         .unwrap();
 }
 
-fn prepare_release_predecessor_for_test(connection: &Connection, version: i64) {
-    connection
-        .execute_batch(
-            r#"
-DROP INDEX IF EXISTS idx_messages_owner_hydration_conversation_seq;
-ALTER TABLE messages DROP COLUMN hydration_state;
-"#,
-        )
-        .unwrap();
-    replace_sync_state_with_release_shape(connection);
-    if version < SYSTEM_NOTIFICATION_SCHEMA_VERSION {
-        connection
-            .execute_batch(
-                "DROP TABLE system_notification_receipts;
-                 DROP TABLE system_notification_join_state;",
-            )
-            .unwrap();
-    }
-    if version < ROOT_IMPORT_COORDINATOR_SCHEMA_VERSION {
-        connection
-            .execute_batch(
-                "DROP TABLE identity_root_import_completion_v1;
-                 DROP TABLE identity_root_transfer_sender_v1;",
-            )
-            .unwrap();
-    }
-    connection
-        .pragma_update(None, "user_version", version)
-        .unwrap();
-}
-
 #[test]
 fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     let db = Connection::open_in_memory().unwrap();
@@ -82,6 +51,14 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("table", "direct_e2ee_one_time_prekeys"),
         ("table", "attachment_manifest_cache"),
         ("table", "sync_state"),
+        ("table", "sync_installation_state"),
+        ("table", "identity_account_bindings"),
+        ("table", "message_sync_state"),
+        ("table", "sync_applied_events"),
+        ("table", "sync_recovery_state"),
+        ("table", "local_mutation_outbox"),
+        ("table", "sync_thread_bindings"),
+        ("table", "sync_remote_read_states"),
         ("table", "thread_read_state"),
         ("table", "message_identity_aliases"),
         ("table", "direct_peer_routes"),
@@ -111,6 +88,13 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     assert_index_exists(&db, "idx_direct_e2ee_one_time_prekeys_owner_status");
     assert_index_exists(&db, "idx_attachment_manifest_cache_owner_thread");
     assert_index_exists(&db, "idx_sync_state_owner_kind");
+    assert_index_exists(&db, "identity_account_device_idx");
+    assert_index_exists(&db, "message_sync_state_account_device_idx");
+    assert_index_exists(&db, "sync_applied_events_prune_idx");
+    assert_index_exists(&db, "sync_applied_events_applied_at_idx");
+    assert_index_exists(&db, "sync_recovery_state_status_idx");
+    assert_index_exists(&db, "local_mutation_outbox_drain_idx");
+    assert_index_exists(&db, "sync_thread_bindings_conversation_idx");
     assert_index_exists(&db, "idx_thread_read_state_owner_pending");
     assert_index_exists(&db, "idx_thread_read_state_owner_conversation");
     assert_index_exists(&db, "idx_message_identity_aliases_owner_canonical");
@@ -212,6 +196,15 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
                 "scope",
                 "checkpoint_kind",
             ],
+        ),
+        ("sync_installation_state", vec!["owner_identity_id"]),
+        ("identity_account_bindings", vec!["owner_identity_id"]),
+        ("message_sync_state", vec!["owner_identity_id"]),
+        ("sync_applied_events", vec!["owner_identity_id", "event_id"]),
+        ("sync_recovery_state", vec!["owner_identity_id"]),
+        (
+            "local_mutation_outbox",
+            vec!["owner_identity_id", "mutation_id"],
         ),
         (
             "thread_read_state",
@@ -1269,8 +1262,7 @@ fn local_state_schema_rejects_unsupported_versions() {
 #[test]
 fn local_state_schema_atomically_upgrades_v28_with_system_notification_tables() {
     let db = Connection::open_in_memory().unwrap();
-    create_schema(&db, true).unwrap();
-    prepare_release_predecessor_for_test(&db, 28);
+    install_v28_fixture(&db);
 
     ensure_schema(&db).unwrap();
 
@@ -1290,13 +1282,14 @@ fn local_state_schema_atomically_upgrades_v28_with_system_notification_tables() 
             .unwrap();
         assert_eq!(count, 1);
     }
+    assert_common_v28_data_preserved(&db);
+    assert_merged_v34_shape(&db);
 }
 
 #[test]
 fn local_state_schema_atomically_upgrades_v29_with_root_import_tables() {
     let db = Connection::open_in_memory().unwrap();
-    create_schema(&db, true).unwrap();
-    prepare_release_predecessor_for_test(&db, 29);
+    install_v29_fixture(&db);
 
     ensure_schema(&db).unwrap();
 
@@ -1314,13 +1307,15 @@ fn local_state_schema_atomically_upgrades_v29_with_root_import_tables() {
             .unwrap();
         assert_eq!(count, 1);
     }
+    assert_common_v28_data_preserved(&db);
+    assert_v29_notification_data_preserved(&db);
+    assert_merged_v34_shape(&db);
 }
 
 #[test]
 fn local_state_schema_atomically_upgrades_v30_with_p5_retirement_boundary() {
     let db = Connection::open_in_memory().unwrap();
-    create_schema(&db, true).unwrap();
-    prepare_release_predecessor_for_test(&db, 30);
+    install_v30_fixture(&db);
 
     ensure_schema(&db).unwrap();
 
@@ -1340,16 +1335,34 @@ fn local_state_schema_atomically_upgrades_v30_with_p5_retirement_boundary() {
             .unwrap();
         assert_eq!(count, 1);
     }
+    assert_common_v28_data_preserved(&db);
+    assert_v29_notification_data_preserved(&db);
+    assert_v30_root_import_data_preserved(&db);
+    assert_direct_v2_ordinary_data_preserved(&db);
+    assert_retired_direct_v2_private_data_removed(&db);
+    assert_merged_v34_shape(&db);
 }
 
 #[test]
-fn local_state_release_schema_v31_upgrades_to_v32_and_keeps_root_import_tables() {
+fn local_state_schema_upgrades_true_v31_fixture_and_is_idempotent() {
     let db = Connection::open_in_memory().unwrap();
-    create_schema(&db, true).unwrap();
-    prepare_release_predecessor_for_test(&db, 31);
+    install_v31_fixture(&db);
 
     ensure_schema(&db).unwrap();
     assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_common_v28_data_preserved(&db);
+    assert_v29_notification_data_preserved(&db);
+    assert_v30_root_import_data_preserved(&db);
+    assert_direct_v2_ordinary_data_preserved(&db);
+    assert_retired_direct_v2_private_data_removed(&db);
+    assert_merged_v34_shape(&db);
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_common_v28_data_preserved(&db);
+    assert_v29_notification_data_preserved(&db);
+    assert_v30_root_import_data_preserved(&db);
+    assert_direct_v2_ordinary_data_preserved(&db);
 
     for table in [
         "identity_root_import_completion_v1",
@@ -1395,8 +1408,7 @@ fn local_state_development_schema_v31_fails_closed_without_mutation() {
 #[test]
 fn local_state_schema_v31_rejects_incomplete_release_shape_without_mutation() {
     let db = Connection::open_in_memory().unwrap();
-    create_schema(&db, true).unwrap();
-    prepare_release_predecessor_for_test(&db, 31);
+    install_v31_fixture(&db);
     db.execute("DROP TABLE identity_root_transfer_sender_v1", [])
         .unwrap();
 
@@ -1408,6 +1420,154 @@ fn local_state_schema_v31_rejects_incomplete_release_shape_without_mutation() {
     assert_eq!(current_schema_version(&db).unwrap(), 31);
     assert!(!has_column(&db, "messages", "hydration_state").unwrap());
     assert!(has_column(&db, "sync_state", "owner_did").unwrap());
+}
+
+#[test]
+fn local_state_schema_upgrades_true_v32_fixture_through_v34_and_is_idempotent() {
+    let db = Connection::open_in_memory().unwrap();
+    install_v32_fixture(&db);
+
+    assert_eq!(current_schema_version(&db).unwrap(), 32);
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'sync_installation_state'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0,
+        "a true v32 fixture must not contain the v33 installation table"
+    );
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_merged_v34_shape(&db);
+    assert_eq!(
+        db.query_row(
+            "SELECT scan_seq FROM message_sync_state
+             WHERE owner_identity_id = 'owner-v32'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "42"
+    );
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_merged_v34_shape(&db);
+}
+
+#[test]
+fn local_state_schema_converges_current_v32_shape_without_losing_checkpoint_data() {
+    let db = Connection::open_in_memory().unwrap();
+    install_current_reliable_sync_fixture(&db, 32);
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_merged_v34_shape(&db);
+    assert_eq!(
+        db.query_row(
+            "SELECT event_seq FROM sync_state
+             WHERE owner_identity_id = 'owner-current'
+               AND sync_subject_id = 'did:example:current'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "73"
+    );
+    assert_eq!(
+        hydration_state_for_owner(&db, "owner-current", "current-message"),
+        "hydrated"
+    );
+}
+
+#[test]
+fn local_state_schema_converges_current_and_release_v33_shapes() {
+    let current = Connection::open_in_memory().unwrap();
+    install_current_reliable_sync_fixture(&current, 33);
+    ensure_schema(&current).unwrap();
+    assert_eq!(current_schema_version(&current).unwrap(), SCHEMA_VERSION);
+    assert_merged_v34_shape(&current);
+    assert_eq!(
+        current
+            .query_row(
+                "SELECT event_seq FROM sync_state
+                 WHERE owner_identity_id = 'owner-current'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "73"
+    );
+
+    let release = Connection::open_in_memory().unwrap();
+    install_v33_fixture(&release);
+    ensure_schema(&release).unwrap();
+    assert_eq!(current_schema_version(&release).unwrap(), SCHEMA_VERSION);
+    assert_merged_v34_shape(&release);
+    assert_eq!(
+        release
+            .query_row(
+                "SELECT scan_seq FROM message_sync_state
+                 WHERE owner_identity_id = 'owner-v32'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "42"
+    );
+}
+
+#[test]
+fn local_state_schema_converges_single_side_v34_shapes_idempotently() {
+    let current = Connection::open_in_memory().unwrap();
+    install_current_reliable_sync_fixture(&current, 34);
+    ensure_schema(&current).unwrap();
+    ensure_schema(&current).unwrap();
+    assert_eq!(current_schema_version(&current).unwrap(), SCHEMA_VERSION);
+    assert_merged_v34_shape(&current);
+
+    let release = Connection::open_in_memory().unwrap();
+    install_v34_fixture(&release);
+    ensure_schema(&release).unwrap();
+    ensure_schema(&release).unwrap();
+    assert_eq!(current_schema_version(&release).unwrap(), SCHEMA_VERSION);
+    assert_merged_v34_shape(&release);
+    assert_eq!(
+        release
+            .query_row(
+                "SELECT scan_seq FROM message_sync_state
+                 WHERE owner_identity_id = 'owner-v32'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "42"
+    );
+}
+
+#[test]
+fn local_state_schema_v27_remains_preopen_upgrade_gate() {
+    let db = Connection::open_in_memory().unwrap();
+    replace_sync_state_with_release_shape(&db);
+    db.pragma_update(None, "user_version", 27).unwrap();
+
+    assert!(matches!(
+        ensure_schema(&db),
+        Err(crate::ImError::LocalStateUpgradeRequired {
+            from_version: 27,
+            target_version: SCHEMA_VERSION,
+        })
+    ));
+    assert!(!column_exists(
+        &db,
+        "identity_account_bindings",
+        "owner_identity_id"
+    ));
 }
 
 #[test]
@@ -1521,4 +1681,606 @@ fn message_wire_identity(db: &Connection, message_id: &str) -> (String, String) 
         |row| Ok((row.get(0)?, row.get(1)?)),
     )
     .unwrap()
+}
+
+fn install_v28_fixture(db: &Connection) {
+    install_complete_v28_schema(db);
+    db.execute_batch(
+        r#"
+INSERT INTO messages (
+    msg_id, owner_identity_id, owner_did, conversation_id,
+    wire_thread_kind, wire_thread_ref, wire_identity_resolution_state, thread_id,
+    direction, sender_did, receiver_did, group_id, group_did, content_type,
+    content, server_seq, sent_at, stored_at, is_e2ee, is_read, sender_name,
+    mentions_current_user, credential_name
+) VALUES (
+    'did:example:legacy-group:411', 'owner-legacy', 'did:example:legacy',
+    'group:did:example:legacy-group', 'group', 'did:example:legacy-group',
+    'resolved', 'group:did:example:legacy-group', 0,
+    'did:example:peer', 'did:example:legacy', 'legacy-group',
+    'did:example:legacy-group', 'text/plain', 'legacy-v28-message', 411,
+    '2026-07-20T00:00:00Z', '2026-07-20T00:00:01Z', 0, 0, 'Legacy peer',
+    1, 'alice'
+);
+
+INSERT INTO conversation_summaries (
+    owner_identity_id, owner_did, conversation_id, thread_id,
+    message_count, unread_count, unread_mention_count,
+    first_unread_mention_message_id, last_message_id, last_message_at,
+    last_content, last_content_type, last_sender_did, last_sender_name,
+    last_payload_json, group_id, group_did, updated_at
+) VALUES (
+    'owner-legacy', 'did:example:legacy',
+    'group:did:example:legacy-group', 'group:did:example:legacy-group',
+    1, 1, 1, 'did:example:legacy-group:411', 'did:example:legacy-group:411',
+    '2026-07-20T00:00:00Z',
+    'legacy-v28-message', 'text/plain', 'did:example:peer', 'Legacy peer',
+    '{"fixture":"v28"}', 'legacy-group', 'did:example:legacy-group',
+    '2026-07-20T00:00:01Z'
+);
+
+INSERT INTO conversation_registry (
+    owner_identity_id, owner_did, conversation_id, thread_kind, thread_id,
+    activity_at, created_at, updated_at, is_active, canonical_group_did,
+    lifecycle_state, resolution_state
+) VALUES (
+    'owner-legacy', 'did:example:legacy',
+    'group:did:example:legacy-group', 'group', 'group:did:example:legacy-group',
+    '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z',
+    '2026-07-20T00:00:01Z', 1, 'did:example:legacy-group',
+    'active', 'resolved'
+);
+"#,
+    )
+    .unwrap();
+    db.execute(
+        r#"
+INSERT INTO sync_state
+    (owner_identity_id, owner_did, scope, checkpoint_kind, event_seq, updated_at)
+VALUES ('owner-legacy', 'did:example:legacy', 'global', 'sync_delta', '912', 'old')"#,
+        [],
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 28).unwrap();
+}
+
+fn install_v29_fixture(db: &Connection) {
+    install_v28_fixture(db);
+    db.execute_batch(crate::internal::system_notification::store::SYSTEM_NOTIFICATION_SCHEMA_SQL)
+        .unwrap();
+    db.execute(
+        r#"
+INSERT INTO system_notification_receipts
+    (owner_identity_id, owner_did, protocol_device_id, event_id, join_session_id,
+     session_revision, payload_hash, proof_hash, first_seen_at, expires_at)
+VALUES ('owner-legacy', 'did:example:legacy', 'device-1', 'event-old', 'join-old',
+        1, 'payload', 'proof', 'old', 'later')"#,
+        [],
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 29).unwrap();
+}
+
+fn install_v30_fixture(db: &Connection) {
+    install_v29_fixture(db);
+    db.execute_batch(ROOT_IMPORT_COORDINATOR_SQL).unwrap();
+    db.execute(
+        r#"
+INSERT INTO identity_root_transfer_sender_v1
+    (owner_identity_id, owner_did, local_device_id, message_id, recipient_device_id,
+     phase, created_at, updated_at)
+VALUES ('owner-legacy', 'did:example:legacy', 'device-1', 'message-old', 'device-2',
+        'pending_delivery', 'old', 'old')"#,
+        [],
+    )
+    .unwrap();
+    install_direct_v2_fixture(db, true);
+    db.pragma_update(None, "user_version", 30).unwrap();
+}
+
+fn install_v31_fixture(db: &Connection) {
+    install_v29_fixture(db);
+    db.execute_batch(ROOT_IMPORT_COORDINATOR_SQL).unwrap();
+    db.execute(
+        r#"
+INSERT INTO identity_root_transfer_sender_v1
+    (owner_identity_id, owner_did, local_device_id, message_id, recipient_device_id,
+     phase, created_at, updated_at)
+VALUES ('owner-legacy', 'did:example:legacy', 'device-1', 'message-old', 'device-2',
+        'pending_delivery', 'old', 'old')"#,
+        [],
+    )
+    .unwrap();
+    install_direct_v2_fixture(db, false);
+    db.pragma_update(None, "user_version", 31).unwrap();
+}
+
+fn install_v32_fixture(db: &Connection) {
+    install_v31_fixture(db);
+    db.execute_batch(crate::internal::local_state::sync_v2::SYNC_V2_SCHEMA_SQL)
+        .unwrap();
+    db.execute(
+        r#"
+INSERT INTO identity_account_bindings
+    (owner_identity_id, account_id, handle_scope, current_did, device_id,
+     identity_generation, device_auth_generation, created_at, updated_at)
+VALUES
+    ('owner-v32', 'account-v32', NULL, 'did:example:v32', 'device-v32',
+     '1', '1', 1, 1)"#,
+        [],
+    )
+    .unwrap();
+    db.execute(
+        r#"
+INSERT INTO message_sync_state
+    (owner_identity_id, account_id, device_id, device_auth_generation,
+     stream_epoch, scan_seq, bootstrap_state, updated_at)
+VALUES
+    ('owner-v32', 'account-v32', 'device-v32', '1',
+     '1', '42', 'active', 1)"#,
+        [],
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 32).unwrap();
+}
+
+fn install_v33_fixture(db: &Connection) {
+    install_v32_fixture(db);
+    crate::internal::local_state::sync_v2::create_installation_schema(db).unwrap();
+    db.pragma_update(None, "user_version", 33).unwrap();
+}
+
+fn install_v34_fixture(db: &Connection) {
+    install_v33_fixture(db);
+    db.execute_batch(crate::internal::local_state::sync_v2::READ_RECOVERY_SCHEMA_SQL)
+        .unwrap();
+    db.pragma_update(None, "user_version", 34).unwrap();
+}
+
+fn install_current_reliable_sync_fixture(db: &Connection, version: i64) {
+    create_schema(db, true).unwrap();
+    db.execute_batch(
+        r#"
+DROP TABLE sync_remote_read_states;
+DROP TABLE sync_thread_bindings;
+DROP TABLE local_mutation_outbox;
+DROP TABLE sync_recovery_state;
+DROP TABLE sync_applied_events;
+DROP TABLE message_sync_state;
+DROP TABLE identity_account_bindings;
+DROP TABLE sync_installation_state;
+ALTER TABLE thread_read_state DROP COLUMN remote_state_version;
+
+INSERT INTO sync_state
+    (owner_identity_id, sync_subject_id, scope, checkpoint_kind, event_seq, updated_at)
+VALUES
+    ('owner-current', 'did:example:current', 'global', 'sync_delta', '73', 'old');
+
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id,
+     content_type, content, server_seq, hydration_state, stored_at, credential_name)
+VALUES
+    ('current-message', 'owner-current', 'did:example:current',
+     'dm:did:example:peer', 'dm:did:example:peer', 'text/plain',
+     'current-body', 73, 'hydrated', 'old', 'current');
+"#,
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", version).unwrap();
+}
+
+/// Historical v28 schema builder, copied from the v28 create path at
+/// `0e543604`. It deliberately does not call the current `create_schema`,
+/// because doing so and merely rewriting `user_version` would manufacture
+/// v29-v32 objects that never existed in a real v28 database.
+fn install_complete_v28_schema(db: &Connection) {
+    create_identity_owned_schema(db, IdentityOwnedSchemaTableMode::Final).unwrap();
+    db.execute_batch("ALTER TABLE messages DROP COLUMN hydration_state;")
+        .unwrap();
+    ensure_column(db, "contacts", "peer_persona_id", "TEXT").unwrap();
+    ensure_group_member_identity_columns(db).unwrap();
+    db.execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL).unwrap();
+    ensure_column(
+        db,
+        "attachment_manifest_cache",
+        "wire_message_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    .unwrap();
+    replace_sync_state_with_release_shape(db);
+    db.execute_batch(THREAD_READ_STATE_SQL).unwrap();
+    db.execute_batch(MESSAGE_IDENTITY_ALIASES_SQL).unwrap();
+    db.execute_batch(crate::internal::group_rebind_recovery::GROUP_REBIND_RECOVERY_SQL)
+        .unwrap();
+    db.execute_batch(DIRECT_PEER_ROUTES_SQL).unwrap();
+    ensure_column(db, "direct_peer_routes", "peer_persona_id", "TEXT").unwrap();
+    ensure_column(db, "direct_peer_routes", "authority_namespace", "TEXT").unwrap();
+    assert!(!ensure_message_projection_columns(db).unwrap());
+    crate::internal::local_state::conversation_summaries::create_schema(db).unwrap();
+    crate::internal::local_state::conversation_registry::create_schema(db).unwrap();
+    crate::internal::local_state::peer_personas::create_schema(db).unwrap();
+    crate::internal::local_state::peer_identifiers::create_schema(db).unwrap();
+    crate::internal::local_state::peer_profiles::create_schema(db).unwrap();
+    crate::internal::local_state::conversation_aliases::create_schema(db).unwrap();
+    crate::internal::local_state::inbound_resolution_backlog::create_schema(db).unwrap();
+    for statement in VIEW_STATEMENTS {
+        db.execute(statement, []).unwrap();
+    }
+
+    for table in [
+        "contacts",
+        "contact_handle_bindings",
+        "messages",
+        "conversation_summaries",
+        "conversation_registry",
+        "groups",
+        "group_members",
+        "relationship_events",
+        "e2ee_outbox",
+        "identity_did_history",
+        "direct_e2ee_sessions",
+        "direct_e2ee_signed_prekeys",
+        "direct_e2ee_one_time_prekeys",
+        "attachment_manifest_cache",
+        "sync_state",
+        "thread_read_state",
+        "message_identity_aliases",
+        "direct_peer_routes",
+        "peer_personas",
+        "peer_identifiers",
+        "peer_profiles",
+        "conversation_aliases",
+        "inbound_resolution_backlog",
+        "group_rebind_outbox",
+        "group_rebind_p6_jobs",
+    ] {
+        assert_schema_object_exists(db, "table", table);
+    }
+    for view in ["threads", "inbox", "outbox"] {
+        assert_schema_object_exists(db, "view", view);
+    }
+    for later_table in [
+        "system_notification_receipts",
+        "identity_root_import_completion_v1",
+        "sync_installation_state",
+        "identity_account_bindings",
+        "message_sync_state",
+    ] {
+        let count = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [later_table],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "v28 fixture unexpectedly contains {later_table}");
+    }
+}
+
+fn install_direct_v2_fixture(db: &Connection, include_retired_private_delivery: bool) {
+    db.execute_batch(crate::internal::secure_direct::v2_store::DIRECT_E2EE_V2_SCHEMA)
+        .unwrap();
+    db.execute_batch(
+        r#"
+INSERT INTO direct_e2ee_v2_sessions (
+    owner_identity_id, owner_did, local_device_id, peer_did, peer_device_id,
+    session_id, state_blob, revision, disabled, created_at, updated_at
+) VALUES (
+    'owner-legacy', 'did:example:legacy', 'device-1',
+    'did:example:peer', 'peer-device', 'ordinary-session',
+    X'01', 7, 0, 'old', 'old'
+);
+
+INSERT INTO direct_e2ee_v2_pending (
+    owner_identity_id, owner_did, local_device_id, peer_did, peer_device_id,
+    operation_id, message_id, session_id, session_revision, pending_blob,
+    created_at, updated_at
+) VALUES (
+    'owner-legacy', 'did:example:legacy', 'device-1',
+    'did:example:peer', 'peer-device', 'ordinary-operation',
+    'ordinary-message', 'ordinary-session', 7, X'02', 'old', 'old'
+);
+
+INSERT INTO direct_e2ee_v2_prekey_bundles (
+    owner_identity_id, owner_did, local_device_id, bundle_id, bundle_json,
+    signed_prekey_private_blob, status, created_at, updated_at
+) VALUES (
+    'owner-legacy', 'did:example:legacy', 'device-1', 'ordinary-bundle',
+    '{"fixture":"v30"}', X'03', 'published', 'old', 'old'
+);
+"#,
+    )
+    .unwrap();
+    if !include_retired_private_delivery {
+        return;
+    }
+    db.execute_batch(
+        r#"
+CREATE TABLE direct_e2ee_v2_private_outbound (
+    owner_identity_id TEXT NOT NULL,
+    local_device_id   TEXT NOT NULL,
+    operation_id      TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, local_device_id, operation_id)
+);
+CREATE TABLE direct_e2ee_v2_private_outbound_tombstones (
+    operation_id TEXT PRIMARY KEY
+);
+
+INSERT INTO direct_e2ee_v2_sessions (
+    owner_identity_id, owner_did, local_device_id, peer_did, peer_device_id,
+    session_id, state_blob, revision, disabled, created_at, updated_at
+) VALUES (
+    'owner-legacy', 'did:example:legacy', 'device-1',
+    'did:example:legacy', 'device-2', 'retired-session',
+    X'10', 1, 0, 'old', 'old'
+);
+
+INSERT INTO direct_e2ee_v2_pending (
+    owner_identity_id, owner_did, local_device_id, peer_did, peer_device_id,
+    operation_id, message_id, session_id, session_revision, pending_blob,
+    created_at, updated_at
+) VALUES (
+    'owner-legacy', 'did:example:legacy', 'device-1',
+    'did:example:legacy', 'device-2', 'retired-operation',
+    'retired-message', 'retired-session', 1, X'11', 'old', 'old'
+);
+
+INSERT INTO direct_e2ee_v2_private_outbound
+    (owner_identity_id, local_device_id, operation_id)
+VALUES ('owner-legacy', 'device-1', 'retired-operation');
+INSERT INTO direct_e2ee_v2_private_outbound_tombstones (operation_id)
+VALUES ('retired-tombstone');
+"#,
+    )
+    .unwrap();
+}
+
+fn assert_common_v28_data_preserved(db: &Connection) {
+    let event_seq = db
+        .query_row(
+            "SELECT event_seq FROM sync_state
+             WHERE owner_identity_id = 'owner-legacy'
+               AND scope = 'global'
+               AND checkpoint_kind = 'sync_delta'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    assert_eq!(event_seq, "912");
+    let message = db
+        .query_row(
+            r#"
+SELECT content, conversation_id, wire_thread_kind, wire_thread_ref, server_seq
+FROM messages
+WHERE owner_identity_id = 'owner-legacy'
+  AND msg_id = 'did:example:legacy-group:411'"#,
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        message,
+        (
+            "legacy-v28-message".to_owned(),
+            "group:did:example:legacy-group".to_owned(),
+            "group".to_owned(),
+            "did:example:legacy-group".to_owned(),
+            411,
+        )
+    );
+    let summary = db
+        .query_row(
+            r#"
+SELECT message_count, unread_count, unread_mention_count, last_message_id, last_content
+FROM conversation_summaries
+WHERE owner_identity_id = 'owner-legacy'
+  AND conversation_id = 'group:did:example:legacy-group'"#,
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        summary,
+        (
+            1,
+            1,
+            1,
+            "did:example:legacy-group:411".to_owned(),
+            "legacy-v28-message".to_owned(),
+        )
+    );
+}
+
+fn assert_v29_notification_data_preserved(db: &Connection) {
+    let receipt = db
+        .query_row(
+            r#"
+SELECT protocol_device_id, join_session_id, session_revision, payload_hash, proof_hash
+FROM system_notification_receipts
+WHERE owner_identity_id = 'owner-legacy' AND event_id = 'event-old'"#,
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        receipt,
+        (
+            "device-1".to_owned(),
+            "join-old".to_owned(),
+            1,
+            "payload".to_owned(),
+            "proof".to_owned(),
+        )
+    );
+}
+
+fn assert_v30_root_import_data_preserved(db: &Connection) {
+    let transfer = db
+        .query_row(
+            r#"
+SELECT owner_did, recipient_device_id, phase
+FROM identity_root_transfer_sender_v1
+WHERE owner_identity_id = 'owner-legacy'
+  AND local_device_id = 'device-1'
+  AND message_id = 'message-old'"#,
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        transfer,
+        (
+            "did:example:legacy".to_owned(),
+            "device-2".to_owned(),
+            "pending_delivery".to_owned(),
+        )
+    );
+}
+
+fn assert_direct_v2_ordinary_data_preserved(db: &Connection) {
+    let session = db
+        .query_row(
+            r#"
+SELECT peer_did, peer_device_id, revision, hex(state_blob)
+FROM direct_e2ee_v2_sessions
+WHERE owner_identity_id = 'owner-legacy'
+  AND local_device_id = 'device-1'
+  AND session_id = 'ordinary-session'"#,
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        session,
+        (
+            "did:example:peer".to_owned(),
+            "peer-device".to_owned(),
+            7,
+            "01".to_owned(),
+        )
+    );
+    let pending_count = db
+        .query_row(
+            r#"
+SELECT COUNT(*)
+FROM direct_e2ee_v2_pending
+WHERE owner_identity_id = 'owner-legacy'
+  AND local_device_id = 'device-1'
+  AND operation_id = 'ordinary-operation'
+  AND session_revision = 7
+  AND hex(pending_blob) = '02'"#,
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(pending_count, 1);
+    let bundle_count = db
+        .query_row(
+            r#"
+SELECT COUNT(*)
+FROM direct_e2ee_v2_prekey_bundles
+WHERE owner_identity_id = 'owner-legacy'
+  AND local_device_id = 'device-1'
+  AND bundle_id = 'ordinary-bundle'
+  AND status = 'published'"#,
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(bundle_count, 1);
+}
+
+fn assert_retired_direct_v2_private_data_removed(db: &Connection) {
+    for table in [
+        "direct_e2ee_v2_private_outbound",
+        "direct_e2ee_v2_private_outbound_tombstones",
+    ] {
+        let count = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "retired table {table} must not survive v31");
+    }
+    let retired_pending = db
+        .query_row(
+            "SELECT COUNT(*) FROM direct_e2ee_v2_pending
+             WHERE operation_id = 'retired-operation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(retired_pending, 0);
+}
+
+fn assert_merged_v34_shape(db: &Connection) {
+    for table in [
+        "sync_installation_state",
+        "identity_account_bindings",
+        "message_sync_state",
+        "sync_applied_events",
+        "sync_recovery_state",
+        "local_mutation_outbox",
+        "sync_thread_bindings",
+        "sync_remote_read_states",
+    ] {
+        assert_schema_object_exists(db, "table", table);
+    }
+    assert_column_exists(db, "messages", "hydration_state");
+    assert_index_exists(db, "idx_messages_owner_hydration_conversation_seq");
+    assert_column_exists(db, "sync_state", "sync_subject_id");
+    assert_primary_key_columns(
+        db,
+        "sync_state",
+        &[
+            "owner_identity_id",
+            "sync_subject_id",
+            "scope",
+            "checkpoint_kind",
+        ],
+    );
+    assert_index_exists(db, "idx_sync_state_owner_kind");
+    assert_column_exists(db, "thread_read_state", "remote_state_version");
+    for index in SYNC_V2_REQUIRED_INDEXES {
+        assert_index_exists(db, index);
+    }
 }

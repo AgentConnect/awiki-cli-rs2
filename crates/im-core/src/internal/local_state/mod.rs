@@ -30,6 +30,8 @@ pub(crate) mod peer_personas;
 pub(crate) mod peer_profiles;
 pub(crate) mod read_state;
 pub(crate) mod sync_state;
+#[cfg(feature = "sqlite")]
+pub(crate) mod sync_v2;
 
 #[cfg(feature = "sqlite")]
 pub(crate) mod schema;

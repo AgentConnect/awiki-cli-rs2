@@ -16,33 +16,36 @@ use crate::dto::{
         DartGroupRebindRecoverySummary, DartGroupSnapshot, DartGroupSummary,
     },
     identity::{
-        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
-        DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt,
-        DartDeviceJoinAuthorizationStatus, DartDeviceJoinAuthorizedDeviceSummary,
-        DartDeviceJoinPhase, DartDeviceJoinProgress, DartDeviceJoinRegistrySnapshot,
-        DartDeviceJoinRemoteState, DartDeviceJoinRequestNotice, DartDeviceJoinRole,
-        DartDeviceJoinSessionSummary, DartDeviceJoinSide, DartDeviceRevokeResult,
-        DartDeviceRevokeStatus, DartHandleRegistrationJoinRequired, DartHandleRegistrationResult,
-        DartIdentityDeviceMode, DartIdentityDeviceReadiness, DartIdentityDeviceRole,
-        DartIdentityDeviceSummary, DartIdentitySecretStorageBackend, DartIdentitySummary,
-        DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
-        DartIdentityVaultVerificationReport, DartLegacyUpgradeStatus, DartRootKeyTransferError,
-        DartRootKeyTransferPreparation, DartRootKeyTransferRecipientSummary,
-        DartRootKeyTransferSendResult,
+        DartActiveSyncAccountBinding, DartDaemonSubkeyAuthorizationRevokeResult,
+        DartDaemonSubkeyPrivatePackage, DartDefaultIdentityChange, DartDeleteLocalIdentityResult,
+        DartDeviceJoinApprovalPrompt, DartDeviceJoinAuthorizationStatus,
+        DartDeviceJoinAuthorizedDeviceSummary, DartDeviceJoinPhase, DartDeviceJoinProgress,
+        DartDeviceJoinRegistrySnapshot, DartDeviceJoinRemoteState, DartDeviceJoinRequestNotice,
+        DartDeviceJoinRole, DartDeviceJoinSessionSummary, DartDeviceJoinSide,
+        DartDeviceRegistryAuthorizedDeviceSummary, DartDeviceRevokeResult, DartDeviceRevokeStatus,
+        DartHandleRegistrationJoinRequired, DartHandleRegistrationResult, DartIdentityDeviceMode,
+        DartIdentityDeviceReadiness, DartIdentityDeviceRole, DartIdentityDeviceSummary,
+        DartIdentitySecretStorageBackend, DartIdentitySummary, DartIdentityVaultMigrationReport,
+        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartLegacyUpgradeStatus,
+        DartRootKeyTransferError, DartRootKeyTransferPreparation,
+        DartRootKeyTransferRecipientSummary, DartRootKeyTransferSendResult,
     },
     message::{
-        DartConversation, DartConversationAlias, DartConversationAliasSource,
-        DartConversationIdentity, DartConversationIdentityScope, DartConversationListSnapshot,
+        DartCommittedIncomingMessage, DartCommittedMessageSource, DartConversation,
+        DartConversationAlias, DartConversationAliasSource, DartConversationIdentity,
+        DartConversationIdentityScope, DartConversationListSnapshot,
         DartConversationMigrationState, DartConversationPage, DartConversationResolutionState,
         DartConversationSnapshotItem, DartConversationSnapshotMessage,
         DartConversationSnapshotMessageBody, DartConversationStorageThreadRef,
         DartConversationStorePatch, DartMarkReadResult, DartMarkThreadReadResult, DartMessage,
         DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
-        DartMessageMetadataAttribute, DartMessagePage, DartReadWatermark, DartSendMessageResult,
+        DartMessageMetadataAttribute, DartMessagePage, DartMessageSyncDiagnostics,
+        DartMessageSyncDirtyDomain, DartMessageSyncMode, DartMessageSyncOutcome,
+        DartMessageSyncRetryState, DartMessageSyncStatus, DartReadWatermark, DartSendMessageResult,
         DartSyncDeltaResult, DartSyncThreadAfterResult, DartThreadMessageStorePatch,
     },
     profile::DartUserProfile,
-    realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint},
+    realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint, DartSyncDomain},
     secure::{
         DartDirectSecurePrepareResult, DartDirectSecureRepairResult, DartDirectSecureState,
         DartDirectSecureStatus, DartGroupSecureLocalReadiness, DartGroupSecurePendingWork,
@@ -198,6 +201,30 @@ impl From<im_core::identity::DeviceJoinAuthorizedDeviceSummary>
     }
 }
 
+impl From<im_core::identity::DeviceRegistryAuthorizedDeviceSummary>
+    for DartDeviceRegistryAuthorizedDeviceSummary
+{
+    fn from(value: im_core::identity::DeviceRegistryAuthorizedDeviceSummary) -> Self {
+        Self {
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            signing_key_id: value.signing_key_id,
+            e2ee_key_id: value.e2ee_key_id,
+            status: match value.status {
+                im_core::identity::DeviceJoinAuthorizationStatus::Active => {
+                    DartDeviceJoinAuthorizationStatus::Active
+                }
+                im_core::identity::DeviceJoinAuthorizationStatus::Revoked => {
+                    DartDeviceJoinAuthorizationStatus::Revoked
+                }
+            },
+            role: dart_device_join_role(value.role),
+            management_ready: value.management_ready,
+            is_current: value.is_current,
+            auth_generation: value.auth_generation,
+        }
+    }
+}
+
 impl From<im_core::identity::DeviceJoinRequestNotice> for DartDeviceJoinRequestNotice {
     fn from(value: im_core::identity::DeviceJoinRequestNotice) -> Self {
         Self {
@@ -219,6 +246,7 @@ impl From<im_core::identity::DeviceJoinRegistrySnapshot> for DartDeviceJoinRegis
     fn from(value: im_core::identity::DeviceJoinRegistrySnapshot) -> Self {
         Self {
             did: value.did.as_str().to_owned(),
+            registry_version: value.registry_version,
             devices: value.devices.into_iter().map(Into::into).collect(),
         }
     }
@@ -289,6 +317,19 @@ impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
                 .into_iter()
                 .map(identity_missing_item_to_string)
                 .collect(),
+        }
+    }
+}
+
+impl From<im_core::identity::ActiveSyncAccountBinding> for DartActiveSyncAccountBinding {
+    fn from(value: im_core::identity::ActiveSyncAccountBinding) -> Self {
+        Self {
+            owner_identity_id: value.owner_identity_id,
+            account_id: value.account_id,
+            current_did: value.current_did,
+            protocol_device_id: value.protocol_device_id,
+            identity_generation: value.identity_generation,
+            device_auth_generation: value.device_auth_generation,
         }
     }
 }
@@ -608,6 +649,7 @@ impl From<im_core::identity::HandleRegistrationResult> for DartHandleRegistratio
     fn from(value: im_core::identity::HandleRegistrationResult) -> Self {
         Self {
             identity: value.identity.map(Into::into),
+            account_id: value.account_id,
             handle: value.handle.as_str().to_string(),
             method: registration_method_to_string(value.method),
             state: registration_state_to_string(value.state),
@@ -721,6 +763,7 @@ impl From<im_core::identity::Profile> for DartUserProfile {
             profile_uri: value.profile_uri,
             subject_type: value.subject_type,
             updated_at: value.updated_at,
+            profile_version: value.profile_version,
             version_id: value.version_id,
             ttl: value.ttl,
         }
@@ -1634,6 +1677,97 @@ impl From<im_core::messages::SyncDeltaResult> for DartSyncDeltaResult {
     }
 }
 
+impl From<im_core::messages::MessageSyncStatus> for DartMessageSyncStatus {
+    fn from(value: im_core::messages::MessageSyncStatus) -> Self {
+        match value {
+            im_core::messages::MessageSyncStatus::Idle => Self::Idle,
+            im_core::messages::MessageSyncStatus::Changed => Self::Changed,
+            im_core::messages::MessageSyncStatus::RecoveryRequired => Self::RecoveryRequired,
+            im_core::messages::MessageSyncStatus::RetryableFailure => Self::RetryableFailure,
+            im_core::messages::MessageSyncStatus::AuthRevoked => Self::AuthRevoked,
+        }
+    }
+}
+
+impl From<im_core::messages::CommittedIncomingMessage> for DartCommittedIncomingMessage {
+    fn from(value: im_core::messages::CommittedIncomingMessage) -> Self {
+        debug_assert_eq!(value.source, "live_delta");
+        Self {
+            event_id: value.event_id,
+            logical_message_id: value.logical_message_id,
+            source: DartCommittedMessageSource::LiveDelta,
+            direction: value.direction.into(),
+            message: value.message.into(),
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncOutcome> for DartMessageSyncOutcome {
+    fn from(value: im_core::messages::MessageSyncOutcome) -> Self {
+        Self {
+            status: value.status.into(),
+            events_applied: value.events_applied,
+            pages_fetched: value.pages_fetched,
+            messages_hydrated: value.messages_hydrated,
+            duplicates_skipped: value.duplicates_skipped,
+            changed_conversation_ids: value.changed_conversation_ids,
+            committed_incoming_messages: value
+                .committed_incoming_messages
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            error_code: value.error_code,
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncMode> for DartMessageSyncMode {
+    fn from(value: im_core::messages::MessageSyncMode) -> Self {
+        match value {
+            im_core::messages::MessageSyncMode::Uninitialized => Self::Uninitialized,
+            im_core::messages::MessageSyncMode::Idle => Self::Idle,
+            im_core::messages::MessageSyncMode::Recovering => Self::Recovering,
+            im_core::messages::MessageSyncMode::Retryable => Self::Retryable,
+            im_core::messages::MessageSyncMode::Blocked => Self::Blocked,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncDirtyDomain> for DartMessageSyncDirtyDomain {
+    fn from(value: im_core::messages::MessageSyncDirtyDomain) -> Self {
+        match value {
+            im_core::messages::MessageSyncDirtyDomain::Messages => Self::Messages,
+            im_core::messages::MessageSyncDirtyDomain::ReadState => Self::ReadState,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncRetryState> for DartMessageSyncRetryState {
+    fn from(value: im_core::messages::MessageSyncRetryState) -> Self {
+        match value {
+            im_core::messages::MessageSyncRetryState::None => Self::None,
+            im_core::messages::MessageSyncRetryState::Pending => Self::Pending,
+            im_core::messages::MessageSyncRetryState::InFlight => Self::InFlight,
+            im_core::messages::MessageSyncRetryState::Scheduled => Self::Scheduled,
+            im_core::messages::MessageSyncRetryState::PermanentFailure => Self::PermanentFailure,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncDiagnostics> for DartMessageSyncDiagnostics {
+    fn from(value: im_core::messages::MessageSyncDiagnostics) -> Self {
+        Self {
+            last_success_at: value.last_success_at,
+            mode: value.mode.into(),
+            pending_mutation_count: value.pending_mutation_count,
+            dirty_domains: value.dirty_domains.into_iter().map(Into::into).collect(),
+            retry_state: value.retry_state.into(),
+            next_retry_at: value.next_retry_at,
+        }
+    }
+}
+
 impl From<im_core::messages::SyncThreadAfterResult> for DartSyncThreadAfterResult {
     fn from(value: im_core::messages::SyncThreadAfterResult) -> Self {
         Self {
@@ -1914,11 +2048,23 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
 impl From<im_core::realtime::RealtimeSyncHint> for DartRealtimeSyncHint {
     fn from(value: im_core::realtime::RealtimeSyncHint) -> Self {
         Self {
-            event_id: value.event_id,
-            event_seq: value.event_seq,
-            event_type: value.event_type,
+            domains: value.domains.into_iter().map(Into::into).collect(),
+            reason: value.reason,
             sync_dirty: value.sync_dirty,
             gap_detected: value.gap_detected,
+            has_unknown_domain: value.has_unknown_domain,
+        }
+    }
+}
+
+impl From<im_core::realtime::SyncDomain> for DartSyncDomain {
+    fn from(value: im_core::realtime::SyncDomain) -> Self {
+        match value {
+            im_core::realtime::SyncDomain::Message => Self::Message,
+            im_core::realtime::SyncDomain::Profile => Self::Profile,
+            im_core::realtime::SyncDomain::AgentInventory => Self::AgentInventory,
+            im_core::realtime::SyncDomain::AgentStatus => Self::AgentStatus,
+            im_core::realtime::SyncDomain::DeviceRegistry => Self::DeviceRegistry,
         }
     }
 }
@@ -1949,7 +2095,8 @@ fn realtime_subscription_to_string(value: im_core::realtime::RealtimeSubscriptio
 #[cfg(test)]
 mod tests {
     use super::{
-        realtime_event_to_dart, DartGroupSummary, DartHandleRegistrationResult, DartRelationStatus,
+        realtime_event_to_dart, DartActiveSyncAccountBinding, DartGroupSummary,
+        DartHandleRegistrationResult, DartRelationStatus, DartSyncDomain,
     };
     use im_core::{
         directory::RelationshipStatus,
@@ -1973,6 +2120,7 @@ mod tests {
         let mapped =
             DartHandleRegistrationResult::from(im_core::identity::HandleRegistrationResult {
                 identity: None,
+                account_id: None,
                 handle: im_core::ids::Handle::parse("alice.example.test", "").unwrap(),
                 method: im_core::identity::RegistrationMethod::Phone,
                 state: im_core::identity::HandleRegistrationState::JoinRequired,
@@ -1986,11 +2134,34 @@ mod tests {
 
         assert_eq!(mapped.state, "join_required");
         assert!(mapped.identity.is_none());
+        assert!(mapped.account_id.is_none());
         let join_required = mapped.join_required.expect("typed Join result");
         assert_eq!(join_required.did, "did:wba:example.test:existing");
         assert_eq!(
             join_required.account_verification_token,
             "single-use-account-verification"
+        );
+    }
+
+    #[test]
+    fn active_sync_binding_mapping_preserves_unbounded_decimal_generations() {
+        let mapped =
+            DartActiveSyncAccountBinding::from(im_core::identity::ActiveSyncAccountBinding {
+                owner_identity_id: "owner-alice".to_owned(),
+                account_id: "account-alice".to_owned(),
+                current_did: "did:wba:awiki.info:user:alice".to_owned(),
+                protocol_device_id: "device-desktop".to_owned(),
+                identity_generation: "184467440737095516160000000000000000001".to_owned(),
+                device_auth_generation: "184467440737095516160000000000000000002".to_owned(),
+            });
+
+        assert_eq!(
+            mapped.identity_generation,
+            "184467440737095516160000000000000000001"
+        );
+        assert_eq!(
+            mapped.device_auth_generation,
+            "184467440737095516160000000000000000002"
         );
     }
 
@@ -2152,8 +2323,13 @@ mod tests {
                     event_id: Some("sync-event-join-1".to_owned()),
                     event_seq: Some("42".to_owned()),
                     event_type: Some("system.notification".to_owned()),
+                    domains: std::collections::BTreeSet::from([
+                        im_core::realtime::SyncDomain::DeviceRegistry,
+                    ]),
+                    reason: Some("system.notification".to_owned()),
                     sync_dirty: false,
                     gap_detected: false,
+                    has_unknown_domain: false,
                 }),
             },
         ));
@@ -2169,8 +2345,8 @@ mod tests {
         assert!(event.content_type.is_none());
         assert!(event.reason.is_none());
         let sync = event.sync.expect("reliable sync hint");
-        assert_eq!(sync.event_seq.as_deref(), Some("42"));
-        assert_eq!(sync.event_type.as_deref(), Some("system.notification"));
+        assert_eq!(sync.domains, vec![DartSyncDomain::DeviceRegistry]);
+        assert_eq!(sync.reason.as_deref(), Some("system.notification"));
     }
 
     #[test]
@@ -2179,8 +2355,14 @@ mod tests {
             event_id: Some("sev-1".to_string()),
             event_seq: Some("42".to_string()),
             event_type: Some("message.created".to_string()),
+            domains: std::collections::BTreeSet::from([
+                im_core::realtime::SyncDomain::Message,
+                im_core::realtime::SyncDomain::Profile,
+            ]),
+            reason: Some("message_available".to_string()),
             sync_dirty: true,
             gap_detected: true,
+            has_unknown_domain: true,
         };
 
         let event =
@@ -2192,11 +2374,14 @@ mod tests {
             }));
 
         let hint = event.sync.expect("sync hint is preserved");
-        assert_eq!(hint.event_id.as_deref(), Some("sev-1"));
-        assert_eq!(hint.event_seq.as_deref(), Some("42"));
-        assert_eq!(hint.event_type.as_deref(), Some("message.created"));
+        assert_eq!(
+            hint.domains,
+            vec![DartSyncDomain::Message, DartSyncDomain::Profile]
+        );
+        assert_eq!(hint.reason.as_deref(), Some("message_available"));
         assert!(hint.sync_dirty);
         assert!(hint.gap_detected);
+        assert!(hint.has_unknown_domain);
     }
 
     #[test]

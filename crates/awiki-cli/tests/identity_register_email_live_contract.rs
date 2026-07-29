@@ -116,6 +116,7 @@ fn identity_register_email_wait_already_verified_registers_and_persists_identity
     assert_eq!(envelope["data"]["action"], "register_handle");
     assert_eq!(envelope["data"]["method"], "email");
     assert_eq!(envelope["data"]["verification_state"], "completed");
+    assert_eq!(envelope["data"]["account_id"], "user-alice");
     assert_eq!(envelope["data"]["identity"]["identity_name"], "alice");
     assert_eq!(envelope["data"]["identity"]["handle"], "alice");
     let registered_did = envelope["data"]["identity"]["did"]
@@ -159,10 +160,16 @@ fn identity_register_email_wait_already_verified_registers_and_persists_identity
     assert_eq!(stored.index["full_handle"], "alice.awiki.ai");
     assert_eq!(stored.index["did"], registered_did);
     assert_eq!(stored.index["user_id"], "user-alice");
+    assert_eq!(stored.index["binding_generation"], "1");
+    assert_eq!(
+        envelope["data"]["account_id"], stored.index["user_id"],
+        "CLI account_id must be the persisted IndexEntry.user_id"
+    );
     assert_eq!(stored.identity["handle"], "alice");
     assert_eq!(stored.identity["full_handle"], "alice.awiki.ai");
     assert_eq!(stored.identity["did"], registered_did);
     assert_eq!(stored.identity["user_id"], "user-alice");
+    assert_eq!(stored.identity["binding_generation"], "1");
     assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(workspace.path(), "alice");
 }
 
@@ -372,6 +379,7 @@ fn registration_response(request: &str) -> String {
             "handle": handle,
             "domain": domain,
             "full_handle": format!("{handle}.{domain}"),
+            "binding_generation": "1",
         },
         "id": rpc["id"].clone(),
     })

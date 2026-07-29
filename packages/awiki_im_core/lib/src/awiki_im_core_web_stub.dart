@@ -200,6 +200,10 @@ class AwikiImClient {
 
   RootKeyTransferApi get rootKeyTransfer => RootKeyTransferApi._();
 
+  Future<ActiveSyncAccountBinding> activeSyncAccountBinding() async {
+    throw _unsupported();
+  }
+
   Future<void> dispose() async {}
 }
 
@@ -282,6 +286,14 @@ class MessageApi {
   }
 
   Future<SyncDeltaResult> syncDelta(SyncDeltaRequest request) async {
+    throw _unsupported();
+  }
+
+  Future<MessageSyncOutcome> syncNow(MessageSyncRequest request) async {
+    throw _unsupported();
+  }
+
+  Future<MessageSyncDiagnostics> syncDiagnostics() async {
     throw _unsupported();
   }
 

@@ -51,9 +51,18 @@ pub struct DartRealtimeEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartRealtimeSyncHint {
-    pub event_id: Option<String>,
-    pub event_seq: Option<String>,
-    pub event_type: Option<String>,
+    pub domains: Vec<DartSyncDomain>,
+    pub reason: Option<String>,
     pub sync_dirty: bool,
     pub gap_detected: bool,
+    pub has_unknown_domain: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartSyncDomain {
+    Message,
+    Profile,
+    AgentInventory,
+    AgentStatus,
+    DeviceRegistry,
 }

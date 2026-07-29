@@ -95,6 +95,24 @@ class IdentitySummary {
   final List<String> missing;
 }
 
+class ActiveSyncAccountBinding {
+  const ActiveSyncAccountBinding({
+    required this.ownerIdentityId,
+    required this.accountId,
+    required this.currentDid,
+    required this.protocolDeviceId,
+    required this.identityGeneration,
+    required this.deviceAuthGeneration,
+  });
+
+  final String ownerIdentityId;
+  final String accountId;
+  final String currentDid;
+  final String protocolDeviceId;
+  final String identityGeneration;
+  final String deviceAuthGeneration;
+}
+
 enum IdentityDeviceMode { legacy, vNext }
 
 enum IdentityDeviceRole { member, admin }
@@ -301,6 +319,7 @@ class DaemonSubkeyAuthorizationRevokeResult {
 class HandleRegistrationResult {
   const HandleRegistrationResult({
     this.identity,
+    this.accountId,
     required this.handle,
     required this.method,
     required this.state,
@@ -310,6 +329,7 @@ class HandleRegistrationResult {
   });
 
   final IdentitySummary? identity;
+  final String? accountId;
   final String handle;
   final String method;
   final String state;
@@ -393,6 +413,28 @@ class DeviceJoinAuthorizedDeviceSummary {
   final bool isCurrent;
 }
 
+class DeviceRegistryAuthorizedDeviceSummary {
+  const DeviceRegistryAuthorizedDeviceSummary({
+    required this.protocolDeviceId,
+    required this.signingKeyId,
+    required this.e2eeKeyId,
+    required this.status,
+    required this.role,
+    required this.managementReady,
+    required this.isCurrent,
+    required this.authGeneration,
+  });
+
+  final String protocolDeviceId;
+  final String signingKeyId;
+  final String e2eeKeyId;
+  final DeviceJoinAuthorizationStatus status;
+  final DeviceJoinRole role;
+  final bool managementReady;
+  final bool isCurrent;
+  final String authGeneration;
+}
+
 class DeviceJoinRequestNotice {
   const DeviceJoinRequestNotice({
     required this.eventId,
@@ -428,10 +470,15 @@ class DeviceJoinRequestNotice {
 }
 
 class DeviceJoinRegistrySnapshot {
-  const DeviceJoinRegistrySnapshot({required this.did, required this.devices});
+  const DeviceJoinRegistrySnapshot({
+    required this.did,
+    required this.registryVersion,
+    required this.devices,
+  });
 
   final String did;
-  final List<DeviceJoinAuthorizedDeviceSummary> devices;
+  final String registryVersion;
+  final List<DeviceRegistryAuthorizedDeviceSummary> devices;
 }
 
 enum DeviceJoinRejectReason { userRejected, sasMismatch }

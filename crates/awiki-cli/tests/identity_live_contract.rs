@@ -43,6 +43,7 @@ fn identity_register_phone_otp_live_posts_register_and_persists_identity_like_go
     assert_eq!(envelope["data"]["full_handle"], "alice.awiki.ai");
     assert_eq!(envelope["data"]["method"], "phone");
     assert_eq!(envelope["data"]["verification_state"], "completed");
+    assert_eq!(envelope["data"]["account_id"], "user-alice");
     assert_eq!(envelope["data"]["identity"]["identity_name"], "alice");
     assert_eq!(envelope["data"]["identity"]["handle"], "alice");
     assert_eq!(
@@ -81,10 +82,16 @@ fn identity_register_phone_otp_live_posts_register_and_persists_identity_like_go
     assert_eq!(stored.index["full_handle"], "alice.awiki.ai");
     assert_eq!(stored.index["did"], registered_did);
     assert_eq!(stored.index["user_id"], "user-alice");
+    assert_eq!(stored.index["binding_generation"], "1");
+    assert_eq!(
+        envelope["data"]["account_id"], stored.index["user_id"],
+        "CLI account_id must be the persisted IndexEntry.user_id"
+    );
     assert_eq!(stored.identity["handle"], "alice");
     assert_eq!(stored.identity["full_handle"], "alice.awiki.ai");
     assert_eq!(stored.identity["did"], registered_did);
     assert_eq!(stored.identity["user_id"], "user-alice");
+    assert_eq!(stored.identity["binding_generation"], "1");
     assert_eq!(stored.auth, Value::Null);
     assert_vault_identity_has_no_plaintext_secret_files(workspace.path(), "alice");
 }
@@ -833,6 +840,7 @@ fn registration_response(request: &str) -> String {
             "handle": handle,
             "domain": domain,
             "full_handle": format!("{handle}.{domain}"),
+            "binding_generation": "1",
         },
         "id": rpc["id"].clone(),
     })

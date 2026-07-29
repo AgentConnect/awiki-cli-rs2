@@ -187,10 +187,19 @@ reinterpret those methods through a different generic verification-method
 parser.
 
 Public host DTOs expose only safe session, DID, device, role, status, readiness,
-fingerprint, short-lived local SAS display, and UI-action facts. OTP/account
-grants, Join tokens, pairing private keys, Challenge plaintext, SAS derivation
-material, root plaintext, Object Proof secrets, and internal checkpoints do not
-cross the host facade or CLI output boundary.
+fingerprint, short-lived local SAS display, and UI-action facts. The explicit
+Device Registry read snapshot additionally exposes `registry_version` and each
+device's `auth_generation` as canonical decimal strings so an App can replace
+its display-only account-state cache monotonically. Those values do not
+authorize Join, revoke, or root transfer; all security actions still perform a
+fresh Core Registry read. The current User Service Registry stores both values
+as `u64`; Core converts them to decimal strings before the Dart/Flutter boundary
+so no Dart or JavaScript numeric representation can narrow them. Join
+session/progress DTOs continue to exclude them.
+OTP/account grants, Join tokens, pairing private keys, Challenge plaintext, SAS
+derivation material, root plaintext, Object Proof secrets, document
+version/hash, and other internal checkpoints do not cross the host facade or
+CLI output boundary.
 
 Local identity deletion is an offline Core transaction, not a remote logout
 operation. Core first persists a secret-free retirement marker keyed by the
@@ -218,6 +227,37 @@ use the same safe allowlisted categories (`transport_unavailable`,
 `service_error`, `permission_denied`, `auth_required`,
 `local_state_unavailable`, or `legacy_upgrade_failed`) without exposing
 transport bodies or secret state.
+
+### 4.2 Stable account binding for message sync
+
+Every local vNext client has one fail-closed sync identity projection:
+
+```text
+owner_identity_id     <- immutable local identity ID
+account_id            <- identity index user_id
+current_did           <- current local DID snapshot
+protocol_device_id    <- current active vNext authorization
+identity_generation   <- Handle binding_generation
+device_auth_generation <- current device authorization generation
+```
+
+`ImClient::active_sync_account_binding()` is the only public boundary that
+materializes these six values together. It does not use
+`IdentitySummary.device_id`, a vault-context device id, a DID-derived account
+key, or a constant generation. When an older identity index has no
+`binding_generation`, Core performs an authoritative public WNS lookup,
+verifies the exact full Handle and current DID, persists the returned
+generation, and only then returns the binding. Transport failure remains a
+typed transport error; malformed or mismatched authority data fails closed.
+Legacy and hosted clients return unsupported rather than receiving a guessed
+binding.
+
+Both generations are canonical positive decimal strings and are never narrowed
+to a machine integer. The local binding reducer is monotonic: neither
+generation may move backwards, `current_did` cannot change at the same
+`identity_generation`, and a DID rotation is accepted only with a newer
+identity generation. The `(account_id, protocol_device_id)` pair cannot be
+rebound to another local owner.
 
 Management-device root transfer reuses the ordinary exact-device P5 v2
 implementation. After eligibility and PreKey/session checks, one explicit user
@@ -465,7 +505,7 @@ These files describe the SDK public surface and interface-level contracts. They 
 
 ## 11. Durable Conversation Registry And Summary Projection
 
-The SQLite local state keeps `messages` as the durable message projection truth, while current target schema version 32 uses the schema-28 `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
+The SQLite local state keeps `messages` as the durable message projection truth, while current target schema version 34 uses the schema-28 `conversation_registry` as the durable conversation-existence truth. This distinction allows a validated Direct or Group conversation to remain in the recent list before its first message. `conversation_summaries` remains a rebuildable user-visible-message aggregate and may legitimately have no row for an empty conversation. Protocol/control records, including group lifecycle events, stay in the durable message projection when required but do not create or replace a conversation summary; the registry preserves the conversation independently. The current conversation/read/send projection contract keeps:
 
 - primary key: `(owner_identity_id, conversation_id)`;
 - hot index: `idx_conversation_summaries_owner_last(owner_identity_id, last_message_at DESC, conversation_id)`;
@@ -575,11 +615,12 @@ invariants, and records a resumable redacted journal before replacing the live
 SQLite file set. The pre-open detector owns exactly schema 27; already canonical
 schemas 28 through current are a no-op there and remain owned by the ordinary
 atomic schema migration in Core open.
-The shadow transaction creates the complete schema-32 target, including release/0714
-multi-device state, the hydration projection, and subject-scoped checkpoints. An already
-canonical schema 28 through 31 database must not be routed back through release/0710
-cutover. Ordinary Core open accepts only the reviewed release predecessor shapes; a
-same-number development schema fails closed and requires an explicit development-state reset.
+The shadow transaction creates the complete schema-34 target, including release/0714
+multi-device/read-recovery state, the hydration projection, and subject-scoped checkpoints.
+An already canonical schema 28 through 34 database must not be routed back through
+release/0710 cutover. Ordinary Core open accepts the reviewed release predecessors and the
+known current/release v32-v34 branch shapes, converges either valid side atomically, and
+fails closed for partial or unrecognized same-number shapes.
 The source allowlist is pinned to the exact deployed release/0710 daemon
 artifact, source ref, and schema fingerprint. Its checked-in fixture is built
 by that binary in an isolated state root and contains synthetic rows only.
@@ -595,7 +636,7 @@ Conversation snapshot and patch APIs are non-authoritative acceleration layers o
 
 - `messages.load_conversation_snapshot()` / Dart `client.messages.loadConversationSnapshot()` reads a redb snapshot generated from `conversation_summaries`.
 - Snapshot entries use `ConversationSnapshotItem`, a core-only DTO containing thread identity, the committed Group profile title when applicable, participants, last message projection, unread counts, message count, and last message time. Group title comes from Core's owner-scoped `groups` projection; it is not an App presentation overlay.
-- `messages.watch_conversation_patches()` / Dart `client.messages.watchConversationPatches()` streams versioned `ConversationStorePatch` values from an in-memory runtime store seeded by snapshot/local projection.
+- `messages.watch_conversation_patches()` / Dart `client.messages.watchConversationPatches()` streams versioned `ConversationStorePatch` values from an in-memory runtime store. A bound watch subscribes before reading and emits exactly one initial `Reset` seeded from the canonical SQLite projection; the redb snapshot remains available only through the explicit legacy snapshot API and is never an authoritative watch seed.
 - `messages.repair_conversation_store()` / Dart `client.messages.repairConversationStore()` returns a reset/repair patch and the current runtime store version after lag, overflow, stream close, or version gaps.
 - `messages.watch_conversation_timeline_patches(conversation, limit)` / Dart `client.messages.watchConversationTimelinePatches(conversation, limit: ...)` streams versioned `ThreadMessageStorePatch` values for the currently opened canonical conversation timeline.
 - `messages.repair_conversation_timeline_store(conversation, limit)` / Dart `client.messages.repairConversationTimelineStore(conversation, limit: ...)` returns a reset/repair patch for the conversation timeline runtime store.
@@ -646,13 +687,30 @@ the SDK architecture boundary.
 
 `im-core` Rust/SQLite owns the global reliable checkpoint:
 
+- `messages.sync_now()` / Dart `client.messages.syncNow(...)` are the v2 ordinary
+  Direct/Group main path. Rust derives account/device binding internally,
+  bootstraps a tail-only cursor and Group baseline when required, exactly
+  hydrates every required `message.created` through `message.get_batch`, and
+  commits event receipts, canonical projection changes, and the next v2 cursor
+  in one SQLite transaction. Required hydration, schema, identity, or route
+  failure rolls back the whole page and does not write a receipt or advance the
+  cursor. Although the wire method accepts at most 100 event IDs and the service
+  enforces a 16 MiB hard response budget, Core uses ordered chunks of 8 to leave
+  headroom for compact-JSON framing and escaping; any unavailable item in any
+  chunk aborts the full delta page.
+- Before the first bootstrap for a local owner, Core persists a cryptographically
+  random opaque `client_instance_id` in the local sync database. Lost responses,
+  process restarts, and retries reuse it; a new/cleared local database generates
+  a different value. It is not derived from owner, account, or device identity
+  and is never exposed through the SDK.
 - `messages.sync_delta()` / Dart `client.messages.syncDelta(...)` are high-level
-  calls. Rust reads the current checkpoint from local `sync_state`, injects
+  v1 compatibility calls. Rust reads the current checkpoint from local `sync_state`, injects
   `since_event_seq` into the wire request, applies the returned page, and writes
   the new checkpoint only after the local apply transaction succeeds.
 - Public Rust, Dart, Flutter, CLI, and App APIs must not expose
-  `loadGlobalCheckpoint`, `storeGlobalCheckpoint`, raw `since_event_seq`, raw
-  `next_event_seq`, or equivalent manual checkpoint advance.
+  account/device binding, `loadGlobalCheckpoint`, `storeGlobalCheckpoint`, raw
+  v1/v2 cursors, raw `since_event_seq`, raw `next_event_seq`, or equivalent
+  manual checkpoint advance. The v1 and v2 cursor stores remain isolated.
 - `snapshot_required=true` is fail-closed until a documented repair API exists:
   no checkpoint advance and no local projection wipe.
 - An identity-unresolved inbound message is not a failed apply and is never
@@ -686,7 +744,7 @@ the SDK architecture boundary.
   `direct + peer DID`. It must not reinterpret that presentation thread as a
   `thread` wire identity or relax conflict detection to make the merge pass.
 
-`messages.sync_conversation_after()` / Dart `client.messages.syncConversationAfter(...)` is the conversationId-first catch-up API for AWiki Me and the Flutter SDK display chain. It resolves `ConversationReadRef.conversation_id` to the syncable storage thread/ref, uses `after_server_seq`, and does not read or advance the account-level checkpoint. `messages.sync_thread_after()` / Dart `client.messages.syncThreadAfter(...)` remains a legacy / debug adapter. Implementations must not return a locally merged `history_async` page as a catch-up result; they use a raw remote path and strictly filter `server_seq` against the effective gap-aware cursor described below.
+`messages.sync_conversation_after()` / Dart `client.messages.syncConversationAfter(...)` is the conversationId-first catch-up API for AWiki Me and the Flutter SDK display chain. It resolves `ConversationReadRef.conversation_id` to the syncable storage thread/ref, uses `after_server_seq`, and does not read or advance the account-level checkpoint. `messages.sync_thread_after()` / Dart `client.messages.syncThreadAfter(...)` remains a legacy / debug adapter. Both blocking and async Core paths call the account-authorized, plain-only service `sync.thread_after` method with exactly `thread_key`, `after_server_seq`, and `limit` in the request body. Direct uses the durable owner-scoped `sync_thread_bindings` conversation reference and fails closed when no authoritative binding exists; it never substitutes a peer DID. Group uses the Group DID as its thread key. Core defensively rejects or filters non-ordinary rows so E2EE, MLS, and device ciphertext cannot enter this plaintext projection. Implementations must not return a locally merged `history_async` page as a catch-up result; they strictly validate `server_seq` against the effective gap-aware cursor described below.
 
 Schema 32 distinguishes message projection completeness internally:
 
@@ -738,11 +796,101 @@ and continue to fail closed during replay.
 durations, redacted owner/thread identifiers, and checkpoint age rather than raw
 message payloads or sensitive E2EE material.
 
+Schema 32 freezes the next reliable-sync persistence boundary without changing
+the current `sync_delta()` wire behavior:
+
+- `identity_account_bindings` stores the exact six-part vNext binding and
+  monotonic generation fences.
+- `message_sync_state` is a separate v2 cursor row bound to the exact account,
+  protocol device, and device authorization generation. No row or cursor is
+  invented before an explicit bootstrap.
+- `sync_applied_events` stores idempotency receipts with bounded pruning that
+  retains at least 10,000 recent receipts per owner and protects the active
+  recovery window.
+- `sync_recovery_state` stores restart-safe recovery metadata and hashes only;
+  raw recovery tokens are forbidden.
+- `local_mutation_outbox` initially admits only
+  `read_state_mark_read`. Message edit, recall, delete, tombstone, and generic
+  message-send mutations are not part of this phase.
+
+Schema 33 adds the per-owner `sync_installation_state` row used to persist the
+opaque bootstrap `client_instance_id`. A true schema-32 database upgrades
+atomically to 33 before bootstrap; keeping this as an explicit version boundary
+also makes older schema-32 binaries reject the newer database instead of
+silently treating it as downgrade-compatible.
+
+Schema 34 completes the ordinary read/recovery boundary. Owner-scoped
+`sync_thread_bindings` maps the service's opaque Direct `conversation_ref` or
+Group thread key to exactly one canonical local conversation; Core never guesses
+that mapping from a DID. `sync_remote_read_states` is a durable unresolved
+Direct read-state backlog. Snapshot/delta may advance after transactionally
+storing a current read state whose recent message was outside the 48-hour/500
+message window; a later ordinary message binding replays and removes that
+backlog in the same transaction. `thread_read_state.remote_state_version`
+provides monotonic stale/conflict rejection.
+
+`syncNow` closes compact recovery inside one call:
+delta (or existing-device bootstrap recovery) → process-local opaque token →
+snapshot validation/atomic merge → post-anchor delta. Snapshot application
+merges current read/Group state and recent ordinary messages without deleting
+older local messages, commits receipts/projections/cursor/recovery completion in
+one SQLite transaction, and returns only the existing high-level `changed` or
+`idle` terminal outcome after the post-anchor delta succeeds. A raw token,
+cursor, cutoff, policy limit, or returned snapshot count never crosses the Rust
+public, Dart, Flutter, CLI, or App boundary and is never persisted. Startup
+changes an interrupted recovery to `retryable` while retaining the original
+cursor, so the next `syncNow` obtains a fresh process-local token.
+
+Core serializes `syncNow` per `owner_identity_id`. Snapshot commit additionally
+uses a SQLite compare-and-swap fence over the exact previous epoch/cursor,
+recovery-id hash, authorized anchor, and `applying` phase; a stale or concurrent
+workflow cannot replace a newer cursor. Snapshot parsing is closed-schema and
+rejects unknown top-level/policy/exclusion/read/Group fields, duplicate event
+IDs or sequences, messages before the server cutoff, and malformed state
+timestamps. Core does not calculate or widen the 48-hour/500-message policy.
+
+The existing `sync_state` table remains the active checkpoint for the v1
+`sync.delta` compatibility implementation; v2 `syncNow` uses
+`message_sync_state`. Schemas 28, 29, 30, and 31 migrate atomically to 34.
+Because the current and release branches previously assigned different complete
+shapes to versions 32 through 34, Core validates their concrete tables, columns,
+keys, and indexes and atomically fills the missing side before retaining version
+34. Schema 27 remains owned exclusively by the explicit pre-open canonical
+upgrade gate. Startup recovery changes interrupted recovery/apply and in-flight
+read mutations to retryable state without advancing a cursor.
+
 `sync.delta` is an authenticated exact-device projection over an owner-global
 sequence. The service may omit sibling-targeted or expired rows while advancing
 `next_event_seq`; Core therefore accepts strictly increasing visible sequences
 with gaps and empty advancing pages, counts only visible applied events, and
 commits the returned scan checkpoint atomically with those projections.
+
+`messages.sync_diagnostics()` is the product-safe observability boundary for
+this runtime. It exposes only the last successful sync time, a typed
+`uninitialized|idle|recovering|retryable|blocked` mode, pending read-mutation
+count, typed dirty domains, and typed retry state/next retry time. It does not
+expose the account/device binding, stream epoch, raw scan cursor, recovery
+anchor/token/hash, event/message payload, or message content. Developer tooling
+that needs deeper inspection must remain a separately controlled internal
+surface and may use only redacted account hashes and aggregate lag/counts.
+
+Successful delta and snapshot commits schedule bounded best-effort local
+cleanup. Cleanup failure never reverses a successful sync result. Applied-event
+receipts are removed only before the safe cursor, outside the active recovery
+window, while retaining at least the newest 10,000 receipts per owner.
+`local_mutation_outbox` and terminal recovery rows have a seven-day audited
+retention window and a maximum 256-row cleanup batch: pending, in-flight, and
+retryable mutations are never deleted, and a recovery row is deleted only when
+it is terminal, expired, and its anchor is covered by the current cursor.
+Cleanup never writes the cursor, epoch, retention floor, or committed
+projection.
+
+Conversation and timeline patch watchers subscribe to the broadcast channel
+before reading their initial committed seed. Initial seed versions fence queued
+patches: a commit during seed construction is either represented by the newer
+seed or delivered once afterward, but is never lost or replayed as an older
+duplicate. The public committed patch envelope and patch variants are
+unchanged.
 
 ## 15. System Notification Projection
 
@@ -785,4 +933,14 @@ Conversation-level read state is separate from reliable sync checkpoints:
   The wire thread is resolved by `im-core` to direct / group; raw canonical storage
   `conversation_id` values are never serialized as `kind: "thread"`. Legacy direct
   `inbox.mark_read(message_ids)` remains only as fallback for unsupported services.
-- `message.read_state_updated` sync events are not emitted by the current service-compatible phase. Adding that event requires first making stable clients treat the type as known or explicitly ignore-safe, because unknown required `sync.delta` events fail closed.
+- A v2 read outbox operation is claimed before transport send. Its operation ID
+  and payload remain immutable while in flight; a higher watermark creates a
+  blocked successor. Core clears `pending_remote_ack` only after a closed-schema
+  response echoes the exact DID/thread, reports a non-partial final remote ack,
+  and returns a server watermark at least as high as the sent watermark. Every
+  transport, decode, validation, or local-commit failure returns the claim to
+  `retryable`.
+- `message.read_state_updated` is a required known v2 event. `thread_kind` is
+  mandatory and is never inferred from a thread key. A read-only delta or
+  snapshot emits a committed conversation/thread invalidation after the read
+  projection transaction succeeds.

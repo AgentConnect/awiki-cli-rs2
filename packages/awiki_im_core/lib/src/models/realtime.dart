@@ -59,20 +59,28 @@ class RealtimeConnectionState {
   final String? reason;
 }
 
+enum SyncDomain {
+  message,
+  profile,
+  agentInventory,
+  agentStatus,
+  deviceRegistry,
+}
+
 class RealtimeSyncHint {
   const RealtimeSyncHint({
-    this.eventId,
-    this.eventSeq,
-    this.eventType,
+    this.domains = const {},
+    this.reason,
     required this.syncDirty,
     required this.gapDetected,
+    required this.hasUnknownDomain,
   });
 
-  final String? eventId;
-  final String? eventSeq;
-  final String? eventType;
+  final Set<SyncDomain> domains;
+  final String? reason;
   final bool syncDirty;
   final bool gapDetected;
+  final bool hasUnknownDomain;
 }
 
 class RealtimeEvent {

@@ -229,6 +229,7 @@ pub(crate) enum PendingRegistrationReconciliation {
     Absent,
     Committed {
         user_id: String,
+        binding_generation: String,
         access_token: String,
     },
 }
@@ -1983,8 +1984,19 @@ fn reconcile_pending_registration(
         Err(error) => return Err(error),
     };
     validate_pending_registration_registry(&mut transport, pending)?;
+    let lookup = crate::internal::handle_discovery::resolve_authoritative_handle_binding(
+        &client,
+        &format!("{}.{}", pending.target_handle, pending.target_domain),
+    )?;
+    if lookup.did != pending.generated.did {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let binding_generation = lookup
+        .binding_generation
+        .ok_or(crate::ImError::PermissionDenied)?;
     Ok(PendingRegistrationReconciliation::Committed {
         user_id: transport.pending_device_user_id()?,
+        binding_generation,
         access_token,
     })
 }
@@ -2003,8 +2015,20 @@ async fn reconcile_pending_registration_async(
         Err(error) => return Err(error),
     };
     validate_pending_registration_registry_async(&mut transport, pending).await?;
+    let lookup = crate::internal::handle_discovery::resolve_authoritative_handle_binding_async(
+        &client,
+        &format!("{}.{}", pending.target_handle, pending.target_domain),
+    )
+    .await?;
+    if lookup.did != pending.generated.did {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let binding_generation = lookup
+        .binding_generation
+        .ok_or(crate::ImError::PermissionDenied)?;
     Ok(PendingRegistrationReconciliation::Committed {
         user_id: transport.pending_device_user_id()?,
+        binding_generation,
         access_token,
     })
 }

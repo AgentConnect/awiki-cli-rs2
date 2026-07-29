@@ -6,3 +6,4 @@ pub(crate) mod history;
 pub(crate) mod inbox;
 pub(crate) mod read_state;
 pub(crate) mod sync;
+pub(crate) mod sync_v2;

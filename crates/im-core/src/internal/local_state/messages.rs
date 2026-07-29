@@ -1858,6 +1858,8 @@ pub(crate) struct MarkThreadReadWatermarkResult {
     pub(crate) read_watermark_message_id: Option<String>,
     pub(crate) read_watermark_at: Option<String>,
     pub(crate) advanced: bool,
+    pub(crate) outbox_operation_id: Option<String>,
+    pub(crate) remote_thread_key: Option<String>,
 }
 
 #[cfg(feature = "sqlite")]
@@ -2401,6 +2403,7 @@ pub(crate) fn mark_thread_read_watermark_for_owner_identity(
         read_watermark_at: Some(read_at.clone()),
         pending_remote_ack: input.pending_remote_ack,
         remote_ack_at: (!input.pending_remote_ack).then(|| read_at.clone()),
+        remote_state_version: current.and_then(|record| record.remote_state_version),
         updated_at: read_at.clone(),
     };
     if previous_was_invalid {
@@ -2419,6 +2422,8 @@ pub(crate) fn mark_thread_read_watermark_for_owner_identity(
         read_watermark_message_id: requested_message_id,
         read_watermark_at: Some(read_at),
         advanced,
+        outbox_operation_id: None,
+        remote_thread_key: None,
     })
 }
 

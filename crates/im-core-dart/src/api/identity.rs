@@ -3,16 +3,28 @@ use std::sync::Arc;
 use crate::dto::{
     error::DartImError,
     identity::{
-        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
-        DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt, DartDeviceJoinProgress,
-        DartDeviceJoinRegistrySnapshot, DartDeviceJoinRejectReason, DartDeviceJoinRequestNotice,
-        DartDeviceJoinSessionSummary, DartDeviceRevokeResult, DartHandleRegistrationResult,
-        DartIdentityDeviceSummary, DartIdentitySelector, DartIdentitySummary,
-        DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
-        DartIdentityVaultVerificationReport, DartInitialProfile, DartLegacyUpgradeStatus,
-        DartRootKeyTransferError, DartRootKeyTransferPreparation, DartRootKeyTransferSendResult,
+        DartActiveSyncAccountBinding, DartDaemonSubkeyAuthorizationRevokeResult,
+        DartDaemonSubkeyPrivatePackage, DartDeleteLocalIdentityResult,
+        DartDeviceJoinApprovalPrompt, DartDeviceJoinProgress, DartDeviceJoinRegistrySnapshot,
+        DartDeviceJoinRejectReason, DartDeviceJoinRequestNotice, DartDeviceJoinSessionSummary,
+        DartDeviceRevokeResult, DartHandleRegistrationResult, DartIdentityDeviceSummary,
+        DartIdentitySelector, DartIdentitySummary, DartIdentityVaultMigrationReport,
+        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartInitialProfile,
+        DartLegacyUpgradeStatus, DartRootKeyTransferError, DartRootKeyTransferPreparation,
+        DartRootKeyTransferSendResult,
     },
 };
+
+pub async fn active_sync_account_binding(
+    client: &Arc<crate::api::client::DartImClient>,
+) -> Result<DartActiveSyncAccountBinding, DartImError> {
+    client
+        .clone_inner()?
+        .active_sync_account_binding()
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
 
 pub async fn revoke_device(
     core: &Arc<crate::api::core::DartImCore>,

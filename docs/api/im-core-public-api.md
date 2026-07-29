@@ -125,6 +125,9 @@ impl ImClient {
     pub fn current_identity(&self) -> &IdentitySummary;
     pub fn did(&self) -> &Did;
     pub fn handle(&self) -> Option<&Handle>;
+    pub async fn active_sync_account_binding(
+        &self,
+    ) -> ImResult<ActiveSyncAccountBinding>;
 
     pub fn auth(&self) -> AuthService<'_>;
     pub fn messages(&self) -> MessageService<'_>;
@@ -185,12 +188,12 @@ cutover 的 journal，将当前 target 保留为 private safety copy 后恢复�
 backup。公共结果只包含 schema、聚合计数、alias mapping 和 backup/safety-copy
 availability，不返回 backup 路径、消息内容或凭证。
 
-当前 target 为 schema 32。pre-open canonical runner 只拥有 schema 27；已经完成
-canonical cutover 的 schema 28 到 31 必须返回 `not_required`，随后由普通 Core open
-推进。schema 32 以 release/0714 schema 31 为正式前身，先严格校验系统通知、Root Import
-和 checkpoint ownership 形状，再原子加入 hydration projection、subject-scoped checkpoint
-以及可证明的旧 Direct WireIdentity 修复。与 release schema 31 占用同一版本号的开发态
-schema 必须 fail closed 并由开发者显式重置，不能被猜测性迁移或静默删除。
+当前 target 为 schema 34。pre-open canonical runner 只拥有 schema 27；已经完成
+canonical cutover 的 schema 28 到 34 必须返回 `not_required`，随后由普通 Core open
+推进或校验。普通 open 严格识别 release/0714 schema 28-31 以及两条开发线曾产生的
+v32-v34 合法形态，并在单一事务中收敛为 hydration projection、subject-scoped checkpoint、
+可证明的旧 Direct WireIdentity 修复、v2 account/message sync 和 read recovery 的并集。
+未知、残缺或混合得无法证明的同号形态必须 fail closed，不能被猜测性迁移或静默删除。
 
 P2+ API：
 
@@ -313,6 +316,15 @@ pub struct IdentityDeviceSummary {
     pub blocked_reason: Option<String>,
 }
 
+pub struct ActiveSyncAccountBinding {
+    pub owner_identity_id: String,
+    pub account_id: String,
+    pub current_did: String,
+    pub protocol_device_id: String,
+    pub identity_generation: String,
+    pub device_auth_generation: String,
+}
+
 pub struct IdentityRegistry<'a> {
     core: &'a ImCore,
 }
@@ -383,6 +395,16 @@ P5/P6 需要精确设备端点时，Core 从持久化 identity index 的当前 a
 authorization 读取 `ProtocolDeviceId`；host 如需展示设备摘要，应调用
 `IdentityRegistry::device_summary`，不得从缺失值推导 `default` 或 sibling 设备。
 
+`ImClient::active_sync_account_binding()` 是消息同步唯一可用的账号绑定来源。
+`account_id` 必须来自 identity index 的稳定 `user_id`，
+`protocol_device_id` 必须来自当前 active vNext authorization；
+`identity_generation` 来自注册结果或经过 full Handle/current DID 校验的权威 WNS
+文档，缺失时异步补查并持久化。Legacy、hosted、缺失账号、缺失设备授权均
+fail closed；网络不可用、权威数据不一致和本地绑定冲突保留各自 typed error，
+不得回退到 `IdentitySummary.device_id`、DID、Vault context device id 或常量 `1`。
+两个 generation 和后续 cursor 都以 canonical decimal string 暴露，以支持超过
+`u64` 的值而不损失精度。
+
 `delete_local_identity` 是纯本地、crash-safe 的身份退役事务。registry/default
 pointer tombstone 是目录与 Vault 清理之前的权威状态；Core open 会恢复中断阶段，并
 通过永久 identity-ID tombstone 清理由并发尾部任务晚写的 identity-scoped Vault
@@ -400,7 +422,8 @@ keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest
 兼容。Handle 已存在时返回 typed `join_required`，不创建第二个身份，host 使用其中的一次性
 account verification grant 进入 Device Join。新注册本地提交后必须发布 exact-device P5
 PreKey Bundle；失败保留同一 PendingRegistration 精确重试。公共 DTO 不暴露私钥、pending、
-内部 checkpoint 或 refresh token。
+内部 checkpoint 或 refresh token。`HandleRegistrationResult.account_id` 仅在
+`registered` 结果中返回服务端 canonical `user_id`；`join_required` 不伪造账号 ID。
 
 ### 5.1 Device Join host facade
 
@@ -430,12 +453,37 @@ process-local handle; after real local user presence,
 same session/admin invalidates the previous unused handle; an in-flight
 confirmation cannot be replaced.
 
-`DeviceJoinSessionView`, progress, Registry, device, and pending summaries are
-safe projections. They exclude account/Join tokens, pairing secrets/private
-keys, root material, challenge/ciphertext details, `document_version`,
-`document_hash`, `registry_version`, and `auth_generation`. Those version and
-hash fields are AWiki domain-internal concurrency state, not cross-domain ANP
-fields and not host-facing Join DTOs.
+`DeviceJoinSessionView`、progress 和 pending summaries 是安全投影，不包含
+account/Join token、pairing secret/private key、root material、challenge/ciphertext
+细节、`document_version`、`document_hash`、`registry_version` 或
+`auth_generation`。
+
+显式 Registry 读取是唯一例外：`DeviceJoinRegistrySnapshot.registry_version` 和
+`DeviceRegistryAuthorizedDeviceSummary.auth_generation` 以 canonical decimal
+string 暴露，用于 App 的 display-only account-state cache 做单调版本替换。它们不是
+跨域 ANP 字段，也不能授权 Join、revoke 或 root transfer；这些安全动作必须继续通过
+Core fresh Registry 校验。User Service 当前的权威 Registry 实现以 `u64` 维护这两个值，
+但 Rust→Dart→Flutter 边界必须先转换为十进制 `String`，不能让 Dart/JavaScript 数值表示参与
+传输或比较。Registry snapshot 仍不暴露 document version/hash。
+
+```rust
+pub struct DeviceJoinRegistrySnapshot {
+    pub did: Did,
+    pub registry_version: String,
+    pub devices: Vec<DeviceRegistryAuthorizedDeviceSummary>,
+}
+
+pub struct DeviceRegistryAuthorizedDeviceSummary {
+    pub protocol_device_id: ProtocolDeviceId,
+    pub signing_key_id: String,
+    pub e2ee_key_id: String,
+    pub status: DeviceJoinAuthorizationStatus,
+    pub role: DeviceJoinRole,
+    pub management_ready: bool,
+    pub is_current: bool,
+    pub auth_generation: String,
+}
+```
 
 Host 观察到服务端 `consumed` 并不代表本地已经可用。Core 会验证最终 DID
 Document/Manifest，使用候选设备 signing key 发起新的 DID-WBA `get_me` 请求，并从标准
@@ -666,6 +714,8 @@ impl MessageService<'_> {
         query: LocalHistoryQuery,
     ) -> ImResult<Page<Message>>;
     pub fn sync_delta(&self, request: SyncDeltaRequest) -> ImResult<SyncDeltaResult>;
+    pub fn sync_now(&self, request: MessageSyncRequest) -> ImResult<MessageSyncOutcome>;
+    pub fn sync_diagnostics(&self) -> ImResult<MessageSyncDiagnostics>;
     pub fn sync_thread_after(
         &self,
         request: SyncThreadAfterRequest,
@@ -725,6 +775,58 @@ impl MessageService<'_> {
 
 Reliable sync 补充：
 
+- `sync_now(MessageSyncRequest { reason, limit })` 是 v2 普通 Direct/Group 主链路。
+  account、device、cursor 均由 Core 内部从 active binding 和 SQLite 获取，public outcome
+  只暴露高层状态、计数、changed conversation IDs、已提交 incoming message 和诊断。
+  `sync.bootstrap` 的 binding/Group baseline/cursor，以及每页 `sync.delta` 的 receipt、
+  exact-hydrated projection/cursor 均在单个 SQLite 事务提交；必需 hydration、schema、
+  canonical identity 或 route 解析失败时整页回滚，cursor 与 receipt 不变。
+  `message.get_batch` 服务端使用 16 MiB hard response budget；Core 固定按请求顺序每 8 个
+  event ID 分批，为 compact JSON 封装与转义保留余量。任一批次出现 unavailable 时整页不应用。
+  bootstrap 的 `client_instance_id` 是 Core 为每个本地 owner 在同步 SQLite 首次生成并先持久化
+  的随机不透明值：请求丢失/失败重试和重启复用，清库/新 DB 自动变化，不能由 owner/account/
+  device 稳定标识派生。
+- `sync_diagnostics()` 是只读、类型化且产品安全的诊断入口。结果只包含
+  `last_success_at`、`mode`、`pending_mutation_count`、`dirty_domains`、
+  `retry_state` 和可选 `next_retry_at`；不包含 raw cursor/epoch、完整 account/device ID、
+  recovery token/anchor/hash、正文、payload 或 auth token。该调用不发网络请求，不推进
+  checkpoint，也不触发 recovery。
+- 每次成功 delta/snapshot commit 后，Core 可 best-effort 执行最多 256 条本地清理。receipt
+  清理继续保留每 owner 最近至少 10,000 条并保护 recovery anchor；mutation/recovery
+  terminal row 至少保留七天。pending/in-flight/retryable mutation 永不由该清理删除；
+  清理失败不改变已经返回的同步成功语义。
+- `sync_now` 在一次调用内闭合 compact recovery：
+  delta（或 existing-device bootstrap）→ 只存在于 Rust 进程栈的不透明 token →
+  snapshot 严格校验/原子 merge → post-anchor delta。成功只返回既有 `changed` / `idle`；
+  snapshot 或 post-anchor delta 失败返回 `retryable_failure`，授权或 generation fence 返回
+  `auth_revoked`。没有第二个 public recover API，raw token、cursor/anchor、cutoff、policy
+  limit、snapshot 返回数量都不得进入 Rust public DTO、Dart/Flutter、CLI、App、SQLite 或日志。
+  snapshot 合并当前 read/Group 状态和最近普通消息，但不得删除更早的本地消息；receipts、
+  projections、cursor 和 recovery completion 在同一 SQLite 事务提交。Core 按 owner
+  串行化 `sync_now`，并在事务内对 previous cursor、recovery-id hash、anchor 和 phase 做
+  CAS；过期并发恢复不能回退 cursor。Snapshot response 必须是 closed schema，消息时间不得
+  早于服务端 cutoff，event ID/seq 不得重复，read/Group timestamp 必须严格合法。
+- `committed_incoming_messages` 只包含 post-snapshot/live delta 实际提交的 incoming messages；
+  snapshot hydration 与 realtime hint 不进入该列表。
+- 本地 read watermark 更新与 durable `read_state_mark_read` outbox enqueue 是同一 SQLite
+  事务。尚未发送的条目按最大 watermark 合并；已 in-flight payload 不可修改，更高 watermark
+  创建 successor；启动恢复把 stale in-flight 改为 retryable。服务响应或经过 account/device/
+  auth-generation 验证的远端 read-state event 必须在同一事务内执行 MAX merge、更新 read
+  projection 并 ack 已覆盖的 outbox。v2 retry 必须把同一个 outbox `operation_id` 放在
+  ANP `meta.operation_id`；body 只保留 `user_did`、`thread { kind, thread_key }` 和 watermark
+  字段，不发送 account/device/origin selector，也不重复发送 body `operation_id`。发送前
+  必须 claim exact operation；同 aggregate 的 in-flight predecessor 会阻挡 successor。
+  成功响应必须 closed-schema 回显相同 DID/thread，并满足
+  `remote_acknowledged=true`、`pending_remote_ack=false`、`partial=false`、
+  且 server watermark 不低于发送值，才可提交本地 ACK。`fallback_used` 只描述服务端
+  采用的兼容路径，不削弱上述最终 ACK 条件。transport、
+  parse、协议验证或本地 ACK transaction 失败都必须把 claim 退回 `retryable`。
+- Direct read state 可以暂时只引用服务端不透明 `conversation_ref`，即使 48 小时/500 条
+  snapshot window 内没有建立 canonical conversation 的消息，也允许把该状态存入 owner-scoped
+  durable backlog 并提交 snapshot/cursor。后续普通消息建立精确 remote-thread binding 时，
+  Core 在同一事务 replay 并删除 backlog；不得根据 DID 猜测 canonical conversation。
+- `message.read_state_updated` 必须显式携带 `thread_kind`；Core 不根据 thread key 猜测。
+  只有 read state 的 delta/snapshot 也必须在事务提交后产生对应 conversation/thread patch。
 - `ensure_conversation(ConversationReadRef)` 幂等提交空会话存在性。Direct 必须已有
   owner-scoped canonical route，Group 必须已有 active membership；校验失败不写入。
 - `conversations(ConversationQuery)` 从 committed `conversation_registry` 左连接
@@ -737,10 +839,11 @@ Reliable sync 补充：
   独立于 `last_message_at`，因此无消息会话也有稳定排序键。cursor 内部保存上一页最后一条
   `activity_at` 与 `conversation_id` 排序键，比 offset 更能抵抗新增消息或排序变化。
   调用方不得解析、修改或复用到其他 API。
-- `sync_delta` 是高层可靠同步入口，`since_event_seq` 从 `im-core` Rust/SQLite 内部
-  checkpoint 注入，调用方不能传入或推进。checkpoint 按稳定 `owner_identity_id` 与服务端
-  `sync_subject_id` 双重分区；当前 `sync_subject_id` 是 canonical DID，不能在 DID recovery
-  时继承旧 DID 的 event sequence。
+- `sync_delta` 保留为 v1 compatibility 高层入口，`since_event_seq` 从 `im-core`
+  Rust/SQLite 内部 checkpoint 注入，调用方不能传入或推进。该 checkpoint 按稳定
+  `owner_identity_id` 与服务端 `sync_subject_id` 双重分区；当前 `sync_subject_id` 是
+  canonical DID，DID recovery 后不能继承旧 DID 的 event sequence。v1 checkpoint 与
+  v2 cursor 相互隔离，不得互转或共用。
 - 对发送者 owner 投影的普通 P3 Direct 元数据事件，`sync_delta` 按 `message_id + server_seq`
   检查具体消息；缺失时先通过权威 Handle 目录解析 Persona，再按 Direct peer 批量从该页最早缺失
   sequence 前一位调用 `direct.get_history` 补齐；同一个权威 history page 的 peer scope 只解析
@@ -751,7 +854,13 @@ Reliable sync 补充：
   fail closed，保留原 checkpoint。
 - `sync_conversation_after` 是 conversationId-first thread-local 补新 wrapper。新的 App/Dart
   消息显示主路径应使用 `ConversationReadRef.conversation_id`，旧 `sync_thread_after(ThreadRef)`
-  只作为 CLI/legacy adapter 或低层调试入口。
+  只作为 CLI/legacy adapter 或低层调试入口。blocking/async 均调用 account-authorized、
+  plain-only 的 `sync.thread_after`；private body 严格只有 `thread_key`、
+  `after_server_seq`、`limit`。Direct 的 `thread_key` 只能来自 owner-scoped durable
+  canonical-conversation binding，缺失时 fail closed，禁止用 peer DID 猜测；Group 使用
+  Group DID。Core 对服务返回页执行 ordinary-only 防御过滤，E2EE、MLS、device-ciphertext
+  行即使被错误返回也不得进入本地普通消息投影。该路径只提交本地 message facts/projection，
+  不推进 account cursor。
 - `sync.delta` 的 metadata-only message discovery 可以先更新会话活动和未读数，但不会作为
   完整 Message 暴露给 local timeline。`discovered` / `hydrated` / migration-only
   `legacy_probe` 都是 Core 私有持久化状态，不作为每条 Message 的 public DTO 字段暴露，host
@@ -905,10 +1014,16 @@ pub struct Profile {
     pub profile_uri: Option<String>,
     pub subject_type: Option<String>,
     pub updated_at: Option<String>,
+    pub profile_version: Option<String>,
     pub version_id: Option<String>,
     pub ttl: Option<u64>,
 }
 ```
+
+`profile_version` 是 User Service 账号 Profile 域提交后的 canonical non-negative decimal
+string，允许 `"0"` 且不得转换为固定位宽整数。它只在相应私有 Profile RPC 返回该版本时存在。
+`version_id` 仍是 WNS DID Subject Profile 的 `versionId` 展示元数据；二者来源和语义独立，
+旧响应只有 `versionId` 时 `profile_version` 保持 `None`。
 
 `hydrate_display_profiles` 是本地 cache 读取 API，不会发起 WNS / User Service 远程请求。它用于联系人列表、会话列表、群成员列表等热路径水化展示资料；cache miss 时返回 `cache_hit = false`，调用方按 `display_name -> handle -> did` 的展示 fallback 处理。远程刷新仍应通过显式 `resolve_peer` / `public_profile` / 安全验证链路触发。
 

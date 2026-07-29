@@ -11,6 +11,7 @@ pub(crate) struct ThreadReadStateRecord {
     pub(crate) read_watermark_at: Option<String>,
     pub(crate) pending_remote_ack: bool,
     pub(crate) remote_ack_at: Option<String>,
+    pub(crate) remote_state_version: Option<String>,
     pub(crate) updated_at: String,
 }
 
@@ -30,8 +31,8 @@ pub(crate) fn upsert_thread_read_state(
 INSERT INTO thread_read_state
     (owner_identity_id, owner_did, thread_scope, thread_id, conversation_id,
      read_watermark_message_id, read_watermark_seq, read_watermark_at,
-     pending_remote_ack, remote_ack_at, updated_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+     pending_remote_ack, remote_ack_at, remote_state_version, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
 ON CONFLICT(owner_identity_id, thread_scope, thread_id) DO UPDATE SET
     owner_did = excluded.owner_did,
     conversation_id = CASE
@@ -77,6 +78,19 @@ ON CONFLICT(owner_identity_id, thread_scope, thread_id) DO UPDATE SET
         THEN excluded.remote_ack_at
         ELSE thread_read_state.remote_ack_at
     END,
+    remote_state_version = CASE
+        WHEN thread_read_state.remote_state_version IS NULL
+        THEN excluded.remote_state_version
+        WHEN excluded.remote_state_version IS NULL
+        THEN thread_read_state.remote_state_version
+        WHEN length(excluded.remote_state_version) > length(thread_read_state.remote_state_version)
+          OR (
+            length(excluded.remote_state_version) = length(thread_read_state.remote_state_version)
+            AND excluded.remote_state_version >= thread_read_state.remote_state_version
+          )
+        THEN excluded.remote_state_version
+        ELSE thread_read_state.remote_state_version
+    END,
     updated_at = CASE
         WHEN thread_read_state.read_watermark_seq IS NULL THEN excluded.updated_at
         WHEN excluded.read_watermark_seq IS NULL THEN thread_read_state.updated_at
@@ -95,6 +109,7 @@ ON CONFLICT(owner_identity_id, thread_scope, thread_id) DO UPDATE SET
                 nullable_option(record.read_watermark_at.as_deref()),
                 record.pending_remote_ack,
                 nullable_option(record.remote_ack_at.as_deref()),
+                nullable_option(record.remote_state_version.as_deref()),
                 updated_at,
             ],
         )
@@ -118,8 +133,8 @@ pub(crate) fn replace_thread_read_state(
 INSERT INTO thread_read_state
     (owner_identity_id, owner_did, thread_scope, thread_id, conversation_id,
      read_watermark_message_id, read_watermark_seq, read_watermark_at,
-     pending_remote_ack, remote_ack_at, updated_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+     pending_remote_ack, remote_ack_at, remote_state_version, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
 ON CONFLICT(owner_identity_id, thread_scope, thread_id) DO UPDATE SET
     owner_did = excluded.owner_did,
     conversation_id = excluded.conversation_id,
@@ -128,6 +143,7 @@ ON CONFLICT(owner_identity_id, thread_scope, thread_id) DO UPDATE SET
     read_watermark_at = excluded.read_watermark_at,
     pending_remote_ack = excluded.pending_remote_ack,
     remote_ack_at = excluded.remote_ack_at,
+    remote_state_version = excluded.remote_state_version,
     updated_at = excluded.updated_at"#,
             rusqlite::params![
                 owner_identity_id,
@@ -140,6 +156,7 @@ ON CONFLICT(owner_identity_id, thread_scope, thread_id) DO UPDATE SET
                 nullable_option(record.read_watermark_at.as_deref()),
                 record.pending_remote_ack,
                 nullable_option(record.remote_ack_at.as_deref()),
+                nullable_option(record.remote_state_version.as_deref()),
                 updated_at,
             ],
         )
@@ -170,6 +187,7 @@ SELECT owner_identity_id,
        read_watermark_at,
        pending_remote_ack,
        remote_ack_at,
+       remote_state_version,
        updated_at
 FROM thread_read_state
 WHERE owner_identity_id = ?1
@@ -217,6 +235,7 @@ fn thread_read_state_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Threa
             .get::<_, Option<bool>>("pending_remote_ack")?
             .unwrap_or(false),
         remote_ack_at: row.get("remote_ack_at")?,
+        remote_state_version: row.get("remote_state_version")?,
         updated_at: row
             .get::<_, Option<String>>("updated_at")?
             .unwrap_or_default(),

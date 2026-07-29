@@ -340,6 +340,38 @@ void main() {
   });
 
   test('sync API models expose no global checkpoint controls', () {
+    const v2Request = MessageSyncRequest(reason: 'websocket_hint', limit: 100);
+    expect(v2Request.reason, 'websocket_hint');
+    expect(v2Request.limit, 100);
+
+    const v2Outcome = MessageSyncOutcome(
+      status: MessageSyncStatus.recoveryRequired,
+      eventsApplied: 0,
+      pagesFetched: 1,
+      messagesHydrated: 0,
+      duplicatesSkipped: 0,
+      errorCode: 'SYNC_RECOVERY_REQUIRED',
+    );
+    expect(v2Outcome.status, MessageSyncStatus.recoveryRequired);
+    expect(v2Outcome.errorCode, 'SYNC_RECOVERY_REQUIRED');
+    expect(v2Outcome.committedIncomingMessages, isEmpty);
+    expect(MessageSyncStatus.retryableFailure, isNotNull);
+    expect(MessageSyncStatus.authRevoked, isNotNull);
+    const diagnostics = MessageSyncDiagnostics(
+      lastSuccessAt: '2026-07-29T00:00:00Z',
+      mode: MessageSyncMode.retryable,
+      pendingMutationCount: 2,
+      dirtyDomains: [
+        MessageSyncDirtyDomain.messages,
+        MessageSyncDirtyDomain.readState,
+      ],
+      retryState: MessageSyncRetryState.scheduled,
+      nextRetryAt: '2026-07-29T00:01:00Z',
+    );
+    expect(diagnostics.pendingMutationCount, 2);
+    expect(diagnostics.dirtyDomains, hasLength(2));
+    expect(_syncDiagnosticsApiShape, isA<Function>());
+
     const deltaRequest = SyncDeltaRequest(
       limit: 100,
       deviceId: 'device-main',
@@ -376,6 +408,7 @@ void main() {
   });
 
   test('sync API shape remains app-usable', () {
+    expect(_syncNowApiShape, isA<Function>());
     expect(_syncDeltaApiShape, isA<Function>());
     expect(_syncThreadAfterApiShape, isA<Function>());
   });
@@ -389,16 +422,18 @@ void main() {
       kind: 'connection_state_changed',
       state: 'connected',
       sync: RealtimeSyncHint(
-        eventId: 'sev-1',
-        eventSeq: '42',
-        eventType: 'message.created',
+        domains: {SyncDomain.message, SyncDomain.profile},
+        reason: 'message_available',
         syncDirty: true,
         gapDetected: false,
+        hasUnknownDomain: false,
       ),
     );
     expect(event.isConnectionState, isTrue);
-    expect(event.sync?.eventSeq, '42');
+    expect(event.sync?.domains, {SyncDomain.message, SyncDomain.profile});
+    expect(event.sync?.reason, 'message_available');
     expect(event.sync?.syncDirty, isTrue);
+    expect(event.sync?.hasUnknownDomain, isFalse);
 
     const systemEvent = RealtimeEvent(
       kind: 'system_notification_changed',
@@ -585,6 +620,16 @@ Future<SyncDeltaResult> _syncDeltaApiShape(MessageApi api) {
   return api.syncDelta(
     const SyncDeltaRequest(limit: 100, reason: 'app_resumed'),
   );
+}
+
+Future<MessageSyncOutcome> _syncNowApiShape(MessageApi api) {
+  return api.syncNow(
+    const MessageSyncRequest(reason: 'websocket_hint', limit: 100),
+  );
+}
+
+Future<MessageSyncDiagnostics> _syncDiagnosticsApiShape(MessageApi api) {
+  return api.syncDiagnostics();
 }
 
 Future<SyncThreadAfterResult> _syncThreadAfterApiShape(MessageApi api) {

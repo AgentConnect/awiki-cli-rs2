@@ -13,6 +13,98 @@ enum LocalStateCommand {
     CurrentSchemaVersion {
         reply: oneshot::Sender<crate::ImResult<i64>>,
     },
+    LoadOrCreateSyncClientInstanceId {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<String>>,
+    },
+    UpsertIdentityAccountBinding {
+        binding: super::sync_v2::IdentityAccountBinding,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    LoadIdentityAccountBinding {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::IdentityAccountBinding>>>,
+    },
+    LoadSyncThreadBindingForConversation {
+        owner_identity_id: String,
+        conversation_id: String,
+        thread_kind: String,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::SyncThreadBinding>>>,
+    },
+    BootstrapMessageSyncState {
+        state: super::sync_v2::MessageSyncState,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    ApplyBootstrapV2 {
+        input: super::sync_v2::BootstrapApplyInputV2,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    LoadMessageSyncState {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::MessageSyncStateAccess>>,
+    },
+    AdvanceMessageSyncState {
+        state: super::sync_v2::MessageSyncState,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::MessageSyncStateAccess>>,
+    },
+    RecordAppliedSyncEvent {
+        receipt: super::sync_v2::AppliedEventReceipt,
+        reply: oneshot::Sender<crate::ImResult<bool>>,
+    },
+    PruneAppliedSyncEvents {
+        owner_identity_id: String,
+        current_stream_epoch: String,
+        current_scan_seq: String,
+        max_delete: u32,
+        reply: oneshot::Sender<crate::ImResult<usize>>,
+    },
+    LoadSyncDiagnostics {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::SyncDiagnosticsState>>,
+    },
+    CleanupTerminalSyncState {
+        owner_identity_id: String,
+        current_stream_epoch: String,
+        current_scan_seq: String,
+        max_delete: u32,
+        now: i64,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::SyncCleanupOutcome>>,
+    },
+    UpsertSyncRecoveryState {
+        state: super::sync_v2::RecoveryState,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    LoadSyncRecoveryState {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::RecoveryState>>>,
+    },
+    EnqueueLocalMutation {
+        record: super::sync_v2::LocalMutationRecord,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
+    LoadLocalMutation {
+        owner_identity_id: String,
+        mutation_id: String,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::LocalMutationRecord>>>,
+    },
+    ClaimNextReadMutation {
+        owner_identity_id: String,
+        now: i64,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::LocalMutationRecord>>>,
+    },
+    ClaimReadMutationByOperationId {
+        owner_identity_id: String,
+        operation_id: String,
+        now: i64,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_v2::LocalMutationRecord>>>,
+    },
+    RetryLocalMutation {
+        owner_identity_id: String,
+        mutation_id: String,
+        error_code: String,
+        retry_at: i64,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
     EnsureConversation {
         owner_identity_id: String,
         owner_did: String,
@@ -46,6 +138,14 @@ enum LocalStateCommand {
     ApplySyncDelta {
         input: super::sync_state::SyncDeltaApplyInput,
         reply: oneshot::Sender<crate::ImResult<super::sync_state::SyncDeltaApplyOutcome>>,
+    },
+    ApplySyncDeltaV2 {
+        input: super::sync_v2::DeltaApplyInputV2,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2>>,
+    },
+    ApplySyncSnapshotV2 {
+        input: super::sync_v2::SnapshotApplyInputV2,
+        reply: oneshot::Sender<crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2>>,
     },
     ApplySystemNotification {
         input: crate::internal::system_notification::store::SystemNotificationApplyInput,
@@ -456,6 +556,264 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
+    pub(crate) async fn load_or_create_sync_client_instance_id(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<String> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadOrCreateSyncClientInstanceId {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn upsert_identity_account_binding(
+        &self,
+        binding: super::sync_v2::IdentityAccountBinding,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::UpsertIdentityAccountBinding { binding, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_identity_account_binding(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<Option<super::sync_v2::IdentityAccountBinding>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadIdentityAccountBinding {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_sync_thread_binding_for_conversation(
+        &self,
+        owner_identity_id: impl Into<String>,
+        conversation_id: impl Into<String>,
+        thread_kind: impl Into<String>,
+    ) -> crate::ImResult<Option<super::sync_v2::SyncThreadBinding>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadSyncThreadBindingForConversation {
+            owner_identity_id: owner_identity_id.into(),
+            conversation_id: conversation_id.into(),
+            thread_kind: thread_kind.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn bootstrap_message_sync_state(
+        &self,
+        state: super::sync_v2::MessageSyncState,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::BootstrapMessageSyncState { state, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn apply_bootstrap_v2(
+        &self,
+        input: super::sync_v2::BootstrapApplyInputV2,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ApplyBootstrapV2 { input, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_message_sync_state(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<super::sync_v2::MessageSyncStateAccess> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadMessageSyncState {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn advance_message_sync_state(
+        &self,
+        state: super::sync_v2::MessageSyncState,
+    ) -> crate::ImResult<super::sync_v2::MessageSyncStateAccess> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::AdvanceMessageSyncState { state, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn record_applied_sync_event(
+        &self,
+        receipt: super::sync_v2::AppliedEventReceipt,
+    ) -> crate::ImResult<bool> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::RecordAppliedSyncEvent { receipt, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn prune_applied_sync_events(
+        &self,
+        owner_identity_id: impl Into<String>,
+        current_stream_epoch: impl Into<String>,
+        current_scan_seq: impl Into<String>,
+        max_delete: u32,
+    ) -> crate::ImResult<usize> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::PruneAppliedSyncEvents {
+            owner_identity_id: owner_identity_id.into(),
+            current_stream_epoch: current_stream_epoch.into(),
+            current_scan_seq: current_scan_seq.into(),
+            max_delete,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_sync_diagnostics(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<super::sync_v2::SyncDiagnosticsState> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadSyncDiagnostics {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn cleanup_terminal_sync_state(
+        &self,
+        owner_identity_id: impl Into<String>,
+        current_stream_epoch: impl Into<String>,
+        current_scan_seq: impl Into<String>,
+        max_delete: u32,
+        now: i64,
+    ) -> crate::ImResult<super::sync_v2::SyncCleanupOutcome> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::CleanupTerminalSyncState {
+            owner_identity_id: owner_identity_id.into(),
+            current_stream_epoch: current_stream_epoch.into(),
+            current_scan_seq: current_scan_seq.into(),
+            max_delete,
+            now,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn upsert_sync_recovery_state(
+        &self,
+        state: super::sync_v2::RecoveryState,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::UpsertSyncRecoveryState { state, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_sync_recovery_state(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<Option<super::sync_v2::RecoveryState>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadSyncRecoveryState {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn enqueue_local_mutation(
+        &self,
+        record: super::sync_v2::LocalMutationRecord,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::EnqueueLocalMutation { record, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_local_mutation(
+        &self,
+        owner_identity_id: impl Into<String>,
+        mutation_id: impl Into<String>,
+    ) -> crate::ImResult<Option<super::sync_v2::LocalMutationRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadLocalMutation {
+            owner_identity_id: owner_identity_id.into(),
+            mutation_id: mutation_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn claim_next_read_mutation(
+        &self,
+        owner_identity_id: impl Into<String>,
+        now: i64,
+    ) -> crate::ImResult<Option<super::sync_v2::LocalMutationRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ClaimNextReadMutation {
+            owner_identity_id: owner_identity_id.into(),
+            now,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn claim_read_mutation_by_operation_id(
+        &self,
+        owner_identity_id: impl Into<String>,
+        operation_id: impl Into<String>,
+        now: i64,
+    ) -> crate::ImResult<Option<super::sync_v2::LocalMutationRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ClaimReadMutationByOperationId {
+            owner_identity_id: owner_identity_id.into(),
+            operation_id: operation_id.into(),
+            now,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn retry_local_mutation(
+        &self,
+        owner_identity_id: impl Into<String>,
+        mutation_id: impl Into<String>,
+        error_code: impl Into<String>,
+        retry_at: i64,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::RetryLocalMutation {
+            owner_identity_id: owner_identity_id.into(),
+            mutation_id: mutation_id.into(),
+            error_code: error_code.into(),
+            retry_at,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn store_messages(
         &self,
         records: Vec<super::messages::MessageRecord>,
@@ -519,6 +877,26 @@ impl LocalStateDb {
     ) -> crate::ImResult<super::sync_state::SyncDeltaApplyOutcome> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::ApplySyncDelta { input, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn apply_sync_delta_v2(
+        &self,
+        input: super::sync_v2::DeltaApplyInputV2,
+    ) -> crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ApplySyncDeltaV2 { input, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn apply_sync_snapshot_v2(
+        &self,
+        input: super::sync_v2::SnapshotApplyInputV2,
+    ) -> crate::ImResult<super::sync_v2::DeltaApplyOutcomeV2> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ApplySyncSnapshotV2 { input, reply })
             .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
@@ -1405,6 +1783,17 @@ fn run_actor(
 ) {
     let mut connection = match super::open_writable(&sqlite_path) {
         Ok(connection) => {
+            let recovered_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .try_into()
+                .unwrap_or(i64::MAX);
+            if let Err(error) = super::sync_v2::recover_interrupted_work(&connection, recovered_at)
+            {
+                let _ = ready_sender.send(Err(error));
+                return;
+            }
             let _ = ready_sender.send(Ok(()));
             connection
         }
@@ -1418,6 +1807,173 @@ fn run_actor(
         match command {
             LocalStateCommand::CurrentSchemaVersion { reply } => {
                 let result = super::schema::current_schema_version(&connection);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadOrCreateSyncClientInstanceId {
+                owner_identity_id,
+                reply,
+            } => {
+                let result = super::sync_v2::load_or_create_sync_client_instance_id(
+                    &connection,
+                    &owner_identity_id,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::UpsertIdentityAccountBinding { binding, reply } => {
+                let result = super::sync_v2::upsert_identity_account_binding(&connection, &binding);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadIdentityAccountBinding {
+                owner_identity_id,
+                reply,
+            } => {
+                let result =
+                    super::sync_v2::load_identity_account_binding(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadSyncThreadBindingForConversation {
+                owner_identity_id,
+                conversation_id,
+                thread_kind,
+                reply,
+            } => {
+                let result = super::sync_v2::load_sync_thread_binding_for_conversation(
+                    &connection,
+                    &owner_identity_id,
+                    &conversation_id,
+                    &thread_kind,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::BootstrapMessageSyncState { state, reply } => {
+                let result = super::sync_v2::bootstrap_message_sync_state(&connection, &state);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ApplyBootstrapV2 { input, reply } => {
+                let result = super::sync_v2::apply_bootstrap_v2(&connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadMessageSyncState {
+                owner_identity_id,
+                reply,
+            } => {
+                let result =
+                    super::sync_v2::load_message_sync_state(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::AdvanceMessageSyncState { state, reply } => {
+                let result = super::sync_v2::advance_message_sync_state(&connection, &state);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::RecordAppliedSyncEvent { receipt, reply } => {
+                let result = super::sync_v2::record_applied_event(&connection, &receipt);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::PruneAppliedSyncEvents {
+                owner_identity_id,
+                current_stream_epoch,
+                current_scan_seq,
+                max_delete,
+                reply,
+            } => {
+                let result = super::sync_v2::prune_applied_events(
+                    &connection,
+                    &owner_identity_id,
+                    &current_stream_epoch,
+                    &current_scan_seq,
+                    max_delete,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadSyncDiagnostics {
+                owner_identity_id,
+                reply,
+            } => {
+                let result = super::sync_v2::load_sync_diagnostics(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::CleanupTerminalSyncState {
+                owner_identity_id,
+                current_stream_epoch,
+                current_scan_seq,
+                max_delete,
+                now,
+                reply,
+            } => {
+                let result = super::sync_v2::cleanup_terminal_sync_state(
+                    &connection,
+                    &owner_identity_id,
+                    &current_stream_epoch,
+                    &current_scan_seq,
+                    max_delete,
+                    now,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::UpsertSyncRecoveryState { state, reply } => {
+                let result = super::sync_v2::upsert_recovery_state(&connection, &state);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadSyncRecoveryState {
+                owner_identity_id,
+                reply,
+            } => {
+                let result = super::sync_v2::load_recovery_state(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::EnqueueLocalMutation { record, reply } => {
+                let result = super::sync_v2::enqueue_local_mutation(&connection, &record);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::LoadLocalMutation {
+                owner_identity_id,
+                mutation_id,
+                reply,
+            } => {
+                let result = super::sync_v2::load_local_mutation(
+                    &connection,
+                    &owner_identity_id,
+                    &mutation_id,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ClaimNextReadMutation {
+                owner_identity_id,
+                now,
+                reply,
+            } => {
+                let result =
+                    super::sync_v2::claim_next_read_mutation(&connection, &owner_identity_id, now);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ClaimReadMutationByOperationId {
+                owner_identity_id,
+                operation_id,
+                now,
+                reply,
+            } => {
+                let result = super::sync_v2::claim_read_mutation_by_operation_id(
+                    &connection,
+                    &owner_identity_id,
+                    &operation_id,
+                    now,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::RetryLocalMutation {
+                owner_identity_id,
+                mutation_id,
+                error_code,
+                retry_at,
+                reply,
+            } => {
+                let result = super::sync_v2::retry_local_mutation(
+                    &connection,
+                    &owner_identity_id,
+                    &mutation_id,
+                    &error_code,
+                    retry_at,
+                );
                 let _ = reply.send(result);
             }
             LocalStateCommand::EnsureConversation {
@@ -1497,6 +2053,14 @@ fn run_actor(
             }
             LocalStateCommand::ApplySyncDelta { input, reply } => {
                 let result = apply_sync_delta(&mut connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ApplySyncDeltaV2 { input, reply } => {
+                let result = super::sync_v2::apply_delta_v2(&connection, input);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ApplySyncSnapshotV2 { input, reply } => {
+                let result = super::sync_v2::apply_snapshot_v2(&connection, input);
                 let _ = reply.send(result);
             }
             LocalStateCommand::ApplySystemNotification { input, reply } => {
@@ -1964,7 +2528,7 @@ fn run_actor(
                 input,
                 reply,
             } => {
-                let result = super::messages::mark_thread_read_watermark_for_owner_identity(
+                let result = super::sync_v2::mark_thread_read_and_update_outbox(
                     &connection,
                     &owner_identity_id,
                     &owner_did,

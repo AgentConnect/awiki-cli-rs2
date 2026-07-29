@@ -819,6 +819,7 @@ fn registration_response(request: &str) -> String {
             "handle": handle,
             "domain": domain,
             "full_handle": format!("{handle}.{domain}"),
+            "binding_generation": "1",
         },
         "id": rpc["id"].clone(),
     })

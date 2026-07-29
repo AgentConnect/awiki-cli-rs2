@@ -99,6 +99,21 @@ pub(crate) async fn resolve_authoritative_handle_binding_async(
     authoritative_lookup_from_public_document(&normalized.full_handle, &raw)
 }
 
+pub(crate) fn resolve_authoritative_handle_binding(
+    client: &crate::core::ImClient,
+    raw_handle: &str,
+) -> crate::ImResult<crate::directory::HandleLookupResult> {
+    let normalized = normalize_handle_for_client(client, raw_handle)?;
+    let url = authoritative_discovery_url_for_client(client, &normalized);
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let raw = crate::internal::transport::RawJsonTransport::get_json_url(
+        &mut transport,
+        &url,
+        BTreeMap::new(),
+    )?;
+    authoritative_lookup_from_public_document(&normalized.full_handle, &raw)
+}
+
 fn resolution_from_lookup(
     expected_handle: &str,
     lookup: crate::directory::HandleLookupResult,

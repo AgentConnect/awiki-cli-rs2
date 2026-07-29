@@ -2348,6 +2348,35 @@ mod tests {
             .count()
     }
 
+    fn install_pre_v34_thread_read_state_fixture(connection: &Connection) {
+        connection
+            .execute_batch(
+                r#"
+CREATE TABLE thread_read_state (
+    owner_identity_id          TEXT NOT NULL,
+    owner_did                  TEXT NOT NULL DEFAULT '',
+    thread_scope               TEXT NOT NULL,
+    thread_id                  TEXT NOT NULL,
+    conversation_id            TEXT NOT NULL DEFAULT '',
+    read_watermark_message_id  TEXT,
+    read_watermark_seq         TEXT,
+    read_watermark_at          TEXT,
+    pending_remote_ack         INTEGER NOT NULL DEFAULT 0,
+    remote_ack_at              TEXT,
+    updated_at                 TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, thread_scope, thread_id)
+);
+
+CREATE INDEX idx_thread_read_state_owner_pending
+ON thread_read_state(owner_identity_id, pending_remote_ack, updated_at DESC);
+
+CREATE INDEX idx_thread_read_state_owner_conversation
+ON thread_read_state(owner_identity_id, conversation_id);
+"#,
+            )
+            .unwrap();
+    }
+
     fn pending_state() -> V2DirectSessionState {
         let ratchet = x25519_dalek::StaticSecret::from([7; 32]);
         V2DirectSessionState {
@@ -2405,6 +2434,7 @@ mod tests {
     fn v31_forward_migration_drops_only_legacy_private_delivery_state() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(DIRECT_E2EE_V2_SCHEMA).unwrap();
+        install_pre_v34_thread_read_state_fixture(&connection);
         connection
             .execute_batch(
                 r#"
@@ -2471,7 +2501,7 @@ INSERT INTO direct_e2ee_v2_prekey_bundles (
         crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
         assert_eq!(
             crate::internal::local_state::schema::current_schema_version(&connection).unwrap(),
-            31
+            crate::internal::local_state::schema::SCHEMA_VERSION
         );
 
         for table in [
@@ -2570,7 +2600,7 @@ INSERT INTO direct_e2ee_v2_prekey_bundles (
         crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
         assert_eq!(
             crate::internal::local_state::schema::current_schema_version(&connection).unwrap(),
-            31
+            crate::internal::local_state::schema::SCHEMA_VERSION
         );
         assert_eq!(
             connection
@@ -2616,7 +2646,7 @@ INSERT INTO direct_e2ee_v2_prekey_bundles (
         drop(store);
         assert_eq!(
             crate::internal::local_state::schema::current_schema_version(&connection).unwrap(),
-            31
+            crate::internal::local_state::schema::SCHEMA_VERSION
         );
 
         // This sentinel has the retired table name but was created after the

@@ -1,0 +1,1477 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde_json::{json, Map, Value};
+
+use super::common::{self, WireIdentity};
+
+pub(crate) const SYNC_V2_PROFILE: &str = "anp.sync.local.v2";
+pub(crate) const MESSAGE_GET_BATCH_MAX_EVENT_IDS: usize = 100;
+pub(crate) const MESSAGE_GET_BATCH_CLIENT_CHUNK_EVENT_IDS: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncCursorV2 {
+    pub(crate) stream_epoch: String,
+    pub(crate) scan_seq: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SyncBootstrapV2 {
+    pub(crate) account_id: String,
+    pub(crate) device_id: String,
+    pub(crate) server_time: String,
+    pub(crate) cursor: SyncCursorV2,
+    pub(crate) read_state_baseline: Vec<Value>,
+    pub(crate) group_state_baseline: Vec<Value>,
+    pub(crate) warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SyncBootstrapResponseV2 {
+    TailOnly(SyncBootstrapV2),
+    RecoveryRequired {
+        account_id: String,
+        device_id: String,
+        recovery: SyncRecoveryV2,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SyncDeltaPageV2 {
+    pub(crate) server_time: String,
+    pub(crate) events: Vec<SyncEventV2>,
+    pub(crate) next_cursor: SyncCursorV2,
+    pub(crate) has_more: bool,
+    pub(crate) warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SyncDeltaResponseV2 {
+    Delta(SyncDeltaPageV2),
+    RecoveryRequired(SyncRecoveryV2),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncRecoveryV2 {
+    pub(crate) recovery_id: String,
+    pub(crate) token: String,
+    pub(crate) stream_epoch: String,
+    pub(crate) snapshot_scan_seq: String,
+    pub(crate) expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SyncSnapshotV2 {
+    pub(crate) account_id: String,
+    pub(crate) device_id: String,
+    pub(crate) server_time: String,
+    pub(crate) snapshot_cursor: SyncCursorV2,
+    pub(crate) read_states: Vec<Value>,
+    pub(crate) groups: Vec<Value>,
+    pub(crate) recent_plain_messages: Vec<SnapshotPlainMessageV2>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SnapshotPlainMessageV2 {
+    pub(crate) event: SyncEventV2,
+    pub(crate) message: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SyncEventV2 {
+    pub(crate) event_id: String,
+    pub(crate) stream_epoch: String,
+    pub(crate) event_seq: String,
+    pub(crate) event_type: String,
+    pub(crate) schema_version: u32,
+    pub(crate) ignore_safe: bool,
+    pub(crate) account_id: String,
+    pub(crate) recipient_device_id: Option<String>,
+    pub(crate) origin_did: Option<String>,
+    pub(crate) origin_device_id: Option<String>,
+    pub(crate) aggregate_kind: String,
+    pub(crate) aggregate_id: String,
+    pub(crate) state_version: Option<String>,
+    pub(crate) thread_key: Option<String>,
+    pub(crate) occurred_at: String,
+    pub(crate) payload: Value,
+    pub(crate) source: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HydratedMessageV2 {
+    pub(crate) event_id: String,
+    pub(crate) message: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MessageBatchV2 {
+    pub(crate) items: Vec<HydratedMessageV2>,
+    pub(crate) unavailable: Vec<String>,
+}
+
+pub(crate) fn build_bootstrap_params(
+    identity: &WireIdentity,
+    client_instance_id: &str,
+) -> crate::ImResult<Value> {
+    let did = required_string("identity.did", identity.did.as_str())?;
+    let client_instance_id = required_string("client_instance_id", client_instance_id)?;
+    Ok(json!({
+        "meta": common::local_meta(&did, SYNC_V2_PROFILE),
+        "body": {
+            "client_instance_id": client_instance_id,
+            "capabilities": {
+                "sync_profile": SYNC_V2_PROFILE,
+                "event_schema_max": 1
+            }
+        }
+    }))
+}
+
+pub(crate) fn build_delta_params(
+    identity: &WireIdentity,
+    cursor: &SyncCursorV2,
+    limit: u32,
+    reason: &str,
+) -> crate::ImResult<Value> {
+    let did = required_string("identity.did", identity.did.as_str())?;
+    validate_cursor(cursor)?;
+    let limit = validate_limit(limit)?;
+    let reason = validate_reason(reason)?;
+    Ok(json!({
+        "meta": common::local_meta(&did, SYNC_V2_PROFILE),
+        "body": {
+            "cursor": {
+                "stream_epoch": cursor.stream_epoch,
+                "scan_seq": cursor.scan_seq
+            },
+            "limit": limit,
+            "reason": reason
+        }
+    }))
+}
+
+pub(crate) fn build_message_get_batch_params(
+    identity: &WireIdentity,
+    event_ids: &[String],
+) -> crate::ImResult<Value> {
+    let did = required_string("identity.did", identity.did.as_str())?;
+    validate_event_ids(event_ids)?;
+    Ok(json!({
+        "meta": common::local_meta(&did, SYNC_V2_PROFILE),
+        "body": {
+            "event_ids": event_ids
+        }
+    }))
+}
+
+pub(crate) fn build_snapshot_params(
+    identity: &WireIdentity,
+    recovery: &SyncRecoveryV2,
+) -> crate::ImResult<Value> {
+    let did = required_string("identity.did", identity.did.as_str())?;
+    let recovery_id = required_string("recovery_id", &recovery.recovery_id)?;
+    let token = required_string("token", &recovery.token)?;
+    Ok(json!({
+        "meta": common::local_meta(&did, SYNC_V2_PROFILE),
+        "body": {
+            "recovery_id": recovery_id,
+            "token": token
+        }
+    }))
+}
+
+pub(crate) fn build_thread_after_params(
+    identity: &WireIdentity,
+    thread_key: &str,
+    after_server_seq: &str,
+    limit: u32,
+) -> crate::ImResult<Value> {
+    let did = required_string("identity.did", identity.did.as_str())?;
+    let thread_key = required_string("thread_key", thread_key)?;
+    crate::internal::local_state::sync_v2::validate_decimal("after_server_seq", after_server_seq)?;
+    let limit = validate_limit(limit)?;
+    Ok(json!({
+        "meta": common::local_meta(&did, SYNC_V2_PROFILE),
+        "body": {
+            "thread_key": thread_key,
+            "after_server_seq": after_server_seq,
+            "limit": limit
+        }
+    }))
+}
+
+pub(crate) fn validate_thread_after_response(
+    raw: &Value,
+    expected_thread_kind: &str,
+) -> crate::ImResult<()> {
+    if !matches!(expected_thread_kind, "direct" | "group") {
+        return Err(crate::ImError::invalid_input(
+            Some("thread_kind".to_owned()),
+            "thread_kind must be direct or group",
+        ));
+    }
+    let response = object(raw, "sync.thread_after response")?;
+    let expected_fields = ["messages", "next_after_server_seq", "has_more", "warnings"];
+    if response.len() != expected_fields.len()
+        || expected_fields
+            .iter()
+            .any(|field| !response.contains_key(*field))
+    {
+        return Err(invalid_page(
+            "sync.thread_after response fields do not match the v2 contract",
+        ));
+    }
+    let messages = response
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_page("messages must be an array"))?;
+    for message in messages {
+        let message = object(message, "sync.thread_after message")?;
+        if canonical_string_field(message, "thread_kind")? != expected_thread_kind {
+            return Err(invalid_page(
+                "sync.thread_after message thread_kind does not match the requested thread",
+            ));
+        }
+    }
+    decimal_field(response, "next_after_server_seq")?;
+    response
+        .get("has_more")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| invalid_page("has_more must be a boolean"))?;
+    warnings(response.get("warnings"))?;
+    Ok(())
+}
+
+pub(crate) fn parse_bootstrap(raw: &Value) -> crate::ImResult<SyncBootstrapV2> {
+    match parse_bootstrap_response(raw)? {
+        SyncBootstrapResponseV2::TailOnly(bootstrap) => Ok(bootstrap),
+        SyncBootstrapResponseV2::RecoveryRequired { .. } => Err(sync_error(
+            "SYNC_RECOVERY_REQUIRED",
+            "sync.bootstrap requires compact recovery",
+        )),
+    }
+}
+
+pub(crate) fn parse_bootstrap_response(raw: &Value) -> crate::ImResult<SyncBootstrapResponseV2> {
+    let object = object(raw, "sync.bootstrap response")?;
+    if object.get("mode").and_then(Value::as_str) == Some("compact_recovery_required") {
+        let recovery = self::object(
+            object
+                .get("recovery")
+                .ok_or_else(|| invalid_page("bootstrap recovery is required"))?,
+            "bootstrap recovery",
+        )?;
+        canonical_string_field(recovery, "message_cutoff")?;
+        let message_limit = recovery
+            .get("message_limit")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| invalid_page("message_limit must be a positive integer"))?;
+        if message_limit == 0 || message_limit > 500 {
+            return Err(invalid_page("message_limit must be between 1 and 500"));
+        }
+        return Ok(SyncBootstrapResponseV2::RecoveryRequired {
+            account_id: canonical_string_field(object, "account_id")?,
+            device_id: canonical_string_field(object, "device_id")?,
+            recovery: SyncRecoveryV2 {
+                recovery_id: canonical_string_field(recovery, "recovery_id")?,
+                token: canonical_string_field(recovery, "token")?,
+                stream_epoch: positive_decimal_field(recovery, "stream_epoch")?,
+                snapshot_scan_seq: decimal_field(recovery, "snapshot_scan_seq")?,
+                expires_at: canonical_string_field(recovery, "expires_at")?,
+            },
+        });
+    }
+    exact_mode(object, "tail_only")?;
+    let read_state_baseline = object
+        .get("read_state_baseline")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_page("read_state_baseline must be an array"))?;
+    for state in read_state_baseline {
+        if !state.is_object() {
+            return Err(invalid_page("read_state_baseline items must be objects"));
+        }
+        reject_e2ee_value(state)?;
+    }
+    let groups = object
+        .get("group_state_baseline")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_page("group_state_baseline must be an array"))?
+        .clone();
+    for group in &groups {
+        if !group.is_object() {
+            return Err(invalid_page("group_state_baseline items must be objects"));
+        }
+        reject_e2ee_value(group)?;
+    }
+    Ok(SyncBootstrapResponseV2::TailOnly(SyncBootstrapV2 {
+        account_id: canonical_string_field(object, "account_id")?,
+        device_id: canonical_string_field(object, "device_id")?,
+        server_time: canonical_string_field(object, "server_time")?,
+        cursor: parse_cursor(
+            object
+                .get("cursor")
+                .ok_or_else(|| invalid_page("cursor is required"))?,
+        )?,
+        read_state_baseline: read_state_baseline.clone(),
+        group_state_baseline: groups,
+        warnings: warnings(object.get("warnings"))?,
+    }))
+}
+
+pub(crate) fn parse_delta(raw: &Value) -> crate::ImResult<SyncDeltaPageV2> {
+    match parse_delta_response(raw)? {
+        SyncDeltaResponseV2::Delta(page) => Ok(page),
+        SyncDeltaResponseV2::RecoveryRequired(_) => Err(sync_error(
+            "SYNC_RECOVERY_REQUIRED",
+            "sync.delta requires compact recovery",
+        )),
+    }
+}
+
+pub(crate) fn parse_delta_response(raw: &Value) -> crate::ImResult<SyncDeltaResponseV2> {
+    let object = object(raw, "sync.delta response")?;
+    match object.get("mode").and_then(Value::as_str) {
+        Some("compact_recovery_required") => {
+            let events = object
+                .get("events")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid_page("events must be an array"))?;
+            if !events.is_empty()
+                || object.get("next_cursor") != Some(&Value::Null)
+                || object.get("has_more").and_then(Value::as_bool) != Some(false)
+            {
+                return Err(invalid_page(
+                    "compact recovery response must not carry events or a next cursor",
+                ));
+            }
+            let recovery = self::object(
+                object
+                    .get("recovery")
+                    .ok_or_else(|| invalid_page("recovery is required"))?,
+                "sync recovery",
+            )?;
+            // Validate the server-owned policy fields without retaining them beyond
+            // the private wire decoder.
+            canonical_string_field(recovery, "message_cutoff")?;
+            let message_limit = recovery
+                .get("message_limit")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| invalid_page("message_limit must be a positive integer"))?;
+            if message_limit == 0 || message_limit > 500 {
+                return Err(invalid_page("message_limit must be between 1 and 500"));
+            }
+            return Ok(SyncDeltaResponseV2::RecoveryRequired(SyncRecoveryV2 {
+                recovery_id: canonical_string_field(recovery, "recovery_id")?,
+                token: canonical_string_field(recovery, "token")?,
+                stream_epoch: positive_decimal_field(recovery, "stream_epoch")?,
+                snapshot_scan_seq: decimal_field(recovery, "snapshot_scan_seq")?,
+                expires_at: canonical_string_field(recovery, "expires_at")?,
+            }));
+        }
+        Some("delta") => {}
+        _ => return Err(invalid_page("sync.delta response has an unsupported mode")),
+    }
+    if !matches!(object.get("recovery"), None | Some(Value::Null)) {
+        return Err(invalid_page("delta response recovery must be null"));
+    }
+    let events = object
+        .get("events")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_page("events must be an array"))?
+        .iter()
+        .map(parse_event)
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    let mut event_ids = BTreeSet::new();
+    let mut event_seqs = BTreeSet::new();
+    for event in &events {
+        if !event_ids.insert(event.event_id.as_str()) {
+            return Err(invalid_page("sync.delta contains a duplicate event_id"));
+        }
+        if !event_seqs.insert(event.event_seq.as_str()) {
+            return Err(invalid_page("sync.delta contains a duplicate event_seq"));
+        }
+    }
+    Ok(SyncDeltaResponseV2::Delta(SyncDeltaPageV2 {
+        server_time: canonical_string_field(object, "server_time")?,
+        events,
+        next_cursor: parse_cursor(
+            object
+                .get("next_cursor")
+                .ok_or_else(|| invalid_page("next_cursor is required"))?,
+        )?,
+        has_more: object
+            .get("has_more")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| invalid_page("has_more must be a boolean"))?,
+        warnings: warnings(object.get("warnings"))?,
+    }))
+}
+
+pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
+    let object = object(raw, "sync.snapshot response")?;
+    exact_fields(
+        object,
+        &[
+            "mode",
+            "account_id",
+            "device_id",
+            "server_time",
+            "snapshot_cursor",
+            "read_states",
+            "groups",
+            "recent_plain_messages",
+            "message_policy",
+            "excluded",
+        ],
+        "sync.snapshot response",
+    )?;
+    exact_mode(object, "compact_recovery")?;
+    let account_id = canonical_string_field(object, "account_id")?;
+    let device_id = canonical_string_field(object, "device_id")?;
+    let server_time = canonical_timestamp_field(object, "server_time")?;
+    let snapshot_cursor = parse_cursor(
+        object
+            .get("snapshot_cursor")
+            .ok_or_else(|| invalid_page("snapshot_cursor is required"))?,
+    )?;
+    let excluded = self::object(
+        object
+            .get("excluded")
+            .ok_or_else(|| invalid_page("excluded is required"))?,
+        "snapshot excluded",
+    )?;
+    exact_fields(
+        excluded,
+        &["e2ee_messages", "plain_messages_before_cutoff"],
+        "snapshot excluded",
+    )?;
+    if excluded.get("e2ee_messages").and_then(Value::as_bool) != Some(true)
+        || excluded
+            .get("plain_messages_before_cutoff")
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
+        return Err(invalid_page(
+            "snapshot must explicitly exclude E2EE and pre-cutoff messages",
+        ));
+    }
+    let policy = self::object(
+        object
+            .get("message_policy")
+            .ok_or_else(|| invalid_page("message_policy is required"))?,
+        "snapshot message policy",
+    )?;
+    exact_fields(
+        policy,
+        &[
+            "server_cutoff",
+            "max_logical_messages",
+            "returned_logical_messages",
+        ],
+        "snapshot message policy",
+    )?;
+    let server_cutoff = canonical_timestamp_field(policy, "server_cutoff")?;
+    let server_cutoff = chrono::DateTime::parse_from_rfc3339(&server_cutoff)
+        .map_err(|_| invalid_page("server_cutoff must be an RFC3339 timestamp"))?;
+    let max_logical_messages = policy
+        .get("max_logical_messages")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| invalid_page("max_logical_messages must be an integer"))?;
+    if max_logical_messages != 500 {
+        return Err(invalid_page(
+            "max_logical_messages must equal the frozen value 500",
+        ));
+    }
+    let returned_logical_messages = policy
+        .get("returned_logical_messages")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| invalid_page("returned_logical_messages must be an integer"))?;
+    if returned_logical_messages > 500 {
+        return Err(invalid_page(
+            "returned_logical_messages must not exceed 500",
+        ));
+    }
+    let mut event_ids = BTreeSet::new();
+    let mut event_seqs = BTreeSet::new();
+    let recent_plain_messages = object
+        .get("recent_plain_messages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_page("recent_plain_messages must be an array"))?
+        .iter()
+        .map(|item| {
+            let item = self::object(item, "snapshot plain message")?;
+            if item.len() != 2 || !item.contains_key("event") || !item.contains_key("message") {
+                return Err(invalid_page(
+                    "snapshot plain message must contain exactly event and message",
+                ));
+            }
+            let event = parse_event(
+                item.get("event")
+                    .ok_or_else(|| invalid_page("snapshot message event is required"))?,
+            )?;
+            if event.event_type != "message.created" {
+                return Err(invalid_page(
+                    "snapshot message event must be message.created",
+                ));
+            }
+            if !event_ids.insert(event.event_id.clone())
+                || !event_seqs.insert(event.event_seq.clone())
+            {
+                return Err(invalid_page(
+                    "snapshot message event_id and event_seq must be unique",
+                ));
+            }
+            if event.account_id != account_id
+                || event.stream_epoch != snapshot_cursor.stream_epoch
+                || event.recipient_device_id.is_some()
+                || crate::internal::local_state::sync_v2::compare_decimal(
+                    &event.event_seq,
+                    &snapshot_cursor.scan_seq,
+                )? == std::cmp::Ordering::Greater
+            {
+                return Err(invalid_page(
+                    "snapshot message event is outside the account/epoch/anchor boundary",
+                ));
+            }
+            let message = item
+                .get("message")
+                .filter(|value| value.is_object())
+                .cloned()
+                .ok_or_else(|| invalid_page("snapshot message must be an object"))?;
+            let accepted_at = message
+                .get("accepted_at")
+                .or_else(|| message.get("created_at"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    invalid_page("snapshot message requires accepted_at or created_at")
+                })?;
+            let accepted_at = chrono::DateTime::parse_from_rfc3339(accepted_at)
+                .map_err(|_| invalid_page("snapshot message timestamp must be RFC3339"))?;
+            if accepted_at < server_cutoff {
+                return Err(invalid_page(
+                    "snapshot message timestamp is before message_policy.server_cutoff",
+                ));
+            }
+            reject_e2ee_value(&message)?;
+            validate_message_kind_matches_hydration(&event, &message)?;
+            Ok(SnapshotPlainMessageV2 { event, message })
+        })
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    if recent_plain_messages.len() > 500 {
+        return Err(invalid_page(
+            "snapshot contains more than 500 ordinary messages",
+        ));
+    }
+    if returned_logical_messages != recent_plain_messages.len() as u64 {
+        return Err(invalid_page(
+            "returned_logical_messages does not match recent_plain_messages",
+        ));
+    }
+    let read_states = object
+        .get("read_states")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_page("read_states must be an array"))?
+        .iter()
+        .map(|value| {
+            let state = self::object(value, "snapshot read state")?;
+            exact_fields(
+                state,
+                &[
+                    "thread_kind",
+                    "thread_key",
+                    "read_up_to_thread_seq",
+                    "read_up_to_message_id",
+                    "state_version",
+                    "updated_by_device_id",
+                    "updated_at",
+                ],
+                "snapshot read state",
+            )?;
+            canonical_timestamp_field(state, "updated_at")?;
+            optional_canonical_string_field(state, "read_up_to_message_id")?;
+            optional_canonical_string_field(state, "updated_by_device_id")?;
+            Ok(value.clone())
+        })
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    let groups = object
+        .get("groups")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_page("groups must be an array"))?
+        .iter()
+        .map(|value| {
+            let state = self::object(value, "snapshot group state")?;
+            exact_fields(
+                state,
+                &[
+                    "group_did",
+                    "host_service_did",
+                    "creator_did",
+                    "group_state_version",
+                    "group_event_seq",
+                    "required_security_profile",
+                    "group_profile",
+                    "member_role",
+                    "membership_status",
+                    "member_count",
+                    "updated_at",
+                ],
+                "snapshot group state",
+            )?;
+            canonical_timestamp_field(state, "updated_at")?;
+            Ok(value.clone())
+        })
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    for value in read_states.iter().chain(groups.iter()) {
+        if !value.is_object() {
+            return Err(invalid_page("snapshot state items must be objects"));
+        }
+        reject_e2ee_value(value)?;
+    }
+    Ok(SyncSnapshotV2 {
+        account_id,
+        device_id,
+        server_time,
+        snapshot_cursor,
+        read_states,
+        groups,
+        recent_plain_messages,
+    })
+}
+
+fn exact_fields(
+    object: &Map<String, Value>,
+    expected: &[&str],
+    label: &str,
+) -> crate::ImResult<()> {
+    if object.len() != expected.len() || expected.iter().any(|field| !object.contains_key(*field)) {
+        return Err(invalid_page(format!(
+            "{label} must contain exactly the frozen fields"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn parse_message_batch(
+    raw: &Value,
+    requested_event_ids: &[String],
+) -> crate::ImResult<MessageBatchV2> {
+    validate_event_ids(requested_event_ids)?;
+    let request_order = requested_event_ids
+        .iter()
+        .enumerate()
+        .map(|(index, event_id)| (event_id.as_str(), index))
+        .collect::<BTreeMap<_, _>>();
+    let response = object(raw, "message.get_batch response")?;
+    let items = response
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_page("items must be an array"))?
+        .iter()
+        .map(|item| {
+            let item = object(item, "message.get_batch item")?;
+            let event_id = canonical_string_field(item, "event_id")?;
+            let message = item
+                .get("message")
+                .filter(|message| message.is_object())
+                .cloned()
+                .ok_or_else(|| invalid_page("hydrated message must be an object"))?;
+            reject_e2ee_value(&message)?;
+            Ok(HydratedMessageV2 { event_id, message })
+        })
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    let unavailable = response
+        .get("unavailable")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_page("unavailable must be an array"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| invalid_page("unavailable entries must be strings"))
+                .and_then(|value| required_string("unavailable.event_id", value))
+        })
+        .collect::<crate::ImResult<Vec<_>>>()?;
+
+    let mut seen = BTreeSet::new();
+    validate_response_order(
+        items.iter().map(|item| item.event_id.as_str()),
+        &request_order,
+        "items",
+        &mut seen,
+    )?;
+    validate_response_order(
+        unavailable.iter().map(String::as_str),
+        &request_order,
+        "unavailable",
+        &mut seen,
+    )?;
+    if seen.len() != requested_event_ids.len() {
+        return Err(invalid_page(
+            "message.get_batch response does not cover every requested event_id",
+        ));
+    }
+    Ok(MessageBatchV2 { items, unavailable })
+}
+
+fn parse_event(value: &Value) -> crate::ImResult<SyncEventV2> {
+    let object = object(value, "sync event")?;
+    let payload = object
+        .get("payload")
+        .filter(|payload| payload.is_object())
+        .cloned()
+        .ok_or_else(|| invalid_page("event payload must be an object"))?;
+    let schema_version = object
+        .get("schema_version")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| invalid_page("schema_version must be a positive integer"))?;
+    if schema_version == 0 {
+        return Err(invalid_page("schema_version must be a positive integer"));
+    }
+    let state_version = optional_decimal_field(object, "state_version")?;
+    let source = match object.get("source") {
+        None | Some(Value::Null) => None,
+        Some(value) if value.is_object() => Some(value.clone()),
+        Some(_) => return Err(invalid_page("source must be an object or null")),
+    };
+    Ok(SyncEventV2 {
+        event_id: canonical_string_field(object, "event_id")?,
+        stream_epoch: positive_decimal_field(object, "stream_epoch")?,
+        event_seq: positive_decimal_field(object, "event_seq")?,
+        event_type: canonical_string_field(object, "event_type")?,
+        schema_version,
+        ignore_safe: object
+            .get("ignore_safe")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| invalid_page("ignore_safe must be a boolean"))?,
+        account_id: canonical_string_field(object, "account_id")?,
+        recipient_device_id: optional_canonical_string_field(object, "recipient_device_id")?,
+        origin_did: optional_canonical_string_field(object, "origin_did")?,
+        origin_device_id: optional_canonical_string_field(object, "origin_device_id")?,
+        aggregate_kind: canonical_string_field(object, "aggregate_kind")?,
+        aggregate_id: canonical_string_field(object, "aggregate_id")?,
+        state_version,
+        thread_key: optional_canonical_string_field(object, "thread_key")?,
+        occurred_at: canonical_string_field(object, "occurred_at")?,
+        payload,
+        source,
+    })
+}
+
+fn parse_cursor(value: &Value) -> crate::ImResult<SyncCursorV2> {
+    let object = object(value, "cursor")?;
+    let cursor = SyncCursorV2 {
+        stream_epoch: positive_decimal_field(object, "stream_epoch")?,
+        scan_seq: decimal_field(object, "scan_seq")?,
+    };
+    validate_cursor(&cursor)?;
+    Ok(cursor)
+}
+
+fn validate_cursor(cursor: &SyncCursorV2) -> crate::ImResult<()> {
+    crate::internal::local_state::sync_v2::validate_positive_decimal(
+        "stream_epoch",
+        &cursor.stream_epoch,
+    )?;
+    crate::internal::local_state::sync_v2::validate_decimal("scan_seq", &cursor.scan_seq)
+}
+
+fn validate_event_ids(event_ids: &[String]) -> crate::ImResult<()> {
+    if event_ids.is_empty() || event_ids.len() > MESSAGE_GET_BATCH_MAX_EVENT_IDS {
+        return Err(crate::ImError::invalid_input(
+            Some("event_ids".to_owned()),
+            format!(
+                "event_ids must contain between 1 and {MESSAGE_GET_BATCH_MAX_EVENT_IDS} entries"
+            ),
+        ));
+    }
+    let mut unique = BTreeSet::new();
+    for event_id in event_ids {
+        required_string("event_ids", event_id)?;
+        if !unique.insert(event_id.as_str()) {
+            return Err(crate::ImError::invalid_input(
+                Some("event_ids".to_owned()),
+                "event_ids must not contain duplicates",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_response_order<'a>(
+    event_ids: impl Iterator<Item = &'a str>,
+    request_order: &BTreeMap<&str, usize>,
+    field: &str,
+    seen: &mut BTreeSet<String>,
+) -> crate::ImResult<()> {
+    let mut previous = None;
+    for event_id in event_ids {
+        let Some(index) = request_order.get(event_id).copied() else {
+            return Err(invalid_page(format!(
+                "{field} contains an event_id that was not requested"
+            )));
+        };
+        if previous.is_some_and(|previous| index <= previous) {
+            return Err(invalid_page(format!(
+                "{field} does not preserve request order"
+            )));
+        }
+        if !seen.insert(event_id.to_owned()) {
+            return Err(invalid_page(
+                "message.get_batch repeats an event_id across response fields",
+            ));
+        }
+        previous = Some(index);
+    }
+    Ok(())
+}
+
+fn reject_e2ee_value(value: &Value) -> crate::ImResult<()> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid_page("ordinary sync v2 value must be an object"))?;
+    reject_e2ee_discriminators(object)?;
+    if let Some(metadata) = object.get("metadata").and_then(Value::as_object) {
+        reject_e2ee_discriminators(metadata)?;
+    }
+    Ok(())
+}
+
+fn reject_e2ee_discriminators(object: &Map<String, Value>) -> crate::ImResult<()> {
+    let forbidden = [
+        "anp.direct.e2ee",
+        "anp.group.e2ee",
+        "group.e2ee.",
+        "e2ee",
+        "mls",
+        "secure_direct",
+    ];
+    let has_forbidden_discriminator = ["profile", "security_profile", "thread_kind"]
+        .into_iter()
+        .filter_map(|field| object.get(field).and_then(Value::as_str))
+        .map(str::to_ascii_lowercase)
+        .any(|value| forbidden.iter().any(|token| value.contains(token)));
+    if has_forbidden_discriminator
+        || object
+            .get("secure")
+            .and_then(Value::as_bool)
+            .is_some_and(|secure| secure)
+    {
+        return Err(invalid_page(
+            "ordinary sync v2 response contains an E2EE/MLS value",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_reason(value: &str) -> crate::ImResult<String> {
+    let value = required_string("reason", value)?;
+    if matches!(
+        value.as_str(),
+        "session_start"
+            | "app_resume"
+            | "websocket_hint"
+            | "websocket_reconnect"
+            | "foreground_reconcile"
+            | "manual_refresh"
+            | "after_mutation"
+    ) {
+        Ok(value)
+    } else {
+        Err(crate::ImError::invalid_input(
+            Some("reason".to_owned()),
+            "unsupported message sync reason",
+        ))
+    }
+}
+
+fn validate_limit(limit: u32) -> crate::ImResult<u32> {
+    if (1..=500).contains(&limit) {
+        Ok(limit)
+    } else {
+        Err(crate::ImError::invalid_input(
+            Some("limit".to_owned()),
+            "message sync limit must be between 1 and 500",
+        ))
+    }
+}
+
+fn exact_mode(object: &Map<String, Value>, expected: &str) -> crate::ImResult<()> {
+    let mode = canonical_string_field(object, "mode")?;
+    if mode == expected {
+        Ok(())
+    } else {
+        Err(invalid_page(format!(
+            "response mode must be {expected:?}, got {mode:?}"
+        )))
+    }
+}
+
+fn warnings(value: Option<&Value>) -> crate::ImResult<Vec<String>> {
+    let Some(values) = value.and_then(Value::as_array) else {
+        return Err(invalid_page("warnings must be an array"));
+    };
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| invalid_page("warning entries must be strings"))
+                .and_then(|value| required_string("warning", value))
+        })
+        .collect()
+}
+
+fn object<'a>(value: &'a Value, label: &str) -> crate::ImResult<&'a Map<String, Value>> {
+    value
+        .as_object()
+        .ok_or_else(|| invalid_page(format!("{label} must be an object")))
+}
+
+fn canonical_string_field(
+    object: &Map<String, Value>,
+    field: &'static str,
+) -> crate::ImResult<String> {
+    object
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_page(format!("{field} must be a string")))
+        .and_then(|value| required_string(field, value))
+}
+
+fn canonical_timestamp_field(
+    object: &Map<String, Value>,
+    field: &'static str,
+) -> crate::ImResult<String> {
+    let value = canonical_string_field(object, field)?;
+    time::OffsetDateTime::parse(&value, &time::format_description::well_known::Rfc3339)
+        .map_err(|_| invalid_page(format!("{field} must be an RFC 3339 timestamp")))?;
+    Ok(value)
+}
+
+fn validate_message_kind_matches_hydration(
+    event: &SyncEventV2,
+    message: &Value,
+) -> crate::ImResult<()> {
+    let event_kind = event
+        .payload
+        .get("message_kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_page("message.created payload is missing message_kind"))?;
+    let expected_thread_kind = match event_kind {
+        "direct_plain" => "direct",
+        "group_plain" => "group",
+        _ => {
+            return Err(invalid_page(
+                "snapshot message event is not an ordinary Direct/Group message",
+            ))
+        }
+    };
+    if message.get("thread_kind").and_then(Value::as_str) != Some(expected_thread_kind) {
+        return Err(invalid_page(
+            "snapshot message thread_kind conflicts with its event message_kind",
+        ));
+    }
+    Ok(())
+}
+
+fn optional_canonical_string_field(
+    object: &Map<String, Value>,
+    field: &'static str,
+) -> crate::ImResult<Option<String>> {
+    match object.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => required_string(field, value).map(Some),
+        Some(_) => Err(invalid_page(format!("{field} must be a string or null"))),
+    }
+}
+
+fn decimal_field(object: &Map<String, Value>, field: &'static str) -> crate::ImResult<String> {
+    let value = canonical_string_field(object, field)?;
+    crate::internal::local_state::sync_v2::validate_decimal(field, &value)
+        .map_err(|_| invalid_page(format!("{field} must be a canonical decimal string")))?;
+    Ok(value)
+}
+
+fn positive_decimal_field(
+    object: &Map<String, Value>,
+    field: &'static str,
+) -> crate::ImResult<String> {
+    let value = canonical_string_field(object, field)?;
+    crate::internal::local_state::sync_v2::validate_positive_decimal(field, &value).map_err(
+        |_| {
+            invalid_page(format!(
+                "{field} must be a canonical positive decimal string"
+            ))
+        },
+    )?;
+    Ok(value)
+}
+
+fn optional_decimal_field(
+    object: &Map<String, Value>,
+    field: &'static str,
+) -> crate::ImResult<Option<String>> {
+    match object.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => {
+            crate::internal::local_state::sync_v2::validate_decimal(field, value).map_err(
+                |_| {
+                    invalid_page(format!(
+                        "{field} must be a canonical decimal string or null"
+                    ))
+                },
+            )?;
+            Ok(Some(value.clone()))
+        }
+        Some(_) => Err(invalid_page(format!(
+            "{field} must be a decimal string or null"
+        ))),
+    }
+}
+
+fn required_string(field: &'static str, value: &str) -> crate::ImResult<String> {
+    if value.trim().is_empty() || value.trim() != value {
+        return Err(crate::ImError::invalid_input(
+            Some(field.to_owned()),
+            format!("{field} must be a non-empty canonical string"),
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+fn invalid_page(message: impl Into<String>) -> crate::ImError {
+    crate::ImError::Service {
+        status_code: None,
+        code: Some("SYNC_INVALID_PAGE".to_owned()),
+        message: message.into(),
+        data: None,
+    }
+}
+
+fn sync_error(code: &str, message: impl Into<String>) -> crate::ImError {
+    crate::ImError::Service {
+        status_code: None,
+        code: Some(code.to_owned()),
+        message: message.into(),
+        data: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(event_id: &str, event_seq: &str) -> Value {
+        json!({
+            "event_id": event_id,
+            "stream_epoch": "1",
+            "event_seq": event_seq,
+            "event_type": "message.created",
+            "schema_version": 1,
+            "ignore_safe": false,
+            "account_id": "account-1",
+            "recipient_device_id": null,
+            "origin_did": "did:example:alice",
+            "origin_device_id": "device-1",
+            "aggregate_kind": "direct_message",
+            "aggregate_id": "message-1",
+            "state_version": null,
+            "thread_key": "conversation-1",
+            "occurred_at": "2026-07-28T10:00:00Z",
+            "payload": {},
+            "source": {}
+        })
+    }
+
+    #[test]
+    fn frozen_delta_fixture_decodes_decimal_strings_and_sparse_scan() {
+        let raw = json!({
+            "mode": "delta",
+            "server_time": "2026-07-28T10:00:00Z",
+            "events": [event("event-1", "100"), event("event-2", "102")],
+            "next_cursor": {"stream_epoch": "1", "scan_seq": "105"},
+            "has_more": false,
+            "recovery": null,
+            "warnings": []
+        });
+        let page = parse_delta(&raw).unwrap();
+        assert_eq!(page.events[1].event_seq, "102");
+        assert_eq!(page.next_cursor.scan_seq, "105");
+    }
+
+    #[test]
+    fn unknown_required_fields_remain_available_to_the_reducer() {
+        let mut raw = event("event-1", "1");
+        raw["event_type"] = json!("future.required");
+        raw["ignore_safe"] = json!(false);
+        raw["schema_version"] = json!(2);
+        let page = parse_delta(&json!({
+            "mode": "delta",
+            "server_time": "2026-07-28T10:00:00Z",
+            "events": [raw],
+            "next_cursor": {"stream_epoch": "1", "scan_seq": "1"},
+            "has_more": false,
+            "recovery": null,
+            "warnings": []
+        }))
+        .unwrap();
+        assert!(!page.events[0].ignore_safe);
+        assert_eq!(page.events[0].schema_version, 2);
+    }
+
+    #[test]
+    fn message_batch_rejects_duplicates_unavailable_and_order_drift() {
+        let request = vec!["event-1".to_owned(), "event-2".to_owned()];
+        assert!(parse_message_batch(
+            &json!({
+                "items": [
+                    {"event_id": "event-2", "message": {}},
+                    {"event_id": "event-1", "message": {}}
+                ],
+                "unavailable": []
+            }),
+            &request
+        )
+        .is_err());
+        assert!(build_message_get_batch_params(
+            &WireIdentity {
+                did: "did:example:alice".to_owned()
+            },
+            &["event-1".to_owned(), "event-1".to_owned()]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn ordinary_content_cannot_trigger_e2ee_discriminator_rejection() {
+        let request = vec!["event-1".to_owned()];
+        assert!(parse_message_batch(
+            &json!({
+                "items": [{
+                    "event_id": "event-1",
+                    "message": {
+                        "thread_kind": "direct",
+                        "content": "anp.direct.e2ee and mls are ordinary user text"
+                    }
+                }],
+                "unavailable": []
+            }),
+            &request
+        )
+        .is_ok());
+        assert!(parse_message_batch(
+            &json!({
+                "items": [{
+                    "event_id": "event-1",
+                    "message": {
+                        "thread_kind": "direct",
+                        "security_profile": "anp.direct.e2ee.v1"
+                    }
+                }],
+                "unavailable": []
+            }),
+            &request
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn bootstrap_accepts_plain_current_read_state_baseline_in_stage_three() {
+        let parsed = parse_bootstrap(&json!({
+            "mode": "tail_only",
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "server_time": "2026-07-28T10:00:00Z",
+            "cursor": {"stream_epoch": "1", "scan_seq": "10"},
+            "read_state_baseline": [{
+                "thread_kind": "direct",
+                "thread_key": "direct-1",
+                "read_up_to_thread_seq": "9",
+                "state_version": "2"
+            }],
+            "group_state_baseline": [],
+            "warnings": []
+        }))
+        .unwrap();
+        assert_eq!(parsed.read_state_baseline.len(), 1);
+    }
+
+    #[test]
+    fn thread_after_v2_has_exact_private_body_and_strict_response_shape() {
+        let params = build_thread_after_params(
+            &WireIdentity {
+                did: "did:example:alice".to_owned(),
+            },
+            "conversation-ref-1",
+            "42",
+            100,
+        )
+        .unwrap();
+        assert_eq!(
+            params["body"],
+            json!({
+                "thread_key": "conversation-ref-1",
+                "after_server_seq": "42",
+                "limit": 100
+            })
+        );
+        assert!(validate_thread_after_response(
+            &json!({
+                "messages": [{"thread_kind": "direct"}],
+                "next_after_server_seq": "43",
+                "has_more": false,
+                "warnings": []
+            }),
+            "direct"
+        )
+        .is_ok());
+        assert!(validate_thread_after_response(
+            &json!({
+                "messages": [{"thread_kind": "group"}],
+                "next_after_server_seq": "43",
+                "has_more": false,
+                "warnings": []
+            }),
+            "direct"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_and_snapshot_keep_policy_and_token_inside_private_wire_types() {
+        let recovery = match parse_delta_response(&json!({
+            "mode": "compact_recovery_required",
+            "server_time": "2026-07-28T12:00:03Z",
+            "events": [],
+            "next_cursor": null,
+            "has_more": false,
+            "recovery": {
+                "recovery_id": "recovery-123",
+                "token": "opaque-secret",
+                "stream_epoch": "2",
+                "snapshot_scan_seq": "15020",
+                "message_cutoff": "2026-07-26T12:00:03Z",
+                "message_limit": 500,
+                "expires_at": "2026-07-28T12:10:03Z"
+            },
+            "warnings": []
+        }))
+        .unwrap()
+        {
+            SyncDeltaResponseV2::RecoveryRequired(recovery) => recovery,
+            SyncDeltaResponseV2::Delta(_) => panic!("expected recovery"),
+        };
+        let params = build_snapshot_params(
+            &WireIdentity {
+                did: "did:example:alice".to_owned(),
+            },
+            &recovery,
+        )
+        .unwrap();
+        assert_eq!(params.pointer("/body/token"), Some(&json!("opaque-secret")));
+
+        let snapshot = parse_snapshot(&json!({
+            "mode": "compact_recovery",
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "server_time": "2026-07-28T12:00:04Z",
+            "snapshot_cursor": {"stream_epoch": "2", "scan_seq": "15020"},
+            "read_states": [],
+            "groups": [],
+            "recent_plain_messages": [],
+            "message_policy": {
+                "server_cutoff": "2026-07-26T12:00:03Z",
+                "max_logical_messages": 500,
+                "returned_logical_messages": 0
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true
+            }
+        }))
+        .unwrap();
+        assert_eq!(snapshot.snapshot_cursor.scan_seq, "15020");
+        assert!(snapshot.recent_plain_messages.is_empty());
+    }
+
+    #[test]
+    fn snapshot_rejects_non_frozen_limit_and_inconsistent_returned_count() {
+        let base = json!({
+            "mode": "compact_recovery",
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "server_time": "2026-07-28T12:00:04Z",
+            "snapshot_cursor": {"stream_epoch": "2", "scan_seq": "10"},
+            "read_states": [],
+            "groups": [],
+            "recent_plain_messages": [],
+            "message_policy": {
+                "server_cutoff": "2026-07-26T12:00:03Z",
+                "max_logical_messages": 500,
+                "returned_logical_messages": 0
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true
+            }
+        });
+        let mut wrong_limit = base.clone();
+        wrong_limit["message_policy"]["max_logical_messages"] = json!(499);
+        assert!(parse_snapshot(&wrong_limit).is_err());
+
+        let mut wrong_count = base.clone();
+        wrong_count["message_policy"]["returned_logical_messages"] = json!(1);
+        assert!(parse_snapshot(&wrong_count).is_err());
+
+        let mut invalid_cutoff = base;
+        invalid_cutoff["message_policy"]["server_cutoff"] = json!("not-a-timestamp");
+        assert!(parse_snapshot(&invalid_cutoff).is_err());
+    }
+
+    #[test]
+    fn snapshot_rejects_device_targeted_or_kind_mismatched_message_envelopes() {
+        let mut snapshot_event = event("event-snapshot-1", "10");
+        snapshot_event["stream_epoch"] = json!("2");
+        snapshot_event["account_id"] = json!("account-1");
+        snapshot_event["payload"]["message_kind"] = json!("direct_plain");
+        let base = json!({
+            "mode": "compact_recovery",
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "server_time": "2026-07-28T12:00:04Z",
+            "snapshot_cursor": {"stream_epoch": "2", "scan_seq": "10"},
+            "read_states": [],
+            "groups": [],
+            "recent_plain_messages": [{
+                "event": snapshot_event,
+                "message": {
+                    "thread_kind": "direct",
+                    "created_at": "2026-07-28T12:00:03Z"
+                }
+            }],
+            "message_policy": {
+                "server_cutoff": "2026-07-26T12:00:03Z",
+                "max_logical_messages": 500,
+                "returned_logical_messages": 1
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true
+            }
+        });
+        assert!(parse_snapshot(&base).is_ok());
+
+        let mut targeted = base.clone();
+        targeted["recent_plain_messages"][0]["event"]["recipient_device_id"] = json!("device-1");
+        assert!(parse_snapshot(&targeted).is_err());
+
+        let mut kind_mismatch = base;
+        kind_mismatch["recent_plain_messages"][0]["message"]["thread_kind"] = json!("group");
+        assert!(parse_snapshot(&kind_mismatch).is_err());
+    }
+
+    #[test]
+    fn snapshot_rejects_pre_cutoff_duplicates_and_unknown_fields() {
+        let mut snapshot_event = event("event-snapshot-1", "10");
+        snapshot_event["stream_epoch"] = json!("2");
+        snapshot_event["account_id"] = json!("account-1");
+        snapshot_event["payload"]["message_kind"] = json!("direct_plain");
+        let base = json!({
+            "mode": "compact_recovery",
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "server_time": "2026-07-28T12:00:04Z",
+            "snapshot_cursor": {"stream_epoch": "2", "scan_seq": "10"},
+            "read_states": [],
+            "groups": [],
+            "recent_plain_messages": [{
+                "event": snapshot_event,
+                "message": {
+                    "thread_kind": "direct",
+                    "created_at": "2026-07-26T12:00:03Z"
+                }
+            }],
+            "message_policy": {
+                "server_cutoff": "2026-07-26T12:00:03Z",
+                "max_logical_messages": 500,
+                "returned_logical_messages": 1
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true
+            }
+        });
+        assert!(parse_snapshot(&base).is_ok(), "cutoff is inclusive");
+
+        let mut before_cutoff = base.clone();
+        before_cutoff["recent_plain_messages"][0]["message"]["created_at"] =
+            json!("2026-07-26T12:00:02Z");
+        assert!(parse_snapshot(&before_cutoff).is_err());
+
+        let mut duplicate = base.clone();
+        let duplicate_item = duplicate["recent_plain_messages"][0].clone();
+        duplicate["recent_plain_messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate_item);
+        duplicate["message_policy"]["returned_logical_messages"] = json!(2);
+        assert!(parse_snapshot(&duplicate).is_err());
+
+        let mut unknown = base;
+        unknown["message_policy"]["client_override"] = json!(true);
+        assert!(parse_snapshot(&unknown).is_err());
+    }
+
+    #[test]
+    fn snapshot_read_state_is_closed_and_requires_timestamp() {
+        let base = json!({
+            "mode": "compact_recovery",
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "server_time": "2026-07-28T12:00:04Z",
+            "snapshot_cursor": {"stream_epoch": "2", "scan_seq": "10"},
+            "read_states": [{
+                "thread_kind": "direct",
+                "thread_key": "dconv-read-1",
+                "read_up_to_thread_seq": "9",
+                "read_up_to_message_id": null,
+                "state_version": "2",
+                "updated_by_device_id": "device-1",
+                "updated_at": "2026-07-28T12:00:00Z"
+            }],
+            "groups": [],
+            "recent_plain_messages": [],
+            "message_policy": {
+                "server_cutoff": "2026-07-26T12:00:03Z",
+                "max_logical_messages": 500,
+                "returned_logical_messages": 0
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true
+            }
+        });
+        assert!(parse_snapshot(&base).is_ok());
+
+        let mut malformed = base.clone();
+        malformed["read_states"][0]["updated_at"] = json!("not-a-timestamp");
+        assert!(parse_snapshot(&malformed).is_err());
+
+        let mut invalid_message_id = base.clone();
+        invalid_message_id["read_states"][0]["read_up_to_message_id"] = json!(42);
+        assert!(parse_snapshot(&invalid_message_id).is_err());
+
+        let mut invalid_device_id = base.clone();
+        invalid_device_id["read_states"][0]["updated_by_device_id"] = json!({"id": "device-1"});
+        assert!(parse_snapshot(&invalid_device_id).is_err());
+
+        let mut nullable = base.clone();
+        nullable["read_states"][0]["updated_by_device_id"] = Value::Null;
+        assert!(parse_snapshot(&nullable).is_ok());
+
+        let mut unknown = base;
+        unknown["read_states"][0]["recovery_token"] = json!("forbidden");
+        assert!(parse_snapshot(&unknown).is_err());
+    }
+}

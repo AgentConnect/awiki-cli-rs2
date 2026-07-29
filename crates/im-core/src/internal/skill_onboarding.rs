@@ -438,6 +438,7 @@ async fn persist_ready_identity(
             display_name: "AWiki Skill Agent".to_owned(),
             handle: journal.agent_handle.as_str().to_owned(),
             full_handle: journal.agent_handle.as_str().to_owned(),
+            binding_generation: None,
             jwt_token,
             did_document: Some(pending.did_document),
             key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,

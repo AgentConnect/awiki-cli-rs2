@@ -288,6 +288,82 @@ pub struct DartSyncDeltaResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartMessageSyncRequest {
+    pub reason: String,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartMessageSyncStatus {
+    Idle,
+    Changed,
+    RecoveryRequired,
+    RetryableFailure,
+    AuthRevoked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartCommittedMessageSource {
+    LiveDelta,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartCommittedIncomingMessage {
+    pub event_id: String,
+    pub logical_message_id: String,
+    pub source: DartCommittedMessageSource,
+    pub direction: DartMessageDirection,
+    pub message: DartMessage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartMessageSyncOutcome {
+    pub status: DartMessageSyncStatus,
+    pub events_applied: u32,
+    pub pages_fetched: u32,
+    pub messages_hydrated: u32,
+    pub duplicates_skipped: u32,
+    pub changed_conversation_ids: Vec<String>,
+    pub committed_incoming_messages: Vec<DartCommittedIncomingMessage>,
+    pub error_code: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartMessageSyncMode {
+    Uninitialized,
+    Idle,
+    Recovering,
+    Retryable,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartMessageSyncDirtyDomain {
+    Messages,
+    ReadState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartMessageSyncRetryState {
+    None,
+    Pending,
+    InFlight,
+    Scheduled,
+    PermanentFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartMessageSyncDiagnostics {
+    pub last_success_at: Option<String>,
+    pub mode: DartMessageSyncMode,
+    pub pending_mutation_count: u32,
+    pub dirty_domains: Vec<DartMessageSyncDirtyDomain>,
+    pub retry_state: DartMessageSyncRetryState,
+    pub next_retry_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartConversationListSnapshot {
     pub format_version: u32,
     pub im_schema_version: i64,

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImEvent {
@@ -150,12 +151,32 @@ pub struct UnknownNotificationEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RealtimeSyncHint {
+    /// Legacy v1 transport metadata. This stays inside Core and is not exposed
+    /// through the application SDK boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
+    /// Legacy v1 sequence, or the v2 account scan high-water hint. A hint never
+    /// advances a durable sync cursor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_seq: Option<String>,
+    /// Legacy v1 transport metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_type: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub domains: BTreeSet<SyncDomain>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     pub sync_dirty: bool,
     pub gap_detected: bool,
+    pub has_unknown_domain: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncDomain {
+    Message,
+    Profile,
+    AgentInventory,
+    AgentStatus,
+    DeviceRegistry,
 }

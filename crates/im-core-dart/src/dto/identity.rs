@@ -21,6 +21,16 @@ pub struct DartIdentitySummary {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartActiveSyncAccountBinding {
+    pub owner_identity_id: String,
+    pub account_id: String,
+    pub current_did: String,
+    pub protocol_device_id: String,
+    pub identity_generation: String,
+    pub device_auth_generation: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DartIdentityDeviceMode {
     Legacy,
@@ -117,6 +127,18 @@ pub struct DartDeviceJoinAuthorizedDeviceSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDeviceRegistryAuthorizedDeviceSummary {
+    pub protocol_device_id: String,
+    pub signing_key_id: String,
+    pub e2ee_key_id: String,
+    pub status: DartDeviceJoinAuthorizationStatus,
+    pub role: DartDeviceJoinRole,
+    pub management_ready: bool,
+    pub is_current: bool,
+    pub auth_generation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinRequestNotice {
     pub event_id: String,
     pub join_session_id: String,
@@ -133,7 +155,8 @@ pub struct DartDeviceJoinRequestNotice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartDeviceJoinRegistrySnapshot {
     pub did: String,
-    pub devices: Vec<DartDeviceJoinAuthorizedDeviceSummary>,
+    pub registry_version: String,
+    pub devices: Vec<DartDeviceRegistryAuthorizedDeviceSummary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,6 +356,7 @@ pub struct DartDeleteLocalIdentityResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartHandleRegistrationResult {
     pub identity: Option<DartIdentitySummary>,
+    pub account_id: Option<String>,
     pub handle: String,
     pub method: String,
     pub state: String,

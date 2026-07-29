@@ -8,6 +8,43 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'message.freezed.dart';
 
+class DartCommittedIncomingMessage {
+  final String eventId;
+  final String logicalMessageId;
+  final DartCommittedMessageSource source;
+  final DartMessageDirection direction;
+  final DartMessage message;
+
+  const DartCommittedIncomingMessage({
+    required this.eventId,
+    required this.logicalMessageId,
+    required this.source,
+    required this.direction,
+    required this.message,
+  });
+
+  @override
+  int get hashCode =>
+      eventId.hashCode ^
+      logicalMessageId.hashCode ^
+      source.hashCode ^
+      direction.hashCode ^
+      message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartCommittedIncomingMessage &&
+          runtimeType == other.runtimeType &&
+          eventId == other.eventId &&
+          logicalMessageId == other.logicalMessageId &&
+          source == other.source &&
+          direction == other.direction &&
+          message == other.message;
+}
+
+enum DartCommittedMessageSource { liveDelta }
+
 class DartConversation {
   final String conversationId;
   final String? peerPersonaId;
@@ -883,6 +920,134 @@ enum DartMessageSecurityMode {
   e2EeRequired,
   secureDirect,
   groupE2Ee,
+}
+
+class DartMessageSyncDiagnostics {
+  final String? lastSuccessAt;
+  final DartMessageSyncMode mode;
+  final int pendingMutationCount;
+  final List<DartMessageSyncDirtyDomain> dirtyDomains;
+  final DartMessageSyncRetryState retryState;
+  final String? nextRetryAt;
+
+  const DartMessageSyncDiagnostics({
+    this.lastSuccessAt,
+    required this.mode,
+    required this.pendingMutationCount,
+    required this.dirtyDomains,
+    required this.retryState,
+    this.nextRetryAt,
+  });
+
+  @override
+  int get hashCode =>
+      lastSuccessAt.hashCode ^
+      mode.hashCode ^
+      pendingMutationCount.hashCode ^
+      dirtyDomains.hashCode ^
+      retryState.hashCode ^
+      nextRetryAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMessageSyncDiagnostics &&
+          runtimeType == other.runtimeType &&
+          lastSuccessAt == other.lastSuccessAt &&
+          mode == other.mode &&
+          pendingMutationCount == other.pendingMutationCount &&
+          dirtyDomains == other.dirtyDomains &&
+          retryState == other.retryState &&
+          nextRetryAt == other.nextRetryAt;
+}
+
+enum DartMessageSyncDirtyDomain { messages, readState }
+
+enum DartMessageSyncMode { uninitialized, idle, recovering, retryable, blocked }
+
+class DartMessageSyncOutcome {
+  final DartMessageSyncStatus status;
+  final int eventsApplied;
+  final int pagesFetched;
+  final int messagesHydrated;
+  final int duplicatesSkipped;
+  final List<String> changedConversationIds;
+  final List<DartCommittedIncomingMessage> committedIncomingMessages;
+  final String? errorCode;
+  final List<String> warnings;
+
+  const DartMessageSyncOutcome({
+    required this.status,
+    required this.eventsApplied,
+    required this.pagesFetched,
+    required this.messagesHydrated,
+    required this.duplicatesSkipped,
+    required this.changedConversationIds,
+    required this.committedIncomingMessages,
+    this.errorCode,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      status.hashCode ^
+      eventsApplied.hashCode ^
+      pagesFetched.hashCode ^
+      messagesHydrated.hashCode ^
+      duplicatesSkipped.hashCode ^
+      changedConversationIds.hashCode ^
+      committedIncomingMessages.hashCode ^
+      errorCode.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMessageSyncOutcome &&
+          runtimeType == other.runtimeType &&
+          status == other.status &&
+          eventsApplied == other.eventsApplied &&
+          pagesFetched == other.pagesFetched &&
+          messagesHydrated == other.messagesHydrated &&
+          duplicatesSkipped == other.duplicatesSkipped &&
+          changedConversationIds == other.changedConversationIds &&
+          committedIncomingMessages == other.committedIncomingMessages &&
+          errorCode == other.errorCode &&
+          warnings == other.warnings;
+}
+
+class DartMessageSyncRequest {
+  final String reason;
+  final int? limit;
+
+  const DartMessageSyncRequest({required this.reason, this.limit});
+
+  @override
+  int get hashCode => reason.hashCode ^ limit.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMessageSyncRequest &&
+          runtimeType == other.runtimeType &&
+          reason == other.reason &&
+          limit == other.limit;
+}
+
+enum DartMessageSyncRetryState {
+  none,
+  pending,
+  inFlight,
+  scheduled,
+  permanentFailure,
+}
+
+enum DartMessageSyncStatus {
+  idle,
+  changed,
+  recoveryRequired,
+  retryableFailure,
+  authRevoked,
 }
 
 @freezed

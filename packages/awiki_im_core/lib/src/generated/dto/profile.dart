@@ -59,6 +59,7 @@ class DartUserProfile {
   final String? profileUri;
   final String? subjectType;
   final String? updatedAt;
+  final String? profileVersion;
   final String? versionId;
   final BigInt? ttl;
 
@@ -76,6 +77,7 @@ class DartUserProfile {
     this.profileUri,
     this.subjectType,
     this.updatedAt,
+    this.profileVersion,
     this.versionId,
     this.ttl,
   });
@@ -95,6 +97,7 @@ class DartUserProfile {
       profileUri.hashCode ^
       subjectType.hashCode ^
       updatedAt.hashCode ^
+      profileVersion.hashCode ^
       versionId.hashCode ^
       ttl.hashCode;
 
@@ -116,6 +119,7 @@ class DartUserProfile {
           profileUri == other.profileUri &&
           subjectType == other.subjectType &&
           updatedAt == other.updatedAt &&
+          profileVersion == other.profileVersion &&
           versionId == other.versionId &&
           ttl == other.ttl;
 }

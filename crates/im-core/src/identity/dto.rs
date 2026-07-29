@@ -341,12 +341,27 @@ pub struct InitialProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleRegistrationResult {
     pub identity: Option<IdentitySummary>,
+    pub account_id: Option<String>,
     pub handle: crate::ids::Handle,
     pub method: RegistrationMethod,
     pub state: HandleRegistrationState,
     pub join_required: Option<HandleRegistrationJoinRequired>,
     pub default_identity_change: Option<DefaultIdentityChange>,
     pub warnings: Vec<String>,
+}
+
+/// Read-only, secret-free binding used to scope account synchronization.
+///
+/// Every field is derived and validated by Core. Hosts cannot construct or
+/// override the active binding used by sync.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveSyncAccountBinding {
+    pub owner_identity_id: String,
+    pub account_id: String,
+    pub current_did: String,
+    pub protocol_device_id: String,
+    pub identity_generation: String,
+    pub device_auth_generation: String,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -419,6 +434,8 @@ pub struct Profile {
     pub profile_uri: Option<String>,
     pub subject_type: Option<String>,
     pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_version: Option<String>,
     #[serde(
         default,
         rename = "versionId",
@@ -452,6 +469,7 @@ impl Profile {
             profile_uri: None,
             subject_type: None,
             updated_at: None,
+            profile_version: None,
             version_id: None,
             ttl: None,
             proof: None,
@@ -543,6 +561,12 @@ impl Profile {
             value.insert(
                 "updated".to_string(),
                 serde_json::Value::String(updated_at.clone()),
+            );
+        }
+        if let Some(profile_version) = self.profile_version.as_ref() {
+            value.insert(
+                "profile_version".to_string(),
+                serde_json::Value::String(profile_version.clone()),
             );
         }
         if let Some(version_id) = self.version_id.as_ref() {

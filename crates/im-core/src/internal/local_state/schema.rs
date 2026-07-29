@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 32;
+pub(crate) const SCHEMA_VERSION: i64 = 34;
 pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
@@ -10,6 +10,26 @@ const CONVERSATION_REGISTRY_SCHEMA_VERSION: i64 = 26;
 const SYSTEM_NOTIFICATION_SCHEMA_VERSION: i64 = 29;
 const ROOT_IMPORT_COORDINATOR_SCHEMA_VERSION: i64 = 30;
 const LEGACY_PRIVATE_DELIVERY_RETIREMENT_SCHEMA_VERSION: i64 = 31;
+const MULTI_DEVICE_SYNC_FOUNDATION_SCHEMA_VERSION: i64 = 32;
+const SYNC_INSTALLATION_ID_SCHEMA_VERSION: i64 = 33;
+const READ_RECOVERY_SCHEMA_VERSION: i64 = 34;
+const SYNC_V2_FOUNDATION_TABLES: &[&str] = &[
+    "identity_account_bindings",
+    "message_sync_state",
+    "sync_applied_events",
+    "sync_recovery_state",
+    "local_mutation_outbox",
+];
+const READ_RECOVERY_TABLES: &[&str] = &["sync_thread_bindings", "sync_remote_read_states"];
+const SYNC_V2_REQUIRED_INDEXES: &[&str] = &[
+    "identity_account_device_idx",
+    "message_sync_state_account_device_idx",
+    "sync_applied_events_prune_idx",
+    "sync_applied_events_applied_at_idx",
+    "sync_recovery_state_status_idx",
+    "local_mutation_outbox_drain_idx",
+    "sync_thread_bindings_conversation_idx",
+];
 
 pub(crate) const ROOT_IMPORT_COORDINATOR_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS identity_root_import_completion_v1 (
@@ -339,6 +359,7 @@ CREATE TABLE IF NOT EXISTS thread_read_state (
     read_watermark_at          TEXT,
     pending_remote_ack         INTEGER NOT NULL DEFAULT 0,
     remote_ack_at              TEXT,
+    remote_state_version       TEXT,
     updated_at                 TEXT NOT NULL,
     PRIMARY KEY (owner_identity_id, thread_scope, thread_id)
 );
@@ -990,7 +1011,15 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
     if (CANONICAL_CONVERSATION_SCHEMA_VERSION..=LEGACY_PRIVATE_DELIVERY_RETIREMENT_SCHEMA_VERSION)
         .contains(&version)
     {
-        return migrate_release_predecessor_to_v32(connection, version);
+        return migrate_release_predecessor_to_v34(connection, version);
+    }
+    if (MULTI_DEVICE_SYNC_FOUNDATION_SCHEMA_VERSION..=READ_RECOVERY_SCHEMA_VERSION)
+        .contains(&version)
+    {
+        if version == SCHEMA_VERSION && merged_v34_shape_is_complete(connection)? {
+            return create_schema(connection, false);
+        }
+        return converge_divergent_schema_to_v34(connection, version);
     }
     if version < SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUpgradeRequired {
@@ -1001,7 +1030,7 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
     create_schema(connection, false)
 }
 
-fn migrate_release_predecessor_to_v32(
+fn migrate_release_predecessor_to_v34(
     connection: &Connection,
     version: i64,
 ) -> crate::ImResult<()> {
@@ -1009,7 +1038,6 @@ fn migrate_release_predecessor_to_v32(
     let transaction = connection
         .unchecked_transaction()
         .map_err(super::local_state_unavailable)?;
-
     if version < SYSTEM_NOTIFICATION_SCHEMA_VERSION {
         crate::internal::system_notification::store::create_schema(&transaction)?;
     }
@@ -1078,6 +1106,121 @@ fn validate_release_predecessor_shape(
     Ok(())
 }
 
+fn converge_divergent_schema_to_v34(
+    connection: &Connection,
+    version: i64,
+) -> crate::ImResult<()> {
+    validate_divergent_schema_shape(connection, version)?;
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    ensure_message_hydration_projection(&transaction)?;
+    migrate_sync_state_subject_scope(&transaction)?;
+    super::messages::repair_legacy_canonical_direct_wire_identities(&transaction)?;
+    create_schema(&transaction, false)?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn validate_divergent_schema_shape(
+    connection: &Connection,
+    version: i64,
+) -> crate::ImResult<()> {
+    let has_hydration = has_column(connection, "messages", "hydration_state")?;
+    let has_sync_subject = has_column(connection, "sync_state", "sync_subject_id")?;
+    let has_complete_sync_subject = sync_state_subject_scope_schema_is_complete(connection)?;
+    if has_sync_subject && !has_complete_sync_subject {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an incomplete subject-scoped checkpoint shape"
+            ),
+        });
+    }
+    if has_hydration != has_sync_subject {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an incomplete reliable-sync projection"
+            ),
+        });
+    }
+
+    let sync_v2_table_count = table_presence_count(connection, SYNC_V2_FOUNDATION_TABLES)?;
+    if sync_v2_table_count != 0 && sync_v2_table_count != SYNC_V2_FOUNDATION_TABLES.len() {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an incomplete multi-device sync foundation"
+            ),
+        });
+    }
+    let read_recovery_table_count = table_presence_count(connection, READ_RECOVERY_TABLES)?;
+    if read_recovery_table_count != 0 && read_recovery_table_count != READ_RECOVERY_TABLES.len() {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} has an incomplete read-recovery projection"
+            ),
+        });
+    }
+
+    let current_shape = has_hydration && has_complete_sync_subject;
+    let release_v32_shape = sync_v2_table_count == SYNC_V2_FOUNDATION_TABLES.len();
+    let release_v33_shape = release_v32_shape
+        && has_table(connection, "sync_installation_state")?;
+    let release_v34_shape = release_v33_shape
+        && read_recovery_table_count == READ_RECOVERY_TABLES.len()
+        && has_column(connection, "thread_read_state", "remote_state_version")?;
+    let known_shape = match version {
+        MULTI_DEVICE_SYNC_FOUNDATION_SCHEMA_VERSION => current_shape || release_v32_shape,
+        SYNC_INSTALLATION_ID_SCHEMA_VERSION => current_shape || release_v33_shape,
+        READ_RECOVERY_SCHEMA_VERSION => current_shape || release_v34_shape,
+        _ => false,
+    };
+    if !known_shape {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "sqlite schema version {version} does not match a supported released schema shape"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn merged_v34_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    Ok(has_column(connection, "messages", "hydration_state")?
+        && has_index(
+            connection,
+            "idx_messages_owner_hydration_conversation_seq",
+        )?
+        && sync_state_subject_scope_schema_is_complete(connection)?
+        && has_index(connection, "idx_sync_state_owner_kind")?
+        && table_presence_count(connection, SYNC_V2_FOUNDATION_TABLES)?
+            == SYNC_V2_FOUNDATION_TABLES.len()
+        && has_table(connection, "sync_installation_state")?
+        && has_column(connection, "thread_read_state", "remote_state_version")?
+        && table_presence_count(connection, READ_RECOVERY_TABLES)? == READ_RECOVERY_TABLES.len()
+        && index_presence_count(connection, SYNC_V2_REQUIRED_INDEXES)?
+            == SYNC_V2_REQUIRED_INDEXES.len())
+}
+
+fn table_presence_count(connection: &Connection, tables: &[&str]) -> crate::ImResult<usize> {
+    let mut count = 0;
+    for table in tables {
+        if has_table(connection, table)? {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn index_presence_count(connection: &Connection, indexes: &[&str]) -> crate::ImResult<usize> {
+    let mut count = 0;
+    for index in indexes {
+        if has_index(connection, index)? {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
 pub(crate) fn current_schema_version(connection: &Connection) -> crate::ImResult<i64> {
     connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -1101,9 +1244,16 @@ pub(super) fn create_schema(
         "TEXT NOT NULL DEFAULT ''",
     )?;
     ensure_sync_state_schema(connection)?;
+    super::sync_v2::create_schema(connection)?;
     connection
         .execute_batch(THREAD_READ_STATE_SQL)
         .map_err(super::local_state_unavailable)?;
+    ensure_column(
+        connection,
+        "thread_read_state",
+        "remote_state_version",
+        "TEXT",
+    )?;
     connection
         .execute_batch(MESSAGE_IDENTITY_ALIASES_SQL)
         .map_err(super::local_state_unavailable)?;
@@ -1934,6 +2084,16 @@ fn has_table(connection: &Connection, table: &str) -> crate::ImResult<bool> {
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
             [table],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(super::local_state_unavailable)
+}
+
+fn has_index(connection: &Connection, index: &str) -> crate::ImResult<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1)",
+            [index],
             |row| row.get::<_, bool>(0),
         )
         .map_err(super::local_state_unavailable)

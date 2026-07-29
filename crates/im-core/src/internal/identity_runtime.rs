@@ -14,4 +14,36 @@ pub(crate) struct ClientIdentityRuntime {
 pub(crate) struct LocalOwnerContext {
     pub(crate) identity_id: crate::ids::IdentityId,
     pub(crate) current_did: crate::ids::Did,
+    pub(crate) sync_account: Option<SyncAccountSeed>,
+}
+
+pub(crate) struct SyncAccountSeed {
+    pub(crate) account_id: String,
+    pub(crate) identity_generation: std::sync::OnceLock<String>,
+    pub(crate) device_auth_generation: String,
+}
+
+impl SyncAccountSeed {
+    pub(crate) fn new(
+        account_id: String,
+        identity_generation: Option<String>,
+        device_auth_generation: String,
+    ) -> Self {
+        let generation = std::sync::OnceLock::new();
+        if let Some(identity_generation) = identity_generation {
+            let _ = generation.set(identity_generation);
+        }
+        Self {
+            account_id,
+            identity_generation: generation,
+            device_auth_generation,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncAccountContext {
+    pub(crate) account_id: String,
+    pub(crate) protocol_device_id: String,
+    pub(crate) device_auth_generation: String,
 }

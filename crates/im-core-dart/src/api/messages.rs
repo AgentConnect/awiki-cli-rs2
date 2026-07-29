@@ -10,11 +10,12 @@ use crate::dto::{
     message::{
         DartConversationListSnapshot, DartConversationPage, DartConversationReadRef,
         DartConversationStorePatch, DartInboxHistoryOptions, DartMarkConversationReadRequest,
-        DartMarkReadResult, DartMarkThreadReadResult, DartMessagePage,
-        DartSendConversationPayloadRequest, DartSendConversationTextRequest, DartSendMessageResult,
-        DartSendPayloadRequest, DartSendTextRequest, DartSyncConversationAfterRequest,
-        DartSyncDeltaRequest, DartSyncDeltaResult, DartSyncThreadAfterRequest,
-        DartSyncThreadAfterResult, DartThreadMessageStorePatch, DartThreadRef,
+        DartMarkReadResult, DartMarkThreadReadResult, DartMessagePage, DartMessageSyncDiagnostics,
+        DartMessageSyncOutcome, DartMessageSyncRequest, DartSendConversationPayloadRequest,
+        DartSendConversationTextRequest, DartSendMessageResult, DartSendPayloadRequest,
+        DartSendTextRequest, DartSyncConversationAfterRequest, DartSyncDeltaRequest,
+        DartSyncDeltaResult, DartSyncThreadAfterRequest, DartSyncThreadAfterResult,
+        DartThreadMessageStorePatch, DartThreadRef,
     },
 };
 use crate::frb_generated::StreamSink;
@@ -470,6 +471,34 @@ pub async fn sync_delta(
     inner
         .messages()
         .sync_delta_async(request.into())
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn sync_now(
+    client: &Arc<crate::api::client::DartImClient>,
+    request: DartMessageSyncRequest,
+) -> Result<DartMessageSyncOutcome, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .sync_now_async(im_core::messages::MessageSyncRequest {
+            reason: request.reason,
+            limit: request.limit,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn sync_diagnostics(
+    client: &Arc<crate::api::client::DartImClient>,
+) -> Result<DartMessageSyncDiagnostics, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .sync_diagnostics_async()
         .await
         .map(Into::into)
         .map_err(DartImError::from)

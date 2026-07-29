@@ -5,7 +5,8 @@ use serde_json::{Map, Value};
 use std::path::Path;
 use std::sync::Arc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
+use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL};
+use tokio_tungstenite::tungstenite::http::{HeaderMap, Request};
 use tokio_tungstenite::tungstenite::Error as TungsteniteError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async_tls_with_config, Connector};
@@ -29,6 +30,7 @@ pub(crate) struct AsyncWsTransport {
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     ping_counter: i32,
+    sync_changed_v2: bool,
 }
 
 impl AsyncWsTransport {
@@ -37,25 +39,19 @@ impl AsyncWsTransport {
         bearer_token: &str,
         ca_bundle: Option<&str>,
     ) -> Result<Self, AsyncWsConnectError> {
-        let mut request = websocket_url
-            .into_client_request()
-            .map_err(|err| async_ws_connect_message(format!("build websocket request: {err}")))?;
-        let authorization =
-            crate::internal::realtime::transport::bearer_authorization_header(bearer_token);
-        let authorization = authorization.parse().map_err(|err| {
-            async_ws_connect_message(format!("build websocket authorization header: {err}"))
-        })?;
-        request.headers_mut().insert(AUTHORIZATION, authorization);
+        let request = build_async_ws_request(websocket_url, bearer_token)?;
         let connector = async_ws_rustls_connector(ca_bundle).await?;
-        let (stream, _response) = if let Some(connector) = connector {
+        let (stream, response) = if let Some(connector) = connector {
             connect_async_tls_with_config(request, None, false, Some(connector)).await
         } else {
             tokio_tungstenite::connect_async(request).await
         }
         .map_err(async_ws_connect_error)?;
+        let sync_changed_v2 = validate_async_ws_subprotocol(response.headers())?;
         Ok(Self {
             stream,
             ping_counter: 0,
+            sync_changed_v2,
         })
     }
 
@@ -67,8 +63,24 @@ impl AsyncWsTransport {
                 return Ok(None);
             };
             match message.map_err(async_ws_error)? {
-                Message::Text(raw) => return decode_json_object(raw.as_str()).map(Some),
-                Message::Binary(raw) => return decode_json_object(&raw).map(Some),
+                Message::Text(raw) => {
+                    let message = decode_json_object(raw.as_str())?;
+                    if crate::internal::realtime::accepts_negotiated_notification(
+                        self.sync_changed_v2,
+                        &message,
+                    ) {
+                        return Ok(Some(message));
+                    }
+                }
+                Message::Binary(raw) => {
+                    let message = decode_json_object(&raw)?;
+                    if crate::internal::realtime::accepts_negotiated_notification(
+                        self.sync_changed_v2,
+                        &message,
+                    ) {
+                        return Ok(Some(message));
+                    }
+                }
                 Message::Ping(payload) => self
                     .stream
                     .send(Message::Pong(payload))
@@ -88,6 +100,42 @@ impl AsyncWsTransport {
             .await
             .map_err(async_ws_error)
     }
+}
+
+fn build_async_ws_request(
+    websocket_url: &str,
+    bearer_token: &str,
+) -> Result<Request<()>, AsyncWsConnectError> {
+    let mut request = websocket_url
+        .into_client_request()
+        .map_err(|err| async_ws_connect_message(format!("build websocket request: {err}")))?;
+    let authorization =
+        crate::internal::realtime::transport::bearer_authorization_header(bearer_token);
+    let authorization = authorization.parse().map_err(|err| {
+        async_ws_connect_message(format!("build websocket authorization header: {err}"))
+    })?;
+    request.headers_mut().insert(AUTHORIZATION, authorization);
+    request.headers_mut().insert(
+        SEC_WEBSOCKET_PROTOCOL,
+        crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL
+            .parse()
+            .expect("static websocket subprotocol is a valid header value"),
+    );
+    Ok(request)
+}
+
+fn validate_async_ws_subprotocol(headers: &HeaderMap) -> Result<bool, AsyncWsConnectError> {
+    let selected = headers
+        .get(SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok());
+    if selected.is_some()
+        && selected != Some(crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL)
+    {
+        return Err(async_ws_connect_message(
+            "websocket server selected an unsupported sync subprotocol",
+        ));
+    }
+    Ok(selected.is_some())
 }
 
 fn decode_json_object(raw: impl AsRef<[u8]>) -> crate::ImResult<Map<String, Value>> {
@@ -178,5 +226,39 @@ mod tests {
 
         assert_eq!(error.status_code, Some(401));
         assert!(error.message.contains("401"));
+    }
+
+    #[test]
+    fn async_ws_allows_v1_fallback_and_rejects_wrong_selected_subprotocol() {
+        let mut headers = HeaderMap::new();
+        assert!(!validate_async_ws_subprotocol(&headers).unwrap());
+
+        headers.insert(
+            SEC_WEBSOCKET_PROTOCOL,
+            "awiki.sync.changed.v1".parse().unwrap(),
+        );
+        assert!(validate_async_ws_subprotocol(&headers).is_err());
+
+        headers.insert(
+            SEC_WEBSOCKET_PROTOCOL,
+            crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL
+                .parse()
+                .unwrap(),
+        );
+        assert!(validate_async_ws_subprotocol(&headers).unwrap());
+    }
+
+    #[test]
+    fn async_ws_requests_sync_changed_v2_subprotocol() {
+        let request = build_async_ws_request("wss://example.test/im/ws", "token").unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get(SEC_WEBSOCKET_PROTOCOL)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL
+        );
     }
 }

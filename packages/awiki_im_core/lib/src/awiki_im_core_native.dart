@@ -64,8 +64,8 @@ Future<T> _mapNativeErrors<T>(Future<T> Function() action) async {
       capability: error.capability,
       serviceCode: error.serviceCode,
       serviceDataJson: error.serviceDataJson,
-      deviceRevokeOutcomeCategory:
-          error.deviceRevokeOutcomeCategory?._toModel(),
+      deviceRevokeOutcomeCategory: error.deviceRevokeOutcomeCategory
+          ?._toModel(),
     );
   }
 }
@@ -605,6 +605,14 @@ class AwikiImClient {
   Stream<RealtimeConnectionState> get connectionStates =>
       _connectionStatesController.stream;
 
+  Future<ActiveSyncAccountBinding> activeSyncAccountBinding() async {
+    _ensureNotDisposed();
+    final binding = await _mapNativeErrors(
+      () => gen_identity_api.activeSyncAccountBinding(client: _inner),
+    );
+    return binding._toModel();
+  }
+
   Future<void> dispose() async {
     if (_disposed) return;
     await realtime.stop();
@@ -1046,6 +1054,28 @@ class MessageApi {
         client: _client._inner,
         request: request._toGen(),
       ),
+    );
+    return result._toModel();
+  }
+
+  Future<MessageSyncOutcome> syncNow(MessageSyncRequest request) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_messages.syncNow(
+        client: _client._inner,
+        request: gen_message.DartMessageSyncRequest(
+          reason: request.reason,
+          limit: request.limit,
+        ),
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<MessageSyncDiagnostics> syncDiagnostics() async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_messages.syncDiagnostics(client: _client._inner),
     );
     return result._toModel();
   }
@@ -1688,12 +1718,22 @@ extension on gen_realtime_dto.DartRealtimeEvent {
 
 extension on gen_realtime_dto.DartRealtimeSyncHint {
   RealtimeSyncHint _toModel() => RealtimeSyncHint(
-    eventId: eventId,
-    eventSeq: eventSeq,
-    eventType: eventType,
+    domains: domains.map((domain) => domain._toModel()).toSet(),
+    reason: reason,
     syncDirty: syncDirty,
     gapDetected: gapDetected,
+    hasUnknownDomain: hasUnknownDomain,
   );
+}
+
+extension on gen_realtime_dto.DartSyncDomain {
+  SyncDomain _toModel() => switch (this) {
+    gen_realtime_dto.DartSyncDomain.message => SyncDomain.message,
+    gen_realtime_dto.DartSyncDomain.profile => SyncDomain.profile,
+    gen_realtime_dto.DartSyncDomain.agentInventory => SyncDomain.agentInventory,
+    gen_realtime_dto.DartSyncDomain.agentStatus => SyncDomain.agentStatus,
+    gen_realtime_dto.DartSyncDomain.deviceRegistry => SyncDomain.deviceRegistry,
+  };
 }
 
 class SecureApi {
@@ -2025,6 +2065,15 @@ extension on gen_identity.DartDeviceJoinRole {
   };
 }
 
+extension on gen_identity.DartDeviceJoinAuthorizationStatus {
+  DeviceJoinAuthorizationStatus _toModel() => switch (this) {
+    gen_identity.DartDeviceJoinAuthorizationStatus.active =>
+      DeviceJoinAuthorizationStatus.active,
+    gen_identity.DartDeviceJoinAuthorizationStatus.revoked =>
+      DeviceJoinAuthorizationStatus.revoked,
+  };
+}
+
 extension on gen_identity.DartDeviceJoinSessionSummary {
   DeviceJoinSessionSummary _toModel() => DeviceJoinSessionSummary(
     joinSessionId: joinSessionId,
@@ -2058,12 +2107,7 @@ extension on gen_identity.DartDeviceJoinAuthorizedDeviceSummary {
         protocolDeviceId: protocolDeviceId,
         signingKeyId: signingKeyId,
         e2eeKeyId: e2EeKeyId,
-        status: switch (status) {
-          gen_identity.DartDeviceJoinAuthorizationStatus.active =>
-            DeviceJoinAuthorizationStatus.active,
-          gen_identity.DartDeviceJoinAuthorizationStatus.revoked =>
-            DeviceJoinAuthorizationStatus.revoked,
-        },
+        status: status._toModel(),
         role: role._toModel(),
         managementReady: managementReady,
         isCurrent: isCurrent,
@@ -2088,8 +2132,23 @@ extension on gen_identity.DartDeviceJoinRequestNotice {
 extension on gen_identity.DartDeviceJoinRegistrySnapshot {
   DeviceJoinRegistrySnapshot _toModel() => DeviceJoinRegistrySnapshot(
     did: did,
+    registryVersion: registryVersion,
     devices: devices.map((device) => device._toModel()).toList(),
   );
+}
+
+extension on gen_identity.DartDeviceRegistryAuthorizedDeviceSummary {
+  DeviceRegistryAuthorizedDeviceSummary _toModel() =>
+      DeviceRegistryAuthorizedDeviceSummary(
+        protocolDeviceId: protocolDeviceId,
+        signingKeyId: signingKeyId,
+        e2eeKeyId: e2EeKeyId,
+        status: status._toModel(),
+        role: role._toModel(),
+        managementReady: managementReady,
+        isCurrent: isCurrent,
+        authGeneration: authGeneration,
+      );
 }
 
 extension on gen_identity.DartDeviceJoinRemoteState {
@@ -2234,12 +2293,24 @@ extension on gen_identity.DartDaemonSubkeyAuthorizationRevokeResult {
 extension on gen_identity.DartHandleRegistrationResult {
   HandleRegistrationResult _toModel() => HandleRegistrationResult(
     identity: identity?._toModel(),
+    accountId: accountId,
     handle: handle,
     method: method,
     state: state,
     joinRequired: joinRequired?._toModel(),
     defaultIdentityChange: defaultIdentityChange?._toModel(),
     warnings: warnings,
+  );
+}
+
+extension on gen_identity.DartActiveSyncAccountBinding {
+  ActiveSyncAccountBinding _toModel() => ActiveSyncAccountBinding(
+    ownerIdentityId: ownerIdentityId,
+    accountId: accountId,
+    currentDid: currentDid,
+    protocolDeviceId: protocolDeviceId,
+    identityGeneration: identityGeneration,
+    deviceAuthGeneration: deviceAuthGeneration,
   );
 }
 
@@ -2401,6 +2472,7 @@ extension on gen_profile_dto.DartUserProfile {
     profileUri: profileUri,
     subjectType: subjectType,
     updatedAt: updatedAt,
+    profileVersion: profileVersion,
     versionId: versionId,
     ttl: ttl?.toInt(),
   );
@@ -3162,6 +3234,97 @@ extension on gen_message.DartSyncDeltaResult {
     snapshotRequired: snapshotRequired,
     retentionFloorEventSeq: retentionFloorEventSeq,
     warnings: warnings,
+  );
+}
+
+extension on gen_message.DartMessageSyncStatus {
+  MessageSyncStatus _toModel() => switch (this) {
+    gen_message.DartMessageSyncStatus.idle => MessageSyncStatus.idle,
+    gen_message.DartMessageSyncStatus.changed => MessageSyncStatus.changed,
+    gen_message.DartMessageSyncStatus.recoveryRequired =>
+      MessageSyncStatus.recoveryRequired,
+    gen_message.DartMessageSyncStatus.retryableFailure =>
+      MessageSyncStatus.retryableFailure,
+    gen_message.DartMessageSyncStatus.authRevoked =>
+      MessageSyncStatus.authRevoked,
+  };
+}
+
+extension on gen_message.DartCommittedMessageSource {
+  CommittedMessageSource _toModel() => switch (this) {
+    gen_message.DartCommittedMessageSource.liveDelta =>
+      CommittedMessageSource.liveDelta,
+  };
+}
+
+extension on gen_message.DartCommittedIncomingMessage {
+  CommittedIncomingMessage _toModel() => CommittedIncomingMessage(
+    eventId: eventId,
+    logicalMessageId: logicalMessageId,
+    source: source._toModel(),
+    direction: direction._toModel(),
+    message: message._toModel(),
+  );
+}
+
+extension on gen_message.DartMessageSyncOutcome {
+  MessageSyncOutcome _toModel() => MessageSyncOutcome(
+    status: status._toModel(),
+    eventsApplied: eventsApplied,
+    pagesFetched: pagesFetched,
+    messagesHydrated: messagesHydrated,
+    duplicatesSkipped: duplicatesSkipped,
+    changedConversationIds: changedConversationIds,
+    committedIncomingMessages: committedIncomingMessages
+        .map((message) => message._toModel())
+        .toList(),
+    errorCode: errorCode,
+    warnings: warnings,
+  );
+}
+
+extension on gen_message.DartMessageSyncMode {
+  MessageSyncMode _toModel() => switch (this) {
+    gen_message.DartMessageSyncMode.uninitialized =>
+      MessageSyncMode.uninitialized,
+    gen_message.DartMessageSyncMode.idle => MessageSyncMode.idle,
+    gen_message.DartMessageSyncMode.recovering => MessageSyncMode.recovering,
+    gen_message.DartMessageSyncMode.retryable => MessageSyncMode.retryable,
+    gen_message.DartMessageSyncMode.blocked => MessageSyncMode.blocked,
+  };
+}
+
+extension on gen_message.DartMessageSyncDirtyDomain {
+  MessageSyncDirtyDomain _toModel() => switch (this) {
+    gen_message.DartMessageSyncDirtyDomain.messages =>
+      MessageSyncDirtyDomain.messages,
+    gen_message.DartMessageSyncDirtyDomain.readState =>
+      MessageSyncDirtyDomain.readState,
+  };
+}
+
+extension on gen_message.DartMessageSyncRetryState {
+  MessageSyncRetryState _toModel() => switch (this) {
+    gen_message.DartMessageSyncRetryState.none => MessageSyncRetryState.none,
+    gen_message.DartMessageSyncRetryState.pending =>
+      MessageSyncRetryState.pending,
+    gen_message.DartMessageSyncRetryState.inFlight =>
+      MessageSyncRetryState.inFlight,
+    gen_message.DartMessageSyncRetryState.scheduled =>
+      MessageSyncRetryState.scheduled,
+    gen_message.DartMessageSyncRetryState.permanentFailure =>
+      MessageSyncRetryState.permanentFailure,
+  };
+}
+
+extension on gen_message.DartMessageSyncDiagnostics {
+  MessageSyncDiagnostics _toModel() => MessageSyncDiagnostics(
+    lastSuccessAt: lastSuccessAt,
+    mode: mode._toModel(),
+    pendingMutationCount: pendingMutationCount,
+    dirtyDomains: dirtyDomains.map((domain) => domain._toModel()).toList(),
+    retryState: retryState._toModel(),
+    nextRetryAt: nextRetryAt,
   );
 }
 

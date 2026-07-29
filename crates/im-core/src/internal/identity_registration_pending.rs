@@ -55,6 +55,7 @@ pub(crate) struct PendingRegistrationRemoteResult {
     pub(crate) user_id: String,
     pub(crate) handle: String,
     pub(crate) full_handle: String,
+    pub(crate) binding_generation: String,
     pub(crate) access_token: String,
 }
 
@@ -147,6 +148,7 @@ impl PendingRegistration {
                 || remote.user_id.trim().is_empty()
                 || remote.handle != self.target_handle
                 || remote.full_handle != format!("{}.{}", self.target_handle, self.target_domain)
+                || anp::wns::BindingGeneration::new(remote.binding_generation.clone()).is_err()
                 || remote.access_token.trim().is_empty()
             {
                 return Err(crate::ImError::PermissionDenied);
