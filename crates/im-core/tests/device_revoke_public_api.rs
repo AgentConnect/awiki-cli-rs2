@@ -3,8 +3,8 @@ use awiki_im_core::identity::{
 };
 use awiki_im_core::prelude::{Did, ProtocolDeviceId};
 use awiki_im_core::{
-    ImCore, ImCoreConfig, ImCoreOpenOptions, ImCorePaths, LocalStatePaths, MessageTransportPolicy,
-    RuntimePaths, ServiceEndpoint,
+    DeviceRevokeOutcomeCategory, ImCore, ImCoreConfig, ImCoreOpenOptions, ImCorePaths,
+    LocalStatePaths, MessageTransportPolicy, RuntimePaths, ServiceEndpoint,
 };
 
 fn test_core(options: ImCoreOpenOptions) -> (tempfile::TempDir, ImCore) {
@@ -75,12 +75,19 @@ async fn user_presence_and_vault_fail_closed_before_identity_or_network_access()
             .revoke(request(false))
             .await
             .unwrap_err(),
-        awiki_im_core::ImError::PermissionDenied
+        awiki_im_core::ImError::DeviceRevokeOutcome {
+            category: DeviceRevokeOutcomeCategory::CancelledBeforeSubmit,
+        }
     );
-    assert!(matches!(
-        core.device_revoke().revoke(request(true)).await,
-        Err(awiki_im_core::ImError::LocalStateUnavailable { .. })
-    ));
+    assert_eq!(
+        core.device_revoke()
+            .revoke(request(true))
+            .await
+            .unwrap_err(),
+        awiki_im_core::ImError::DeviceRevokeOutcome {
+            category: DeviceRevokeOutcomeCategory::RejectedBeforeCommit,
+        }
+    );
 }
 
 #[test]
