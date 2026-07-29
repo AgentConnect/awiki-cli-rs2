@@ -290,6 +290,67 @@ async fn sync_delta_hydrates_metadata_only_outbound_direct_before_checkpoint() {
 }
 
 #[tokio::test]
+async fn sync_delta_hydrates_metadata_only_group_before_checkpoint() {
+    let fixture = Fixture::new("sync-delta-group-thread-hydration");
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::clone(&calls),
+            vec![
+                delta_page(
+                    vec![group_message_created_event_without_content(
+                        "sev-group-1",
+                        "1",
+                        "wire-group-9",
+                        9,
+                    )],
+                    "1",
+                    false,
+                ),
+                json!({
+                    "messages": [{
+                        "id": "wire-group-9",
+                        "thread_kind": "group",
+                        "group_did": "did:example:group",
+                        "sender_did": "did:example:bob",
+                        "content": "group body from authoritative history",
+                        "content_type": "text/plain",
+                        "group_event_seq": 9
+                    }],
+                    "next_since_seq": "9",
+                    "has_more": false,
+                    "warnings": []
+                }),
+            ],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 1);
+    assert_eq!(fixture.checkpoint().as_deref(), Some("1"));
+    assert_eq!(
+        fixture.message_content("did:example:group:9").as_deref(),
+        Some("group body from authoritative history")
+    );
+    let calls = calls.borrow();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].method, "sync.delta");
+    assert_eq!(calls[1].method, "group.list_messages");
+    assert_eq!(calls[1].params["body"]["group_did"], "did:example:group");
+    assert_eq!(calls[1].params["body"]["since_seq"], "0");
+}
+
+#[tokio::test]
 async fn sync_delta_batches_metadata_only_outbound_hydration_per_direct_peer() {
     let fixture = Fixture::new("sync-delta-outbound-thread-batched-hydration");
     let client = fixture.client();
@@ -1293,6 +1354,11 @@ async fn sync_thread_after_direct_fails_before_rpc_without_durable_binding() {
 async fn sync_thread_after_group_uses_raw_group_messages_since_seq() {
     let fixture = Fixture::new("thread-after-group");
     let client = fixture.client();
+    let mut conversation_patches = client.messages().watch_conversation_patches().unwrap();
+    assert!(matches!(
+        conversation_patches.next_patch().await,
+        Some(crate::messages::ConversationStorePatch::Reset { .. })
+    ));
     let calls = Rc::new(RefCell::new(Vec::new()));
     let runtime = MessageSyncRuntime::new(
         &client,
@@ -1355,6 +1421,22 @@ async fn sync_thread_after_group_uses_raw_group_messages_since_seq() {
     assert_eq!(result.next_after_server_seq.as_deref(), Some("6"));
     assert!(result.has_more);
     assert_eq!(result.warnings, vec!["partial"]);
+    let patch = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        conversation_patches.next_patch(),
+    )
+    .await
+    .expect("Group hydration must emit a conversation patch")
+    .expect("conversation patch stream must remain open");
+    assert!(
+        matches!(
+            &patch,
+            crate::messages::ConversationStorePatch::Upsert { item, .. }
+                if item.last_message.as_ref().map(|message| message.id.as_str())
+                    == Some("did:example:group:6")
+        ),
+        "unexpected Group conversation patch: {patch:?}"
+    );
     let calls = calls.borrow();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].method, "sync.thread_after");
@@ -1892,6 +1974,39 @@ fn outbound_message_created_event_without_content(
                 "server_seq": server_seq.to_string(),
                 "sender_did": "did:example:alice",
                 "receiver_did": "did:example:bob",
+                "content_type": "text/plain",
+                "sent_at": "2026-07-27T00:00:00Z"
+            }
+        }
+    })
+}
+
+fn group_message_created_event_without_content(
+    event_id: &str,
+    event_seq: &str,
+    message_id: &str,
+    server_seq: i64,
+) -> Value {
+    json!({
+        "event_id": event_id,
+        "event_seq": event_seq,
+        "event_type": "message.created",
+        "aggregate_kind": "group_message",
+        "aggregate_id": message_id,
+        "owner_subject_id": "did:example:alice",
+        "created_at": "2026-07-27T00:00:00Z",
+        "payload": {
+            "thread_kind": "group",
+            "thread": {
+                "kind": "group",
+                "group_did": "did:example:group"
+            },
+            "message": {
+                "id": message_id,
+                "server_seq": server_seq.to_string(),
+                "group_event_seq": server_seq.to_string(),
+                "sender_did": "did:example:bob",
+                "group_did": "did:example:group",
                 "content_type": "text/plain",
                 "sent_at": "2026-07-27T00:00:00Z"
             }
