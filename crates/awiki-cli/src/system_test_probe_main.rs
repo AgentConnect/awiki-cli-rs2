@@ -15,6 +15,8 @@
 //! 5. Account-state reads and public mutations return canonical versions, bounded counts, and
 //!    match booleans only; they never return account IDs, DIDs, device IDs, profile values, or
 //!    bearer tokens.
+//! 6. The test-only Account State fail-once code is accepted only for Agent Inventory reads and
+//!    is mapped to one secret-free probe code; every other RPC rejection keeps its prior mapping.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -59,6 +61,8 @@ const INVALID_REQUEST: &str = "probe.invalid_request";
 const INVALID_STATE: &str = "probe.invalid_state";
 const TRANSPORT_FAILED: &str = "probe.transport_failed";
 const RUNTIME_FAILED: &str = "probe.runtime_failed";
+const ACCOUNT_STATE_TEST_FAIL_ONCE: &str = "account_state_test_fail_once";
+const PROBE_ACCOUNT_STATE_TEST_FAIL_ONCE: &str = "probe.account_state_test_fail_once";
 
 const DEVICE_NOT_ELIGIBLE: &str = "anp.device_not_eligible";
 const DEVICE_STATE_CHANGED: &str = "anp.device_state_changed";
@@ -161,6 +165,7 @@ enum ProbeFailure {
     InvalidState,
     Transport,
     Runtime,
+    AccountStateTestFailOnce,
 }
 
 impl ProbeFailure {
@@ -170,7 +175,26 @@ impl ProbeFailure {
             Self::InvalidState => INVALID_STATE,
             Self::Transport => TRANSPORT_FAILED,
             Self::Runtime => RUNTIME_FAILED,
+            Self::AccountStateTestFailOnce => PROBE_ACCOUNT_STATE_TEST_FAIL_ONCE,
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RpcRejectionPolicy {
+    Standard,
+    AccountStateAgentInventory,
+}
+
+impl RpcRejectionPolicy {
+    fn allowlisted_code(self, status: reqwest::StatusCode, error: &Value) -> Option<&'static str> {
+        allowlisted_anp_code(error).or_else(|| match self {
+            Self::Standard => None,
+            Self::AccountStateAgentInventory if status.is_success() => {
+                allowlisted_account_state_test_code(error)
+            }
+            Self::AccountStateAgentInventory => None,
+        })
     }
 }
 
@@ -216,6 +240,16 @@ struct DownloadTicketResult {
 enum RpcOutcome<T> {
     Success(T),
     Rejected(Option<&'static str>),
+}
+
+fn required_account_state_agent_outcome(outcome: RpcOutcome<Value>) -> Result<Value, ProbeFailure> {
+    match outcome {
+        RpcOutcome::Success(result) => Ok(result),
+        RpcOutcome::Rejected(Some(ACCOUNT_STATE_TEST_FAIL_ONCE)) => {
+            Err(ProbeFailure::AccountStateTestFailOnce)
+        }
+        RpcOutcome::Rejected(_) => Err(ProbeFailure::Transport),
+    }
 }
 
 enum WsConnectOutcome {
@@ -478,13 +512,7 @@ impl Probe {
                 Ok((closed_manifest_result(&result)?, false))
             }
             Action::AccountStateAgent(params) => {
-                let result = self
-                    .required_user_rpc(
-                        &self.account_state_rpc_url,
-                        "account_state.agent_inventory_get",
-                        json!({}),
-                    )
-                    .await?;
+                let result = self.required_account_state_agent_rpc().await?;
                 Ok((closed_agent_result(&result, &params)?, false))
             }
             Action::AccountStateAgentRename(params) => {
@@ -798,8 +826,14 @@ impl Probe {
         method: &'static str,
         params: Value,
     ) -> Result<RpcOutcome<T>, ProbeFailure> {
-        self.rpc_to(&self.message_rpc_url, &self.bearer, method, params)
-            .await
+        self.rpc_to(
+            &self.message_rpc_url,
+            &self.bearer,
+            method,
+            params,
+            RpcRejectionPolicy::Standard,
+        )
+        .await
     }
 
     async fn required_user_rpc(
@@ -808,10 +842,32 @@ impl Probe {
         method: &'static str,
         params: Value,
     ) -> Result<Value, ProbeFailure> {
-        match self.rpc_to(endpoint, &self.bearer, method, params).await? {
+        match self
+            .rpc_to(
+                endpoint,
+                &self.bearer,
+                method,
+                params,
+                RpcRejectionPolicy::Standard,
+            )
+            .await?
+        {
             RpcOutcome::Success(result) => Ok(result),
             RpcOutcome::Rejected(_) => Err(ProbeFailure::Transport),
         }
+    }
+
+    async fn required_account_state_agent_rpc(&self) -> Result<Value, ProbeFailure> {
+        let outcome = self
+            .rpc_to(
+                &self.account_state_rpc_url,
+                &self.bearer,
+                "account_state.agent_inventory_get",
+                json!({}),
+                RpcRejectionPolicy::AccountStateAgentInventory,
+            )
+            .await?;
+        required_account_state_agent_outcome(outcome)
     }
 
     async fn rpc_to<T: DeserializeOwned>(
@@ -820,6 +876,7 @@ impl Probe {
         bearer: &Zeroizing<String>,
         method: &'static str,
         params: Value,
+        rejection_policy: RpcRejectionPolicy,
     ) -> Result<RpcOutcome<T>, ProbeFailure> {
         let payload = json!({
             "jsonrpc": "2.0",
@@ -851,7 +908,9 @@ impl Probe {
         match (envelope.result, envelope.error) {
             (Some(result), None) if status.is_success() => Ok(RpcOutcome::Success(result)),
             (None, Some(error)) => Ok(RpcOutcome::Rejected(
-                allowlisted_anp_code(&error).or_else(|| auth_status_code(status.as_u16())),
+                rejection_policy
+                    .allowlisted_code(status, &error)
+                    .or_else(|| auth_status_code(status.as_u16())),
             )),
             _ if status.as_u16() == 401 || status.as_u16() == 403 => {
                 Ok(RpcOutcome::Rejected(Some(SESSION_UNAUTHORIZED)))
@@ -1787,6 +1846,25 @@ fn allowlisted_anp_code(error: &Value) -> Option<&'static str> {
         })
 }
 
+fn allowlisted_account_state_test_code(error: &Value) -> Option<&'static str> {
+    let error = error.as_object()?;
+    require_exact_keys(error, &["code", "data", "message"]).ok()?;
+    if error.get("code").and_then(Value::as_i64) != Some(-32603)
+        || error
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|message| !message.is_empty())
+            .is_none()
+    {
+        return None;
+    }
+    let data = error.get("data").and_then(Value::as_object)?;
+    require_exact_keys(data, &["code", "retryable"]).ok()?;
+    (data.get("code").and_then(Value::as_str) == Some(ACCOUNT_STATE_TEST_FAIL_ONCE)
+        && data.get("retryable").and_then(Value::as_bool) == Some(true))
+    .then_some(ACCOUNT_STATE_TEST_FAIL_ONCE)
+}
+
 fn validate_service_url(url: &reqwest::Url) -> Result<(), ProbeFailure> {
     match url.scheme() {
         "https" => Ok(()),
@@ -1867,6 +1945,112 @@ mod tests {
         assert_eq!(
             response,
             json!({"id": 7, "ok": false, "error": {"code": INVALID_REQUEST}})
+        );
+    }
+
+    #[test]
+    fn account_state_test_fail_once_code_is_exact_scoped_and_secret_free() {
+        let exact = json!({
+            "code": -32603,
+            "message": SERVER_ERROR_SECRET,
+            "data": {
+                "code": ACCOUNT_STATE_TEST_FAIL_ONCE,
+                "retryable": true,
+            }
+        });
+        assert_eq!(
+            RpcRejectionPolicy::Standard.allowlisted_code(reqwest::StatusCode::OK, &exact),
+            None
+        );
+        assert_eq!(
+            RpcRejectionPolicy::AccountStateAgentInventory
+                .allowlisted_code(reqwest::StatusCode::OK, &exact),
+            Some(ACCOUNT_STATE_TEST_FAIL_ONCE)
+        );
+        for status in [
+            reqwest::StatusCode::UNAUTHORIZED,
+            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            assert_eq!(
+                RpcRejectionPolicy::AccountStateAgentInventory.allowlisted_code(status, &exact),
+                None
+            );
+        }
+        for invalid in [
+            json!({
+                "code": -32603,
+                "message": SERVER_ERROR_SECRET,
+                "data": {
+                    "code": ACCOUNT_STATE_TEST_FAIL_ONCE,
+                    "retryable": false,
+                }
+            }),
+            json!({
+                "code": -32000,
+                "message": SERVER_ERROR_SECRET,
+                "data": {
+                    "code": ACCOUNT_STATE_TEST_FAIL_ONCE,
+                    "retryable": true,
+                }
+            }),
+            json!({
+                "code": -32603,
+                "message": SERVER_ERROR_SECRET,
+                "data": {
+                    "code": ACCOUNT_STATE_TEST_FAIL_ONCE,
+                    "retryable": true,
+                    "receipt_id": "must-not-be-accepted",
+                }
+            }),
+            json!({
+                "code": -32603,
+                "message": SERVER_ERROR_SECRET,
+                "data": {
+                    "awiki_code": ACCOUNT_STATE_TEST_FAIL_ONCE,
+                    "retryable": true,
+                }
+            }),
+        ] {
+            assert_eq!(
+                RpcRejectionPolicy::AccountStateAgentInventory
+                    .allowlisted_code(reqwest::StatusCode::OK, &invalid),
+                None
+            );
+        }
+
+        let response =
+            failure_response(RequestId(json!(8)), ProbeFailure::AccountStateTestFailOnce);
+        assert_eq!(
+            response,
+            json!({
+                "id": 8,
+                "ok": false,
+                "error": {"code": PROBE_ACCOUNT_STATE_TEST_FAIL_ONCE}
+            })
+        );
+        let serialized = response.to_string();
+        assert!(!serialized.contains(SERVER_ERROR_SECRET));
+        assert!(!serialized.contains("receipt_id"));
+        assert_eq!(
+            required_account_state_agent_outcome(RpcOutcome::Rejected(Some(
+                ACCOUNT_STATE_TEST_FAIL_ONCE
+            )))
+            .expect_err("exact fail-once rejection")
+            .code(),
+            PROBE_ACCOUNT_STATE_TEST_FAIL_ONCE
+        );
+        assert_eq!(
+            required_account_state_agent_outcome(RpcOutcome::Rejected(None))
+                .expect_err("broad rejection")
+                .code(),
+            TRANSPORT_FAILED
+        );
+        assert_eq!(
+            required_account_state_agent_outcome(RpcOutcome::Rejected(Some(SESSION_UNAUTHORIZED)))
+                .expect_err("ordinary allowlisted rejection")
+                .code(),
+            TRANSPORT_FAILED
         );
     }
 
