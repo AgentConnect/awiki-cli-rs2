@@ -832,11 +832,11 @@ mod tests {
         let valid = format!(
             "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: awiki.sync.changed.v2\r\n\r\n"
         );
-        assert_eq!(validate_handshake_response(&valid, key).unwrap(), true);
+        assert!(validate_handshake_response(&valid, key).unwrap());
 
         let missing =
             format!("HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\n\r\n");
-        assert_eq!(validate_handshake_response(&missing, key).unwrap(), false);
+        assert!(!validate_handshake_response(&missing, key).unwrap());
 
         let wrong = format!(
             "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: awiki.sync.changed.v1\r\n\r\n"

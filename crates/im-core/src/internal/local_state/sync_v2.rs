@@ -1809,7 +1809,7 @@ pub(crate) fn mark_thread_read_and_update_outbox(
         acknowledge_read_outbox(
             &transaction,
             owner_identity_id,
-            &remote_thread_key,
+            remote_thread_key,
             acknowledged_remote_seq.as_deref().unwrap_or(seq),
             unix_time_i64(),
         )?;

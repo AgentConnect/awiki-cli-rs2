@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn async_ws_allows_v1_fallback_and_rejects_wrong_selected_subprotocol() {
         let mut headers = HeaderMap::new();
-        assert_eq!(validate_async_ws_subprotocol(&headers).unwrap(), false);
+        assert!(!validate_async_ws_subprotocol(&headers).unwrap());
 
         headers.insert(
             SEC_WEBSOCKET_PROTOCOL,
@@ -245,7 +245,7 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        assert_eq!(validate_async_ws_subprotocol(&headers).unwrap(), true);
+        assert!(validate_async_ws_subprotocol(&headers).unwrap());
     }
 
     #[test]

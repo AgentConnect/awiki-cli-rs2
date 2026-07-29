@@ -2502,10 +2502,13 @@ mod tests {
             restart_outcome.status,
             crate::messages::MessageSyncStatus::Idle
         );
-        let restart_calls = restart_calls.borrow();
+        let restart_cursor = restart_calls.borrow()[0]
+            .params
+            .pointer("/body/cursor/scan_seq")
+            .cloned();
         assert_eq!(
-            restart_calls[0].params.pointer("/body/cursor/scan_seq"),
-            Some(&json!("10")),
+            restart_cursor,
+            Some(json!("10")),
             "restart must request a fresh recovery authorization from the durable cursor"
         );
         let state = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;

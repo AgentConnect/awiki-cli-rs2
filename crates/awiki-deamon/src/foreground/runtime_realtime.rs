@@ -903,8 +903,11 @@ mod tests {
             event_id: Some("evt-1".to_string()),
             event_seq: Some("42".to_string()),
             event_type: Some("message.created".to_string()),
+            domains: Default::default(),
+            reason: None,
             sync_dirty: true,
             gap_detected,
+            has_unknown_domain: false,
         }
     }
 
