@@ -630,7 +630,7 @@ Conversation snapshot and patch APIs are non-authoritative acceleration layers o
 
 - `messages.load_conversation_snapshot()` / Dart `client.messages.loadConversationSnapshot()` reads a redb snapshot generated from `conversation_summaries`.
 - Snapshot entries use `ConversationSnapshotItem`, a core-only DTO containing thread identity, the committed Group profile title when applicable, participants, last message projection, unread counts, message count, and last message time. Group title comes from Core's owner-scoped `groups` projection; it is not an App presentation overlay.
-- `messages.watch_conversation_patches()` / Dart `client.messages.watchConversationPatches()` streams versioned `ConversationStorePatch` values from an in-memory runtime store seeded by snapshot/local projection.
+- `messages.watch_conversation_patches()` / Dart `client.messages.watchConversationPatches()` streams versioned `ConversationStorePatch` values from an in-memory runtime store. A bound watch subscribes before reading and emits exactly one initial `Reset` seeded from the canonical SQLite projection; the redb snapshot remains available only through the explicit legacy snapshot API and is never an authoritative watch seed.
 - `messages.repair_conversation_store()` / Dart `client.messages.repairConversationStore()` returns a reset/repair patch and the current runtime store version after lag, overflow, stream close, or version gaps.
 - `messages.watch_conversation_timeline_patches(conversation, limit)` / Dart `client.messages.watchConversationTimelinePatches(conversation, limit: ...)` streams versioned `ThreadMessageStorePatch` values for the currently opened canonical conversation timeline.
 - `messages.repair_conversation_timeline_store(conversation, limit)` / Dart `client.messages.repairConversationTimelineStore(conversation, limit: ...)` returns a reset/repair patch for the conversation timeline runtime store.
@@ -825,6 +825,33 @@ sequence. The service may omit sibling-targeted or expired rows while advancing
 `next_event_seq`; Core therefore accepts strictly increasing visible sequences
 with gaps and empty advancing pages, counts only visible applied events, and
 commits the returned scan checkpoint atomically with those projections.
+
+`messages.sync_diagnostics()` is the product-safe observability boundary for
+this runtime. It exposes only the last successful sync time, a typed
+`uninitialized|idle|recovering|retryable|blocked` mode, pending read-mutation
+count, typed dirty domains, and typed retry state/next retry time. It does not
+expose the account/device binding, stream epoch, raw scan cursor, recovery
+anchor/token/hash, event/message payload, or message content. Developer tooling
+that needs deeper inspection must remain a separately controlled internal
+surface and may use only redacted account hashes and aggregate lag/counts.
+
+Successful delta and snapshot commits schedule bounded best-effort local
+cleanup. Cleanup failure never reverses a successful sync result. Applied-event
+receipts are removed only before the safe cursor, outside the active recovery
+window, while retaining at least the newest 10,000 receipts per owner.
+`local_mutation_outbox` and terminal recovery rows have a seven-day audited
+retention window and a maximum 256-row cleanup batch: pending, in-flight, and
+retryable mutations are never deleted, and a recovery row is deleted only when
+it is terminal, expired, and its anchor is covered by the current cursor.
+Cleanup never writes the cursor, epoch, retention floor, or committed
+projection.
+
+Conversation and timeline patch watchers subscribe to the broadcast channel
+before reading their initial committed seed. Initial seed versions fence queued
+patches: a commit during seed construction is either represented by the newer
+seed or delivered once afterward, but is never lost or replayed as an older
+duplicate. The public committed patch envelope and patch variants are
+unchanged.
 
 ## 15. System Notification Projection
 

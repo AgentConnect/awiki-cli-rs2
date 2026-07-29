@@ -712,6 +712,7 @@ impl MessageService<'_> {
     ) -> ImResult<Page<Message>>;
     pub fn sync_delta(&self, request: SyncDeltaRequest) -> ImResult<SyncDeltaResult>;
     pub fn sync_now(&self, request: MessageSyncRequest) -> ImResult<MessageSyncOutcome>;
+    pub fn sync_diagnostics(&self) -> ImResult<MessageSyncDiagnostics>;
     pub fn sync_thread_after(
         &self,
         request: SyncThreadAfterRequest,
@@ -782,6 +783,15 @@ Reliable sync 补充：
   bootstrap 的 `client_instance_id` 是 Core 为每个本地 owner 在同步 SQLite 首次生成并先持久化
   的随机不透明值：请求丢失/失败重试和重启复用，清库/新 DB 自动变化，不能由 owner/account/
   device 稳定标识派生。
+- `sync_diagnostics()` 是只读、类型化且产品安全的诊断入口。结果只包含
+  `last_success_at`、`mode`、`pending_mutation_count`、`dirty_domains`、
+  `retry_state` 和可选 `next_retry_at`；不包含 raw cursor/epoch、完整 account/device ID、
+  recovery token/anchor/hash、正文、payload 或 auth token。该调用不发网络请求，不推进
+  checkpoint，也不触发 recovery。
+- 每次成功 delta/snapshot commit 后，Core 可 best-effort 执行最多 256 条本地清理。receipt
+  清理继续保留每 owner 最近至少 10,000 条并保护 recovery anchor；mutation/recovery
+  terminal row 至少保留七天。pending/in-flight/retryable mutation 永不由该清理删除；
+  清理失败不改变已经返回的同步成功语义。
 - `sync_now` 在一次调用内闭合 compact recovery：
   delta（或 existing-device bootstrap）→ 只存在于 Rust 进程栈的不透明 token →
   snapshot 严格校验/原子 merge → post-anchor delta。成功只返回既有 `changed` / `idle`；

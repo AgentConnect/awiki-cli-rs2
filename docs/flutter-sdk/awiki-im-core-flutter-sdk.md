@@ -452,6 +452,10 @@ projection, runtime store, read state, or reliable checkpoint. `watchConversatio
 `repairRequired`) emitted only after the underlying local projection commit
 succeeds. The conversation store is keyed only by canonical `conversationId`;
 `remove` and `reorder` carry that ID instead of thread kind/id or a legacy alias.
+The bound watch subscribes before reading and emits exactly one initial `reset`
+from the canonical SQLite projection. The non-authoritative redb snapshot is
+available only through the explicit `loadConversationSnapshot` legacy
+acceleration API and is not used as an initial watch seed.
 After a committed invalidation, the runtime store compares the full projected
 items with its current state. Identical items do not advance the store version
 and do not emit a synthetic `reset`; one-row material changes emit
@@ -656,6 +660,8 @@ final page = await client.messages.syncConversationAfter(
     limit: 100,
   ),
 );
+
+final diagnostics = await client.messages.syncDiagnostics();
 ```
 
 `syncNow` semantics:
@@ -716,6 +722,17 @@ final page = await client.messages.syncConversationAfter(
   pages, so Flutter never needs to poll or merge read state itself.
 - `syncDelta` retains the earlier v1 checkpoint behavior and remains isolated
   from the v2 cursor.
+- `syncDiagnostics()` performs a local-only read and returns typed
+  `lastSuccessAt`, sync/recovery `mode`, `pendingMutationCount`,
+  `dirtyDomains`, `retryState`, and optional `nextRetryAt`. The model is safe
+  for product status UI: it contains no raw cursor/epoch, full account/device
+  identifier, recovery token/anchor/hash, message body/payload, or auth token.
+  Flutter code must not reconstruct those private values from other DTOs.
+- Successful delta/snapshot cleanup is bounded and best-effort inside Core.
+  Flutter does not receive a cleanup control API and must not interpret cleanup
+  failure as rollback of a committed sync. Terminal mutation/recovery records
+  are retained for seven days; live pending/in-flight/retryable work remains
+  durable.
 
 `syncDelta` compatibility semantics:
 
