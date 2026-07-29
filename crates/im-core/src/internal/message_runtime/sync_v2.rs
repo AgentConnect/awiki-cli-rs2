@@ -725,11 +725,14 @@ fn reduce_event(
                 ));
             }
             let synthetic = hydrated_v1_event(event, hydrated_message)?;
-            let mut message =
+            let projection =
                 super::sync::sync_delta_message_from_payload(client, &synthetic, true)?;
+            let mut message = projection.message;
             message.direction = event_direction(event)?;
             add_v2_metadata(&mut message, event);
-            let record = super::local_projection::message_record_from_message(client, &message)?;
+            let mut record =
+                super::local_projection::message_record_from_message(client, &message)?;
+            record.hydration_state = projection.hydration_state;
             let remote_thread_key = event.thread_key.as_deref().ok_or_else(|| {
                 sync_error(
                     "SYNC_INVALID_PAGE",
@@ -3247,6 +3250,85 @@ mod tests {
                 ..
             } if code == "SYNC_UNKNOWN_REQUIRED_EVENT"
         ));
+    }
+
+    #[test]
+    fn reduce_event_preserves_hydration_state_and_v2_projection_metadata() {
+        let fixture = Fixture::new("hydration-state");
+        let client = fixture.client();
+        let event = crate::internal::wire::sync_v2::SyncEventV2 {
+            event_id: "event-discovered".to_owned(),
+            stream_epoch: "3".to_owned(),
+            event_seq: "17".to_owned(),
+            event_type: "message.created".to_owned(),
+            schema_version: 1,
+            ignore_safe: false,
+            account_id: "account-1".to_owned(),
+            recipient_device_id: None,
+            origin_did: Some("did:example:bob".to_owned()),
+            origin_device_id: Some("device-bob".to_owned()),
+            aggregate_kind: "direct_message".to_owned(),
+            aggregate_id: "message-discovered".to_owned(),
+            state_version: None,
+            thread_key: Some("remote-thread-bob".to_owned()),
+            occurred_at: "2026-07-28T10:00:00Z".to_owned(),
+            payload: json!({
+                "message_kind": "direct_plain",
+                "direction": "incoming",
+                "sender_did_snapshot": "did:example:bob",
+                "recipient_did_snapshot": "did:example:alice",
+                "client_message_id": "client-message-discovered"
+            }),
+            source: None,
+        };
+        let hydrated_message = json!({
+            "id": "message-discovered",
+            "thread_kind": "direct",
+            "sender_did": "did:example:bob",
+            "receiver_did": "did:example:alice",
+            "content_type": "text/plain",
+            "server_seq": "17",
+            "created_at": "2026-07-28T10:00:00Z"
+        });
+        let mut public_messages = BTreeMap::new();
+
+        let apply = reduce_event(
+            &client,
+            &event,
+            Some(&hydrated_message),
+            &mut public_messages,
+        )
+        .unwrap();
+
+        assert_eq!(apply.messages.len(), 1);
+        assert_eq!(
+            apply.messages[0].hydration_state,
+            crate::internal::local_state::messages::MessageHydrationState::Discovered
+        );
+        assert_eq!(apply.thread_bindings.len(), 1);
+        assert_eq!(
+            apply.thread_bindings[0].remote_thread_key,
+            "remote-thread-bob"
+        );
+        assert_eq!(apply.thread_bindings[0].thread_kind, "direct");
+        let message = public_messages.get("event-discovered").unwrap();
+        assert_eq!(
+            message.direction,
+            crate::messages::MessageDirection::Incoming
+        );
+        for (key, value) in [
+            ("stream_epoch", "3"),
+            ("account_id", "account-1"),
+            ("origin_device_id", "device-bob"),
+            ("client_message_id", "client-message-discovered"),
+            ("remote_thread_key", "remote-thread-bob"),
+        ] {
+            assert!(message
+                .metadata
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key == key && attribute.value == value));
+        }
     }
 
     #[test]

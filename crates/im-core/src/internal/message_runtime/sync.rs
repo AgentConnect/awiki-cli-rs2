@@ -26,9 +26,9 @@ pub(crate) struct SyncDeltaInput {
 }
 
 #[cfg(feature = "sqlite")]
-struct SyncDeltaMessageProjection {
-    message: crate::messages::Message,
-    hydration_state: crate::internal::local_state::messages::MessageHydrationState,
+pub(super) struct SyncDeltaMessageProjection {
+    pub(super) message: crate::messages::Message,
+    pub(super) hydration_state: crate::internal::local_state::messages::MessageHydrationState,
 }
 
 impl<'a, P, T, R> MessageSyncRuntime<'a, P, T, R> {
