@@ -402,6 +402,10 @@ fail closed；网络不可用、权威数据不一致和本地绑定冲突保留
 两个 generation 和后续 cursor 都以 canonical decimal string 暴露，以支持超过
 `u64` 的值而不损失精度。
 
+普通消息 v2 同步对每个合法 binding 默认生效，不存在 public API 级账号/设备 allowlist 或
+百分比灰度。host 只可通过全局配置做应急回滚；该配置不改变 cursor、replica 或 Event
+Envelope 语义，也不影响独立的 Direct/Group E2EE rollout gate。
+
 `delete_local_identity` 是纯本地、crash-safe 的身份退役事务。registry/default
 pointer tombstone 是目录与 Vault 清理之前的权威状态；Core open 会恢复中断阶段，并
 通过永久 identity-ID tombstone 清理由并发尾部任务晚写的 identity-scoped Vault

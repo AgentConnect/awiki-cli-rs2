@@ -678,6 +678,12 @@ Reliable message sync is split between service-owned event logs and
 `message-service/docs/api/ANP-client-server-api-sync.md`; this document records
 the SDK architecture boundary.
 
+Ordinary v2 Direct/Group sync is the default product path for every valid
+account/device binding. Core does not accept an account allowlist, device
+cohort, or percentage rollout input. A host may explicitly disable the global
+v2 reader only for emergency rollback; the independent P5/P6 E2EE gates in
+Section 4.2 remain default-off and do not control ordinary synchronization.
+
 `im-core` Rust/SQLite owns the global reliable checkpoint:
 
 - `messages.sync_now()` / Dart `client.messages.syncNow(...)` are the v2 ordinary
