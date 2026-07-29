@@ -13,9 +13,13 @@ flowchart LR
     Skill --> CLI[awiki-cli]
     CLI --> Core[awiki-im-core]
     Core --> Service[AWiki / Compatible Service]
-    Listener[Runtime Listener] --> Notify[Host Notification]
-    Notify --> Agent
+    Service --> App[AWiki Me]
+    Listener[Runtime Listener] --> HostNotify[Host Notification]
+    HostNotify --> Agent
 ```
+
+`Host Notification` 是唤醒 Host Agent 的入站 Runtime 集成。Coding Agent 终态通知方向相反：
+在用户明确授权后，通过明文 `msg send` 向 AWiki Me 发消息，不使用 host-notify、Daemon 或 E2EE。
 
 ## 2. 安装状态
 
@@ -56,6 +60,7 @@ Agent 默认只加载 `skills/SKILL.md`。只有任务明确进入某个领域�
 | Discovery | `references/07-discovery.md` |
 | People | `references/09-people.md` |
 | Upgrade | `references/10-upgrade.md` |
+| Coding Agent 终态通知 | `references/12-notify.md` |
 | Debug | `references/08-debug.md`，仅作为最后路径 |
 
 不要预加载所有参考，也不要把 Skill 本身变成业务实现说明。

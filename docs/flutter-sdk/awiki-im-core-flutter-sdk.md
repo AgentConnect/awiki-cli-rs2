@@ -649,6 +649,10 @@ snapshot count is exposed to Dart. `syncDelta` remains a separate v1
 compatibility facade. Message edit, recall, delete, tombstone, Push, and
 E2EE/MLS multi-device synchronization remain outside this stage.
 
+AWiki Me 默认启用 `syncNow`，并对所有合法账号/设备 binding 使用同一协议；Dart SDK 不暴露
+账号 allowlist、设备 cohort 或百分比 rollout 参数。显式关闭只用于全局应急回滚，P5/P6
+E2EE 的独立默认关闭开关不受影响。
+
 Expected public shape:
 
 ```dart

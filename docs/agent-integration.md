@@ -13,9 +13,14 @@ flowchart LR
     Skill --> CLI[awiki-cli]
     CLI --> Core[awiki-im-core]
     Core --> Service[AWiki / compatible service]
-    Listener[Runtime Listener] --> Notify[Host Notification]
-    Notify --> Agent
+    Service --> App[AWiki Me]
+    Listener[Runtime Listener] --> HostNotify[Host Notification]
+    HostNotify --> Agent
 ```
+
+`Host Notification` is an inbound Runtime integration that wakes the Host Agent. Coding Agent
+terminal notification is the opposite direction: an explicitly authorized outbound plain
+`msg send` reaches AWiki Me and does not use host-notify, Daemon, or E2EE.
 
 ## 2. Installation status
 
@@ -43,6 +48,7 @@ Agents load only `skills/SKILL.md` by default, then one matching reference when 
 | Discovery | `references/07-discovery.md` |
 | People | `references/09-people.md` |
 | Upgrade | `references/10-upgrade.md` |
+| Coding Agent terminal notification | `references/12-notify.md` |
 | Debug | `references/08-debug.md`, only as a last resort |
 
 Do not preload every reference or turn the Skill into an implementation document.

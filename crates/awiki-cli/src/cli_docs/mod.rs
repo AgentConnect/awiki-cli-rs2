@@ -110,6 +110,8 @@ fn topics() -> &'static [Topic] {
                 "docs/architecture/awiki-skill-architecture.md",
                 "skills/references/00-installation.md",
                 "skills/references/02-identity.md",
+                "skills/references/03-messaging.md",
+                "skills/references/12-notify.md",
             ],
         },
         Topic {
