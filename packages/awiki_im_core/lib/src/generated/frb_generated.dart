@@ -90,7 +90,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 2113074029;
+  int get rustContentHash => 607378738;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -720,6 +720,10 @@ abstract class RustLibApi extends BaseApi {
   Future<DartSyncDeltaResult> crateApiMessagesSyncDelta({
     required ArcDartImClient client,
     required DartSyncDeltaRequest request,
+  });
+
+  Future<DartMessageSyncDiagnostics> crateApiMessagesSyncDiagnostics({
+    required ArcDartImClient client,
   });
 
   Future<DartMessageSyncOutcome> crateApiMessagesSyncNow({
@@ -5344,6 +5348,39 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<DartMessageSyncDiagnostics> crateApiMessagesSyncDiagnostics({
+    required ArcDartImClient client,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
+            client,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 115,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_message_sync_diagnostics,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiMessagesSyncDiagnosticsConstMeta,
+        argValues: [client],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiMessagesSyncDiagnosticsConstMeta =>
+      const TaskConstMeta(debugName: "sync_diagnostics", argNames: ["client"]);
+
+  @override
   Future<DartMessageSyncOutcome> crateApiMessagesSyncNow({
     required ArcDartImClient client,
     required DartMessageSyncRequest request,
@@ -5360,7 +5397,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 115,
+            funcId: 116,
             port: port_,
           );
         },
@@ -5400,7 +5437,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 116,
+            funcId: 117,
             port: port_,
           );
         },
@@ -5442,7 +5479,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 117,
+              funcId: 118,
               port: port_,
             );
           },
@@ -5482,7 +5519,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 118,
+            funcId: 119,
             port: port_,
           );
         },
@@ -5510,7 +5547,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 119,
+            funcId: 120,
             port: port_,
           );
         },
@@ -5545,7 +5582,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 120,
+            funcId: 121,
             port: port_,
           );
         },
@@ -5583,7 +5620,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 121,
+            funcId: 122,
             port: port_,
           );
         },
@@ -5615,7 +5652,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 122,
+            funcId: 123,
             port: port_,
           );
         },
@@ -5651,7 +5688,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 123,
+            funcId: 124,
             port: port_,
           );
         },
@@ -5687,7 +5724,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 124,
+            funcId: 125,
             port: port_,
           );
         },
@@ -5722,7 +5759,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 125,
+            funcId: 126,
             port: port_,
           );
         },
@@ -5767,7 +5804,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 126,
+            funcId: 127,
             port: port_,
           );
         },
@@ -5809,7 +5846,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 127,
+            funcId: 128,
             port: port_,
           );
         },
@@ -8245,6 +8282,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartMessageSyncDiagnostics dco_decode_dart_message_sync_diagnostics(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return DartMessageSyncDiagnostics(
+      lastSuccessAt: dco_decode_opt_String(arr[0]),
+      mode: dco_decode_dart_message_sync_mode(arr[1]),
+      pendingMutationCount: dco_decode_u_32(arr[2]),
+      dirtyDomains: dco_decode_list_dart_message_sync_dirty_domain(arr[3]),
+      retryState: dco_decode_dart_message_sync_retry_state(arr[4]),
+      nextRetryAt: dco_decode_opt_String(arr[5]),
+    );
+  }
+
+  @protected
+  DartMessageSyncDirtyDomain dco_decode_dart_message_sync_dirty_domain(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartMessageSyncDirtyDomain.values[raw as int];
+  }
+
+  @protected
+  DartMessageSyncMode dco_decode_dart_message_sync_mode(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartMessageSyncMode.values[raw as int];
+  }
+
+  @protected
   DartMessageSyncOutcome dco_decode_dart_message_sync_outcome(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -8274,6 +8343,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       reason: dco_decode_String(arr[0]),
       limit: dco_decode_opt_box_autoadd_u_32(arr[1]),
     );
+  }
+
+  @protected
+  DartMessageSyncRetryState dco_decode_dart_message_sync_retry_state(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartMessageSyncRetryState.values[raw as int];
   }
 
   @protected
@@ -9150,6 +9227,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>)
         .map(dco_decode_dart_message_metadata_attribute)
+        .toList();
+  }
+
+  @protected
+  List<DartMessageSyncDirtyDomain>
+  dco_decode_list_dart_message_sync_dirty_domain(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_dart_message_sync_dirty_domain)
         .toList();
   }
 
@@ -12435,6 +12521,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartMessageSyncDiagnostics sse_decode_dart_message_sync_diagnostics(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_lastSuccessAt = sse_decode_opt_String(deserializer);
+    var var_mode = sse_decode_dart_message_sync_mode(deserializer);
+    var var_pendingMutationCount = sse_decode_u_32(deserializer);
+    var var_dirtyDomains = sse_decode_list_dart_message_sync_dirty_domain(
+      deserializer,
+    );
+    var var_retryState = sse_decode_dart_message_sync_retry_state(deserializer);
+    var var_nextRetryAt = sse_decode_opt_String(deserializer);
+    return DartMessageSyncDiagnostics(
+      lastSuccessAt: var_lastSuccessAt,
+      mode: var_mode,
+      pendingMutationCount: var_pendingMutationCount,
+      dirtyDomains: var_dirtyDomains,
+      retryState: var_retryState,
+      nextRetryAt: var_nextRetryAt,
+    );
+  }
+
+  @protected
+  DartMessageSyncDirtyDomain sse_decode_dart_message_sync_dirty_domain(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartMessageSyncDirtyDomain.values[inner];
+  }
+
+  @protected
+  DartMessageSyncMode sse_decode_dart_message_sync_mode(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartMessageSyncMode.values[inner];
+  }
+
+  @protected
   DartMessageSyncOutcome sse_decode_dart_message_sync_outcome(
     SseDeserializer deserializer,
   ) {
@@ -12470,6 +12597,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_reason = sse_decode_String(deserializer);
     var var_limit = sse_decode_opt_box_autoadd_u_32(deserializer);
     return DartMessageSyncRequest(reason: var_reason, limit: var_limit);
+  }
+
+  @protected
+  DartMessageSyncRetryState sse_decode_dart_message_sync_retry_state(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartMessageSyncRetryState.values[inner];
   }
 
   @protected
@@ -13689,6 +13825,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <DartMessageMetadataAttribute>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_dart_message_metadata_attribute(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<DartMessageSyncDirtyDomain>
+  sse_decode_list_dart_message_sync_dirty_domain(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <DartMessageSyncDirtyDomain>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_dart_message_sync_dirty_domain(deserializer));
     }
     return ans_;
   }
@@ -16609,6 +16758,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_message_sync_diagnostics(
+    DartMessageSyncDiagnostics self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.lastSuccessAt, serializer);
+    sse_encode_dart_message_sync_mode(self.mode, serializer);
+    sse_encode_u_32(self.pendingMutationCount, serializer);
+    sse_encode_list_dart_message_sync_dirty_domain(
+      self.dirtyDomains,
+      serializer,
+    );
+    sse_encode_dart_message_sync_retry_state(self.retryState, serializer);
+    sse_encode_opt_String(self.nextRetryAt, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_message_sync_dirty_domain(
+    DartMessageSyncDirtyDomain self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_message_sync_mode(
+    DartMessageSyncMode self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_dart_message_sync_outcome(
     DartMessageSyncOutcome self,
     SseSerializer serializer,
@@ -16636,6 +16820,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.reason, serializer);
     sse_encode_opt_box_autoadd_u_32(self.limit, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_message_sync_retry_state(
+    DartMessageSyncRetryState self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected
@@ -17573,6 +17766,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_dart_message_metadata_attribute(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_dart_message_sync_dirty_domain(
+    List<DartMessageSyncDirtyDomain> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_dart_message_sync_dirty_domain(item, serializer);
     }
   }
 

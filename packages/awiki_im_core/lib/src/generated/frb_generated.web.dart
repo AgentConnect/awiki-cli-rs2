@@ -845,10 +845,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartMessageSecurityMode dco_decode_dart_message_security_mode(dynamic raw);
 
   @protected
+  DartMessageSyncDiagnostics dco_decode_dart_message_sync_diagnostics(
+    dynamic raw,
+  );
+
+  @protected
+  DartMessageSyncDirtyDomain dco_decode_dart_message_sync_dirty_domain(
+    dynamic raw,
+  );
+
+  @protected
+  DartMessageSyncMode dco_decode_dart_message_sync_mode(dynamic raw);
+
+  @protected
   DartMessageSyncOutcome dco_decode_dart_message_sync_outcome(dynamic raw);
 
   @protected
   DartMessageSyncRequest dco_decode_dart_message_sync_request(dynamic raw);
+
+  @protected
+  DartMessageSyncRetryState dco_decode_dart_message_sync_retry_state(
+    dynamic raw,
+  );
 
   @protected
   DartMessageSyncStatus dco_decode_dart_message_sync_status(dynamic raw);
@@ -1079,6 +1097,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<DartMessageMetadataAttribute>
   dco_decode_list_dart_message_metadata_attribute(dynamic raw);
+
+  @protected
+  List<DartMessageSyncDirtyDomain>
+  dco_decode_list_dart_message_sync_dirty_domain(dynamic raw);
 
   @protected
   List<DartRelationshipListItem> dco_decode_list_dart_relationship_list_item(
@@ -2180,12 +2202,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartMessageSyncDiagnostics sse_decode_dart_message_sync_diagnostics(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageSyncDirtyDomain sse_decode_dart_message_sync_dirty_domain(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageSyncMode sse_decode_dart_message_sync_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartMessageSyncOutcome sse_decode_dart_message_sync_outcome(
     SseDeserializer deserializer,
   );
 
   @protected
   DartMessageSyncRequest sse_decode_dart_message_sync_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMessageSyncRetryState sse_decode_dart_message_sync_retry_state(
     SseDeserializer deserializer,
   );
 
@@ -2500,6 +2542,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<DartMessageMetadataAttribute>
   sse_decode_list_dart_message_metadata_attribute(SseDeserializer deserializer);
+
+  @protected
+  List<DartMessageSyncDirtyDomain>
+  sse_decode_list_dart_message_sync_dirty_domain(SseDeserializer deserializer);
 
   @protected
   List<DartRelationshipListItem> sse_decode_list_dart_relationship_list_item(
@@ -3814,6 +3860,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_message_sync_diagnostics(
+    DartMessageSyncDiagnostics self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_sync_dirty_domain(
+    DartMessageSyncDirtyDomain self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_sync_mode(
+    DartMessageSyncMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_message_sync_outcome(
     DartMessageSyncOutcome self,
     SseSerializer serializer,
@@ -3822,6 +3886,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_message_sync_request(
     DartMessageSyncRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_message_sync_retry_state(
+    DartMessageSyncRetryState self,
     SseSerializer serializer,
   );
 
@@ -4206,6 +4276,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_message_metadata_attribute(
     List<DartMessageMetadataAttribute> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_message_sync_dirty_domain(
+    List<DartMessageSyncDirtyDomain> self,
     SseSerializer serializer,
   );
 

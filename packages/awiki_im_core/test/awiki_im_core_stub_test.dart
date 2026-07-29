@@ -357,6 +357,20 @@ void main() {
     expect(v2Outcome.committedIncomingMessages, isEmpty);
     expect(MessageSyncStatus.retryableFailure, isNotNull);
     expect(MessageSyncStatus.authRevoked, isNotNull);
+    const diagnostics = MessageSyncDiagnostics(
+      lastSuccessAt: '2026-07-29T00:00:00Z',
+      mode: MessageSyncMode.retryable,
+      pendingMutationCount: 2,
+      dirtyDomains: [
+        MessageSyncDirtyDomain.messages,
+        MessageSyncDirtyDomain.readState,
+      ],
+      retryState: MessageSyncRetryState.scheduled,
+      nextRetryAt: '2026-07-29T00:01:00Z',
+    );
+    expect(diagnostics.pendingMutationCount, 2);
+    expect(diagnostics.dirtyDomains, hasLength(2));
+    expect(_syncDiagnosticsApiShape, isA<Function>());
 
     const deltaRequest = SyncDeltaRequest(
       limit: 100,
@@ -612,6 +626,10 @@ Future<MessageSyncOutcome> _syncNowApiShape(MessageApi api) {
   return api.syncNow(
     const MessageSyncRequest(reason: 'websocket_hint', limit: 100),
   );
+}
+
+Future<MessageSyncDiagnostics> _syncDiagnosticsApiShape(MessageApi api) {
+  return api.syncDiagnostics();
 }
 
 Future<SyncThreadAfterResult> _syncThreadAfterApiShape(MessageApi api) {

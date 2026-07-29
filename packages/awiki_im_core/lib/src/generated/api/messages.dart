@@ -141,6 +141,10 @@ Future<DartMessageSyncOutcome> syncNow({
   request: request,
 );
 
+Future<DartMessageSyncDiagnostics> syncDiagnostics({
+  required ArcDartImClient client,
+}) => RustLib.instance.api.crateApiMessagesSyncDiagnostics(client: client);
+
 Future<DartSyncThreadAfterResult> syncThreadAfter({
   required ArcDartImClient client,
   required DartSyncThreadAfterRequest request,

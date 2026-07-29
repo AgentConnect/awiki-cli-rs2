@@ -25,6 +25,34 @@ fn dart_profile_mapping_keeps_account_and_wns_versions_independent() {
 }
 
 #[test]
+fn dart_message_sync_diagnostics_mapping_is_typed_and_redacted() {
+    let mapped = awiki_im_core::dto::message::DartMessageSyncDiagnostics::from(
+        im_core::messages::MessageSyncDiagnostics {
+            last_success_at: Some("2026-07-29T00:00:00Z".to_owned()),
+            mode: im_core::messages::MessageSyncMode::Retryable,
+            pending_mutation_count: 2,
+            dirty_domains: vec![
+                im_core::messages::MessageSyncDirtyDomain::Messages,
+                im_core::messages::MessageSyncDirtyDomain::ReadState,
+            ],
+            retry_state: im_core::messages::MessageSyncRetryState::Scheduled,
+            next_retry_at: Some("2026-07-29T00:01:00Z".to_owned()),
+        },
+    );
+
+    assert_eq!(
+        mapped.mode,
+        awiki_im_core::dto::message::DartMessageSyncMode::Retryable
+    );
+    assert_eq!(mapped.pending_mutation_count, 2);
+    assert_eq!(
+        mapped.retry_state,
+        awiki_im_core::dto::message::DartMessageSyncRetryState::Scheduled
+    );
+    assert_eq!(mapped.dirty_domains.len(), 2);
+}
+
+#[test]
 fn dart_device_revoke_outcome_is_structured() {
     let error =
         awiki_im_core::dto::error::DartImError::from(im_core::ImError::DeviceRevokeOutcome {

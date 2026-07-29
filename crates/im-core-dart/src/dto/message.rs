@@ -329,6 +329,40 @@ pub struct DartMessageSyncOutcome {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartMessageSyncMode {
+    Uninitialized,
+    Idle,
+    Recovering,
+    Retryable,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartMessageSyncDirtyDomain {
+    Messages,
+    ReadState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartMessageSyncRetryState {
+    None,
+    Pending,
+    InFlight,
+    Scheduled,
+    PermanentFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartMessageSyncDiagnostics {
+    pub last_success_at: Option<String>,
+    pub mode: DartMessageSyncMode,
+    pub pending_mutation_count: u32,
+    pub dirty_domains: Vec<DartMessageSyncDirtyDomain>,
+    pub retry_state: DartMessageSyncRetryState,
+    pub next_retry_at: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartConversationListSnapshot {
     pub format_version: u32,

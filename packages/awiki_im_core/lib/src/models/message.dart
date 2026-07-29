@@ -412,6 +412,36 @@ class MessageSyncOutcome {
   final List<String> warnings;
 }
 
+enum MessageSyncMode { uninitialized, idle, recovering, retryable, blocked }
+
+enum MessageSyncDirtyDomain { messages, readState }
+
+enum MessageSyncRetryState {
+  none,
+  pending,
+  inFlight,
+  scheduled,
+  permanentFailure,
+}
+
+class MessageSyncDiagnostics {
+  const MessageSyncDiagnostics({
+    this.lastSuccessAt,
+    required this.mode,
+    required this.pendingMutationCount,
+    this.dirtyDomains = const [],
+    required this.retryState,
+    this.nextRetryAt,
+  });
+
+  final String? lastSuccessAt;
+  final MessageSyncMode mode;
+  final int pendingMutationCount;
+  final List<MessageSyncDirtyDomain> dirtyDomains;
+  final MessageSyncRetryState retryState;
+  final String? nextRetryAt;
+}
+
 class ConversationListSnapshot {
   const ConversationListSnapshot({
     required this.formatVersion,

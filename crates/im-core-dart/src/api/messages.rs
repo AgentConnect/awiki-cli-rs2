@@ -10,8 +10,8 @@ use crate::dto::{
     message::{
         DartConversationListSnapshot, DartConversationPage, DartConversationReadRef,
         DartConversationStorePatch, DartInboxHistoryOptions, DartMarkConversationReadRequest,
-        DartMarkReadResult, DartMarkThreadReadResult, DartMessagePage, DartMessageSyncOutcome,
-        DartMessageSyncRequest, DartSendConversationPayloadRequest,
+        DartMarkReadResult, DartMarkThreadReadResult, DartMessagePage, DartMessageSyncDiagnostics,
+        DartMessageSyncOutcome, DartMessageSyncRequest, DartSendConversationPayloadRequest,
         DartSendConversationTextRequest, DartSendMessageResult, DartSendPayloadRequest,
         DartSendTextRequest, DartSyncConversationAfterRequest, DartSyncDeltaRequest,
         DartSyncDeltaResult, DartSyncThreadAfterRequest, DartSyncThreadAfterResult,
@@ -487,6 +487,18 @@ pub async fn sync_now(
             reason: request.reason,
             limit: request.limit,
         })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn sync_diagnostics(
+    client: &Arc<crate::api::client::DartImClient>,
+) -> Result<DartMessageSyncDiagnostics, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .sync_diagnostics_async()
         .await
         .map(Into::into)
         .map_err(DartImError::from)

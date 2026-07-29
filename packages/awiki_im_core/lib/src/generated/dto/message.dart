@@ -922,6 +922,49 @@ enum DartMessageSecurityMode {
   groupE2Ee,
 }
 
+class DartMessageSyncDiagnostics {
+  final String? lastSuccessAt;
+  final DartMessageSyncMode mode;
+  final int pendingMutationCount;
+  final List<DartMessageSyncDirtyDomain> dirtyDomains;
+  final DartMessageSyncRetryState retryState;
+  final String? nextRetryAt;
+
+  const DartMessageSyncDiagnostics({
+    this.lastSuccessAt,
+    required this.mode,
+    required this.pendingMutationCount,
+    required this.dirtyDomains,
+    required this.retryState,
+    this.nextRetryAt,
+  });
+
+  @override
+  int get hashCode =>
+      lastSuccessAt.hashCode ^
+      mode.hashCode ^
+      pendingMutationCount.hashCode ^
+      dirtyDomains.hashCode ^
+      retryState.hashCode ^
+      nextRetryAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMessageSyncDiagnostics &&
+          runtimeType == other.runtimeType &&
+          lastSuccessAt == other.lastSuccessAt &&
+          mode == other.mode &&
+          pendingMutationCount == other.pendingMutationCount &&
+          dirtyDomains == other.dirtyDomains &&
+          retryState == other.retryState &&
+          nextRetryAt == other.nextRetryAt;
+}
+
+enum DartMessageSyncDirtyDomain { messages, readState }
+
+enum DartMessageSyncMode { uninitialized, idle, recovering, retryable, blocked }
+
 class DartMessageSyncOutcome {
   final DartMessageSyncStatus status;
   final int eventsApplied;
@@ -989,6 +1032,14 @@ class DartMessageSyncRequest {
           runtimeType == other.runtimeType &&
           reason == other.reason &&
           limit == other.limit;
+}
+
+enum DartMessageSyncRetryState {
+  none,
+  pending,
+  inFlight,
+  scheduled,
+  permanentFailure,
 }
 
 enum DartMessageSyncStatus {

@@ -1072,6 +1072,14 @@ class MessageApi {
     return result._toModel();
   }
 
+  Future<MessageSyncDiagnostics> syncDiagnostics() async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_messages.syncDiagnostics(client: _client._inner),
+    );
+    return result._toModel();
+  }
+
   Future<SyncThreadAfterResult> syncThreadAfter(
     SyncThreadAfterRequest request,
   ) async {
@@ -3272,6 +3280,51 @@ extension on gen_message.DartMessageSyncOutcome {
         .toList(),
     errorCode: errorCode,
     warnings: warnings,
+  );
+}
+
+extension on gen_message.DartMessageSyncMode {
+  MessageSyncMode _toModel() => switch (this) {
+    gen_message.DartMessageSyncMode.uninitialized =>
+      MessageSyncMode.uninitialized,
+    gen_message.DartMessageSyncMode.idle => MessageSyncMode.idle,
+    gen_message.DartMessageSyncMode.recovering => MessageSyncMode.recovering,
+    gen_message.DartMessageSyncMode.retryable => MessageSyncMode.retryable,
+    gen_message.DartMessageSyncMode.blocked => MessageSyncMode.blocked,
+  };
+}
+
+extension on gen_message.DartMessageSyncDirtyDomain {
+  MessageSyncDirtyDomain _toModel() => switch (this) {
+    gen_message.DartMessageSyncDirtyDomain.messages =>
+      MessageSyncDirtyDomain.messages,
+    gen_message.DartMessageSyncDirtyDomain.readState =>
+      MessageSyncDirtyDomain.readState,
+  };
+}
+
+extension on gen_message.DartMessageSyncRetryState {
+  MessageSyncRetryState _toModel() => switch (this) {
+    gen_message.DartMessageSyncRetryState.none => MessageSyncRetryState.none,
+    gen_message.DartMessageSyncRetryState.pending =>
+      MessageSyncRetryState.pending,
+    gen_message.DartMessageSyncRetryState.inFlight =>
+      MessageSyncRetryState.inFlight,
+    gen_message.DartMessageSyncRetryState.scheduled =>
+      MessageSyncRetryState.scheduled,
+    gen_message.DartMessageSyncRetryState.permanentFailure =>
+      MessageSyncRetryState.permanentFailure,
+  };
+}
+
+extension on gen_message.DartMessageSyncDiagnostics {
+  MessageSyncDiagnostics _toModel() => MessageSyncDiagnostics(
+    lastSuccessAt: lastSuccessAt,
+    mode: mode._toModel(),
+    pendingMutationCount: pendingMutationCount,
+    dirtyDomains: dirtyDomains.map((domain) => domain._toModel()).toList(),
+    retryState: retryState._toModel(),
+    nextRetryAt: nextRetryAt,
   );
 }
 

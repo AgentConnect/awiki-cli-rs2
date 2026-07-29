@@ -39,9 +39,10 @@ use crate::dto::{
         DartConversationSnapshotMessageBody, DartConversationStorageThreadRef,
         DartConversationStorePatch, DartMarkReadResult, DartMarkThreadReadResult, DartMessage,
         DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
-        DartMessageMetadataAttribute, DartMessagePage, DartMessageSyncOutcome,
-        DartMessageSyncStatus, DartReadWatermark, DartSendMessageResult, DartSyncDeltaResult,
-        DartSyncThreadAfterResult, DartThreadMessageStorePatch,
+        DartMessageMetadataAttribute, DartMessagePage, DartMessageSyncDiagnostics,
+        DartMessageSyncDirtyDomain, DartMessageSyncMode, DartMessageSyncOutcome,
+        DartMessageSyncRetryState, DartMessageSyncStatus, DartReadWatermark, DartSendMessageResult,
+        DartSyncDeltaResult, DartSyncThreadAfterResult, DartThreadMessageStorePatch,
     },
     profile::DartUserProfile,
     realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint, DartSyncDomain},
@@ -1717,6 +1718,52 @@ impl From<im_core::messages::MessageSyncOutcome> for DartMessageSyncOutcome {
                 .collect(),
             error_code: value.error_code,
             warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncMode> for DartMessageSyncMode {
+    fn from(value: im_core::messages::MessageSyncMode) -> Self {
+        match value {
+            im_core::messages::MessageSyncMode::Uninitialized => Self::Uninitialized,
+            im_core::messages::MessageSyncMode::Idle => Self::Idle,
+            im_core::messages::MessageSyncMode::Recovering => Self::Recovering,
+            im_core::messages::MessageSyncMode::Retryable => Self::Retryable,
+            im_core::messages::MessageSyncMode::Blocked => Self::Blocked,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncDirtyDomain> for DartMessageSyncDirtyDomain {
+    fn from(value: im_core::messages::MessageSyncDirtyDomain) -> Self {
+        match value {
+            im_core::messages::MessageSyncDirtyDomain::Messages => Self::Messages,
+            im_core::messages::MessageSyncDirtyDomain::ReadState => Self::ReadState,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncRetryState> for DartMessageSyncRetryState {
+    fn from(value: im_core::messages::MessageSyncRetryState) -> Self {
+        match value {
+            im_core::messages::MessageSyncRetryState::None => Self::None,
+            im_core::messages::MessageSyncRetryState::Pending => Self::Pending,
+            im_core::messages::MessageSyncRetryState::InFlight => Self::InFlight,
+            im_core::messages::MessageSyncRetryState::Scheduled => Self::Scheduled,
+            im_core::messages::MessageSyncRetryState::PermanentFailure => Self::PermanentFailure,
+        }
+    }
+}
+
+impl From<im_core::messages::MessageSyncDiagnostics> for DartMessageSyncDiagnostics {
+    fn from(value: im_core::messages::MessageSyncDiagnostics) -> Self {
+        Self {
+            last_success_at: value.last_success_at,
+            mode: value.mode.into(),
+            pending_mutation_count: value.pending_mutation_count,
+            dirty_domains: value.dirty_domains.into_iter().map(Into::into).collect(),
+            retry_state: value.retry_state.into(),
+            next_retry_at: value.next_retry_at,
         }
     }
 }
