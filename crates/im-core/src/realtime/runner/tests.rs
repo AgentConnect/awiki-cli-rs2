@@ -161,8 +161,14 @@ fn realtime_sync_hint_parses_dirty_and_gap_without_checkpoint_owner_logic() {
     assert_eq!(hint.event_id.as_deref(), Some("sev-12"));
     assert_eq!(hint.event_seq.as_deref(), Some("12"));
     assert_eq!(hint.event_type.as_deref(), Some("message.created"));
+    assert_eq!(
+        hint.domains,
+        std::collections::BTreeSet::from([super::super::SyncDomain::Message])
+    );
+    assert_eq!(hint.reason.as_deref(), Some("message.created"));
     assert!(hint.sync_dirty);
     assert!(hint.gap_detected);
+    assert!(!hint.has_unknown_domain);
     assert!(
         crate::internal::realtime::projection::sync_hint_with_gap(&notification, Some("11"))
             .unwrap()
@@ -192,6 +198,67 @@ fn realtime_sync_hint_ignores_non_integral_event_seq() {
     assert_eq!(hint.event_id.as_deref(), Some("sev-float"));
     assert_eq!(hint.event_seq, None);
     assert!(hint.gap_detected);
+}
+
+#[test]
+fn realtime_sync_hint_v2_exposes_closed_domains_but_keeps_high_water_internal() {
+    let notification = json!({
+        "jsonrpc": "2.0",
+        "method": "sync.changed",
+        "params": {
+            "domains": ["message", "profile", "future_domain"],
+            "reason": "message_available"
+        },
+        "sync": {
+            "schema_version": 2,
+            "account_scan_seq_hint": "15021",
+            "domain_versions": {
+                "profile": "7",
+                "future_domain": "9"
+            }
+        }
+    });
+
+    let hint = crate::internal::realtime::projection::sync_hint(&notification).unwrap();
+
+    assert_eq!(hint.event_id, None);
+    assert_eq!(hint.event_seq.as_deref(), Some("15021"));
+    assert_eq!(hint.event_type, None);
+    assert_eq!(
+        hint.domains,
+        std::collections::BTreeSet::from([
+            super::super::SyncDomain::Message,
+            super::super::SyncDomain::Profile,
+        ])
+    );
+    assert_eq!(hint.reason.as_deref(), Some("message_available"));
+    assert!(hint.sync_dirty);
+    assert!(!hint.gap_detected);
+    assert!(hint.has_unknown_domain);
+}
+
+#[test]
+fn malformed_realtime_sync_hint_v2_fails_safe_without_raw_cursor() {
+    let notification = json!({
+        "method": "sync.changed",
+        "params": {
+            "domains": ["message"],
+            "reason": "message_available"
+        },
+        "sync": {
+            "schema_version": 2,
+            "account_scan_seq_hint": 15021,
+            "domain_versions": {}
+        }
+    });
+
+    let hint = crate::internal::realtime::projection::sync_hint(&notification).unwrap();
+
+    assert!(hint.domains.is_empty());
+    assert_eq!(hint.event_seq, None);
+    assert!(hint.sync_dirty);
+    assert!(hint.gap_detected);
+    assert!(hint.has_unknown_domain);
 }
 
 #[test]
@@ -1466,8 +1533,11 @@ fn direct_message_event_with_sync(
             event_id: Some("sev-99".to_owned()),
             event_seq: Some("99".to_owned()),
             event_type: Some("message.created".to_owned()),
+            domains: std::collections::BTreeSet::from([super::super::SyncDomain::Message]),
+            reason: Some("message.created".to_owned()),
             sync_dirty: true,
             gap_detected: true,
+            has_unknown_domain: false,
         }),
         warnings: Vec::new(),
     }

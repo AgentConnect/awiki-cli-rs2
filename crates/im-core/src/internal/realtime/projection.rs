@@ -1,4 +1,5 @@
 use serde_json::{Map, Value};
+use std::collections::BTreeSet;
 
 use crate::ids::{GroupRef, MessageId, PeerRef};
 use crate::messages::{
@@ -7,7 +8,8 @@ use crate::messages::{
 };
 use crate::realtime::{
     GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent, HostNotificationKind, ImEvent,
-    LocalNotificationEvent, MessageReceivedEvent, RealtimeSyncHint, UnknownNotificationEvent,
+    LocalNotificationEvent, MessageReceivedEvent, RealtimeSyncHint, SyncDomain,
+    UnknownNotificationEvent,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -380,6 +382,10 @@ fn message_received_event(
 
 pub fn sync_hint(notification: &Value) -> Option<RealtimeSyncHint> {
     let sync = map_value(notification.get("sync"))?;
+    if sync.contains_key("schema_version") {
+        return Some(sync_hint_v2(notification, sync));
+    }
+
     let event_id = string_from_object(Some(sync), "event_id");
     let event_seq = decimal_event_seq_value(value_from_object(Some(sync), "event_seq"));
     let event_type = string_from_object(Some(sync), "event_type");
@@ -389,10 +395,134 @@ pub fn sync_hint(notification: &Value) -> Option<RealtimeSyncHint> {
     Some(RealtimeSyncHint {
         event_id: none_if_empty(event_id),
         event_seq,
-        event_type: none_if_empty(event_type),
+        event_type: none_if_empty(event_type.clone()),
+        domains: BTreeSet::from([SyncDomain::Message]),
+        reason: none_if_empty(event_type),
         sync_dirty: true,
         gap_detected: false,
+        has_unknown_domain: false,
     })
+}
+
+fn sync_hint_v2(notification: &Value, sync: &Map<String, Value>) -> RealtimeSyncHint {
+    let fail_safe = || RealtimeSyncHint {
+        event_id: None,
+        event_seq: None,
+        event_type: None,
+        domains: BTreeSet::new(),
+        reason: None,
+        sync_dirty: true,
+        gap_detected: true,
+        has_unknown_domain: true,
+    };
+    if notification.get("method").and_then(Value::as_str) != Some("sync.changed")
+        || sync.get("schema_version").and_then(Value::as_u64) != Some(2)
+        || !has_only_keys(
+            sync,
+            &["schema_version", "account_scan_seq_hint", "domain_versions"],
+        )
+    {
+        return fail_safe();
+    }
+    let Some(params) = notification.get("params").and_then(Value::as_object) else {
+        return fail_safe();
+    };
+    if !has_exact_keys(params, &["domains", "reason"]) {
+        return fail_safe();
+    }
+    let Some(raw_domains) = params.get("domains").and_then(Value::as_array) else {
+        return fail_safe();
+    };
+    let Some(reason) = params
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|reason| valid_hint_reason(reason))
+    else {
+        return fail_safe();
+    };
+    let Some(domain_versions) = sync.get("domain_versions").and_then(Value::as_object) else {
+        return fail_safe();
+    };
+    if !domain_versions
+        .values()
+        .all(|value| canonical_decimal_string(value).is_some())
+    {
+        return fail_safe();
+    }
+    let account_scan_seq_hint = match sync.get("account_scan_seq_hint") {
+        Some(Value::Null) | None => None,
+        Some(value) => {
+            let Some(value) = canonical_decimal_string(value) else {
+                return fail_safe();
+            };
+            Some(value.to_owned())
+        }
+    };
+    let mut domains = BTreeSet::new();
+    let mut raw_domain_names = BTreeSet::new();
+    let mut has_unknown_domain = false;
+    for raw_domain in raw_domains {
+        let Some(raw_domain) = raw_domain.as_str() else {
+            return fail_safe();
+        };
+        if !raw_domain_names.insert(raw_domain) {
+            return fail_safe();
+        }
+        match sync_domain(raw_domain) {
+            Some(domain) => {
+                domains.insert(domain);
+            }
+            None => has_unknown_domain = true,
+        }
+    }
+    if raw_domains.is_empty() {
+        return fail_safe();
+    }
+    has_unknown_domain |= domain_versions
+        .keys()
+        .any(|domain| sync_domain(domain).is_none());
+
+    RealtimeSyncHint {
+        event_id: None,
+        event_seq: account_scan_seq_hint,
+        event_type: None,
+        domains,
+        reason: Some(reason.to_owned()),
+        sync_dirty: true,
+        gap_detected: false,
+        has_unknown_domain,
+    }
+}
+
+fn sync_domain(value: &str) -> Option<SyncDomain> {
+    match value {
+        "message" => Some(SyncDomain::Message),
+        "profile" => Some(SyncDomain::Profile),
+        "agent_inventory" => Some(SyncDomain::AgentInventory),
+        "agent_status" => Some(SyncDomain::AgentStatus),
+        "device_registry" => Some(SyncDomain::DeviceRegistry),
+        _ => None,
+    }
+}
+
+fn canonical_decimal_string(value: &Value) -> Option<&str> {
+    let value = value.as_str()?;
+    crate::internal::local_state::sync_state::parse_decimal_seq(value)
+        .ok()
+        .filter(|parsed| parsed.to_string() == value)?;
+    Some(value)
+}
+
+fn valid_hint_reason(reason: &str) -> bool {
+    !reason.is_empty() && reason.len() <= 128 && !reason.chars().any(char::is_control)
+}
+
+fn has_only_keys(object: &Map<String, Value>, keys: &[&str]) -> bool {
+    object.keys().all(|key| keys.contains(&key.as_str()))
+}
+
+fn has_exact_keys(object: &Map<String, Value>, keys: &[&str]) -> bool {
+    object.len() == keys.len() && has_only_keys(object, keys)
 }
 
 pub fn sync_hint_with_gap(

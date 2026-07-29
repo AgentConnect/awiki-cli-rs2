@@ -408,16 +408,18 @@ void main() {
       kind: 'connection_state_changed',
       state: 'connected',
       sync: RealtimeSyncHint(
-        eventId: 'sev-1',
-        eventSeq: '42',
-        eventType: 'message.created',
+        domains: {SyncDomain.message, SyncDomain.profile},
+        reason: 'message_available',
         syncDirty: true,
         gapDetected: false,
+        hasUnknownDomain: false,
       ),
     );
     expect(event.isConnectionState, isTrue);
-    expect(event.sync?.eventSeq, '42');
+    expect(event.sync?.domains, {SyncDomain.message, SyncDomain.profile});
+    expect(event.sync?.reason, 'message_available');
     expect(event.sync?.syncDirty, isTrue);
+    expect(event.sync?.hasUnknownDomain, isFalse);
 
     const systemEvent = RealtimeEvent(
       kind: 'system_notification_changed',

@@ -200,36 +200,44 @@ class DartRealtimeStatus {
 }
 
 class DartRealtimeSyncHint {
-  final String? eventId;
-  final String? eventSeq;
-  final String? eventType;
+  final List<DartSyncDomain> domains;
+  final String? reason;
   final bool syncDirty;
   final bool gapDetected;
+  final bool hasUnknownDomain;
 
   const DartRealtimeSyncHint({
-    this.eventId,
-    this.eventSeq,
-    this.eventType,
+    required this.domains,
+    this.reason,
     required this.syncDirty,
     required this.gapDetected,
+    required this.hasUnknownDomain,
   });
 
   @override
   int get hashCode =>
-      eventId.hashCode ^
-      eventSeq.hashCode ^
-      eventType.hashCode ^
+      domains.hashCode ^
+      reason.hashCode ^
       syncDirty.hashCode ^
-      gapDetected.hashCode;
+      gapDetected.hashCode ^
+      hasUnknownDomain.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is DartRealtimeSyncHint &&
           runtimeType == other.runtimeType &&
-          eventId == other.eventId &&
-          eventSeq == other.eventSeq &&
-          eventType == other.eventType &&
+          domains == other.domains &&
+          reason == other.reason &&
           syncDirty == other.syncDirty &&
-          gapDetected == other.gapDetected;
+          gapDetected == other.gapDetected &&
+          hasUnknownDomain == other.hasUnknownDomain;
+}
+
+enum DartSyncDomain {
+  message,
+  profile,
+  agentInventory,
+  agentStatus,
+  deviceRegistry,
 }

@@ -44,7 +44,7 @@ use crate::dto::{
         DartSyncThreadAfterResult, DartThreadMessageStorePatch,
     },
     profile::DartUserProfile,
-    realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint},
+    realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint, DartSyncDomain},
     secure::{
         DartDirectSecurePrepareResult, DartDirectSecureRepairResult, DartDirectSecureState,
         DartDirectSecureStatus, DartGroupSecureLocalReadiness, DartGroupSecurePendingWork,
@@ -2001,11 +2001,23 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
 impl From<im_core::realtime::RealtimeSyncHint> for DartRealtimeSyncHint {
     fn from(value: im_core::realtime::RealtimeSyncHint) -> Self {
         Self {
-            event_id: value.event_id,
-            event_seq: value.event_seq,
-            event_type: value.event_type,
+            domains: value.domains.into_iter().map(Into::into).collect(),
+            reason: value.reason,
             sync_dirty: value.sync_dirty,
             gap_detected: value.gap_detected,
+            has_unknown_domain: value.has_unknown_domain,
+        }
+    }
+}
+
+impl From<im_core::realtime::SyncDomain> for DartSyncDomain {
+    fn from(value: im_core::realtime::SyncDomain) -> Self {
+        match value {
+            im_core::realtime::SyncDomain::Message => Self::Message,
+            im_core::realtime::SyncDomain::Profile => Self::Profile,
+            im_core::realtime::SyncDomain::AgentInventory => Self::AgentInventory,
+            im_core::realtime::SyncDomain::AgentStatus => Self::AgentStatus,
+            im_core::realtime::SyncDomain::DeviceRegistry => Self::DeviceRegistry,
         }
     }
 }
@@ -2037,7 +2049,7 @@ fn realtime_subscription_to_string(value: im_core::realtime::RealtimeSubscriptio
 mod tests {
     use super::{
         realtime_event_to_dart, DartActiveSyncAccountBinding, DartGroupSummary,
-        DartHandleRegistrationResult, DartRelationStatus,
+        DartHandleRegistrationResult, DartRelationStatus, DartSyncDomain,
     };
     use im_core::{
         directory::RelationshipStatus,
@@ -2264,8 +2276,13 @@ mod tests {
                     event_id: Some("sync-event-join-1".to_owned()),
                     event_seq: Some("42".to_owned()),
                     event_type: Some("system.notification".to_owned()),
+                    domains: std::collections::BTreeSet::from([
+                        im_core::realtime::SyncDomain::DeviceRegistry,
+                    ]),
+                    reason: Some("system.notification".to_owned()),
                     sync_dirty: false,
                     gap_detected: false,
+                    has_unknown_domain: false,
                 }),
             },
         ));
@@ -2281,8 +2298,8 @@ mod tests {
         assert!(event.content_type.is_none());
         assert!(event.reason.is_none());
         let sync = event.sync.expect("reliable sync hint");
-        assert_eq!(sync.event_seq.as_deref(), Some("42"));
-        assert_eq!(sync.event_type.as_deref(), Some("system.notification"));
+        assert_eq!(sync.domains, vec![DartSyncDomain::DeviceRegistry]);
+        assert_eq!(sync.reason.as_deref(), Some("system.notification"));
     }
 
     #[test]
@@ -2291,8 +2308,14 @@ mod tests {
             event_id: Some("sev-1".to_string()),
             event_seq: Some("42".to_string()),
             event_type: Some("message.created".to_string()),
+            domains: std::collections::BTreeSet::from([
+                im_core::realtime::SyncDomain::Message,
+                im_core::realtime::SyncDomain::Profile,
+            ]),
+            reason: Some("message_available".to_string()),
             sync_dirty: true,
             gap_detected: true,
+            has_unknown_domain: true,
         };
 
         let event =
@@ -2304,11 +2327,14 @@ mod tests {
             }));
 
         let hint = event.sync.expect("sync hint is preserved");
-        assert_eq!(hint.event_id.as_deref(), Some("sev-1"));
-        assert_eq!(hint.event_seq.as_deref(), Some("42"));
-        assert_eq!(hint.event_type.as_deref(), Some("message.created"));
+        assert_eq!(
+            hint.domains,
+            vec![DartSyncDomain::Message, DartSyncDomain::Profile]
+        );
+        assert_eq!(hint.reason.as_deref(), Some("message_available"));
         assert!(hint.sync_dirty);
         assert!(hint.gap_detected);
+        assert!(hint.has_unknown_domain);
     }
 
     #[test]

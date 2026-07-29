@@ -10544,17 +10544,17 @@ impl SseDecode for crate::dto::realtime::DartRealtimeStatus {
 impl SseDecode for crate::dto::realtime::DartRealtimeSyncHint {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_eventId = <Option<String>>::sse_decode(deserializer);
-        let mut var_eventSeq = <Option<String>>::sse_decode(deserializer);
-        let mut var_eventType = <Option<String>>::sse_decode(deserializer);
+        let mut var_domains = <Vec<crate::dto::realtime::DartSyncDomain>>::sse_decode(deserializer);
+        let mut var_reason = <Option<String>>::sse_decode(deserializer);
         let mut var_syncDirty = <bool>::sse_decode(deserializer);
         let mut var_gapDetected = <bool>::sse_decode(deserializer);
+        let mut var_hasUnknownDomain = <bool>::sse_decode(deserializer);
         return crate::dto::realtime::DartRealtimeSyncHint {
-            event_id: var_eventId,
-            event_seq: var_eventSeq,
-            event_type: var_eventType,
+            domains: var_domains,
+            reason: var_reason,
             sync_dirty: var_syncDirty,
             gap_detected: var_gapDetected,
+            has_unknown_domain: var_hasUnknownDomain,
         };
     }
 }
@@ -11068,6 +11068,21 @@ impl SseDecode for crate::dto::message::DartSyncDeltaResult {
             snapshot_required: var_snapshotRequired,
             retention_floor_event_seq: var_retentionFloorEventSeq,
             warnings: var_warnings,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::realtime::DartSyncDomain {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::dto::realtime::DartSyncDomain::Message,
+            1 => crate::dto::realtime::DartSyncDomain::Profile,
+            2 => crate::dto::realtime::DartSyncDomain::AgentInventory,
+            3 => crate::dto::realtime::DartSyncDomain::AgentStatus,
+            4 => crate::dto::realtime::DartSyncDomain::DeviceRegistry,
+            _ => unreachable!("Invalid variant for DartSyncDomain: {}", inner),
         };
     }
 }
@@ -11594,6 +11609,20 @@ impl SseDecode for Vec<crate::dto::secure::DartSecureOutboxEntry> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::dto::secure::DartSecureOutboxEntry>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::dto::realtime::DartSyncDomain> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::dto::realtime::DartSyncDomain>::sse_decode(
                 deserializer,
             ));
         }
@@ -15880,11 +15909,11 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::realtime::DartRealtimeStatus>
 impl flutter_rust_bridge::IntoDart for crate::dto::realtime::DartRealtimeSyncHint {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
-            self.event_id.into_into_dart().into_dart(),
-            self.event_seq.into_into_dart().into_dart(),
-            self.event_type.into_into_dart().into_dart(),
+            self.domains.into_into_dart().into_dart(),
+            self.reason.into_into_dart().into_dart(),
             self.sync_dirty.into_into_dart().into_dart(),
             self.gap_detected.into_into_dart().into_dart(),
+            self.has_unknown_domain.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -16556,6 +16585,30 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartSyncDeltaResult>
     for crate::dto::message::DartSyncDeltaResult
 {
     fn into_into_dart(self) -> crate::dto::message::DartSyncDeltaResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::realtime::DartSyncDomain {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Message => 0.into_dart(),
+            Self::Profile => 1.into_dart(),
+            Self::AgentInventory => 2.into_dart(),
+            Self::AgentStatus => 3.into_dart(),
+            Self::DeviceRegistry => 4.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::realtime::DartSyncDomain
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::realtime::DartSyncDomain>
+    for crate::dto::realtime::DartSyncDomain
+{
+    fn into_into_dart(self) -> crate::dto::realtime::DartSyncDomain {
         self
     }
 }
@@ -18953,11 +19006,11 @@ impl SseEncode for crate::dto::realtime::DartRealtimeStatus {
 impl SseEncode for crate::dto::realtime::DartRealtimeSyncHint {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <Option<String>>::sse_encode(self.event_id, serializer);
-        <Option<String>>::sse_encode(self.event_seq, serializer);
-        <Option<String>>::sse_encode(self.event_type, serializer);
+        <Vec<crate::dto::realtime::DartSyncDomain>>::sse_encode(self.domains, serializer);
+        <Option<String>>::sse_encode(self.reason, serializer);
         <bool>::sse_encode(self.sync_dirty, serializer);
         <bool>::sse_encode(self.gap_detected, serializer);
+        <bool>::sse_encode(self.has_unknown_domain, serializer);
     }
 }
 
@@ -19297,6 +19350,25 @@ impl SseEncode for crate::dto::message::DartSyncDeltaResult {
         <bool>::sse_encode(self.snapshot_required, serializer);
         <Option<String>>::sse_encode(self.retention_floor_event_seq, serializer);
         <Vec<String>>::sse_encode(self.warnings, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::realtime::DartSyncDomain {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::dto::realtime::DartSyncDomain::Message => 0,
+                crate::dto::realtime::DartSyncDomain::Profile => 1,
+                crate::dto::realtime::DartSyncDomain::AgentInventory => 2,
+                crate::dto::realtime::DartSyncDomain::AgentStatus => 3,
+                crate::dto::realtime::DartSyncDomain::DeviceRegistry => 4,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 
@@ -19710,6 +19782,16 @@ impl SseEncode for Vec<crate::dto::secure::DartSecureOutboxEntry> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::dto::secure::DartSecureOutboxEntry>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::dto::realtime::DartSyncDomain> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::dto::realtime::DartSyncDomain>::sse_encode(item, serializer);
         }
     }
 }

@@ -971,6 +971,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartSyncDeltaResult dco_decode_dart_sync_delta_result(dynamic raw);
 
   @protected
+  DartSyncDomain dco_decode_dart_sync_domain(dynamic raw);
+
+  @protected
   DartSyncThreadAfterRequest dco_decode_dart_sync_thread_after_request(
     dynamic raw,
   );
@@ -1084,6 +1087,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<DartSecureOutboxEntry> dco_decode_list_dart_secure_outbox_entry(
     dynamic raw,
   );
+
+  @protected
+  List<DartSyncDomain> dco_decode_list_dart_sync_domain(dynamic raw);
 
   @protected
   List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
@@ -2366,6 +2372,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartSyncDomain sse_decode_dart_sync_domain(SseDeserializer deserializer);
+
+  @protected
   DartSyncThreadAfterRequest sse_decode_dart_sync_thread_after_request(
     SseDeserializer deserializer,
   );
@@ -2497,6 +2506,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartSecureOutboxEntry> sse_decode_list_dart_secure_outbox_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartSyncDomain> sse_decode_list_dart_sync_domain(
     SseDeserializer deserializer,
   );
 
@@ -4032,6 +4046,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_sync_domain(
+    DartSyncDomain self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_sync_thread_after_request(
     DartSyncThreadAfterRequest self,
     SseSerializer serializer,
@@ -4196,6 +4216,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_secure_outbox_entry(
     List<DartSecureOutboxEntry> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_sync_domain(
+    List<DartSyncDomain> self,
     SseSerializer serializer,
   );
 

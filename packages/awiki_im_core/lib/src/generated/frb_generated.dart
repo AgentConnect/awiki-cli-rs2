@@ -8412,11 +8412,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (arr.length != 5)
       throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return DartRealtimeSyncHint(
-      eventId: dco_decode_opt_String(arr[0]),
-      eventSeq: dco_decode_opt_String(arr[1]),
-      eventType: dco_decode_opt_String(arr[2]),
-      syncDirty: dco_decode_bool(arr[3]),
-      gapDetected: dco_decode_bool(arr[4]),
+      domains: dco_decode_list_dart_sync_domain(arr[0]),
+      reason: dco_decode_opt_String(arr[1]),
+      syncDirty: dco_decode_bool(arr[2]),
+      gapDetected: dco_decode_bool(arr[3]),
+      hasUnknownDomain: dco_decode_bool(arr[4]),
     );
   }
 
@@ -8828,6 +8828,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartSyncDomain dco_decode_dart_sync_domain(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartSyncDomain.values[raw as int];
+  }
+
+  @protected
   DartSyncThreadAfterRequest dco_decode_dart_sync_thread_after_request(
     dynamic raw,
   ) {
@@ -9165,6 +9171,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return (raw as List<dynamic>)
         .map(dco_decode_dart_secure_outbox_entry)
         .toList();
+  }
+
+  @protected
+  List<DartSyncDomain> dco_decode_list_dart_sync_domain(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_dart_sync_domain).toList();
   }
 
   @protected
@@ -12644,17 +12656,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_eventId = sse_decode_opt_String(deserializer);
-    var var_eventSeq = sse_decode_opt_String(deserializer);
-    var var_eventType = sse_decode_opt_String(deserializer);
+    var var_domains = sse_decode_list_dart_sync_domain(deserializer);
+    var var_reason = sse_decode_opt_String(deserializer);
     var var_syncDirty = sse_decode_bool(deserializer);
     var var_gapDetected = sse_decode_bool(deserializer);
+    var var_hasUnknownDomain = sse_decode_bool(deserializer);
     return DartRealtimeSyncHint(
-      eventId: var_eventId,
-      eventSeq: var_eventSeq,
-      eventType: var_eventType,
+      domains: var_domains,
+      reason: var_reason,
       syncDirty: var_syncDirty,
       gapDetected: var_gapDetected,
+      hasUnknownDomain: var_hasUnknownDomain,
     );
   }
 
@@ -13168,6 +13180,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       retentionFloorEventSeq: var_retentionFloorEventSeq,
       warnings: var_warnings,
     );
+  }
+
+  @protected
+  DartSyncDomain sse_decode_dart_sync_domain(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartSyncDomain.values[inner];
   }
 
   @protected
@@ -13698,6 +13717,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <DartSecureOutboxEntry>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_dart_secure_outbox_entry(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<DartSyncDomain> sse_decode_list_dart_sync_domain(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <DartSyncDomain>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_dart_sync_domain(deserializer));
     }
     return ans_;
   }
@@ -16735,11 +16768,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_String(self.eventId, serializer);
-    sse_encode_opt_String(self.eventSeq, serializer);
-    sse_encode_opt_String(self.eventType, serializer);
+    sse_encode_list_dart_sync_domain(self.domains, serializer);
+    sse_encode_opt_String(self.reason, serializer);
     sse_encode_bool(self.syncDirty, serializer);
     sse_encode_bool(self.gapDetected, serializer);
+    sse_encode_bool(self.hasUnknownDomain, serializer);
   }
 
   @protected
@@ -17105,6 +17138,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.snapshotRequired, serializer);
     sse_encode_opt_String(self.retentionFloorEventSeq, serializer);
     sse_encode_list_String(self.warnings, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_sync_domain(
+    DartSyncDomain self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected
@@ -17555,6 +17597,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_dart_secure_outbox_entry(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_dart_sync_domain(
+    List<DartSyncDomain> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_dart_sync_domain(item, serializer);
     }
   }
 

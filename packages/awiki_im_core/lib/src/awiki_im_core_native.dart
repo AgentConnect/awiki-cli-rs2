@@ -1710,12 +1710,22 @@ extension on gen_realtime_dto.DartRealtimeEvent {
 
 extension on gen_realtime_dto.DartRealtimeSyncHint {
   RealtimeSyncHint _toModel() => RealtimeSyncHint(
-    eventId: eventId,
-    eventSeq: eventSeq,
-    eventType: eventType,
+    domains: domains.map((domain) => domain._toModel()).toSet(),
+    reason: reason,
     syncDirty: syncDirty,
     gapDetected: gapDetected,
+    hasUnknownDomain: hasUnknownDomain,
   );
+}
+
+extension on gen_realtime_dto.DartSyncDomain {
+  SyncDomain _toModel() => switch (this) {
+    gen_realtime_dto.DartSyncDomain.message => SyncDomain.message,
+    gen_realtime_dto.DartSyncDomain.profile => SyncDomain.profile,
+    gen_realtime_dto.DartSyncDomain.agentInventory => SyncDomain.agentInventory,
+    gen_realtime_dto.DartSyncDomain.agentStatus => SyncDomain.agentStatus,
+    gen_realtime_dto.DartSyncDomain.deviceRegistry => SyncDomain.deviceRegistry,
+  };
 }
 
 class SecureApi {
