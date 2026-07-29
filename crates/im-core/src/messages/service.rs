@@ -65,6 +65,20 @@ mod direct_send_result_identity_tests {
     }
 
     #[test]
+    fn direct_target_preserves_cross_domain_handle_subject() {
+        let resolved = super::resolved_direct_peer_from_handle(
+            crate::internal::handle_discovery::DirectHandleResolution {
+                target_did: "did:wba:remote.example:user:peer:e1".to_owned(),
+                full_handle: "peer.remote.example".to_owned(),
+                authority_subject_id: "peer.remote.example".to_owned(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resolved.peer_scope.unwrap().user_id, "peer.remote.example");
+    }
+
+    #[test]
     fn direct_send_result_normalization_without_peer_scope_is_noop() {
         let mut result = send_result("msg-direct-did");
 
@@ -130,11 +144,14 @@ mod direct_send_result_identity_tests {
 }
 
 #[cfg(test)]
+mod conversation_send_tests;
+
+#[cfg(test)]
 mod stale_delivery_target_tests {
     use serde_json::json;
 
     #[test]
-    fn stale_delivery_target_from_error_extracts_current_binding() {
+    fn stale_delivery_target_from_error_extracts_binding_but_ignores_private_subject() {
         let err = crate::ImError::Service {
             status_code: None,
             code: Some("1406".to_owned()),
@@ -156,7 +173,6 @@ mod stale_delivery_target_tests {
             Some("did:example:bob-current")
         );
         assert_eq!(stale.full_handle.as_deref(), Some("bob.awiki.test"));
-        assert_eq!(stale.user_id.as_deref(), Some("user-bob"));
     }
 
     #[test]
@@ -1860,6 +1876,9 @@ impl<'a> MessageService<'a> {
         &self,
         resolved: ResolvedConversationSendRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        if conversation_send_uses_security_runtime(&resolved.request.security) {
+            return self.send_async(resolved.request).await;
+        }
         validate_plain_conversation_send(&resolved.request)?;
         let message_id = resolved
             .request
@@ -1939,23 +1958,20 @@ impl<'a> MessageService<'a> {
                     .as_ref()
                     .map(|scope| scope.full_handle.clone())
             });
-        let mut user_id = stale.user_id.or_else(|| {
-            let handle = full_handle.as_deref()?;
-            let scope = resolved.peer_scope.as_ref()?;
-            (scope.full_handle.eq_ignore_ascii_case(handle)).then(|| scope.user_id.clone())
-        });
+        let mut authority_subject_id = None;
 
         if let Some(handle) = full_handle.clone() {
-            if current_did.is_none() || user_id.is_none() {
-                let lookup = crate::internal::handle_discovery::resolve_direct_handle_async(
-                    self.client,
-                    &handle,
-                )
-                .await?;
-                current_did = Some(lookup.target_did);
-                full_handle = Some(lookup.full_handle);
-                user_id = Some(lookup.user_id);
-            }
+            // The retry scope must come from the same authoritative Handle
+            // route as a normal send. Never trust deployment-private IDs from
+            // an error payload, especially for a cross-domain peer.
+            let lookup = crate::internal::handle_discovery::resolve_direct_handle_async(
+                self.client,
+                &handle,
+            )
+            .await?;
+            current_did = Some(lookup.target_did);
+            full_handle = Some(lookup.full_handle);
+            authority_subject_id = Some(lookup.authority_subject_id);
         }
 
         let Some(current_did) = current_did
@@ -1975,10 +1991,10 @@ impl<'a> MessageService<'a> {
         let full_handle = full_handle
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty());
-        let peer_scope = match (user_id, full_handle.as_ref()) {
-            (Some(user_id), Some(handle)) => Some(
+        let peer_scope = match (authority_subject_id, full_handle.as_ref()) {
+            (Some(authority_subject_id), Some(handle)) => Some(
                 crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                    user_id,
+                    authority_subject_id,
                     handle.clone(),
                 )?,
             ),
@@ -2154,11 +2170,17 @@ impl<'a> MessageService<'a> {
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
         let target = request.target.clone();
+        let client_message_id = request.client_message_id.clone();
         let attachment = attachment_request_from_message_request(request)?;
-        self.client
-            .attachments()
-            .send(target, attachment)
-            .map(|result| result.message)
+        match client_message_id {
+            Some(client_message_id) => self.client.attachments().send_with_client_message_id(
+                target,
+                attachment,
+                client_message_id,
+            ),
+            None => self.client.attachments().send(target, attachment),
+        }
+        .map(|result| result.message)
     }
 
     async fn send_plain_attachment_async(
@@ -2166,18 +2188,32 @@ impl<'a> MessageService<'a> {
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
         let target = request.target.clone();
+        let client_message_id = request.client_message_id.clone();
         let attachment = attachment_request_from_message_request(request)?;
-        self.client
-            .attachments()
-            .send_async(target, attachment)
-            .await
-            .map(|result| result.message)
+        match client_message_id {
+            Some(client_message_id) => {
+                self.client
+                    .attachments()
+                    .send_with_client_message_id_async(target, attachment, client_message_id)
+                    .await
+            }
+            None => {
+                self.client
+                    .attachments()
+                    .send_async(target, attachment)
+                    .await
+            }
+        }
+        .map(|result| result.message)
     }
 
     fn send_direct_e2ee(
         &self,
         resolved: ResolvedSendRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        if super::v2_product::direct_enabled_for_client(self.client)? {
+            return super::v2_product::send_direct(self.client, resolved);
+        }
         #[cfg(all(feature = "sqlite", feature = "blocking"))]
         {
             send_direct_e2ee_with_client(self.client, resolved)
@@ -2199,6 +2235,9 @@ impl<'a> MessageService<'a> {
         &self,
         resolved: ResolvedSendRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        if super::v2_product::direct_enabled_for_client(self.client)? {
+            return super::v2_product::send_direct_async(self.client, resolved).await;
+        }
         let target_handle = resolved.direct_handle().map(str::to_owned);
         let peer_scope = resolved.peer_scope.clone();
         if matches!(resolved.request.body, super::MessageBody::Attachment { .. }) {
@@ -2354,6 +2393,9 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        if self.client.core_inner().group_e2ee_v2_enabled() {
+            return super::v2_product::send_group(self.client, request);
+        }
         #[cfg(feature = "blocking")]
         {
             let session_provider =
@@ -2435,6 +2477,9 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        if self.client.core_inner().group_e2ee_v2_enabled() {
+            return super::v2_product::send_group_async(self.client, request).await;
+        }
         let provider =
             crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
         if matches!(request.body, super::MessageBody::Attachment { .. }) {
@@ -3436,10 +3481,10 @@ fn apply_peer_scope_to_direct_secure_attachment_result(
 }
 
 #[derive(Clone)]
-struct ResolvedSendRequest {
-    request: super::SendMessageRequest,
-    target_did: Option<String>,
-    peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
+pub(super) struct ResolvedSendRequest {
+    pub(super) request: super::SendMessageRequest,
+    pub(super) target_did: Option<String>,
+    pub(super) peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
 }
 
 #[derive(Clone)]
@@ -3452,7 +3497,7 @@ struct ResolvedConversationSendRequest {
 }
 
 impl ResolvedSendRequest {
-    fn direct_handle(&self) -> Option<&str> {
+    pub(super) fn direct_handle(&self) -> Option<&str> {
         self.peer_scope
             .as_ref()
             .map(|scope| scope.full_handle.as_str())
@@ -3510,6 +3555,15 @@ pub(crate) fn normalize_direct_send_result_for_peer_scope(
         );
     }
     Ok(())
+}
+
+fn conversation_send_uses_security_runtime(security: &super::MessageSecurityMode) -> bool {
+    matches!(
+        security,
+        super::MessageSecurityMode::E2eeRequired
+            | super::MessageSecurityMode::SecureDirect
+            | super::MessageSecurityMode::GroupE2ee
+    )
 }
 
 fn conversation_send_request(
@@ -3707,15 +3761,7 @@ fn resolve_direct_peer(
         });
     }
     let lookup = crate::internal::handle_discovery::resolve_direct_handle(client, raw)?;
-    Ok(ResolvedDirectPeer {
-        target_did: Some(lookup.target_did),
-        peer_scope: Some(
-            crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                lookup.user_id,
-                lookup.full_handle,
-            )?,
-        ),
-    })
+    resolved_direct_peer_from_handle(lookup)
 }
 
 async fn resolve_direct_peer_async(
@@ -3731,14 +3777,16 @@ async fn resolve_direct_peer_async(
     }
     let lookup =
         crate::internal::handle_discovery::resolve_direct_handle_async(client, raw).await?;
+    resolved_direct_peer_from_handle(lookup)
+}
+
+fn resolved_direct_peer_from_handle(
+    lookup: crate::internal::handle_discovery::DirectHandleResolution,
+) -> crate::ImResult<ResolvedDirectPeer> {
+    let peer_scope = lookup.peer_scope()?;
     Ok(ResolvedDirectPeer {
         target_did: Some(lookup.target_did),
-        peer_scope: Some(
-            crate::internal::local_state::owner_scope::DirectPeerScope::new(
-                lookup.user_id,
-                lookup.full_handle,
-            )?,
-        ),
+        peer_scope: Some(peer_scope),
     })
 }
 
@@ -3839,7 +3887,7 @@ fn validate_secure_attachment_request(
     }
 }
 
-fn attachment_request_from_message_request(
+pub(super) fn attachment_request_from_message_request(
     request: super::SendMessageRequest,
 ) -> crate::ImResult<crate::attachments::AttachmentSendRequest> {
     match request.body {
@@ -3901,7 +3949,6 @@ fn direct_handle_from_target(target: &super::MessageTarget) -> Option<&str> {
 struct StaleDeliveryTarget {
     current_did: Option<String>,
     full_handle: Option<String>,
-    user_id: Option<String>,
 }
 
 fn stale_delivery_target_from_error(
@@ -3932,16 +3979,9 @@ fn stale_delivery_target_from_error(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
-    let user_id = data
-        .get("user_id")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
     (current_did.is_some() || full_handle.is_some()).then_some(StaleDeliveryTarget {
         current_did,
         full_handle,
-        user_id,
     })
 }
 
@@ -3991,7 +4031,7 @@ fn resolve_history_thread(
     let did = lookup.target_did;
     let full_handle = lookup.full_handle;
     let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
-        lookup.user_id,
+        lookup.authority_subject_id,
         full_handle.clone(),
     )?;
     Ok(ResolvedHistoryThread {
@@ -4318,7 +4358,7 @@ async fn resolve_history_thread_async(
     let did = lookup.target_did;
     let full_handle = lookup.full_handle;
     let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
-        lookup.user_id,
+        lookup.authority_subject_id,
         full_handle.clone(),
     )?;
     Ok(ResolvedHistoryThread {
@@ -4859,7 +4899,10 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND msg_id = ?3
     fn accept_before_deadline(listener: &TcpListener, deadline: Instant) -> TcpStream {
         loop {
             match listener.accept() {
-                Ok((stream, _)) => return stream,
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    return stream;
+                }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                     assert!(Instant::now() < deadline, "timed out waiting for RPC");
                     thread::sleep(Duration::from_millis(10));

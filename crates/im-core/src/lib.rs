@@ -17,11 +17,13 @@ pub mod ids;
 #[cfg(feature = "sqlite")]
 pub mod local_state_upgrade;
 pub mod messages;
+pub mod onboarding;
 pub mod paths;
 pub mod prelude;
 pub mod realtime;
 pub mod secure;
 pub mod site;
+pub mod system_notifications;
 pub mod vault;
 
 #[doc(hidden)]
@@ -38,7 +40,7 @@ pub use crate::core::{
 };
 pub use crate::directory::{DirectoryService, HandleLookupResult};
 pub use crate::email::EmailService;
-pub use crate::error::{IdentityVaultFailure, ImError, ImResult};
+pub use crate::error::{DeviceRevokeOutcomeCategory, IdentityVaultFailure, ImError, ImResult};
 pub use crate::groups::GroupService;
 pub use crate::identity::{
     DeleteLocalIdentityResult, HostedIdentityMaterial, IdentitySecretStorageBackend,
@@ -51,7 +53,12 @@ pub use crate::local_state_upgrade::{
     LocalStateConversationAliasMapping, LocalStateRestoreResult, LocalStateUpgradeEligibility,
     LocalStateUpgradeInspection, LocalStateUpgradeResult, LocalStateUpgradeStatus,
 };
+pub use crate::onboarding::{
+    SkillClaimPhase, SkillClaimRequest, SkillClaimResult, SkillClaimStatus, SkillOnboardingService,
+    SkillOnboardingToken,
+};
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::RealtimeService;
 pub use crate::secure::SecureService;
 pub use crate::site::SiteService;
+pub use crate::system_notifications::SystemNotificationService;

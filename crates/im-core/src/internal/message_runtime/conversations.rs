@@ -593,6 +593,7 @@ pub(crate) fn message_from_record(
     record: &crate::internal::local_state::messages::MessageRecord,
 ) -> crate::ImResult<crate::messages::Message> {
     let thread = message_thread(record)?;
+    let group = group_ref_from_record(record)?;
     let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref_for_owner(
         &thread,
         &record.owner_did,
@@ -608,13 +609,8 @@ pub(crate) fn message_from_record(
         send_state.as_ref(),
         retry_target,
     );
-    let group = group_ref_from_record(record)?;
     let mut attributes = metadata_attributes(&record.metadata);
-    if record.is_e2ee
-        && !attributes
-            .iter()
-            .any(|attribute| attribute.key == "security")
-    {
+    if record.is_e2ee && metadata_attribute_value(&attributes, "security").is_none() {
         attributes.push(crate::messages::MessageMetadataAttribute {
             key: "security".to_owned(),
             value: if group.is_some() {
@@ -811,6 +807,8 @@ fn metadata_attributes(metadata: &str) -> Vec<crate::messages::MessageMetadataAt
         "sender_name",
         "sender_peer_persona_id",
         "security",
+        "decryption_state",
+        "secure_wire_content_type",
     ]
     .into_iter()
     .filter_map(|key| {
@@ -825,6 +823,17 @@ fn metadata_attributes(metadata: &str) -> Vec<crate::messages::MessageMetadataAt
             })
     })
     .collect()
+}
+
+fn metadata_attribute_value<'a>(
+    attributes: &'a [crate::messages::MessageMetadataAttribute],
+    key: &str,
+) -> Option<&'a str> {
+    attributes
+        .iter()
+        .find(|attribute| attribute.key == key)
+        .map(|attribute| attribute.value.trim())
+        .filter(|value| !value.is_empty())
 }
 
 fn metadata_attribute<'a>(
@@ -881,27 +890,36 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn message_from_legacy_e2ee_record_restores_direct_security_attribute() {
-        let message = message_from_record(&crate::internal::local_state::messages::MessageRecord {
-            msg_id: "msg-secure".to_owned(),
-            owner_identity_id: "alice-id".to_owned(),
-            owner_did: "did:example:alice".to_owned(),
-            conversation_id: "dm:did:example:bob".to_owned(),
-            thread_id: "dm:did:example:bob".to_owned(),
-            direction: 0,
-            sender_did: "did:example:bob".to_owned(),
-            receiver_did: "did:example:alice".to_owned(),
-            content_type: "text/plain".to_owned(),
-            content: "secure plaintext".to_owned(),
-            is_e2ee: true,
-            metadata: r#"{"decryption_state":"decrypted"}"#.to_owned(),
-            ..crate::internal::local_state::messages::MessageRecord::default()
-        })
+    fn secure_message_record_restores_public_security_metadata() {
+        let message = message_from_record(
+            &crate::internal::local_state::messages::MessageRecord {
+                msg_id: "msg-secure".to_owned(),
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                conversation_id: "dm:did:example:bob".to_owned(),
+                thread_id: "dm:did:example:bob".to_owned(),
+                sender_did: "did:example:bob".to_owned(),
+                receiver_did: "did:example:alice".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "decrypted text".to_owned(),
+                is_e2ee: true,
+                metadata: r#"{"decryption_state":"decrypted","secure_wire_content_type":"application/anp-direct-init+json"}"#.to_owned(),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            },
+        )
         .unwrap();
 
         assert_eq!(
             metadata_attribute(&message.metadata, "security"),
             Some("direct-e2ee")
+        );
+        assert_eq!(
+            metadata_attribute(&message.metadata, "decryption_state"),
+            Some("decrypted")
+        );
+        assert_eq!(
+            metadata_attribute(&message.metadata, "secure_wire_content_type"),
+            Some("application/anp-direct-init+json")
         );
     }
 

@@ -21,8 +21,8 @@ Step index：03
 
 ## 2. 目标
 
-- 结果：Daemon 在保存 user delegated identity、创建 message agent binding 或启动 delegated inbox sync 前，先验证 APP 发送的 private package 与当前 DID Document `authentication` 一致。
-- 用户 / 系统可见行为：错误 key package、过期 package、public/private 不匹配、DID Document 不含该 authentication method、public key 不一致时，bootstrap 被拒绝并返回可诊断错误，不创建坏 binding 或不可用 Message Agent。
+- 结果：Daemon 在保存 user delegated identity、创建 personal agent binding 或启动 delegated inbox sync 前，先验证 APP 发送的 private package 与当前 DID Document `authentication` 一致。
+- 用户 / 系统可见行为：错误 key package、过期 package、public/private 不匹配、DID Document 不含该 authentication method、public key 不一致时，bootstrap 被拒绝并返回可诊断错误，不创建坏 binding 或不可用 Personal Agent。
 - 非目标：不新增第二条 pairing channel；不解决 bootstrap 传输加密；不让 Hermes runtime 接触 private key；不改变 message-service 运行时授权模型。
 - 完成标准：bootstrap validation 覆盖 key parse、private/public derive、DID Document authentication、public key match、expires_at、allowed scopes 和 secret redaction。
 
@@ -57,7 +57,7 @@ Step index：03
    - DID Document proof 校验如本地已有 verifier 能力则执行；否则至少不接受未绑定 public method。
 4. 调整 `process_bootstrap_envelope`：
    - 在 `store_bootstrap_state` 前完成 crypto/DID validation；
-   - validation 失败不写 user delegated identity、bootstrap replay、app message agent binding；
+   - validation 失败不写 user delegated identity、bootstrap replay、app personal agent binding；
    - audit 只记录 redacted error code。
 5. 调整 delegated inbox shadow DID Document 生成：
    - 不只信任本地 package public key；在 sync 前可复查当前 DID Document authentication；
@@ -150,5 +150,5 @@ Step index：03
 ## 13. 风险、回滚与后续文档
 
 - 风险：DID resolve 依赖网络，可能让 `did:wba` / `did:web` bootstrap 首次 fail closed；Daemon 本地尚未验证 DID Document proof；bootstrap private package 仍走普通消息明文 JSON；schema v1 字段名仍存在历史命名问题。
-- 回滚 / 回退：不得回退到创建坏 binding；如 resolver 不可用，保持 schema validation 与 private/public 校验，但 binding / message agent 创建必须 fail closed，等待 bootstrap retry。
+- 回滚 / 回退：不得回退到创建坏 binding；如 resolver 不可用，保持 schema validation 与 private/public 校验，但 binding / personal agent 创建必须 fail closed，等待 bootstrap retry。
 - 后续文档：Step 04 更新 daemon bootstrap key package schema v2、APP action capability 行为和核心设计文档；Step 05 更新 ANP SDK optional API 文档。

@@ -1,5 +1,9 @@
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::Mutex;
+
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 use crate::dto::{
     error::DartImError,
@@ -15,9 +19,103 @@ use crate::dto::{
 };
 use crate::frb_generated::StreamSink;
 
+#[cfg(test)]
+#[path = "messages_tests.rs"]
+mod tests;
+
+struct PatchStreamLifecycle {
+    label: &'static str,
+    cancel: watch::Sender<bool>,
+    task: Mutex<Option<JoinHandle<()>>>,
+    stop_lock: tokio::sync::Mutex<()>,
+}
+
+impl PatchStreamLifecycle {
+    fn new(label: &'static str) -> Self {
+        let (cancel, _) = watch::channel(false);
+        Self {
+            label,
+            cancel,
+            task: Mutex::new(None),
+            stop_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    fn is_stopped(&self) -> bool {
+        *self.cancel.borrow()
+    }
+
+    fn spawn<F>(&self, worker: F) -> Result<(), DartImError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let mut task = self
+            .task
+            .lock()
+            .map_err(|_| DartImError::internal(format!("{} task lock poisoned", self.label)))?;
+        if self.is_stopped() {
+            return Err(DartImError::object_closed(self.label));
+        }
+        if task.is_some() {
+            return Err(DartImError::invalid_input(
+                Some("session".to_string()),
+                format!("{} stream is already attached", self.label),
+            ));
+        }
+        let mut cancel = self.cancel.subscribe();
+        *task = Some(tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                _ = wait_for_patch_stream_cancel(&mut cancel) => {}
+                _ = worker => {}
+            }
+        }));
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<(), DartImError> {
+        let _stop = self.stop_lock.lock().await;
+        self.cancel.send_replace(true);
+        let task = self
+            .task
+            .lock()
+            .map_err(|_| DartImError::internal(format!("{} task lock poisoned", self.label)))?
+            .take();
+        if let Some(task) = task {
+            task.await.map_err(|error| {
+                DartImError::internal(format!("{} task failed: {error}", self.label))
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PatchStreamLifecycle {
+    fn drop(&mut self) {
+        self.cancel.send_replace(true);
+        if let Ok(task) = self.task.get_mut() {
+            if let Some(task) = task.take() {
+                task.abort();
+            }
+        }
+    }
+}
+
+async fn wait_for_patch_stream_cancel(cancel: &mut watch::Receiver<bool>) {
+    if *cancel.borrow() {
+        return;
+    }
+    while cancel.changed().await.is_ok() {
+        if *cancel.borrow() {
+            return;
+        }
+    }
+}
+
 pub struct DartConversationPatchSession {
     session: Mutex<Option<im_core::messages::ConversationPatchSession>>,
     stream_attached: Mutex<bool>,
+    lifecycle: PatchStreamLifecycle,
 }
 
 impl DartConversationPatchSession {
@@ -25,10 +123,14 @@ impl DartConversationPatchSession {
         Self {
             session: Mutex::new(Some(session)),
             stream_attached: Mutex::new(false),
+            lifecycle: PatchStreamLifecycle::new("conversation patch session"),
         }
     }
 
     fn take_session(&self) -> Result<im_core::messages::ConversationPatchSession, DartImError> {
+        if self.lifecycle.is_stopped() {
+            return Err(DartImError::object_closed("DartConversationPatchSession"));
+        }
         let mut attached = self
             .stream_attached
             .lock()
@@ -51,6 +153,7 @@ impl DartConversationPatchSession {
     }
 
     async fn stop(&self) -> Result<(), DartImError> {
+        self.lifecycle.stop().await?;
         let session = self
             .session
             .lock()
@@ -74,6 +177,7 @@ impl Drop for DartConversationPatchSession {
 pub struct DartThreadMessagePatchSession {
     session: Mutex<Option<im_core::messages::ThreadMessagePatchSession>>,
     stream_attached: Mutex<bool>,
+    lifecycle: PatchStreamLifecycle,
 }
 
 impl DartThreadMessagePatchSession {
@@ -81,10 +185,14 @@ impl DartThreadMessagePatchSession {
         Self {
             session: Mutex::new(Some(session)),
             stream_attached: Mutex::new(false),
+            lifecycle: PatchStreamLifecycle::new("thread message patch session"),
         }
     }
 
     fn take_session(&self) -> Result<im_core::messages::ThreadMessagePatchSession, DartImError> {
+        if self.lifecycle.is_stopped() {
+            return Err(DartImError::object_closed("DartThreadMessagePatchSession"));
+        }
         let mut attached = self
             .stream_attached
             .lock()
@@ -107,6 +215,7 @@ impl DartThreadMessagePatchSession {
     }
 
     async fn stop(&self) -> Result<(), DartImError> {
+        self.lifecycle.stop().await?;
         let session = self
             .session
             .lock()
@@ -473,16 +582,15 @@ pub async fn conversation_patch_stream(
     session: &Arc<DartConversationPatchSession>,
     sink: StreamSink<DartConversationStorePatch>,
 ) -> Result<(), DartImError> {
-    let mut session = session.take_session()?;
-    tokio::spawn(async move {
-        while let Some(patch) = session.next_patch().await {
+    let mut patch_session = session.take_session()?;
+    session.lifecycle.spawn(async move {
+        while let Some(patch) = patch_session.next_patch().await {
             if sink.add(patch.into()).is_err() {
-                let _ = session.stop().await;
+                let _ = patch_session.stop().await;
                 break;
             }
         }
-    });
-    Ok(())
+    })
 }
 
 pub async fn stop_conversation_patch_session(
@@ -535,16 +643,15 @@ pub async fn thread_message_patch_stream(
     session: &Arc<DartThreadMessagePatchSession>,
     sink: StreamSink<DartThreadMessageStorePatch>,
 ) -> Result<(), DartImError> {
-    let mut session = session.take_session()?;
-    tokio::spawn(async move {
-        while let Some(patch) = session.next_patch().await {
+    let mut patch_session = session.take_session()?;
+    session.lifecycle.spawn(async move {
+        while let Some(patch) = patch_session.next_patch().await {
             if sink.add(patch.into()).is_err() {
-                let _ = session.stop().await;
+                let _ = patch_session.stop().await;
                 break;
             }
         }
-    });
-    Ok(())
+    })
 }
 
 pub async fn stop_thread_message_patch_session(

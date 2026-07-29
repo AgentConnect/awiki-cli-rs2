@@ -12,7 +12,7 @@ use awiki_deamon::registration::{
     AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
     ControllerSenderScope, DidAuthMaterial, RegistrationToken, RegistrationTokenMetadata,
 };
-use awiki_deamon::state::{AppMessageAgentBindingRecord, CreateCliRouteSession};
+use awiki_deamon::state::{AppPersonalAgentBindingRecord, CreateCliRouteSession};
 use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{
     daemon_cli::{setup_daemon_agent_from_token, SetupDaemonAgentOptions},
@@ -2869,7 +2869,7 @@ fn runtime_agent_delete_archives_owned_runtime_and_reports_status() {
 }
 
 #[test]
-fn message_agent_binding_disable_command_stops_active_binding() {
+fn personal_agent_binding_disable_command_stops_active_binding() {
     let (_root, config, state) = fixture();
     let registration = MockRegistrationClient::default();
     let daemon = setup_daemon_agent(
@@ -2889,22 +2889,22 @@ fn message_agent_binding_disable_command_stops_active_binding() {
             &registration,
             &outbox,
             IncomingAgentPayloadMessage {
-                message_id: "msg_create_message_agent".to_string(),
-                conversation_id: Some("conv_message_agent".to_string()),
+                message_id: "msg_create_personal_agent".to_string(),
+                conversation_id: Some("conv_personal_agent".to_string()),
                 sender_did: "did:human:alice".to_string(),
                 target_agent_did: daemon.agent_did.clone(),
                 content_type: "application/json".to_string(),
                 payload: json!({
                     "schema": "awiki.agent.command.v1",
-                    "command_id": "cmd_create_message_agent",
+                    "command_id": "cmd_create_personal_agent",
                     "command": "runtime.agent.create",
                     "target_agent_kind": "runtime",
                     "args": {
-                        "handle": "@hermes-msg-app-1",
+                        "handle": "@hermes-personal-app-1",
                         "runtime": "hermes",
                         "controller_did": "did:human:alice",
                         "registration_token": "tok_runtime_secret_value",
-                        "display_name": "Hermes Message Agent"
+                        "display_name": "Hermes Personal Agent"
                     }
                 }),
             },
@@ -2912,20 +2912,20 @@ fn message_agent_binding_disable_command_stops_active_binding() {
         .unwrap(),
     );
     state
-        .upsert_app_message_agent_binding(&AppMessageAgentBindingRecord {
-            binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+        .upsert_app_personal_agent_binding(&AppPersonalAgentBindingRecord {
+            binding_id: "app-personal-agent:did:human:alice:app_1".to_string(),
             user_did: "did:human:alice".to_string(),
             inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
             app_instance_id: "app_1".to_string(),
             bootstrap_id: "boot_1".to_string(),
-            idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+            idempotency_key: "personal-agent-bootstrap:did:human:alice:app_1".to_string(),
             daemon_agent_did: daemon.agent_did.clone(),
             runtime_agent_did: created.agent_did.clone(),
             runtime_profile_id: created.runtime_profile_id.clone(),
             role: "app_message_handler".to_string(),
             desired_agent_json: json!({"role": "app_message_handler"}),
             capability_policy_json: json!({"allowed_actions": []}),
-            status: "message_agent_ready".to_string(),
+            status: "personal_agent_ready".to_string(),
             created_at_ms: 0,
             updated_at_ms: 0,
             revoked_at_ms: None,
@@ -2938,18 +2938,18 @@ fn message_agent_binding_disable_command_stops_active_binding() {
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
-            message_id: "msg_pause_message_agent".to_string(),
-            conversation_id: Some("conv_message_agent".to_string()),
+            message_id: "msg_pause_personal_agent".to_string(),
+            conversation_id: Some("conv_personal_agent".to_string()),
             sender_did: "did:human:alice".to_string(),
             target_agent_did: daemon.agent_did.clone(),
             content_type: "application/json".to_string(),
             payload: json!({
                 "schema": "awiki.agent.command.v1",
-                "command_id": "cmd_pause_message_agent",
-                "command": "message_agent.binding.disable",
+                "command_id": "cmd_pause_personal_agent",
+                "command": "personal_agent.binding.disable",
                 "target_agent_kind": "runtime",
                 "args": {
-                    "message_agent_did": created.agent_did,
+                    "personal_agent_did": created.agent_did,
                     "lifecycle_action": "pause"
                 }
             }),
@@ -2958,25 +2958,112 @@ fn message_agent_binding_disable_command_stops_active_binding() {
     .unwrap();
 
     assert!(state
-        .load_active_app_message_agent_binding_by_runtime(&created.agent_did)
+        .load_active_app_personal_agent_binding_by_runtime(&created.agent_did)
         .unwrap()
         .is_none());
     let binding = state
-        .load_active_or_inactive_app_message_agent_binding_by_runtime(&created.agent_did)
+        .load_active_or_inactive_app_personal_agent_binding_by_runtime(&created.agent_did)
         .unwrap()
         .unwrap();
-    assert_eq!(binding.status, "message_agent_disabled");
+    assert_eq!(binding.status, "personal_agent_disabled");
     assert!(binding.revoked_at_ms.is_none());
     let disabled = outbox.agent_statuses().last().unwrap().clone();
     assert_eq!(disabled.payload["state"], "disabled");
     assert_eq!(
         disabled.payload["result"]["command"],
-        "message_agent.binding.disable"
+        "personal_agent.binding.disable"
     );
     assert_eq!(
         disabled.payload["result"]["runtime_agent_did"],
         created.agent_did
     );
+}
+
+#[test]
+fn legacy_message_agent_disable_command_emits_canonical_status() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let runtime_agent_did = "did:agent:legacy-personal";
+    let legacy_binding_id = "app-message-agent:did:human:alice:app_1";
+    let legacy_idempotency_key = "message-agent-bootstrap:did:human:alice:app_1";
+    state
+        .upsert_app_personal_agent_binding(&AppPersonalAgentBindingRecord {
+            binding_id: legacy_binding_id.to_string(),
+            user_did: "did:human:alice".to_string(),
+            inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
+            app_instance_id: "app_1".to_string(),
+            bootstrap_id: "boot_legacy".to_string(),
+            idempotency_key: legacy_idempotency_key.to_string(),
+            daemon_agent_did: daemon.agent_did.clone(),
+            runtime_agent_did: runtime_agent_did.to_string(),
+            runtime_profile_id: "profile_legacy_personal".to_string(),
+            role: "app_message_handler".to_string(),
+            desired_agent_json: json!({
+                "role": "app_message_handler",
+                "runtime_profile": "message_agent"
+            }),
+            capability_policy_json: json!({"allowed_actions": []}),
+            status: "personal_agent_ready".to_string(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            revoked_at_ms: None,
+        })
+        .unwrap();
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_pause_legacy_personal_agent".to_string(),
+            conversation_id: Some("conv_personal_agent".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_pause_legacy_personal_agent",
+                "command": "message_agent.binding.disable",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "message_agent_did": runtime_agent_did,
+                    "lifecycle_action": "pause"
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    let binding = state
+        .load_active_or_inactive_app_personal_agent_binding_by_runtime(runtime_agent_did)
+        .unwrap()
+        .unwrap();
+    assert_eq!(binding.binding_id, legacy_binding_id);
+    assert_eq!(binding.idempotency_key, legacy_idempotency_key);
+    assert_eq!(binding.status, "personal_agent_disabled");
+    let disabled = outbox.agent_statuses().last().unwrap().clone();
+    assert_eq!(
+        disabled.payload["result"]["command"],
+        "personal_agent.binding.disable"
+    );
+    assert_eq!(
+        disabled.payload["result"]["personal_agent_did"],
+        runtime_agent_did
+    );
+    assert!(disabled.payload["result"]
+        .get("message_agent_did")
+        .is_none());
 }
 
 #[test]

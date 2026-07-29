@@ -9,6 +9,102 @@
 - Service API: [message-service Group API](../../../message-service/docs/api/ANP-client-server-api-group.md).
 - Public discovery and service capability gates still decide whether secure operations are available for a concrete identity/workspace/service.
 
+The device-scoped P6 v2 product path also has a host-local, default-off
+`ImCoreOpenOptions.multi_device_group_e2ee_enabled` rollout gate. This setting
+is not an ANP capability and is never serialized into DID or cross-domain wire
+objects. Enabling it selects the v2 implementation for supported public group
+lifecycle operations and the existing redacted group status/repair facade; it
+does not expose low-level MLS commands.
+
+The CLI maps the deployment-local environment variable
+`AWIKI_MULTI_DEVICE_GROUP_E2EE_ENABLED` to that Core option. It is unset/`0`
+by default, accepts only `0` or `1`, and fails closed on every other value.
+This gate is independent from Join, Direct, root transfer, revoke and Handle
+Recovery and is never serialized into ANP discovery or message payloads.
+
+### P6 v2 lifecycle routing
+
+When the host-local rollout gate is enabled:
+
+- `groups().publish_key_package()` binds the operation to the current
+  authenticated protocol device and its P2 `deviceManifest` entry. Omitting
+  `device_id` means the current device; selecting a sibling device or the
+  legacy `default` device fails closed.
+- Secure `groups().create()` first creates the P4 business group. Core then
+  requires the exact P4 `group_state_ref`, publishes a current-device P6 v2
+  creator KeyPackage, and submits the typed P6 create operation. The typed Host
+  result must match before the SDK finalizes local MLS state.
+- An uncertain P6 Host result is returned as an error while the SDK keeps its
+  durable operation in `prepared` for an exact later recheck. A missing local
+  group remains `MissingLocalState`; status or repair must not synthesize MLS
+  state or claim success. An explicit non-accepting Host validation/state
+  conflict aborts the local prepare; transport failures, temporary errors and
+  idempotency conflicts remain uncertain and never do.
+- Public `groups().add_member()`, `groups().remove_member()`, and `groups().leave()`
+  first issue a fresh `group.get` that explicitly requests policy. The
+  authoritative policy, not the caller's security hint or a best-effort local
+  cache, selects Base-only versus P6 behavior. Missing, malformed, or
+  conflicting security classification fails closed; an E2EE group still uses
+  P6 when the caller leaves the security hint at its default.
+- For an E2EE Add/Remove, an active owner device with the accepted local MLS
+  endpoint may run the combined P4 + P6 operation. A P4 admin is not declared
+  unauthorized, but Core currently fails before P4 with a controller-required
+  local-state error because no durable owner handoff exists for this ordinary
+  membership path. This avoids reporting P4 success as full E2EE convergence.
+  Gate-on E2EE Leave likewise fails before P4 and never enters the legacy
+  lifecycle until the subsequent owner-controlled device Removes can be durably
+  orchestrated.
+- The P4 mutation is sent as a Base operation without legacy E2EE extension
+  fields. P6 accepts the exact response `member_did` as its subject (including
+  a Handle binding change during the request), verifies any embedded
+  `group_state_ref.group_did`, and consumes that exact state reference.
+- On initial P4 member activation, Core resolves and validates the target's
+  current P2 DID Document/embedded Manifest through a fresh authoritative
+  resolve with no local cache fallback, selects every currently P6-eligible
+  device that is absent from the accepted local tree, obtains a fresh
+  KeyPackage for each exact DID/device pair from the target DID Document's
+  `ANPMessageService.serviceDid` (including the federated case), and performs
+  one ordered Add/Commit per device. Each Welcome remains a Host-routed notice
+  for only that target device; the public result still represents one
+  DID-level business member.
+- On P4 member removal, Core derives the exact target device list from the
+  authenticated accepted MLS tree and performs one ordered Remove/Commit per
+  leaf. It deliberately does not require a removed device to remain in the
+  current Manifest, because loss of P2 eligibility is itself a Remove trigger;
+  sibling DID leaves are not selected.
+- V1 convergence is desired-state reconciliation rather than a second Core
+  membership-operation database. The authoritative P4 active-member roster,
+  each member's freshly resolved P2 Manifest, and the SDK accepted endpoint
+  inventory are compared on every step. Missing endpoints are added, extra
+  endpoints are removed, and the accepted tree plus fresh P4 state reference
+  are reloaded after each successful Commit. The SDK WAL is the sole durable
+  per-Commit crash/response-loss state.
+- Repeating public `group add` for an existing P4 member is idempotent at the
+  business layer and enters device reconciliation instead of creating another
+  P4 member. Public `group secure repair` performs the same owner-side
+  reconciliation for the selected group and returns only high-level
+  added/removed/remaining device counts. This is the supported path for a new
+  device of a DID that is already a group member.
+- Device revocation uses an exact `(DID, device_id)` Remove primitive. It never
+  removes the P4 business member or selects sibling Leaves. Full member removal
+  remains a separate P4 transition followed by removal of every accepted Leaf
+  for that DID. After a Step 06 Identity revoke, Core enumerates groups where
+  the current DID is the active P4 owner and invokes this exact primitive when
+  the current device also has the active local MLS controller Leaf. Historical
+  groups not joined by this device and other Group Hosts retain their durable
+  removal trigger until an owner device with local MLS state runs the same
+  selected-group repair.
+
+When the rollout gate is disabled, the existing legacy lifecycle and provider
+path remains unchanged. Core must not reinterpret a legacy result as P6 v2 or
+mix legacy and v2 local state in one operation.
+
+This lifecycle slice covers owner-driven initial member Add, member Remove,
+same-DID device convergence, and selected-group repair. A partially accepted
+multi-device sequence remains fail-closed and is resumed from the SDK WAL; it
+must not be reported as fully converged until every remaining exact-device step
+has completed.
+
 ## CLI responsibility
 
 `awiki-cli` owns argument parsing, workspace/config selection, dry-run rendering, errors, schema/help/completion, and user-facing output. Supported E2EE behavior must execute through `im-core` public services; the CLI must not orchestrate MLS or expose raw crypto artifacts.
@@ -83,7 +179,9 @@ review approves an explicit enablement plan.
 ### Repair and lifecycle
 
 - `group secure status` returns high-level secure state and redacted problems.
-- `group secure repair` converges pending notices, local MLS state, and service head comparison through `im-core`.
+- `group secure repair` first reconciles the selected group's P4 member/P2
+  device desired state with the accepted SDK tree, then reconciles pending SDK
+  WAL work and reports secret-free readiness plus device counts.
 - `group remove --secure required` and `group leave --secure required` use secure-aware lifecycle APIs; low-level process-leave/update/rejoin commands are not the supported interface.
 
 ### Handle-backed DID recovery

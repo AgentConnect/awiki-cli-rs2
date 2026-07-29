@@ -115,6 +115,8 @@ class RealtimeEvent {
   final RealtimeSyncHint? sync;
 
   bool get isConnectionState => kind == 'connection_state_changed';
+
+  bool get isSystemNotificationChanged => kind == 'system_notification_changed';
 }
 
 abstract interface class RealtimeSession {

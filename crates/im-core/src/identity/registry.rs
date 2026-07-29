@@ -46,7 +46,6 @@ impl<'a> IdentityRegistry<'a> {
         &self,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
-        let paths = &self.core.inner().sdk_paths().identities;
         let mut registry = self.load_registry()?;
         let deleted_index = registry.find_index(selector)?;
         let deleted_entry = registry.entries.remove(deleted_index);
@@ -54,26 +53,6 @@ impl<'a> IdentityRegistry<'a> {
         let was_default = deleted.is_default
             || registry.default_alias.as_deref() == deleted_entry.local_alias.as_deref();
 
-        let mut warnings = Vec::new();
-        if let Some(identity_dir_name) = deleted_entry.identity_dir_name() {
-            let identity_dir = local_identity_dir(&paths.identity_root_dir, &identity_dir_name)?;
-            match fs::remove_dir_all(&identity_dir) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    warnings.push(format!(
-                        "local identity directory was already missing: {}",
-                        identity_dir.display()
-                    ));
-                }
-                Err(err) => return Err(crate::ImError::from(err)),
-            }
-        } else {
-            warnings.push(format!(
-                "local identity {} did not include a usable directory name",
-                deleted.id.as_str()
-            ));
-        }
-
         if was_default {
             registry.default_alias = registry
                 .entries
@@ -82,17 +61,29 @@ impl<'a> IdentityRegistry<'a> {
         }
         registry.apply_default_flags();
         let next_default = registry.default_identity();
-        write_registry(&paths.registry_path, &registry)?;
-        write_default_identity(
-            paths.default_identity_path.as_deref(),
-            registry.default_alias.as_deref(),
+        let local_alias =
+            deleted_entry
+                .local_alias
+                .clone()
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: deleted.id.as_str().to_owned(),
+                })?;
+        let outcome = crate::internal::identity_retirement::retire(
+            self.core,
+            crate::internal::identity_retirement::IdentityRetirementInput {
+                identity_id: deleted.id.as_str().to_owned(),
+                did: deleted.did.as_str().to_owned(),
+                local_alias,
+                identity_dir_name: deleted_entry.identity_dir_name(),
+                next_default_alias: registry.default_alias.clone(),
+            },
         )?;
 
         Ok(super::DeleteLocalIdentityResult {
             deleted,
             was_default,
             next_default,
-            warnings,
+            warnings: outcome.warnings,
         })
     }
 
@@ -100,55 +91,14 @@ impl<'a> IdentityRegistry<'a> {
         &self,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
-        let paths = &self.core.inner().sdk_paths().identities;
-        let mut registry = self.load_registry_async().await?;
-        let deleted_index = registry.find_index(selector)?;
-        let deleted_entry = registry.entries.remove(deleted_index);
-        let deleted = deleted_entry.summary.clone();
-        let was_default = deleted.is_default
-            || registry.default_alias.as_deref() == deleted_entry.local_alias.as_deref();
-
-        let mut warnings = Vec::new();
-        if let Some(identity_dir_name) = deleted_entry.identity_dir_name() {
-            let identity_dir = local_identity_dir(&paths.identity_root_dir, &identity_dir_name)?;
-            match tokio::fs::remove_dir_all(&identity_dir).await {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    warnings.push(format!(
-                        "local identity directory was already missing: {}",
-                        identity_dir.display()
-                    ));
-                }
-                Err(err) => return Err(crate::ImError::from(err)),
-            }
-        } else {
-            warnings.push(format!(
-                "local identity {} did not include a usable directory name",
-                deleted.id.as_str()
-            ));
-        }
-
-        if was_default {
-            registry.default_alias = registry
-                .entries
-                .first()
-                .and_then(|entry| entry.local_alias.clone());
-        }
-        registry.apply_default_flags();
-        let next_default = registry.default_identity();
-        write_registry_async(&paths.registry_path, &registry).await?;
-        write_default_identity_async(
-            paths.default_identity_path.clone(),
-            registry.default_alias.clone(),
-        )
-        .await?;
-
-        Ok(super::DeleteLocalIdentityResult {
-            deleted,
-            was_default,
-            next_default,
-            warnings,
+        let core = self.core.clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            IdentityRegistry::new(&core).delete_local_identity(selector)
         })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?
     }
 
     pub fn resolve(
@@ -165,6 +115,86 @@ impl<'a> IdentityRegistry<'a> {
     ) -> crate::ImResult<super::IdentitySummary> {
         let registry = self.load_registry_async().await?;
         self.resolve_from_snapshot(&registry, selector)
+    }
+
+    pub fn device_summary(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityDeviceSummary> {
+        let registry = self.load_registry()?;
+        let entry = registry.find_entry(selector)?;
+        self.device_summary_for_entry(entry)
+    }
+
+    pub async fn device_summary_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityDeviceSummary> {
+        let registry = self.load_registry_async().await?;
+        let entry = registry.find_entry(selector)?;
+        self.device_summary_for_entry(entry)
+    }
+
+    pub async fn upgrade_legacy_identity_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::LegacyUpgradeStatus> {
+        let identity = self.resolve_async(selector.clone()).await?;
+        match crate::internal::identity_legacy_upgrade_runtime::upgrade(self.core, selector).await {
+            Ok(status) => Ok(status),
+            Err(error) => Ok(super::LegacyUpgradeStatus::RetryRequired {
+                identity_id: identity.id.as_str().to_owned(),
+                code: crate::internal::identity_legacy_upgrade_runtime::legacy_upgrade_error_code(
+                    &error,
+                )
+                .to_owned(),
+            }),
+        }
+    }
+
+    pub fn legacy_upgrade_status(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::LegacyUpgradeStatus> {
+        let identity = self.resolve(selector)?;
+        let alias = identity
+            .local_alias
+            .as_deref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let index = crate::internal::identity_store::IdentityStore::new(
+            &self.core.inner().sdk_paths().identities,
+        )
+        .load_index()?;
+        if index
+            .credentials
+            .get(alias)
+            .and_then(|entry| entry.device_state.as_ref())
+            .is_some_and(|state| {
+                state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
+            })
+        {
+            return Ok(super::LegacyUpgradeStatus::Completed);
+        }
+        let pending =
+            crate::internal::identity_legacy_upgrade_pending::PendingLegacyUpgradeStore::from_core(
+                self.core,
+            )?
+            .load(alias)?;
+        Ok(match pending {
+            Some((_, pending))
+                if pending.attempt
+                    == crate::internal::identity_legacy_upgrade_pending::PendingLegacyUpgradeAttempt::RetryRequired =>
+            {
+                super::LegacyUpgradeStatus::RetryRequired {
+                    identity_id: identity.id.as_str().to_owned(),
+                    code: pending
+                        .failure_code
+                        .unwrap_or_else(|| "legacy_upgrade_failed".to_owned()),
+                }
+            }
+            Some(_) => super::LegacyUpgradeStatus::Running,
+            None => super::LegacyUpgradeStatus::Idle,
+        })
     }
 
     pub fn vault_status(
@@ -218,7 +248,7 @@ impl<'a> IdentityRegistry<'a> {
         .migrate_identity_to_vault(
             &local_alias,
             context.workspace_id(),
-            context.device_id(),
+            context.vault_context_device_id().as_str(),
             context.vault().as_ref(),
         )?;
         let status = self.vault_status(super::IdentitySelector::LocalAlias(local_alias))?;
@@ -257,7 +287,7 @@ impl<'a> IdentityRegistry<'a> {
                 })?;
         let paths = self.core.inner().sdk_paths().identities.clone();
         let workspace_id = context.workspace_id().to_owned();
-        let device_id = context.device_id().to_owned();
+        let device_id = context.vault_context_device_id().as_str().to_owned();
         let vault = context.vault();
         let local_alias_for_migration = local_alias.clone();
         crate::internal::runtime::worker::run_blocking(move || {
@@ -536,8 +566,9 @@ impl<'a> IdentityRegistry<'a> {
         let entry = registry.find_entry(selector)?;
         let core = (*self.core).clone();
         let entry = entry.clone();
+        let prepared_entry = entry.clone();
         let prepared = crate::internal::runtime::worker::run_blocking(move || {
-            IdentityRegistry::new(&core).prepare_daemon_subkey_revoke(&entry)
+            IdentityRegistry::new(&core).prepare_daemon_subkey_revoke(&prepared_entry)
         })
         .await
         .map_err(|err| crate::ImError::Internal {
@@ -559,6 +590,94 @@ impl<'a> IdentityRegistry<'a> {
                 did_document,
                 selector,
             } => {
+                if entry.device_state.as_ref().is_some_and(|state| {
+                    state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
+                }) {
+                    let mut state = entry
+                        .device_state
+                        .clone()
+                        .ok_or(crate::ImError::PermissionDenied)?;
+                    let expected_checkpoint = state
+                        .checkpoint
+                        .clone()
+                        .ok_or(crate::ImError::PermissionDenied)?;
+                    let (client, authorizing_device_id, authorizing_signing_key_id) =
+                        crate::internal::identity_device_join::ready_admin_context(
+                            self.core, &selector, None,
+                        )?;
+                    let signing_pem = zeroize::Zeroizing::new(
+                        client
+                            .runtime()
+                            .key_provider
+                            .device_request_signing_private_pem()?,
+                    );
+                    let signing_private = anp::PrivateKeyMaterial::from_pem(&signing_pem)
+                        .map_err(|_| crate::ImError::PermissionDenied)?;
+                    let next_document_hash =
+                        crate::internal::identity_wire::document::document_hash(&did_document)?;
+                    let expected_result_checkpoint =
+                        crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                            document_version: expected_checkpoint
+                                .document_version
+                                .checked_add(1)
+                                .ok_or(crate::ImError::PermissionDenied)?,
+                            document_hash: next_document_hash.clone(),
+                            registry_version: expected_checkpoint.registry_version,
+                        };
+                    let operation_id = format!(
+                        "daemon-subkey-revoke-{}",
+                        next_document_hash
+                            .strip_prefix("sha256:")
+                            .ok_or(crate::ImError::PermissionDenied)?
+                    );
+                    let prepared =
+                        crate::internal::identity_wire::device_document_update::prepare_update(
+                            operation_id,
+                            expected_checkpoint,
+                            did_document.clone(),
+                            authorizing_device_id,
+                            &authorizing_signing_key_id,
+                            &signing_private,
+                            time::OffsetDateTime::now_utc(),
+                        )?;
+                    let call =
+                        crate::internal::identity_wire::device_document_update::build_update_call(
+                            &prepared,
+                        )?;
+                    use crate::internal::transport::AsyncAuthenticatedRpcTransport;
+                    let mut transport = crate::internal::transport::CoreHttpTransport::new(&client);
+                    let raw = transport
+                        .authenticated_rpc(call.endpoint, call.method, call.params)
+                        .await?;
+                    let checkpoint =
+                        crate::internal::identity_wire::device_document_update::parse_update_result(
+                            raw,
+                            &did,
+                            &expected_result_checkpoint,
+                        )?;
+                    state.checkpoint = Some(checkpoint);
+                    state.validate_for_did(&did)?;
+                    let local_alias = client
+                        .current_identity()
+                        .local_alias
+                        .clone()
+                        .ok_or(crate::ImError::PermissionDenied)?;
+                    let paths = self.core.inner().sdk_paths().identities.clone();
+                    crate::internal::runtime::worker::run_blocking(move || {
+                        let store = crate::internal::identity_store::IdentityStore::new(&paths);
+                        store.save_device_state(&local_alias, state)?;
+                        store.save_did_document(&dir_name, &did_document)
+                    })
+                    .await
+                    .map_err(|err| crate::ImError::Internal {
+                        message: err.to_string(),
+                    })??;
+                    return Ok(super::DaemonSubkeyAuthorizationRevokeResult {
+                        user_did: did,
+                        verification_method,
+                        updated: true,
+                    });
+                }
                 let client = self.core.client_async(selector).await?;
                 let call =
                     crate::internal::identity_wire::update_document::build_update_document_rpc_call(
@@ -742,22 +861,29 @@ impl<'a> IdentityRegistry<'a> {
         dir_name: &str,
         did: &crate::ids::Did,
     ) -> crate::ImResult<String> {
-        let store = crate::internal::identity_store::IdentityStore::new(
-            &self.core.inner().sdk_paths().identities,
-        );
+        let identity_dir = self
+            .core
+            .inner()
+            .sdk_paths()
+            .identities
+            .identity_root_dir
+            .join(dir_name);
         let policy = self.core.inner().identity_secret_storage_policy();
         if let Some(metadata) = entry.vault_migration.as_ref() {
             if vault_metadata_is_verified(metadata) {
                 if let Some(context) = self.core.inner().identity_vault() {
                     if vault_context_matches_metadata(context, metadata) {
-                        return store.load_key1_private_pem_from_vault(
-                            dir_name,
-                            did,
-                            metadata,
-                            context.workspace_id(),
-                            context.device_id(),
-                            context.vault().as_ref(),
-                        );
+                        if metadata.refs.default_signing_private.did.as_deref()
+                            != Some(did.as_str())
+                        {
+                            return Err(crate::ImError::IdentityNotReady {
+                                identity: did.as_str().to_string(),
+                                missing: vec!["identity_vault_did_match".to_string()],
+                            });
+                        }
+                        return self
+                            .key_provider_for_entry(identity_dir, Some(entry), &entry.summary)?
+                            .did_document_root_private_pem();
                     }
                     if matches!(
                         policy,
@@ -798,13 +924,14 @@ impl<'a> IdentityRegistry<'a> {
                 missing: vec!["identity_vault_metadata".to_string()],
             });
         }
-        store
-            .load_key1_private_pem(dir_name)
+        let provider =
+            crate::internal::key_provider::FileBackedKeyMaterialProvider::new(identity_dir);
+        crate::internal::key_provider::KeyMaterialProvider::did_document_root_private_pem(&provider)
             .map_err(|err| match err {
                 crate::ImError::CredentialFileUnreadable { .. } => {
                     crate::ImError::IdentityNotReady {
                         identity: did.as_str().to_string(),
-                        missing: vec!["key1_private".to_string()],
+                        missing: vec!["did_document_root_private_key".to_string()],
                     }
                 }
                 other => other,
@@ -976,58 +1103,6 @@ impl<'a> IdentityRegistry<'a> {
 }
 
 impl IdentityRegistry<'_> {
-    pub fn recover_handle(
-        &self,
-        request: super::RecoverHandleRequest,
-    ) -> crate::ImResult<super::RecoverHandleResult> {
-        let prepared = crate::internal::identity_recovery_runtime::prepare_recover_handle_request(
-            self.core, request,
-        )?;
-        crate::internal::identity_recovery_runtime::IdentityRecoveryRuntime::new_with_core(
-            self.core,
-            crate::internal::transport::CorePlainTransport::new(self.core),
-        )
-        .recover_handle(prepared.request)
-        .map(|result| result.sdk_result)
-    }
-
-    pub async fn recover_handle_async(
-        &self,
-        request: super::RecoverHandleRequest,
-    ) -> crate::ImResult<super::RecoverHandleResult> {
-        let prepared = crate::internal::identity_recovery_runtime::prepare_recover_handle_request(
-            self.core, request,
-        )?;
-        crate::internal::identity_recovery_runtime::IdentityRecoveryRuntime::new_with_core(
-            self.core,
-            crate::internal::transport::CorePlainTransport::new(self.core),
-        )
-        .recover_handle_async(prepared.request)
-        .await
-        .map(|result| result.sdk_result)
-    }
-
-    pub fn recover_handle_plan(
-        &self,
-        request: super::RecoverHandlePlanRequest,
-    ) -> crate::ImResult<super::RecoverHandlePlan> {
-        let phone = crate::internal::identity_wire::normalize_phone(&request.phone)?;
-        let plan = crate::internal::identity_recovery_local::plan_recover_handle(
-            &self.core.inner().sdk_paths().identities,
-            &request.handle,
-            request.raw_handle.as_deref(),
-            &self.core.inner().sdk_config().did_domain,
-        )?;
-        Ok(plan.public_plan(&phone, request.otp.as_deref()))
-    }
-
-    pub async fn recover_handle_plan_async(
-        &self,
-        request: super::RecoverHandlePlanRequest,
-    ) -> crate::ImResult<super::RecoverHandlePlan> {
-        self.recover_handle_plan(request)
-    }
-
     pub fn plan_default_identity_change(
         &self,
         selector: super::IdentitySelector,
@@ -1200,6 +1275,54 @@ impl IdentityRegistry<'_> {
     ) -> crate::ImResult<Arc<dyn crate::internal::key_provider::KeyMaterialProvider>> {
         let policy = self.core.inner().identity_secret_storage_policy();
         let metadata = entry.and_then(|entry| entry.vault_migration.as_ref());
+        let is_vnext = entry
+            .and_then(|entry| entry.device_state.as_ref())
+            .is_some_and(|state| {
+                state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
+            });
+        if is_vnext {
+            let metadata = metadata.ok_or_else(|| crate::ImError::IdentityNotReady {
+                identity: summary.did.as_str().to_owned(),
+                missing: vec!["identity_vault_metadata".to_owned()],
+            })?;
+            if !vault_metadata_is_verified(metadata) {
+                return Err(crate::ImError::IdentityNotReady {
+                    identity: summary.did.as_str().to_owned(),
+                    missing: vec!["identity_vault_metadata_verified".to_owned()],
+                });
+            }
+            let context = self.core.inner().identity_vault().ok_or_else(|| {
+                crate::ImError::IdentityNotReady {
+                    identity: summary.did.as_str().to_owned(),
+                    missing: vec!["identity_secret_vault".to_owned()],
+                }
+            })?;
+            if !vault_context_matches_metadata(context, metadata) {
+                return Err(crate::ImError::IdentityNotReady {
+                    identity: summary.did.as_str().to_owned(),
+                    missing: vec!["identity_vault_context_mismatch".to_owned()],
+                });
+            }
+            let refs = metadata.vnext_key_material_refs().ok_or_else(|| {
+                crate::ImError::IdentityNotReady {
+                    identity: summary.did.as_str().to_owned(),
+                    missing: vec!["vnext_vault_key_refs".to_owned()],
+                }
+            })?;
+            return Ok(Arc::new(
+                crate::internal::key_provider::vault::VaultBackedKeyMaterialProvider::new_vnext(
+                    identity_dir,
+                    context.vault(),
+                    refs,
+                ),
+            ));
+        }
+        if metadata.is_some_and(|metadata| metadata.vnext_key_material_refs().is_some()) {
+            return Err(crate::ImError::IdentityNotReady {
+                identity: summary.did.as_str().to_owned(),
+                missing: vec!["vnext_device_state".to_owned()],
+            });
+        }
         if let Some(metadata) = metadata {
             if vault_metadata_is_verified(metadata) {
                 if let Some(context) = self.core.inner().identity_vault() {
@@ -1208,7 +1331,7 @@ impl IdentityRegistry<'_> {
                             crate::internal::key_provider::vault::VaultBackedKeyMaterialProvider::new(
                                 identity_dir,
                                 context.vault(),
-                                metadata.key_material_refs(),
+                                metadata.legacy_key_material_refs(),
                             ),
                         ));
                     }
@@ -1254,6 +1377,124 @@ impl IdentityRegistry<'_> {
         ))
     }
 
+    fn device_summary_for_entry(
+        &self,
+        entry: &RegistryEntry,
+    ) -> crate::ImResult<super::IdentityDeviceSummary> {
+        let Some(state) = entry.device_state.as_ref() else {
+            return Ok(super::IdentityDeviceSummary {
+                identity: entry.summary.clone(),
+                mode: super::IdentityDeviceMode::Legacy,
+                protocol_device_id: None,
+                role: None,
+                signing_key_id: None,
+                e2ee_key_id: None,
+                readiness: super::IdentityDeviceReadiness::Legacy,
+                blocked_reason: None,
+            });
+        };
+        state.validate_for_did(&entry.summary.did)?;
+        if state.mode == crate::internal::identity_device_state::IdentityDeviceMode::Legacy {
+            return Ok(super::IdentityDeviceSummary {
+                identity: entry.summary.clone(),
+                mode: super::IdentityDeviceMode::Legacy,
+                protocol_device_id: None,
+                role: None,
+                signing_key_id: None,
+                e2ee_key_id: None,
+                readiness: super::IdentityDeviceReadiness::Legacy,
+                blocked_reason: None,
+            });
+        }
+
+        let authorization =
+            state
+                .authorization
+                .as_ref()
+                .ok_or_else(|| crate::ImError::IdentityNotReady {
+                    identity: entry.summary.did.as_str().to_owned(),
+                    missing: vec!["device_authorization".to_owned()],
+                })?;
+        let (local_root_available, local_blocker) = self.vnext_local_key_state(entry);
+        let (readiness, blocked_reason) =
+            match state.readiness(local_root_available, local_blocker.as_deref()) {
+                crate::internal::identity_device_state::LocalDeviceReadiness::Legacy => {
+                    (super::IdentityDeviceReadiness::Legacy, None)
+                }
+                crate::internal::identity_device_state::LocalDeviceReadiness::MemberReady => {
+                    (super::IdentityDeviceReadiness::MemberReady, None)
+                }
+                crate::internal::identity_device_state::LocalDeviceReadiness::AdminAwaitingRoot => {
+                    (super::IdentityDeviceReadiness::AdminAwaitingRoot, None)
+                }
+                crate::internal::identity_device_state::LocalDeviceReadiness::AdminReady => {
+                    (super::IdentityDeviceReadiness::AdminReady, None)
+                }
+                crate::internal::identity_device_state::LocalDeviceReadiness::Blocked {
+                    reason,
+                } => (super::IdentityDeviceReadiness::Blocked, Some(reason)),
+            };
+        Ok(super::IdentityDeviceSummary {
+            identity: entry.summary.clone(),
+            mode: super::IdentityDeviceMode::VNext,
+            protocol_device_id: Some(authorization.protocol_device_id.clone()),
+            role: Some(match authorization.role {
+                crate::internal::identity_device_state::DeviceAuthorizationRole::Member => {
+                    super::IdentityDeviceRole::Member
+                }
+                crate::internal::identity_device_state::DeviceAuthorizationRole::Admin => {
+                    super::IdentityDeviceRole::Admin
+                }
+            }),
+            signing_key_id: Some(authorization.signing_key_id.clone()),
+            e2ee_key_id: Some(authorization.e2ee_key_id.clone()),
+            readiness,
+            blocked_reason,
+        })
+    }
+
+    fn vnext_local_key_state(&self, entry: &RegistryEntry) -> (bool, Option<String>) {
+        let Some(metadata) = entry.vault_migration.as_ref() else {
+            return (false, Some("identity_vault_metadata_missing".to_owned()));
+        };
+        if !vault_metadata_is_verified(metadata) {
+            return (false, Some("identity_vault_metadata_unverified".to_owned()));
+        }
+        let Some(context) = self.core.inner().identity_vault() else {
+            return (false, Some("identity_secret_vault_unavailable".to_owned()));
+        };
+        if !vault_context_matches_metadata(context, metadata) {
+            return (false, Some("identity_vault_context_mismatch".to_owned()));
+        }
+        let Some(refs) = metadata.vnext_key_material_refs() else {
+            return (false, Some("vnext_vault_key_refs_missing".to_owned()));
+        };
+        let Some(dir_name) = entry.identity_dir_name() else {
+            return (false, Some("identity_directory_missing".to_owned()));
+        };
+        let identity_dir = match local_identity_dir(
+            &self.core.inner().sdk_paths().identities.identity_root_dir,
+            &dir_name,
+        ) {
+            Ok(path) => path,
+            Err(_) => return (false, Some("identity_directory_invalid".to_owned())),
+        };
+        let provider =
+            crate::internal::key_provider::vault::VaultBackedKeyMaterialProvider::new_vnext(
+                identity_dir,
+                context.vault(),
+                refs,
+            );
+        use crate::internal::key_provider::KeyMaterialProvider;
+        if provider.device_request_signing_private_pem().is_err()
+            || provider.e2ee_agreement_private_pem().is_err()
+            || provider.auth_state().is_err()
+        {
+            return (false, Some("device_key_material_unavailable".to_owned()));
+        }
+        (provider.did_document_root_private_pem().is_ok(), None)
+    }
+
     fn verify_identity_vault_status(
         &self,
         status: super::IdentityVaultStatus,
@@ -1270,7 +1511,7 @@ impl IdentityRegistry<'_> {
             let runtime =
                 self.load_runtime(super::IdentitySelector::Id(status.identity.id.clone()))?;
             let _ = runtime.key_provider.optional_did_document()?;
-            let _ = runtime.key_provider.default_signing_private_pem()?;
+            let _ = runtime.key_provider.device_request_signing_private_pem()?;
             let _ = runtime.key_provider.e2ee_agreement_private_pem()?;
             let _ = runtime.key_provider.auth_state()?;
             Ok(())
@@ -1312,7 +1553,9 @@ impl IdentityRegistry<'_> {
             .unwrap_or(false);
         let vault_device_matches = metadata
             .zip(context)
-            .map(|(metadata, context)| metadata.device_id == context.device_id())
+            .map(|(metadata, context)| {
+                metadata.device_id == context.vault_context_device_id().as_str()
+            })
             .unwrap_or(false);
         let vault_context_matches = vault_workspace_matches && vault_device_matches;
         let selected_backend =
@@ -1609,6 +1852,7 @@ struct RegistryEntry {
     dir_name: Option<String>,
     summary: super::IdentitySummary,
     vault_migration: Option<crate::internal::identity_store::IdentityVaultMigrationMetadata>,
+    device_state: Option<crate::internal::identity_device_state::IdentityDeviceState>,
 }
 
 #[derive(Debug, Clone)]
@@ -1691,6 +1935,9 @@ struct SdkIdentityRecord {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     vault_migration: Option<crate::internal::identity_store::IdentityVaultMigrationMetadata>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_state: Option<crate::internal::identity_device_state::IdentityDeviceState>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1723,6 +1970,8 @@ struct LegacyIdentityRecord {
     is_default: bool,
     #[serde(default)]
     vault_migration: Option<crate::internal::identity_store::IdentityVaultMigrationMetadata>,
+    #[serde(default)]
+    device_state: Option<crate::internal::identity_device_state::IdentityDeviceState>,
 }
 
 fn parse_registry(raw: &[u8]) -> crate::ImResult<RegistrySnapshot> {
@@ -1756,12 +2005,16 @@ fn sdk_registry_snapshot(file: SdkRegistryFile) -> crate::ImResult<RegistrySnaps
             .clone()
             .or_else(|| local_alias.clone())
             .or_else(|| Some(record.id.clone()).filter(|value| !value.trim().is_empty()));
+        let did = crate::ids::Did::parse(&record.did)?;
+        if let Some(state) = record.device_state.as_ref() {
+            state.validate_for_did(&did)?;
+        }
         entries.push(RegistryEntry {
             local_alias,
             dir_name,
             summary: super::IdentitySummary {
                 id: crate::ids::IdentityId::parse(record.id)?,
-                did: crate::ids::Did::parse(record.did)?,
+                did,
                 handle: optional_handle(record.handle)?,
                 display_name: record.display_name,
                 local_alias: record.local_alias,
@@ -1778,6 +2031,7 @@ fn sdk_registry_snapshot(file: SdkRegistryFile) -> crate::ImResult<RegistrySnaps
                 },
             },
             vault_migration: record.vault_migration,
+            device_state: record.device_state,
         });
     }
     let mut snapshot = RegistrySnapshot {
@@ -1789,6 +2043,7 @@ fn sdk_registry_snapshot(file: SdkRegistryFile) -> crate::ImResult<RegistrySnaps
     Ok(snapshot)
 }
 
+#[cfg(test)]
 fn write_registry(path: &Path, registry: &RegistrySnapshot) -> crate::ImResult<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -1824,6 +2079,7 @@ fn write_registry(path: &Path, registry: &RegistrySnapshot) -> crate::ImResult<(
                     .map(identity_missing_item_to_string)
                     .collect(),
                 vault_migration: entry.vault_migration.clone(),
+                device_state: entry.device_state.clone(),
             })
             .collect(),
     };
@@ -1831,94 +2087,6 @@ fn write_registry(path: &Path, registry: &RegistrySnapshot) -> crate::ImResult<(
         detail: err.to_string(),
     })?;
     fs::write(path, raw)?;
-    Ok(())
-}
-
-async fn write_registry_async(path: &Path, registry: &RegistrySnapshot) -> crate::ImResult<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let file = SdkRegistryFile {
-        default_identity: registry.default_alias.clone(),
-        identities: registry
-            .entries
-            .iter()
-            .map(|entry| SdkIdentityRecord {
-                id: entry.summary.id.as_str().to_string(),
-                did: entry.summary.did.as_str().to_string(),
-                dir_name: entry.dir_name.clone(),
-                handle: entry
-                    .summary
-                    .handle
-                    .as_ref()
-                    .map(|handle| handle.as_str().to_string()),
-                display_name: entry.summary.display_name.clone(),
-                local_alias: entry
-                    .local_alias
-                    .clone()
-                    .or_else(|| entry.summary.local_alias.clone()),
-                device_id: entry.summary.device_id.clone(),
-                is_default: entry.summary.is_default,
-                ready_for_auth: entry.summary.readiness.ready_for_auth,
-                ready_for_messaging: entry.summary.readiness.ready_for_messaging,
-                missing: entry
-                    .summary
-                    .readiness
-                    .missing
-                    .iter()
-                    .map(identity_missing_item_to_string)
-                    .collect(),
-                vault_migration: entry.vault_migration.clone(),
-            })
-            .collect(),
-    };
-    let raw = serde_json::to_vec_pretty(&file).map_err(|err| crate::ImError::Serialization {
-        detail: err.to_string(),
-    })?;
-    tokio::fs::write(path, raw).await?;
-    Ok(())
-}
-
-fn write_default_identity(path: Option<&Path>, default_alias: Option<&str>) -> crate::ImResult<()> {
-    let Some(path) = path else {
-        return Ok(());
-    };
-    match default_alias {
-        Some(alias) => {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(path, format!("{alias}\n"))?;
-        }
-        None => match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(crate::ImError::from(err)),
-        },
-    }
-    Ok(())
-}
-
-async fn write_default_identity_async(
-    path: Option<PathBuf>,
-    default_alias: Option<String>,
-) -> crate::ImResult<()> {
-    let Some(path) = path else {
-        return Ok(());
-    };
-    match default_alias {
-        Some(alias) => {
-            if let Some(parent) = path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-            tokio::fs::write(path, format!("{alias}\n")).await?;
-        }
-        None => match tokio::fs::remove_file(path).await {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(crate::ImError::from(err)),
-        },
-    }
     Ok(())
 }
 
@@ -1948,12 +2116,16 @@ fn legacy_registry_snapshot(file: LegacyRegistryFile) -> crate::ImResult<Registr
             .unwrap_or(&alias)
             .to_string();
         let missing = legacy_readiness_missing(&record, handle);
+        let did = crate::ids::Did::parse(&record.did)?;
+        if let Some(state) = record.device_state.as_ref() {
+            state.validate_for_did(&did)?;
+        }
         entries.push(RegistryEntry {
             local_alias: Some(alias.clone()),
             dir_name: Some(dir_name),
             summary: super::IdentitySummary {
                 id: crate::ids::IdentityId::parse(id)?,
-                did: crate::ids::Did::parse(record.did)?,
+                did,
                 handle: optional_handle(handle.map(str::to_string))?,
                 display_name: Some(record.name).filter(|value| !value.trim().is_empty()),
                 local_alias: Some(alias),
@@ -1966,6 +2138,7 @@ fn legacy_registry_snapshot(file: LegacyRegistryFile) -> crate::ImResult<Registr
                 },
             },
             vault_migration: record.vault_migration,
+            device_state: record.device_state,
         });
     }
     let mut snapshot = RegistrySnapshot {
@@ -2012,7 +2185,8 @@ fn vault_context_matches_metadata(
     context: &crate::core::options::IdentityVaultContext,
     metadata: &crate::internal::identity_store::IdentityVaultMigrationMetadata,
 ) -> bool {
-    context.workspace_id() == metadata.workspace_id && context.device_id() == metadata.device_id
+    context.workspace_id() == metadata.workspace_id
+        && context.vault_context_device_id().as_str() == metadata.device_id
 }
 
 fn default_alias_from_file(path: Option<&Path>) -> crate::ImResult<Option<String>> {
@@ -2202,6 +2376,149 @@ mod tests {
     }
 
     #[test]
+    fn vnext_device_summary_is_ready_and_excludes_internal_checkpoint() {
+        use crate::internal::identity_device_state::{
+            DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
+            IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
+            IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let registry_path = paths.identities.registry_path.clone();
+        let vault_dir = root.path().join("vault");
+        let did = crate::ids::Did::parse("did:wba:awiki.info:alice:e1_root").unwrap();
+        let signing_key_id = format!("{}#dev-a-sign", did.as_str());
+        let e2ee_key_id = format!("{}#dev-a-e2ee", did.as_str());
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([29_u8; 32]),
+            FileSecretVaultStore::new(&vault_dir),
+        ));
+        crate::internal::identity_store::IdentityStore::new(&paths.identities)
+            .save_identity_with_secret_storage(
+                crate::internal::identity_store::SaveIdentityInput {
+                    local_alias: "alice".to_owned(),
+                    did: did.clone(),
+                    unique_id: "alice-id".to_owned(),
+                    user_id: "user-1".to_owned(),
+                    display_name: "Alice".to_owned(),
+                    handle: "alice".to_owned(),
+                    full_handle: "alice.awiki.info".to_owned(),
+                    jwt_token: "device-token".to_owned(),
+                    did_document: Some(json!({"id": did.as_str()})),
+                    key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
+                        root_key_id: format!("{}#key-1", did.as_str()),
+                        device_signing_key_id: signing_key_id.clone(),
+                        device_e2ee_key_id: e2ee_key_id.clone(),
+                    },
+                    device_state: Some(IdentityDeviceState {
+                        schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                        mode: IdentityDeviceMode::VNext,
+                        authorization: Some(DeviceAuthorizationProjection {
+                            protocol_device_id: crate::ids::ProtocolDeviceId::parse("dev-a")
+                                .unwrap(),
+                            signing_key_id: signing_key_id.clone(),
+                            e2ee_key_id: e2ee_key_id.clone(),
+                            status: DeviceAuthorizationStatus::Active,
+                            role: DeviceAuthorizationRole::Admin,
+                            management_ready: true,
+                            auth_generation: 1,
+                        }),
+                        checkpoint: Some(IdentityInternalCheckpoint {
+                            document_version: 9,
+                            document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                                .to_owned(),
+                            registry_version: 4,
+                        }),
+                    }),
+                    key1_private_pem: "root-private".to_owned(),
+                    key1_public_pem: "root-public".to_owned(),
+                    e2ee_signing_private_pem: "device-signing-private".to_owned(),
+                    e2ee_agreement_private_pem: "device-e2ee-private".to_owned(),
+                    daemon_subkey_package: None,
+                    make_default: true,
+                },
+                crate::internal::identity_store::SaveIdentitySecretStorage::Vault {
+                    workspace_id: "workspace-a".to_owned(),
+                    device_id: "vault-a".to_owned(),
+                    vault,
+                },
+            )
+            .unwrap();
+        let core = crate::ImCore::new_with_options(
+            test_config(),
+            paths,
+            crate::ImCoreOpenOptions::default().with_identity_secret_vault(
+                crate::IdentitySecretStoragePolicy::VaultRequired,
+                crate::ImCoreSecretVaultOptions::new(
+                    DeviceVaultRootKey::from_bytes([29_u8; 32]),
+                    &vault_dir,
+                    "workspace-a",
+                    "vault-a",
+                ),
+            ),
+        )
+        .unwrap();
+
+        let summary = core
+            .identities()
+            .device_summary(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        assert_eq!(summary.mode, crate::identity::IdentityDeviceMode::VNext);
+        assert_eq!(
+            summary.role,
+            Some(crate::identity::IdentityDeviceRole::Admin)
+        );
+        assert_eq!(
+            summary.readiness,
+            crate::identity::IdentityDeviceReadiness::AdminReady
+        );
+        assert_eq!(
+            summary
+                .protocol_device_id
+                .as_ref()
+                .map(|value| value.as_str()),
+            Some("dev-a")
+        );
+        assert_eq!(
+            summary.signing_key_id.as_deref(),
+            Some(signing_key_id.as_str())
+        );
+        assert_eq!(summary.e2ee_key_id.as_deref(), Some(e2ee_key_id.as_str()));
+        assert!(summary.blocked_reason.is_none());
+        let public_json = serde_json::to_string(&summary).unwrap();
+        assert!(!public_json.contains("document_version"));
+        assert!(!public_json.contains("document_hash"));
+        assert!(!public_json.contains("registry_version"));
+        assert!(!public_json.contains("root_private"));
+        assert!(!public_json.contains("vault"));
+
+        let mut registry_json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        registry_json["credentials"]["alice"]
+            .as_object_mut()
+            .unwrap()
+            .remove("device_state");
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&registry_json).unwrap(),
+        )
+        .unwrap();
+        let error = core
+            .identities()
+            .load_runtime(crate::identity::IdentitySelector::Default)
+            .err()
+            .expect("vNext vault refs without vNext state must fail closed");
+        assert_eq!(
+            error,
+            crate::ImError::IdentityNotReady {
+                identity: did.as_str().to_owned(),
+                missing: vec!["vnext_device_state".to_owned()],
+            }
+        );
+    }
+
+    #[test]
     fn identity_vault_status_and_runtime_use_verified_matching_vault_context() {
         let root = tempfile::tempdir().unwrap();
         let identity_dir = root.path().join("identities").join("alice-id");
@@ -2346,7 +2663,10 @@ mod tests {
             .load_runtime(crate::identity::IdentitySelector::Default)
             .unwrap();
         assert_eq!(
-            runtime.key_provider.default_signing_private_pem().unwrap(),
+            runtime
+                .key_provider
+                .device_request_signing_private_pem()
+                .unwrap(),
             "vault-signing-secret"
         );
         assert_eq!(
@@ -2443,6 +2763,9 @@ mod tests {
             crate::ImCoreOpenOptions {
                 identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultPreferred,
                 identity_secret_vault: None,
+                multi_device_device_revoke_enabled: false,
+                multi_device_direct_e2ee_enabled: false,
+                multi_device_group_e2ee_enabled: false,
             },
         )
         .unwrap();
@@ -2517,6 +2840,8 @@ mod tests {
                 full_handle: "alice.example".to_owned(),
                 jwt_token: "jwt-secret-value".to_owned(),
                 did_document: Some(json!({"id": "did:example:alice"})),
+                key_mode: crate::internal::identity_store::SaveIdentityKeyMode::LegacyKey1,
+                device_state: None,
                 key1_private_pem: "signing-private-secret".to_owned(),
                 key1_public_pem: "signing-public".to_owned(),
                 e2ee_signing_private_pem: String::new(),
@@ -2579,6 +2904,9 @@ mod tests {
             crate::ImCoreOpenOptions {
                 identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultRequired,
                 identity_secret_vault: None,
+                multi_device_device_revoke_enabled: false,
+                multi_device_direct_e2ee_enabled: false,
+                multi_device_group_e2ee_enabled: false,
             },
         ) {
             Ok(_) => panic!("VaultRequired without vault options should fail"),

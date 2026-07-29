@@ -34,6 +34,15 @@ used as a runtime owner fallback.
 
 The CLI must not independently implement ratchet/session algorithms or expose raw secure artifacts.
 
+## Multi-device rollout gate
+
+The CLI passes `AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED` into
+`ImCoreOpenOptions.multi_device_direct_e2ee_enabled`. The variable is optional
+and defaults to disabled; when present, only `0` and `1` are accepted. Invalid
+values fail closed before Core opens. This host-local gate is independent from
+Join, root transfer, device revoke, Handle Recovery, and Group E2EE gates, and
+is never emitted as an ANP, DID Document, or cross-domain field.
+
 Historical Go SDK reference stores may exist under the identity directory, but active runtime state is stored through `im-core` local state rather than using those paths as owner identity.
 
 The CLI business SQLite additionally stores message indexes, local plaintext views,
@@ -52,6 +61,12 @@ bundle ID is stable for the lifetime of one signed-prekey version, and its proof
 timestamp is stable across repeated preparation. Publishing the same bundle and
 OPK set therefore produces the same request and operation ID; replenishing the
 OPK sidecar produces a new operation ID without redefining the bundle.
+PreKey publication keeps the original immutable public OPK batch beside the
+Vault-sealed signed-prekey material. A publish retry therefore reuses the same
+operation ID and byte-identical batch even after a consumed OPK private record
+has been deleted. Legacy records that cannot reconstruct that original batch
+rotate to a new bundle instead of sending a changed payload under an old
+idempotency key.
 
 The CLI business SQLite may store high-level message indexes, local plaintext views, delivery summaries and outbox summaries. It must not expose or log:
 
@@ -77,6 +92,10 @@ The CLI business SQLite may store high-level message indexes, local plaintext vi
 2. SDK processes init, persists session state and returns a safe plaintext view.
 3. Recipient reply with secure required sends a secure cipher message.
 4. Sender processes the first valid reply and marks the session established.
+5. The responder retains the exact Session Reply retry only until it receives
+   the first authenticated Cipher for that same session; it then deletes the
+   pending ciphertext and Vault record. Replay after restart repeats only this
+   idempotent cleanup.
 
 ### Follow-up messages
 
@@ -88,6 +107,11 @@ The CLI business SQLite may store high-level message indexes, local plaintext vi
   ratchet again; a later failed replay must never overwrite a committed
   decrypted view.
 - Replay, tamper and skip-window behavior remains SDK-owned.
+
+Private device-control retries have a stricter terminal lifecycle. Completion
+or expiry atomically removes the pending ciphertext and private sidecar, then
+garbage-collects the corresponding Vault secret. Only a secret-free completed
+or failed tombstone remains, and its operation ID cannot be reused.
 
 ## Command Surface
 
@@ -101,6 +125,13 @@ awiki-cli msg secure repair --with DID
 ```
 
 User-facing output should help repair sessions while redacting private cryptographic material.
+
+When AWiki's multi-device product path is enabled, the JSON `delivery` object
+may also expose `attempted_device_count`, `previously_accepted_device_count`,
+`newly_accepted_device_count`, `accepted_device_count`, and
+`failed_device_count`. These secret-free counters describe only the current
+local product invocation and its durable retry ledger. They are AWiki-internal
+observability fields, not ANP Direct wire fields and not cross-domain state.
 
 `msg secure init`, `msg secure failed`, `msg secure retry`, and `msg secure drop`
 are reserved internal/diagnostic command shapes in this branch. They are stable
@@ -126,6 +157,7 @@ System-level validation belongs in the cross-repo system test suite, not in long
 
 - Public discovery enablement.
 - Group E2EE / MLS semantics.
-- Multi-device direct E2EE protocol expansion.
+- A cross-domain Direct batch request such as `deliveries[]`; fan-out remains
+  one standard `direct.send` request per target device.
 - Service-side plaintext decrypt.
 - Compatibility with obsolete HPKE wire objects.

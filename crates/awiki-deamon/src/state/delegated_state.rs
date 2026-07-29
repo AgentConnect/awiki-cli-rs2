@@ -114,6 +114,28 @@ WHERE agent_did = ?1
         identity: &UserDelegatedIdentityRecord,
         replay: &BootstrapReplayRecord,
     ) -> Result<BootstrapStoreOutcome> {
+        self.store_bootstrap_state_with_payload_hash_alias(identity, replay, None)
+    }
+
+    pub(crate) fn store_bootstrap_state_with_legacy_payload_hash(
+        &self,
+        identity: &UserDelegatedIdentityRecord,
+        replay: &BootstrapReplayRecord,
+        legacy_payload_hash: &str,
+    ) -> Result<BootstrapStoreOutcome> {
+        self.store_bootstrap_state_with_payload_hash_alias(
+            identity,
+            replay,
+            Some(legacy_payload_hash),
+        )
+    }
+
+    fn store_bootstrap_state_with_payload_hash_alias(
+        &self,
+        identity: &UserDelegatedIdentityRecord,
+        replay: &BootstrapReplayRecord,
+        legacy_payload_hash: Option<&str>,
+    ) -> Result<BootstrapStoreOutcome> {
         identity.validate()?;
         replay.validate()?;
         if identity.user_did != replay.user_did
@@ -133,7 +155,10 @@ WHERE agent_did = ?1
             &replay.bootstrap_id,
             &replay.idempotency_key,
         )? {
-            if existing.payload_hash != replay.payload_hash {
+            let payload_hash_matches = existing.payload_hash == replay.payload_hash
+                || legacy_payload_hash
+                    .is_some_and(|legacy_hash| existing.payload_hash == legacy_hash);
+            if !payload_hash_matches {
                 bail!("daemon bootstrap replay conflict");
             }
             if existing.bootstrap_id != replay.bootstrap_id
@@ -394,16 +419,16 @@ WHERE operation_id = ?1
             .context("load secure bootstrap replay")
     }
 
-    pub fn upsert_app_message_agent_binding(
+    pub fn upsert_app_personal_agent_binding(
         &self,
-        record: &AppMessageAgentBindingRecord,
+        record: &AppPersonalAgentBindingRecord,
     ) -> Result<()> {
         record.validate()?;
         let connection = self.connection()?;
         let now = current_time_millis()?;
         connection.execute(
             r#"
-INSERT INTO app_message_agent_binding (
+INSERT INTO app_personal_agent_binding (
     binding_id,
     user_did,
     inbox_auth_verification_method,
@@ -463,7 +488,7 @@ ON CONFLICT(binding_id) DO UPDATE SET
         Ok(())
     }
 
-    pub fn revoke_other_active_app_message_agent_bindings(
+    pub fn revoke_other_active_app_personal_agent_bindings(
         &self,
         user_did: &str,
         role: &str,
@@ -473,26 +498,26 @@ ON CONFLICT(binding_id) DO UPDATE SET
         let now = current_time_millis()?;
         let affected = connection.execute(
             r#"
-UPDATE app_message_agent_binding
+UPDATE app_personal_agent_binding
 SET revoked_at_ms = ?1,
     updated_at_ms = ?1
 WHERE user_did = ?2
   AND role = ?3
   AND binding_id <> ?4
   AND revoked_at_ms IS NULL
-  AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring')
+  AND status IN ('personal_agent_ready', 'personal_agent_active', 'personal_agent_ensuring')
 "#,
             rusqlite::params![now, user_did, role, keep_binding_id],
         )?;
         Ok(affected)
     }
 
-    pub fn load_active_app_message_agent_binding(
+    pub fn load_active_app_personal_agent_binding(
         &self,
         user_did: &str,
         app_instance_id: &str,
         role: &str,
-    ) -> Result<Option<AppMessageAgentBindingRecord>> {
+    ) -> Result<Option<AppPersonalAgentBindingRecord>> {
         let connection = self.connection()?;
         connection
             .query_row(
@@ -514,26 +539,26 @@ SELECT
     created_at_ms,
     updated_at_ms,
     revoked_at_ms
-FROM app_message_agent_binding
+FROM app_personal_agent_binding
 WHERE user_did = ?1
   AND app_instance_id = ?2
   AND role = ?3
   AND revoked_at_ms IS NULL
-  AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring')
+  AND status IN ('personal_agent_ready', 'personal_agent_active', 'personal_agent_ensuring')
 ORDER BY updated_at_ms DESC
 LIMIT 1
 "#,
                 rusqlite::params![user_did, app_instance_id, role],
-                app_message_agent_binding_from_row,
+                app_personal_agent_binding_from_row,
             )
             .optional()
-            .context("load active app message agent binding")
+            .context("load active app personal agent binding")
     }
 
-    pub fn load_app_message_agent_binding(
+    pub fn load_app_personal_agent_binding(
         &self,
         binding_id: &str,
-    ) -> Result<Option<AppMessageAgentBindingRecord>> {
+    ) -> Result<Option<AppPersonalAgentBindingRecord>> {
         let connection = self.connection()?;
         connection
             .query_row(
@@ -555,22 +580,22 @@ SELECT
     created_at_ms,
     updated_at_ms,
     revoked_at_ms
-FROM app_message_agent_binding
+FROM app_personal_agent_binding
 WHERE binding_id = ?1
 "#,
                 [binding_id],
-                app_message_agent_binding_from_row,
+                app_personal_agent_binding_from_row,
             )
             .optional()
-            .context("load app message agent binding")
+            .context("load app personal agent binding")
     }
 
-    pub fn update_app_message_agent_binding_status_by_runtime(
+    pub fn update_app_personal_agent_binding_status_by_runtime(
         &self,
         runtime_agent_did: &str,
         status: &str,
         revoked: bool,
-    ) -> Result<Option<AppMessageAgentBindingRecord>> {
+    ) -> Result<Option<AppPersonalAgentBindingRecord>> {
         let runtime_agent_did = runtime_agent_did.trim();
         if runtime_agent_did.is_empty() {
             anyhow::bail!("runtime_agent_did must not be empty");
@@ -583,26 +608,26 @@ WHERE binding_id = ?1
         let now = current_time_millis()?;
         let affected = connection.execute(
             r#"
-UPDATE app_message_agent_binding
+UPDATE app_personal_agent_binding
 SET status = ?1,
     updated_at_ms = ?2,
     revoked_at_ms = CASE WHEN ?3 THEN COALESCE(revoked_at_ms, ?2) ELSE revoked_at_ms END
 WHERE runtime_agent_did = ?4
   AND revoked_at_ms IS NULL
-  AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring')
+  AND status IN ('personal_agent_ready', 'personal_agent_active', 'personal_agent_ensuring')
 "#,
             rusqlite::params![status, now, revoked, runtime_agent_did],
         )?;
         if affected == 0 {
             return Ok(None);
         }
-        self.load_active_or_inactive_app_message_agent_binding_by_runtime(runtime_agent_did)
+        self.load_active_or_inactive_app_personal_agent_binding_by_runtime(runtime_agent_did)
     }
 
-    pub fn load_active_or_inactive_app_message_agent_binding_by_runtime(
+    pub fn load_active_or_inactive_app_personal_agent_binding_by_runtime(
         &self,
         runtime_agent_did: &str,
-    ) -> Result<Option<AppMessageAgentBindingRecord>> {
+    ) -> Result<Option<AppPersonalAgentBindingRecord>> {
         let connection = self.connection()?;
         connection
             .query_row(
@@ -624,22 +649,22 @@ SELECT
     created_at_ms,
     updated_at_ms,
     revoked_at_ms
-FROM app_message_agent_binding
+FROM app_personal_agent_binding
 WHERE runtime_agent_did = ?1
 ORDER BY updated_at_ms DESC
 LIMIT 1
 "#,
                 [runtime_agent_did],
-                app_message_agent_binding_from_row,
+                app_personal_agent_binding_from_row,
             )
             .optional()
-            .context("load app message agent binding by runtime")
+            .context("load app personal agent binding by runtime")
     }
 
-    pub fn load_active_app_message_agent_binding_by_runtime(
+    pub fn load_active_app_personal_agent_binding_by_runtime(
         &self,
         runtime_agent_did: &str,
-    ) -> Result<Option<AppMessageAgentBindingRecord>> {
+    ) -> Result<Option<AppPersonalAgentBindingRecord>> {
         let connection = self.connection()?;
         connection
             .query_row(
@@ -661,23 +686,23 @@ SELECT
     created_at_ms,
     updated_at_ms,
     revoked_at_ms
-FROM app_message_agent_binding
+FROM app_personal_agent_binding
 WHERE runtime_agent_did = ?1
   AND revoked_at_ms IS NULL
-  AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring')
+  AND status IN ('personal_agent_ready', 'personal_agent_active', 'personal_agent_ensuring')
 ORDER BY updated_at_ms DESC
 LIMIT 1
 "#,
                 [runtime_agent_did],
-                app_message_agent_binding_from_row,
+                app_personal_agent_binding_from_row,
             )
             .optional()
-            .context("load active app message agent binding by runtime")
+            .context("load active app personal agent binding by runtime")
     }
 
-    pub fn list_active_app_message_agent_bindings(
+    pub fn list_active_app_personal_agent_bindings(
         &self,
-    ) -> Result<Vec<AppMessageAgentBindingRecord>> {
+    ) -> Result<Vec<AppPersonalAgentBindingRecord>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             r#"
@@ -698,13 +723,13 @@ SELECT
     created_at_ms,
     updated_at_ms,
     revoked_at_ms
-FROM app_message_agent_binding
+FROM app_personal_agent_binding
 WHERE revoked_at_ms IS NULL
-  AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring')
+  AND status IN ('personal_agent_ready', 'personal_agent_active', 'personal_agent_ensuring')
 ORDER BY updated_at_ms ASC
 "#,
         )?;
-        let rows = statement.query_map([], app_message_agent_binding_from_row)?;
+        let rows = statement.query_map([], app_personal_agent_binding_from_row)?;
         let mut bindings = Vec::new();
         for row in rows {
             bindings.push(row?);

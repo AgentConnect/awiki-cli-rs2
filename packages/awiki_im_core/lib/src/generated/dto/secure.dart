@@ -202,6 +202,9 @@ class DartGroupSecureRepairResult {
   final String group;
   final DartGroupSecureState state;
   final bool repaired;
+  final int addedDevices;
+  final int removedDevices;
+  final int remainingDevices;
   final DartSecureProblem? problem;
   final List<String> warnings;
 
@@ -209,6 +212,9 @@ class DartGroupSecureRepairResult {
     required this.group,
     required this.state,
     required this.repaired,
+    required this.addedDevices,
+    required this.removedDevices,
+    required this.remainingDevices,
     this.problem,
     required this.warnings,
   });
@@ -218,6 +224,9 @@ class DartGroupSecureRepairResult {
       group.hashCode ^
       state.hashCode ^
       repaired.hashCode ^
+      addedDevices.hashCode ^
+      removedDevices.hashCode ^
+      remainingDevices.hashCode ^
       problem.hashCode ^
       warnings.hashCode;
 
@@ -229,6 +238,9 @@ class DartGroupSecureRepairResult {
           group == other.group &&
           state == other.state &&
           repaired == other.repaired &&
+          addedDevices == other.addedDevices &&
+          removedDevices == other.removedDevices &&
+          remainingDevices == other.remainingDevices &&
           problem == other.problem &&
           warnings == other.warnings;
 }

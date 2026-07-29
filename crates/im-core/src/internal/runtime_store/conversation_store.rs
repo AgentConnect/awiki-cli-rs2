@@ -77,9 +77,11 @@ impl ConversationStore {
         }
         let patch = match committed_items(client) {
             Ok(items) => self.diff_committed_items(items),
-            Err(_) => self.repair_required_patch("committed_projection_unavailable"),
+            Err(_) => Some(self.repair_required_patch("committed_projection_unavailable")),
         };
-        let _ = self.sender.send(patch);
+        if let Some(patch) = patch {
+            let _ = self.sender.send(patch);
+        }
     }
 
     pub(crate) fn on_committed_local_projection(
@@ -92,9 +94,11 @@ impl ConversationStore {
         }
         let patch = match committed_items(client) {
             Ok(items) => self.diff_committed_items(items),
-            Err(_) => self.repair_required_patch(reason),
+            Err(_) => Some(self.repair_required_patch(reason)),
         };
-        let _ = self.sender.send(patch);
+        if let Some(patch) = patch {
+            let _ = self.sender.send(patch);
+        }
     }
 
     pub(crate) fn repair_required_patch(
@@ -141,9 +145,12 @@ impl ConversationStore {
     fn diff_committed_items(
         &self,
         next_items: Vec<crate::messages::ConversationSnapshotItem>,
-    ) -> crate::messages::ConversationStorePatch {
+    ) -> Option<crate::messages::ConversationStorePatch> {
         let next_unread_total = unread_total(&next_items);
         let mut state = self.state.lock().expect("conversation store lock poisoned");
+        if state.items == next_items {
+            return None;
+        }
         state.version = state.version.saturating_add(1);
         let version = state.version;
         let previous_items = std::mem::replace(&mut state.items, next_items.clone());
@@ -157,13 +164,15 @@ impl ConversationStore {
             &previous_items,
             &next_items,
         );
-        patch.unwrap_or_else(|| crate::messages::ConversationStorePatch::Reset {
-            owner_identity_id: self.owner_identity_id.clone(),
-            owner_did: self.owner_did.clone(),
-            version,
-            unread_total: next_unread_total,
-            items: next_items,
-        })
+        Some(
+            patch.unwrap_or_else(|| crate::messages::ConversationStorePatch::Reset {
+                owner_identity_id: self.owner_identity_id.clone(),
+                owner_did: self.owner_did.clone(),
+                version,
+                unread_total: next_unread_total,
+                items: next_items,
+            }),
+        )
     }
 
     fn ensure_owner(&self, client: &crate::core::ImClient) -> crate::ImResult<()> {
@@ -188,13 +197,7 @@ fn diff_patch(
     next: &[crate::messages::ConversationSnapshotItem],
 ) -> Option<crate::messages::ConversationStorePatch> {
     if previous == next {
-        return Some(crate::messages::ConversationStorePatch::Reset {
-            owner_identity_id: owner_identity_id.to_owned(),
-            owner_did: owner_did.to_owned(),
-            version,
-            unread_total,
-            items: next.to_vec(),
-        });
+        return None;
     }
     let previous_keys = previous.iter().map(item_key).collect::<Vec<_>>();
     let next_keys = next.iter().map(item_key).collect::<Vec<_>>();
@@ -330,6 +333,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn conversation_store_diff_has_no_patch_for_unchanged_items() {
+        let items = vec![item("dm:persona:a", "direct", "a", "same", 1)];
+
+        assert!(
+            diff_patch("owner-id", "did:example:owner", 4, 1, &items, &items,).is_none(),
+            "unchanged items must not produce a patch"
+        );
+    }
+
     #[tokio::test]
     async fn conversation_patch_session_reports_repair_required_on_lag() {
         let fixture = Fixture::new();
@@ -387,6 +400,26 @@ mod tests {
             }
             other => panic!("expected local send upsert patch, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn conversation_store_ignores_unchanged_local_projection_commit() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let store = client.conversation_store();
+        let mut session = client.messages().watch_conversation_patches().unwrap();
+        let _initial_hydrate = session.next_patch().await.unwrap();
+        let version_before = store.version_for_test();
+
+        client.emit_committed_conversation_projection("unchanged_projection");
+
+        assert_eq!(store.version_for_test(), version_before);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), session.next_patch())
+                .await
+                .is_err(),
+            "unchanged projection must not emit a patch"
+        );
     }
 
     fn item(

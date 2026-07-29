@@ -524,7 +524,6 @@ pub struct SyncDeltaResult {
     /// Callers should reconcile these through `syncConversationAfter`. The
     /// underlying per-message hydration state remains Core-private.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub hydration_required_conversation_ids: Vec<String>,
     pub warnings: Vec<String>,
 }
 

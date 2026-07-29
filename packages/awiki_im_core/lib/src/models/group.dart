@@ -227,6 +227,10 @@ class GroupReadResult {
     this.members = const [],
     required this.messages,
     this.total,
+    this.nextCursor,
+    this.hasMore = false,
+    this.pageGroupDid,
+    this.groupStateVersion,
     this.source,
     this.warnings = const [],
   });
@@ -236,6 +240,10 @@ class GroupReadResult {
   final List<GroupMember> members;
   final MessagePage messages;
   final int? total;
+  final String? nextCursor;
+  final bool hasMore;
+  final String? pageGroupDid;
+  final String? groupStateVersion;
   final String? source;
   final List<String> warnings;
 }

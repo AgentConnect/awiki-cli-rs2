@@ -195,13 +195,9 @@ choose diagnostics such as `limit`, `deviceId`, and `reason`, but cannot pass
 `since_event_seq` or store the checkpoint. `syncThreadAfter` is thread-local and
 uses `afterServerSeq`; it does not read or advance the global checkpoint.
 
-After applying a delta, `SyncDeltaResult.hydrationRequiredConversationIds`
-lists active, resolved canonical conversations that still contain durable
-metadata-only message gaps. The list comes from current SQLite state and remains
-present on later delta calls until the gaps are hydrated. Apps must page
-`syncConversationAfter` for each listed conversation until `hasMore` is false,
-then reload local conversation summaries before publishing final preview state.
-The private per-message hydration state is intentionally not exposed to Dart.
+For ordinary Direct metadata events, Core hydrates the exact missing messages
+before it commits the delta checkpoint. Apps do not run a second hydration loop,
+and private per-message hydration state is intentionally not exposed to Dart.
 
 Realtime events may include a readonly `RealtimeSyncHint`. Apps may use it to
 schedule `syncDelta` after dirty/gap detection, but receiving realtime metadata

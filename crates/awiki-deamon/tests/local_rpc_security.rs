@@ -15,7 +15,7 @@ use awiki_deamon::runtime::{
 use awiki_deamon::security::runtime_token::{
     current_time_millis, issue_runtime_token, RpcMethod, RuntimeTokenScope,
 };
-use awiki_deamon::state::AppMessageAgentBindingRecord;
+use awiki_deamon::state::AppPersonalAgentBindingRecord;
 use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{DaemonConfig, DaemonState};
 use rusqlite::Connection;
@@ -112,15 +112,15 @@ fn insert_runtime_task_context(
         .unwrap();
 }
 
-fn insert_app_message_agent_binding(state: &DaemonState) {
+fn insert_app_personal_agent_binding(state: &DaemonState) {
     state
-        .upsert_app_message_agent_binding(&AppMessageAgentBindingRecord {
-            binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+        .upsert_app_personal_agent_binding(&AppPersonalAgentBindingRecord {
+            binding_id: "app-personal-agent:did:human:alice:app_1".to_string(),
             user_did: "did:human:alice".to_string(),
             inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
             app_instance_id: "app_1".to_string(),
             bootstrap_id: "boot_1".to_string(),
-            idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+            idempotency_key: "personal-agent-bootstrap:did:human:alice:app_1".to_string(),
             daemon_agent_did: "did:agent:daemon".to_string(),
             runtime_agent_did: "did:agent:test".to_string(),
             runtime_profile_id: "profile_1".to_string(),
@@ -145,7 +145,7 @@ fn insert_app_message_agent_binding(state: &DaemonState) {
                 ],
                 "require_confirmation_for_write_actions": true
             }),
-            status: "message_agent_ready".to_string(),
+            status: "personal_agent_ready".to_string(),
             created_at_ms: 0,
             updated_at_ms: 0,
             revoked_at_ms: None,
@@ -342,9 +342,9 @@ fn msg_send_records_direct_message_side_effect_with_security_mode() {
 }
 
 #[test]
-fn message_agent_runtime_msg_send_is_rejected_even_with_legacy_send_scope() {
+fn personal_agent_runtime_msg_send_is_rejected_even_with_legacy_send_scope() {
     let (root, state) = fixture();
-    insert_app_message_agent_binding(&state);
+    insert_app_personal_agent_binding(&state);
     let issued = issue(
         &state,
         vec![RpcMethod::MsgSend],
@@ -370,7 +370,7 @@ fn message_agent_runtime_msg_send_is_rejected_even_with_legacy_send_scope() {
 
     assert!(error
         .to_string()
-        .contains("message agent outbound send is not enabled"));
+        .contains("personal agent outbound send is not enabled"));
     assert!(outbox.records().is_empty());
     let connection = Connection::open(root.path().join("daemon.db")).unwrap();
     let audit_count: i64 = connection
@@ -750,12 +750,12 @@ fn attachment_send_requires_scope_task_context_and_records_attachment_side_effec
 }
 
 #[test]
-fn message_agent_runtime_attachment_send_is_rejected_even_with_legacy_send_scope() {
+fn personal_agent_runtime_attachment_send_is_rejected_even_with_legacy_send_scope() {
     let (root, state) = fixture();
     let workspace_root = root.path().join("workspace");
     std::fs::create_dir_all(&workspace_root).unwrap();
     insert_runtime_task_context(&state, "did:agent:test", "run_1", Some(&workspace_root));
-    insert_app_message_agent_binding(&state);
+    insert_app_personal_agent_binding(&state);
     let issued = issue(&state, vec![RpcMethod::SendAttachment], None);
     let outbox = MemoryRuntimeOutbox::default();
     let file_path = workspace_root.join("report.txt");
@@ -780,7 +780,7 @@ fn message_agent_runtime_attachment_send_is_rejected_even_with_legacy_send_scope
 
     assert!(error
         .to_string()
-        .contains("message agent outbound send is not enabled"));
+        .contains("personal agent outbound send is not enabled"));
     assert!(outbox.records().is_empty());
     let connection = Connection::open(root.path().join("daemon.db")).unwrap();
     let sent_count: i64 = connection
@@ -793,7 +793,7 @@ fn message_agent_runtime_attachment_send_is_rejected_even_with_legacy_send_scope
     assert_eq!(sent_count, 0);
     let rejected_count: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM audit_log WHERE event_type = 'runtime.message_agent_outbound_send.rejected'",
+            "SELECT COUNT(*) FROM audit_log WHERE event_type = 'runtime.personal_agent_outbound_send.rejected'",
             [],
             |row| row.get(0),
         )
@@ -871,7 +871,7 @@ fn attachment_send_requires_outbox_execution_path() {
 #[test]
 fn app_action_request_requires_outbox_execution_path() {
     let (_root, state) = fixture();
-    insert_app_message_agent_binding(&state);
+    insert_app_personal_agent_binding(&state);
     let issued = issue(&state, vec![RpcMethod::AppActionRequest], None);
 
     let error = execute_runtime_rpc_request(
@@ -895,7 +895,7 @@ fn app_action_request_requires_outbox_execution_path() {
 #[test]
 fn app_action_request_records_message_sync_side_effect() {
     let (_root, state) = fixture();
-    insert_app_message_agent_binding(&state);
+    insert_app_personal_agent_binding(&state);
     let issued = issue(&state, vec![RpcMethod::AppActionRequest], None);
     let outbox = MemoryRuntimeOutbox::default();
 

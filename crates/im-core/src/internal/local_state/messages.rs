@@ -667,6 +667,19 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
     metadata = CASE
         WHEN messages.hydration_state = 'hydrated' AND excluded.hydration_state <> 'hydrated'
         THEN COALESCE(NULLIF(messages.metadata, ''), excluded.metadata)
+        WHEN excluded.content IS NULL
+         AND messages.is_e2ee = 1
+         AND json_valid(COALESCE(NULLIF(messages.metadata, ''), '{}')) = 1
+         AND json_extract(
+               COALESCE(NULLIF(messages.metadata, ''), '{}'),
+               '$.decryption_state'
+             ) = 'decrypted'
+         AND json_valid(COALESCE(NULLIF(excluded.metadata, ''), '{}')) = 1
+         AND json_extract(
+               COALESCE(NULLIF(excluded.metadata, ''), '{}'),
+               '$.decryption_state'
+             ) = 'failed'
+        THEN messages.metadata
         ELSE excluded.metadata
     END,
     mentions_current_user = CASE
@@ -1099,6 +1112,27 @@ SELECT EXISTS(
         )
         .map_err(super::local_state_unavailable)?;
     Ok(exists != 0)
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn message_server_seq(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    msg_id: &str,
+) -> crate::ImResult<Option<i64>> {
+    connection
+        .query_row(
+            r#"
+SELECT server_seq
+FROM messages
+WHERE owner_identity_id = ?1 AND msg_id = ?2
+"#,
+            rusqlite::params![owner_identity_id, msg_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .optional()
+        .map(|value| value.flatten())
+        .map_err(super::local_state_unavailable)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1536,6 +1570,9 @@ SELECT msg_id,
        owner_identity_id,
        owner_did,
        conversation_id,
+       wire_thread_kind,
+       wire_thread_ref,
+       wire_identity_resolution_state,
        thread_id,
        direction,
        sender_did,
@@ -1557,7 +1594,17 @@ SELECT msg_id,
        credential_name
 FROM messages
 WHERE owner_identity_id = ?
-  AND msg_id IN ({placeholders})
+  AND (
+        msg_id IN ({placeholders})
+        OR CASE
+             WHEN json_valid(COALESCE(NULLIF(metadata, ''), '{{}}')) = 1
+             THEN json_extract(
+                    COALESCE(NULLIF(metadata, ''), '{{}}'),
+                    '$.raw_message_id'
+                  ) IN ({placeholders})
+             ELSE 0
+           END
+      )
   AND is_e2ee = 1
   AND CASE
         WHEN json_valid(COALESCE(NULLIF(metadata, ''), '{{}}')) = 1
@@ -1565,8 +1612,12 @@ WHERE owner_identity_id = ?
         ELSE NULL
       END = 'decrypted'"#
     );
-    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(message_ids.len() + 1);
+    let mut params: Vec<&dyn rusqlite::ToSql> =
+        Vec::with_capacity(message_ids.len().saturating_mul(2) + 1);
     params.push(&owner_identity_id);
+    for message_id in &message_ids {
+        params.push(message_id);
+    }
     for message_id in &message_ids {
         params.push(message_id);
     }
@@ -1727,7 +1778,7 @@ fn hydration_state_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message
         Ok(Some(value)) if value.trim() == "legacy_probe" => Ok(MessageHydrationState::LegacyProbe),
         // Invalid persisted state is a gap; catch-up must not advance past it.
         Ok(_) => Ok(MessageHydrationState::Discovered),
-        // Older compatibility SELECTs do not always request the schema-29-only column.
+        // Older compatibility SELECTs do not always request the schema-32-only column.
         Err(rusqlite::Error::InvalidColumnName(_)) => Ok(MessageHydrationState::Hydrated),
         Err(error) => Err(error),
     }
@@ -1763,6 +1814,7 @@ fn project_direct_records_to_thread(records: &mut [MessageRecord], thread_id: &s
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MarkReadClassification {
     pub(crate) direct_ids: Vec<String>,
+    pub(crate) remote_direct_ids: Vec<String>,
     pub(crate) group_ids: Vec<String>,
     pub(crate) local_only_ids: Vec<String>,
 }
@@ -2011,35 +2063,6 @@ WHERE owner_identity_id = ?
 }
 
 #[cfg(feature = "sqlite")]
-pub(crate) fn hydration_required_conversation_ids(
-    connection: &rusqlite::Connection,
-    owner_identity_id: &str,
-) -> crate::ImResult<Vec<String>> {
-    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
-    let mut statement = connection
-        .prepare(
-            r#"
-SELECT DISTINCT m.conversation_id
-FROM messages m
-JOIN conversation_registry r
-  ON r.owner_identity_id = m.owner_identity_id
- AND r.conversation_id = m.conversation_id
-WHERE m.owner_identity_id = ?1
-  AND m.hydration_state <> 'hydrated'
-  AND TRIM(m.conversation_id) <> ''
-  AND r.is_active = 1
-  AND r.resolution_state = 'resolved'
-ORDER BY m.conversation_id"#,
-        )
-        .map_err(super::local_state_unavailable)?;
-    let rows = statement
-        .query_map([owner_identity_id], |row| row.get::<_, String>(0))
-        .map_err(super::local_state_unavailable)?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(super::local_state_unavailable)
-}
-
-#[cfg(feature = "sqlite")]
 pub(crate) fn resolve_legacy_hydration_probes_for_thread_ref(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
@@ -2238,6 +2261,7 @@ fn classify_mark_read_ids_from_rows(
         let requested_msg_id = id.trim();
         let Some(row) = rows.get(requested_msg_id) else {
             result.direct_ids.push(id.clone());
+            result.remote_direct_ids.push(id.clone());
             continue;
         };
         if row.is_local_mail_notification() {
@@ -2246,6 +2270,7 @@ fn classify_mark_read_ids_from_rows(
             result.group_ids.push(id.clone());
         } else {
             result.direct_ids.push(id.clone());
+            result.remote_direct_ids.push(row.remote_mark_read_id());
         }
     }
     Ok(result)
@@ -3405,6 +3430,41 @@ impl MessageClassificationRow {
             .map(|value| value.trim() == "mail")
             .unwrap_or(false)
     }
+
+    fn remote_mark_read_id(&self) -> String {
+        let metadata = parse_metadata(&self.metadata);
+        let is_authenticated_p5_v2_projection = metadata
+            .get("p5_cache_profile")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            == Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
+            && [
+                "p5_cache_sender_did",
+                "p5_cache_sender_device_id",
+                "p5_cache_recipient_did",
+                "p5_cache_recipient_device_id",
+                "p5_cache_binding_digest",
+            ]
+            .into_iter()
+            .all(|key| {
+                metadata
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty())
+            });
+        if is_authenticated_p5_v2_projection {
+            if let Some(raw_message_id) = metadata
+                .get("raw_message_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return raw_message_id.to_owned();
+            }
+        }
+        self.requested_msg_id.clone()
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -4267,6 +4327,44 @@ fn now_utc_like() -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn decrypted_secure_lookup_uses_unresolved_durable_projection() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let record = MessageRecord {
+            msg_id: "msg-secure-unresolved".to_owned(),
+            owner_identity_id: "owner-id".to_owned(),
+            owner_did: "did:example:owner".to_owned(),
+            conversation_id: "dm:did:example:peer".to_owned(),
+            thread_id: "dm:did:example:peer".to_owned(),
+            direction: 0,
+            sender_did: "did:example:peer".to_owned(),
+            receiver_did: "did:example:owner".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "decrypted text".to_owned(),
+            is_e2ee: true,
+            metadata: r#"{"decryption_state":"decrypted"}"#.to_owned(),
+            ..MessageRecord::default()
+        };
+        let outcome = super::super::inbound_resolution_backlog::ingest_remote_messages(
+            &db,
+            std::slice::from_ref(&record),
+            "remote_history",
+        )
+        .unwrap();
+        assert_eq!(outcome.stored_messages, 0);
+        assert_eq!(outcome.backlogged_messages, 1);
+
+        let cached = list_decrypted_secure_messages_for_owner_identity(
+            &db,
+            "owner-id",
+            &[record.msg_id.clone()],
+        )
+        .unwrap();
+
+        assert_eq!(cached, vec![record]);
+    }
+
     fn wire_identity_record() -> MessageRecord {
         MessageRecord {
             msg_id: "wire-message-1".to_owned(),
@@ -4559,6 +4657,7 @@ VALUES (?1, ?2, ?3, ?4, ?4, 0, 'mail.notification', 'mail', '2026-05-21T00:00:00
         .unwrap();
 
         assert_eq!(classified.direct_ids, vec!["direct-1", "missing-1"]);
+        assert_eq!(classified.remote_direct_ids, vec!["direct-1", "missing-1"]);
         assert_eq!(classified.group_ids, vec!["group-1"]);
         assert_eq!(classified.local_only_ids, vec!["mail-1"]);
     }
@@ -6733,6 +6832,72 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
         assert_eq!(summary.last_message_id, canonical_id);
         assert!(summary.last_content.contains("2026-07-06"));
         assert_summary_matches_rebuild(&db, owner_identity_id, &conversation_id);
+    }
+
+    #[test]
+    fn local_state_group_redaction_does_not_replace_decrypted_projection_metadata() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let group_did = "did:example:groups:secure";
+        let canonical_id = "did:example:groups:secure:11";
+        let base = MessageRecord {
+            msg_id: canonical_id.to_owned(),
+            owner_identity_id: "owner-id".to_owned(),
+            owner_did: "did:owner".to_owned(),
+            conversation_id: crate::internal::local_state::owner_scope::group_conversation_id(
+                group_did,
+            ),
+            thread_id: crate::internal::local_state::owner_scope::group_conversation_id(group_did),
+            direction: 0,
+            sender_did: "did:example:sender".to_owned(),
+            group_id: group_did.to_owned(),
+            group_did: group_did.to_owned(),
+            server_seq: Some(11),
+            is_e2ee: true,
+            ..MessageRecord::default()
+        };
+
+        upsert_message(
+            &db,
+            &MessageRecord {
+                content_type: "text/plain".to_owned(),
+                content: "decrypted".to_owned(),
+                metadata: serde_json::json!({
+                    "decryption_state": "decrypted",
+                    "group_event_seq": "11"
+                })
+                .to_string(),
+                ..base.clone()
+            },
+        )
+        .unwrap();
+        upsert_message(
+            &db,
+            &MessageRecord {
+                content_type: "application/x-awiki-group-e2ee-redacted".to_owned(),
+                metadata: serde_json::json!({
+                    "decryption_state": "failed",
+                    "group_event_seq": "11"
+                })
+                .to_string(),
+                ..base
+            },
+        )
+        .unwrap();
+
+        let (content_type, content, metadata): (String, String, String) = db
+            .query_row(
+                "SELECT content_type, content, metadata FROM messages WHERE msg_id = ?1",
+                [canonical_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(content_type, "text/plain");
+        assert_eq!(content, "decrypted");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&metadata).unwrap()["decryption_state"],
+            "decrypted"
+        );
     }
 
     #[test]

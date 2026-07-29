@@ -6,6 +6,60 @@ fn upgrade_legacy_schema_for_test(connection: &Connection) -> crate::ImResult<()
     set_schema_version(connection, SCHEMA_VERSION)
 }
 
+fn replace_sync_state_with_release_shape(connection: &Connection) {
+    connection
+        .execute_batch(
+            r#"
+DROP INDEX IF EXISTS idx_sync_state_owner_kind;
+DROP TABLE sync_state;
+CREATE TABLE sync_state (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    scope             TEXT NOT NULL,
+    checkpoint_kind   TEXT NOT NULL,
+    event_seq         TEXT NOT NULL DEFAULT '0',
+    updated_at        TEXT NOT NULL,
+    metadata_json     TEXT,
+    PRIMARY KEY (owner_identity_id, scope, checkpoint_kind)
+);
+CREATE INDEX idx_sync_state_owner_kind
+ON sync_state(owner_identity_id, checkpoint_kind, updated_at DESC);
+"#,
+        )
+        .unwrap();
+}
+
+fn prepare_release_predecessor_for_test(connection: &Connection, version: i64) {
+    connection
+        .execute_batch(
+            r#"
+DROP INDEX IF EXISTS idx_messages_owner_hydration_conversation_seq;
+ALTER TABLE messages DROP COLUMN hydration_state;
+"#,
+        )
+        .unwrap();
+    replace_sync_state_with_release_shape(connection);
+    if version < SYSTEM_NOTIFICATION_SCHEMA_VERSION {
+        connection
+            .execute_batch(
+                "DROP TABLE system_notification_receipts;
+                 DROP TABLE system_notification_join_state;",
+            )
+            .unwrap();
+    }
+    if version < ROOT_IMPORT_COORDINATOR_SCHEMA_VERSION {
+        connection
+            .execute_batch(
+                "DROP TABLE identity_root_import_completion_v1;
+                 DROP TABLE identity_root_transfer_sender_v1;",
+            )
+            .unwrap();
+    }
+    connection
+        .pragma_update(None, "user_version", version)
+        .unwrap();
+}
+
 #[test]
 fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     let db = Connection::open_in_memory().unwrap();
@@ -257,6 +311,7 @@ PRAGMA user_version = 28;
 "#,
         )
         .unwrap();
+        replace_sync_state_with_release_shape(&db);
     }
 
     {
@@ -341,7 +396,7 @@ PRAGMA user_version = 28;
 }
 
 #[test]
-fn local_state_schema_29_scopes_checkpoints_by_subject_and_drops_ambiguous_current_did_rows() {
+fn sync_state_subject_migration_drops_ambiguous_current_did_rows() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("im.sqlite");
     {
@@ -383,12 +438,11 @@ VALUES
     ('later-updated-id', 'did:later-updated:new', 'global', 'event_seq', '50', '2026-07-03T00:00:00Z'),
     ('stable-id', 'did:stable', 'global', 'event_seq', '12', '100'),
     ('historical-id', 'did:historical:old', 'global', 'event_seq', '31', '100');
-PRAGMA user_version = 29;
 "#,
         )
         .unwrap();
 
-        ensure_schema(&db).unwrap();
+        migrate_sync_state_subject_scope(&db).unwrap();
         assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
         assert_primary_key_columns(
             &db,
@@ -465,7 +519,7 @@ PRAGMA user_version = 29;
 }
 
 #[test]
-fn local_state_schema_29_rejects_partial_subject_scoped_checkpoint_shape() {
+fn sync_state_schema_rejects_partial_subject_scoped_checkpoint_shape() {
     let db = Connection::open_in_memory().unwrap();
     ensure_schema(&db).unwrap();
     db.execute_batch(
@@ -481,20 +535,16 @@ CREATE TABLE sync_state (
     metadata_json     TEXT,
     PRIMARY KEY (owner_identity_id, scope, checkpoint_kind)
 );
-PRAGMA user_version = 29;
 "#,
     )
     .unwrap();
 
     assert!(matches!(
-        ensure_schema(&db),
+        ensure_sync_state_schema(&db),
         Err(crate::ImError::LocalStateUnavailable { detail })
             if detail.contains("sync_state subject-scoped schema is incomplete")
     ));
-    assert_eq!(
-        current_schema_version(&db).unwrap(),
-        HYDRATION_SCHEMA_VERSION
-    );
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
 }
 
 #[test]
@@ -553,7 +603,7 @@ fn did_history_transition_does_not_relabel_sync_checkpoint_subject() {
 }
 
 #[test]
-fn local_state_schema_30_repairs_only_provable_canonical_direct_wire_identity() {
+fn canonical_direct_wire_repair_updates_only_provable_rows() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("im.sqlite");
     {
@@ -607,7 +657,7 @@ fn local_state_schema_30_repairs_only_provable_canonical_direct_wire_identity() 
                     sender_did: sender_did.to_owned(),
                     receiver_did: receiver_did.to_owned(),
                     content_type: "text/plain".to_owned(),
-                    content: "schema 30 wire repair fixture".to_owned(),
+                    content: "schema 32 wire repair fixture".to_owned(),
                     server_seq: Some(5),
                     stored_at: "2026-07-26T00:00:00Z".to_owned(),
                     ..Default::default()
@@ -625,10 +675,8 @@ WHERE msg_id IN ('provable-old-wire', 'ambiguous-owner-snapshot',
             [],
         )
         .unwrap();
-        db.pragma_update(None, "user_version", SYNC_SUBJECT_SCHEMA_VERSION)
+        crate::internal::local_state::messages::repair_legacy_canonical_direct_wire_identities(&db)
             .unwrap();
-
-        ensure_schema(&db).unwrap();
         assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
         assert_eq!(
             message_wire_identity(&db, "provable-old-wire"),
@@ -1216,6 +1264,150 @@ fn local_state_schema_rejects_unsupported_versions() {
         Err(crate::ImError::LocalStateUnavailable { detail })
             if detail.contains("newer than supported")
     ));
+}
+
+#[test]
+fn local_state_schema_atomically_upgrades_v28_with_system_notification_tables() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    prepare_release_predecessor_for_test(&db, 28);
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    for table in [
+        "system_notification_receipts",
+        "system_notification_join_state",
+        "identity_root_import_completion_v1",
+        "identity_root_transfer_sender_v1",
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[test]
+fn local_state_schema_atomically_upgrades_v29_with_root_import_tables() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    prepare_release_predecessor_for_test(&db, 29);
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    for table in [
+        "identity_root_import_completion_v1",
+        "identity_root_transfer_sender_v1",
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[test]
+fn local_state_schema_atomically_upgrades_v30_with_p5_retirement_boundary() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    prepare_release_predecessor_for_test(&db, 30);
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    for table in [
+        "direct_e2ee_v2_sessions",
+        "direct_e2ee_v2_pending",
+        "direct_e2ee_v2_prekey_bundles",
+        "direct_e2ee_v2_one_time_prekeys",
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[test]
+fn local_state_release_schema_v31_upgrades_to_v32_and_keeps_root_import_tables() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    prepare_release_predecessor_for_test(&db, 31);
+
+    ensure_schema(&db).unwrap();
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+
+    for table in [
+        "identity_root_import_completion_v1",
+        "identity_root_transfer_sender_v1",
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[test]
+fn local_state_development_schema_v31_fails_closed_without_mutation() {
+    let db = Connection::open_in_memory().unwrap();
+    ensure_schema(&db).unwrap();
+    db.execute(
+        "INSERT INTO sync_state
+         (owner_identity_id, sync_subject_id, scope, checkpoint_kind, event_seq, updated_at)
+         VALUES ('alice-id', 'did:example:alice', 'global', 'event_seq', '9', '9')",
+        [],
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 31).unwrap();
+
+    assert!(matches!(
+        ensure_schema(&db),
+        Err(crate::ImError::LocalStateUnavailable { detail })
+            if detail.contains("incompatible development profile")
+                && detail.contains("reset this development local state")
+    ));
+    assert_eq!(current_schema_version(&db).unwrap(), 31);
+    let event_seq: String = db
+        .query_row("SELECT event_seq FROM sync_state", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(event_seq, "9");
+}
+
+#[test]
+fn local_state_schema_v31_rejects_incomplete_release_shape_without_mutation() {
+    let db = Connection::open_in_memory().unwrap();
+    create_schema(&db, true).unwrap();
+    prepare_release_predecessor_for_test(&db, 31);
+    db.execute("DROP TABLE identity_root_transfer_sender_v1", [])
+        .unwrap();
+
+    assert!(matches!(
+        ensure_schema(&db),
+        Err(crate::ImError::LocalStateUnavailable { detail })
+            if detail.contains("does not match the release/0714 predecessor shape")
+    ));
+    assert_eq!(current_schema_version(&db).unwrap(), 31);
+    assert!(!has_column(&db, "messages", "hydration_state").unwrap());
+    assert!(has_column(&db, "sync_state", "owner_did").unwrap());
 }
 
 #[test]

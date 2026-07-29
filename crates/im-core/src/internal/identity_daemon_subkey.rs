@@ -225,7 +225,9 @@ pub(crate) fn resign_did_document_with_key1(
             detail: format!("load DID Document signing key: {err}"),
         }
     })?;
-    let options = proof_generation_options_for_update(did_document);
+    let fallback_domain =
+        crate::internal::identity_join_activation_pending::service_domain_from_did(did)?;
+    let options = proof_generation_options_for_update(did_document, &fallback_domain);
     let signed = generate_w3c_proof(
         did_document,
         &private_key,
@@ -438,7 +440,10 @@ fn ed25519_public_key_to_multibase(key: &ed25519_dalek::VerifyingKey) -> String 
     format!("z{}", bs58::encode(bytes).into_string())
 }
 
-fn proof_generation_options_for_update(did_document: &Value) -> ProofGenerationOptions {
+fn proof_generation_options_for_update(
+    did_document: &Value,
+    fallback_domain: &str,
+) -> ProofGenerationOptions {
     let proof = did_document.get("proof");
     ProofGenerationOptions {
         proof_purpose: proof
@@ -460,7 +465,8 @@ fn proof_generation_options_for_update(did_document: &Value) -> ProofGenerationO
         domain: proof
             .and_then(|value| value.get("domain"))
             .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
+            .map(ToOwned::to_owned)
+            .or_else(|| Some(fallback_domain.to_owned())),
         challenge: Some(fresh_proof_challenge()),
     }
 }
@@ -646,5 +652,34 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item.as_str() == Some(subkey.verification_method.as_str())));
+    }
+
+    #[test]
+    fn resign_unsigned_vnext_document_restores_authority_domain() {
+        let generated = crate::internal::identity_generation::generate_identity_with_path_segments(
+            "awiki.test",
+            ["alice"],
+            None,
+            None,
+        )
+        .unwrap();
+        let mut document = generated.did_document.clone();
+        document.as_object_mut().unwrap().remove("proof");
+
+        resign_did_document_with_key1(&mut document, &generated.did, &generated.key1_private_pem)
+            .unwrap();
+
+        let challenge = document["proof"]["challenge"].as_str().unwrap();
+        assert_eq!(document["proof"]["domain"], "awiki.test");
+        let signing_key = anp::PrivateKeyMaterial::from_pem(&generated.key1_private_pem).unwrap();
+        assert!(verify_w3c_proof(
+            &document,
+            &signing_key.public_key(),
+            ProofVerificationOptions {
+                expected_purpose: Some("assertionMethod".to_owned()),
+                expected_domain: Some("awiki.test".to_owned()),
+                expected_challenge: Some(challenge.to_owned()),
+            },
+        ));
     }
 }

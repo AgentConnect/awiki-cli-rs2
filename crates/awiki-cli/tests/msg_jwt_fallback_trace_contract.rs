@@ -1,3 +1,4 @@
+use base64::Engine;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -18,11 +19,9 @@ fn direct_send_http_401_refreshes_inside_im_core_transport() {
     let workspace = TempDir::new("msg-jwt-fallback-send").expect("workspace");
     register_ready_msg_identity(workspace.path(), "alice-msg-fallback", "alice", "jwt-stale");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    let refreshed_token = legacy_access_token("did:wba:awiki.ai:alice:e1_alice");
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_error(1401, "expired jwt")),
-        TestResponse::ok(&json_rpc_result(json!({
-            "access_token": "jwt-refreshed"
-        }))),
         TestResponse::ok(&json_rpc_result(json!({
             "accepted": true,
             "final_acceptance": true,
@@ -31,7 +30,8 @@ fn direct_send_http_401_refreshes_inside_im_core_transport() {
             "target_did": bob_did,
             "accepted_at": "2026-05-17T01:02:03Z",
             "delivery_state": "accepted"
-        }))),
+        })))
+        .with_access_token(&refreshed_token),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
 
@@ -59,19 +59,17 @@ fn direct_send_http_401_refreshes_inside_im_core_transport() {
     assert_text_not_contains(&trace, "消息回退时刷新 JWT");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 2);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
     assert_contains_text(&requests[0], "Authorization: Bearer jwt-stale\r\n");
-    assert!(requests[1].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
-    assert_eq!(json_body(&requests[1])["method"], "get_me");
-    assert!(requests[2].starts_with("POST /im/rpc HTTP/1.1"));
-    assert_contains_text(&requests[2], "Authorization: Bearer jwt-refreshed\r\n");
-    assert_eq!(json_body(&requests[2])["method"], "direct.send");
+    assert!(requests[1].starts_with("POST /im/rpc HTTP/1.1"));
+    assert_contains_text(&requests[1], "signature-input:");
+    assert_eq!(json_body(&requests[1])["method"], "direct.send");
 
     assert_vault_auth_token_is_used(
         workspace.path(),
         "alice-msg-fallback",
-        "jwt-refreshed",
+        &refreshed_token,
         &[
             "--identity",
             "alice-msg-fallback",
@@ -91,11 +89,9 @@ fn inbox_http_1401_refreshes_inside_im_core_transport() {
     register_ready_msg_identity(workspace.path(), "bob-msg-fallback", "bob", "jwt-bob-stale");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
+    let refreshed_token = legacy_access_token(bob_did);
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_error(1401, "expired inbox jwt")),
-        TestResponse::ok(&json_rpc_result(json!({
-            "access_token": "jwt-bob-fresh"
-        }))),
         TestResponse::ok(&json_rpc_result(json!({
             "messages": [{
                 "id": "msg-fallback-inbox-1",
@@ -109,7 +105,8 @@ fn inbox_http_1401_refreshes_inside_im_core_transport() {
             }],
             "total": 1,
             "source": "remote_http"
-        }))),
+        })))
+        .with_access_token(&refreshed_token),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
 
@@ -148,18 +145,16 @@ fn inbox_http_1401_refreshes_inside_im_core_transport() {
     assert_text_not_contains(&trace, "消息回退时刷新 JWT");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 2);
     assert_eq!(json_body(&requests[0])["method"], "inbox.get");
     assert_contains_text(&requests[0], "Authorization: Bearer jwt-bob-stale\r\n");
-    assert!(requests[1].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
-    assert_eq!(json_body(&requests[1])["method"], "get_me");
-    assert_eq!(json_body(&requests[2])["method"], "inbox.get");
-    assert_contains_text(&requests[2], "Authorization: Bearer jwt-bob-fresh\r\n");
+    assert_eq!(json_body(&requests[1])["method"], "inbox.get");
+    assert_contains_text(&requests[1], "signature-input:");
 
     assert_vault_auth_token_is_used(
         workspace.path(),
         "bob-msg-fallback",
-        "jwt-bob-fresh",
+        &refreshed_token,
         &[
             "--identity",
             "bob-msg-fallback",
@@ -423,10 +418,30 @@ fn json_rpc_error(code: i64, message: &str) -> String {
     .to_string()
 }
 
+fn legacy_access_token(did: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let claims = json!({
+        "iss": "user-service",
+        "sub": did,
+        "type": "access",
+        "iat": now,
+        "exp": now + 3600,
+    });
+    format!(
+        "e30.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).expect("serialize legacy access token claims"))
+    )
+}
+
 #[derive(Debug, Clone)]
 struct TestResponse {
     status: u16,
     body: String,
+    access_token: Option<String>,
 }
 
 impl TestResponse {
@@ -434,7 +449,13 @@ impl TestResponse {
         Self {
             status: 200,
             body: body.to_string(),
+            access_token: None,
         }
+    }
+
+    fn with_access_token(mut self, access_token: &str) -> Self {
+        self.access_token = Some(access_token.to_owned());
+        self
     }
 }
 
@@ -515,9 +536,15 @@ fn handle_connection(
     let request = read_http_request(&mut stream);
     requests.lock().expect("requests mutex").push(request);
     let body = response.body.as_bytes();
+    let authentication_info = response
+        .access_token
+        .as_deref()
+        .map(|token| format!("Authentication-Info: access_token=\"{token}\"\r\n"))
+        .unwrap_or_default();
     let raw = format!(
-        "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
         response.status,
+        authentication_info,
         body.len(),
         response.body
     );

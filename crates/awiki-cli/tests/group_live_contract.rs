@@ -83,14 +83,17 @@ fn group_members_live_posts_group_list_members_and_maps_members_like_go() {
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "members": [
             {
-                "member_did": bob_did,
-                "member_handle": "bob.awiki.ai",
+                "agent_did": bob_did,
+                "agent_handle": "bob.awiki.ai",
                 "role": "member",
                 "status": "active",
                 "joined_at": "2026-04-07T01:02:03Z"
             }
         ],
+        "group_did": group_did,
+        "group_state_version": "7",
         "total": 1,
+        "has_more": false,
         "source": "remote_http"
     })))]);
     write_group_config(workspace.path(), &server.base_url());
@@ -160,12 +163,15 @@ fn group_control_websocket_mode_stays_http_and_warns_like_go() {
         }))),
         TestResponse::ok(&json_rpc_result(json!({
             "members": [{
-                "member_did": "did:wba:awiki.ai:bob:e1_bob",
-                "member_handle": "bob.awiki.ai",
+                "agent_did": "did:wba:awiki.ai:bob:e1_bob",
+                "agent_handle": "bob.awiki.ai",
                 "role": "member",
                 "status": "active"
             }],
+            "group_did": group_did,
+            "group_state_version": "7",
             "total": 1,
+            "has_more": false,
             "source": "remote_http"
         }))),
     ]);
@@ -264,7 +270,7 @@ fn group_add_live_error_preserves_go_owner_hint() {
     assert_eq!(envelope["error"]["code"], "internal_error");
     assert_contains_text(
         envelope["error"]["message"].as_str().unwrap_or_default(),
-        "actor cannot add members",
+        "message operation: remote service request failed.",
     );
     assert_contains_text(
         envelope["error"]["hint"].as_str().unwrap_or_default(),

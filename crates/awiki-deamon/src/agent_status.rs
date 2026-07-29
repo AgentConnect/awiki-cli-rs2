@@ -229,7 +229,7 @@ pub fn daemon_lightweight_payload(config: &DaemonConfig, daemon: &AgentDefinitio
     let now = rfc3339_now();
     let service = service_status(config);
     let release = check_release_status(config);
-    daemon_lightweight_payload_with_release(config, daemon, &service, &now, &release)
+    daemon_lightweight_payload_with_release(config, daemon, &service, &now, &release, None)
 }
 
 fn daemon_lightweight_payload_with_release(
@@ -238,6 +238,7 @@ fn daemon_lightweight_payload_with_release(
     service: &ServiceStatus,
     now: &str,
     release: &DaemonReleaseStatus,
+    bootstrap_key: Option<&DaemonBootstrapKeySummary>,
 ) -> Value {
     json!({
         "schema": "awiki.agent.status.v1",
@@ -248,7 +249,7 @@ fn daemon_lightweight_payload_with_release(
         "command_id": null,
         "state": "ready",
         "message": "daemon heartbeat",
-        "daemon": daemon_status_payload(config, daemon, service, now, release, None),
+        "daemon": daemon_status_payload(config, daemon, service, now, release, bootstrap_key),
         "runtimes": [],
         "runs": [],
         "details": {
@@ -486,7 +487,14 @@ where
         payload: {
             let service = service_status(config);
             let now = rfc3339_now();
-            daemon_lightweight_payload_with_release(config, daemon, &service, &now, release)
+            daemon_lightweight_payload_with_release(
+                config,
+                daemon,
+                &service,
+                &now,
+                release,
+                daemon_bootstrap_key_summary(state, daemon).as_ref(),
+            )
         },
     })
 }
@@ -1924,6 +1932,7 @@ fn sanitize_public_error(message: &str) -> String {
 mod tests {
     use super::*;
     use crate::agent::{generate_agent_identity, AgentDefinition};
+    use crate::outbox::MemoryRuntimeOutbox;
     use crate::plugins::generic_cli::GENERIC_CLI_RUNTIME_PLUGIN_ID;
     use crate::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
     use crate::state::{
@@ -2281,6 +2290,67 @@ mod tests {
                 .is_some()
         );
         let dump = serde_json::to_string(&items).unwrap();
+        assert!(!dump.contains("PRIVATE KEY"));
+        assert!(!dump.contains("token"));
+        assert!(!dump.contains("private"));
+    }
+
+    #[tokio::test]
+    async fn daemon_heartbeat_includes_public_bootstrap_key_without_private_material() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let identity = generate_agent_identity(&config, AgentKind::Daemon, "alice-mac-daemon")
+            .unwrap()
+            .into_record("alice-mac-daemon".to_string(), AgentKind::Daemon);
+        let mut daemon = daemon();
+        daemon.agent_did = identity.agent_did.clone();
+        state.store_agent_identity(&identity).unwrap();
+        state.upsert_agent_definition(&daemon).unwrap();
+        let im_core = ImCoreAdapter::open(&config).unwrap();
+        im_core.initialize_local_state().await.unwrap();
+        let outbox = MemoryRuntimeOutbox::default();
+        let release = DaemonReleaseStatus {
+            current_version: "test".to_string(),
+            latest_version: None,
+            needs_upgrade: false,
+            manifest_url: "test://release".to_string(),
+            error: Some("offline-test".to_string()),
+        };
+
+        emit_daemon_heartbeat(&config, &state, &im_core, &outbox, &daemon, &release).unwrap();
+
+        let statuses = outbox.agent_statuses();
+        assert_eq!(statuses.len(), 1);
+        let payload = &statuses[0].payload;
+        assert_eq!(payload["schema"], "awiki.agent.status.v1");
+        let config_summary = &payload["daemon"]["diagnostics_summary"]["config_summary"];
+        assert_eq!(config_summary["bootstrap_key_status"], "ready");
+        assert_eq!(
+            config_summary["bootstrap_key_id"],
+            format!(
+                "{}#{}",
+                daemon.agent_did,
+                anp::authentication::VM_KEY_E2EE_AGREEMENT
+            )
+        );
+        assert_eq!(config_summary["bootstrap_key_algorithm"], "x25519");
+        assert!(config_summary["bootstrap_public_key_multibase"]
+            .as_str()
+            .unwrap()
+            .starts_with('z'));
+        let public_key = URL_SAFE_NO_PAD
+            .decode(
+                config_summary["bootstrap_public_key_b64u"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(public_key.len(), 32);
+
+        let dump = payload.to_string();
         assert!(!dump.contains("PRIVATE KEY"));
         assert!(!dump.contains("token"));
         assert!(!dump.contains("private"));

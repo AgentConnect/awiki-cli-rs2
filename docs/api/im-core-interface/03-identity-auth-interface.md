@@ -109,6 +109,21 @@ impl IdentityRegistry<'_> {
 
     pub fn resolve(&self, selector: IdentitySelector) -> crate::ImResult<IdentitySummary>;
 
+    pub fn delete_local_identity(
+        &self,
+        selector: IdentitySelector,
+    ) -> crate::ImResult<DeleteLocalIdentityResult>;
+
+    pub fn legacy_upgrade_status(
+        &self,
+        selector: IdentitySelector,
+    ) -> crate::ImResult<LegacyUpgradeStatus>;
+
+    pub async fn upgrade_legacy_identity_async(
+        &self,
+        selector: IdentitySelector,
+    ) -> crate::ImResult<LegacyUpgradeStatus>;
+
     pub fn vault_status(
         &self,
         selector: IdentitySelector,
@@ -143,6 +158,39 @@ impl IdentityRegistry<'_> {
 
 `load_runtime` 只能是 `pub(crate)`，供 `ImCore::client` 使用。
 
+`delete_local_identity` 是离线、可恢复的本地身份退役事务。成功返回前，Core
+已提交 registry/default pointer tombstone，并删除该 identity ID 精确拥有的目录和
+Vault records；它不等待远端 logout、realtime stop 或 host runtime dispose。Core open
+会恢复中断的退役阶段，并对已完成 tombstone 重放 identity-scoped Vault cleanup，防止
+删除开始前已进入执行的异步任务在删除返回后重新写入凭证。
+
+```rust
+pub struct DeleteLocalIdentityResult {
+    pub deleted: IdentitySummary,
+    pub was_default: bool,
+    pub next_default: Option<IdentitySummary>,
+    pub warnings: Vec<String>,
+}
+```
+
+`LegacyUpgradeStatus::RetryRequired { identity_id, code }` 的 `code` 是安全分类，
+包括 `transport_unavailable`、`service_error`、`permission_denied`、
+`auth_required`、`local_state_unavailable` 和兜底 `legacy_upgrade_failed`。同步 status
+查询与升级调用的即时失败使用同一分类。Host 必须等待 Core 的 typed 结果，不能用较短的
+通用 UI timeout 包裹升级 future；Dart timeout 不会取消 native 事务，会制造并发重试。
+
+`register_handle` 是新旧客户端共用的唯一注册入口。新注册在本地生成带 bootstrap
+Manifest 的 DID 和独立设备 signing/E2EE key，通过同一个 `register` RPC 原子创建
+用户、DID checkpoint 和首设备 Registry。Phone OTP 使用闭合参数
+`{phone,purpose:"awiki.identity.register.v1",handle,domain,full_handle}`；Phone、Email、
+AlreadyVerified 和 Invite 的既有验证能力继续保留。
+
+如果 Handle 已存在，注册正常返回 typed `join_required`，其中包含现有 DID 和一次性
+account verification grant；Core 不创建第二个 DID、不提交本地身份，也不发布 P5。
+新注册本地提交成功后必须生成并发布 exact-device P5 PreKey Bundle，发布失败保留同一
+PendingRegistration 供精确重试，不重放 `register`。V1 只保存 access token，不保存设备
+refresh token，也没有 Genesis 或独立设备 Token RPC。
+
 Vault DTO boundary:
 
 - `IdentityVaultStatus` reports the selected backend (`file_compat` or `vault`),
@@ -164,10 +212,71 @@ Vault DTO boundary:
 - These DTOs do not expose root keys, JWTs, private PEM, full `SecretRef` JSON,
   ciphertext internals, or local auth/token file contents.
 
-`VaultRequired` registration, recovery, daemon subkey package persistence, and
+`VaultRequired` registration, Legacy upgrade, daemon subkey package persistence, and
 JWT/token refresh must persist secret material through SecretVault. Existing
 legacy PEM/auth.json files are a compatibility bridge until explicit cleanup is
 available; migration failure must not delete them.
+
+## 3.1 Device Join control plane
+
+`ImCore::device_join()` has no host-local rollout gate. It exposes local
+sessions plus new-device begin/poll/cancel and management-device Registry,
+notification-driven request listing, start-verification, reject and approval.
+Management devices do not poll Join state and do not have an admin-side cancel
+operation. The account verification grant is a write-only input. Approval is
+split into a locally confirmed SAS preparation call and a one-time handle
+confirmation call after host user presence.
+
+The host session projection intentionally omits internal transcript hashes and
+challenge IDs. Registry/progress DTOs likewise omit AWiki domain-internal
+`document_version`, `document_hash`, `registry_version`, and `auth_generation`.
+Those values remain server/local concurrency state and are not cross-domain ANP
+or public host fields.
+
+新设备侧只有在服务端 Join 状态为 `consumed`、重新解析并验证最终 DID
+Document/Manifest 后，才使用候选设备 signing key 发起新的 DID-WBA `get_me` 请求。
+Core 从标准 `Authentication-Info` 或 `Authorization: Bearer` 响应头取得 access token，
+严格校验 DID/user/device/key/generation/scopes 后，将候选 signing/E2EE 私钥提升为不含
+根私钥的 rootless vNext 身份。身份、checkpoint 和 access token 都落盘后才对 host 报告
+`Authorized`；V1 不调用 `device_token_issue`，不保存 refresh token。
+
+## 3.2 Root-key transfer control plane
+
+Root transfer exists only on an identity-scoped `ImClient`; it has no rollout
+gate. `prepare` accepts the exact recipient device ID and returns a secret-free
+recipient summary plus an opaque, 60-second, single-use authorization handle.
+`confirm_and_send` accepts only that handle and local user presence. The host
+cannot provide a message ID, root material, proof, checkpoint or transport
+metadata.
+
+Core verifies a ready Admin sender and active Member/not-ready recipient before
+opening the active Root Vault record. It sends the RootKeyEnvelope as secret
+JSON in a standard exact-device P5 v2 Init or Cipher. P5 pending state and the
+secret-free sender ledger are one SQLite transaction. After response or process
+loss, Core startup recovery reads only `pending_delivery`, resumes the same
+durable operation/message/ciphertext, and atomically commits P5 acceptance with
+the sender `sent` fact; it never reopens the Root Vault or creates a replacement
+message. A later prepare for the same recipient fails closed while the pending
+or sent fact exists. There is no private
+root-control endpoint, delivery class, sidecar, empty Init, imported ACK,
+sender list/retry API or completion tombstone exposed through this interface.
+
+Authenticated Mailbox delivery is the receiver authority. Core validates the
+exact delivery tuple, P5 pre-state, Registry/Manifest, Root fingerprint and
+checkpoint, seals an `IdentityRootImportPending` record, and persists the P5
+advance plus completion coordinator atomically. Completion uses one canonical
+double-proof request with a fixed nonce and request hash. After response loss,
+a fresh DID-WBA `get_me` may return only the original Member principal (retry
+the exact request) or the next-generation ready Admin principal (skip replay
+and confirm Registry once). Registry confirmation precedes pending-to-active
+Root promotion and durable Admin token replacement. No root key, private PEM,
+proof, nonce, ciphertext or Vault reference crosses the public interface.
+Realtime arrival metadata is only a hint: it never supplies `accepted_at` and
+never commits a Root import. A matching hint triggers an exact authenticated
+Inbox hydration; only the persisted Mailbox row and its service-provided
+six-microsecond `accepted_at` can advance the Root transaction. Startup recovery
+also replays receiver coordinators in `registry_confirmed` or `promoted` so both
+the index/coordinator crash window and pending-Vault cleanup converge.
 
 ## 4. Register Handle
 
@@ -329,6 +438,10 @@ business-read contract. DID-WBA proof generation, business signing, secure
 direct static key loading, daemon subkey package persistence, and auth/JWT
 refresh must use the runtime `KeyMaterialProvider`. When verified vault metadata
 and the host workspace/device context match, the provider is vault-backed.
+Daily login/HTTP auth/Direct/Group/Attachment signing uses
+`device_request_signing_private_pem`; only DID Document create/re-sign/update
+uses `did_document_root_private_pem`. A vNext member may omit the root ref, and
+root-only access then fails closed without blocking daily device signing.
 
 ## 7. Auth Retry Contract
 

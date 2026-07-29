@@ -170,6 +170,7 @@ impl<'a> SqliteDirectSecureStateStore<'a> {
             DirectSecretSealInput {
                 owner_identity_id: &owner_identity_id,
                 owner_did: record.owner_did.trim(),
+                device_id: None,
                 kind: SecretKind::DirectE2eeSessionState,
                 key_id: direct_secret_key_id(&owner_identity_id, "session", &peer_did, &session_id),
                 plaintext: &record.state_blob,
@@ -226,6 +227,7 @@ impl<'a> SqliteDirectSecureStateStore<'a> {
                 DirectSecretSealInput {
                     owner_identity_id: &owner_identity_id,
                     owner_did: record.owner_did.trim(),
+                    device_id: None,
                     kind: SecretKind::DirectE2eeSessionState,
                     key_id: direct_secret_key_id(
                         &owner_identity_id,
@@ -293,6 +295,7 @@ WHERE owner_identity_id = ?1
                         DirectSecretSealInput {
                             owner_identity_id: &owner_identity_id,
                             owner_did: record.owner_did.trim(),
+                            device_id: None,
                             kind: SecretKind::DirectE2eeSessionState,
                             key_id: direct_secret_key_id(
                                 &owner_identity_id,
@@ -449,6 +452,7 @@ WHERE owner_identity_id = ?1 AND peer_did = ?2"#,
             DirectSecretSealInput {
                 owner_identity_id: &owner_identity_id,
                 owner_did: record.owner_did.trim(),
+                device_id: None,
                 kind: SecretKind::DirectE2eeSignedPrekeyPrivate,
                 key_id: direct_secret_key_id(
                     &owner_identity_id,
@@ -559,6 +563,7 @@ LIMIT 1"#,
             DirectSecretSealInput {
                 owner_identity_id: &owner_identity_id,
                 owner_did: record.owner_did.trim(),
+                device_id: None,
                 kind: SecretKind::DirectE2eeOneTimePrekeyPrivate,
                 key_id: direct_secret_key_id(
                     &owner_identity_id,
@@ -766,7 +771,7 @@ WHERE owner_identity_id = ?1 AND key_id = ?2"#,
     }
 }
 
-fn direct_secret_vault_dir_for_connection(
+pub(crate) fn direct_secret_vault_dir_for_connection(
     connection: &Connection,
 ) -> crate::ImResult<std::path::PathBuf> {
     let database_path = connection.path().unwrap_or_default();

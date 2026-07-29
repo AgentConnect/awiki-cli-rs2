@@ -21,7 +21,7 @@ Step index：09
 
 ## 2. 目标
 
-- 结果：验证 APP bootstrap -> Daemon user delegated identity -> ensure message agent -> delegated inbox/send -> message sync/action -> APP 展示/执行 的完整链路。
+- 结果：验证 APP bootstrap -> Daemon user delegated identity -> ensure personal agent -> delegated inbox/send -> message sync/action -> APP 展示/执行 的完整链路。
 - 用户 / 系统可见行为：真实或接近真实环境中，用户创建 DID 后可一次性启用消息处理 Agent；普通消息可被 Agent 处理；E2EE 消息不进入 Agent；系统 payload 不污染聊天。
 - 非目标：不把失败的 remote 系统测试标记为通过；不在此步骤补做大规模功能开发，除非是集成修复且先更新 Plan。
 - 完成标准：所有前置 Step done；全局 Review 完成；`awiki-system-test` remote `awiki.info` 模式执行并记录实际命令、通过/失败/跳过数量、失败或跳过原因、关键环境配置；最终工作区状态记录。
@@ -45,7 +45,7 @@ Step index：09
    - APP 通过 message-service 普通消息发送 `awiki.daemon.bootstrap.v1` 明文 JSON system/control payload；
    - bootstrap private package 在 MVP 中经过普通消息发送路由到 Daemon，但不显示为普通聊天、不进入 Hermes prompt、日志或 audit detail；
    - Daemon 写入 user delegated identity；
-   - Daemon `ensure_app_message_agent` 幂等；
+   - Daemon `ensure_app_personal_agent` 幂等；
    - message-service delegated send/inbox/history 只处理普通非 E2EE；
    - message-service MVP 校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope；
    - 同 DID APP/Daemon 多连接 fanout；

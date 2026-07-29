@@ -693,7 +693,7 @@ pub enum BootstrapStoreOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppMessageAgentBindingRecord {
+pub struct AppPersonalAgentBindingRecord {
     pub binding_id: String,
     pub user_did: String,
     pub inbox_auth_verification_method: String,
@@ -810,7 +810,7 @@ impl UserDelegatedIdentityRecord {
     }
 }
 
-impl AppMessageAgentBindingRecord {
+impl AppPersonalAgentBindingRecord {
     pub fn validate(&self) -> Result<()> {
         for (field_name, value) in [
             ("binding_id", self.binding_id.as_str()),

@@ -1,6 +1,6 @@
 pub use crate::internal::identity_wire::{
-    ProfileUpdateCall, RecoverHandleRpcParams, RegisterRpcParams, ReplaceDidRpcParams, RestCall,
-    RpcCall, TransportProfile, UpdateDocumentRpcParams, UpdateProfileParams,
+    ProfileUpdateCall, RegisterRpcParams, ReplaceDidRpcParams, RestCall, RpcCall, TransportProfile,
+    UpdateDocumentRpcParams, UpdateProfileParams,
 };
 
 pub const DID_AUTH_RPC_ENDPOINT: &str = crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT;
@@ -16,10 +16,6 @@ pub fn build_get_me_profile_rpc_call() -> RpcCall {
     crate::internal::identity_wire::profile::build_get_me_profile_rpc_call()
 }
 
-pub fn build_refresh_token_rpc_call() -> RpcCall {
-    crate::internal::identity_wire::profile::build_refresh_token_rpc_call()
-}
-
 pub fn build_update_me_profile_rpc_call(
     params: UpdateProfileParams,
 ) -> crate::ImResult<ProfileUpdateCall> {
@@ -33,11 +29,7 @@ pub fn build_update_profile_payload(
 }
 
 pub fn build_register_rpc_call(params: RegisterRpcParams) -> crate::ImResult<RpcCall> {
-    crate::internal::identity_wire::recovery::build_register_rpc_call(params)
-}
-
-pub fn build_recover_handle_rpc_call(params: RecoverHandleRpcParams) -> crate::ImResult<RpcCall> {
-    crate::internal::identity_wire::recovery::build_recover_handle_rpc_call(params)
+    crate::internal::identity_wire::registration::build_register_rpc_call(params)
 }
 
 pub fn build_replace_did_rpc_call(params: ReplaceDidRpcParams) -> RpcCall {
@@ -95,13 +87,6 @@ pub fn contact_binding_raw_response(
     result.response_json()
 }
 
-#[doc(hidden)]
-pub fn recover_handle_raw_response(
-    result: &crate::identity::RecoverHandleResult,
-) -> Option<&serde_json::Value> {
-    result.response_json()
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContactBindingBridgeResult {
     pub result: crate::identity::ContactBindingResult,
@@ -136,26 +121,6 @@ pub trait BridgeIdentityRpcTransport {
         method: &str,
         params: serde_json::Value,
     ) -> crate::ImResult<serde_json::Value>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecoverLocalStateMergeRequest {
-    pub old_owner_dids: Vec<String>,
-    pub new_owner_did: String,
-    pub final_identity_name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecoverLocalStateMergeResult {
-    pub store_merge_counts: std::collections::BTreeMap<String, i64>,
-    pub e2ee_cleanup_counts: std::collections::BTreeMap<String, i64>,
-}
-
-pub trait BridgeRecoverLocalStateStore {
-    fn merge_recovered_handle_local_state(
-        &mut self,
-        request: RecoverLocalStateMergeRequest,
-    ) -> crate::ImResult<RecoverLocalStateMergeResult>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -243,42 +208,6 @@ where
     })
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RecoverHandleBridgeResult {
-    pub result: crate::identity::RecoverHandleResult,
-    pub raw: serde_json::Value,
-}
-
-#[doc(hidden)]
-pub fn recover_handle_with_bridge<T>(
-    request: crate::identity::RecoverHandleRequest,
-    transport: T,
-) -> crate::ImResult<RecoverHandleBridgeResult>
-where
-    T: BridgeIdentityRpcTransport,
-{
-    let result = crate::internal::identity_recovery_runtime::IdentityRecoveryRuntime::new(
-        CompatIdentityRpcTransport(transport),
-    )
-    .recover_handle(request)?;
-    Ok(RecoverHandleBridgeResult {
-        result: result.sdk_result,
-        raw: result.raw,
-    })
-}
-
-#[doc(hidden)]
-pub fn merge_recovered_handle_local_state_with_bridge<S>(
-    request: RecoverLocalStateMergeRequest,
-    mut store: S,
-) -> crate::ImResult<RecoverLocalStateMergeResult>
-where
-    S: BridgeRecoverLocalStateStore,
-{
-    validate_recover_local_state_merge_request(&request)?;
-    store.merge_recovered_handle_local_state(request)
-}
-
 #[doc(hidden)]
 pub fn replace_did_with_bridge<B>(
     client: &crate::core::ImClient,
@@ -291,24 +220,6 @@ where
     client
         .identity()
         .replace_did_with_runtime(request, CompatReplaceDidExecutionBridge(bridge))
-}
-
-fn validate_recover_local_state_merge_request(
-    request: &RecoverLocalStateMergeRequest,
-) -> crate::ImResult<()> {
-    if request.new_owner_did.trim().is_empty() {
-        return Err(crate::ImError::invalid_input(
-            Some("new_owner_did".to_string()),
-            "new owner DID is required",
-        ));
-    }
-    if request.final_identity_name.trim().is_empty() {
-        return Err(crate::ImError::invalid_input(
-            Some("final_identity_name".to_string()),
-            "final identity name is required",
-        ));
-    }
-    Ok(())
 }
 
 struct CompatIdentitySessionProvider<P>(P);

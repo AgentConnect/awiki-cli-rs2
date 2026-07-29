@@ -4,14 +4,15 @@ use crate::internal::transport::{
     AsyncAuthenticatedRpcTransport, AsyncRpcTransport, AuthenticatedRpcTransport, RpcTransport,
 };
 use crate::vault::{
-    FileSecretVault, FileSecretVaultStore, SealSecretRequest, SecretAccessPolicy, SecretBytes,
-    SecretKind, SecretMetadata, SecretVault,
+    DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealSecretRequest,
+    SecretAccessPolicy, SecretBytes, SecretKind, SecretMetadata, SecretVault,
 };
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 #[test]
 fn messages_read_runtime_builds_inbox_rpc_and_maps_page() {
@@ -116,6 +117,102 @@ fn messages_read_runtime_group_inbox_scope_lists_groups_and_messages() {
     assert_eq!(calls[1].params["body"]["group_did"], "did:example:group");
 }
 
+#[tokio::test]
+async fn all_inbox_persists_direct_and_group_in_their_child_paths() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        AllInboxRecordingTransport {
+            calls: Rc::clone(&calls),
+            direct_response: json!({
+                "messages": [{
+                    "id": "msg-all-direct",
+                    "sender_did": "did:example:bob",
+                    "receiver_did": &fixture.did,
+                    "content": "direct child",
+                    "content_type": "text/plain",
+                    "sent_at": "2026-07-21T00:00:00Z"
+                }],
+                "has_more": false
+            }),
+            group_list_response: json!({
+                "groups": [{"group_did": "did:example:group"}]
+            }),
+            group_messages_response: json!({
+                "messages": [{
+                    "id": "msg-all-group",
+                    "sender_did": "did:example:bob",
+                    "content": "group child",
+                    "content_type": "text/plain",
+                    "group_event_seq": 31,
+                    "sent_at": "2026-07-21T00:00:01Z"
+                }],
+                "has_more": false
+            }),
+        },
+        StaticHandleDirectoryTransport,
+    );
+
+    let result = runtime
+        .inbox_async(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::All,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: None,
+            },
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.page.items.len(), 2);
+    assert_eq!(
+        calls
+            .borrow()
+            .iter()
+            .map(|call| call.method.as_str())
+            .collect::<Vec<_>>(),
+        vec!["inbox.get", "group.list", "group.list_messages"]
+    );
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-bob",
+        "bob.anpclaw.com",
+    )
+    .unwrap();
+    let direct = crate::internal::local_state::messages::list_direct_messages_for_owner_identity(
+        &connection,
+        client.current_identity().id.as_str(),
+        &[
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &peer_scope,
+            ),
+        ],
+        20,
+    )
+    .unwrap();
+    let group = crate::internal::local_state::groups::list_group_messages_for_owner_identity(
+        &connection,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        "did:example:group",
+        20,
+        None,
+    )
+    .unwrap();
+    assert_eq!(direct.len(), 1);
+    assert_eq!(direct[0].msg_id, "msg-all-direct");
+    assert_eq!(group.len(), 1);
+    assert_eq!(group[0]["content"], "group child");
+}
+
 #[test]
 fn messages_read_runtime_builds_delegated_inbox_auth_and_filters_e2ee() {
     let fixture = Fixture::new();
@@ -124,7 +221,7 @@ fn messages_read_runtime_builds_delegated_inbox_auth_and_filters_e2ee() {
     let calls = Rc::new(RefCell::new(Vec::new()));
     let runtime = MessageReadRuntime::new(
         &client,
-        ReadySessionProvider,
+        DelegatedProofOnlySessionProvider,
         RecordingTransport {
             calls: Rc::clone(&calls),
             response: json!({
@@ -581,7 +678,7 @@ fn messages_read_runtime_persists_inbox_projection_for_conversations() {
                 }]
             }),
         },
-        NoopDirectoryTransport,
+        StaticHandleDirectoryTransport,
     );
 
     runtime
@@ -619,8 +716,9 @@ fn messages_read_runtime_persists_inbox_projection_for_conversations() {
     );
     assert_eq!(conversation.unread_count, 1);
     assert!(matches!(
-        conversation.thread,
-        crate::messages::ThreadRef::Direct(_)
+        &conversation.thread,
+        crate::messages::ThreadRef::Thread(thread)
+            if thread.as_str().starts_with("dm:peer-scope:v1:")
     ));
 }
 
@@ -730,7 +828,7 @@ fn messages_read_runtime_preserves_remote_read_state_in_projection() {
                 }]
             }),
         },
-        NoopDirectoryTransport,
+        StaticHandleDirectoryTransport,
     );
 
     runtime
@@ -903,7 +1001,17 @@ fn messages_read_runtime_group_history_merges_committed_local_projection() {
         RecordingTransport {
             calls: Rc::clone(&calls),
             response: json!({
-                "messages": [],
+                "messages": [{
+                    "id": "did:example:group:77",
+                    "message_id": "did:example:group:77",
+                    "group_did": "did:example:group",
+                    "sender_did": "did:example:alice",
+                    "content": "local group send",
+                    "content_type": "text/plain",
+                    "group_event_seq": "77",
+                    "server_seq": 77,
+                    "sent_at": "2026-05-21T00:00:03Z"
+                }],
                 "has_more": false
             }),
         },
@@ -946,7 +1054,7 @@ fn messages_read_runtime_group_history_merges_committed_local_projection() {
 }
 
 #[test]
-fn messages_read_runtime_prefers_remote_group_message_id_at_same_event_position() {
+fn messages_read_runtime_keeps_canonical_group_id_and_remote_raw_id() {
     let fixture = Fixture::new();
     let client = fixture.client();
     let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
@@ -1009,8 +1117,11 @@ fn messages_read_runtime_prefers_remote_group_message_id_at_same_event_position(
     merge_local_message_values_into_page(&mut page, rows, crate::ids::PageLimit(20));
 
     assert_eq!(page.items.len(), 1);
-    assert_eq!(page.items[0].id.as_str(), "msg-original-77");
+    assert_eq!(page.items[0].id.as_str(), "did:example:group:77");
     assert_eq!(page.items[0].metadata.server_sequence, Some(77));
+    assert!(page.items[0].metadata.attributes.iter().any(|attribute| {
+        attribute.key == "raw_message_id" && attribute.value == "msg-original-77"
+    }));
 }
 
 #[test]
@@ -1508,7 +1619,7 @@ async fn messages_read_runtime_emits_conversation_patch_after_history_projection
                 "has_more": false
             }),
         },
-        NoopDirectoryTransport,
+        StaticHandleDirectoryTransport,
     );
 
     runtime
@@ -1713,6 +1824,14 @@ async fn messages_read_runtime_builds_group_history_rpc_async() {
     assert_eq!(message.id.as_str(), "did:example:group:10");
     assert_eq!(message.group.as_ref(), Some(&group));
     assert_eq!(message.metadata.server_sequence, Some(10));
+    assert!(message.metadata.attributes.iter().any(|attribute| {
+        attribute.key == "raw_message_id" && attribute.value == "msg-group-history-async-1"
+    }));
+    assert!(message
+        .metadata
+        .attributes
+        .iter()
+        .any(|attribute| { attribute.key == "group_event_seq" && attribute.value == "10" }));
     let calls = calls.borrow();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].endpoint, MESSAGE_RPC_ENDPOINT);
@@ -2050,7 +2169,8 @@ fn group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_red
     let client = fixture.client();
     let mut messages = vec![json!({
         "id": "did:example:group:e2ee:9",
-        "message_id": "did:example:group:e2ee:9",
+        "message_id": "logical-group-message-9",
+        "raw_message_id": "logical-group-message-9",
         "sender_did": "did:example:alice",
         "group_did": "did:example:group:e2ee",
         "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
@@ -2084,6 +2204,7 @@ fn group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_red
         .unwrap()
         .unwrap();
     assert_eq!(cached["message_security_profile"], "group-e2ee");
+    assert_eq!(cached["raw_message_id"], "logical-group-message-9");
     assert_eq!(
         cached["content"]["attachments"][0]["encryption_info"]["object_key_b64u"],
         "OBJECT-KEY-SECRET"
@@ -2156,8 +2277,9 @@ fn direct_attachment_manifest_cache_uses_peer_did_while_public_projection_redact
     let fixture = Fixture::new();
     let client = fixture.client();
     let mut messages = vec![json!({
-        "id": "msg-direct-e2ee-9",
+        "id": "logical-direct-e2ee-9",
         "message_id": "msg-direct-e2ee-9",
+        "raw_message_id": "wire-direct-e2ee-9",
         "sender_did": "did:example:alice",
         "receiver_did": client.did().as_str(),
         "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
@@ -2185,10 +2307,14 @@ fn direct_attachment_manifest_cache_uses_peer_did_while_public_projection_redact
         client.current_identity().id.as_str(),
         "direct",
         "did:example:alice",
-        "msg-direct-e2ee-9",
+        "logical-direct-e2ee-9",
     )
     .unwrap()
     .unwrap();
+    assert_eq!(cached["id"], "logical-direct-e2ee-9");
+    assert_eq!(cached["message_id"], "logical-direct-e2ee-9");
+    assert_eq!(cached["raw_message_id"], "wire-direct-e2ee-9");
+    assert!(cached.get("wire_message_id").is_none());
     assert_eq!(cached["message_security_profile"], "direct-e2ee");
     assert_eq!(
         cached["content"]["attachments"][0]["encryption_info"]["object_key_b64u"],
@@ -2307,6 +2433,298 @@ async fn messages_read_async_projects_direct_init_without_legacy_fallback() {
         crate::internal::secure_direct::sqlite_store::direct_session_from_blob(&saved.state_blob)
             .unwrap();
     assert_eq!(saved_session.recv_n, 1);
+}
+
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn v2_product_profiles_are_hidden_gate_independently_from_blocking_and_delegated_reads() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let p5 = json!({
+        "id": "wire-p5-business",
+        "sender_did": "did:example:bob",
+        "receiver_did": "did:example:alice",
+        "meta": {
+            "profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2,
+            "content_type": anp::direct_e2ee::CONTENT_TYPE_DIRECT_CIPHER_V2,
+            "operation_id": "ordinary-product-operation"
+        },
+        "body": {"ciphertext_b64u": "SECRET-P5-CIPHERTEXT"}
+    });
+    let p6 = json!({
+        "id": "wire-p6-business",
+        "meta": {
+            "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2,
+            "content_type": anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE_V2
+        },
+        "body": {"group_cipher_object": {"private_message_b64u": "SECRET-P6-CIPHERTEXT"}}
+    });
+    let p6_notice = json!({
+        "method": anp::group_e2ee::METHOD_GROUP_NOTICE_V2,
+        "params": {
+            "meta": {
+                "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2,
+                "security_profile": anp::group_e2ee::GROUP_E2EE_TRANSPORT_PROFILE_V2
+            },
+            "body": {
+                "notice_type": "welcome-delivery",
+                "welcome_b64u": "SECRET-P6-WELCOME"
+            }
+        }
+    });
+
+    let mut direct = json!({"messages": [p5.clone()]});
+    project_secure_direct_messages(&client, &mut direct, &mut NoopDirectoryTransport);
+    assert_eq!(direct["messages"], json!([]));
+
+    let mut group = json!({"messages": [p6.clone(), p6_notice.clone()]});
+    project_group_e2ee_messages(&client, &mut group);
+    assert_eq!(group["messages"], json!([]));
+
+    let mut delegated = json!({"messages": [p5, p6, p6_notice]});
+    filter_delegated_e2ee_messages(&mut delegated);
+    assert_eq!(delegated["messages"], json!([]));
+    let public = serde_json::to_string(&(direct, group, delegated)).unwrap();
+    assert!(!public.contains("SECRET-P5-CIPHERTEXT"));
+    assert!(!public.contains("SECRET-P6-CIPHERTEXT"));
+    assert!(!public.contains("SECRET-P6-WELCOME"));
+}
+
+#[test]
+fn direct_inbox_prepass_hides_group_notices_before_message_projection() {
+    let client = Fixture::new().client();
+    let mut raw = json!({
+        "messages": [
+            {
+                "method": anp::group_e2ee::METHOD_GROUP_NOTICE_V2,
+                "params": {
+                    "meta": {
+                        "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2,
+                        "security_profile": anp::group_e2ee::GROUP_E2EE_TRANSPORT_PROFILE_V2
+                    },
+                    "body": {
+                        "notice_type": "welcome-delivery",
+                        "welcome_b64u": "BLOCKING-INBOX-CONTROL-SECRET"
+                    }
+                }
+            },
+            {
+                "method": anp::group_e2ee::METHOD_GROUP_NOTICE_V2,
+                "params": {
+                    "meta": {"profile": "anp.group.e2ee.unknown"},
+                    "body": {"private_extension": "MALFORMED-CONTROL-SECRET"}
+                }
+            },
+            {
+                "id": "ordinary-direct-message",
+                "content_type": "text/plain",
+                "content": "visible"
+            }
+        ]
+    });
+
+    consume_group_e2ee_control_messages(&client, &mut raw);
+
+    assert_eq!(raw["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(raw["messages"][0]["id"], "ordinary-direct-message");
+    let public = serde_json::to_string(&raw).unwrap();
+    assert!(!public.contains("BLOCKING-INBOX-CONTROL-SECRET"));
+    assert!(!public.contains("MALFORMED-CONTROL-SECRET"));
+}
+
+#[tokio::test]
+async fn async_direct_inbox_prepass_hides_group_notices_before_message_projection() {
+    let client = Fixture::new().client();
+    let mut raw = json!({
+        "messages": [
+            {
+                "method": anp::group_e2ee::METHOD_GROUP_NOTICE_V2,
+                "params": {
+                    "meta": {
+                        "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2,
+                        "security_profile": anp::group_e2ee::GROUP_E2EE_TRANSPORT_PROFILE_V2
+                    },
+                    "body": {
+                        "notice_type": "commit-delivery",
+                        "commit_b64u": "ASYNC-INBOX-CONTROL-SECRET"
+                    }
+                }
+            },
+            {
+                "id": "ordinary-direct-message",
+                "content_type": "text/plain",
+                "content": "visible"
+            }
+        ]
+    });
+
+    consume_group_e2ee_control_messages_async(&client, &mut raw).await;
+
+    assert_eq!(raw["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(raw["messages"][0]["id"], "ordinary-direct-message");
+    assert!(!serde_json::to_string(&raw)
+        .unwrap()
+        .contains("ASYNC-INBOX-CONTROL-SECRET"));
+}
+
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn v2_profile_recognition_accepts_json_rpc_notification_shape() {
+    let p5 = json!({
+        "method": "direct.incoming",
+        "params": {"meta": {"profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2}}
+    });
+    let p6 = json!({
+        "method": "group.incoming",
+        "params": {"meta": {"profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2}}
+    });
+    let p6_notice = json!({
+        "method": anp::group_e2ee::METHOD_GROUP_NOTICE_V2,
+        "params": {"meta": {
+            "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2,
+            "security_profile": anp::group_e2ee::GROUP_E2EE_TRANSPORT_PROFILE_V2
+        }}
+    });
+
+    assert!(is_p5_v2_projection_candidate(&p5));
+    assert!(is_p6_v2_projection_candidate(&p6));
+    assert!(is_p6_v2_projection_candidate(&p6_notice));
+    assert!(crate::internal::group_e2ee::v2_notice::is_v2_notice_candidate(&p6_notice));
+}
+
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_parser_accepts_json_rpc_notification_envelope() {
+    let mut wire = p6_v2_incoming_wire();
+    wire.as_object_mut()
+        .unwrap()
+        .insert("jsonrpc".to_owned(), json!("2.0"));
+
+    let (meta, body, _) = parse_p6_v2_incoming_notification(&wire).unwrap();
+
+    assert_eq!(meta.message_id, "message-1");
+    assert_eq!(body.group_did, "did:example:group");
+}
+
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_parser_rejects_invalid_json_rpc_version() {
+    for invalid in [json!("1.0"), json!(2.0), Value::Null] {
+        let mut wire = p6_v2_incoming_wire();
+        wire.as_object_mut()
+            .unwrap()
+            .insert("jsonrpc".to_owned(), invalid);
+
+        assert_eq!(
+            parse_p6_v2_incoming_notification(&wire),
+            Err(crate::ImError::PermissionDenied)
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_parser_rejects_unknown_top_level_field() {
+    let mut wire = p6_v2_incoming_wire();
+    let object = wire.as_object_mut().unwrap();
+    object.insert("jsonrpc".to_owned(), json!("2.0"));
+    object.insert("unexpected".to_owned(), json!(true));
+
+    assert_eq!(
+        parse_p6_v2_incoming_notification(&wire),
+        Err(crate::ImError::PermissionDenied)
+    );
+}
+
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_parser_accepts_flat_fallback() {
+    let wire = p6_v2_incoming_wire();
+    let flat = json!({
+        "meta": wire.pointer("/params/meta").unwrap(),
+        "body": wire.pointer("/params/body").unwrap(),
+        "auth": wire.pointer("/params/auth").unwrap(),
+    });
+
+    let (meta, body, _) = parse_p6_v2_incoming_notification(&flat).unwrap();
+
+    assert_eq!(meta.message_id, "message-1");
+    assert_eq!(body.group_did, "did:example:group");
+}
+
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_recipient_device_requires_exact_owner_did() {
+    assert_eq!(
+        p6_recipient_device_id("did:example:alice", "did:example:alice", "alice-device"),
+        Ok("alice-device".to_owned())
+    );
+    assert_eq!(
+        p6_recipient_device_id("did:example:alice", "did:example:other", "alice-device"),
+        Err(crate::ImError::PermissionDenied)
+    );
+    assert_eq!(
+        p6_recipient_device_id("did:example:alice", "did:example:alice", ""),
+        Err(crate::ImError::PermissionDenied)
+    );
+}
+
+#[test]
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_uses_canonical_group_timeline_id() {
+    assert_eq!(
+        p6_group_message_id("did:example:group", "17"),
+        Ok("did:example:group:17".to_owned())
+    );
+    assert_eq!(
+        p6_group_message_id("did:example:group", ""),
+        Err(crate::ImError::PermissionDenied)
+    );
+}
+
+#[cfg(feature = "group-e2ee")]
+fn p6_v2_incoming_wire() -> Value {
+    json!({
+        "method": anp::group_e2ee::METHOD_GROUP_INCOMING_V2,
+        "params": {
+            "meta": {
+                "anp_version": "2.0",
+                "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2,
+                "security_profile": anp::group_e2ee::GROUP_E2EE_SECURITY_PROFILE_V2,
+                "sender_did": "did:example:alice",
+                "sender_device_id": "alice-device",
+                "target": {"kind": "agent", "did": "did:example:bob"},
+                "recipient_device_id": "bob-device",
+                "operation_id": "operation-1",
+                "message_id": "message-1",
+                "content_type": anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE_V2
+            },
+            "body": {
+                "group_did": "did:example:group",
+                "group_state_version": "1",
+                "group_event_seq": "1",
+                "accepted_at": "2026-07-22T00:00:00Z",
+                "group_receipt": {},
+                "group_cipher_object": {
+                    "crypto_group_id_b64u": "AA",
+                    "epoch": "1",
+                    "private_message_b64u": "AA",
+                    "group_state_ref": {
+                        "group_did": "did:example:group",
+                        "group_state_version": "1"
+                    }
+                }
+            },
+            "auth": {
+                "scheme": anp::group_e2ee::RFC9421_ORIGIN_PROOF_SCHEME_V2,
+                "origin_proof": {
+                    "contentDigest": "digest",
+                    "signatureInput": "signature-input",
+                    "signature": "signature"
+                }
+            }
+        }
+    })
 }
 
 #[tokio::test]
@@ -2499,6 +2917,2687 @@ async fn messages_read_async_replays_pending_direct_cipher_after_init() {
     assert_eq!(session_after_repeat.recv_n, saved_session.recv_n);
 }
 
+#[tokio::test]
+async fn direct_inbox_projects_verified_handle_before_persisting_message() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadySessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [{
+                    "id": "msg-authoritative-peer",
+                    "sender_did": "did:example:bob-new",
+                    "receiver_did": "did:example:alice",
+                    "content": "verified peer message",
+                    "content_type": "text/plain",
+                    "sent_at": "2026-07-21T00:00:00Z",
+                    "server_seq": 21
+                }],
+                "has_more": false
+            }),
+        },
+        StaticHandleDirectoryTransport,
+    );
+
+    let result = runtime
+        .inbox_async(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::DirectOnly,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: None,
+            },
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.page.items.len(), 1);
+    let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-bob",
+        "bob.anpclaw.com",
+    )
+    .unwrap();
+    let records = client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .list_direct_messages(
+            "alice-id",
+            vec![
+                crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                    &scope,
+                ),
+            ],
+            20,
+        )
+        .await
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].msg_id, "msg-authoritative-peer");
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    assert_eq!(
+        crate::internal::local_state::inbound_resolution_backlog::pending_count(
+            &connection,
+            "alice-id"
+        )
+        .unwrap(),
+        0
+    );
+    assert!(crate::internal::local_state::peer_personas::resolve_by_did(
+        &connection,
+        "alice-id",
+        "did:example:bob-new"
+    )
+    .unwrap()
+    .is_some());
+}
+
+#[tokio::test]
+async fn direct_page_resolves_expected_peer_scope_once_for_all_messages() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut directory = CountingHandleDirectoryTransport {
+        calls: Rc::clone(&calls),
+    };
+    let mut raw = json!({
+        "messages": [
+            {
+                "id": "msg-page-1",
+                "sender_did": "did:example:bob-new",
+                "receiver_did": "did:example:alice",
+                "content": "first",
+                "content_type": "text/plain"
+            },
+            {
+                "id": "msg-page-2",
+                "sender_did": "did:example:alice",
+                "receiver_did": "did:example:bob-new",
+                "content": "second",
+                "content_type": "text/plain"
+            }
+        ]
+    });
+
+    annotate_direct_peer_scopes_async(
+        &client,
+        &mut raw,
+        &mut directory,
+        None,
+        Some("did:example:bob-new"),
+        None,
+    )
+    .await;
+
+    assert_eq!(calls.borrow().as_slice(), ["lookup"]);
+    for message in raw["messages"].as_array().unwrap() {
+        assert_eq!(message["peer_user_id"], "user-bob");
+        assert_eq!(message["peer_full_handle"], "bob.anpclaw.com");
+        assert_eq!(message["peer_current_did"], "did:example:bob-new");
+    }
+}
+
+#[test]
+fn plain_direct_history_keeps_peer_wire_identity_after_canonical_thread_projection() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let raw = json!({
+        "messages": [{
+            "id": "msg-plain-own-sync-history",
+            "sender_did": "did:example:alice",
+            "receiver_did": "did:example:bob-new",
+            "content": "plain sender history",
+            "content_type": "text/plain",
+            "server_seq": 37,
+            "peer_user_id": "user-bob",
+            "peer_full_handle": "bob.anpclaw.com",
+            "peer_current_did": "did:example:bob-new",
+            "resolved_target_did": "did:example:bob-new"
+        }],
+        "has_more": false
+    });
+    let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
+    assert!(matches!(
+        &page.items[0].thread,
+        crate::messages::ThreadRef::Thread(_)
+    ));
+
+    let records = remote_projection_records(
+        &client,
+        &page.items,
+        &DirectP5ProjectionProvenance::default(),
+    )
+    .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].wire_thread_kind, "direct");
+    assert_eq!(records[0].wire_thread_ref, "did:example:bob-new");
+
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let mut local_projection = records[0].clone();
+    local_projection.content = "local optimistic send".to_owned();
+    local_projection.server_seq = None;
+    crate::internal::local_state::messages::upsert_message(&connection, &local_projection).unwrap();
+    crate::internal::local_state::messages::upsert_message(&connection, &records[0]).unwrap();
+}
+
+#[tokio::test]
+async fn p5_backlog_retries_by_authenticated_wire_and_converges_after_handle_resolution() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let owner_identity_id = client.current_identity().id.as_str().to_owned();
+    let wire = ordinary_p5_cache_message(
+        "wire-p5-backlog",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    let mut first_projection = wire.clone();
+    apply_p5_v2_product_outcome(
+        &mut first_projection,
+        crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Business(
+            crate::internal::secure_direct::v2_product::V2InboundBusinessProjection {
+                logical_message_id: "msg-logical-backlog".to_owned(),
+                conversation_id: None,
+                sender_did: "did:example:bob-new".to_owned(),
+                sender_device_id: "device-bob".to_owned(),
+                recipient_did: fixture.did.clone(),
+                wire_message_id: "wire-p5-backlog".to_owned(),
+                body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
+                    text: "backlog plaintext".to_owned(),
+                    markdown: false,
+                },
+                session_reply_pending: false,
+            },
+        ),
+    );
+    let mut first_raw = json!({"messages": [first_projection], "has_more": false});
+    annotate_direct_peer_scopes_async(
+        &client,
+        &mut first_raw,
+        &mut NoopDirectoryTransport,
+        None,
+        None,
+        None,
+    )
+    .await;
+    let first_page = page_from_raw(&client, &first_raw, crate::ids::PageLimit(20)).unwrap();
+    assert_eq!(first_page.items.len(), 1);
+    let mut p5_provenance = DirectP5ProjectionProvenance::default();
+    p5_provenance.record(
+        "msg-logical-backlog",
+        p5_cache_binding_from_message(&first_raw["messages"][0])
+            .unwrap()
+            .unwrap(),
+    );
+    persist_projection_best_effort_async(&client, &first_page.items, &p5_provenance).await;
+
+    let sqlite_path = VNextCacheFixture::paths(&fixture.root)
+        .local_state
+        .sqlite_path;
+    let connection = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
+    assert_eq!(
+        crate::internal::local_state::inbound_resolution_backlog::pending_count(
+            &connection,
+            &owner_identity_id
+        )
+        .unwrap(),
+        1
+    );
+    let cached =
+        crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
+            &connection,
+            &owner_identity_id,
+            &["wire-p5-backlog".to_owned()],
+        )
+        .unwrap();
+    assert_eq!(cached.len(), 1);
+    assert!(p5_cache_binding_from_record(&cached[0]).is_some());
+    drop(connection);
+
+    for _ in 0..2 {
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response: json!({"messages": [wire.clone()], "has_more": false}),
+            },
+            StaticHandleDirectoryTransport,
+        );
+        let result = runtime
+            .inbox_async(InboxRead {
+                query: crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::DirectOnly,
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                    unread_only: false,
+                    inbox_history_options: None,
+                },
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.page.items.len(), 1);
+        assert_eq!(result.page.items[0].id.as_str(), "msg-logical-backlog");
+    }
+
+    let connection = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
+    assert_eq!(
+        crate::internal::local_state::inbound_resolution_backlog::pending_count(
+            &connection,
+            &owner_identity_id
+        )
+        .unwrap(),
+        0
+    );
+    let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-bob",
+        "bob.anpclaw.com",
+    )
+    .unwrap();
+    let records = crate::internal::local_state::messages::list_direct_messages_for_owner_identity(
+        &connection,
+        &owner_identity_id,
+        &[
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &scope,
+            ),
+        ],
+        20,
+    )
+    .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].msg_id, "msg-logical-backlog");
+}
+
+#[tokio::test]
+async fn cached_p5_projection_restores_logical_id_without_redecrypting_replay() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let direct_wire = ordinary_p5_cache_message(
+        "wire-p5-device-delivery",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    let own_sync_wire = json_rpc_p5_cache_message(ordinary_p5_cache_message(
+        "wire-p5-own-sync-delivery",
+        &fixture.did,
+        "device-alice-sender",
+        &fixture.did,
+        &fixture.device_id,
+    ));
+    let owner_identity_id = client.current_identity().id.as_str().to_owned();
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![
+            crate::internal::local_state::messages::MessageRecord {
+                msg_id: "msg-logical-p5".to_owned(),
+                owner_identity_id: owner_identity_id.clone(),
+                owner_did: fixture.did.clone(),
+                conversation_id: "dm:did:example:bob-new".to_owned(),
+                thread_id: "dm:did:example:bob-new".to_owned(),
+                wire_thread_kind: "direct".to_owned(),
+                wire_thread_ref: "did:example:bob-new".to_owned(),
+                wire_identity_resolution_state: "resolved".to_owned(),
+                direction: 0,
+                sender_did: "did:example:bob-new".to_owned(),
+                receiver_did: fixture.did.clone(),
+                content_type: "text/plain".to_owned(),
+                content: "cached p5 plaintext".to_owned(),
+                sent_at: "2026-07-21T00:00:00Z".to_owned(),
+                stored_at: "2026-07-21T00:00:00Z".to_owned(),
+                is_e2ee: true,
+                metadata: p5_cache_record_metadata(&direct_wire),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            },
+            crate::internal::local_state::messages::MessageRecord {
+                msg_id: "msg-logical-own-sync".to_owned(),
+                owner_identity_id,
+                owner_did: fixture.did.clone(),
+                conversation_id: "dm:did:example:bob-new".to_owned(),
+                thread_id: "dm:did:example:bob-new".to_owned(),
+                wire_thread_kind: "direct".to_owned(),
+                wire_thread_ref: "did:example:bob-new".to_owned(),
+                wire_identity_resolution_state: "resolved".to_owned(),
+                direction: 1,
+                sender_did: fixture.did.clone(),
+                receiver_did: "did:example:bob-new".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "cached own-sync plaintext".to_owned(),
+                sent_at: "2026-07-21T00:00:01Z".to_owned(),
+                stored_at: "2026-07-21T00:00:01Z".to_owned(),
+                is_e2ee: true,
+                metadata: p5_cache_record_metadata(&own_sync_wire),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            },
+        ])
+        .await
+        .unwrap();
+    let mut raw = json!({"messages": [direct_wire, own_sync_wire], "has_more": false});
+
+    let p5_provenance =
+        project_secure_direct_messages_async(&client, &mut raw, &mut NoopDirectoryTransport).await;
+
+    let messages = raw["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["id"], "msg-logical-p5");
+    assert_eq!(messages[0]["raw_message_id"], "wire-p5-device-delivery");
+    assert_eq!(messages[0]["content"], "cached p5 plaintext");
+    assert_eq!(messages[0]["decryption_state"], "decrypted");
+    assert_eq!(messages[0]["direction"], 0);
+    assert!(messages[0].get("_awiki_p5_cache_authenticated").is_none());
+    assert!(metadata_attributes_from_object(
+        messages[0].as_object().unwrap(),
+        "msg-logical-p5",
+        Some("text/plain")
+    )
+    .iter()
+    .any(|attribute| {
+        attribute.key == "raw_message_id" && attribute.value == "wire-p5-device-delivery"
+    }));
+    assert_eq!(messages[1]["id"], "msg-logical-own-sync");
+    assert_eq!(messages[1]["raw_message_id"], "wire-p5-own-sync-delivery");
+    assert_eq!(messages[1]["sender_did"], fixture.did);
+    assert_eq!(messages[1]["receiver_did"], "did:example:bob-new");
+    assert_eq!(messages[1]["content"], "cached own-sync plaintext");
+    assert_eq!(messages[1]["decryption_state"], "decrypted");
+    assert_eq!(messages[1]["direction"], 1);
+    let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
+    assert!(page
+        .items
+        .iter()
+        .all(
+            |message| P5_CACHE_METADATA_KEYS.into_iter().all(|key| !message
+                .metadata
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key == key))
+        ));
+    assert!(messages.iter().all(|message| P5_CACHE_METADATA_KEYS
+        .into_iter()
+        .all(|key| message.get(key).is_none())));
+    persist_projection_best_effort_async(&client, &page.items, &p5_provenance).await;
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    let cached =
+        crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
+            &connection,
+            client.current_identity().id.as_str(),
+            &[
+                "wire-p5-device-delivery".to_owned(),
+                "wire-p5-own-sync-delivery".to_owned(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(cached.len(), 2);
+    assert!(cached.iter().all(|record| {
+        p5_cache_record_has_direct_route(record) && p5_cache_binding_from_record(record).is_some()
+    }));
+}
+
+#[tokio::test]
+async fn verified_scoped_thread_p5_projection_persists_wire_route_and_replays() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let wire = ordinary_p5_cache_message(
+        "wire-p5-scoped-thread",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    let own_sync_wire = json_rpc_p5_cache_message(ordinary_p5_cache_message(
+        "wire-p5-scoped-own-sync",
+        &fixture.did,
+        "device-alice-sender",
+        &fixture.did,
+        &fixture.device_id,
+    ));
+    let mut projected = wire.clone();
+    projected["peer_user_id"] = json!("service-forged-user");
+    projected["peer_full_handle"] = json!("service-forged.example");
+    projected["peer_current_did"] = json!("did:example:mallory");
+    projected["resolved_target_did"] = json!("did:example:mallory");
+    clear_untrusted_p5_projection_state(std::slice::from_mut(&mut projected));
+    assert!(projected.get("peer_user_id").is_none());
+    assert!(projected.get("peer_full_handle").is_none());
+    assert!(projected.get("peer_current_did").is_none());
+    assert!(projected.get("resolved_target_did").is_none());
+    apply_p5_v2_product_outcome(
+        &mut projected,
+        crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Business(
+            crate::internal::secure_direct::v2_product::V2InboundBusinessProjection {
+                logical_message_id: "msg-logical-scoped-thread".to_owned(),
+                conversation_id: None,
+                sender_did: "did:example:bob-new".to_owned(),
+                sender_device_id: "device-bob".to_owned(),
+                recipient_did: fixture.did.clone(),
+                wire_message_id: "wire-p5-scoped-thread".to_owned(),
+                body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
+                    text: "scoped thread plaintext".to_owned(),
+                    markdown: false,
+                },
+                session_reply_pending: false,
+            },
+        ),
+    );
+    let mut own_sync_projected = own_sync_wire.clone();
+    clear_untrusted_p5_projection_state(std::slice::from_mut(&mut own_sync_projected));
+    apply_p5_v2_product_outcome(
+        &mut own_sync_projected,
+        crate::internal::secure_direct::v2_product::V2InboundProductOutcome::OwnSync(
+            crate::internal::secure_direct::v2_product::V2InboundOwnSyncProjection {
+                logical_message_id: "msg-logical-scoped-own-sync".to_owned(),
+                conversation_id: None,
+                original_sender_did: fixture.did.clone(),
+                original_sender_device_id: "device-alice-sender".to_owned(),
+                target_did: "did:example:bob-new".to_owned(),
+                wire_message_id: "wire-p5-scoped-own-sync".to_owned(),
+                body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
+                    text: "scoped own-sync plaintext".to_owned(),
+                    markdown: false,
+                },
+                session_reply_pending: false,
+            },
+        ),
+    );
+    let mut raw = json!({"messages": [projected, own_sync_projected], "has_more": false});
+    let mut provenance = DirectP5ProjectionProvenance::default();
+    provenance.record(
+        "msg-logical-scoped-thread",
+        p5_cache_binding_from_message(&raw["messages"][0])
+            .unwrap()
+            .unwrap(),
+    );
+    provenance.record(
+        "msg-logical-scoped-own-sync",
+        p5_cache_binding_from_message(&raw["messages"][1])
+            .unwrap()
+            .unwrap(),
+    );
+    provenance.retain_unambiguous_projected_instances(&client, raw["messages"].as_array().unwrap());
+    annotate_direct_peer_scopes_async(
+        &client,
+        &mut raw,
+        &mut StaticHandleDirectoryTransport,
+        None,
+        None,
+        Some(&mut provenance),
+    )
+    .await;
+    let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
+    assert_eq!(page.items.len(), 2);
+    assert!(page
+        .items
+        .iter()
+        .all(|message| matches!(message.thread, crate::messages::ThreadRef::Thread(_))));
+    let records = remote_projection_records(&client, &page.items, &provenance).unwrap();
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|record| {
+        p5_cache_record_has_direct_route(record) && p5_cache_binding_from_record(record).is_some()
+    }));
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(records)
+        .await
+        .unwrap();
+
+    for _ in 0..2 {
+        let result = MessageReadRuntime::new(
+            &client,
+            ReadyAnyReadSessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response: json!({
+                    "messages": [wire.clone(), own_sync_wire.clone()],
+                    "has_more": false
+                }),
+            },
+            StaticHandleDirectoryTransport,
+        )
+        .inbox_async(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::DirectOnly,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: None,
+            },
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.page.items.len(), 2);
+        let ids = result
+            .page
+            .items
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            ids,
+            HashSet::from(["msg-logical-scoped-thread", "msg-logical-scoped-own-sync"])
+        );
+    }
+}
+
+#[tokio::test]
+async fn legacy_profile_fallback_cannot_attest_scoped_p5_cache() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let wire = ordinary_p5_cache_message(
+        "wire-p5-legacy-profile",
+        "did:example:legacy-peer",
+        "device-legacy-peer",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![p5_cached_incoming_record(
+            &client,
+            &wire,
+            "msg-logical-legacy-profile",
+            "legacy profile plaintext",
+        )])
+        .await
+        .unwrap();
+    let result = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [wire], "has_more": false}),
+        },
+        ProfileFallbackDirectoryTransport::legacy(json!({
+            "id": "did:example:legacy-peer",
+            "profile": {
+                "user_id": "legacy-user",
+                "full_handle": "legacy.anpclaw.com"
+            }
+        })),
+    )
+    .inbox_async(InboxRead {
+        query: crate::messages::InboxQuery {
+            scope: crate::messages::InboxScope::DirectOnly,
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            unread_only: false,
+            inbox_history_options: None,
+        },
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.page.items.len(), 1);
+    assert!(matches!(
+        result.page.items[0].thread,
+        crate::messages::ThreadRef::Direct(_)
+    ));
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    let cached =
+        crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
+            &connection,
+            client.current_identity().id.as_str(),
+            &["wire-p5-legacy-profile".to_owned()],
+        )
+        .unwrap();
+    assert_eq!(cached.len(), 1);
+    assert!(p5_cache_record_has_direct_route(&cached[0]));
+    assert!(p5_cache_binding_from_record(&cached[0]).is_some());
+    assert!(!cached[0].conversation_id.starts_with("dm:peer-scope:"));
+}
+
+#[test]
+fn self_reported_scoped_thread_without_verified_route_cannot_mint_p5_cache() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let wire = ordinary_p5_cache_message(
+        "wire-p5-unverified-thread",
+        "did:example:bob-new",
+        "device-bob",
+        "did:example:alice",
+        "device-alice",
+    );
+    let mut projected = wire.clone();
+    apply_p5_v2_product_outcome(
+        &mut projected,
+        crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Business(
+            crate::internal::secure_direct::v2_product::V2InboundBusinessProjection {
+                logical_message_id: "msg-logical-unverified-thread".to_owned(),
+                conversation_id: None,
+                sender_did: "did:example:bob-new".to_owned(),
+                sender_device_id: "device-bob".to_owned(),
+                recipient_did: "did:example:alice".to_owned(),
+                wire_message_id: "wire-p5-unverified-thread".to_owned(),
+                body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
+                    text: "unverified scoped plaintext".to_owned(),
+                    markdown: false,
+                },
+                session_reply_pending: false,
+            },
+        ),
+    );
+    let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "service-forged-user",
+        "service-forged.example",
+    )
+    .unwrap();
+    annotate_object_with_peer_scope(
+        projected.as_object_mut().unwrap(),
+        &scope,
+        Some("did:example:bob-new"),
+    );
+    let raw = json!({"messages": [projected], "has_more": false});
+    let mut provenance = DirectP5ProjectionProvenance::default();
+    provenance.record(
+        "msg-logical-unverified-thread",
+        p5_cache_binding_from_message(&wire).unwrap().unwrap(),
+    );
+    let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
+    assert!(matches!(
+        page.items[0].thread,
+        crate::messages::ThreadRef::Thread(_)
+    ));
+    let records = remote_projection_records(&client, &page.items, &provenance).unwrap();
+    assert_eq!(records.len(), 1);
+    assert!(p5_cache_binding_from_record(&records[0]).is_none());
+    assert!(!p5_cache_record_has_direct_route(&records[0]));
+}
+
+#[test]
+fn authenticated_p5_business_receiver_overrides_service_projection() {
+    let mut message = ordinary_p5_cache_message(
+        "wire-p5-authenticated-receiver",
+        "did:example:bob-new",
+        "device-bob",
+        "did:example:alice",
+        "device-alice",
+    );
+    message["receiver_did"] = json!("did:example:service-forged");
+
+    apply_p5_v2_product_outcome(
+        &mut message,
+        crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Business(
+            crate::internal::secure_direct::v2_product::V2InboundBusinessProjection {
+                logical_message_id: "msg-p5-authenticated-receiver".to_owned(),
+                conversation_id: None,
+                sender_did: "did:example:bob-new".to_owned(),
+                sender_device_id: "device-bob".to_owned(),
+                recipient_did: "did:example:alice".to_owned(),
+                wire_message_id: "wire-p5-authenticated-receiver".to_owned(),
+                body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
+                    text: "authenticated endpoints".to_owned(),
+                    markdown: false,
+                },
+                session_reply_pending: false,
+            },
+        ),
+    );
+
+    assert_eq!(message["sender_did"], "did:example:bob-new");
+    assert_eq!(message["receiver_did"], "did:example:alice");
+}
+
+#[tokio::test]
+async fn fresh_scoped_p5_rejection_then_correct_receive_projects_and_persists() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let (mut wire, outcome) = crate::internal::secure_direct::v2_product::v2_product_tests::fresh_scoped_business_receive_for_projection_test().await;
+    let binding = p5_cache_binding_from_message(&wire).unwrap().unwrap();
+    apply_p5_v2_product_outcome(&mut wire, outcome);
+    assert_eq!(wire["receiver_did"], "did:example:alice");
+
+    let mut raw = json!({"messages": [wire], "has_more": false});
+    let mut provenance = DirectP5ProjectionProvenance::default();
+    provenance.record("logical-scoped-business", binding);
+    assert!(!retain_direct_messages_for_expected_peer(
+        &client,
+        &mut raw,
+        "did:example:mallory",
+        &mut provenance,
+    ));
+    annotate_direct_peer_scopes_async(
+        &client,
+        &mut raw,
+        &mut StaticHandleDirectoryTransport,
+        None,
+        Some("did:example:mallory"),
+        Some(&mut provenance),
+    )
+    .await;
+    let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-bob",
+        "bob.anpclaw.com",
+    )
+    .unwrap();
+    let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert!(matches!(
+        &page.items[0].body,
+        crate::messages::MessageBodyView::Text { text, .. } if text == "scoped business"
+    ));
+    assert_eq!(
+        persist_projection_async(&client, &page.items, &provenance)
+            .await
+            .unwrap()
+            .stored_messages,
+        1
+    );
+    let records = client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .list_direct_messages(
+            "alice-id",
+            vec![
+                crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                    &scope,
+                ),
+            ],
+            20,
+        )
+        .await
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].msg_id, "logical-scoped-business");
+    assert_eq!(records[0].content, "scoped business");
+}
+
+#[tokio::test]
+async fn history_runtime_fresh_p5_mixed_page_rejects_wrong_peer_and_reopens_exactly_once() {
+    use crate::internal::secure_direct::v2_product::v2_product_tests::{
+        prepare_runtime_p5_test_wires, RuntimeP5TestBody, RuntimeP5TestClientFixture,
+        RuntimeP5TestWire,
+    };
+
+    const BOB_DID: &str = "did:example:runtime-history-bob";
+    const MALLORY_DID: &str = "did:example:runtime-history-mallory";
+    let fixture = RuntimeP5TestClientFixture::new("runtime-history-wire");
+    let client = fixture.client();
+    let wires = prepare_runtime_p5_test_wires(
+        &client,
+        vec![
+            RuntimeP5TestWire {
+                peer_did: MALLORY_DID,
+                peer_device_id: "runtime-history-mallory-device",
+                seed: 161,
+                logical_message_id: "runtime-history-wrong",
+                server_seq: 41,
+                body: RuntimeP5TestBody::Text("wrong peer encrypted text"),
+            },
+            RuntimeP5TestWire {
+                peer_did: BOB_DID,
+                peer_device_id: "runtime-history-bob-device",
+                seed: 171,
+                logical_message_id: "runtime-history-correct",
+                server_seq: 42,
+                body: RuntimeP5TestBody::Text("correct peer encrypted text"),
+            },
+        ],
+    )
+    .await;
+    assert_eq!(wires.len(), 2);
+    let serialized_wire = serde_json::to_string(&wires).unwrap();
+    assert!(!serialized_wire.contains("wrong peer encrypted text"));
+    assert!(!serialized_wire.contains("correct peer encrypted text"));
+    let wrong_wire = wires[0].clone();
+    let correct_wire = wires[1].clone();
+    let correct_wire_id = correct_wire["id"].as_str().unwrap().to_owned();
+    let bob_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "runtime-history-bob-user",
+        "runtime-history-bob.example",
+    )
+    .unwrap();
+    let request = || HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse(BOB_DID, "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some(BOB_DID.to_owned()),
+        peer_scope: Some(bob_scope.clone()),
+    };
+
+    let first = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [wrong_wire.clone(), correct_wire.clone()],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(request())
+    .await
+    .unwrap();
+    assert_eq!(first.page.items.len(), 1);
+    assert_eq!(first.page.items[0].id.as_str(), "runtime-history-correct");
+    assert!(matches!(
+        &first.page.items[0].body,
+        crate::messages::MessageBodyView::Text { text, .. }
+            if text == "correct peer encrypted text"
+    ));
+
+    let reopened = fixture.client();
+    let replay = MessageReadRuntime::new(
+        &reopened,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [wrong_wire.clone(), correct_wire],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(request())
+    .await
+    .unwrap();
+    assert_eq!(replay.page.items.len(), 1);
+    assert_eq!(replay.page.items[0].id.as_str(), "runtime-history-correct");
+
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let bob_records =
+        crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
+            &connection,
+            reopened.current_identity().id.as_str(),
+            &[correct_wire_id],
+        )
+        .unwrap();
+    assert_eq!(bob_records.len(), 1);
+    assert_eq!(bob_records[0].msg_id, "runtime-history-correct");
+    drop(connection);
+
+    // The same ciphertext must still decrypt under its authenticated peer scope.
+    // If the mixed Bob page had committed Mallory's replay state, this returns no item.
+    let mallory = MessageReadRuntime::new(
+        &reopened,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [wrong_wire], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse(MALLORY_DID, "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some(MALLORY_DID.to_owned()),
+        peer_scope: Some(
+            crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                "runtime-history-mallory-user",
+                "runtime-history-mallory.example",
+            )
+            .unwrap(),
+        ),
+    })
+    .await
+    .unwrap();
+    assert_eq!(mallory.page.items.len(), 1);
+    assert_eq!(mallory.page.items[0].id.as_str(), "runtime-history-wrong");
+}
+
+#[tokio::test]
+async fn sync_runtime_fresh_p5_mixed_page_rejects_wrong_peer_and_reopens_exactly_once() {
+    use crate::internal::secure_direct::v2_product::v2_product_tests::{
+        prepare_runtime_p5_test_wires, RuntimeP5TestBody, RuntimeP5TestClientFixture,
+        RuntimeP5TestWire,
+    };
+
+    const BOB_DID: &str = "did:example:runtime-sync-bob";
+    const MALLORY_DID: &str = "did:example:runtime-sync-mallory";
+    let fixture = RuntimeP5TestClientFixture::new("runtime-sync-wire");
+    let client = fixture.client();
+    let wires = prepare_runtime_p5_test_wires(
+        &client,
+        vec![
+            RuntimeP5TestWire {
+                peer_did: MALLORY_DID,
+                peer_device_id: "runtime-sync-mallory-device",
+                seed: 181,
+                logical_message_id: "runtime-sync-wrong",
+                server_seq: 51,
+                body: RuntimeP5TestBody::Text("wrong sync encrypted text"),
+            },
+            RuntimeP5TestWire {
+                peer_did: BOB_DID,
+                peer_device_id: "runtime-sync-bob-device",
+                seed: 191,
+                logical_message_id: "runtime-sync-correct",
+                server_seq: 52,
+                body: RuntimeP5TestBody::Text("correct sync encrypted text"),
+            },
+        ],
+    )
+    .await;
+    assert!(!serde_json::to_string(&wires)
+        .unwrap()
+        .contains("correct sync encrypted text"));
+    let wrong_wire = wires[0].clone();
+    let correct_wire = wires[1].clone();
+    let correct_wire_id = correct_wire["id"].as_str().unwrap().to_owned();
+    let bob_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "runtime-sync-bob-user",
+        "runtime-sync-bob.example",
+    )
+    .unwrap();
+    let request = || crate::internal::message_runtime::sync::SyncThreadAfterInput {
+        request: crate::messages::SyncThreadAfterRequest {
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse(BOB_DID, "").unwrap(),
+            ),
+            after_server_seq: Some("0".to_owned()),
+            limit: Some(20),
+        },
+        resolved_peer_did: Some(BOB_DID.to_owned()),
+        peer_scope: Some(bob_scope.clone()),
+    };
+
+    let first = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [wrong_wire.clone(), correct_wire.clone()],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    )
+    .sync_thread_after_async(request())
+    .await
+    .unwrap();
+    assert_eq!(first.messages.len(), 1);
+    assert_eq!(first.messages[0].id.as_str(), "runtime-sync-correct");
+
+    let reopened = fixture.client();
+    let replay = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+        &reopened,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [wrong_wire.clone(), correct_wire],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    )
+    .sync_thread_after_async(request())
+    .await
+    .unwrap();
+    assert_eq!(replay.messages.len(), 1);
+    assert_eq!(replay.messages[0].id.as_str(), "runtime-sync-correct");
+
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let records =
+        crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
+            &connection,
+            reopened.current_identity().id.as_str(),
+            &[correct_wire_id],
+        )
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].msg_id, "runtime-sync-correct");
+    drop(connection);
+
+    let mallory = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+        &reopened,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [wrong_wire], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .sync_thread_after_async(
+        crate::internal::message_runtime::sync::SyncThreadAfterInput {
+            request: crate::messages::SyncThreadAfterRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse(MALLORY_DID, "").unwrap(),
+                ),
+                after_server_seq: Some("0".to_owned()),
+                limit: Some(20),
+            },
+            resolved_peer_did: Some(MALLORY_DID.to_owned()),
+            peer_scope: Some(
+                crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                    "runtime-sync-mallory-user",
+                    "runtime-sync-mallory.example",
+                )
+                .unwrap(),
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(mallory.messages.len(), 1);
+    assert_eq!(mallory.messages[0].id.as_str(), "runtime-sync-wrong");
+}
+
+#[tokio::test]
+async fn scoped_history_and_sync_fail_closed_on_nonadvancing_wrong_peer_page() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let response = json!({
+        "messages": [{
+            "id": "wrong-peer-page",
+            "sender_did": "did:example:mallory",
+            "receiver_did": "did:example:alice",
+            "content": "wrong peer",
+            "content_type": "text/plain",
+            "server_seq": 7
+        }],
+        "has_more": true
+    });
+    let input = HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob".to_owned()),
+        peer_scope: None,
+    };
+    let history_error = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: response.clone(),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(input)
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        history_error,
+        crate::ImError::IdentityBindingConflict { .. }
+    ));
+
+    let sync_error = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response,
+        },
+        NoopDirectoryTransport,
+    )
+    .sync_thread_after_async(
+        crate::internal::message_runtime::sync::SyncThreadAfterInput {
+            request: crate::messages::SyncThreadAfterRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                after_server_seq: Some("0".to_owned()),
+                limit: Some(20),
+            },
+            resolved_peer_did: Some("did:example:bob".to_owned()),
+            peer_scope: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        sync_error,
+        crate::ImError::IdentityBindingConflict { .. }
+    ));
+
+    let empty_history_error = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [], "has_more": true}),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob".to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        empty_history_error,
+        crate::ImError::IdentityBindingConflict { .. }
+    ));
+
+    let empty_terminal = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob".to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert!(empty_terminal.page.items.is_empty());
+}
+
+#[tokio::test]
+async fn scoped_history_mixed_page_keeps_and_persists_requested_peer_once() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let requested_peer_did = "did:example:bob-new";
+    let requested_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-bob",
+        "bob.anpclaw.com",
+    )
+    .unwrap();
+    let requested_wire = json!({
+        "id": "logical-mixed-requested",
+        "sender_did": requested_peer_did,
+        "receiver_did": &fixture.did,
+        "content": "requested fresh plaintext",
+        "content_type": "text/plain",
+        "server_seq": 11
+    });
+    let mut wrong_wire = ordinary_p5_cache_message(
+        "wire-p5-mixed-wrong",
+        "did:example:mallory",
+        "device-mallory",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    wrong_wire["server_seq"] = json!(12);
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![p5_cached_incoming_record(
+            &client,
+            &wrong_wire,
+            "logical-p5-mixed-wrong",
+            "wrong cached plaintext",
+        )])
+        .await
+        .unwrap();
+
+    let first = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [requested_wire.clone(), wrong_wire.clone()],
+                "has_more": true
+            }),
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse(requested_peer_did, "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some(requested_peer_did.to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(first.page.items.len(), 1);
+    assert_eq!(first.page.items[0].id.as_str(), "logical-mixed-requested");
+
+    let scoped_records = client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .list_direct_messages(
+            client.current_identity().id.as_str(),
+            vec![
+                crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                    &requested_scope,
+                ),
+            ],
+            20,
+        )
+        .await
+        .unwrap();
+    assert_eq!(scoped_records.len(), 1);
+    assert_eq!(scoped_records[0].msg_id, "logical-mixed-requested");
+
+    let reopened = fixture.client(true);
+    let replay = MessageReadRuntime::new(
+        &reopened,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [requested_wire, wrong_wire],
+                "has_more": false
+            }),
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse(requested_peer_did, "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some(requested_peer_did.to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(replay.page.items.len(), 1);
+    assert_eq!(replay.page.items[0].id.as_str(), "logical-mixed-requested");
+}
+
+#[tokio::test]
+async fn history_and_sync_reject_authenticated_p5_for_unrequested_peer() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let incoming_wire = ordinary_p5_cache_message(
+        "wire-p5-wrong-history-peer",
+        "did:example:mallory",
+        "device-mallory",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    let own_sync_wire = json_rpc_p5_cache_message(ordinary_p5_cache_message(
+        "wire-p5-wrong-history-own-sync",
+        &fixture.did,
+        "device-alice-sender",
+        &fixture.did,
+        &fixture.device_id,
+    ));
+    let owner_identity_id = client.current_identity().id.as_str().to_owned();
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![
+            p5_cached_incoming_record(
+                &client,
+                &incoming_wire,
+                "msg-logical-wrong-history-peer",
+                "wrong history peer plaintext",
+            ),
+            crate::internal::local_state::messages::MessageRecord {
+                msg_id: "msg-logical-wrong-history-own-sync".to_owned(),
+                owner_identity_id,
+                owner_did: fixture.did.clone(),
+                conversation_id: "dm:did:example:mallory".to_owned(),
+                thread_id: "dm:did:example:mallory".to_owned(),
+                wire_thread_kind: "direct".to_owned(),
+                wire_thread_ref: "did:example:mallory".to_owned(),
+                wire_identity_resolution_state: "resolved".to_owned(),
+                direction: 1,
+                sender_did: fixture.did.clone(),
+                receiver_did: "did:example:mallory".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "wrong history own-sync plaintext".to_owned(),
+                is_e2ee: true,
+                metadata: p5_cache_record_metadata(&own_sync_wire),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            },
+        ])
+        .await
+        .unwrap();
+    let requested_peer_did = "did:example:bob-new";
+    let requested_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-bob",
+        "bob.anpclaw.com",
+    )
+    .unwrap();
+    let response = json!({
+        "messages": [incoming_wire.clone(), own_sync_wire.clone()],
+        "has_more": false
+    });
+
+    let history = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: response.clone(),
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse(requested_peer_did, "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some(requested_peer_did.to_owned()),
+        peer_scope: Some(requested_scope.clone()),
+    })
+    .await
+    .unwrap();
+    assert!(history.page.items.is_empty());
+
+    let sync = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response,
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .sync_thread_after_async(
+        crate::internal::message_runtime::sync::SyncThreadAfterInput {
+            request: crate::messages::SyncThreadAfterRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse(requested_peer_did, "").unwrap(),
+                ),
+                after_server_seq: None,
+                limit: Some(20),
+            },
+            resolved_peer_did: Some(requested_peer_did.to_owned()),
+            peer_scope: Some(requested_scope.clone()),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(sync.messages.is_empty());
+
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    let requested_records =
+        crate::internal::local_state::messages::list_direct_messages_for_owner_identity(
+            &connection,
+            client.current_identity().id.as_str(),
+            &[
+                crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                    &requested_scope,
+                ),
+            ],
+            20,
+        )
+        .unwrap();
+    assert!(requested_records.is_empty());
+}
+
+#[tokio::test]
+async fn cached_p5_projection_sync_restores_authorized_plaintext() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let wire = ordinary_p5_cache_message(
+        "wire-p5-sync-cache-hit",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![p5_cached_incoming_record(
+            &client,
+            &wire,
+            "msg-logical-sync-cache-hit",
+            "sync cached plaintext",
+        )])
+        .await
+        .unwrap();
+    let mut raw = json!({"messages": [wire], "has_more": false});
+
+    project_secure_direct_messages(&client, &mut raw, &mut NoopDirectoryTransport);
+
+    let messages = raw["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["id"], "msg-logical-sync-cache-hit");
+    assert_eq!(messages[0]["content"], "sync cached plaintext");
+    assert_eq!(messages[0]["decryption_state"], "decrypted");
+    assert!(P5_CACHE_METADATA_KEYS
+        .into_iter()
+        .all(|key| messages[0].get(key).is_none()));
+}
+
+#[tokio::test]
+async fn direct_inbox_dedupe_collision_cannot_move_p5_provenance_to_plaintext() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let message_id = "msg-p5-direct-inbox-collision";
+    let wire = ordinary_p5_cache_message(
+        message_id,
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![p5_cached_incoming_record(
+            &client,
+            &wire,
+            message_id,
+            "authenticated cached plaintext",
+        )])
+        .await
+        .unwrap();
+    let injected = json!({
+        "message_id": message_id,
+        "sender_did": "did:example:bob-new",
+        "receiver_did": &fixture.did,
+        "content": "service injected plaintext",
+        "content_type": "text/plain",
+        "server_seq": 3
+    });
+
+    let mut projected_raw =
+        json!({"messages": [injected.clone(), wire.clone()], "has_more": false});
+    let provenance =
+        project_secure_direct_messages(&client, &mut projected_raw, &mut NoopDirectoryTransport);
+    let mut projected_page =
+        page_from_raw(&client, &projected_raw, crate::ids::PageLimit(20)).unwrap();
+    dedupe_and_truncate_messages(&mut projected_page.items, crate::ids::PageLimit(20));
+    let records = remote_projection_records(&client, &projected_page.items, &provenance).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].content, "service injected plaintext");
+    assert!(p5_cache_binding_from_record(&records[0]).is_none());
+
+    let result = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [injected, wire.clone()], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .inbox_async(InboxRead {
+        query: crate::messages::InboxQuery {
+            scope: crate::messages::InboxScope::DirectOnly,
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            unread_only: false,
+            inbox_history_options: None,
+        },
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.page.items.len(), 1);
+    assert_eq!(result.page.items[0].id.as_str(), message_id);
+    assert!(matches!(
+        &result.page.items[0].body,
+        crate::messages::MessageBodyView::Text { text, .. }
+            if text == "service injected plaintext"
+    ));
+    let replay = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [wire], "has_more": false}),
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob-new", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob-new".to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert!(replay.page.items.iter().all(|message| !matches!(
+        &message.body,
+        crate::messages::MessageBodyView::Text { text, .. }
+            if text == "service injected plaintext"
+    )));
+}
+
+#[tokio::test]
+async fn sync_thread_after_duplicate_instance_cannot_persist_p5_provenance() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let message_id = "msg-p5-thread-after-collision";
+    let wire = ordinary_p5_cache_message(
+        message_id,
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![p5_cached_incoming_record(
+            &client,
+            &wire,
+            message_id,
+            "authenticated cached plaintext",
+        )])
+        .await
+        .unwrap();
+    let injected = json!({
+        "message_id": message_id,
+        "sender_did": "did:example:bob-new",
+        "receiver_did": &fixture.did,
+        "content": "service injected thread plaintext",
+        "content_type": "text/plain",
+        "server_seq": 3
+    });
+
+    let mut projected_raw =
+        json!({"messages": [wire.clone(), injected.clone()], "has_more": false});
+    let provenance = project_secure_direct_messages_async(
+        &client,
+        &mut projected_raw,
+        &mut NoopDirectoryTransport,
+    )
+    .await;
+    let mut projected_page =
+        page_from_raw(&client, &projected_raw, crate::ids::PageLimit(20)).unwrap();
+    projected_page.items.retain(|message| {
+        message
+            .metadata
+            .server_sequence
+            .is_some_and(|server_sequence| server_sequence > 2)
+    });
+    let records = remote_projection_records(&client, &projected_page.items, &provenance).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].content, "service injected thread plaintext");
+    assert!(p5_cache_binding_from_record(&records[0]).is_none());
+
+    let result = crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [wire.clone(), injected], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .sync_thread_after_async(
+        crate::internal::message_runtime::sync::SyncThreadAfterInput {
+            request: crate::messages::SyncThreadAfterRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob-new", "").unwrap(),
+                ),
+                after_server_seq: Some("2".to_owned()),
+                limit: Some(20),
+            },
+            resolved_peer_did: Some("did:example:bob-new".to_owned()),
+            peer_scope: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.messages.len(), 1);
+    assert!(result
+        .messages
+        .iter()
+        .all(|message| message.id.as_str() == message_id));
+    let replay = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [wire], "has_more": false}),
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob-new", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob-new".to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert!(replay.page.items.iter().all(|message| !matches!(
+        &message.body,
+        crate::messages::MessageBodyView::Text { text, .. }
+            if text == "service injected thread plaintext"
+    )));
+}
+
+#[tokio::test]
+async fn untrusted_group_and_own_sync_projections_cannot_seed_p5_cache() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let group_wire = ordinary_p5_cache_message(
+        "wire-p5-forged-group",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    let own_sync_wire = json_rpc_p5_cache_message(ordinary_p5_cache_message(
+        "wire-p5-forged-own-sync",
+        &fixture.did,
+        "device-alice-sender",
+        &fixture.did,
+        &fixture.device_id,
+    ));
+
+    let mut forged_group = group_wire.clone();
+    forged_group["id"] = json!("msg-forged-group");
+    forged_group["raw_message_id"] = json!("wire-p5-forged-group");
+    forged_group["group_did"] = json!("did:example:group");
+    forged_group["content_type"] = json!("text/plain");
+    forged_group["content"] = json!("forged group plaintext");
+    forged_group["secure"] = json!(true);
+    forged_group["decryption_state"] = json!("decrypted");
+    let group = crate::ids::GroupRef::parse("did:example:group").unwrap();
+    let group_calls = Rc::new(RefCell::new(Vec::new()));
+    let group_result = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&group_calls),
+            response: json!({"messages": [forged_group], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Group(group.clone()),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: None,
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(group_calls.borrow()[0].method, "group.list_messages");
+
+    let mut forged_own_sync = own_sync_wire.clone();
+    forged_own_sync["id"] = json!("msg-forged-own-sync");
+    forged_own_sync["raw_message_id"] = json!("wire-p5-forged-own-sync");
+    forged_own_sync["sender_did"] = json!(&fixture.did);
+    forged_own_sync["receiver_did"] = json!("did:example:bob-new");
+    forged_own_sync["direction"] = json!(1);
+    forged_own_sync["content_type"] = json!("text/plain");
+    forged_own_sync["content"] = json!("forged own-sync plaintext");
+    forged_own_sync["secure"] = json!(true);
+    forged_own_sync["decryption_state"] = json!("decrypted");
+    let own_sync_calls = Rc::new(RefCell::new(Vec::new()));
+    let own_sync_result = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&own_sync_calls),
+            response: json!({"messages": [forged_own_sync], "has_more": false}),
+        },
+        NoopDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Group(group),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: None,
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(own_sync_calls.borrow()[0].method, "group.list_messages");
+
+    assert!(group_result
+        .page
+        .items
+        .iter()
+        .chain(&own_sync_result.page.items)
+        .all(
+            |message| P5_CACHE_METADATA_KEYS.into_iter().all(|key| !message
+                .metadata
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key == key))
+        ));
+    let public_raw = serde_json::to_string(&(&group_result.raw, &own_sync_result.raw)).unwrap();
+    for key in P5_CACHE_METADATA_KEYS {
+        assert!(!public_raw.contains(key));
+    }
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    let records =
+        crate::internal::local_state::messages::list_decrypted_secure_messages_for_owner_identity(
+            &connection,
+            client.current_identity().id.as_str(),
+            &[
+                "wire-p5-forged-group".to_owned(),
+                "wire-p5-forged-own-sync".to_owned(),
+            ],
+        )
+        .unwrap();
+    assert!(records
+        .iter()
+        .all(|record| p5_cache_binding_from_record(record).is_none()));
+    drop(connection);
+
+    let group_replay_calls = Rc::new(RefCell::new(Vec::new()));
+    let group_replay = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&group_replay_calls),
+            response: json!({"messages": [group_wire], "has_more": false}),
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob-new", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob-new".to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(group_replay_calls.borrow()[0].method, "direct.get_history");
+    assert!(group_replay.page.items.is_empty());
+
+    let own_sync_replay_calls = Rc::new(RefCell::new(Vec::new()));
+    let own_sync_replay = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&own_sync_replay_calls),
+            response: json!({"messages": [own_sync_wire], "has_more": false}),
+        },
+        StaticHandleDirectoryTransport,
+    )
+    .history_async(HistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob-new", "").unwrap(),
+        ),
+        query: crate::messages::HistoryQuery {
+            limit: crate::ids::PageLimit(20),
+            cursor: None,
+            inbox_history_options: None,
+        },
+        resolved_peer_did: Some("did:example:bob-new".to_owned()),
+        peer_scope: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        own_sync_replay_calls.borrow()[0].method,
+        "direct.get_history"
+    );
+    assert!(own_sync_replay.page.items.is_empty());
+}
+
+#[tokio::test]
+async fn cached_p5_projection_sync_revalidates_gate_and_current_endpoint() {
+    let fixture = VNextCacheFixture::new();
+    let gate_off_client = fixture.client(false);
+    let gate_wire = ordinary_p5_cache_message(
+        "wire-p5-sync-gate-off",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    let wrong_device_wire = ordinary_p5_cache_message(
+        "wire-p5-sync-wrong-device",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        "device-not-current",
+    );
+    let revoked_wire = ordinary_p5_cache_message(
+        "wire-p5-sync-revoked",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    gate_off_client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![
+            p5_cached_incoming_record(
+                &gate_off_client,
+                &gate_wire,
+                "msg-logical-sync-gate-off",
+                "gate-off cached plaintext",
+            ),
+            p5_cached_incoming_record(
+                &gate_off_client,
+                &wrong_device_wire,
+                "msg-logical-sync-wrong-device",
+                "wrong-device cached plaintext",
+            ),
+            p5_cached_incoming_record(
+                &gate_off_client,
+                &revoked_wire,
+                "msg-logical-sync-revoked",
+                "revoked cached plaintext",
+            ),
+        ])
+        .await
+        .unwrap();
+
+    let mut gate_off_raw = json!({"messages": [gate_wire], "has_more": false});
+    project_secure_direct_messages(
+        &gate_off_client,
+        &mut gate_off_raw,
+        &mut NoopDirectoryTransport,
+    );
+    assert!(gate_off_raw["messages"].as_array().unwrap().is_empty());
+
+    let enabled_client = fixture.client(true);
+    let mut wrong_device_raw = json!({"messages": [wrong_device_wire], "has_more": false});
+    project_secure_direct_messages(
+        &enabled_client,
+        &mut wrong_device_raw,
+        &mut NoopDirectoryTransport,
+    );
+    assert!(wrong_device_raw["messages"].as_array().unwrap().is_empty());
+
+    fixture.set_authorization_status("revoked");
+    let mut revoked_raw = json!({"messages": [revoked_wire], "has_more": false});
+    project_secure_direct_messages(
+        &enabled_client,
+        &mut revoked_raw,
+        &mut NoopDirectoryTransport,
+    );
+    assert!(revoked_raw["messages"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cached_p5_projection_is_hidden_when_product_gate_is_disabled() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(false);
+    let wire = ordinary_p5_cache_message(
+        "wire-p5-gate-off",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![p5_cached_incoming_record(
+            &client,
+            &wire,
+            "msg-logical-gate-off",
+            "gate-off cached plaintext",
+        )])
+        .await
+        .unwrap();
+    let mut raw = json!({"messages": [wire], "has_more": false});
+
+    project_secure_direct_messages_async(&client, &mut raw, &mut NoopDirectoryTransport).await;
+
+    assert!(raw["messages"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cached_p5_projection_revalidates_current_device_and_authorization() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let wrong_device_wire = ordinary_p5_cache_message(
+        "wire-p5-wrong-local-device",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        "device-not-current",
+    );
+    let revoked_wire = ordinary_p5_cache_message(
+        "wire-p5-revoked-local-device",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    let unauthorized_wire = ordinary_p5_cache_message(
+        "wire-p5-unauthorized-local-device",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![
+            p5_cached_incoming_record(
+                &client,
+                &wrong_device_wire,
+                "msg-logical-wrong-local-device",
+                "wrong-device cached plaintext",
+            ),
+            p5_cached_incoming_record(
+                &client,
+                &revoked_wire,
+                "msg-logical-revoked-local-device",
+                "revoked cached plaintext",
+            ),
+            p5_cached_incoming_record(
+                &client,
+                &unauthorized_wire,
+                "msg-logical-unauthorized-local-device",
+                "unauthorized cached plaintext",
+            ),
+        ])
+        .await
+        .unwrap();
+
+    let mut wrong_device_raw = json!({"messages": [wrong_device_wire], "has_more": false});
+    project_secure_direct_messages_async(
+        &client,
+        &mut wrong_device_raw,
+        &mut NoopDirectoryTransport,
+    )
+    .await;
+    assert!(wrong_device_raw["messages"].as_array().unwrap().is_empty());
+
+    fixture.set_authorization_status("revoked");
+    let mut revoked_raw = json!({"messages": [revoked_wire], "has_more": false});
+    project_secure_direct_messages_async(&client, &mut revoked_raw, &mut NoopDirectoryTransport)
+        .await;
+    assert!(revoked_raw["messages"].as_array().unwrap().is_empty());
+
+    fixture.set_authorization_status("active");
+    fixture.remove_direct_profile_from_local_document();
+    let mut unauthorized_raw = json!({"messages": [unauthorized_wire], "has_more": false});
+    project_secure_direct_messages_async(
+        &client,
+        &mut unauthorized_raw,
+        &mut NoopDirectoryTransport,
+    )
+    .await;
+    assert!(unauthorized_raw["messages"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn p5_cache_rejects_tampered_cross_profile_and_ambiguous_wire() {
+    let wire = ordinary_p5_cache_message(
+        "wire-p5-binding",
+        "did:example:bob-new",
+        "device-bob",
+        "did:example:alice",
+        "device-alice",
+    );
+    let record = crate::internal::local_state::messages::MessageRecord {
+        msg_id: "msg-logical-binding".to_owned(),
+        owner_identity_id: "alice-id".to_owned(),
+        owner_did: "did:example:alice".to_owned(),
+        conversation_id: "dm:did:example:bob-new".to_owned(),
+        thread_id: "dm:did:example:bob-new".to_owned(),
+        wire_thread_kind: "direct".to_owned(),
+        wire_thread_ref: "did:example:bob-new".to_owned(),
+        wire_identity_resolution_state: "resolved".to_owned(),
+        direction: 0,
+        sender_did: "did:example:bob-new".to_owned(),
+        receiver_did: "did:example:alice".to_owned(),
+        content_type: "text/plain".to_owned(),
+        content: "authenticated cached plaintext".to_owned(),
+        is_e2ee: true,
+        metadata: p5_cache_record_metadata(&wire),
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    };
+    let rejects = |mut candidate: Value, records: Vec<_>| {
+        let applied = apply_cached_secure_direct_records(
+            std::slice::from_mut(&mut candidate),
+            records,
+            Some(&HashSet::from([0])),
+        );
+        assert!(applied.is_empty());
+        assert_ne!(candidate["id"], "msg-logical-binding");
+        assert_ne!(candidate["content"], "authenticated cached plaintext");
+    };
+
+    let mut malformed = wire.clone();
+    malformed.as_object_mut().unwrap().remove("body");
+    rejects(malformed, vec![record.clone()]);
+
+    let mut cross_profile = wire.clone();
+    cross_profile["meta"]["profile"] = json!("anp.direct.e2ee.v1");
+    rejects(cross_profile, vec![record.clone()]);
+
+    let mut sender_device_tamper = wire.clone();
+    sender_device_tamper["meta"]["sender_device_id"] = json!("device-mallory");
+    rejects(sender_device_tamper, vec![record.clone()]);
+
+    let mut recipient_device_tamper = wire.clone();
+    recipient_device_tamper["meta"]["recipient_device_id"] = json!("device-other");
+    rejects(recipient_device_tamper, vec![record.clone()]);
+
+    let mut ciphertext_tamper = wire.clone();
+    ciphertext_tamper["body"]["ciphertext_b64u"] = json!("QU5PVEhFUi1WQUxJRC1DSVBIRVJURVhU");
+    rejects(ciphertext_tamper, vec![record.clone()]);
+
+    let mut session_tamper = wire.clone();
+    session_tamper["body"]["session_id"] = json!("AQEBAQEBAQEBAQEBAQEBAQ");
+    rejects(session_tamper, vec![record.clone()]);
+
+    let mut ratchet_header_tamper = wire.clone();
+    ratchet_header_tamper["body"]["ratchet_header"]["n"] = json!("1");
+    rejects(ratchet_header_tamper, vec![record.clone()]);
+
+    let mut suite_tamper = wire.clone();
+    suite_tamper["body"]
+        .as_object_mut()
+        .unwrap()
+        .remove("suite");
+    rejects(suite_tamper, vec![record.clone()]);
+
+    let mut message_id_tamper = wire.clone();
+    message_id_tamper["meta"]["message_id"] = json!("wire-p5-other");
+    message_id_tamper["meta"]["operation_id"] = json!("wire-p5-other");
+    rejects(message_id_tamper, vec![record.clone()]);
+
+    let mut legacy_record = record.clone();
+    let mut legacy_metadata: Value = serde_json::from_str(&legacy_record.metadata).unwrap();
+    legacy_metadata
+        .as_object_mut()
+        .unwrap()
+        .remove(P5_CACHE_BINDING_DIGEST_KEY);
+    legacy_record.metadata = legacy_metadata.to_string();
+    rejects(wire.clone(), vec![legacy_record]);
+
+    let mut duplicate = record.clone();
+    duplicate.msg_id = "msg-logical-duplicate".to_owned();
+    rejects(wire.clone(), vec![record.clone(), duplicate]);
+
+    let mut outer_tamper = wire;
+    outer_tamper["id"] = json!("forged-outer-id");
+    outer_tamper["sender_did"] = json!("did:example:mallory");
+    outer_tamper["receiver_did"] = json!("did:example:mallory");
+    let applied = apply_cached_secure_direct_records(
+        std::slice::from_mut(&mut outer_tamper),
+        vec![record],
+        Some(&HashSet::from([0])),
+    );
+    assert_eq!(applied.len(), 1);
+    assert_eq!(outer_tamper["id"], "msg-logical-binding");
+    assert_eq!(
+        outer_tamper["raw_message_id"], "wire-p5-binding",
+        "only authenticated inner meta.message_id is the cache index"
+    );
+
+    let init_wire = ordinary_p5_cache_init_message(
+        "wire-p5-init-binding",
+        "did:example:bob-new",
+        "device-bob",
+        "did:example:alice",
+        "device-alice",
+    );
+    let init_record = crate::internal::local_state::messages::MessageRecord {
+        msg_id: "msg-logical-init-binding".to_owned(),
+        owner_identity_id: "alice-id".to_owned(),
+        owner_did: "did:example:alice".to_owned(),
+        conversation_id: "dm:did:example:bob-new".to_owned(),
+        thread_id: "dm:did:example:bob-new".to_owned(),
+        wire_thread_kind: "direct".to_owned(),
+        wire_thread_ref: "did:example:bob-new".to_owned(),
+        wire_identity_resolution_state: "resolved".to_owned(),
+        direction: 0,
+        sender_did: "did:example:bob-new".to_owned(),
+        receiver_did: "did:example:alice".to_owned(),
+        content_type: "text/plain".to_owned(),
+        content: "authenticated init plaintext".to_owned(),
+        is_e2ee: true,
+        metadata: p5_cache_record_metadata(&init_wire),
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    };
+    let mut ephemeral_tamper = init_wire;
+    ephemeral_tamper["body"]["sender_ephemeral_pub_b64u"] =
+        json!("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE");
+    rejects(ephemeral_tamper, vec![init_record]);
+}
+
+#[test]
+fn p5_cache_binding_is_canonical_and_excludes_advisory_metadata() {
+    let wire = ordinary_p5_cache_message(
+        "wire-p5-canonical",
+        "did:example:bob-new",
+        "device-bob",
+        "did:example:alice",
+        "device-alice",
+    );
+    let baseline = p5_cache_binding_from_message(&wire).unwrap().unwrap();
+
+    let mut reordered = wire.clone();
+    reordered["body"] = json!({
+        "ciphertext_b64u": "U0VTU0lPTi1DT05UUk9MLUNJUEhFUlRFWFQ",
+        "ratchet_header": {
+            "n": "0",
+            "pn": "0",
+            "dh_pub_b64u": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "suite": anp::direct_e2ee::MTI_DIRECT_E2EE_SUITE_V2,
+        "session_id": "AAAAAAAAAAAAAAAAAAAAAA"
+    });
+    assert_eq!(
+        p5_cache_binding_from_message(&reordered).unwrap().unwrap(),
+        baseline,
+        "JSON member order must not affect the binding digest"
+    );
+
+    let mut advisory_change = wire;
+    advisory_change["meta"]["anp_version"] = json!("9.9");
+    advisory_change["meta"]["created_at"] = json!("2026-07-21T01:02:03Z");
+    assert_eq!(
+        p5_cache_binding_from_message(&advisory_change)
+            .unwrap()
+            .unwrap(),
+        baseline,
+        "non-AAD advisory metadata must not affect cache identity"
+    );
+}
+
+#[test]
+fn p5_cache_metadata_requires_authenticated_outcome_and_persists_same_wire_id() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let message_id = "msg-p5-same-wire-and-logical";
+    let wire = ordinary_p5_cache_message(
+        message_id,
+        "did:example:bob-new",
+        "device-bob",
+        "did:example:alice",
+        "device-alice",
+    );
+    let mut untrusted = wire.clone();
+    untrusted["decryption_state"] = json!("decrypted");
+    untrusted["secure"] = json!(true);
+    untrusted["raw_message_id"] = json!(message_id);
+    clear_untrusted_p5_projection_state(std::slice::from_mut(&mut untrusted));
+    let untrusted_attributes = metadata_attributes_from_object(
+        untrusted.as_object().unwrap(),
+        message_id,
+        Some("text/plain"),
+    );
+    assert!(P5_CACHE_METADATA_KEYS.into_iter().all(|key| {
+        !untrusted_attributes
+            .iter()
+            .any(|attribute| attribute.key == key)
+    }));
+
+    let mut authenticated = wire;
+    apply_p5_v2_product_outcome(
+        &mut authenticated,
+        crate::internal::secure_direct::v2_product::V2InboundProductOutcome::Business(
+            crate::internal::secure_direct::v2_product::V2InboundBusinessProjection {
+                logical_message_id: message_id.to_owned(),
+                conversation_id: None,
+                sender_did: "did:example:bob-new".to_owned(),
+                sender_device_id: "device-bob".to_owned(),
+                recipient_did: "did:example:alice".to_owned(),
+                wire_message_id: message_id.to_owned(),
+                body: crate::internal::secure_direct::v2_product::V2InboundBusinessBody::Text {
+                    text: "same id plaintext".to_owned(),
+                    markdown: false,
+                },
+                session_reply_pending: false,
+            },
+        ),
+    );
+    let raw = json!({"messages": [authenticated], "has_more": false});
+    assert!(raw["messages"][0]
+        .get("_awiki_p5_cache_authenticated")
+        .is_none());
+    let page = page_from_raw(&client, &raw, crate::ids::PageLimit(20)).unwrap();
+    assert!(P5_CACHE_METADATA_KEYS.into_iter().all(|key| !page.items[0]
+        .metadata
+        .attributes
+        .iter()
+        .any(|attribute| attribute.key == key)));
+    assert!(P5_CACHE_METADATA_KEYS
+        .into_iter()
+        .all(|key| raw["messages"][0].get(key).is_none()));
+    let mut p5_provenance = DirectP5ProjectionProvenance::default();
+    p5_provenance.record(
+        message_id,
+        p5_cache_binding_from_message(&raw["messages"][0])
+            .unwrap()
+            .unwrap(),
+    );
+    let records = remote_projection_records(&client, &page.items, &p5_provenance).unwrap();
+    assert_eq!(records.len(), 1);
+    let metadata: Value = serde_json::from_str(&records[0].metadata).unwrap();
+    assert_eq!(metadata["raw_message_id"], message_id);
+    for key in P5_CACHE_METADATA_KEYS {
+        assert!(
+            metadata.get(key).is_some(),
+            "missing internal cache key {key}"
+        );
+    }
+    for secret_key in [
+        "plaintext",
+        "content",
+        "ciphertext",
+        "ciphertext_b64u",
+        "aad",
+    ] {
+        assert!(metadata.get(secret_key).is_none());
+    }
+    assert!(!records[0]
+        .metadata
+        .contains("U0VTU0lPTi1DT05UUk9MLUNJUEhFUlRFWFQ"));
+    assert!(!records[0].metadata.contains("same id plaintext"));
+}
+
+#[tokio::test]
+async fn verified_handle_projection_rejects_missing_and_conflicting_authority() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let mut first = FixedLookupDirectoryTransport(json!({
+        "handle": "bob",
+        "full_handle": "bob.anpclaw.com",
+        "did": "did:example:bob-new",
+        "domain": "anpclaw.com",
+        "status": "active",
+        "user_id": "user-bob"
+    }));
+    assert!(matches!(
+        lookup_direct_peer_scope_async(&client, &mut first, "did:example:bob-new").await,
+        VerifiedHandleScopeLookup::Verified(_)
+    ));
+
+    let mut missing = FixedLookupDirectoryTransport(json!({
+        "handle": "bob",
+        "full_handle": "bob.anpclaw.com",
+        "did": "did:example:bob-missing-authority",
+        "domain": "anpclaw.com",
+        "status": "active"
+    }));
+    assert!(matches!(
+        lookup_direct_peer_scope_async(&client, &mut missing, "did:example:bob-missing-authority")
+            .await,
+        VerifiedHandleScopeLookup::Rejected
+    ));
+
+    let mismatched_response = json!({
+        "handle": "mallory",
+        "full_handle": "mallory.anpclaw.com",
+        "did": "did:example:mallory-response",
+        "domain": "anpclaw.com",
+        "status": "active",
+        "user_id": "user-mallory-response"
+    });
+    let mut mismatched_async = FixedLookupDirectoryTransport(mismatched_response.clone());
+    assert!(matches!(
+        lookup_direct_peer_scope_async(&client, &mut mismatched_async, "did:example:bob-requested")
+            .await,
+        VerifiedHandleScopeLookup::Rejected
+    ));
+    let mut mismatched_sync = FixedLookupDirectoryTransport(mismatched_response);
+    assert!(matches!(
+        lookup_direct_peer_scope(&client, &mut mismatched_sync, "did:example:bob-requested"),
+        VerifiedHandleScopeLookup::Rejected
+    ));
+
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    assert!(crate::internal::local_state::peer_personas::resolve_by_did(
+        &connection,
+        "alice-id",
+        "did:example:bob-requested"
+    )
+    .unwrap()
+    .is_none());
+    assert!(crate::internal::local_state::peer_personas::resolve_by_did(
+        &connection,
+        "alice-id",
+        "did:example:mallory-response"
+    )
+    .unwrap()
+    .is_none());
+    let before = crate::internal::local_state::peer_personas::resolve_by_did(
+        &connection,
+        "alice-id",
+        "did:example:bob-new",
+    )
+    .unwrap()
+    .unwrap();
+    drop(connection);
+    let mut conflicting = FixedLookupDirectoryTransport(json!({
+        "handle": "mallory",
+        "full_handle": "mallory.anpclaw.com",
+        "did": "did:example:bob-new",
+        "domain": "anpclaw.com",
+        "status": "active",
+        "user_id": "user-mallory"
+    }));
+    assert!(matches!(
+        lookup_direct_peer_scope_async(&client, &mut conflicting, "did:example:bob-new").await,
+        VerifiedHandleScopeLookup::Rejected
+    ));
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let after = crate::internal::local_state::peer_personas::resolve_by_did(
+        &connection,
+        "alice-id",
+        "did:example:bob-new",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(after, before);
+
+    assert!(matches!(
+        lookup_direct_peer_scope_async(
+            &client,
+            &mut NoopDirectoryTransport,
+            "did:example:no-authority"
+        )
+        .await,
+        VerifiedHandleScopeLookup::Unavailable
+    ));
+
+    let mut fallback = ProfileFallbackDirectoryTransport::legacy(json!({
+        "user_id": "legacy-user",
+        "full_handle": "legacy.anpclaw.com"
+    }));
+    let fallback_scope =
+        resolve_direct_peer_scope_async(&client, &mut fallback, "did:example:legacy-profile")
+            .await
+            .unwrap();
+    assert_eq!(fallback_scope.user_id, "legacy-user");
+    assert_eq!(fallback_scope.full_handle, "legacy.anpclaw.com");
+
+    let rejected_calls = Rc::new(RefCell::new(Vec::new()));
+    let mut rejected_fallback = ProfileFallbackDirectoryTransport {
+        lookup_result: Ok(json!({
+            "did": "did:example:malformed-authority",
+            "full_handle": "malformed.anpclaw.com"
+        })),
+        profile_response: json!({
+            "user_id": "must-not-be-used",
+            "full_handle": "must-not-be-used.anpclaw.com"
+        }),
+        calls: Rc::clone(&rejected_calls),
+    };
+    assert!(
+        resolve_direct_peer_scope_async(
+            &client,
+            &mut rejected_fallback,
+            "did:example:malformed-authority"
+        )
+        .await
+        .is_none(),
+        "a malformed authority response must not downgrade to Profile fallback"
+    );
+    assert_eq!(rejected_calls.borrow().as_slice(), ["lookup"]);
+}
+
+#[tokio::test]
+async fn profile_fallback_is_limited_and_rejects_every_conflicting_did_claim() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let requested = "did:example:legacy-peer";
+
+    let mut method_absent = ProfileFallbackDirectoryTransport::with_lookup_error(
+        crate::ImError::Service {
+            status_code: None,
+            code: Some("-32601".to_owned()),
+            message: "method absent".to_owned(),
+            data: None,
+        },
+        json!({
+            "profile": {
+                "subject_did": requested,
+                "user_id": "legacy-user",
+                "full_handle": "legacy.anpclaw.com"
+            }
+        }),
+    );
+    assert!(
+        resolve_direct_peer_scope_async(&client, &mut method_absent, requested)
+            .await
+            .is_some()
+    );
+    assert_eq!(method_absent.calls.borrow().len(), 2);
+    let mut method_absent_sync = ProfileFallbackDirectoryTransport::with_lookup_error(
+        crate::ImError::Service {
+            status_code: None,
+            code: Some("method_not_found".to_owned()),
+            message: "method absent".to_owned(),
+            data: None,
+        },
+        json!({
+            "profile": {
+                "id": requested,
+                "user_id": "legacy-user",
+                "full_handle": "legacy.anpclaw.com"
+            }
+        }),
+    );
+    assert!(resolve_direct_peer_scope(&client, &mut method_absent_sync, requested).is_some());
+
+    for error in [
+        crate::ImError::PermissionDenied,
+        crate::ImError::Service {
+            status_code: Some(503),
+            code: Some("directory_unavailable".to_owned()),
+            message: "temporary failure".to_owned(),
+            data: None,
+        },
+        crate::ImError::Service {
+            status_code: Some(403),
+            code: Some("not_found".to_owned()),
+            message: "forbidden".to_owned(),
+            data: None,
+        },
+        crate::ImError::Service {
+            status_code: Some(503),
+            code: Some("-32601".to_owned()),
+            message: "upstream unavailable".to_owned(),
+            data: None,
+        },
+    ] {
+        let mut rejected = ProfileFallbackDirectoryTransport::with_lookup_error(
+            error.clone(),
+            json!({
+                "user_id": "must-not-be-used",
+                "full_handle": "must-not-be-used.anpclaw.com"
+            }),
+        );
+        assert!(
+            resolve_direct_peer_scope_async(&client, &mut rejected, requested)
+                .await
+                .is_none()
+        );
+        assert_eq!(rejected.calls.borrow().as_slice(), ["lookup"]);
+        let mut rejected_sync = ProfileFallbackDirectoryTransport::with_lookup_error(
+            error,
+            json!({
+                "user_id": "must-not-be-used",
+                "full_handle": "must-not-be-used.anpclaw.com"
+            }),
+        );
+        assert!(resolve_direct_peer_scope(&client, &mut rejected_sync, requested).is_none());
+        assert_eq!(rejected_sync.calls.borrow().as_slice(), ["lookup"]);
+    }
+
+    let conflicting_profile = json!({
+        "did": requested,
+        "profile": {
+            "id": requested,
+            "subject_did": "did:example:other-peer",
+            "user_id": "legacy-user",
+            "full_handle": "legacy.anpclaw.com"
+        },
+        "result": {
+            "subjectDid": requested,
+            "profile": {"subject": {"id": requested}}
+        }
+    });
+    let mut async_conflict = ProfileFallbackDirectoryTransport::legacy(conflicting_profile.clone());
+    assert!(
+        resolve_direct_peer_scope_async(&client, &mut async_conflict, requested)
+            .await
+            .is_none(),
+        "the resolver must inspect every DID claim, not only the first one"
+    );
+    let mut sync_conflict = ProfileFallbackDirectoryTransport::legacy(conflicting_profile);
+    assert!(resolve_direct_peer_scope(&client, &mut sync_conflict, requested).is_none());
+
+    let profile_subject_mismatch = json!({
+        "profile": {
+            "subject_did": "did:example:other-peer",
+            "user_id": "legacy-user",
+            "full_handle": "legacy.anpclaw.com"
+        }
+    });
+    let mut async_mismatch =
+        ProfileFallbackDirectoryTransport::legacy(profile_subject_mismatch.clone());
+    assert!(
+        resolve_direct_peer_scope_async(&client, &mut async_mismatch, requested)
+            .await
+            .is_none()
+    );
+    let mut sync_mismatch = ProfileFallbackDirectoryTransport::legacy(profile_subject_mismatch);
+    assert!(resolve_direct_peer_scope(&client, &mut sync_mismatch, requested).is_none());
+
+    let all_aliases_match = json!({
+        "id": requested,
+        "profile": {
+            "id": requested,
+            "subject": {"id": requested},
+            "user_id": "legacy-user",
+            "full_handle": "legacy.anpclaw.com"
+        },
+        "result": {
+            "id": requested,
+            "profile": {
+                "id": requested,
+                "subject": {"id": requested}
+            }
+        }
+    });
+    let mut aliases_async = ProfileFallbackDirectoryTransport::legacy(all_aliases_match.clone());
+    assert!(
+        resolve_direct_peer_scope_async(&client, &mut aliases_async, requested)
+            .await
+            .is_some()
+    );
+    let mut aliases_sync = ProfileFallbackDirectoryTransport::legacy(all_aliases_match);
+    assert!(resolve_direct_peer_scope(&client, &mut aliases_sync, requested).is_some());
+
+    let mut nested_id_conflict = ProfileFallbackDirectoryTransport::legacy(json!({
+        "id": requested,
+        "profile": {
+            "user_id": "legacy-user",
+            "full_handle": "legacy.anpclaw.com"
+        },
+        "result": {
+            "profile": {"subject": {"id": "did:example:other-peer"}}
+        }
+    }));
+    assert!(
+        resolve_direct_peer_scope_async(&client, &mut nested_id_conflict, requested)
+            .await
+            .is_none()
+    );
+}
+
 #[derive(Clone)]
 struct ReadySessionProvider;
 
@@ -2527,6 +5626,43 @@ impl SessionProvider for ReadySessionProvider {
 }
 
 impl crate::internal::auth::session::AsyncSessionProvider for ReadySessionProvider {
+    async fn ensure_session(
+        &self,
+        scope: crate::auth::AuthScope,
+    ) -> crate::ImResult<crate::auth::SessionBundle> {
+        SessionProvider::ensure_session(self, scope)
+    }
+
+    async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+        SessionProvider::refresh_session(self)
+    }
+
+    async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+        SessionProvider::status(self)
+    }
+}
+
+#[derive(Clone)]
+struct DelegatedProofOnlySessionProvider;
+
+impl SessionProvider for DelegatedProofOnlySessionProvider {
+    fn ensure_session(
+        &self,
+        _scope: crate::auth::AuthScope,
+    ) -> crate::ImResult<crate::auth::SessionBundle> {
+        panic!("delegated inbox reads must use their DID proof without an access-token session")
+    }
+
+    fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+        panic!("delegated inbox reads must not refresh an access-token session")
+    }
+
+    fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+        panic!("delegated inbox reads must not inspect an access-token session")
+    }
+}
+
+impl crate::internal::auth::session::AsyncSessionProvider for DelegatedProofOnlySessionProvider {
     async fn ensure_session(
         &self,
         scope: crate::auth::AuthScope,
@@ -2639,6 +5775,45 @@ struct RecordingTransport {
     response: Value,
 }
 
+struct AllInboxRecordingTransport {
+    calls: Rc<RefCell<Vec<RecordedCall>>>,
+    direct_response: Value,
+    group_list_response: Value,
+    group_messages_response: Value,
+}
+
+impl AuthenticatedRpcTransport for AllInboxRecordingTransport {
+    fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> crate::ImResult<Value> {
+        self.calls.borrow_mut().push(RecordedCall {
+            endpoint: endpoint.to_owned(),
+            method: method.to_owned(),
+            params,
+        });
+        match method {
+            "inbox.get" => Ok(self.direct_response.clone()),
+            "group.list" => Ok(self.group_list_response.clone()),
+            "group.list_messages" => Ok(self.group_messages_response.clone()),
+            _ => Err(crate::ImError::unsupported("all-inbox-test-rpc")),
+        }
+    }
+}
+
+impl AsyncAuthenticatedRpcTransport for AllInboxRecordingTransport {
+    async fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> crate::ImResult<Value> {
+        AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+    }
+}
+
 impl AuthenticatedRpcTransport for RecordingTransport {
     fn authenticated_rpc(
         &mut self,
@@ -2719,8 +5894,104 @@ impl AsyncRpcTransport for StaticHandleDirectoryTransport {
     }
 }
 
+struct CountingHandleDirectoryTransport {
+    calls: Rc<RefCell<Vec<String>>>,
+}
+
+impl RpcTransport for CountingHandleDirectoryTransport {
+    fn rpc(&mut self, _endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+        self.calls.borrow_mut().push(method.to_owned());
+        let did = params
+            .get("did")
+            .and_then(Value::as_str)
+            .unwrap_or("did:example:bob-new");
+        Ok(json!({
+            "handle": "bob",
+            "full_handle": "bob.anpclaw.com",
+            "did": did,
+            "domain": "anpclaw.com",
+            "status": "active",
+            "user_id": "user-bob"
+        }))
+    }
+}
+
+impl AsyncRpcTransport for CountingHandleDirectoryTransport {
+    async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+        RpcTransport::rpc(self, endpoint, method, params)
+    }
+}
+
+struct FixedLookupDirectoryTransport(Value);
+
+impl RpcTransport for FixedLookupDirectoryTransport {
+    fn rpc(&mut self, _endpoint: &str, method: &str, _params: Value) -> crate::ImResult<Value> {
+        if method == "lookup" {
+            Ok(self.0.clone())
+        } else {
+            Err(crate::ImError::PeerNotFound {
+                peer: "fixed-lookup-directory".to_owned(),
+            })
+        }
+    }
+}
+
+impl AsyncRpcTransport for FixedLookupDirectoryTransport {
+    async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+        RpcTransport::rpc(self, endpoint, method, params)
+    }
+}
+
+struct ProfileFallbackDirectoryTransport {
+    lookup_result: crate::ImResult<Value>,
+    profile_response: Value,
+    calls: Rc<RefCell<Vec<String>>>,
+}
+
+impl ProfileFallbackDirectoryTransport {
+    fn legacy(profile_response: Value) -> Self {
+        Self::with_lookup_error(
+            crate::ImError::PeerNotFound {
+                peer: "profile-fallback".to_owned(),
+            },
+            profile_response,
+        )
+    }
+
+    fn with_lookup_error(error: crate::ImError, profile_response: Value) -> Self {
+        Self {
+            lookup_result: Err(error),
+            profile_response,
+            calls: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+}
+
+impl RpcTransport for ProfileFallbackDirectoryTransport {
+    fn rpc(&mut self, _endpoint: &str, method: &str, _params: Value) -> crate::ImResult<Value> {
+        self.calls.borrow_mut().push(method.to_owned());
+        if method == "lookup" {
+            return self.lookup_result.clone();
+        }
+        Ok(self.profile_response.clone())
+    }
+}
+
+impl AsyncRpcTransport for ProfileFallbackDirectoryTransport {
+    async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+        RpcTransport::rpc(self, endpoint, method, params)
+    }
+}
+
 struct Fixture {
     root: PathBuf,
+}
+
+struct VNextCacheFixture {
+    root: PathBuf,
+    did: String,
+    device_id: String,
+    identity_dir_name: String,
 }
 
 struct DelegatedIdentityFixture {
@@ -2758,6 +6029,179 @@ impl DelegatedIdentityFixture {
     }
 }
 
+impl VNextCacheFixture {
+    const VAULT_SEED: [u8; 32] = [41_u8; 32];
+    const WORKSPACE_ID: &'static str = "read-p5-cache-workspace";
+    const VAULT_DEVICE_ID: &'static str = "read-p5-cache-vault-device";
+
+    fn new() -> Self {
+        use crate::internal::identity_device_state::{
+            DeviceAuthorizationProjection, DeviceAuthorizationRole, DeviceAuthorizationStatus,
+            IdentityDeviceMode, IdentityDeviceState, IdentityInternalCheckpoint,
+            IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+        };
+        use crate::internal::identity_store::{
+            IdentityStore, SaveIdentityInput, SaveIdentityKeyMode, SaveIdentitySecretStorage,
+        };
+
+        let root = unique_temp_root();
+        let paths = Self::paths(&root);
+        fs::create_dir_all(&paths.identities.identity_root_dir).unwrap();
+        let generated =
+            crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+                "awiki.test",
+                "read-cache",
+                None,
+                None,
+            )
+            .unwrap();
+        let device_state = IdentityDeviceState {
+            schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+            mode: IdentityDeviceMode::VNext,
+            authorization: Some(DeviceAuthorizationProjection {
+                protocol_device_id: generated.protocol_device_id.clone(),
+                signing_key_id: generated.device_signing_key_id.clone(),
+                e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                status: DeviceAuthorizationStatus::Active,
+                role: DeviceAuthorizationRole::Member,
+                management_ready: false,
+                auth_generation: 1,
+            }),
+            checkpoint: Some(IdentityInternalCheckpoint {
+                document_version: 1,
+                document_hash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+                registry_version: 1,
+            }),
+        };
+        let vault = Arc::new(FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes(Self::VAULT_SEED),
+            FileSecretVaultStore::new(root.join("vault")),
+        ));
+        let store = IdentityStore::new(&paths.identities);
+        store
+            .save_identity_with_secret_storage(
+                SaveIdentityInput {
+                    local_alias: "alice".to_owned(),
+                    did: generated.did.clone(),
+                    unique_id: generated.unique_id.clone(),
+                    user_id: "read-cache-user".to_owned(),
+                    display_name: "Read cache".to_owned(),
+                    handle: "read-cache".to_owned(),
+                    full_handle: "read-cache.awiki.test".to_owned(),
+                    jwt_token: "test-device-token".to_owned(),
+                    did_document: Some(generated.did_document.clone()),
+                    key_mode: SaveIdentityKeyMode::VNext {
+                        root_key_id: generated.root_key_id.clone(),
+                        device_signing_key_id: generated.device_signing_key_id.clone(),
+                        device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                    },
+                    device_state: Some(device_state),
+                    key1_private_pem: generated.root_private_pem.clone(),
+                    key1_public_pem: generated.root_public_pem.clone(),
+                    e2ee_signing_private_pem: generated.device_signing_private_pem.clone(),
+                    e2ee_agreement_private_pem: generated.device_e2ee_private_pem.clone(),
+                    daemon_subkey_package: Some(generated.daemon_subkey_package.clone()),
+                    make_default: true,
+                },
+                SaveIdentitySecretStorage::Vault {
+                    workspace_id: Self::WORKSPACE_ID.to_owned(),
+                    device_id: Self::VAULT_DEVICE_ID.to_owned(),
+                    vault,
+                },
+            )
+            .unwrap();
+        let identity_dir_name = store.load_index().unwrap().credentials["alice"]
+            .dir_name
+            .clone();
+        Self {
+            root,
+            did: generated.did.as_str().to_owned(),
+            device_id: generated.protocol_device_id.as_str().to_owned(),
+            identity_dir_name,
+        }
+    }
+
+    fn paths(root: &std::path::Path) -> crate::ImCorePaths {
+        crate::ImCorePaths {
+            identities: crate::paths::IdentityRegistryPaths {
+                identity_root_dir: root.join("identities"),
+                registry_path: root.join("identities").join("registry.json"),
+                default_identity_path: Some(root.join("identities").join("default")),
+            },
+            local_state: crate::paths::LocalStatePaths {
+                sqlite_path: root.join("local").join("im.sqlite"),
+            },
+            runtime: crate::paths::RuntimePaths {
+                cache_dir: root.join("cache"),
+                temp_dir: root.join("tmp"),
+            },
+        }
+    }
+
+    fn client(&self, enabled: bool) -> crate::core::ImClient {
+        crate::core::ImCore::new_with_options(
+            crate::ImCoreConfig {
+                service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
+                did_domain: "awiki.test".to_owned(),
+                user_service_endpoint: None,
+                message_service_endpoint: None,
+                mail_service_endpoint: None,
+                anp_service_endpoint: None,
+                anp_service_did: None,
+                ca_bundle: None,
+                transport_policy: crate::MessageTransportPolicy::HttpOnly,
+            },
+            Self::paths(&self.root),
+            crate::ImCoreOpenOptions::default()
+                .with_identity_secret_vault(
+                    crate::IdentitySecretStoragePolicy::VaultRequired,
+                    crate::ImCoreSecretVaultOptions::new(
+                        DeviceVaultRootKey::from_bytes(Self::VAULT_SEED),
+                        self.root.join("vault"),
+                        Self::WORKSPACE_ID,
+                        Self::VAULT_DEVICE_ID,
+                    ),
+                )
+                .with_multi_device_direct_e2ee_enabled(enabled),
+        )
+        .unwrap()
+        .client(crate::identity::IdentitySelector::LocalAlias(
+            "alice".to_owned(),
+        ))
+        .unwrap()
+    }
+
+    fn set_authorization_status(&self, status: &str) {
+        let path = self.root.join("identities").join("registry.json");
+        let mut registry: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        registry["credentials"]["alice"]["device_state"]["authorization"]["status"] = json!(status);
+        fs::write(path, serde_json::to_vec_pretty(&registry).unwrap()).unwrap();
+    }
+
+    fn remove_direct_profile_from_local_document(&self) {
+        let path = self
+            .root
+            .join("identities")
+            .join(&self.identity_dir_name)
+            .join("did_document.json");
+        let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let devices = document["deviceManifest"]["devices"]
+            .as_array_mut()
+            .unwrap();
+        let device = devices
+            .iter_mut()
+            .find(|device| device["device_id"] == self.device_id)
+            .unwrap();
+        device["profiles"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|profile| {
+                profile.as_str() != Some(anp::authentication::PROFILE_DIRECT_E2EE_V2)
+            });
+        fs::write(path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+    }
+}
+
 impl Fixture {
     fn new() -> Self {
         let root = unique_temp_root();
@@ -2784,7 +6228,7 @@ impl Fixture {
     }
 
     fn client(&self) -> crate::core::ImClient {
-        crate::core::ImCore::new(
+        crate::core::ImCore::new_with_options(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
                 did_domain: "awiki.test".to_string(),
@@ -2810,6 +6254,7 @@ impl Fixture {
                     temp_dir: self.root.join("tmp"),
                 },
             },
+            crate::ImCoreOpenOptions::default(),
         )
         .unwrap()
         .client(crate::identity::IdentitySelector::LocalAlias(
@@ -3040,6 +6485,171 @@ impl Fixture {
             private_key_path,
             private_key_pem: delegated_private_key,
         }
+    }
+}
+
+fn p5_wire_message(init: bool) -> Value {
+    let operation_id = "p5-wire-placeholder";
+    let content_type = if init {
+        anp::direct_e2ee::CONTENT_TYPE_DIRECT_INIT_V2
+    } else {
+        anp::direct_e2ee::CONTENT_TYPE_DIRECT_CIPHER_V2
+    };
+    let body = if init {
+        json!({
+            "session_id": "AAAAAAAAAAAAAAAAAAAAAA",
+            "suite": anp::direct_e2ee::MTI_DIRECT_E2EE_SUITE_V2,
+            "sender_static_key_agreement_id": "did:example:alice#ka-admin",
+            "recipient_bundle_id": "bundle-member",
+            "recipient_signed_prekey_id": "signed-member",
+            "sender_ephemeral_pub_b64u": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "ciphertext_b64u": "U0VTU0lPTi1DT05UUk9MLUNJUEhFUlRFWFQ"
+        })
+    } else {
+        json!({
+            "session_id": "AAAAAAAAAAAAAAAAAAAAAA",
+            "suite": anp::direct_e2ee::MTI_DIRECT_E2EE_SUITE_V2,
+            "ratchet_header": {
+                "dh_pub_b64u": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "pn": "0",
+                "n": "0"
+            },
+            "ciphertext_b64u": "U0VTU0lPTi1DT05UUk9MLUNJUEhFUlRFWFQ"
+        })
+    };
+    json!({
+        "id": operation_id,
+        "sender_did": "did:example:alice",
+        "receiver_did": "did:example:alice",
+        "content_type": content_type,
+        "server_seq": if init { 1 } else { 2 },
+        "meta": {
+            "profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2,
+            "security_profile": "direct-e2ee",
+            "sender_did": "did:example:alice",
+            "sender_device_id": "device-admin",
+            "target": {"kind": "agent", "did": "did:example:alice"},
+            "recipient_device_id": "device-member",
+            "operation_id": operation_id,
+            "message_id": operation_id,
+            "content_type": content_type
+        },
+        "body": body,
+        "content": body
+    })
+}
+
+fn ordinary_p5_cache_message(
+    message_id: &str,
+    sender_did: &str,
+    sender_device_id: &str,
+    recipient_did: &str,
+    recipient_device_id: &str,
+) -> Value {
+    ordinary_p5_cache_message_with_kind(
+        false,
+        message_id,
+        sender_did,
+        sender_device_id,
+        recipient_did,
+        recipient_device_id,
+    )
+}
+
+fn ordinary_p5_cache_init_message(
+    message_id: &str,
+    sender_did: &str,
+    sender_device_id: &str,
+    recipient_did: &str,
+    recipient_device_id: &str,
+) -> Value {
+    ordinary_p5_cache_message_with_kind(
+        true,
+        message_id,
+        sender_did,
+        sender_device_id,
+        recipient_did,
+        recipient_device_id,
+    )
+}
+
+fn ordinary_p5_cache_message_with_kind(
+    init: bool,
+    message_id: &str,
+    sender_did: &str,
+    sender_device_id: &str,
+    recipient_did: &str,
+    recipient_device_id: &str,
+) -> Value {
+    let mut message = p5_wire_message(init);
+    let object = message.as_object_mut().unwrap();
+    object.insert("id".to_owned(), json!(message_id));
+    object.insert("sender_did".to_owned(), json!(sender_did));
+    object.insert("receiver_did".to_owned(), json!(recipient_did));
+    let meta = object
+        .get_mut("meta")
+        .and_then(Value::as_object_mut)
+        .unwrap();
+    meta.insert("sender_did".to_owned(), json!(sender_did));
+    meta.insert("sender_device_id".to_owned(), json!(sender_device_id));
+    meta.insert(
+        "target".to_owned(),
+        json!({"kind": "agent", "did": recipient_did}),
+    );
+    meta.insert("recipient_device_id".to_owned(), json!(recipient_device_id));
+    meta.insert("operation_id".to_owned(), json!(message_id));
+    meta.insert("message_id".to_owned(), json!(message_id));
+    message
+}
+
+fn json_rpc_p5_cache_message(mut message: Value) -> Value {
+    let object = message.as_object_mut().unwrap();
+    let meta = object.remove("meta").unwrap();
+    let body = object.remove("body").unwrap();
+    object.insert("method".to_owned(), json!("direct.incoming"));
+    object.insert("params".to_owned(), json!({"meta": meta, "body": body}));
+    message
+}
+
+fn p5_cache_record_metadata(message: &Value) -> String {
+    let binding = p5_cache_binding_from_message(message).unwrap().unwrap();
+    json!({
+        "decryption_state": "decrypted",
+        "raw_message_id": binding.message_id,
+        (P5_CACHE_PROFILE_KEY): binding.profile,
+        (P5_CACHE_SENDER_DID_KEY): binding.sender_did,
+        (P5_CACHE_SENDER_DEVICE_ID_KEY): binding.sender_device_id,
+        (P5_CACHE_RECIPIENT_DID_KEY): binding.recipient_did,
+        (P5_CACHE_RECIPIENT_DEVICE_ID_KEY): binding.recipient_device_id,
+        (P5_CACHE_BINDING_DIGEST_KEY): binding.digest,
+    })
+    .to_string()
+}
+
+fn p5_cached_incoming_record(
+    client: &crate::core::ImClient,
+    wire: &Value,
+    logical_message_id: &str,
+    plaintext: &str,
+) -> crate::internal::local_state::messages::MessageRecord {
+    let binding = p5_cache_binding_from_message(wire).unwrap().unwrap();
+    crate::internal::local_state::messages::MessageRecord {
+        msg_id: logical_message_id.to_owned(),
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        conversation_id: format!("dm:{}", binding.sender_did),
+        thread_id: format!("dm:{}", binding.sender_did),
+        wire_thread_kind: "direct".to_owned(),
+        wire_thread_ref: binding.sender_did.clone(),
+        wire_identity_resolution_state: "resolved".to_owned(),
+        direction: 0,
+        sender_did: binding.sender_did,
+        receiver_did: binding.recipient_did,
+        content_type: "text/plain".to_owned(),
+        content: plaintext.to_owned(),
+        is_e2ee: true,
+        metadata: p5_cache_record_metadata(wire),
+        ..crate::internal::local_state::messages::MessageRecord::default()
     }
 }
 

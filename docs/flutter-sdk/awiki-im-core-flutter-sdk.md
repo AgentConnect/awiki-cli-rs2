@@ -48,8 +48,13 @@ Inspection is read-only. Upgrade performs the Core-owned cross-process lock,
 SQLite online backup (including committed WAL state), shadow migration,
 conservation/invariant validation, and cutover. A missing SQLite file is a fresh
 install and returns `notRequired` without creating files. Ordinary Core open
-continues to fail closed with `local_state_upgrade_required`; hosts must not
-delete, archive, or recreate the database to bypass this gate. Public reports
+continues to fail closed with `local_state_upgrade_required` for the exact
+release/0710 schema 27 source; hosts must not delete, archive, or recreate the
+database to bypass this gate. The canonical pre-open runner owns schema 27 only.
+Post-canonical schemas 28 through the current version return `notRequired` and
+remain available to the ordinary atomic schema migration performed by
+`AwikiImCore.open`; the pre-open runner must not duplicate or block that
+dispatch. Public reports
 contain schema versions, aggregate counts, and owner-scoped legacy-to-canonical
 conversation mappings required by the App overlay migration. They never expose
 backup paths or message content. The mapping remains available after cutover so
@@ -65,22 +70,23 @@ assert(restored.targetSafetyCopyAvailable);
 ```
 
 Restore is not an in-process rollback for an open Core. It only accepts a
-completed canonical-upgrade journal, keeps the current schema-31 target as a private
+completed canonical-upgrade journal, keeps the current schema-32 target as a private
 safety copy, and is idempotent across interruption. The public result exposes
 versions/availability only, never filesystem backup paths.
 
 Schema 28 stores have already completed the canonical-conversation cutover.
-Ordinary Core open upgrades them in place through schemas 29, 30, and 31 to add
-the private message-hydration projection, subject-scoped reliable checkpoint,
-and the strictly proven legacy canonical-Direct WireIdentity repair;
-applications must not invoke the
-release/0710 runner again or delete/archive local state for this additive step.
+Ordinary Core open upgrades reviewed release predecessor shapes through schema 32.
+The release/0714 schema-31 shape is validated before Core adds the private message
+hydration projection, subject-scoped reliable checkpoint, and strictly proven legacy
+canonical-Direct WireIdentity repair. A same-number development schema fails closed
+and requires an explicit development-state reset; applications must not invoke the
+release/0710 runner again or perform an automatic delete/archive fallback.
 
 ## DTO policy
 
 Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitives at the boundary. Time values remain ISO-8601 strings. The Dart wrapper may add convenience getters such as `AuthStatus.authenticated`, but it must not rename Rust DTO semantics such as `has_session` into a different facade meaning.
 
-## Identity registration and recovery
+## Identity registration and legacy recovery
 
 The SDK exposes `registerHandleWithPhone`, `registerHandleWithEmail`, and `recoverHandle` on `AwikiImCore`. These calls are core-level identity registry operations that map to `im-core` public identity DTOs; they do not depend on any `awiki-me` account gateway or UI model.
 
@@ -89,6 +95,13 @@ successful recovery of an existing full Handle rotates its DID without changing 
 identity ID, records old/current DID history, refreshes owner-DID snapshots, and enqueues any
 Handle-backed group member rebind work. Dart hosts must not persist the returned DID as a new local
 identity owner or supply a separate generated identity.
+
+This legacy API is not the multi-device Handle Recovery flow below and must
+never be used as its fallback.
+
+Skill Token claim is intentionally not exposed through the Dart facade in v1. The raw one-time
+Token is consumed only by the CLI/Rust onboarding path; App code signs and copies the instruction
+but does not pass the Token into im-core, persist it, or manage the resulting Skill Agent identity.
 
 ## Identity secret storage
 
@@ -136,6 +149,181 @@ plaintext compatibility retention only. They do not expose root key material,
 JWTs, bearer tokens, or secret refs. Flutter Web remains a stub and cannot run
 the native vault-backed backend.
 
+Native hosts can read the current identity's safe device projection without
+opening any private key:
+
+```dart
+final device = await core.identityDeviceSummary(selector);
+```
+
+The result distinguishes legacy/member/admin readiness and exposes only the
+protocol device ID and public key IDs. It intentionally omits Vault references,
+root-key presence flags, and internal Document/Registry/auth checkpoints.
+
+## Multi-device Join
+
+Device Join 是 native SDK 的正式产品能力，不再受 Join host-local rollout gate 控制。新设备立即用
+`DeviceJoinAccountVerificationGrant.fromToken(...)` 包装短期账号验证结果；
+该 grant 没有 getter、copy/JSON API 或泄露内容的 `toString`，并由
+`beginDeviceJoin` 一次性消费。重启恢复与候选设备侧收敛继续使用
+`localDeviceJoinSessions`、`pollNewDeviceJoin` 和 `cancelNewDeviceJoin`。
+
+现有管理设备不通过 Registry pending 列表或 admin HTTP polling 发现请求。Core 在完成系统通知
+验证、durable dedupe 和本地 reducer commit 后，才发出可信
+`system_notification_changed` 事件；host 收到该信号后调用
+`localDeviceJoinRequests(selector)` 读取已验证、secret-free 的本地请求投影。打开页面或读取请求
+不得自动占有 Session。用户明确点击“开始验证”后，host 才调用
+`startDeviceJoinVerification(...)`，将 claim 与 Challenge 提交合并为一个操作；拒绝请求使用
+带 `DeviceJoinRejectReason.userRejected` 或 `DeviceJoinRejectReason.sasMismatch` 的
+`rejectDeviceJoin(...)`。
+
+该验证把目标 DID 的 `ANPMessageService.serviceDid` 仅作为 Home Service 域信任锚；P3
+Business Origin 是同域保留 path 下独立、E1 绑定的 System Notification Agent DID。Flutter
+host 不接收该身份的动态配置，也不需要处理自定义 profile。
+
+只有响应已经验证后，两端才显示本地推导的六位 SAS。管理设备收到可信通知并刷新本地请求后，
+调用 `localDeviceJoinVerificationProgress(selector:, joinSessionId:)` 读取短期 SAS。该接口是
+纯本地读取，只接受已经进入 `ResponseVerified` 或 `ApprovalPrepared` 的本地管理端 Session；
+它不发起 HTTP/RPC、不轮询远端、不写通知，也不推进 Join 状态。
+
+新设备的 `pollNewDeviceJoin` 在远端仍为 `responseVerified` 时，从本地 restart-safe
+transcript 与 Vault pairing secret 按需重新派生同一 SAS；SAS 本身仍不落盘。这样响应已经
+提交后发生 App 重启或一次无界面轮询，不会让该 Join 永久失去可比较的 SAS。
+远端进入 `consumed` 后，Core 使用与实时 Join 相同的文档解析边界校验最终
+`JsonWebKey2020` OKP Ed25519/X25519 设备方法，再提交 Vault activation record 和本地身份；
+该边界也供 hosted device auth、Root 和 P5 使用，Flutter host 不需要也不能自行转换这些
+verification methods。
+
+用户确认 SAS 一致后，host 调用 `prepareDeviceJoinApproval`，再在真实本地 user presence 后调用
+`confirmDeviceJoinApproval`。approval API 不接受 role，Join 结果固定为 rootless
+`member`；Registry 中既有设备的 member/admin role 仍可用于授权设备展示。approval handle
+只保留在进程内，不得记录或持久化。
+
+Join model 只暴露安全的 Session、设备、Registry role/status、expiry、请求生命周期和短期 SAS
+事实，不暴露 OTP/Join token、完整 Join Request/proof、pairing/private key、shared secret、
+root material、Challenge/ciphertext 或 AWiki 内部 Document/Registry/auth 版本与 hash。
+SAS 只允许短暂存在于 `DeviceJoinProgress`，不得进入 `DeviceJoinRequestNotice`、realtime event、
+持久化 DTO 或日志；相关模型的字符串与 Debug 输出必须保持脱敏。
+`system_notification_changed` 只携带 event ID、闭合 notification type 和可靠同步 hint，不透传
+raw P3 payload。Flutter Web 保留同形 API，但该 native 流程仍返回 unsupported。
+
+## Multi-device Handle Recovery
+
+V1 does not expose a Handle Recovery lifecycle, rollout flag, old-admin notice
+API, or native/Web stub. Recovery is a future, independently designed security
+capability; it must not be implemented by reusing Device Join or the
+single-original-device Legacy-to-Manifest upgrade. Applications must not infer
+Recovery support from identity registration, Join, root transfer, group rebind
+repair, or other operational repair APIs.
+
+## Management-device root-key transfer
+
+Root transfer is the single native V1 path and has no separate rollout option.
+The host first obtains an identity-scoped `AwikiImClient`, then calls:
+
+```dart
+final prepared = await client.rootKeyTransfer.prepare(
+  recipientDeviceId: justJoinedDeviceId,
+);
+// Verify and display prepared.recipient before prompting the user.
+final accepted = await client.rootKeyTransfer.confirmAndSend(
+  authorizationHandle: prepared.authorizationHandle,
+  userPresenceConfirmed: confirmedByOperatingSystem,
+);
+```
+
+`prepare` returns an opaque, short-lived authorization handle plus the exact
+secret-free recipient summary and expiry. The handle must only be passed back
+to the same client's `confirmAndSend`; its string projection is redacted.
+Core generates the message ID. The host cannot provide a root key, PreKey,
+session, checkpoint, proof, nonce, ciphertext, completion proof, or timeout.
+
+`RootKeyTransferSendResult` contains only DID, sender/recipient device IDs,
+Core-generated message ID, and accepted time. Acceptance means that encrypted
+delivery was accepted; it does not claim that recipient import or management
+readiness completed. Sender-side list, import status, and retry APIs are not
+public.
+
+RootKeyEnvelope, P5 state, imported completion, Vault state, and transport
+recovery remain entirely inside native Core. Public failures are the typed
+`RootKeyTransferException(code:, retryable:)` closed union. Flutter Web returns
+`root_transfer.unsupported` and has no plaintext or JavaScript fallback.
+
+## Permanent device revocation
+
+Native hosts opt in with
+`AwikiImCoreOpenOptions(multiDeviceDeviceRevokeEnabled: true)`; the option is
+independent from Join and defaults to false. After the host obtains foreground
+OS user presence, it calls `revokeDevice` with an identity selector, the exact
+opaque target device ID, and `userPresenceConfirmed: true`.
+
+The result contains only DID, target device ID, and `revoked` status. Internal
+Document/Registry versions and hashes, `auth_generation`, operation IDs,
+documents, proofs, tokens, and key material never enter the Dart API. Native
+Core rejects self-revocation and revoking the final ready management device;
+Flutter Web exposes the typed surface but keeps the operation unsupported.
+
+Failures expose `AwikiImCoreException.deviceRevokeOutcomeCategory` with the closed
+`DeviceRevokeOutcomeCategory.cancelledBeforeSubmit`, `rejectedBeforeCommit`, and
+`outcomeUnknown` values. Apps must refresh the authoritative device Registry after
+`outcomeUnknown`; they must not classify the outcome by matching `message`. A successful result
+does not claim every encrypted group has converged. Affected groups may remain send-paused until a
+current owner device explicitly repairs that group.
+
+## Multi-device Direct E2EE rollout
+
+Native hosts select the exact-device P5 v2 Direct product path with
+`AwikiImCoreOpenOptions(multiDeviceDirectE2eeEnabled: true)`. The option is
+host-local, defaults to false, and is independent from Join, root transfer,
+device revoke, Handle Recovery, and Group E2EE. It is never serialized into
+ANP, a DID Document, or a cross-domain request. Enabling it changes only Core's
+Direct product routing; it does not expose ciphertext, ratchet state, control
+JSON, or internal delivery ledgers to Dart.
+
+## Multi-device group encryption rollout
+
+Native hosts opt in with
+`AwikiImCoreOpenOptions(multiDeviceGroupE2eeEnabled: true)`; the option defaults
+to false and is independent from the Join flow and root-transfer gate. It is local
+configuration and is not sent as an ANP, DID Document, or cross-domain field.
+When enabled, `client.secure.group(groupDid).status()` and `repair()` read the
+device-scoped P6 v2 state and return only redacted readiness and repair facts.
+`GroupSecureRepairResult` reports `addedDevices`, `removedDevices`, and
+`remainingDevices` for the selected group reconciliation.
+They never return raw KeyPackages, Welcome/Commit data, Leaf identifiers, MLS
+secrets, provider paths, or SQLite rows.
+
+Group inventory is explicitly paged:
+
+```dart
+final first = await client.groups.listGroups(limit: 100);
+final next = first.hasMore
+    ? await client.groups.listGroups(limit: 100, cursor: first.nextCursor)
+    : null;
+
+final firstMembers = await client.groups.listMembers(
+  groupDid,
+  limit: 100,
+);
+final moreMembers = await client.groups.listMembers(
+  groupDid,
+  limit: 100,
+  cursor: firstMembers.nextCursor,
+);
+```
+
+`GroupReadResult` exposes `nextCursor`, `hasMore`, `pageGroupDid`, and
+`groupStateVersion`. The cursor is opaque. `groupStateVersion` remains a canonical decimal
+`String`, not a Dart `int`; `pageGroupDid/groupStateVersion` come from the Host member-page
+response and must not be filled from request arguments. The Dart wrapper returns one page and does
+not automatically enumerate a whole roster.
+
+When the Host projects `device_revocation_pending`, group secure status is never `ready`:
+an active owner with local controller state receives `needsRepair`, a non-owner receives
+`waitingForMembershipUpdate`, and a device without controller state receives
+`missingLocalState`. These are read-only readiness facts. Status does not mutate MLS, and malformed
+or unavailable Host maintenance state fails closed to `unavailable`.
+
 ## Directory profile metadata
 
 `client.directory.resolvePeer(handle)` and `client.directory.lookupHandle(handle)` return a
@@ -181,7 +369,7 @@ These display fields are UI metadata only. They must not be used for routing, au
 
 ## Local-first message reads
 
-`client.messages.conversations(...)` returns durable local conversations from `im-core`. Current schema version 31 reads conversation existence from the schema-28 `conversation_registry` and left-joins the message-derived `conversation_summaries`, so a validated empty conversation remains visible. Protocol/control records (including group lifecycle records) do not materialize a message summary; until the first user-visible message, `messageCount` remains `0` and `lastMessage` remains `null`. The API is paged: pass `cursor: page.nextCursor` to continue, and stop when `hasMore` is false or `nextCursor` is null. A single page is capped at 100 items by `PageLimit::new`. The cursor is opaque and follows `activity_at DESC, conversation_id DESC`; callers must not parse it or treat it as an offset.
+`client.messages.conversations(...)` returns durable local conversations from `im-core`. Current schema version 32 reads conversation existence from the schema-28 `conversation_registry` and left-joins the message-derived `conversation_summaries`, so a validated empty conversation remains visible. Protocol/control records (including group lifecycle records) do not materialize a message summary; until the first user-visible message, `messageCount` remains `0` and `lastMessage` remains `null`. The API is paged: pass `cursor: page.nextCursor` to continue, and stop when `hasMore` is false or `nextCursor` is null. A single page is capped at 100 items by `PageLimit::new`. The cursor is opaque and follows `activity_at DESC, conversation_id DESC`; callers must not parse it or treat it as an offset.
 
 Before opening a newly resolved Direct conversation or a newly created/joined Group conversation, commit its existence:
 
@@ -234,6 +422,12 @@ projection, runtime store, read state, or reliable checkpoint. `watchConversatio
 `repairRequired`) emitted only after the underlying local projection commit
 succeeds. The conversation store is keyed only by canonical `conversationId`;
 `remove` and `reorder` carry that ID instead of thread kind/id or a legacy alias.
+After a committed invalidation, the runtime store compares the full projected
+items with its current state. Identical items do not advance the store version
+and do not emit a synthetic `reset`; one-row material changes emit
+`upsert`/`remove`, while material multi-row changes may emit `reset`. Explicit
+repair, lag, overflow, stream-close, and version-gap paths keep their repair
+semantics.
 Snapshot format v3 invalidates older discardable redb snapshots and rebuilds them
 from SQLite so Group first paint retains the committed profile title across a
 restart. `repairConversationStore` returns a reset/repair patch after lag,
@@ -247,6 +441,13 @@ not the AWiki Me display-chain owner. A
 realtime incoming message becomes patch-visible only after `im-core` has
 committed its SQLite local projection; failed or skipped realtime projection
 does not emit an authoritative conversation/thread patch.
+
+Cancelling any of these Dart patch streams is a native lifecycle barrier. The
+bridge retains a cancellation signal and the Rust worker handle after stream
+attachment, wakes an idle `next_patch()` call, and joins the worker before the
+stop call completes. Conversation-list, conversation-timeline, and legacy
+thread patch streams use the same rule; an attached stream must never make its
+stop API a no-op.
 
 Remote history, conversation catch-up, and realtime incoming messages share one
 Core canonical-ingress gate. A Direct wire DID must resolve to a verified
@@ -379,8 +580,12 @@ The SDK first uses the service `read_state.mark_read` contract. When the service
 does not support the endpoint, the SDK falls back to local unread-id lookup and
 legacy direct `inbox.mark_read(message_ids)`. Group fallback on an old service is
 local/pending only. Results must expose `updatedCount`, `remoteAcknowledged`,
-`partial`, `fallbackUsed`, `pendingRemoteAck`, and `warnings`; any returned
-message ids are legacy fallback diagnostics only.
+`partial`, `fallbackUsed`, `pendingRemoteAck`, `effectiveWatermark`, and
+`warnings`; any returned message ids are legacy fallback diagnostics only.
+`effectiveWatermark` is the locally committed read watermark. Therefore
+`remoteAcknowledged == false && pendingRemoteAck == true` is still local-first
+success when `effectiveWatermark` covers the requested target; callers must not
+discard the result or convert it into a void fire-and-forget boundary.
 
 `markConversationRead` does not expose or advance the reliable sync checkpoint.
 `remoteAcknowledged` and `pendingRemoteAck` describe only read-ack state.
@@ -425,18 +630,26 @@ final page = await client.messages.syncConversationAfter(
   `since_event_seq` internally.
 - Rust `im-core` applies all returned events and advances the checkpoint only after
   the local apply transaction succeeds.
+- For an owner-scoped ordinary P3 Direct event that carries metadata but no body,
+  Rust checks the exact `message_id` and `server_seq`, resolves the peer through
+  the authoritative Handle directory, groups missing targets by Direct peer,
+  and hydrates `direct.get_history` from immediately before that peer's earliest
+  missing sequence. The verified peer scope is resolved once per authoritative
+  history page and reused for its messages, avoiding both one history request
+  per metadata event and one directory lookup per message. A later local thread
+  sequence does not satisfy the exact-message check. The checkpoint advances
+  only after every required message in the page is committed; hydration failure
+  leaves it unchanged. This plain-message recovery path does not create or select
+  P5 E2EE. A stable conversation ID remains a presentation/storage route:
+  ordinary Direct history is persisted with immutable `direct + peer DID` wire
+  identity so it can merge with the sender device's local projection without
+  weakening wire-conflict checks.
 - If the service returns `snapshot_required=true`, the SDK returns a failed-closed
   result: no checkpoint advance, no local projection wipe, and diagnostic fields for
   the App to surface a degraded sync state.
-- `hydrationRequiredConversationIds` contains every active, resolved canonical
-  conversation that still has a durable metadata-only message gap for the current
-  owner identity. It is derived from SQLite after the delta transaction, not only
-  from events in the current response, so a later `syncDelta` returns the same
-  conversation again until hydration succeeds.
-- Hosts must page `syncConversationAfter` for each returned conversation until
-  `hasMore` is false, then reload the committed local conversation summaries before
-  publishing final unread/preview state. A hydration failure does not roll back the
-  reliable checkpoint; the durable hint makes the next sync retryable.
+- Direct metadata-only hydration is entirely Core-owned. Hosts receive a successful
+  delta only after all exact plain Direct targets are committed; there is no App-side
+  second hydration loop or public list of pending conversation IDs.
 - Dart callers can choose `limit` and `reason`; they cannot choose or store the
   reliable checkpoint.
 

@@ -2,8 +2,7 @@ use im_core::identity::{ContactBindingMethodKind, ContactBindingResult};
 use im_core::prelude::{
     ContactBindingMethod, ContactBindingRequest, ContactBindingState, Did, DirectoryResolution,
     Handle, HandleRegistrationResult, HandleRegistrationState, IdentitySelector, IdentitySubject,
-    InitialProfile, PeerRef, ProfilePatch, RecoverHandleLocalFinalizeRequest,
-    RecoverHandlePlanRequest, RecoverHandleRequest, RegisterHandleRequest, RegistrationMethod,
+    InitialProfile, PeerRef, ProfilePatch, RegisterHandleRequest, RegistrationMethod,
     VerificationInput,
 };
 use serde::Serialize;
@@ -26,12 +25,6 @@ trait IdentityRawResponse {
 }
 
 impl IdentityRawResponse for ContactBindingResult {
-    fn raw_response(&self) -> Option<&Value> {
-        self.response_json()
-    }
-}
-
-impl IdentityRawResponse for im_core::identity::RecoverHandleResult {
     fn raw_response(&self) -> Option<&Value> {
         self.response_json()
     }
@@ -63,14 +56,6 @@ pub struct BindContactCommandRequest {
     pub sdk: ContactBindingRequest,
     pub verification_timeout: i64,
     pub poll_interval_seconds: f64,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct RecoverHandleCommandRequest {
-    pub identity_name: String,
-    pub handle: String,
-    pub phone: String,
-    pub otp: String,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -111,8 +96,6 @@ struct NormalizedHandle {
     full_handle: String,
     effective_domain: String,
 }
-
-const RECOVER_IDENTITY_IGNORED_WARNING: &str = "The --identity flag is ignored by `awiki-cli id recover`; the recover target and final live identity are derived only from --handle.";
 
 pub fn cli_identity_selector(identity_flag: &str) -> IdentitySelector {
     let value = identity_flag.trim();
@@ -288,6 +271,12 @@ fn register_handle_command_result(
     });
     if let Some(identity) = result.identity.as_ref() {
         data["identity"] = json!(cli_identity_summary_from_sdk(identity, &[]));
+    }
+    if let Some(join_required) = result.join_required.as_ref() {
+        data["join_required"] = json!({
+            "did": join_required.did.as_str(),
+            "account_verification_token": join_required.account_verification_token,
+        });
     }
     if let Some(phone) = registration_phone(&request.verification) {
         data["phone"] = json!(normalize_registration_phone(phone)?);
@@ -680,242 +669,6 @@ fn require_messaging_ready(
         return Ok(());
     }
     Err(super::map_im_error(im_core::ImError::AuthRequired, context))
-}
-
-pub fn recover_handle_request(
-    handle: String,
-    phone: String,
-    otp: Option<String>,
-    local_finalize: Option<RecoverHandleLocalFinalizeRequest>,
-    default_domain: &str,
-) -> Result<RecoverHandleRequest, ExitError> {
-    Ok(RecoverHandleRequest {
-        handle: Handle::parse(&handle, default_domain)
-            .map_err(|err| super::map_im_error(err, "id recover"))?,
-        raw_handle: Some(handle),
-        phone,
-        otp,
-        generated_identity: None,
-        local_finalize,
-    })
-}
-
-fn recover_handle_command_result(
-    result: im_core::identity::RecoverHandleResult,
-    plan: &im_core::identity::RecoverHandlePlan,
-) -> Result<CommandResult, ExitError> {
-    let raw = identity_raw_response(&result);
-    if result.state == im_core::identity::RecoverHandleState::OtpSent {
-        let full_handle = plan.target_handle.clone();
-        let handle = full_handle
-            .split_once('.')
-            .map(|(local, _)| local.to_string())
-            .unwrap_or_else(|| full_handle.clone());
-        return Ok(recover_otp_command_result(
-            &plan.final_identity_name,
-            &handle,
-            &full_handle,
-            &result.phone,
-            raw,
-        )?);
-    }
-    let Some(local) = result.local_recovery.as_ref() else {
-        return Err(ExitError::new(
-            "internal_error",
-            1,
-            "recover_handle result is missing local recovery summary",
-            "Run `awiki-cli doctor` to inspect configuration and storage paths.",
-        ));
-    };
-    Ok(CommandResult {
-        data: json!({
-            "action": "recover_handle",
-            "identity": local.identity,
-            "backup_path": local.backup_path,
-            "archived_identities": local.archived_identities,
-            "archived_dids": local.archived_dids,
-            "full_handle": local.full_handle,
-            "final_identity_name": local.final_identity_name,
-            "store_merge_counts": local.store_merge_counts,
-            "e2ee_cleanup_counts": local.e2ee_cleanup_counts,
-            "result": raw,
-        }),
-        summary: format!("Handle {} recovered successfully", local.full_handle),
-        warnings: result.warnings,
-    })
-}
-
-pub fn recover_handle_plan_via_im_core(
-    resolved: &crate::workspace_config::Resolved,
-    request: RecoverHandleCommandRequest,
-) -> Result<CommandResult, ExitError> {
-    let core = super::build_im_core(resolved)?;
-    let plan = core
-        .identities()
-        .recover_handle_plan(RecoverHandlePlanRequest {
-            handle: Handle::parse(request.handle.clone(), &resolved.did_domain)
-                .map_err(|err| super::map_im_error(err, "id recover"))?,
-            raw_handle: Some(request.handle.clone()),
-            phone: request.phone.clone(),
-            otp: trimmed_optional(&request.otp),
-        })
-        .map_err(|err| super::map_im_error(err, "id recover"))?;
-    Ok(CommandResult {
-        data: json!({ "plan": plan }),
-        summary: "Dry run: handle recovery planned".to_string(),
-        warnings: Vec::new(),
-    })
-}
-
-pub async fn recover_handle_plan_via_im_core_async(
-    resolved: &crate::workspace_config::Resolved,
-    request: RecoverHandleCommandRequest,
-) -> Result<CommandResult, ExitError> {
-    let core = super::build_im_core_async(resolved).await?;
-    let plan = core
-        .identities()
-        .recover_handle_plan_async(RecoverHandlePlanRequest {
-            handle: Handle::parse(request.handle.clone(), &resolved.did_domain)
-                .map_err(|err| super::map_im_error(err, "id recover"))?,
-            raw_handle: Some(request.handle.clone()),
-            phone: request.phone.clone(),
-            otp: trimmed_optional(&request.otp),
-        })
-        .await
-        .map_err(|err| super::map_im_error(err, "id recover"))?;
-    Ok(CommandResult {
-        data: json!({ "plan": plan }),
-        summary: "Dry run: handle recovery planned".to_string(),
-        warnings: Vec::new(),
-    })
-}
-
-pub fn recover_handle_via_im_core(
-    resolved: &crate::workspace_config::Resolved,
-    request: RecoverHandleCommandRequest,
-) -> Result<CommandResult, ExitError> {
-    let phone = request.phone.trim().to_string();
-    let otp = request.otp.trim().to_string();
-    if request.handle.trim().is_empty() || phone.is_empty() {
-        return Err(ExitError::new(
-            "invalid_argument",
-            2,
-            "invalid input: handle and phone are required",
-            "Usage: awiki-cli id recover --handle <handle> --phone <phone> [--otp <code>]",
-        ));
-    }
-
-    let core = super::build_im_core(resolved)?;
-    let plan = core
-        .identities()
-        .recover_handle_plan(RecoverHandlePlanRequest {
-            handle: Handle::parse(request.handle.clone(), &resolved.did_domain)
-                .map_err(|err| super::map_im_error(err, "id recover"))?,
-            raw_handle: Some(request.handle.clone()),
-            phone: request.phone.clone(),
-            otp: None,
-        })
-        .map_err(|err| super::map_im_error(err, "id recover"))?;
-    let sdk_request = recover_handle_request(
-        request.handle.clone(),
-        request.phone.clone(),
-        trimmed_optional(&request.otp),
-        (!otp.is_empty()).then(|| RecoverHandleLocalFinalizeRequest {
-            raw_handle: Some(request.handle.clone()),
-            active_identity_name: Some(resolved.active_identity.clone()),
-            config_file_path: Some(std::path::PathBuf::from(&resolved.paths.config_file)),
-        }),
-        &resolved.did_domain,
-    )?;
-    let result = core
-        .identities()
-        .recover_handle(sdk_request)
-        .map_err(|err| super::map_im_error(err, "id recover"))?;
-    recover_handle_command_result(result, &plan)
-}
-
-pub async fn recover_handle_via_im_core_async(
-    resolved: &crate::workspace_config::Resolved,
-    request: RecoverHandleCommandRequest,
-) -> Result<CommandResult, ExitError> {
-    let phone = request.phone.trim().to_string();
-    let otp = request.otp.trim().to_string();
-    if request.handle.trim().is_empty() || phone.is_empty() {
-        return Err(ExitError::new(
-            "invalid_argument",
-            2,
-            "invalid input: handle and phone are required",
-            "Usage: awiki-cli id recover --handle <handle> --phone <phone> [--otp <code>]",
-        ));
-    }
-
-    let core = super::build_im_core_async(resolved).await?;
-    let plan = core
-        .identities()
-        .recover_handle_plan_async(RecoverHandlePlanRequest {
-            handle: Handle::parse(request.handle.clone(), &resolved.did_domain)
-                .map_err(|err| super::map_im_error(err, "id recover"))?,
-            raw_handle: Some(request.handle.clone()),
-            phone: request.phone.clone(),
-            otp: None,
-        })
-        .await
-        .map_err(|err| super::map_im_error(err, "id recover"))?;
-    let sdk_request = recover_handle_request(
-        request.handle.clone(),
-        request.phone.clone(),
-        trimmed_optional(&request.otp),
-        (!otp.is_empty()).then(|| RecoverHandleLocalFinalizeRequest {
-            raw_handle: Some(request.handle.clone()),
-            active_identity_name: Some(resolved.active_identity.clone()),
-            config_file_path: Some(std::path::PathBuf::from(&resolved.paths.config_file)),
-        }),
-        &resolved.did_domain,
-    )?;
-    let result = core
-        .identities()
-        .recover_handle_async(sdk_request)
-        .await
-        .map_err(|err| super::map_im_error(err, "id recover"))?;
-    recover_handle_command_result(result, &plan)
-}
-
-pub fn recover_handle_command_via_im_core(
-    resolved: &crate::workspace_config::Resolved,
-    request: RecoverHandleCommandRequest,
-    dry_run: bool,
-    identity_changed: bool,
-) -> Result<CommandResult, ExitError> {
-    let mut result = if dry_run {
-        recover_handle_plan_via_im_core(resolved, request)
-    } else {
-        recover_handle_via_im_core(resolved, request)
-    }?;
-    append_recover_identity_warning(&mut result, identity_changed);
-    Ok(result)
-}
-
-pub async fn recover_handle_command_via_im_core_async(
-    resolved: &crate::workspace_config::Resolved,
-    request: RecoverHandleCommandRequest,
-    dry_run: bool,
-    identity_changed: bool,
-) -> Result<CommandResult, ExitError> {
-    let mut result = if dry_run {
-        recover_handle_plan_via_im_core_async(resolved, request).await
-    } else {
-        recover_handle_via_im_core_async(resolved, request).await
-    }?;
-    append_recover_identity_warning(&mut result, identity_changed);
-    Ok(result)
-}
-
-fn append_recover_identity_warning(result: &mut CommandResult, identity_changed: bool) {
-    if identity_changed {
-        result
-            .warnings
-            .push(RECOVER_IDENTITY_IGNORED_WARNING.to_string());
-    }
 }
 
 fn bind_email_wait_via_im_core(
@@ -1463,31 +1216,6 @@ fn resolve_command_result_from_sdk(resolution: DirectoryResolution) -> CommandRe
         .as_ref()
         .map(im_core::identity::Profile::to_wire_profile_value);
     resolve_command_result(resolve, lookup, public_profile, resolution.warnings)
-}
-
-fn recover_otp_command_result(
-    identity_name: &str,
-    handle: &str,
-    full_handle: &str,
-    phone: &str,
-    result: Value,
-) -> Result<CommandResult, ExitError> {
-    let phone = normalize_registration_phone(phone)?;
-    let full_handle = full_handle.trim();
-    Ok(CommandResult {
-        data: json!({
-            "action": "send_recover_otp",
-            "identity_name": identity_name,
-            "handle": handle.trim(),
-            "full_handle": full_handle,
-            "method": "phone",
-            "phone": phone,
-            "verification_state": "otp_sent",
-            "result": result,
-        }),
-        summary: format!("OTP sent for handle {full_handle} recovery"),
-        warnings: Vec::new(),
-    })
 }
 
 fn bind_phone_otp_command_result(
@@ -2072,6 +1800,7 @@ fn registration_action(state: HandleRegistrationState) -> &'static str {
         HandleRegistrationState::EmailSent => "send_registration_email",
         HandleRegistrationState::EmailPending => "wait_for_registration_email",
         HandleRegistrationState::Registered => "register_handle",
+        HandleRegistrationState::JoinRequired => "join_device",
     }
 }
 
@@ -2081,6 +1810,7 @@ fn registration_state_label(state: HandleRegistrationState) -> &'static str {
         HandleRegistrationState::EmailSent => "email_sent",
         HandleRegistrationState::EmailPending => "pending",
         HandleRegistrationState::Registered => "completed",
+        HandleRegistrationState::JoinRequired => "join_required",
     }
 }
 
@@ -2101,6 +1831,9 @@ fn registration_summary(state: HandleRegistrationState, full_handle: &str) -> St
         HandleRegistrationState::EmailPending => "Email verification is still pending".to_string(),
         HandleRegistrationState::Registered => {
             format!("Handle {full_handle} registered successfully")
+        }
+        HandleRegistrationState::JoinRequired => {
+            format!("Handle {full_handle} already exists; continue with device Join")
         }
     }
 }

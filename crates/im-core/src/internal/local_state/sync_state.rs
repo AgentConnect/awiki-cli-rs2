@@ -188,28 +188,25 @@ pub(crate) fn apply_sync_delta_tx(
             .then_with(|| left.2.event_id.cmp(&right.2.event_id))
     });
 
-    let mut expected = current_seq.saturating_add(1);
     let mut previous_seq = None;
     for (seq_num, _, _) in &new_events {
         if previous_seq == Some(*seq_num) {
             return Err(invalid_page("sync.delta page contains duplicate event_seq"));
         }
-        if *seq_num != expected {
-            return Err(invalid_page("sync.delta page has an event_seq gap"));
+        if *seq_num > next_seq {
+            return Err(invalid_page(
+                "sync.delta event_seq is ahead of next_event_seq",
+            ));
         }
         previous_seq = Some(*seq_num);
-        expected = expected.saturating_add(1);
     }
 
-    let last_new_seq = new_events
-        .last()
-        .map(|(seq_num, _, _)| *seq_num)
-        .unwrap_or(current_seq);
-    if next_seq != last_new_seq {
-        return Err(invalid_page(
-            "next_event_seq must equal the last applied event_seq",
-        ));
-    }
+    // `sync.delta` is projected to the authenticated device. The server scans
+    // the owner's global sequence, omits rows targeted at sibling devices (or
+    // already expired), and advances `next_event_seq` across those invisible
+    // rows. Visible event sequences are therefore strictly ordered but may be
+    // sparse, and a page may contain no visible events while still advancing.
+    let applied_events = new_events.len();
 
     let mut messages = Vec::new();
     let mut groups = Vec::new();
@@ -283,6 +280,7 @@ pub(crate) fn apply_sync_delta_tx(
             groups,
             invalidation,
             backlogged_messages,
+            applied_events,
         );
     }
 
@@ -297,6 +295,7 @@ pub(crate) fn apply_sync_delta_tx(
         groups,
         invalidation,
         backlogged_messages,
+        applied_events,
     )
 }
 
@@ -313,6 +312,7 @@ fn finish_sync_delta_apply(
     groups: Vec<super::groups::GroupRecord>,
     invalidation: SyncDeltaInvalidation,
     backlogged_messages: usize,
+    applied_events: usize,
 ) -> crate::ImResult<SyncDeltaApplyOutcome> {
     for group in groups {
         super::groups::upsert_group(transaction, group)?;
@@ -329,7 +329,7 @@ fn finish_sync_delta_apply(
     }
 
     Ok(SyncDeltaApplyOutcome {
-        applied_events: usize::try_from(next_seq - current_seq).unwrap_or(usize::MAX),
+        applied_events,
         backlogged_messages,
         last_applied_event_seq: next_event_seq,
         invalidation,

@@ -105,25 +105,6 @@ fn register_handle_command_request_uses_cli_identity_alias() {
 }
 
 #[test]
-fn recover_handle_request_builds_sdk_request() {
-    let request = identity::recover_handle_request(
-        "Alice".to_string(),
-        "13800138000".to_string(),
-        Some("12 34 56".to_string()),
-        None,
-        "awiki.test",
-    )
-    .unwrap();
-
-    assert_eq!(request.handle.as_str(), "alice.awiki.test");
-    assert_eq!(request.raw_handle.as_deref(), Some("Alice"));
-    assert_eq!(request.phone, "13800138000");
-    assert_eq!(request.otp.as_deref(), Some("12 34 56"));
-    assert!(request.generated_identity.is_none());
-    assert!(request.local_finalize.is_none());
-}
-
-#[test]
 fn replace_did_plan_command_request_builds_sdk_plan_request() {
     let workspace = TempDir::new("replace-did-plan-command").expect("workspace");
     let paths = crate::workspace_config::Paths {
@@ -401,6 +382,108 @@ fn common_im_errors_map_to_exit_errors() {
         assert!(mapped.exit_code > 0);
         assert!(!mapped.detail.code.is_empty());
         assert!(!mapped.detail.message.is_empty());
+    }
+}
+
+#[test]
+fn service_auth_statuses_map_to_safe_authorization_codes() {
+    let private_marker = "remote-private-error-detail";
+    let cases = [(401, "auth_required", 3), (403, "permission_denied", 4)];
+
+    for (status_code, expected_code, expected_exit) in cases {
+        let mapped = error::map_im_error(
+            ImError::Service {
+                status_code: Some(status_code),
+                code: Some("private.remote.code".to_owned()),
+                message: private_marker.to_owned(),
+                data: Some(serde_json::json!({"private": private_marker})),
+            },
+            "adapter test",
+        );
+        assert_eq!(mapped.detail.code, expected_code);
+        assert_eq!(mapped.exit_code, expected_exit);
+        let rendered = format!("{mapped:?}");
+        assert!(!rendered.contains(private_marker));
+        assert!(!rendered.contains("private.remote.code"));
+    }
+}
+
+#[test]
+fn service_error_exposes_only_a_valid_stable_public_code() {
+    let private_marker = "remote-private-error-detail";
+    let mapped = error::map_im_error(
+        ImError::Service {
+            status_code: None,
+            code: Some("anp.device_state_changed".to_owned()),
+            message: private_marker.to_owned(),
+            data: Some(serde_json::json!({"private": private_marker})),
+        },
+        "adapter test",
+    );
+
+    assert_eq!(mapped.detail.code, "service_error");
+    assert_eq!(mapped.exit_code, 5);
+    assert_eq!(
+        mapped.detail.details,
+        serde_json::json!({"service_code": "anp.device_state_changed"})
+    );
+    let rendered = format!("{mapped:?}");
+    assert!(!rendered.contains(private_marker));
+}
+
+#[test]
+fn service_error_omits_malformed_overlong_and_secret_like_codes() {
+    let private_marker = "remote-private-error-detail";
+    let invalid_codes = [
+        "anp.DeviceStateChanged".to_owned(),
+        " anp.device_state_changed".to_owned(),
+        "anp..device_state_changed".to_owned(),
+        format!("anp.{}", "x".repeat(96)),
+        "token.private_secret".to_owned(),
+        "-32001".to_owned(),
+    ];
+
+    for code in invalid_codes {
+        let mapped = error::map_im_error(
+            ImError::Service {
+                status_code: None,
+                code: Some(code.clone()),
+                message: private_marker.to_owned(),
+                data: Some(serde_json::json!({
+                    "private": private_marker,
+                    "remote_code": code
+                })),
+            },
+            "adapter test",
+        );
+
+        assert_eq!(mapped.detail.code, "service_error");
+        assert!(mapped.detail.details.is_null());
+        let rendered = format!("{mapped:?}");
+        assert!(!rendered.contains(private_marker));
+        assert!(!rendered.contains(&code));
+    }
+}
+
+#[test]
+fn skill_onboarding_errors_preserve_stable_code_phase_and_retryability() {
+    for (retryable, expected_exit) in [(false, 3), (true, 5)] {
+        let mapped = error::map_im_error(
+            ImError::SkillOnboarding {
+                code: "skill_onboarding_token_expired".to_owned(),
+                phase: "verify".to_owned(),
+                retryable,
+            },
+            "onboarding claim",
+        );
+        assert_eq!(mapped.exit_code, expected_exit);
+        assert_eq!(mapped.detail.code, "skill_onboarding_token_expired");
+        assert_eq!(mapped.detail.retryable, retryable);
+        assert_eq!(
+            mapped.detail.details,
+            serde_json::json!({"phase": "verify"})
+        );
+        assert!(!mapped.detail.message.contains("awsk1_"));
     }
 }
 
@@ -683,6 +766,34 @@ fn send_message_request_accepts_client_message_id_and_idempotency_key() {
     assert_eq!(
         request.delivery.idempotency_key.as_deref(),
         Some("agent-im-run-001")
+    );
+}
+
+#[test]
+fn send_attachment_request_accepts_client_message_id_and_idempotency_key() {
+    let mut command = command_with_flags([
+        ("to", "did:example:bob"),
+        ("file", "attachment.txt"),
+        ("client-message-id", "msg_attachment_001"),
+        ("idempotency-key", "op-msg_attachment_001"),
+    ]);
+    command.globals.dry_run = true;
+
+    let (target, request, client_message_id, warnings) =
+        messages::send_attachment_request(&command, "awiki.test").unwrap();
+
+    assert!(warnings.is_empty());
+    assert!(matches!(
+        target,
+        MessageTarget::Direct(ref peer) if peer.as_str() == "did:example:bob"
+    ));
+    assert_eq!(
+        client_message_id.as_ref().map(MessageId::as_str),
+        Some("msg_attachment_001")
+    );
+    assert_eq!(
+        request.delivery.idempotency_key.as_deref(),
+        Some("op-msg_attachment_001")
     );
 }
 

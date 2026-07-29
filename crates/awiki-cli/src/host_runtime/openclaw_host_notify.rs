@@ -3,8 +3,8 @@ use crate::workspace_config::{Paths, Resolved};
 use serde::Serialize;
 
 use super::host_notify::{
-    DirectMessageNotificationData, GroupStateChangedNotificationData, HostNotificationData,
-    HostNotificationEvent,
+    DeviceJoinRequestNotificationData, DirectMessageNotificationData,
+    GroupStateChangedNotificationData, HostNotificationData, HostNotificationEvent,
 };
 
 pub const FIXED_HOOK_NAME: &str = "AWiki";
@@ -107,6 +107,18 @@ pub fn build_openclaw_hook_request(
 }
 
 pub fn build_openclaw_agent_hook_message(event: &HostNotificationEvent) -> String {
+    if let Some(data) = extract_device_join_request(event) {
+        return [
+            "A Core-verified AWiki device Join request is waiting for user review.".to_string(),
+            format!("Receiver DID: {}", data.recipient_did),
+            "Message type: device_join_request".to_string(),
+            format!("Join session ID: {}", data.join_session_id),
+            format!("Issued at: {}", data.issued_at),
+            format!("Expires at: {}", data.expires_at),
+            "Required handling: Present this request to the user and ask them to choose whether to start verification or reject it. Read-only inspection of the Core-verified Join inbox is allowed to show device details. Do not start verification, reject the request, or perform any approval action until the user explicitly chooses. Starting verification is not approval; approval remains a later foreground verification-code step. The joined device uses the fixed member role and there is no role choice.".to_string(),
+        ]
+        .join("\n");
+    }
     let parts = openclaw_event_prompt_parts(event);
     [
         parts.summary,
@@ -203,6 +215,18 @@ fn openclaw_event_text_parts(event: &HostNotificationEvent) -> (String, Vec<Stri
                 group_state_content(data, ""),
             )
         }
+        Some(HostNotificationData::DeviceJoinRequest(data)) => {
+            let mut lines = Vec::new();
+            push_metadata_line(&mut lines, "recipient_did", &data.recipient_did);
+            push_metadata_line(&mut lines, "join_session_id", &data.join_session_id);
+            push_metadata_line(&mut lines, "issued_at", &data.issued_at);
+            push_metadata_line(&mut lines, "expires_at", &data.expires_at);
+            (
+                "[AWiki Device Join Request]".to_string(),
+                lines,
+                "A verified device Join request needs your choice. Start verification / Reject request. No action has been run.".to_string(),
+            )
+        }
         None => (
             "[Awiki Notification]".to_string(),
             Vec::new(),
@@ -278,6 +302,19 @@ fn openclaw_event_prompt_parts(event: &HostNotificationEvent) -> PromptParts {
             content: group_state_content(data, "Group state changed."),
             summary: "You received a new im message from awiki.".to_string(),
         },
+        Some(HostNotificationData::DeviceJoinRequest(data)) => PromptParts {
+            message_type: "device_join_request".to_string(),
+            group_id: "N/A".to_string(),
+            sender_handle: String::new(),
+            sender_did: String::new(),
+            receiver_handle: String::new(),
+            receiver_did: data.recipient_did.clone(),
+            content: format!(
+                "Join session ID: {}. Start verification / Reject request.",
+                data.join_session_id
+            ),
+            summary: "A verified AWiki device Join request needs user review.".to_string(),
+        },
         None => PromptParts {
             message_type: "notification".to_string(),
             group_id: "N/A".to_string(),
@@ -288,6 +325,15 @@ fn openclaw_event_prompt_parts(event: &HostNotificationEvent) -> PromptParts {
             content: serde_json::to_string(event).unwrap_or_default(),
             summary: "You received a new notification from awiki.".to_string(),
         },
+    }
+}
+
+fn extract_device_join_request(
+    event: &HostNotificationEvent,
+) -> Option<&DeviceJoinRequestNotificationData> {
+    match event.data.as_ref() {
+        Some(HostNotificationData::DeviceJoinRequest(data)) => Some(data),
+        _ => None,
     }
 }
 

@@ -85,6 +85,9 @@ pub struct DartGroupSecureRepairResult {
     pub group: String,
     pub state: DartGroupSecureState,
     pub repaired: bool,
+    pub added_devices: u32,
+    pub removed_devices: u32,
+    pub remaining_devices: u32,
     pub problem: Option<DartSecureProblem>,
     pub warnings: Vec<String>,
 }

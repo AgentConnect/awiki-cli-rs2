@@ -78,6 +78,7 @@ sudo mkdir -p "$(dirname "${release_dir}")" "${ARCHIVE_ROOT}/channels" "${WEB_RO
 [[ ! -e "${release_dir}" ]] || { echo "Error: release archive already exists at ${release_dir}" >&2; exit 1; }
 sudo rm -rf "${release_dir}.staging"
 sudo cp -R "${tmp}/stage" "${release_dir}.staging"
+sudo chmod -R u=rwX,go=rX "${release_dir}.staging"
 sudo mv "${release_dir}.staging" "${release_dir}"
 link_tmp="${WEB_ROOT}/.${CHANNEL}.${VERSION}.$$"
 sudo ln -s "${release_dir}" "${link_tmp}"
@@ -87,6 +88,9 @@ if [[ "${CHANNEL}" == "stable" ]]; then
   onboarding_tmp="${ARCHIVE_ROOT}/channels/.stable-onboarding.$$"
   sudo ln -s "${release_dir}/onboarding.md" "${onboarding_tmp}"
   sudo mv -Tf "${onboarding_tmp}" "${ARCHIVE_ROOT}/channels/stable-onboarding.md"
+  public_onboarding_tmp="${WEB_ROOT}/.onboarding.${VERSION}.$$"
+  sudo ln -s "${release_dir}/onboarding.md" "${public_onboarding_tmp}"
+  sudo mv -Tf "${public_onboarding_tmp}" "${WEB_ROOT}/onboarding.md"
 fi
 
 mapfile -t versions < <(sudo find "${ARCHIVE_ROOT}/releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn | awk '{print $2}')

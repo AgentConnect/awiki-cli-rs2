@@ -74,6 +74,10 @@ where
             .as_ref()
             .map(|value| value.direct_ids.clone())
             .unwrap_or_else(|_| ids.clone());
+        let remote_direct_ids = classification
+            .as_ref()
+            .map(|value| value.remote_direct_ids.clone())
+            .unwrap_or_else(|_| ids.clone());
         let group_ids = classification
             .as_ref()
             .map(|value| value.group_ids.clone())
@@ -86,12 +90,12 @@ where
         let mut warnings = Vec::new();
         let mut updated_count = 0_i64;
         let mut raw = None;
-        if !direct_ids.is_empty() {
+        if !remote_direct_ids.is_empty() {
             let (updated, response) = mark_direct_ids_remote_sync(
                 self.client,
                 &mut self.session_provider,
                 &mut self.transport,
-                &direct_ids,
+                &remote_direct_ids,
             )?;
             updated_count += updated;
             warnings.extend(warnings_from_raw(&response));
@@ -257,6 +261,10 @@ where
             .as_ref()
             .map(|value| value.direct_ids.clone())
             .unwrap_or_else(|_| ids.clone());
+        let remote_direct_ids = classification
+            .as_ref()
+            .map(|value| value.remote_direct_ids.clone())
+            .unwrap_or_else(|_| ids.clone());
         let group_ids = classification
             .as_ref()
             .map(|value| value.group_ids.clone())
@@ -269,12 +277,12 @@ where
         let mut warnings = Vec::new();
         let mut updated_count = 0_i64;
         let mut raw = None;
-        if !direct_ids.is_empty() {
+        if !remote_direct_ids.is_empty() {
             let (updated, response) = mark_direct_ids_remote_async(
                 self.client,
                 &mut self.session_provider,
                 &mut self.transport,
-                &direct_ids,
+                &remote_direct_ids,
             )
             .await?;
             updated_count += updated;
@@ -558,6 +566,7 @@ fn classify_mark_read_ids(
 ) -> crate::ImResult<NoSqliteMarkReadClassification> {
     Ok(NoSqliteMarkReadClassification {
         direct_ids: ids.to_vec(),
+        remote_direct_ids: ids.to_vec(),
         group_ids: Vec::new(),
         local_only_ids: Vec::new(),
     })
@@ -587,6 +596,7 @@ async fn classify_mark_read_ids_async(
 ) -> crate::ImResult<NoSqliteMarkReadClassification> {
     Ok(NoSqliteMarkReadClassification {
         direct_ids: ids.to_vec(),
+        remote_direct_ids: ids.to_vec(),
         group_ids: Vec::new(),
         local_only_ids: Vec::new(),
     })
@@ -1008,9 +1018,9 @@ where
         });
     }
     let classification = classify_mark_read_ids(client, &lookup.message_ids);
-    let direct_ids = classification
+    let remote_direct_ids = classification
         .as_ref()
-        .map(|value| value.direct_ids.clone())
+        .map(|value| value.remote_direct_ids.clone())
         .unwrap_or_else(|_| lookup.message_ids.clone());
     let has_group_or_local = classification
         .as_ref()
@@ -1018,8 +1028,8 @@ where
         .unwrap_or(false);
     let mut remote_acknowledged = false;
     let mut raw = None;
-    if !direct_ids.is_empty() {
-        match mark_direct_ids_remote_sync(client, session_provider, transport, &direct_ids) {
+    if !remote_direct_ids.is_empty() {
+        match mark_direct_ids_remote_sync(client, session_provider, transport, &remote_direct_ids) {
             Ok((_updated, response)) => {
                 warnings.extend(warnings_from_raw(&response));
                 raw = Some(response);
@@ -1069,9 +1079,9 @@ where
         });
     }
     let classification = classify_mark_read_ids_async(client, &lookup.message_ids).await;
-    let direct_ids = classification
+    let remote_direct_ids = classification
         .as_ref()
-        .map(|value| value.direct_ids.clone())
+        .map(|value| value.remote_direct_ids.clone())
         .unwrap_or_else(|_| lookup.message_ids.clone());
     let has_group_or_local = classification
         .as_ref()
@@ -1079,8 +1089,10 @@ where
         .unwrap_or(false);
     let mut remote_acknowledged = false;
     let mut raw = None;
-    if !direct_ids.is_empty() {
-        match mark_direct_ids_remote_async(client, session_provider, transport, &direct_ids).await {
+    if !remote_direct_ids.is_empty() {
+        match mark_direct_ids_remote_async(client, session_provider, transport, &remote_direct_ids)
+            .await
+        {
             Ok((_updated, response)) => {
                 warnings.extend(warnings_from_raw(&response));
                 raw = Some(response);
@@ -1233,6 +1245,7 @@ fn warnings_from_raw(value: &Value) -> Vec<String> {
 #[cfg(not(feature = "sqlite"))]
 struct NoSqliteMarkReadClassification {
     direct_ids: Vec<String>,
+    remote_direct_ids: Vec<String>,
     group_ids: Vec<String>,
     local_only_ids: Vec<String>,
 }
@@ -1717,7 +1730,23 @@ mod tests {
     async fn mark_read_runtime_async_marks_direct_remote_and_actor_local_rows() {
         let fixture = Fixture::new();
         let client = fixture.client();
-        fixture.seed_message(&client, "direct-async-1", "", "text/plain", "", 0);
+        fixture.seed_message(
+            &client,
+            "direct-async-1",
+            "",
+            "text/plain",
+            &json!({
+                "raw_message_id": "p5-v2-delivery:direct-async-1",
+                "p5_cache_profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2,
+                "p5_cache_sender_did": "did:example:bob",
+                "p5_cache_sender_device_id": "device-bob",
+                "p5_cache_recipient_did": "did:example:alice",
+                "p5_cache_recipient_device_id": "device-alice",
+                "p5_cache_binding_digest": "sha256:test-binding",
+            })
+            .to_string(),
+            0,
+        );
         let calls = Rc::new(RefCell::new(Vec::new()));
 
         let result = MessageMarkReadRuntime::new(
@@ -1743,7 +1772,7 @@ mod tests {
         assert_eq!(calls[0].method, "inbox.mark_read");
         assert_eq!(
             calls[0].params["body"]["message_ids"],
-            json!(["direct-async-1"])
+            json!(["p5-v2-delivery:direct-async-1"])
         );
     }
 

@@ -1,4 +1,12 @@
+"""Focused notification-surface and host-event compatibility contracts.
+
+[INPUT]: Representative host events, including redacted Device Join wakes
+[OUTPUT]: Deterministic validation and Hermes surface projection assertions
+[POS]: Unit contract for scripts/hermes_notify_adapter.py
+"""
+
 import importlib.util
+import json
 import pathlib
 import sys
 import unittest
@@ -105,6 +113,36 @@ class HermesNotifyAdapterValidationTests(unittest.TestCase):
         self.assertEqual(surface["id"], "ntf_msg_probe_001")
         self.assertEqual(surface["kind"], "message")
         self.assertEqual(surface["source"]["conversation_id"], "conv-probe-001")
+
+    def test_convert_device_join_wake_uses_identity_scoped_binding(self) -> None:
+        payload = {
+            "version": "1.0",
+            "id": "evt-join-001",
+            "topic": "im.device.join.requested",
+            "received_at": "2026-07-23T02:00:01Z",
+            "data": {
+                "channel": "device",
+                "event_id": "evt-join-001",
+                "join_session_id": "join-001",
+                "recipient_did": "did:wba:test:bob",
+                "issued_at": "2026-07-23T02:00:00Z",
+                "expires_at": "2026-07-23T02:10:00Z",
+            },
+        }
+
+        surface = hermes_notify_adapter.convert_host_event_to_surface(payload)
+
+        self.assertEqual(surface["kind"], "event")
+        self.assertEqual(
+            surface["source"]["conversation_id"],
+            "device-join:did:wba:test:bob",
+        )
+        self.assertEqual(surface["source"]["thread_id"], "join-001")
+        self.assertEqual(
+            surface["binding_key"],
+            "awiki:device-join:did:wba:test:bob",
+        )
+        self.assertNotIn("sas", json.dumps(surface).lower())
 
     def test_convert_host_event_to_surface_rejects_invalid_received_at(self) -> None:
         payload = {

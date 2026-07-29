@@ -238,13 +238,23 @@ second durable optimistic message source.
 Direct conversation send keeps a stable peer scope when the conversation is bound
 to a Handle/user identity. The normal send path uses the resolved DID already
 stored for the conversation and does not perform a Handle lookup before every
-message. If message-service rejects the send with JSON-RPC `1406` and
+message. Same-domain AWiki resolution obtains the authority subject from the
+authenticated Directory `user_id`. Cross-domain Direct and target-first attachment
+resolution instead reads the Handle provider's public WNS document and validates only
+the ANP-04 binding fields `handle`, `did`, `status`, and `binding_generation`; the
+normalized permanent full Handle is the authority subject. Public `user_id` /
+`subject_id` fields are ignored whether absent, changed, or conflicting, and the
+canonical positive decimal generation is required without a fixed integer-width limit.
+The same local-part under different domains therefore produces different peer scopes.
+
+If message-service rejects the send with JSON-RPC `1406` and
 `error.data.reason = "stale_did"`, `im-core` treats that as an authoritative
-target-rotation signal from user-service: it reads `current_did` /
-`full_handle` / `user_id` from `error.data`, fills missing data with one Handle
-lookup when a Handle is available, updates the retry target, and retries the
-network send once. Other `1406` reasons and all non-`stale_did` errors are not
-retargeted automatically and are persisted as failed local send state.
+target-rotation signal from user-service: it may use `current_did` / `full_handle`
+to find the target, but never accepts a private subject ID from `error.data`. When a
+Handle is available it repeats the normal authoritative same-domain Directory or
+cross-domain WNS resolution, updates the retry target, and retries the network send
+once. Other `1406` reasons and all non-`stale_did` errors are not retargeted
+automatically and are persisted as failed local send state.
 
 ### 2.1 Delegated Signing Optional 扩展
 
@@ -456,6 +466,17 @@ key；`send_state` 和 `retry_plan` 是 pending/accepted/sent/failed 展示事�
 pending rows 替代。
 
 ## 5. Inbox / History Query
+
+Inbox/History and realtime share a fail-closed control projection boundary.
+AWiki's fixed P5 v2 device-session Init/reply is recognized only from the exact
+session operation-ID form plus a strictly valid standard P5 `meta`/`body`.
+Recognized controls (including replays) and malformed strict-ID candidates are
+never returned as ordinary messages, timeline rows, events, or notifications.
+This filtering remains active when root-transfer rollout is off; enablement only
+permits async Inbox/History and realtime to execute the session-control side
+effect before dropping the wire object. A non-reserved operation ID remains
+ordinary P5 traffic. An ID that claims a reserved session prefix but fails the
+exact form is dropped fail-closed and cannot invoke the control side effect.
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -702,7 +723,10 @@ pub struct RealtimeSyncHint {
    `next_event_seq` checkpoint。后续权威 Handle projection 会幂等重放对应 backlog；冲突保持
    blocked/conflict-visible，不猜测合并。
 5. 返回 `events_applied`、`pages_fetched` 和 `last_applied_event_seq` 作为诊断和 UI 状态；
-   `last_applied_event_seq` 不是 public checkpoint setter。
+   `events_applied` 只统计本设备实际可见并应用的事件；`last_applied_event_seq` 是服务端扫描后
+   提交的 owner checkpoint，不是 public checkpoint setter。`sync.delta` 按认证设备投影时，
+   服务端会跳过发给兄弟设备或已过期的 owner 事件，因此可见 `event_seq` 允许严格递增但不连续，
+   空事件页也可以在 `next_event_seq` 前进时提交 checkpoint。
 6. 当服务端返回 `snapshot_required=true` 时 fail-closed：不推进 checkpoint、不清空本地
    projection，返回 `snapshot_required=true` 和诊断字段。
 7. `has_more=true` 时可由 runtime 或上层 coordinator 继续调度下一页，但每页仍必须走
@@ -798,6 +822,12 @@ authoritative patch。首条在线 Direct 的 verified Persona projection 必须
 patch / repair wrapper，返回同一个 `ThreadMessageStorePatch` DTO。新的 App timeline 主路径
 应使用这些 API；旧 `watch_thread_patches(ThreadRef)` / `repair_thread_store(ThreadRef)` 是
 compatibility adapter，不应继续作为 AWiki Me 消息归属判断的主来源。
+
+Flutter/Dart bridge 的 Patch session 在 stream attach 后仍拥有取消能力。对应 stop API
+必须唤醒 idle `next_patch().await`，等待后台 worker 退出后才完成；conversation list、
+conversation timeline 和 legacy thread stream 使用同一生命周期合同。调用方因此可以把
+stream `cancel()` 当作资源释放完成屏障，但业务事务仍不应把 presentation subscription
+清理作为身份删除等 Core 操作的前置条件。
 
 Conversation snapshot、conversation store patch 和 thread message patch DTO 都必须保持
 core-only，不包含 `awiki-me` presentation overlay 字段或 App domain DTO。

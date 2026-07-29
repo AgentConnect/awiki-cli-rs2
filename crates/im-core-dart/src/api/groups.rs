@@ -91,12 +91,18 @@ pub async fn get_group(
 pub async fn list_groups(
     client: &Arc<crate::api::client::DartImClient>,
     limit: u32,
+    cursor: Option<String>,
 ) -> Result<DartGroupReadResult, DartImError> {
     let inner = client.clone_inner()?;
+    let cursor = cursor
+        .map(im_core::ids::Cursor::parse)
+        .transpose()
+        .map_err(DartImError::from)?;
     inner
         .groups()
         .list_async(im_core::groups::GroupListRequest {
             limit: page_limit(limit)?,
+            cursor,
         })
         .await
         .map(Into::into)
@@ -107,14 +113,20 @@ pub async fn list_group_members(
     client: &Arc<crate::api::client::DartImClient>,
     group_did: String,
     limit: u32,
+    cursor: Option<String>,
 ) -> Result<DartGroupReadResult, DartImError> {
     let inner = client.clone_inner()?;
     let group = im_core::ids::GroupRef::parse(group_did).map_err(DartImError::from)?;
+    let cursor = cursor
+        .map(im_core::ids::Cursor::parse)
+        .transpose()
+        .map_err(DartImError::from)?;
     inner
         .groups()
         .members_async(im_core::groups::GroupMembersRequest {
             group,
             limit: page_limit(limit)?,
+            cursor,
         })
         .await
         .map(Into::into)

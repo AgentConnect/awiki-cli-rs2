@@ -6,6 +6,12 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+enum DartDeviceRevokeOutcomeCategory {
+  cancelledBeforeSubmit,
+  rejectedBeforeCommit,
+  outcomeUnknown,
+}
+
 class DartImError implements FrbException {
   final String code;
   final String message;
@@ -14,6 +20,7 @@ class DartImError implements FrbException {
   final String? capability;
   final String? serviceCode;
   final String? serviceDataJson;
+  final DartDeviceRevokeOutcomeCategory? deviceRevokeOutcomeCategory;
 
   const DartImError({
     required this.code,
@@ -23,6 +30,7 @@ class DartImError implements FrbException {
     this.capability,
     this.serviceCode,
     this.serviceDataJson,
+    this.deviceRevokeOutcomeCategory,
   });
 
   @override
@@ -33,7 +41,8 @@ class DartImError implements FrbException {
       statusCode.hashCode ^
       capability.hashCode ^
       serviceCode.hashCode ^
-      serviceDataJson.hashCode;
+      serviceDataJson.hashCode ^
+      deviceRevokeOutcomeCategory.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -46,5 +55,6 @@ class DartImError implements FrbException {
           statusCode == other.statusCode &&
           capability == other.capability &&
           serviceCode == other.serviceCode &&
-          serviceDataJson == other.serviceDataJson;
+          serviceDataJson == other.serviceDataJson &&
+          deviceRevokeOutcomeCategory == other.deviceRevokeOutcomeCategory;
 }

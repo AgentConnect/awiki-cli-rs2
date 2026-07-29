@@ -44,8 +44,8 @@ pub struct DaemonBootstrapEnvelope {
     pub user_subkey_package: UserSubkeyPackage,
     #[serde(default)]
     pub capability_policy: Value,
-    #[serde(default)]
-    pub desired_message_agent: Value,
+    #[serde(default, alias = "desired_message_agent")]
+    pub desired_personal_agent: Value,
     #[serde(default)]
     pub sync_policy: Value,
     #[serde(flatten)]
@@ -121,7 +121,7 @@ pub struct BootstrapProcessOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecureBootstrapProcessOutcome {
     pub bootstrap: BootstrapProcessOutcome,
-    pub desired_message_agent: Value,
+    pub desired_personal_agent: Value,
     pub capability_policy: Value,
     pub secure_replayed: bool,
 }
@@ -167,7 +167,7 @@ impl std::fmt::Debug for DaemonBootstrapEnvelope {
             .field("user_handle", &self.user_handle)
             .field("user_subkey_package", &self.user_subkey_package)
             .field("capability_policy", &"<redacted-control-payload>")
-            .field("desired_message_agent", &"<redacted-control-payload>")
+            .field("desired_personal_agent", &"<redacted-control-payload>")
             .field("sync_policy", &"<redacted-control-payload>")
             .field("extra", &"<redacted-control-payload>")
             .finish()
@@ -217,7 +217,11 @@ impl std::fmt::Debug for UserSubkeyPackage {
 }
 
 pub fn parse_bootstrap_payload(payload: Value) -> Result<DaemonBootstrapEnvelope> {
-    serde_json::from_value(payload).context("parse daemon bootstrap payload")
+    let mut envelope: DaemonBootstrapEnvelope =
+        serde_json::from_value(payload).context("parse daemon bootstrap payload")?;
+    envelope.desired_personal_agent =
+        canonicalize_desired_personal_agent_names(&envelope.desired_personal_agent);
+    Ok(envelope)
 }
 
 pub fn parse_secure_bootstrap_payload(payload: Value) -> Result<DaemonSecureBootstrapEnvelope> {
@@ -257,6 +261,7 @@ pub fn process_bootstrap_envelope(
         OffsetDateTime::now_utc(),
     )?;
     let payload_hash = stable_payload_hash(&envelope)?;
+    let legacy_payload_hash = legacy_stable_payload_hash(&envelope)?;
     let package = &envelope.user_subkey_package;
     let private_key = secret_from_private_key_multibase(package.private_key_material());
     let identity = UserDelegatedIdentityRecord {
@@ -288,7 +293,11 @@ pub fn process_bootstrap_envelope(
         created_at_ms: 0,
         updated_at_ms: 0,
     };
-    let outcome = state.store_bootstrap_state(&identity, &replay)?;
+    let outcome = state.store_bootstrap_state_with_legacy_payload_hash(
+        &identity,
+        &replay,
+        &legacy_payload_hash,
+    )?;
     let replayed = matches!(outcome, BootstrapStoreOutcome::Duplicate);
     state.insert_audit_event_json(
         "daemon.bootstrap.received",
@@ -367,7 +376,7 @@ pub fn process_secure_bootstrap_envelope(
         state.store_secure_bootstrap_replay(&secure_replay)?,
         BootstrapStoreOutcome::Duplicate
     );
-    let desired_message_agent = envelope.desired_message_agent.clone();
+    let desired_personal_agent = envelope.desired_personal_agent.clone();
     let capability_policy = envelope.capability_policy.clone();
     let bootstrap =
         process_bootstrap_envelope(state, daemon_agent_did, sender_did, did_resolver, envelope)?;
@@ -390,7 +399,7 @@ pub fn process_secure_bootstrap_envelope(
     )?;
     Ok(SecureBootstrapProcessOutcome {
         bootstrap,
-        desired_message_agent,
+        desired_personal_agent,
         capability_policy,
         secure_replayed,
     })
@@ -415,7 +424,7 @@ fn validate_bootstrap_envelope(
     }
     reject_forbidden_private_state_keys(&serde_json::to_value(&envelope.extra)?)?;
     reject_forbidden_private_state_keys(&envelope.capability_policy)?;
-    reject_forbidden_private_state_keys(&envelope.desired_message_agent)?;
+    reject_forbidden_private_state_keys(&envelope.desired_personal_agent)?;
     reject_forbidden_private_state_keys(&envelope.sync_policy)?;
     validate_user_subkey_package(&envelope.user_subkey_package)?;
     Ok(())
@@ -1134,8 +1143,24 @@ fn reject_forbidden_private_state_name(value: &str) -> Result<()> {
 }
 
 fn stable_payload_hash(envelope: &DaemonBootstrapEnvelope) -> Result<String> {
+    stable_payload_hash_with_agent_key(envelope, "desired_personal_agent")
+}
+
+fn legacy_stable_payload_hash(envelope: &DaemonBootstrapEnvelope) -> Result<String> {
+    stable_payload_hash_with_agent_key(envelope, "desired_message_agent")
+}
+
+fn stable_payload_hash_with_agent_key(
+    envelope: &DaemonBootstrapEnvelope,
+    agent_key: &str,
+) -> Result<String> {
     let package = &envelope.user_subkey_package;
-    let stable = json!({
+    let desired_agent = if agent_key == "desired_personal_agent" {
+        sanitized_desired_personal_agent_for_hash(&envelope.desired_personal_agent)
+    } else {
+        sanitized_legacy_message_agent_for_hash(&envelope.desired_personal_agent)
+    };
+    let mut stable = json!({
         "schema": envelope.schema,
         "bootstrap_id": envelope.bootstrap_id,
         "idempotency_key": envelope.idempotency_key,
@@ -1154,20 +1179,89 @@ fn stable_payload_hash(envelope: &DaemonBootstrapEnvelope) -> Result<String> {
             "allowed_scopes": package.allowed_scopes,
         },
         "capability_policy": envelope.capability_policy,
-        "desired_message_agent": sanitized_desired_message_agent_for_hash(&envelope.desired_message_agent),
+        "desired_personal_agent": desired_agent,
         "sync_policy": envelope.sync_policy,
     });
+    if agent_key != "desired_personal_agent" {
+        let object = stable
+            .as_object_mut()
+            .context("daemon bootstrap stable payload must be an object")?;
+        let desired = object
+            .remove("desired_personal_agent")
+            .context("daemon bootstrap stable payload is missing desired personal agent")?;
+        object.insert(agent_key.to_string(), desired);
+    }
     let bytes = serde_json::to_vec(&stable).context("serialize daemon bootstrap payload hash")?;
     let digest = Sha256::digest(bytes);
     Ok(hex_lower(&digest))
 }
 
-fn sanitized_desired_message_agent_for_hash(value: &Value) -> Value {
-    let mut sanitized = value.clone();
+fn sanitized_desired_personal_agent_for_hash(value: &Value) -> Value {
+    let mut sanitized = canonicalize_desired_personal_agent_names(value);
     if let Some(object) = sanitized.as_object_mut() {
         object.remove("runtime_registration_token");
         object.remove("registration_token");
         object.remove("token");
+    }
+    sanitized
+}
+
+fn canonicalize_desired_personal_agent_names(value: &Value) -> Value {
+    let mut canonical = value.clone();
+    if let Some(object) = canonical.as_object_mut() {
+        if object.get("runtime_profile").and_then(Value::as_str) == Some("message_agent") {
+            object.insert(
+                "runtime_profile".to_string(),
+                Value::String("personal_agent".to_string()),
+            );
+        }
+        if object.get("display_name").and_then(Value::as_str) == Some("Hermes Message Agent") {
+            object.insert(
+                "display_name".to_string(),
+                Value::String("Hermes Personal Agent".to_string()),
+            );
+        }
+        let canonical_ensure_once_key = object
+            .get("ensure_once_key")
+            .and_then(Value::as_str)
+            .and_then(|value| value.strip_prefix("app-message-agent:"))
+            .map(|suffix| format!("app-personal-agent:{suffix}"));
+        if let Some(canonical_ensure_once_key) = canonical_ensure_once_key {
+            object.insert(
+                "ensure_once_key".to_string(),
+                Value::String(canonical_ensure_once_key),
+            );
+        }
+    }
+    canonical
+}
+
+fn sanitized_legacy_message_agent_for_hash(value: &Value) -> Value {
+    let mut sanitized = sanitized_desired_personal_agent_for_hash(value);
+    if let Some(object) = sanitized.as_object_mut() {
+        if object.get("runtime_profile").and_then(Value::as_str) == Some("personal_agent") {
+            object.insert(
+                "runtime_profile".to_string(),
+                Value::String("message_agent".to_string()),
+            );
+        }
+        if object.get("display_name").and_then(Value::as_str) == Some("Hermes Personal Agent") {
+            object.insert(
+                "display_name".to_string(),
+                Value::String("Hermes Message Agent".to_string()),
+            );
+        }
+        let legacy_ensure_once_key = object
+            .get("ensure_once_key")
+            .and_then(Value::as_str)
+            .and_then(|value| value.strip_prefix("app-personal-agent:"))
+            .map(|suffix| format!("app-message-agent:{suffix}"));
+        if let Some(legacy_ensure_once_key) = legacy_ensure_once_key {
+            object.insert(
+                "ensure_once_key".to_string(),
+                Value::String(legacy_ensure_once_key),
+            );
+        }
     }
     sanitized
 }
@@ -1365,7 +1459,7 @@ mod tests {
         json!({
             "schema": DAEMON_BOOTSTRAP_SCHEMA,
             "bootstrap_id": "boot_1",
-            "idempotency_key": "message-agent-bootstrap:did:wba:example.com:user:alice:e1_user:app_1",
+            "idempotency_key": "personal-agent-bootstrap:did:wba:example.com:user:alice:e1_user:app_1",
             "app_instance_id": "app_1",
             "controller_did": "did:wba:example.com:user:alice:e1_user",
             "user_subkey_package": {
@@ -1383,11 +1477,11 @@ mod tests {
                     "message.summarize_plain"
                 ]
             },
-            "desired_message_agent": {
+            "desired_personal_agent": {
                 "role": "app_message_handler",
                 "runtime": "hermes",
                 "runtime_provider": "hermes",
-                "runtime_profile": "message_agent",
+                "runtime_profile": "personal_agent",
                 "preferred_language": "zh-Hans",
                 "e2ee_visible": false
             },
@@ -1415,13 +1509,60 @@ mod tests {
     }
 
     #[test]
+    fn legacy_desired_message_agent_field_decodes_but_serializes_canonical_name() {
+        let mut canonical_payload = valid_payload();
+        canonical_payload["desired_personal_agent"]["display_name"] =
+            json!("Hermes Personal Agent");
+        canonical_payload["desired_personal_agent"]["ensure_once_key"] =
+            json!("app-personal-agent:did:wba:example.com:user:alice:e1_user:app_1");
+        let canonical_envelope = parse_bootstrap_payload(canonical_payload.clone()).unwrap();
+        let mut legacy_payload = canonical_payload;
+        let desired = legacy_payload
+            .as_object_mut()
+            .unwrap()
+            .remove("desired_personal_agent")
+            .unwrap();
+        let mut desired = desired;
+        desired["runtime_profile"] = json!("message_agent");
+        desired["display_name"] = json!("Hermes Message Agent");
+        desired["ensure_once_key"] =
+            json!("app-message-agent:did:wba:example.com:user:alice:e1_user:app_1");
+        legacy_payload
+            .as_object_mut()
+            .unwrap()
+            .insert("desired_message_agent".to_string(), desired);
+
+        let envelope = parse_bootstrap_payload(legacy_payload).unwrap();
+        assert_eq!(
+            envelope.desired_personal_agent["runtime_profile"],
+            "personal_agent"
+        );
+        assert_eq!(
+            stable_payload_hash(&envelope).unwrap(),
+            stable_payload_hash(&canonical_envelope).unwrap()
+        );
+        assert_eq!(
+            legacy_stable_payload_hash(&envelope).unwrap(),
+            legacy_stable_payload_hash(&canonical_envelope).unwrap()
+        );
+        assert_ne!(
+            stable_payload_hash(&envelope).unwrap(),
+            legacy_stable_payload_hash(&envelope).unwrap()
+        );
+
+        let serialized = serde_json::to_value(envelope).unwrap();
+        assert!(serialized.get("desired_personal_agent").is_some());
+        assert!(serialized.get("desired_message_agent").is_none());
+    }
+
+    #[test]
     fn secure_bootstrap_payload_validates_contract_and_redacts_ciphertext() {
         let payload = json!({
             "schema": DAEMON_BOOTSTRAP_SECURE_SCHEMA,
             "recipient_daemon_did": "did:agent:daemon",
             "recipient_key_id": "did:agent:daemon#key-3",
             "sender_human_did": "did:wba:example.com:user:alice:e1_user",
-            "operation_id": "message-agent-bootstrap:did:wba:example.com:user:alice:e1_user:app_1",
+            "operation_id": "personal-agent-bootstrap:did:wba:example.com:user:alice:e1_user:app_1",
             "issued_at": "2026-06-19T01:00:00Z",
             "expires_at": "2026-06-19T01:05:00Z",
             "nonce": URL_SAFE_NO_PAD.encode([1_u8; 12]),
@@ -1431,7 +1572,7 @@ mod tests {
             "aad": {
                 "human_did": "did:wba:example.com:user:alice:e1_user",
                 "daemon_agent_did": "did:agent:daemon",
-                "binding_id": "app-message-agent:did:wba:example.com:user:alice:e1_user:app_1"
+                "binding_id": "app-personal-agent:did:wba:example.com:user:alice:e1_user:app_1"
             }
         });
 
@@ -1452,7 +1593,7 @@ mod tests {
             "recipient_daemon_did": "did:agent:daemon",
             "recipient_key_id": "did:agent:daemon#key-3",
             "sender_human_did": "did:wba:example.com:user:alice:e1_user",
-            "operation_id": "message-agent-bootstrap:did:wba:example.com:user:alice:e1_user:app_1",
+            "operation_id": "personal-agent-bootstrap:did:wba:example.com:user:alice:e1_user:app_1",
             "issued_at": "2026-06-19T01:00:00Z",
             "expires_at": "2026-06-19T01:05:00Z",
             "nonce": URL_SAFE_NO_PAD.encode([1_u8; 12]),
@@ -1545,7 +1686,7 @@ mod tests {
     #[test]
     fn bootstrap_payload_hash_ignores_runtime_registration_token() {
         let mut with_token = valid_payload();
-        with_token["desired_message_agent"]["runtime_registration_token"] =
+        with_token["desired_personal_agent"]["runtime_registration_token"] =
             json!("tok_runtime_secret_value");
         let without_token = valid_payload();
 

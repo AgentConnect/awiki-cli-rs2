@@ -167,7 +167,7 @@ impl App {
         file_path: &str,
         mime_type: &str,
     ) -> Result<(), ExitError> {
-        let (target, request, request_warnings) =
+        let (target, request, client_message_id, request_warnings) =
             crate::m_core_cli_adapter::messages::send_attachment_request(
                 command,
                 &resolved.did_domain,
@@ -203,7 +203,11 @@ impl App {
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )?;
         let mut result = crate::m_core_cli_adapter::messages::send_attachment_via_im_core(
-            resolved, &client, target, request,
+            resolved,
+            &client,
+            target,
+            request,
+            client_message_id,
         )
         .map_err(|err| {
             message_exit(
@@ -222,7 +226,7 @@ impl App {
         file_path: &str,
         mime_type: &str,
     ) -> Result<(), ExitError> {
-        let (target, request, request_warnings) =
+        let (target, request, client_message_id, request_warnings) =
             crate::m_core_cli_adapter::messages::send_attachment_request(
                 command,
                 &resolved.did_domain,
@@ -259,7 +263,11 @@ impl App {
         )
         .await?;
         let mut result = crate::m_core_cli_adapter::messages::send_attachment_via_im_core_async(
-            resolved, &client, target, request,
+            resolved,
+            &client,
+            target,
+            request,
+            client_message_id,
         )
         .await
         .map_err(|err| {
@@ -1138,6 +1146,18 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
             message,
             "Complete user setup with `awiki-cli id register --handle <handle> ...` or recover an existing handle before using `awiki-cli msg` commands.",
         ),
+        MessageAdapterError::PermissionDenied => ExitError::new(
+            "permission_denied",
+            4,
+            err.to_string(),
+            "Check that the active device has the required group role and retry.",
+        ),
+        MessageAdapterError::LocalStateUnavailable(detail) => ExitError::new(
+            "local_state_unavailable",
+            5,
+            detail,
+            "Refresh authoritative group state, then run group secure repair and retry.",
+        ),
         MessageAdapterError::SecureNotSupported => ExitError::new(
             "unsupported_mode",
             1,
@@ -1171,43 +1191,92 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
         MessageAdapterError::AttachmentNotSupported | MessageAdapterError::GroupNotSupported => {
             ExitError::new("not_implemented", 1, err.to_string(), hint)
         }
-        MessageAdapterError::Service(service_err) => match () {
-            _ if service_err.status_code == 400 || service_err.rpc_code == -32602 => {
-                ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
+        MessageAdapterError::PublicServiceCode(service_code) => {
+            let mut mapped = ExitError::new(
+                "service_error",
+                5,
+                "message operation: remote service request failed.",
+                hint,
+            );
+            if crate::m_core_cli_adapter::error::is_public_service_code(&service_code) {
+                mapped.detail.details = json!({"service_code": service_code});
             }
-            _ if service_err.status_code == 401 || service_err.rpc_code == -32000 => {
+            mapped
+        }
+        MessageAdapterError::Service(service_err) => match () {
+            _ if service_err.status_code == 403 => ExitError::new(
+                "permission_denied",
+                4,
+                "message operation: permission denied.",
+                "Check identity permissions and service access.",
+            ),
+            _ if service_err.status_code == 401 => ExitError::new(
+                "auth_required",
+                3,
+                "message operation: authentication is required.",
+                "Use an identity with a valid JWT or DID WBA auth material.",
+            ),
+            _ if service_err.status_code == 400 || service_err.rpc_code == -32602 => {
+                ExitError::new(
+                    "invalid_argument",
+                    2,
+                    "message operation: remote service rejected the request.",
+                    hint,
+                )
+            }
+            _ if service_err.rpc_code == -32000 => {
                 ExitError::new(
                     "auth_required",
                     3,
-                    service_err.to_string(),
+                    "message operation: authentication is required.",
                     "Use an identity with a valid JWT or DID WBA auth material.",
                 )
             }
             _ if service_err.rpc_code == 1401 => ExitError::new(
                 "auth_required",
                 3,
-                service_err.to_string(),
+                "message operation: authentication is required.",
                 "Use an identity with a valid JWT or DID WBA auth material.",
             ),
             _ if service_err.status_code == 404
                 || service_err.rpc_code == -32002
                 || matches!(service_err.rpc_code, 6000 | 6005 | 6007 | 6012) =>
             {
-                ExitError::new("not_found", 5, service_err.to_string(), hint)
+                ExitError::new(
+                    "not_found",
+                    5,
+                    "message operation: remote resource was not found.",
+                    hint,
+                )
             }
             _ if service_err.status_code == 409
                 || matches!(service_err.rpc_code, -32003 | -32004) =>
             {
-                ExitError::new("conflict", 1, service_err.to_string(), hint)
+                ExitError::new(
+                    "conflict",
+                    1,
+                    "message operation: remote state conflict.",
+                    hint,
+                )
             }
             _ if matches!(
                 service_err.rpc_code,
                 6006 | 6008 | 6009 | 6010 | 6011 | 6013
             ) =>
             {
-                ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
+                ExitError::new(
+                    "invalid_argument",
+                    2,
+                    "message operation: remote service rejected the request.",
+                    hint,
+                )
             }
-            _ => ExitError::new("internal_error", 1, service_err.to_string(), hint),
+            _ => ExitError::new(
+                "internal_error",
+                1,
+                "message operation: remote service request failed.",
+                hint,
+            ),
         },
         MessageAdapterError::Identity(err) => match err.kind {
             IdentityErrorKind::InvalidInput => ExitError::new(
@@ -1232,7 +1301,7 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
                 "auth_required",
                 3,
                 err.message,
-                "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
+                "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` first.",
             ),
             IdentityErrorKind::Internal => ExitError::new(
                 "internal_error",
@@ -1266,5 +1335,84 @@ mod tests {
             exit.detail.hint,
             "Start the websocket listener/daemon or switch runtime.mode back to http."
         );
+    }
+
+    #[test]
+    fn message_exit_preserves_group_fail_closed_categories() {
+        let denied = message_exit(MessageAdapterError::PermissionDenied, "fallback hint");
+        assert_eq!(denied.exit_code, 4);
+        assert_eq!(denied.detail.code, "permission_denied");
+
+        let unavailable = message_exit(
+            MessageAdapterError::LocalStateUnavailable(
+                "authoritative P4 member roster is incomplete".to_owned(),
+            ),
+            "fallback hint",
+        );
+        assert_eq!(unavailable.exit_code, 5);
+        assert_eq!(unavailable.detail.code, "local_state_unavailable");
+        assert_eq!(
+            unavailable.detail.message,
+            "authoritative P4 member roster is incomplete"
+        );
+    }
+
+    #[test]
+    fn message_exit_preserves_only_stable_public_service_code() {
+        let exit = message_exit(
+            MessageAdapterError::PublicServiceCode("anp.device_state_changed".to_owned()),
+            "Refresh the device state and retry.",
+        );
+
+        assert_eq!(exit.exit_code, 5);
+        assert_eq!(exit.detail.code, "service_error");
+        assert_eq!(
+            exit.detail.details,
+            json!({"service_code": "anp.device_state_changed"})
+        );
+        assert_eq!(
+            exit.detail.message,
+            "message operation: remote service request failed."
+        );
+    }
+
+    #[test]
+    fn message_exit_rejects_unvalidated_service_code() {
+        let private_marker = "remote-private-service-code";
+        let exit = message_exit(
+            MessageAdapterError::PublicServiceCode(private_marker.to_owned()),
+            "Retry later.",
+        );
+
+        assert_eq!(exit.exit_code, 5);
+        assert_eq!(exit.detail.code, "service_error");
+        assert_eq!(exit.detail.details, serde_json::Value::Null);
+        assert!(!format!("{exit:?}").contains(private_marker));
+    }
+
+    #[test]
+    fn message_exit_does_not_expose_remote_auth_error_payload() {
+        let private_marker = "remote-private-auth-payload";
+        for (status_code, rpc_code, expected_code, expected_exit_code) in [
+            (401, -32602, "auth_required", 3),
+            (403, -32602, "permission_denied", 4),
+        ] {
+            let exit = message_exit(
+                MessageAdapterError::Service(
+                    crate::m_core_cli_adapter::message_result::ServiceError {
+                        status_code,
+                        rpc_code,
+                        message: private_marker.to_owned(),
+                        data: Some(json!({"private": private_marker})),
+                    },
+                ),
+                "Retry later.",
+            );
+
+            assert_eq!(exit.exit_code, expected_exit_code);
+            assert_eq!(exit.detail.code, expected_code);
+            assert_eq!(exit.detail.details, serde_json::Value::Null);
+            assert!(!format!("{exit:?}").contains(private_marker));
+        }
     }
 }

@@ -9,8 +9,9 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `new`, `new`, `page_limit`, `read_watermark_to_core`, `stop`, `stop`, `take_session`, `take_session`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`
+// These functions are ignored because they are not marked as `pub`: `is_stopped`, `new`, `new`, `new`, `page_limit`, `read_watermark_to_core`, `spawn`, `stop`, `stop`, `stop`, `take_session`, `take_session`, `wait_for_patch_stream_cancel`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `PatchStreamLifecycle`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`, `drop`
 
 Future<DartSendMessageResult> sendText({
   required ArcDartImClient client,

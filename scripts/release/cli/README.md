@@ -25,7 +25,7 @@ Beta 和 Stable 是相互独立的发布通道，按实际需要选择其中一�
 3. 在目标服务器运行对应的 `publish-cli-release.sh beta` 或 `publish-cli-release.sh stable`。
 4. 验证本次所选通道的 Linux、macOS、Skill、Onboarding 和更新检查。
 
-只有 Stable 发布会更新 protocol-gateway 使用的 stable onboarding 快照；Beta 发布不会改变线上 onboarding。
+只有 Stable 发布会更新 `/cli/onboarding.md` 和 protocol-gateway 使用的 stable onboarding 快照；Beta 发布不会改变线上 onboarding。
 
 服务器脚本不会创建 commit 或 tag。任何失败都必须先修复并发布更高版本，不能移动 tag 或把旧归档重新提升为 latest。
 

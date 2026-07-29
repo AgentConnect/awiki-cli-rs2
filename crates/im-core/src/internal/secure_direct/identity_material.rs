@@ -44,7 +44,7 @@ pub(crate) fn local_identity_material(
 ) -> crate::ImResult<DirectSecureIdentityMaterial> {
     let runtime = client.runtime();
     let local_did_document = runtime.key_provider.did_document()?;
-    let signing_private_pem = runtime.key_provider.default_signing_private_pem()?;
+    let signing_private_pem = runtime.key_provider.device_request_signing_private_pem()?;
     let agreement_private_pem = runtime.key_provider.e2ee_agreement_private_pem()?;
     let owner_did = client.did().as_str().to_owned();
     Ok(DirectSecureIdentityMaterial {

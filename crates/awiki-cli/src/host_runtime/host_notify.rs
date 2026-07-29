@@ -21,6 +21,7 @@ pub enum HostNotificationData {
     Direct(DirectMessageNotificationData),
     Group(GroupMessageNotificationData),
     GroupState(GroupStateChangedNotificationData),
+    DeviceJoinRequest(DeviceJoinRequestNotificationData),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +126,16 @@ pub struct GroupStateChangedNotificationData {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceJoinRequestNotificationData {
+    pub channel: String,
+    pub event_id: String,
+    pub join_session_id: String,
+    pub recipient_did: String,
+    pub issued_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostNotificationAttachmentSummary {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub attachment_id: String,
@@ -186,6 +197,7 @@ pub fn apply_host_notification_handles(
                 fallback_string(recipient_handle.trim().to_string(), &data.recipient_handle);
         }
         HostNotificationData::GroupState(_) => {}
+        HostNotificationData::DeviceJoinRequest(_) => {}
     }
 }
 

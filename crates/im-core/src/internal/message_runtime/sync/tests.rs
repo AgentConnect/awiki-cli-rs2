@@ -10,6 +10,66 @@ use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+#[test]
+fn system_notification_delta_is_checkpoint_only_and_never_projects_chat_state() {
+    let fixture = Fixture::new("sync-delta-system-notification");
+    let client = fixture.client();
+    let raw = delta_page(
+        vec![json!({
+            "event_id": "sev-system-1",
+            "event_seq": "1",
+            "event_type": "system.notification",
+            "aggregate_kind": "device",
+            "aggregate_id": "dev-local",
+            "owner_subject_id": "did:example:alice",
+            "created_at": "2026-07-23T02:00:00Z",
+            "payload": {
+                "projection_kind": "system_notification"
+            }
+        })],
+        "1",
+        false,
+    );
+    let page = crate::internal::wire::sync::parse_sync_delta_page(&raw).unwrap();
+    let apply = sync_delta_apply_event(&client, &page.events[0], &Default::default()).unwrap();
+
+    assert_eq!(apply.event_type, "system.notification");
+    assert!(apply.messages.is_empty());
+    assert!(apply.groups.is_empty());
+}
+
+#[test]
+fn chat_shaped_delta_with_system_marker_is_also_checkpoint_only() {
+    let fixture = Fixture::new("sync-delta-system-marker");
+    let client = fixture.client();
+    let raw = delta_page(
+        vec![json!({
+            "event_id": "sev-system-2",
+            "event_seq": "2",
+            "event_type": "message.created",
+            "aggregate_kind": "direct_message",
+            "aggregate_id": "must-not-be-chat",
+            "owner_subject_id": "did:example:alice",
+            "created_at": "2026-07-23T02:00:00Z",
+            "payload": {
+                "message": {
+                    "projection_kind": "system_notification",
+                    "content": {
+                        "type": "awiki.device.join-requested.v1"
+                    }
+                }
+            }
+        })],
+        "2",
+        false,
+    );
+    let page = crate::internal::wire::sync::parse_sync_delta_page(&raw).unwrap();
+    let apply = sync_delta_apply_event(&client, &page.events[0], &Default::default()).unwrap();
+
+    assert!(apply.messages.is_empty());
+    assert!(apply.groups.is_empty());
+}
+
 #[tokio::test]
 async fn sync_delta_reads_checkpoint_calls_wire_and_advances_checkpoint() {
     let fixture = Fixture::new("sync-delta-basic");
@@ -57,29 +117,8 @@ async fn sync_delta_reads_checkpoint_calls_wire_and_advances_checkpoint() {
 }
 
 #[tokio::test]
-async fn sync_delta_schema_30_wire_repair_unblocks_replay_and_advances_checkpoint() {
-    let fixture = Fixture::new("sync-delta-schema-30-wire-repair");
-    let conversation_id = fixture.seed_verified_peer();
-    fixture.seed_message(
-        "legacy-bad-wire-5",
-        &conversation_id,
-        "",
-        Some(5),
-        "did:example:bob",
-        "did:example:alice",
-    );
-    {
-        let db = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
-        db.execute(
-            r#"UPDATE messages
-SET wire_thread_kind = 'thread', wire_thread_ref = conversation_id,
-    wire_identity_resolution_state = 'resolved'
-WHERE owner_identity_id = 'alice-id' AND msg_id = 'legacy-bad-wire-5'"#,
-            [],
-        )
-        .unwrap();
-        db.pragma_update(None, "user_version", 30).unwrap();
-    }
+async fn sync_delta_advances_past_v2_wire_without_persisting_private_objects() {
+    let fixture = Fixture::new("sync-delta-v2-private-wire");
     let client = fixture.client();
     let runtime = MessageSyncRuntime::new(
         &client,
@@ -87,8 +126,29 @@ WHERE owner_identity_id = 'alice-id' AND msg_id = 'legacy-bad-wire-5'"#,
         RecordingTransport::queued(
             Rc::new(RefCell::new(Vec::new())),
             vec![delta_page(
-                vec![message_created_event("sev-1", "1", "legacy-bad-wire-5", 5)],
-                "1",
+                vec![
+                    v2_message_event(
+                        "sev-p5",
+                        "1",
+                        "message.created",
+                        "wire-p5-secret",
+                        json!({
+                            "profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2
+                        }),
+                        false,
+                    ),
+                    v2_message_event(
+                        "sev-p6",
+                        "2",
+                        "conversation.updated",
+                        "wire-p6-secret",
+                        json!({
+                            "profile": anp::group_e2ee::GROUP_E2EE_PROFILE_V2
+                        }),
+                        true,
+                    ),
+                ],
+                "2",
                 false,
             )],
         ),
@@ -102,18 +162,11 @@ WHERE owner_identity_id = 'alice-id' AND msg_id = 'legacy-bad-wire-5'"#,
         .await
         .unwrap();
 
-    assert_eq!(result.events_applied, 1);
-    assert_eq!(fixture.checkpoint().as_deref(), Some("1"));
-    let db = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
-    let wire = db
-        .query_row(
-            r#"SELECT wire_thread_kind, wire_thread_ref
-FROM messages WHERE owner_identity_id = 'alice-id' AND msg_id = 'legacy-bad-wire-5'"#,
-            [],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .unwrap();
-    assert_eq!(wire, ("direct".to_owned(), "did:example:bob".to_owned()));
+    assert_eq!(result.events_applied, 2);
+    assert_eq!(result.last_applied_event_seq.as_deref(), Some("2"));
+    assert_eq!(fixture.checkpoint().as_deref(), Some("2"));
+    assert_eq!(fixture.message_server_seq("wire-p5-secret"), None);
+    assert_eq!(fixture.message_server_seq("wire-p6-secret"), None);
 }
 
 #[tokio::test]
@@ -197,6 +250,284 @@ async fn sync_delta_backlogs_unresolved_direct_before_advancing_checkpoint() {
         .warnings
         .iter()
         .any(|warning| warning == "identity_unresolved_backlog:1"));
+}
+
+#[tokio::test]
+async fn sync_delta_hydrates_metadata_only_outbound_direct_before_checkpoint() {
+    let fixture = Fixture::new("sync-delta-outbound-thread-hydration");
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::clone(&calls),
+            vec![
+                delta_page(
+                    vec![outbound_message_created_event_without_content(
+                        "sev-outbound-1",
+                        "1",
+                        "msg-outbound-1",
+                        41,
+                    )],
+                    "1",
+                    false,
+                ),
+                json!({
+                    "messages": [{
+                        "id": "msg-outbound-1",
+                        "sender_did": "did:example:alice",
+                        "receiver_did": "did:example:bob",
+                        "content": "outbound body from authoritative history",
+                        "content_type": "text/plain",
+                        "server_seq": "41",
+                        "sent_at": "2026-07-27T00:00:00Z"
+                    }],
+                    "has_more": false,
+                    "warnings": []
+                }),
+            ],
+        ),
+        FixedLookupDirectoryTransport(json!({
+            "handle": "bob",
+            "full_handle": "bob.example",
+            "did": "did:example:bob",
+            "domain": "example",
+            "status": "active",
+            "user_id": "user-bob"
+        })),
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 1);
+    assert_eq!(fixture.checkpoint().as_deref(), Some("1"));
+    assert_eq!(fixture.unresolved_backlog_count(), 0);
+    assert_eq!(
+        fixture.message_content("msg-outbound-1").as_deref(),
+        Some("outbound body from authoritative history")
+    );
+    let calls = calls.borrow();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].method, "sync.delta");
+    assert_eq!(calls[1].method, "direct.get_history");
+    assert_eq!(calls[1].params["body"]["peer_did"], "did:example:bob");
+    assert_eq!(calls[1].params["body"]["since_seq"], "0");
+}
+
+#[tokio::test]
+async fn sync_delta_batches_metadata_only_outbound_hydration_per_direct_peer() {
+    let fixture = Fixture::new("sync-delta-outbound-thread-batched-hydration");
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::clone(&calls),
+            vec![
+                delta_page(
+                    vec![
+                        outbound_message_created_event_without_content(
+                            "sev-outbound-1",
+                            "1",
+                            "msg-outbound-1",
+                            41,
+                        ),
+                        outbound_message_created_event_without_content(
+                            "sev-outbound-2",
+                            "2",
+                            "msg-outbound-2",
+                            42,
+                        ),
+                    ],
+                    "2",
+                    false,
+                ),
+                json!({
+                    "messages": [
+                        {
+                            "id": "msg-outbound-1",
+                            "sender_did": "did:example:alice",
+                            "receiver_did": "did:example:bob",
+                            "content": "first outbound body",
+                            "content_type": "text/plain",
+                            "server_seq": "41",
+                            "sent_at": "2026-07-27T00:00:00Z"
+                        },
+                        {
+                            "id": "msg-outbound-2",
+                            "sender_did": "did:example:alice",
+                            "receiver_did": "did:example:bob",
+                            "content": "second outbound body",
+                            "content_type": "text/plain",
+                            "server_seq": "42",
+                            "sent_at": "2026-07-27T00:00:01Z"
+                        }
+                    ],
+                    "has_more": false,
+                    "warnings": []
+                }),
+            ],
+        ),
+        FixedLookupDirectoryTransport(json!({
+            "handle": "bob",
+            "full_handle": "bob.example",
+            "did": "did:example:bob",
+            "domain": "example",
+            "status": "active",
+            "user_id": "user-bob"
+        })),
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 2);
+    assert_eq!(fixture.checkpoint().as_deref(), Some("2"));
+    assert_eq!(
+        fixture.message_content("msg-outbound-1").as_deref(),
+        Some("first outbound body")
+    );
+    assert_eq!(
+        fixture.message_content("msg-outbound-2").as_deref(),
+        Some("second outbound body")
+    );
+    let calls = calls.borrow();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].method, "sync.delta");
+    assert_eq!(calls[1].method, "direct.get_history");
+}
+
+#[tokio::test]
+async fn sync_delta_hydrates_missing_message_even_when_thread_sequence_is_ahead() {
+    let fixture = Fixture::new("sync-delta-outbound-message-gap");
+    let conversation_id = fixture.seed_verified_peer();
+    fixture.seed_message(
+        "msg-outbound-later",
+        &conversation_id,
+        "",
+        Some(50),
+        "did:example:alice",
+        "did:example:bob",
+    );
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::clone(&calls),
+            vec![
+                delta_page(
+                    vec![outbound_message_created_event_without_content(
+                        "sev-outbound-1",
+                        "1",
+                        "msg-outbound-missing",
+                        41,
+                    )],
+                    "1",
+                    false,
+                ),
+                json!({
+                    "messages": [{
+                        "id": "msg-outbound-missing",
+                        "sender_did": "did:example:alice",
+                        "receiver_did": "did:example:bob",
+                        "content": "missing outbound body",
+                        "content_type": "text/plain",
+                        "server_seq": "41",
+                        "sent_at": "2026-07-27T00:00:00Z"
+                    }],
+                    "has_more": false,
+                    "warnings": []
+                }),
+            ],
+        ),
+        FixedLookupDirectoryTransport(json!({
+            "handle": "bob",
+            "full_handle": "bob.example",
+            "did": "did:example:bob",
+            "domain": "example",
+            "status": "active",
+            "user_id": "user-bob"
+        })),
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 1);
+    assert_eq!(fixture.checkpoint().as_deref(), Some("1"));
+    assert_eq!(
+        fixture.message_content("msg-outbound-missing").as_deref(),
+        Some("missing outbound body")
+    );
+    assert_eq!(
+        fixture.message_content("msg-outbound-later").as_deref(),
+        Some("local")
+    );
+    let calls = calls.borrow();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1].method, "direct.get_history");
+    assert_eq!(calls[1].params["body"]["since_seq"], "40");
+}
+
+#[tokio::test]
+async fn sync_delta_does_not_checkpoint_unhydrated_outbound_direct() {
+    let fixture = Fixture::new("sync-delta-outbound-thread-hydration-required");
+    let client = fixture.client();
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![
+                delta_page(
+                    vec![outbound_message_created_event_without_content(
+                        "sev-outbound-1",
+                        "1",
+                        "msg-outbound-1",
+                        41,
+                    )],
+                    "1",
+                    false,
+                ),
+                json!({
+                    "messages": [],
+                    "has_more": false,
+                    "warnings": []
+                }),
+            ],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let error = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("did not commit the Direct delta projection"));
+    assert_eq!(fixture.checkpoint(), None);
+    assert_eq!(fixture.message_count("msg-outbound-1"), 0);
 }
 
 #[tokio::test]
@@ -476,8 +807,9 @@ async fn sync_delta_snapshot_required_is_fail_closed() {
 }
 
 #[tokio::test]
-async fn sync_delta_invalid_page_rolls_back_message_and_checkpoint() {
-    let fixture = Fixture::new("sync-delta-rollback");
+async fn sync_delta_accepts_sparse_exact_device_projection() {
+    let fixture = Fixture::new("sync-delta-sparse-device-projection");
+    fixture.seed_verified_peer();
     let client = fixture.client();
     let runtime = MessageSyncRuntime::new(
         &client,
@@ -496,20 +828,99 @@ async fn sync_delta_invalid_page_rolls_back_message_and_checkpoint() {
         NoopDirectoryTransport,
     );
 
-    let err = runtime
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest {
+                device_id: Some("device-a".to_owned()),
+                ..crate::messages::SyncDeltaRequest::default()
+            },
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 2);
+    assert_eq!(result.last_applied_event_seq.as_deref(), Some("3"));
+    assert_eq!(fixture.checkpoint().as_deref(), Some("3"));
+    assert_eq!(fixture.message_server_seq("msg-before-gap"), Some(1));
+    assert_eq!(fixture.message_server_seq("msg-after-gap"), Some(3));
+    assert!(committed_sync_invalidations_for_test()
+        .iter()
+        .any(|item| item.checkpoint_event_seq == "3"));
+}
+
+#[tokio::test]
+async fn sync_delta_empty_exact_device_page_advances_before_next_page() {
+    let fixture = Fixture::new("sync-delta-empty-device-page");
+    fixture.seed_verified_peer();
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::clone(&calls),
+            vec![
+                delta_page(Vec::new(), "2", true),
+                delta_page(
+                    vec![message_created_event("sev-4", "4", "msg-visible-4", 4)],
+                    "4",
+                    false,
+                ),
+            ],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest {
+                limit: Some(2),
+                device_id: Some("device-a".to_owned()),
+                reason: Some("exact_device_projection".to_owned()),
+            },
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 1);
+    assert_eq!(result.pages_fetched, 2);
+    assert_eq!(result.last_applied_event_seq.as_deref(), Some("4"));
+    assert_eq!(fixture.checkpoint().as_deref(), Some("4"));
+    assert_eq!(fixture.message_server_seq("msg-visible-4"), Some(4));
+    let calls = calls.borrow();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].params["body"]["since_event_seq"], "0");
+    assert_eq!(calls[1].params["body"]["since_event_seq"], "2");
+}
+
+#[tokio::test]
+async fn sync_delta_rejects_visible_event_ahead_of_server_checkpoint() {
+    let fixture = Fixture::new("sync-delta-event-ahead-of-checkpoint");
+    let client = fixture.client();
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![delta_page(
+                vec![message_created_event("sev-3", "3", "msg-ahead", 3)],
+                "2",
+                false,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let error = runtime
         .sync_delta_async(SyncDeltaInput {
             request: crate::messages::SyncDeltaRequest::default(),
         })
         .await
         .unwrap_err();
 
-    assert!(err.to_string().contains("event_seq gap"));
+    assert!(error.to_string().contains("ahead of next_event_seq"));
     assert_eq!(fixture.checkpoint(), None);
-    assert_eq!(fixture.message_server_seq("msg-before-gap"), None);
-    assert_eq!(fixture.message_server_seq("msg-after-gap"), None);
-    assert!(!committed_sync_invalidations_for_test()
-        .iter()
-        .any(|item| item.checkpoint_event_seq == "3"));
+    assert_eq!(fixture.message_server_seq("msg-ahead"), None);
 }
 
 #[tokio::test]
@@ -539,7 +950,7 @@ async fn sync_delta_metadata_only_message_without_thread_sequence_is_fail_closed
 
     assert!(error
         .to_string()
-        .contains("metadata-only message discovery missing thread-local server_seq"));
+        .contains("metadata-only Direct sync event is missing server_seq"));
     assert_eq!(fixture.checkpoint(), None);
     assert_eq!(fixture.message_count("msg-no-seq"), 0);
 }
@@ -638,156 +1049,6 @@ async fn sync_delta_metadata_only_event_preserves_existing_message_body() {
             .as_deref(),
         Some("local")
     );
-    assert!(result.hydration_required_conversation_ids.is_empty());
-}
-
-#[tokio::test]
-async fn metadata_only_direct_discovery_is_unread_then_catch_up_hydrates_exact_message() {
-    let fixture = Fixture::new("sync-delta-direct-hydration");
-    let conversation_id = fixture.seed_verified_peer();
-    let client = fixture.client();
-    let delta_result = MessageSyncRuntime::new(
-        &client,
-        ReadyAnySessionProvider,
-        RecordingTransport::queued(
-            Rc::new(RefCell::new(Vec::new())),
-            vec![delta_page(
-                vec![message_created_event_without_content(
-                    "sev-1",
-                    "1",
-                    "msg-needs-body",
-                    10,
-                )],
-                "1",
-                false,
-            )],
-        ),
-        NoopDirectoryTransport,
-    )
-    .sync_delta_async(SyncDeltaInput {
-        request: crate::messages::SyncDeltaRequest::default(),
-    })
-    .await
-    .unwrap();
-
-    assert_eq!(
-        delta_result.hydration_required_conversation_ids,
-        vec![conversation_id.clone()]
-    );
-
-    assert_eq!(
-        fixture.message_hydration_state("msg-needs-body").as_deref(),
-        Some("discovered")
-    );
-    assert_eq!(fixture.message_content("msg-needs-body"), None);
-    assert_eq!(fixture.conversation_unread_count(&conversation_id), Some(1));
-
-    drop(client);
-    let client = fixture.client();
-    assert_eq!(
-        fixture.message_hydration_state("msg-needs-body").as_deref(),
-        Some("discovered")
-    );
-
-    let retry_result = MessageSyncRuntime::new(
-        &client,
-        ReadyAnySessionProvider,
-        RecordingTransport::queued(
-            Rc::new(RefCell::new(Vec::new())),
-            vec![delta_page(Vec::new(), "1", false)],
-        ),
-        NoopDirectoryTransport,
-    )
-    .sync_delta_async(SyncDeltaInput {
-        request: crate::messages::SyncDeltaRequest::default(),
-    })
-    .await
-    .unwrap();
-    assert_eq!(
-        retry_result.hydration_required_conversation_ids,
-        vec![conversation_id.clone()]
-    );
-
-    let calls = Rc::new(RefCell::new(Vec::new()));
-    let result = MessageSyncRuntime::new(
-        &client,
-        ReadyAnySessionProvider,
-        RecordingTransport::queued(
-            Rc::clone(&calls),
-            vec![json!({
-                "messages": [{
-                    "id": "msg-needs-body",
-                    "sender_did": "did:example:bob",
-                    "receiver_did": "did:example:alice",
-                    "content": "exact hydration marker",
-                    "content_type": "text/plain",
-                    "server_seq": 10
-                }],
-                "next_after_server_seq": "10",
-                "has_more": false
-            })],
-        ),
-        StaticHandleDirectoryTransport,
-    )
-    .sync_thread_after_async(SyncThreadAfterInput {
-        request: crate::messages::SyncThreadAfterRequest {
-            thread: crate::messages::ThreadRef::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
-            ),
-            // Even a caller-provided newest cursor is clamped behind the
-            // durable hydration gap.
-            after_server_seq: Some("10".to_owned()),
-            limit: Some(10),
-        },
-        resolved_peer_did: Some("did:example:bob".to_owned()),
-        peer_scope: None,
-    })
-    .await
-    .unwrap();
-
-    assert_eq!(calls.borrow()[0].params["body"]["after_server_seq"], "9");
-    assert_eq!(result.messages.len(), 1);
-    assert_eq!(result.messages[0].id.as_str(), "msg-needs-body");
-    assert!(matches!(
-        &result.messages[0].thread,
-        crate::messages::ThreadRef::Thread(thread) if thread.as_str() == conversation_id
-    ));
-    assert_eq!(
-        fixture.message_content("msg-needs-body").as_deref(),
-        Some("exact hydration marker")
-    );
-    assert_eq!(
-        fixture.message_hydration_state("msg-needs-body").as_deref(),
-        Some("hydrated")
-    );
-    assert_eq!(fixture.conversation_unread_count(&conversation_id), Some(1));
-    assert_eq!(
-        fixture.message_conversation_and_wire_identity("msg-needs-body"),
-        Some((
-            conversation_id,
-            "direct".to_owned(),
-            "did:example:bob".to_owned(),
-            "resolved".to_owned(),
-        ))
-    );
-
-    let hydrated_result = MessageSyncRuntime::new(
-        &client,
-        ReadyAnySessionProvider,
-        RecordingTransport::queued(
-            Rc::new(RefCell::new(Vec::new())),
-            vec![delta_page(Vec::new(), "1", false)],
-        ),
-        NoopDirectoryTransport,
-    )
-    .sync_delta_async(SyncDeltaInput {
-        request: crate::messages::SyncDeltaRequest::default(),
-    })
-    .await
-    .unwrap();
-    assert!(hydrated_result
-        .hydration_required_conversation_ids
-        .is_empty());
 }
 
 #[tokio::test]
@@ -1465,7 +1726,7 @@ async fn sync_thread_after_does_not_hydrate_probe_when_full_message_is_backlogge
 async fn metadata_only_group_discovery_is_hydrated_by_group_catch_up() {
     let fixture = Fixture::new("sync-delta-group-hydration");
     let client = fixture.client();
-    let delta_result = MessageSyncRuntime::new(
+    let _delta_result = MessageSyncRuntime::new(
         &client,
         ReadyAnySessionProvider,
         RecordingTransport::queued(
@@ -1500,11 +1761,6 @@ async fn metadata_only_group_discovery_is_hydrated_by_group_catch_up() {
         fixture.conversation_unread_count("group:did:example:group"),
         Some(1)
     );
-    assert_eq!(
-        delta_result.hydration_required_conversation_ids,
-        vec!["group:did:example:group"]
-    );
-
     let calls = Rc::new(RefCell::new(Vec::new()));
     MessageSyncRuntime::new(
         &client,
@@ -1769,6 +2025,20 @@ impl RpcTransport for StaticHandleDirectoryTransport {
 }
 
 impl AsyncRpcTransport for StaticHandleDirectoryTransport {
+    async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+        RpcTransport::rpc(self, endpoint, method, params)
+    }
+}
+
+struct FixedLookupDirectoryTransport(Value);
+
+impl RpcTransport for FixedLookupDirectoryTransport {
+    fn rpc(&mut self, _endpoint: &str, _method: &str, _params: Value) -> crate::ImResult<Value> {
+        Ok(self.0.clone())
+    }
+}
+
+impl AsyncRpcTransport for FixedLookupDirectoryTransport {
     async fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
         RpcTransport::rpc(self, endpoint, method, params)
     }
@@ -2130,6 +2400,38 @@ fn message_created_event_without_content(
     })
 }
 
+fn outbound_message_created_event_without_content(
+    event_id: &str,
+    event_seq: &str,
+    message_id: &str,
+    server_seq: i64,
+) -> Value {
+    json!({
+        "event_id": event_id,
+        "event_seq": event_seq,
+        "event_type": "message.created",
+        "aggregate_kind": "direct_message",
+        "aggregate_id": message_id,
+        "owner_subject_id": "did:example:alice",
+        "created_at": "2026-07-27T00:00:00Z",
+        "payload": {
+            "thread_kind": "direct",
+            "thread": {
+                "kind": "direct",
+                "peer_did": "did:example:bob"
+            },
+            "message": {
+                "id": message_id,
+                "server_seq": server_seq.to_string(),
+                "sender_did": "did:example:alice",
+                "receiver_did": "did:example:bob",
+                "content_type": "text/plain",
+                "sent_at": "2026-07-27T00:00:00Z"
+            }
+        }
+    })
+}
+
 fn message_created_event(
     event_id: &str,
     event_seq: &str,
@@ -2208,6 +2510,53 @@ fn group_message_created_event_without_content(
                 "content_type": "text/plain",
                 "sent_at": "2026-07-24T00:00:00Z"
             }
+        }
+    })
+}
+
+fn v2_message_event(
+    event_id: &str,
+    event_seq: &str,
+    event_type: &str,
+    message_id: &str,
+    meta: Value,
+    json_rpc_shape: bool,
+) -> Value {
+    let private_message = if json_rpc_shape {
+        json!({
+            "id": message_id,
+            "params": {
+                "meta": meta,
+                "body": {"ciphertext_b64u": "PRIVATE-CIPHERTEXT"}
+            }
+        })
+    } else {
+        json!({
+            "id": message_id,
+            "meta": meta,
+            "body": {"ciphertext_b64u": "PRIVATE-CIPHERTEXT"}
+        })
+    };
+    let message_key = if event_type == "conversation.updated" {
+        "latest_message"
+    } else {
+        "message"
+    };
+    json!({
+        "event_id": event_id,
+        "event_seq": event_seq,
+        "event_type": event_type,
+        "aggregate_kind": "direct_message",
+        "aggregate_id": message_id,
+        "owner_subject_id": "did:example:alice",
+        "created_at": "2026-07-20T00:00:00Z",
+        "payload": {
+            "thread_kind": "direct",
+            "thread": {
+                "kind": "direct",
+                "peer_did": "did:example:bob"
+            },
+            (message_key): private_message
         }
     })
 }

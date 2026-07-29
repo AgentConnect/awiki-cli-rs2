@@ -210,6 +210,9 @@ mod tests {
                     group,
                     state: crate::secure::GroupSecureState::Ready,
                     repaired: true,
+                    added_devices: 0,
+                    removed_devices: 0,
+                    remaining_devices: 0,
                     problem: None,
                     warnings: vec!["repair warning".to_owned()],
                 })
@@ -232,6 +235,9 @@ mod tests {
                     group,
                     state: crate::secure::GroupSecureState::Ready,
                     repaired: true,
+                    added_devices: 0,
+                    removed_devices: 0,
+                    remaining_devices: 0,
                     problem: None,
                     warnings: vec!["async repair warning".to_owned()],
                 })

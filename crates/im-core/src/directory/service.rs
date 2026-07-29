@@ -1083,7 +1083,7 @@ fn validate_identity_subject(subject: &super::IdentitySubject) -> crate::ImResul
 }
 
 #[cfg(feature = "sqlite")]
-fn project_handle_lookup(
+pub(crate) fn project_handle_lookup(
     client: &crate::core::ImClient,
     lookup: &super::HandleLookupResult,
 ) -> crate::ImResult<()> {
@@ -1103,7 +1103,7 @@ fn project_handle_lookup(
 }
 
 #[cfg(feature = "sqlite")]
-async fn project_handle_lookup_async(
+pub(crate) async fn project_handle_lookup_async(
     client: &crate::core::ImClient,
     lookup: &super::HandleLookupResult,
 ) -> crate::ImResult<()> {

@@ -683,7 +683,7 @@ mod tests {
         assert_eq!(report.source_schema_version, 27);
         assert_eq!(
             report.target_schema_version,
-            crate::internal::local_state::schema::SCHEMA_VERSION
+            super::super::super::schema::SCHEMA_VERSION
         );
         assert_eq!(report.migrated_personas, 1);
         assert_eq!(report.unresolved_messages, 0);
@@ -691,7 +691,7 @@ mod tests {
         let db = Connection::open(&source).unwrap();
         assert_eq!(
             super::super::super::schema::current_schema_version(&db).unwrap(),
-            crate::internal::local_state::schema::SCHEMA_VERSION
+            super::super::super::schema::SCHEMA_VERSION
         );
         let sync_state_columns = db
             .prepare("PRAGMA table_info(sync_state)")

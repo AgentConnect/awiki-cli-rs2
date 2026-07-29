@@ -62,7 +62,7 @@ DID recover 或 replace 的本地状态行为是：
 7. 不执行业务行 owner rebind。
 8. 不 reset、merge 或泄露 E2EE private state。
 
-Schema 29 的 `sync_state.owner_did` 同时承担业务 snapshot 和服务端同步主体，DID recovery 曾可能把旧 checkpoint 重标成当前 DID。该结构没有足够 provenance 证明 current-DID 行属于旧流还是新流；因此 29→30 迁移在同一 owner 已存在 previous DID 时确定性丢弃 current-DID checkpoint，并从 `0` 幂等补同步。明确属于 previous DID 的历史 checkpoint 和从未轮换身份的 checkpoint 继续保留。
+release/0714 schema 31 的 `sync_state.owner_did` 同时承担业务 snapshot 和服务端同步主体。该结构没有足够 provenance 证明 current-DID 行属于旧流还是新流；因此 31→32 迁移在同一 owner 已存在 previous DID 时确定性丢弃 current-DID checkpoint，并从 `0` 幂等补同步。明确属于 previous DID 的历史 checkpoint 和从未轮换身份的 checkpoint 继续保留。
 
 Replace-DID dry-run 的 `store_rebind_counts` 和 `e2ee_cleanup_counts` 保持为兼容字段；在 identity-owned schema 中它们不再通过 `owner_did` 扫描业务表。
 

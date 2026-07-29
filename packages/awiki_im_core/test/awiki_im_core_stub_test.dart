@@ -18,6 +18,21 @@ void main() {
     expect(AwikiImCore, isNotNull);
   });
 
+  test('group secure repair result exposes reconciliation counts', () {
+    const result = GroupSecureRepairResult(
+      group: 'did:example:group',
+      state: GroupSecureState.needsRepair,
+      repaired: true,
+      addedDevices: 2,
+      removedDevices: 3,
+      remainingDevices: 1,
+    );
+
+    expect(result.addedDevices, 2);
+    expect(result.removedDevices, 3);
+    expect(result.remainingDevices, 1);
+  });
+
   test('identity vault open options remain optional and constructible', () {
     final rootKey = DeviceVaultRootKey.fromList(List<int>.filled(32, 9));
     final options = AwikiImCoreOpenOptions.vaultRequired(
@@ -92,6 +107,31 @@ void main() {
     expect(status.plaintextCompatRetained, isFalse);
     expect(status.missing, isEmpty);
     expect(status.warnings, isEmpty);
+  });
+
+  test('identity device summary exposes safe local readiness only', () {
+    const summary = IdentityDeviceSummary(
+      identity: IdentitySummary(
+        id: 'id-alice',
+        did: 'did:example:alice',
+        localAlias: 'alice',
+        isDefault: true,
+        readyForAuth: true,
+        readyForMessaging: true,
+      ),
+      mode: IdentityDeviceMode.vNext,
+      protocolDeviceId: 'protocol-device-a',
+      role: IdentityDeviceRole.admin,
+      signingKeyId: 'did:example:alice#device-signing',
+      e2eeKeyId: 'did:example:alice#device-e2ee',
+      readiness: IdentityDeviceReadiness.adminReady,
+    );
+
+    expect(summary.identity.did, 'did:example:alice');
+    expect(summary.protocolDeviceId, 'protocol-device-a');
+    expect(summary.role, IdentityDeviceRole.admin);
+    expect(summary.readiness, IdentityDeviceReadiness.adminReady);
+    expect(summary.blockedReason, isNull);
   });
 
   test(
@@ -359,6 +399,15 @@ void main() {
     expect(event.isConnectionState, isTrue);
     expect(event.sync?.eventSeq, '42');
     expect(event.sync?.syncDirty, isTrue);
+
+    const systemEvent = RealtimeEvent(
+      kind: 'system_notification_changed',
+      notificationId: 'event-join-1',
+      notificationType: 'awiki.device.join-requested.v1',
+    );
+    expect(systemEvent.isSystemNotificationChanged, isTrue);
+    expect(systemEvent.message, isNull);
+    expect(systemEvent.body, isNull);
   });
 
   test('email models can be constructed without CLI-only fields', () {

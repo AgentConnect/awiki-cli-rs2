@@ -65,9 +65,13 @@ pub(super) fn detect(path: &Path) -> crate::ImResult<CanonicalUpgradeDetection> 
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|_| upgrade_failed("detect", "schema_version_unreadable"))?;
     let source_fingerprint = schema_fingerprint(&connection)?;
-    if (super::super::schema::CANONICAL_CONVERSATION_SCHEMA_VERSION
-        ..=super::super::schema::SCHEMA_VERSION)
-        .contains(&source_schema_version)
+    // Schema 27 is the only source owned by this backup/shadow/cutover
+    // migrator. Every later schema is already canonical and belongs to the
+    // ordinary atomic migration dispatch in `schema::ensure_schema`. Do not
+    // duplicate that dispatch here: doing so would make an App bootstrap reject
+    // a supported intermediate schema before Core can open and migrate it.
+    if source_schema_version > RELEASE_0710_SCHEMA_VERSION
+        && source_schema_version <= super::super::schema::SCHEMA_VERSION
     {
         return Ok(CanonicalUpgradeDetection {
             eligibility: CanonicalUpgradeEligibility::NotRequired,

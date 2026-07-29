@@ -6,9 +6,17 @@ pub enum ImEvent {
     MessageReceived(MessageReceivedEvent),
     MessageUpdated(MessageUpdatedEvent),
     GroupUpdated(GroupUpdatedEvent),
+    SystemNotificationChanged(SystemNotificationChangedEvent),
     LocalNotification(LocalNotificationEvent),
     HostNotification(HostNotificationEvent),
     UnknownNotification(UnknownNotificationEvent),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemNotificationChangedEvent {
+    pub notification: crate::system_notifications::SystemNotificationSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<RealtimeSyncHint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

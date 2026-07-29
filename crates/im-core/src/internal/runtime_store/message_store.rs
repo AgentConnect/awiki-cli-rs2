@@ -198,9 +198,11 @@ impl MessageStore {
             };
             let patch = match committed_thread_items(client, &thread, limit) {
                 Ok(items) => self.diff_thread_items(&thread, limit, items),
-                Err(_) => self.repair_required_patch(&thread, limit, reason),
+                Err(_) => Some(self.repair_required_patch(&thread, limit, reason)),
             };
-            let _ = self.sender.send(patch);
+            if let Some(patch) = patch {
+                let _ = self.sender.send(patch);
+            }
         }
     }
 
@@ -209,45 +211,55 @@ impl MessageStore {
         thread: &crate::messages::ThreadRef,
         limit: u32,
         next_items: Vec<crate::messages::Message>,
-    ) -> crate::messages::ThreadMessageStorePatch {
+    ) -> Option<crate::messages::ThreadMessageStorePatch> {
         let key = ThreadKey::from_thread(thread);
         let mut state = self.state.lock().expect("message store lock poisoned");
-        state.version = state.version.saturating_add(1);
-        let version = state.version;
+        let normalized_limit = normalized_limit(Some(limit));
         let previous_items = state
             .threads
-            .insert(
-                key.clone(),
-                ThreadState {
-                    limit: normalized_limit(Some(limit)),
-                    items: next_items.clone(),
-                },
-            )
-            .map(|thread_state| thread_state.items)
+            .get(&key)
+            .map(|thread_state| thread_state.items.clone())
             .unwrap_or_default();
-        diff_patch(
-            &self.owner_identity_id,
-            &self.owner_did,
-            version,
-            &key,
-            &previous_items,
-            &next_items,
-        )
-        .unwrap_or_else(|| crate::messages::ThreadMessageStorePatch::Reset {
-            owner_identity_id: self.owner_identity_id.clone(),
-            owner_did: self.owner_did.clone(),
-            version,
-            conversation_identity: Some(
-                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
-                    key.kind.clone(),
-                    key.id.clone(),
-                    &self.owner_did,
+        if previous_items == next_items {
+            if let Some(thread_state) = state.threads.get_mut(&key) {
+                thread_state.limit = normalized_limit;
+            }
+            return None;
+        }
+        state.version = state.version.saturating_add(1);
+        let version = state.version;
+        state.threads.insert(
+            key.clone(),
+            ThreadState {
+                limit: normalized_limit,
+                items: next_items.clone(),
+            },
+        );
+        Some(
+            diff_patch(
+                &self.owner_identity_id,
+                &self.owner_did,
+                version,
+                &key,
+                &previous_items,
+                &next_items,
+            )
+            .unwrap_or_else(|| crate::messages::ThreadMessageStorePatch::Reset {
+                owner_identity_id: self.owner_identity_id.clone(),
+                owner_did: self.owner_did.clone(),
+                version,
+                conversation_identity: Some(
+                    crate::messages::ConversationIdentity::from_storage_parts_for_owner(
+                        key.kind.clone(),
+                        key.id.clone(),
+                        &self.owner_did,
+                    ),
                 ),
-            ),
-            thread_kind: key.kind,
-            thread_id: key.id,
-            items: next_items,
-        })
+                thread_kind: key.kind,
+                thread_id: key.id,
+                items: next_items,
+            }),
+        )
     }
 
     fn repair_required_for_key(
@@ -327,21 +339,7 @@ fn diff_patch(
     next: &[crate::messages::Message],
 ) -> Option<crate::messages::ThreadMessageStorePatch> {
     if previous == next {
-        return Some(crate::messages::ThreadMessageStorePatch::Reset {
-            owner_identity_id: owner_identity_id.to_owned(),
-            owner_did: owner_did.to_owned(),
-            version,
-            conversation_identity: Some(
-                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
-                    key.kind.clone(),
-                    key.id.clone(),
-                    owner_did,
-                ),
-            ),
-            thread_kind: key.kind.clone(),
-            thread_id: key.id.clone(),
-            items: next.to_vec(),
-        });
+        return None;
     }
     let previous_keys = previous.iter().map(message_key).collect::<Vec<_>>();
     let next_keys = next.iter().map(message_key).collect::<Vec<_>>();
@@ -534,6 +532,19 @@ mod tests {
         .is_none());
     }
 
+    #[test]
+    fn message_store_diff_has_no_patch_for_unchanged_items() {
+        let key = super::ThreadKey {
+            kind: "group".to_owned(),
+            id: "group:dev".to_owned(),
+        };
+        let items = vec![message("m1", "one")];
+
+        assert!(
+            super::diff_patch("owner-id", "did:example:alice", 3, &key, &items, &items,).is_none()
+        );
+    }
+
     #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
     #[tokio::test]
     async fn message_store_repair_reads_committed_thread_history() {
@@ -597,6 +608,38 @@ mod tests {
             }
             other => panic!("unexpected patch: {other:?}"),
         }
+    }
+
+    #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+    #[tokio::test]
+    async fn message_store_ignores_unchanged_local_projection_commit() {
+        let fixture = Fixture::new("message-store-unchanged-commit");
+        let client = fixture.client();
+        let store = client.message_store();
+        let mut session = store
+            .watch_for_client(
+                &client,
+                crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                Some(100),
+            )
+            .unwrap();
+        assert!(matches!(
+            session.next_patch().await,
+            Some(crate::messages::ThreadMessageStorePatch::Reset { .. })
+        ));
+        let version_before = store.version_for_test();
+
+        client.emit_committed_message_projection("unchanged_projection");
+
+        assert_eq!(store.version_for_test(), version_before);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), session.next_patch())
+                .await
+                .is_err(),
+            "unchanged projection must not emit a patch"
+        );
     }
 
     fn message(id: &str, text: &str) -> crate::messages::Message {

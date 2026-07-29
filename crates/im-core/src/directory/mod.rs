@@ -8,3 +8,5 @@ pub use self::dto::{
     SaveContactRequest, UnfollowRequest, UnfollowResult,
 };
 pub use self::service::DirectoryService;
+#[cfg(feature = "sqlite")]
+pub(crate) use self::service::{project_handle_lookup, project_handle_lookup_async};

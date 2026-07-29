@@ -4,6 +4,10 @@
 # ///
 """Hermes notify adapter for awiki Notification Surface v1.
 
+[INPUT]: Signed Notification Surface v1 or compatible HostNotificationEvent
+[OUTPUT]: Validated, identity-scoped Hermes webhook events
+[POS]: Compatibility ingress and projection boundary for the Hermes host sink
+
 Endpoints:
 - GET  /healthz
 - POST /notify
@@ -487,6 +491,9 @@ def resolve_kind(topic: str) -> str:
 
 
 def resolve_conversation_id(topic: str, data: dict[str, Any], fallback: str) -> str:
+    if topic == "im.device.join.requested":
+        recipient_did = str(data.get("recipient_did", "")).strip() or "unknown"
+        return f"device-join:{recipient_did}"
     if topic == "im.message.received":
         return str(data.get("conversation_id", "")).strip() or fallback or "unknown"
     if topic == "mail.message.received":
@@ -497,6 +504,8 @@ def resolve_conversation_id(topic: str, data: dict[str, Any], fallback: str) -> 
 
 
 def resolve_thread_id(topic: str, data: dict[str, Any], fallback: str) -> str:
+    if topic == "im.device.join.requested":
+        return str(data.get("join_session_id", "")).strip() or fallback or "unknown"
     if topic in {"im.message.received", "im.group.message.received", "mail.message.received"}:
         return str(data.get("message_id", "")).strip() or fallback or "unknown"
     if topic == "im.group.state.changed":
@@ -511,6 +520,8 @@ def resolve_binding_key(
     data: dict[str, Any],
     fallback: str,
 ) -> str:
+    if topic == "im.device.join.requested":
+        return f"awiki:device-join:{recipient_did}"
     if topic == "im.message.received":
         sender_did = str(data.get("sender_did", "")).strip()
         conversation_part = conversation_id if conversation_id and conversation_id != "unknown" else sender_did

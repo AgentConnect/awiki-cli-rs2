@@ -101,6 +101,10 @@ pub struct DartGroupReadResult {
     pub members: Vec<DartGroupMember>,
     pub messages: crate::dto::message::DartMessagePage,
     pub total: Option<u32>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+    pub page_group_did: Option<String>,
+    pub group_state_version: Option<String>,
     pub source: Option<String>,
     pub warnings: Vec<String>,
 }
