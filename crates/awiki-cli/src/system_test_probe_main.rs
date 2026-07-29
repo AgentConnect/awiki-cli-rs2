@@ -12,8 +12,9 @@
 //! 3. Plan attachment ticket requests through the production runtime so Profile, service target,
 //!    and per-device wire message authorization remain identical to normal downloads.
 //! 4. Keep stdout/stderr free of credentials and cryptographic state.
-//! 5. Account-state probes may return canonical versions and bounded match counts only; they
-//!    never return account IDs, DIDs, device IDs, profile values, or bearer tokens.
+//! 5. Account-state reads and public mutations return canonical versions, bounded counts, and
+//!    match booleans only; they never return account IDs, DIDs, device IDs, profile values, or
+//!    bearer tokens.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -50,7 +51,9 @@ const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TIMEOUT_MS: u64 = 300_000;
 const RPC_PATH: &str = "/im/rpc";
 const ACCOUNT_STATE_RPC_PATH: &str = "/user-service/account-state/rpc";
+const AGENT_INVENTORY_RPC_PATH: &str = "/user-service/agent-inventory/rpc";
 const DID_AUTH_RPC_PATH: &str = "/user-service/did-auth/rpc";
+const ME_RPC_PATH: &str = "/user-service/me/rpc";
 
 const INVALID_REQUEST: &str = "probe.invalid_request";
 const INVALID_STATE: &str = "probe.invalid_state";
@@ -86,8 +89,13 @@ enum Action {
     ProbePrekey(PrekeyParams),
     AccountStateManifest,
     AccountStateAgent(AgentSnapshotParams),
+    AccountStateAgentRename(AgentRenameParams),
+    AccountStateAgentConfig(AgentConfigParams),
+    AccountStateAgentUnbind(AgentTargetParams),
+    AccountStateAgentRemove(AgentTargetParams),
     AccountStateStatus(AgentStatusParams),
     AccountStateProfile(ProfileSnapshotParams),
+    AccountStateProfileUpdate(ProfileUpdateParams),
     AccountStateRegistry(RegistrySnapshotParams),
     RedeemHeldTicket { expected_digest_b64u: String },
     Shutdown,
@@ -109,6 +117,25 @@ struct AgentSnapshotParams {
     agent_did: String,
     expected_active_state: String,
     expected_display_name: String,
+    expected_active_mode: String,
+    expected_whitelist_handles: Vec<String>,
+    expected_blacklist_handles: Vec<String>,
+}
+
+struct AgentRenameParams {
+    agent_did: String,
+    display_name: String,
+}
+
+struct AgentConfigParams {
+    agent_did: String,
+    active_mode: String,
+    whitelist_handles: Vec<String>,
+    blacklist_handles: Vec<String>,
+}
+
+struct AgentTargetParams {
+    agent_did: String,
 }
 
 struct AgentStatusParams {
@@ -117,6 +144,10 @@ struct AgentStatusParams {
 
 struct ProfileSnapshotParams {
     expected_nick_name: String,
+}
+
+struct ProfileUpdateParams {
+    nick_name: String,
 }
 
 struct RegistrySnapshotParams {
@@ -152,10 +183,11 @@ struct Probe {
     _client: Option<im_core::ImClient>,
     http: reqwest::Client,
     bearer: Zeroizing<String>,
-    user_bearer: Zeroizing<String>,
     message_rpc_url: reqwest::Url,
     account_state_rpc_url: reqwest::Url,
+    agent_inventory_rpc_url: reqwest::Url,
     did_auth_rpc_url: reqwest::Url,
+    me_rpc_url: reqwest::Url,
     websocket_url: String,
     ca_bundle: Option<String>,
     local_did: String,
@@ -286,17 +318,6 @@ impl Probe {
             .client_async(im_core::IdentitySelector::Default)
             .await
             .map_err(|_| ProbeFailure::Runtime)?;
-        let mut user_session = client
-            .auth()
-            .ensure_session_async(im_core::auth::AuthScope::UserProfile)
-            .await
-            .map_err(|_| ProbeFailure::Runtime)?;
-        let user_bearer = user_session
-            .bearer_token
-            .take()
-            .filter(|value| !value.trim().is_empty())
-            .map(Zeroizing::new)
-            .ok_or(ProbeFailure::Runtime)?;
         let mut session = client
             .auth()
             .ensure_session_async(im_core::auth::AuthScope::Messaging)
@@ -325,12 +346,24 @@ impl Probe {
         ))
         .map_err(|_| ProbeFailure::Runtime)?;
         validate_service_url(&account_state_rpc_url)?;
+        let agent_inventory_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
+            &resolved.user_service_endpoint,
+            AGENT_INVENTORY_RPC_PATH,
+        ))
+        .map_err(|_| ProbeFailure::Runtime)?;
+        validate_service_url(&agent_inventory_rpc_url)?;
         let did_auth_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
             &resolved.user_service_endpoint,
             DID_AUTH_RPC_PATH,
         ))
         .map_err(|_| ProbeFailure::Runtime)?;
         validate_service_url(&did_auth_rpc_url)?;
+        let me_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
+            &resolved.user_service_endpoint,
+            ME_RPC_PATH,
+        ))
+        .map_err(|_| ProbeFailure::Runtime)?;
+        validate_service_url(&me_rpc_url)?;
         let websocket_url = im_core::realtime::realtime_client_construction_plan(
             &resolved.message_service_endpoint,
         )
@@ -344,10 +377,11 @@ impl Probe {
             _client: Some(client),
             http,
             bearer,
-            user_bearer,
             message_rpc_url,
             account_state_rpc_url,
+            agent_inventory_rpc_url,
             did_auth_rpc_url,
+            me_rpc_url,
             websocket_url,
             ca_bundle,
             local_did,
@@ -453,6 +487,54 @@ impl Probe {
                     .await?;
                 Ok((closed_agent_result(&result, &params)?, false))
             }
+            Action::AccountStateAgentRename(params) => {
+                let result = self
+                    .required_user_rpc(
+                        &self.agent_inventory_rpc_url,
+                        "update_display_name",
+                        json!({
+                            "agent_did": params.agent_did,
+                            "display_name": params.display_name,
+                        }),
+                    )
+                    .await?;
+                Ok((closed_agent_rename_result(&result, &params)?, false))
+            }
+            Action::AccountStateAgentConfig(params) => {
+                let result = self
+                    .required_user_rpc(
+                        &self.agent_inventory_rpc_url,
+                        "update_invocation_policy",
+                        json!({
+                            "agent_did": params.agent_did,
+                            "active_mode": params.active_mode,
+                            "whitelist_handles": params.whitelist_handles,
+                            "blacklist_handles": params.blacklist_handles,
+                        }),
+                    )
+                    .await?;
+                Ok((closed_agent_config_result(&result, &params)?, false))
+            }
+            Action::AccountStateAgentUnbind(params) => {
+                let result = self
+                    .required_user_rpc(
+                        &self.agent_inventory_rpc_url,
+                        "unbind_agent",
+                        json!({"agent_did": params.agent_did}),
+                    )
+                    .await?;
+                Ok((closed_agent_unbind_result(&result)?, false))
+            }
+            Action::AccountStateAgentRemove(params) => {
+                let result = self
+                    .required_user_rpc(
+                        &self.agent_inventory_rpc_url,
+                        "remove_agent_from_account",
+                        json!({"agent_did": params.agent_did}),
+                    )
+                    .await?;
+                Ok((closed_agent_remove_result(&result, &params)?, false))
+            }
             Action::AccountStateStatus(params) => {
                 let result = self
                     .required_user_rpc(
@@ -472,6 +554,16 @@ impl Probe {
                     )
                     .await?;
                 Ok((closed_profile_result(&result, &params)?, false))
+            }
+            Action::AccountStateProfileUpdate(params) => {
+                let result = self
+                    .required_user_rpc(
+                        &self.me_rpc_url,
+                        "update_me",
+                        json!({"nick_name": params.nick_name}),
+                    )
+                    .await?;
+                Ok((closed_profile_update_result(&result, &params)?, false))
             }
             Action::AccountStateRegistry(params) => {
                 let result = self
@@ -716,10 +808,7 @@ impl Probe {
         method: &'static str,
         params: Value,
     ) -> Result<Value, ProbeFailure> {
-        match self
-            .rpc_to(endpoint, &self.user_bearer, method, params)
-            .await?
-        {
+        match self.rpc_to(endpoint, &self.bearer, method, params).await? {
             RpcOutcome::Success(result) => Ok(result),
             RpcOutcome::Rejected(_) => Err(ProbeFailure::Transport),
         }
@@ -939,9 +1028,24 @@ fn parse_request(raw: &str) -> Result<ProbeRequest, ProbeFailure> {
             Action::AccountStateManifest
         }
         "account_state_agent" => Action::AccountStateAgent(parse_agent_snapshot_params(params)?),
+        "account_state_agent_rename" => {
+            Action::AccountStateAgentRename(parse_agent_rename_params(params)?)
+        }
+        "account_state_agent_config" => {
+            Action::AccountStateAgentConfig(parse_agent_config_params(params)?)
+        }
+        "account_state_agent_unbind" => {
+            Action::AccountStateAgentUnbind(parse_agent_target_params(params)?)
+        }
+        "account_state_agent_remove" => {
+            Action::AccountStateAgentRemove(parse_agent_target_params(params)?)
+        }
         "account_state_status" => Action::AccountStateStatus(parse_agent_status_params(params)?),
         "account_state_profile" => {
             Action::AccountStateProfile(parse_profile_snapshot_params(params)?)
+        }
+        "account_state_profile_update" => {
+            Action::AccountStateProfileUpdate(parse_profile_update_params(params)?)
         }
         "account_state_registry" => {
             Action::AccountStateRegistry(parse_registry_snapshot_params(params)?)
@@ -1006,7 +1110,10 @@ fn parse_agent_snapshot_params(
         &[
             "agent_did",
             "expected_active_state",
+            "expected_active_mode",
+            "expected_blacklist_handles",
             "expected_display_name",
+            "expected_whitelist_handles",
         ],
     )?;
     let agent_did = required_string(params, "agent_did", 2048)?;
@@ -1018,10 +1125,63 @@ fn parse_agent_snapshot_params(
     ) {
         return Err(ProbeFailure::InvalidRequest);
     }
+    let expected_active_mode = required_agent_access_mode(params, "expected_active_mode")?;
     Ok(AgentSnapshotParams {
         agent_did,
         expected_active_state,
         expected_display_name: required_string(params, "expected_display_name", 512)?,
+        expected_active_mode,
+        expected_whitelist_handles: required_string_list(
+            params,
+            "expected_whitelist_handles",
+            100,
+            255,
+        )?,
+        expected_blacklist_handles: required_string_list(
+            params,
+            "expected_blacklist_handles",
+            100,
+            255,
+        )?,
+    })
+}
+
+fn parse_agent_rename_params(
+    params: &Map<String, Value>,
+) -> Result<AgentRenameParams, ProbeFailure> {
+    require_exact_keys(params, &["agent_did", "display_name"])?;
+    Ok(AgentRenameParams {
+        agent_did: required_did(params, "agent_did")?,
+        display_name: required_string(params, "display_name", 40)?,
+    })
+}
+
+fn parse_agent_config_params(
+    params: &Map<String, Value>,
+) -> Result<AgentConfigParams, ProbeFailure> {
+    require_exact_keys(
+        params,
+        &[
+            "active_mode",
+            "agent_did",
+            "blacklist_handles",
+            "whitelist_handles",
+        ],
+    )?;
+    Ok(AgentConfigParams {
+        agent_did: required_did(params, "agent_did")?,
+        active_mode: required_agent_access_mode(params, "active_mode")?,
+        whitelist_handles: required_string_list(params, "whitelist_handles", 100, 255)?,
+        blacklist_handles: required_string_list(params, "blacklist_handles", 100, 255)?,
+    })
+}
+
+fn parse_agent_target_params(
+    params: &Map<String, Value>,
+) -> Result<AgentTargetParams, ProbeFailure> {
+    require_exact_keys(params, &["agent_did"])?;
+    Ok(AgentTargetParams {
+        agent_did: required_did(params, "agent_did")?,
     })
 }
 
@@ -1029,9 +1189,9 @@ fn parse_agent_status_params(
     params: &Map<String, Value>,
 ) -> Result<AgentStatusParams, ProbeFailure> {
     require_exact_keys(params, &["agent_did"])?;
-    let agent_did = required_string(params, "agent_did", 2048)?;
-    im_core::ids::Did::parse(&agent_did).map_err(|_| ProbeFailure::InvalidRequest)?;
-    Ok(AgentStatusParams { agent_did })
+    Ok(AgentStatusParams {
+        agent_did: required_did(params, "agent_did")?,
+    })
 }
 
 fn parse_profile_snapshot_params(
@@ -1040,6 +1200,15 @@ fn parse_profile_snapshot_params(
     require_exact_keys(params, &["expected_nick_name"])?;
     Ok(ProfileSnapshotParams {
         expected_nick_name: required_string(params, "expected_nick_name", 512)?,
+    })
+}
+
+fn parse_profile_update_params(
+    params: &Map<String, Value>,
+) -> Result<ProfileUpdateParams, ProbeFailure> {
+    require_exact_keys(params, &["nick_name"])?;
+    Ok(ProfileUpdateParams {
+        nick_name: required_string(params, "nick_name", 50)?,
     })
 }
 
@@ -1073,6 +1242,47 @@ fn required_string(
         .filter(|value| !value.chars().any(char::is_control))
         .ok_or(ProbeFailure::InvalidRequest)?;
     Ok(value.to_owned())
+}
+
+fn required_did(params: &Map<String, Value>, key: &str) -> Result<String, ProbeFailure> {
+    let did = required_string(params, key, 2048)?;
+    im_core::ids::Did::parse(&did).map_err(|_| ProbeFailure::InvalidRequest)?;
+    Ok(did)
+}
+
+fn required_agent_access_mode(
+    params: &Map<String, Value>,
+    key: &str,
+) -> Result<String, ProbeFailure> {
+    let mode = required_string(params, key, 16)?;
+    matches!(mode.as_str(), "whitelist" | "blacklist")
+        .then_some(mode)
+        .ok_or(ProbeFailure::InvalidRequest)
+}
+
+fn required_string_list(
+    params: &Map<String, Value>,
+    key: &str,
+    max_items: usize,
+    max_len: usize,
+) -> Result<Vec<String>, ProbeFailure> {
+    let values = params
+        .get(key)
+        .and_then(Value::as_array)
+        .filter(|values| values.len() <= max_items)
+        .ok_or(ProbeFailure::InvalidRequest)?;
+    values
+        .iter()
+        .map(|value| {
+            let value = value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && value.len() <= max_len)
+                .filter(|value| !value.chars().any(char::is_control))
+                .ok_or(ProbeFailure::InvalidRequest)?;
+            Ok(value.to_owned())
+        })
+        .collect()
 }
 
 fn parse_request_id(value: &Value) -> Result<RequestId, ProbeFailure> {
@@ -1174,10 +1384,30 @@ fn closed_agent_result(
             _ => return Err(ProbeFailure::Runtime),
         }
         let display_name = required_response_string(agent, "display_name")?;
+        let invocation_policy = agent
+            .get("invocation_policy")
+            .and_then(Value::as_object)
+            .ok_or(ProbeFailure::Runtime)?;
+        if required_response_string(invocation_policy, "schema")?
+            != "awiki.agent_invocation_policy.v1"
+        {
+            return Err(ProbeFailure::Runtime);
+        }
+        let active_mode = required_response_string(invocation_policy, "active_mode")?;
+        if !matches!(active_mode, "whitelist" | "blacklist") {
+            return Err(ProbeFailure::Runtime);
+        }
+        let whitelist_handles =
+            response_string_list(invocation_policy, "whitelist_handles", 100, 255)?;
+        let blacklist_handles =
+            response_string_list(invocation_policy, "blacklist_handles", 100, 255)?;
         if agent_did == params.agent_did {
             match_count += 1;
             matched_expected |= active_state == params.expected_active_state
-                && display_name == params.expected_display_name;
+                && display_name == params.expected_display_name
+                && active_mode == params.expected_active_mode
+                && whitelist_handles == params.expected_whitelist_handles
+                && blacklist_handles == params.expected_blacklist_handles;
         }
     }
     Ok(json!({
@@ -1189,6 +1419,81 @@ fn closed_agent_result(
         "revoked_count": revoked_count,
         "archived_count": archived_count,
         "matched_expected": matched_expected,
+    }))
+}
+
+fn closed_agent_rename_result(
+    result: &Value,
+    params: &AgentRenameParams,
+) -> Result<Value, ProbeFailure> {
+    let object = result.as_object().ok_or(ProbeFailure::Runtime)?;
+    let agent_did = required_response_did(object, "agent_did")?;
+    let display_name = required_response_string(object, "display_name")?;
+    Ok(json!({
+        "inventory_version": canonical_decimal_string(object, "inventory_version")?,
+        "matched_expected": agent_did == params.agent_did
+            && display_name == params.display_name,
+    }))
+}
+
+fn closed_agent_config_result(
+    result: &Value,
+    params: &AgentConfigParams,
+) -> Result<Value, ProbeFailure> {
+    let object = result.as_object().ok_or(ProbeFailure::Runtime)?;
+    if required_response_string(object, "schema")? != "awiki.agent_invocation_policy.v1" {
+        return Err(ProbeFailure::Runtime);
+    }
+    let active_mode = required_response_string(object, "active_mode")?;
+    if !matches!(active_mode, "whitelist" | "blacklist") {
+        return Err(ProbeFailure::Runtime);
+    }
+    let whitelist_handles = response_string_list(object, "whitelist_handles", 100, 255)?;
+    let blacklist_handles = response_string_list(object, "blacklist_handles", 100, 255)?;
+    Ok(json!({
+        "inventory_version": canonical_decimal_string(object, "inventory_version")?,
+        "matched_expected": active_mode == params.active_mode
+            && whitelist_handles == params.whitelist_handles
+            && blacklist_handles == params.blacklist_handles,
+    }))
+}
+
+fn closed_agent_unbind_result(result: &Value) -> Result<Value, ProbeFailure> {
+    let object = result.as_object().ok_or(ProbeFailure::Runtime)?;
+    let matched_expected = object
+        .get("ok")
+        .and_then(Value::as_bool)
+        .ok_or(ProbeFailure::Runtime)?;
+    Ok(json!({
+        "inventory_version": canonical_decimal_string(object, "inventory_version")?,
+        "matched_expected": matched_expected,
+    }))
+}
+
+fn closed_agent_remove_result(
+    result: &Value,
+    params: &AgentTargetParams,
+) -> Result<Value, ProbeFailure> {
+    let object = result.as_object().ok_or(ProbeFailure::Runtime)?;
+    let removed = object
+        .get("removed")
+        .and_then(Value::as_array)
+        .ok_or(ProbeFailure::Runtime)?;
+    let mut match_count = 0_u64;
+    for agent in removed {
+        let agent = agent.as_object().ok_or(ProbeFailure::Runtime)?;
+        let agent_did = required_response_did(agent, "agent_did")?;
+        let active_state = required_response_string(agent, "active_state")?;
+        if !matches!(active_state, "active" | "inactive" | "revoked" | "archived") {
+            return Err(ProbeFailure::Runtime);
+        }
+        if agent_did == params.agent_did && active_state == "archived" {
+            match_count += 1;
+        }
+    }
+    Ok(json!({
+        "inventory_version": canonical_decimal_string(object, "inventory_version")?,
+        "matched_expected": match_count == 1,
     }))
 }
 
@@ -1232,6 +1537,18 @@ fn closed_profile_result(
     Ok(json!({
         "profile_version": canonical_decimal_string(object, "profile_version")?,
         "matched_expected": nick_name == params.expected_nick_name,
+    }))
+}
+
+fn closed_profile_update_result(
+    result: &Value,
+    params: &ProfileUpdateParams,
+) -> Result<Value, ProbeFailure> {
+    let object = result.as_object().ok_or(ProbeFailure::Runtime)?;
+    let nick_name = required_response_string(object, "nick_name")?;
+    Ok(json!({
+        "profile_version": canonical_decimal_string(object, "profile_version")?,
+        "matched_expected": nick_name == params.nick_name,
     }))
 }
 
@@ -1283,6 +1600,39 @@ fn required_response_string<'a>(
         .filter(|value| !value.trim().is_empty())
         .filter(|value| !value.chars().any(char::is_control))
         .ok_or(ProbeFailure::Runtime)
+}
+
+fn required_response_did<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+) -> Result<&'a str, ProbeFailure> {
+    let did = required_response_string(object, key)?;
+    im_core::ids::Did::parse(did).map_err(|_| ProbeFailure::Runtime)?;
+    Ok(did)
+}
+
+fn response_string_list(
+    object: &Map<String, Value>,
+    key: &str,
+    max_items: usize,
+    max_len: usize,
+) -> Result<Vec<String>, ProbeFailure> {
+    let values = object
+        .get(key)
+        .and_then(Value::as_array)
+        .filter(|values| values.len() <= max_items)
+        .ok_or(ProbeFailure::Runtime)?;
+    values
+        .iter()
+        .map(|value| {
+            let value = value
+                .as_str()
+                .filter(|value| !value.trim().is_empty() && value.len() <= max_len)
+                .filter(|value| !value.chars().any(char::is_control))
+                .ok_or(ProbeFailure::Runtime)?;
+            Ok(value.to_owned())
+        })
+        .collect()
 }
 
 fn canonical_decimal_string(
@@ -1631,6 +1981,96 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn account_state_mutations_use_public_rpc_with_device_bearer() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let (base_url, server) = spawn_account_mutation_fake_server(observed.clone()).await;
+        let mut probe = test_probe(&base_url);
+        let agent_did = "did:wba:example.test:agent:runtime";
+        let actions = [
+            json!({
+                "id": 30,
+                "action": "account_state_agent_rename",
+                "params": {"agent_did": agent_did, "display_name": "Renamed"}
+            }),
+            json!({
+                "id": 31,
+                "action": "account_state_agent_config",
+                "params": {
+                    "agent_did": agent_did,
+                    "active_mode": "blacklist",
+                    "whitelist_handles": [],
+                    "blacklist_handles": []
+                }
+            }),
+            json!({
+                "id": 32,
+                "action": "account_state_agent_unbind",
+                "params": {"agent_did": agent_did}
+            }),
+            json!({
+                "id": 33,
+                "action": "account_state_agent_remove",
+                "params": {"agent_did": agent_did}
+            }),
+            json!({
+                "id": 34,
+                "action": "account_state_profile_update",
+                "params": {"nick_name": "Profile Name"}
+            }),
+        ];
+        let mut outputs = Vec::new();
+        for action in actions {
+            outputs.push(execute_line(&mut probe, &action.to_string()).await);
+        }
+        server.await.expect("account mutation fake server task");
+
+        assert_eq!(
+            outputs
+                .iter()
+                .map(|output| output["result"].clone())
+                .collect::<Vec<_>>(),
+            vec![
+                json!({"inventory_version": "45", "matched_expected": true}),
+                json!({"inventory_version": "46", "matched_expected": true}),
+                json!({"inventory_version": "47", "matched_expected": true}),
+                json!({"inventory_version": "48", "matched_expected": true}),
+                json!({"profile_version": "22", "matched_expected": true}),
+            ]
+        );
+        assert_eq!(
+            observed.lock().expect("mutation observations").as_slice(),
+            &[
+                (
+                    AGENT_INVENTORY_RPC_PATH.to_owned(),
+                    "update_display_name".to_owned(),
+                    true,
+                ),
+                (
+                    AGENT_INVENTORY_RPC_PATH.to_owned(),
+                    "update_invocation_policy".to_owned(),
+                    true,
+                ),
+                (
+                    AGENT_INVENTORY_RPC_PATH.to_owned(),
+                    "unbind_agent".to_owned(),
+                    true,
+                ),
+                (
+                    AGENT_INVENTORY_RPC_PATH.to_owned(),
+                    "remove_agent_from_account".to_owned(),
+                    true,
+                ),
+                (ME_RPC_PATH.to_owned(), "update_me".to_owned(), true),
+            ]
+        );
+        let serialized = serde_json::to_string(&outputs).expect("serialize mutation outputs");
+        assert!(!serialized.contains(TOKEN_SECRET));
+        assert!(!serialized.contains(agent_did));
+        assert!(!serialized.contains("Profile Name"));
+        assert!(!serialized.contains(SERVER_ERROR_SECRET));
+    }
+
     fn test_probe(base_url: &str) -> Probe {
         let rpc_url = reqwest::Url::parse(&format!("{base_url}{RPC_PATH}")).expect("fake RPC URL");
         let http = match build_http_client(None) {
@@ -1641,14 +2081,19 @@ mod tests {
             _client: None,
             http,
             bearer: Zeroizing::new(TOKEN_SECRET.to_owned()),
-            user_bearer: Zeroizing::new(TOKEN_SECRET.to_owned()),
             message_rpc_url: rpc_url,
             account_state_rpc_url: reqwest::Url::parse(&format!(
                 "{base_url}{ACCOUNT_STATE_RPC_PATH}"
             ))
             .expect("fake account-state RPC URL"),
+            agent_inventory_rpc_url: reqwest::Url::parse(&format!(
+                "{base_url}{AGENT_INVENTORY_RPC_PATH}"
+            ))
+            .expect("fake Agent Inventory RPC URL"),
             did_auth_rpc_url: reqwest::Url::parse(&format!("{base_url}{DID_AUTH_RPC_PATH}"))
                 .expect("fake DID-auth RPC URL"),
+            me_rpc_url: reqwest::Url::parse(&format!("{base_url}{ME_RPC_PATH}"))
+                .expect("fake Me RPC URL"),
             websocket_url: base_url.replacen("http://", "ws://", 1),
             ca_bundle: None,
             local_did: LOCAL_DID.to_owned(),
@@ -1672,7 +2117,7 @@ mod tests {
         assert!(matches!(manifest.action, Action::AccountStateManifest));
 
         let agent = match parse_request(
-            r#"{"id":11,"action":"account_state_agent","params":{"agent_did":"did:wba:example.test:agent:runtime","expected_active_state":"revoked","expected_display_name":"Runtime"}}"#,
+            r#"{"id":11,"action":"account_state_agent","params":{"agent_did":"did:wba:example.test:agent:runtime","expected_active_state":"revoked","expected_display_name":"Runtime","expected_active_mode":"blacklist","expected_whitelist_handles":[],"expected_blacklist_handles":["blocked.example.test"]}}"#,
         ) {
             Ok(request) => request,
             Err(_) => panic!("closed agent action"),
@@ -1722,6 +2167,12 @@ mod tests {
                         "agent_did": "did:wba:example.test:agent:runtime",
                         "active_state": "revoked",
                         "display_name": "Runtime",
+                        "invocation_policy": {
+                            "schema": "awiki.agent_invocation_policy.v1",
+                            "active_mode": "blacklist",
+                            "whitelist_handles": [],
+                            "blacklist_handles": ["blocked.example.test"]
+                        },
                         "profile_summary": {"secret": SERVER_ERROR_SECRET}
                     }
                 ]
@@ -1730,6 +2181,9 @@ mod tests {
                 agent_did: "did:wba:example.test:agent:runtime".to_owned(),
                 expected_active_state: "revoked".to_owned(),
                 expected_display_name: "Runtime".to_owned(),
+                expected_active_mode: "blacklist".to_owned(),
+                expected_whitelist_handles: Vec::new(),
+                expected_blacklist_handles: vec!["blocked.example.test".to_owned()],
             },
         ) {
             Ok(result) => result,
@@ -1754,6 +2208,147 @@ mod tests {
         assert!(!serialized.contains("account-secret"));
         assert!(!serialized.contains(LOCAL_DID));
         assert!(!serialized.contains(SERVER_ERROR_SECRET));
+    }
+
+    #[test]
+    fn account_state_mutation_actions_are_exact_and_results_are_closed() {
+        let requests = [
+            (
+                r#"{"id":20,"action":"account_state_agent_rename","params":{"agent_did":"did:wba:example.test:agent:runtime","display_name":"Renamed"}}"#,
+                "rename",
+            ),
+            (
+                r#"{"id":21,"action":"account_state_agent_config","params":{"agent_did":"did:wba:example.test:agent:runtime","active_mode":"blacklist","whitelist_handles":[],"blacklist_handles":["blocked.example.test"]}}"#,
+                "config",
+            ),
+            (
+                r#"{"id":22,"action":"account_state_agent_unbind","params":{"agent_did":"did:wba:example.test:agent:runtime"}}"#,
+                "unbind",
+            ),
+            (
+                r#"{"id":23,"action":"account_state_agent_remove","params":{"agent_did":"did:wba:example.test:agent:runtime"}}"#,
+                "remove",
+            ),
+            (
+                r#"{"id":24,"action":"account_state_profile_update","params":{"nick_name":"Profile Name"}}"#,
+                "profile",
+            ),
+        ];
+        for (raw, expected) in requests {
+            let request = parse_request(raw).unwrap_or_else(|_| panic!("valid {expected} request"));
+            let matches_expected = matches!(
+                (request.action, expected),
+                (Action::AccountStateAgentRename(_), "rename")
+                    | (Action::AccountStateAgentConfig(_), "config")
+                    | (Action::AccountStateAgentUnbind(_), "unbind")
+                    | (Action::AccountStateAgentRemove(_), "remove")
+                    | (Action::AccountStateProfileUpdate(_), "profile")
+            );
+            assert!(matches_expected, "unexpected parsed {expected} action");
+        }
+
+        for invalid in [
+            r#"{"id":25,"action":"account_state_agent_rename","params":{"agent_did":"did:wba:example.test:agent:runtime","display_name":"Renamed","account_id":"secret"}}"#,
+            r#"{"id":26,"action":"account_state_agent_config","params":{"agent_did":"did:wba:example.test:agent:runtime","active_mode":"open","whitelist_handles":[],"blacklist_handles":[]}}"#,
+            r#"{"id":27,"action":"account_state_profile_update","params":{"nick_name":""}}"#,
+        ] {
+            let error = match parse_request(invalid) {
+                Err(error) => error,
+                Ok(_) => panic!("invalid mutation action must be rejected"),
+            };
+            assert_eq!(error.code(), INVALID_REQUEST);
+        }
+
+        let rename = closed_agent_rename_result(
+            &json!({
+                "agent_did": "did:wba:example.test:agent:runtime",
+                "display_name": "Renamed",
+                "inventory_version": "45",
+                "status": {"secret": SERVER_ERROR_SECRET}
+            }),
+            &AgentRenameParams {
+                agent_did: "did:wba:example.test:agent:runtime".to_owned(),
+                display_name: "Renamed".to_owned(),
+            },
+        )
+        .unwrap_or_else(|_| panic!("closed rename result"));
+        let config = closed_agent_config_result(
+            &json!({
+                "schema": "awiki.agent_invocation_policy.v1",
+                "active_mode": "blacklist",
+                "whitelist_handles": [],
+                "blacklist_handles": ["blocked.example.test"],
+                "inventory_version": "46",
+                "secret": SERVER_ERROR_SECRET
+            }),
+            &AgentConfigParams {
+                agent_did: "did:wba:example.test:agent:runtime".to_owned(),
+                active_mode: "blacklist".to_owned(),
+                whitelist_handles: Vec::new(),
+                blacklist_handles: vec!["blocked.example.test".to_owned()],
+            },
+        )
+        .unwrap_or_else(|_| panic!("closed config result"));
+        let unbind = closed_agent_unbind_result(&json!({
+            "ok": true,
+            "inventory_version": "47",
+            "secret": SERVER_ERROR_SECRET
+        }))
+        .unwrap_or_else(|_| panic!("closed unbind result"));
+        let remove = closed_agent_remove_result(
+            &json!({
+                "removed": [{
+                    "agent_did": "did:wba:example.test:agent:runtime",
+                    "active_state": "archived",
+                    "secret": SERVER_ERROR_SECRET
+                }],
+                "inventory_version": "48"
+            }),
+            &AgentTargetParams {
+                agent_did: "did:wba:example.test:agent:runtime".to_owned(),
+            },
+        )
+        .unwrap_or_else(|_| panic!("closed remove result"));
+        let profile = closed_profile_update_result(
+            &json!({
+                "nick_name": "Profile Name",
+                "profile_version": "22",
+                "email": SERVER_ERROR_SECRET
+            }),
+            &ProfileUpdateParams {
+                nick_name: "Profile Name".to_owned(),
+            },
+        )
+        .unwrap_or_else(|_| panic!("closed profile mutation result"));
+        assert_eq!(
+            rename,
+            json!({"inventory_version": "45", "matched_expected": true})
+        );
+        assert_eq!(
+            config,
+            json!({"inventory_version": "46", "matched_expected": true})
+        );
+        assert_eq!(
+            unbind,
+            json!({"inventory_version": "47", "matched_expected": true})
+        );
+        assert_eq!(
+            remove,
+            json!({"inventory_version": "48", "matched_expected": true})
+        );
+        assert_eq!(
+            profile,
+            json!({"profile_version": "22", "matched_expected": true})
+        );
+
+        let serialized = serde_json::to_string(&(rename, config, unbind, remove, profile))
+            .expect("serialize mutation outputs");
+        assert!(!serialized.contains("did:wba:"));
+        assert!(!serialized.contains("Profile Name"));
+        assert!(!serialized.contains(SERVER_ERROR_SECRET));
+        assert!(
+            closed_agent_unbind_result(&json!({"ok": true, "inventory_version": "047"})).is_err()
+        );
     }
 
     fn attachment_action(id: u64, action: &str, object_uri: &str) -> String {
@@ -1866,6 +2461,127 @@ mod tests {
                     .write_all(response.as_bytes())
                     .await
                     .expect("write fake response");
+            }
+        });
+        (base_url, server)
+    }
+
+    async fn spawn_account_mutation_fake_server(
+        observed: Arc<Mutex<Vec<(String, String, bool)>>>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind account mutation fake server");
+        let address = listener.local_addr().expect("account mutation address");
+        let base_url = format!("http://{address}");
+        let server = tokio::spawn(async move {
+            for index in 0..5 {
+                let (mut socket, _) = listener.accept().await.expect("accept mutation request");
+                let request = read_http_request(&mut socket).await;
+                let first_line = request.lines().next().expect("mutation request line");
+                let path = first_line
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("mutation request path")
+                    .to_owned();
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .expect("mutation request body");
+                let payload: Value = serde_json::from_str(body).expect("mutation JSON-RPC body");
+                let method = payload
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .expect("mutation method")
+                    .to_owned();
+                let has_expected_auth = request.to_ascii_lowercase().contains(&format!(
+                    "authorization: bearer {}",
+                    TOKEN_SECRET.to_ascii_lowercase()
+                ));
+                observed.lock().expect("mutation observations").push((
+                    path,
+                    method.clone(),
+                    has_expected_auth,
+                ));
+
+                let result = match index {
+                    0 => {
+                        assert_eq!(method, "update_display_name");
+                        assert_eq!(
+                            payload["params"],
+                            json!({
+                                "agent_did": "did:wba:example.test:agent:runtime",
+                                "display_name": "Renamed"
+                            })
+                        );
+                        json!({
+                            "agent_did": "did:wba:example.test:agent:runtime",
+                            "display_name": "Renamed",
+                            "inventory_version": "45",
+                            "secret": SERVER_ERROR_SECRET
+                        })
+                    }
+                    1 => {
+                        assert_eq!(method, "update_invocation_policy");
+                        assert_eq!(
+                            payload["params"],
+                            json!({
+                                "agent_did": "did:wba:example.test:agent:runtime",
+                                "active_mode": "blacklist",
+                                "whitelist_handles": [],
+                                "blacklist_handles": []
+                            })
+                        );
+                        json!({
+                            "schema": "awiki.agent_invocation_policy.v1",
+                            "active_mode": "blacklist",
+                            "whitelist_handles": [],
+                            "blacklist_handles": [],
+                            "inventory_version": "46",
+                            "secret": SERVER_ERROR_SECRET
+                        })
+                    }
+                    2 => {
+                        assert_eq!(method, "unbind_agent");
+                        json!({
+                            "ok": true,
+                            "inventory_version": "47",
+                            "secret": SERVER_ERROR_SECRET
+                        })
+                    }
+                    3 => {
+                        assert_eq!(method, "remove_agent_from_account");
+                        json!({
+                            "removed": [{
+                                "agent_did": "did:wba:example.test:agent:runtime",
+                                "active_state": "archived",
+                                "secret": SERVER_ERROR_SECRET
+                            }],
+                            "inventory_version": "48"
+                        })
+                    }
+                    _ => {
+                        assert_eq!(method, "update_me");
+                        assert_eq!(payload["params"], json!({"nick_name": "Profile Name"}));
+                        json!({
+                            "nick_name": "Profile Name",
+                            "profile_version": "22",
+                            "secret": SERVER_ERROR_SECRET
+                        })
+                    }
+                };
+                let response = json_response(
+                    200,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": "system-test-probe",
+                        "result": result
+                    }),
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write mutation response");
             }
         });
         (base_url, server)
