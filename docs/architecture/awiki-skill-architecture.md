@@ -53,6 +53,7 @@
 - `skills/references/09-people.md`
 - `skills/references/10-upgrade.md`
 - `skills/references/11-site-pages.md`
+- `skills/references/12-notify.md`
 - `docs/architecture/awiki-v2-architecture.md`
 - `docs/architecture/awiki-command-v2.md`
 - `docs/architecture/output-format.md`
@@ -104,6 +105,7 @@
 | debug raw/logs/schema-cache | planned/removed | raw RPC 已 removed；logs/schema-cache 为 hidden diagnostic contract，不能作为默认 workflow |
 | discovery workflow | partial | 基于 group/id/msg/people contacts 的只读编排已可表达，people search 仍未落地 |
 | onboarding workflow | implemented | 可指导注册、runtime bootstrap、listener smoke-check |
+| notify workflow | partial | 可指导 Coding Agent 通过 plain `msg send` 主动发送终态通知；不保证 lifecycle invocation 或 App 展示 |
 
 基于该快照，新的 skill 架构必须同时表达：
 
@@ -134,6 +136,7 @@ skills/
     09-people.md
     10-upgrade.md
     11-site-pages.md
+    12-notify.md
 ```
 
 ### 4.1 两层定义
@@ -141,7 +144,7 @@ skills/
 | 层级 | 数量 | 作用 |
 |---|---:|---|
 | entry skill | 1 | 默认入口、路由、共享规则、最小高频命令、安全边界 |
-| references | 12 | 领域细节、workflow 流程、debug 兜底、people 边界、upgrade、site pages、installation 长文 |
+| references | 13 | 领域细节、workflow 流程、debug 兜底、people 边界、upgrade、site pages、notify、installation 长文 |
 
 ### 4.2 架构结论
 
@@ -237,6 +240,7 @@ skills/
 - page markdown/slug 的低频细节
 - onboarding/discovery 的多步 workflow 细节
 - installation 长文
+- Coding Agent terminal notify 的授权、消息格式与失败语义
 - debug SQL 与低层排查说明
 - people/relationship/local-contact 的部分实现边界
 
@@ -362,7 +366,22 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 **加载策略**：仅在 site/root/page tenant-domain 任务时加载。
 **状态**：implemented。
 
-### 7.12 `00-installation.md`
+### 7.12 `12-notify.md`
+
+**职责**：Coding Agent 终态通知 workflow reference。
+**适用场景**：用户明确要求当前任务在 completed、blocked、action_required 或 failed 时通知指定 AWiki Me Handle/DID。
+**加载策略**：只在用户明确请求任务通知或当前任务已经具有有效通知授权时加载。
+**状态**：partial workflow。
+
+特别规则：
+
+- 只走 plain `awiki-cli msg send`，先 dry-run，再实际发送
+- 当前任务、指定 target、指定终态是授权边界
+- 普通进度不发送
+- 不使用 E2EE、Daemon 或 `runtime host-notify`
+- Skill-only 是 best-effort，不保证 lifecycle invocation，也不证明 AWiki Me 已展示横幅
+
+### 7.13 `00-installation.md`
 
 **职责**：低频 installation reference。
 **适用场景**：安装 `awiki-cli`、安装 Awiki Skills、初始化 workspace prerequisite。
@@ -428,12 +447,14 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 - `09-people.md`
 - `10-upgrade.md`
 - `11-site-pages.md`
+- `12-notify.md`
 - `00-installation.md`
 
 原因是：
 
 - `people` 是部分实现能力，默认入口只保留状态摘要，完整边界按需加载
 - upgrade 与 site pages 是低频领域，默认入口只保留路由和高频命令提示
+- notify 只有在用户明确请求或当前任务已授权时加载，不能把任意 `msg send` 变成自动通知
 - installation 文档体积大、频率低，不适合默认装载
 
 ---
@@ -505,6 +526,7 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 | runtime domain skill | `skills/references/05-runtime.md` |
 | page domain skill | `skills/references/06-pages.md` |
 | site pages domain skill | `skills/references/11-site-pages.md` |
+| notify workflow skill | `skills/references/12-notify.md` |
 | onboarding workflow skill | `skills/references/01-onboarding.md` |
 | upgrade workflow skill | `skills/references/10-upgrade.md` |
 | discovery workflow skill | `skills/references/07-discovery.md` |
@@ -531,7 +553,7 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 
 1. **只使用当前仓库中已存在的 `awiki-cli` 命令名**
 2. **不得把 stub 或 reserved contract 写成已可执行能力**
-3. **`msg secure`、`people`、`heartbeat`、`debug raw/logs/schema-cache` 必须显式标注 current status**
+3. **`msg secure`、`people`、`notify`、`heartbeat`、`debug raw/logs/schema-cache` 必须显式标注 current status**
 4. **`group` 必须保持为一级领域**
 5. **`msg send --group` 仍归 messaging reference**
 6. **hidden commands 必须明确标注为 internal-only**
@@ -539,6 +561,7 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 8. **所有排障说明都必须优先推荐 `status / docs / schema / doctor / config show`**
 9. **公开说明中不得出现 `user_id` 作为对外身份字段**
 10. **能力状态必须与当前 repo 实现一致，不得把 `partial` 或 `planned` 写成 production-ready**
+11. **notify 必须保持当前任务级显式授权，并区分 server acceptance 与 AWiki Me 展示**
 
 ---
 
@@ -557,7 +580,7 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 - 文档明确说明默认只加载 `skills/SKILL.md`
 - 文档明确说明单领域任务只应补读一个 matching reference
 - 文档明确说明 workflow 与 debug 的进入条件
-- 文档明确说明 people、upgrade、site pages 与 installation reference 不进入默认上下文
+- 文档明确说明 people、upgrade、site pages、notify 与 installation reference 不进入默认上下文
 
 ### C. 路由正确
 
@@ -569,6 +592,7 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 - onboarding/discovery 任务稳定路由到 `01-onboarding.md` / `07-discovery.md`
 - upgrade 任务稳定路由到 `10-upgrade.md`
 - site pages 任务稳定路由到 `11-site-pages.md`
+- Coding Agent 终态通知稳定路由到 `12-notify.md`
 - debug 被识别为最后兜底
 
 ### D. 契约一致
@@ -606,4 +630,4 @@ awiki 当前 skill 体系不再采用旧版的：
 - 以 `implemented / partial / planned` 作为统一状态表达
 - 以 debug 为最后兜底，而不是常规入口
 
-这套方案既对齐当前仓库的实际制品，也为后续 `people`、secure messaging、heartbeat 等能力落地后继续扩展 reference 提供了稳定边界。
+这套方案既对齐当前仓库的实际制品，也为后续 `people`、secure messaging、notify lifecycle hook、heartbeat 等能力落地后继续扩展 reference 提供了稳定边界。
