@@ -1781,7 +1781,10 @@ pub(crate) fn mark_thread_read_and_update_outbox(
         )
         .optional()
         .map_err(super::local_state_unavailable)?
-        .or_else(|| (result.thread_scope == "group").then(|| result.thread_id.clone()));
+        .or_else(|| {
+            (result.thread_scope == "group")
+                .then(|| remote_group_key_from_local_thread_id(&result.thread_id))
+        });
     result.remote_thread_key = remote_thread_key.clone();
     let has_sync_binding =
         load_identity_account_binding(&transaction, owner_identity_id)?.is_some();
@@ -2108,13 +2111,24 @@ fn apply_remote_read_state(
         .optional()
         .map_err(super::local_state_unavailable)?
         .or_else(|| {
-            (state.thread_kind == "group")
-                .then(|| ("group".to_owned(), state.remote_thread_key.clone()))
+            (state.thread_kind == "group").then(|| {
+                (
+                    "group".to_owned(),
+                    super::owner_scope::group_conversation_id(&state.remote_thread_key),
+                )
+            })
         });
     let Some(binding) = binding else {
         return Ok(());
     };
     project_remote_read_state(connection, owner_identity_id, owner_did, state, &binding)
+}
+
+fn remote_group_key_from_local_thread_id(thread_id: &str) -> String {
+    thread_id
+        .strip_prefix("group:")
+        .unwrap_or(thread_id)
+        .to_owned()
 }
 
 fn project_remote_read_state(
@@ -4067,6 +4081,100 @@ mod tests {
             )
             .unwrap(),
             ("991".to_owned(), "38".to_owned())
+        );
+    }
+
+    #[test]
+    fn group_read_outbox_uses_raw_group_did_as_remote_thread_key() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let group_did = "did:wba:awiki.info:groups:group-read-outbox";
+
+        let result = mark_thread_read_and_update_outbox(
+            &db,
+            &binding.owner_identity_id,
+            &binding.current_did,
+            super::super::messages::MarkThreadReadWatermarkInput {
+                thread: crate::messages::ThreadRef::Group(
+                    crate::ids::GroupRef::parse(group_did).unwrap(),
+                ),
+                read_watermark_message_id: None,
+                read_watermark_seq: Some("30".to_owned()),
+                read_watermark_at: Some("2026-07-28T10:00:00Z".to_owned()),
+                pending_remote_ack: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.conversation_id, format!("group:{group_did}"));
+        assert_eq!(result.remote_thread_key.as_deref(), Some(group_did));
+        assert_eq!(
+            db.query_row(
+                "SELECT aggregate_id || '|' ||
+                        json_extract(payload_json, '$.remote_thread_key')
+                 FROM local_mutation_outbox
+                 WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            format!("{group_did}|{group_did}")
+        );
+    }
+
+    #[test]
+    fn unbound_remote_group_read_state_projects_to_local_group_conversation() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        let group_did = "did:wba:awiki.info:groups:group-read-projection";
+
+        mark_thread_read_and_update_outbox(
+            &db,
+            &binding.owner_identity_id,
+            &binding.current_did,
+            super::super::messages::MarkThreadReadWatermarkInput {
+                thread: crate::messages::ThreadRef::Group(
+                    crate::ids::GroupRef::parse(group_did).unwrap(),
+                ),
+                read_watermark_message_id: None,
+                read_watermark_seq: Some("10".to_owned()),
+                read_watermark_at: Some("2026-07-28T10:00:00Z".to_owned()),
+                pending_remote_ack: false,
+            },
+        )
+        .unwrap();
+        apply_remote_read_state(
+            &db,
+            &binding.owner_identity_id,
+            &binding.current_did,
+            &ReadStateApplyV2 {
+                remote_thread_key: group_did.to_owned(),
+                thread_kind: "group".to_owned(),
+                read_watermark_seq: "20".to_owned(),
+                read_watermark_message_id: None,
+                state_version: "1".to_owned(),
+                occurred_at: "2026-07-28T10:00:01Z".to_owned(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            db.query_row(
+                "SELECT conversation_id || '|' || read_watermark_seq || '|' ||
+                        remote_state_version
+                 FROM thread_read_state
+                 WHERE owner_identity_id = ?1",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            format!("group:{group_did}|20|1")
         );
     }
 

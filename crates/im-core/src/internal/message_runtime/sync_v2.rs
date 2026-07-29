@@ -275,7 +275,8 @@ where
         };
         let thread_kind = field("thread_kind")?;
         let thread_id = field("thread_id")?;
-        let remote_thread_key = field("remote_thread_key")?;
+        let remote_thread_key =
+            canonical_read_remote_thread_key(&thread_kind, &field("remote_thread_key")?);
         let requested_seq = field("read_watermark_seq")?;
         crate::internal::local_state::sync_v2::validate_decimal(
             "read_watermark_seq",
@@ -657,6 +658,17 @@ where
         )
         .await?;
         Ok(state)
+    }
+}
+
+fn canonical_read_remote_thread_key(thread_kind: &str, remote_thread_key: &str) -> String {
+    if thread_kind == "group" {
+        remote_thread_key
+            .strip_prefix("group:")
+            .unwrap_or(remote_thread_key)
+            .to_owned()
+    } else {
+        remote_thread_key.to_owned()
     }
 }
 
@@ -1436,6 +1448,24 @@ mod tests {
     use std::collections::VecDeque;
     use std::rc::Rc;
     use std::sync::Arc;
+
+    #[test]
+    fn group_read_outbox_legacy_local_key_is_normalized_for_the_wire() {
+        let group_did = "did:wba:awiki.info:groups:legacy-outbox";
+
+        assert_eq!(
+            canonical_read_remote_thread_key("group", &format!("group:{group_did}")),
+            group_did
+        );
+        assert_eq!(
+            canonical_read_remote_thread_key("group", group_did),
+            group_did
+        );
+        assert_eq!(
+            canonical_read_remote_thread_key("direct", "dconv-alice-bob"),
+            "dconv-alice-bob"
+        );
+    }
 
     struct Fixture {
         root: std::path::PathBuf,
