@@ -2454,6 +2454,7 @@ extension on gen_profile_dto.DartUserProfile {
     profileUri: profileUri,
     subjectType: subjectType,
     updatedAt: updatedAt,
+    profileVersion: profileVersion,
     versionId: versionId,
     ttl: ttl?.toInt(),
   );

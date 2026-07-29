@@ -8952,8 +8952,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartUserProfile dco_decode_dart_user_profile(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 15)
-      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return DartUserProfile(
       subject: dco_decode_String(arr[0]),
       handle: dco_decode_opt_String(arr[1]),
@@ -8968,8 +8968,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       profileUri: dco_decode_opt_String(arr[10]),
       subjectType: dco_decode_opt_String(arr[11]),
       updatedAt: dco_decode_opt_String(arr[12]),
-      versionId: dco_decode_opt_String(arr[13]),
-      ttl: dco_decode_opt_box_autoadd_u_64(arr[14]),
+      profileVersion: dco_decode_opt_String(arr[13]),
+      versionId: dco_decode_opt_String(arr[14]),
+      ttl: dco_decode_opt_box_autoadd_u_64(arr[15]),
     );
   }
 
@@ -13351,6 +13352,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_profileUri = sse_decode_opt_String(deserializer);
     var var_subjectType = sse_decode_opt_String(deserializer);
     var var_updatedAt = sse_decode_opt_String(deserializer);
+    var var_profileVersion = sse_decode_opt_String(deserializer);
     var var_versionId = sse_decode_opt_String(deserializer);
     var var_ttl = sse_decode_opt_box_autoadd_u_64(deserializer);
     return DartUserProfile(
@@ -13367,6 +13369,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       profileUri: var_profileUri,
       subjectType: var_subjectType,
       updatedAt: var_updatedAt,
+      profileVersion: var_profileVersion,
       versionId: var_versionId,
       ttl: var_ttl,
     );
@@ -17274,6 +17277,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.profileUri, serializer);
     sse_encode_opt_String(self.subjectType, serializer);
     sse_encode_opt_String(self.updatedAt, serializer);
+    sse_encode_opt_String(self.profileVersion, serializer);
     sse_encode_opt_String(self.versionId, serializer);
     sse_encode_opt_box_autoadd_u_64(self.ttl, serializer);
   }

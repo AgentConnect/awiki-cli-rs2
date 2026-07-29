@@ -11265,6 +11265,7 @@ impl SseDecode for crate::dto::profile::DartUserProfile {
         let mut var_profileUri = <Option<String>>::sse_decode(deserializer);
         let mut var_subjectType = <Option<String>>::sse_decode(deserializer);
         let mut var_updatedAt = <Option<String>>::sse_decode(deserializer);
+        let mut var_profileVersion = <Option<String>>::sse_decode(deserializer);
         let mut var_versionId = <Option<String>>::sse_decode(deserializer);
         let mut var_ttl = <Option<u64>>::sse_decode(deserializer);
         return crate::dto::profile::DartUserProfile {
@@ -11281,6 +11282,7 @@ impl SseDecode for crate::dto::profile::DartUserProfile {
             profile_uri: var_profileUri,
             subject_type: var_subjectType,
             updated_at: var_updatedAt,
+            profile_version: var_profileVersion,
             version_id: var_versionId,
             ttl: var_ttl,
         };
@@ -16776,6 +16778,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::profile::DartUserProfile {
             self.profile_uri.into_into_dart().into_dart(),
             self.subject_type.into_into_dart().into_dart(),
             self.updated_at.into_into_dart().into_dart(),
+            self.profile_version.into_into_dart().into_dart(),
             self.version_id.into_into_dart().into_dart(),
             self.ttl.into_into_dart().into_dart(),
         ]
@@ -19467,6 +19470,7 @@ impl SseEncode for crate::dto::profile::DartUserProfile {
         <Option<String>>::sse_encode(self.profile_uri, serializer);
         <Option<String>>::sse_encode(self.subject_type, serializer);
         <Option<String>>::sse_encode(self.updated_at, serializer);
+        <Option<String>>::sse_encode(self.profile_version, serializer);
         <Option<String>>::sse_encode(self.version_id, serializer);
         <Option<u64>>::sse_encode(self.ttl, serializer);
     }

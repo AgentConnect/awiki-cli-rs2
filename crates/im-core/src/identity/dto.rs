@@ -434,6 +434,8 @@ pub struct Profile {
     pub profile_uri: Option<String>,
     pub subject_type: Option<String>,
     pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_version: Option<String>,
     #[serde(
         default,
         rename = "versionId",
@@ -467,6 +469,7 @@ impl Profile {
             profile_uri: None,
             subject_type: None,
             updated_at: None,
+            profile_version: None,
             version_id: None,
             ttl: None,
             proof: None,
@@ -558,6 +561,12 @@ impl Profile {
             value.insert(
                 "updated".to_string(),
                 serde_json::Value::String(updated_at.clone()),
+            );
+        }
+        if let Some(profile_version) = self.profile_version.as_ref() {
+            value.insert(
+                "profile_version".to_string(),
+                serde_json::Value::String(profile_version.clone()),
             );
         }
         if let Some(version_id) = self.version_id.as_ref() {

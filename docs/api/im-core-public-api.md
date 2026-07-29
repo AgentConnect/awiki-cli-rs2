@@ -989,10 +989,16 @@ pub struct Profile {
     pub profile_uri: Option<String>,
     pub subject_type: Option<String>,
     pub updated_at: Option<String>,
+    pub profile_version: Option<String>,
     pub version_id: Option<String>,
     pub ttl: Option<u64>,
 }
 ```
+
+`profile_version` 是 User Service 账号 Profile 域提交后的 canonical non-negative decimal
+string，允许 `"0"` 且不得转换为固定位宽整数。它只在相应私有 Profile RPC 返回该版本时存在。
+`version_id` 仍是 WNS DID Subject Profile 的 `versionId` 展示元数据；二者来源和语义独立，
+旧响应只有 `versionId` 时 `profile_version` 保持 `None`。
 
 `hydrate_display_profiles` 是本地 cache 读取 API，不会发起 WNS / User Service 远程请求。它用于联系人列表、会话列表、群成员列表等热路径水化展示资料；cache miss 时返回 `cache_hit = false`，调用方按 `display_name -> handle -> did` 的展示 fallback 处理。远程刷新仍应通过显式 `resolve_peer` / `public_profile` / 安全验证链路触发。
 

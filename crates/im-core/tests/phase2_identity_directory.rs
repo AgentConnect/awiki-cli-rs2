@@ -24,6 +24,7 @@ async fn identity_service_profile_uses_public_http_transport() {
                 "bio": "Rust public API",
                 "tags": ["sdk", "http"],
                 "profile_md": "## Alice",
+                "versionId": "wns-profile-7",
             }),
         ),
         ExpectedRpc::new(
@@ -42,6 +43,8 @@ async fn identity_service_profile_uses_public_http_transport() {
                 "bio": "sdk profile skeleton",
                 "tags": ["sdk"],
                 "profile_md": "# Alice",
+                "profile_version": "18446744073709551616",
+                "versionId": "wns-profile-8",
             }),
         ),
     ]);
@@ -53,6 +56,8 @@ async fn identity_service_profile_uses_public_http_transport() {
     assert_eq!(profile.display_name.as_deref(), Some("Alice Remote"));
     assert_eq!(profile.bio.as_deref(), Some("Rust public API"));
     assert_eq!(profile.tags, vec!["sdk", "http"]);
+    assert_eq!(profile.profile_version, None);
+    assert_eq!(profile.version_id.as_deref(), Some("wns-profile-7"));
 
     let updated = client
         .identity()
@@ -68,6 +73,11 @@ async fn identity_service_profile_uses_public_http_transport() {
     assert_eq!(updated.subject.as_str(), "did:example:alice");
     assert_eq!(updated.display_name.as_deref(), Some("Alice Updated"));
     assert_eq!(updated.markdown.as_deref(), Some("# Alice"));
+    assert_eq!(
+        updated.profile_version.as_deref(),
+        Some("18446744073709551616")
+    );
+    assert_eq!(updated.version_id.as_deref(), Some("wns-profile-8"));
 
     let requests = server.join();
     assert_eq!(requests.len(), 2);

@@ -368,6 +368,11 @@ The Dart `UserProfile` model uses these standard display fields:
 - `versionId`
 - `ttl`
 
+相同 `UserProfile` 模型从已认证的 User Service Profile mutation 返回时，还可以包含
+`profileVersion`。它是账号 Profile 域的 canonical non-negative decimal string，允许
+`"0"` 并始终保留为 Dart `String?`。它与 WNS DID Subject Profile 展示元数据 `versionId`
+相互独立；旧响应只有 `versionId` 时 `profileVersion` 为 `null`。
+
 Legacy compatibility fields remain available:
 
 - `bio` maps to / from `description` where needed.

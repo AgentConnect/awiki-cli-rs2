@@ -762,6 +762,7 @@ impl From<im_core::identity::Profile> for DartUserProfile {
             profile_uri: value.profile_uri,
             subject_type: value.subject_type,
             updated_at: value.updated_at,
+            profile_version: value.profile_version,
             version_id: value.version_id,
             ttl: value.ttl,
         }

@@ -13,6 +13,7 @@ pub struct DartUserProfile {
     pub profile_uri: Option<String>,
     pub subject_type: Option<String>,
     pub updated_at: Option<String>,
+    pub profile_version: Option<String>,
     pub version_id: Option<String>,
     pub ttl: Option<u64>,
 }
