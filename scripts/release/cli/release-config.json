@@ -6,11 +6,11 @@
       "min_supported_version": "1.0.20-beta.1"
     },
     "stable": {
-      "version": "1.0.29",
-      "min_supported_version": "1.0.29"
+      "version": "1.0.30",
+      "min_supported_version": "1.0.30"
     }
   },
-  "anp_commit": "67e6680fac80a5fb3dca41029c67a0ea3ecc0dd5",
+  "anp_commit": "690272e62f7fba0aeea8c65896a1806b6ef5b3b4",
   "archive_keep_versions": 10,
   "targets": [
     "darwin-amd64",
