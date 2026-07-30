@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 34;
+pub(crate) const SCHEMA_VERSION: i64 = 35;
 pub(crate) const CANONICAL_CONVERSATION_SCHEMA_VERSION: i64 = 28;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 27;
@@ -13,6 +13,7 @@ const LEGACY_PRIVATE_DELIVERY_RETIREMENT_SCHEMA_VERSION: i64 = 31;
 const MULTI_DEVICE_SYNC_FOUNDATION_SCHEMA_VERSION: i64 = 32;
 const SYNC_INSTALLATION_ID_SCHEMA_VERSION: i64 = 33;
 const READ_RECOVERY_SCHEMA_VERSION: i64 = 34;
+const INBOUND_RESOLUTION_THREAD_BINDING_SCHEMA_VERSION: i64 = 35;
 const SYNC_V2_FOUNDATION_TABLES: &[&str] = &[
     "identity_account_bindings",
     "message_sync_state",
@@ -1016,10 +1017,20 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
     if (MULTI_DEVICE_SYNC_FOUNDATION_SCHEMA_VERSION..=READ_RECOVERY_SCHEMA_VERSION)
         .contains(&version)
     {
-        if version == SCHEMA_VERSION && merged_v34_shape_is_complete(connection)? {
-            return create_schema(connection, false);
+        if version == READ_RECOVERY_SCHEMA_VERSION && merged_v34_shape_is_complete(connection)? {
+            return migrate_v34_to_v35(connection);
         }
         return converge_divergent_schema_to_v34(connection, version);
+    }
+    if version == INBOUND_RESOLUTION_THREAD_BINDING_SCHEMA_VERSION {
+        if !merged_v35_shape_is_complete(connection)? {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: format!(
+                    "sqlite schema version {version} has an incomplete inbound resolution binding shape"
+                ),
+            });
+        }
+        return create_schema(connection, false);
     }
     if version < SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUpgradeRequired {
@@ -1106,10 +1117,7 @@ fn validate_release_predecessor_shape(
     Ok(())
 }
 
-fn converge_divergent_schema_to_v34(
-    connection: &Connection,
-    version: i64,
-) -> crate::ImResult<()> {
+fn converge_divergent_schema_to_v34(connection: &Connection, version: i64) -> crate::ImResult<()> {
     validate_divergent_schema_shape(connection, version)?;
     let transaction = connection
         .unchecked_transaction()
@@ -1122,10 +1130,27 @@ fn converge_divergent_schema_to_v34(
     transaction.commit().map_err(super::local_state_unavailable)
 }
 
-fn validate_divergent_schema_shape(
-    connection: &Connection,
-    version: i64,
-) -> crate::ImResult<()> {
+fn migrate_v34_to_v35(connection: &Connection) -> crate::ImResult<()> {
+    if current_schema_version(connection)? != READ_RECOVERY_SCHEMA_VERSION
+        || !merged_v34_shape_is_complete(connection)?
+    {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "sqlite schema v34 must be complete before adding inbound resolution bindings"
+                .to_owned(),
+        });
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(super::local_state_unavailable)?;
+    super::inbound_resolution_backlog::create_schema(&transaction)?;
+    set_schema_version(
+        &transaction,
+        INBOUND_RESOLUTION_THREAD_BINDING_SCHEMA_VERSION,
+    )?;
+    transaction.commit().map_err(super::local_state_unavailable)
+}
+
+fn validate_divergent_schema_shape(connection: &Connection, version: i64) -> crate::ImResult<()> {
     let has_hydration = has_column(connection, "messages", "hydration_state")?;
     let has_sync_subject = has_column(connection, "sync_state", "sync_subject_id")?;
     let has_complete_sync_subject = sync_state_subject_scope_schema_is_complete(connection)?;
@@ -1163,8 +1188,7 @@ fn validate_divergent_schema_shape(
 
     let current_shape = has_hydration && has_complete_sync_subject;
     let release_v32_shape = sync_v2_table_count == SYNC_V2_FOUNDATION_TABLES.len();
-    let release_v33_shape = release_v32_shape
-        && has_table(connection, "sync_installation_state")?;
+    let release_v33_shape = release_v32_shape && has_table(connection, "sync_installation_state")?;
     let release_v34_shape = release_v33_shape
         && read_recovery_table_count == READ_RECOVERY_TABLES.len()
         && has_column(connection, "thread_read_state", "remote_state_version")?;
@@ -1186,10 +1210,7 @@ fn validate_divergent_schema_shape(
 
 fn merged_v34_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
     Ok(has_column(connection, "messages", "hydration_state")?
-        && has_index(
-            connection,
-            "idx_messages_owner_hydration_conversation_seq",
-        )?
+        && has_index(connection, "idx_messages_owner_hydration_conversation_seq")?
         && sync_state_subject_scope_schema_is_complete(connection)?
         && has_index(connection, "idx_sync_state_owner_kind")?
         && table_presence_count(connection, SYNC_V2_FOUNDATION_TABLES)?
@@ -1199,6 +1220,26 @@ fn merged_v34_shape_is_complete(connection: &Connection) -> crate::ImResult<bool
         && table_presence_count(connection, READ_RECOVERY_TABLES)? == READ_RECOVERY_TABLES.len()
         && index_presence_count(connection, SYNC_V2_REQUIRED_INDEXES)?
             == SYNC_V2_REQUIRED_INDEXES.len())
+}
+
+fn merged_v35_shape_is_complete(connection: &Connection) -> crate::ImResult<bool> {
+    Ok(merged_v34_shape_is_complete(connection)?
+        && has_table(connection, "inbound_resolution_thread_bindings")?
+        && has_column(
+            connection,
+            "inbound_resolution_thread_bindings",
+            "remote_thread_key",
+        )?
+        && has_column(
+            connection,
+            "inbound_resolution_thread_bindings",
+            "thread_kind",
+        )?
+        && has_column(
+            connection,
+            "inbound_resolution_thread_bindings",
+            "updated_at",
+        )?)
 }
 
 fn table_presence_count(connection: &Connection, tables: &[&str]) -> crate::ImResult<usize> {

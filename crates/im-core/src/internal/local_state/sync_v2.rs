@@ -894,7 +894,8 @@ pub(crate) fn apply_delta_v2(
     let mut groups = Vec::new();
     let mut thread_bindings = Vec::new();
     let mut read_states = Vec::new();
-    for event in events {
+    let mut backlogged_messages = 0usize;
+    for mut event in events {
         let event_id = event.event_id.clone();
         let inserted = record_applied_event(
             &transaction,
@@ -911,14 +912,44 @@ pub(crate) fn apply_delta_v2(
             continue;
         }
         let mut projected_message = false;
+        let mut canonical_conversation_ids = BTreeSet::new();
+        let had_messages = !event.messages.is_empty();
+        let message_thread_binding =
+            message_event_thread_binding(&event, &input.owner_identity_id)?;
         for message in event.messages {
-            let message = super::inbound_resolution_backlog::canonicalize_inbound_message(
+            validate_message_owner(&message, &input.owner_identity_id)?;
+            match super::inbound_resolution_backlog::canonicalize_inbound_message(
                 &transaction,
-                message,
-            )?;
-            messages.push(message);
-            projected_message = true;
+                message.clone(),
+            ) {
+                Ok(message) => {
+                    canonical_conversation_ids.insert(message.conversation_id.clone());
+                    messages.push(message);
+                    projected_message = true;
+                }
+                Err(error) if super::inbound_resolution_backlog::is_resolution_error(&error) => {
+                    super::inbound_resolution_backlog::store_with_thread_binding(
+                        &transaction,
+                        super::inbound_resolution_backlog::BacklogSource {
+                            event_id: &event.event_id,
+                            event_seq: &event.event_seq,
+                            event_type: &event.event_type,
+                        },
+                        &message,
+                        &error,
+                        message_thread_binding.as_ref(),
+                    )?;
+                    backlogged_messages = backlogged_messages.saturating_add(1);
+                }
+                Err(error) => return Err(error),
+            }
         }
+        canonicalize_message_event_thread_bindings(
+            &mut event.thread_bindings,
+            &event.event_type,
+            &input.owner_identity_id,
+            &canonical_conversation_ids,
+        )?;
         for group in event.groups {
             validate_group_owner(&group, &input.owner_identity_id)?;
             if group_state_is_stale(&transaction, &group)? {
@@ -926,7 +957,9 @@ pub(crate) fn apply_delta_v2(
             }
             groups.push(group);
         }
-        thread_bindings.extend(event.thread_bindings);
+        if projected_message || !had_messages {
+            thread_bindings.extend(event.thread_bindings);
+        }
         read_states.extend(event.read_states);
         applied_event_ids.push(event_id.clone());
         if projected_message {
@@ -1004,7 +1037,7 @@ pub(crate) fn apply_delta_v2(
         applied_event_ids,
         projected_message_event_ids,
         duplicate_events,
-        backlogged_messages: 0,
+        backlogged_messages,
         invalidation,
     })
 }
@@ -1079,7 +1112,9 @@ pub(crate) fn apply_snapshot_v2(
     let mut groups = input.groups;
     let mut thread_bindings = Vec::new();
     let mut read_states = input.read_states;
-    for event in events {
+    let mut backlogged_messages = 0usize;
+    for mut event in events {
+        let event_id = event.event_id.clone();
         if compare_decimal(&event.event_seq, &input.snapshot_scan_seq)?
             == std::cmp::Ordering::Greater
         {
@@ -1102,21 +1137,54 @@ pub(crate) fn apply_snapshot_v2(
             duplicate_events = duplicate_events.saturating_add(1);
             continue;
         }
-        if !event.messages.is_empty() {
-            projected_message_event_ids.push(event.event_id.clone());
-        }
+        let mut canonical_conversation_ids = BTreeSet::new();
+        let had_messages = !event.messages.is_empty();
+        let message_thread_binding =
+            message_event_thread_binding(&event, &input.owner_identity_id)?;
+        let mut projected_message = false;
         for message in event.messages {
-            messages.push(
-                super::inbound_resolution_backlog::canonicalize_inbound_message(
-                    &transaction,
-                    message,
-                )?,
-            );
+            validate_message_owner(&message, &input.owner_identity_id)?;
+            match super::inbound_resolution_backlog::canonicalize_inbound_message(
+                &transaction,
+                message.clone(),
+            ) {
+                Ok(message) => {
+                    canonical_conversation_ids.insert(message.conversation_id.clone());
+                    messages.push(message);
+                    projected_message = true;
+                }
+                Err(error) if super::inbound_resolution_backlog::is_resolution_error(&error) => {
+                    super::inbound_resolution_backlog::store_with_thread_binding(
+                        &transaction,
+                        super::inbound_resolution_backlog::BacklogSource {
+                            event_id: &event.event_id,
+                            event_seq: &event.event_seq,
+                            event_type: &event.event_type,
+                        },
+                        &message,
+                        &error,
+                        message_thread_binding.as_ref(),
+                    )?;
+                    backlogged_messages = backlogged_messages.saturating_add(1);
+                }
+                Err(error) => return Err(error),
+            }
         }
+        canonicalize_message_event_thread_bindings(
+            &mut event.thread_bindings,
+            &event.event_type,
+            &input.owner_identity_id,
+            &canonical_conversation_ids,
+        )?;
         groups.extend(event.groups);
-        thread_bindings.extend(event.thread_bindings);
+        if projected_message || !had_messages {
+            thread_bindings.extend(event.thread_bindings);
+        }
         read_states.extend(event.read_states);
-        applied_event_ids.push(event.event_id);
+        applied_event_ids.push(event_id.clone());
+        if projected_message {
+            projected_message_event_ids.push(event_id);
+        }
     }
 
     for binding in thread_bindings {
@@ -1187,7 +1255,7 @@ pub(crate) fn apply_snapshot_v2(
         applied_event_ids,
         projected_message_event_ids,
         duplicate_events,
-        backlogged_messages: 0,
+        backlogged_messages,
         invalidation,
     })
 }
@@ -2055,13 +2123,14 @@ pub(crate) fn upsert_sync_thread_binding(
         )
         .optional()
         .map_err(super::local_state_unavailable)?;
-    if conflict.as_ref().is_some_and(|current| {
-        current != &(binding.thread_kind.clone(), binding.conversation_id.clone())
-    }) {
-        return Err(sync_error(
-            "SYNC_THREAD_BINDING_CONFLICT",
-            "remote thread key cannot be rebound to another canonical conversation",
-        ));
+    if let Some(current) = conflict.as_ref() {
+        let next = (binding.thread_kind.clone(), binding.conversation_id.clone());
+        if current != &next && !is_direct_binding_canonical_upgrade(current, &next) {
+            return Err(sync_error(
+                "SYNC_THREAD_BINDING_CONFLICT",
+                "remote thread key cannot be rebound to another canonical conversation",
+            ));
+        }
     }
     connection
         .execute(
@@ -2069,6 +2138,7 @@ pub(crate) fn upsert_sync_thread_binding(
                 (owner_identity_id, remote_thread_key, thread_kind, conversation_id, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(owner_identity_id, remote_thread_key) DO UPDATE SET
+                conversation_id = excluded.conversation_id,
                 updated_at = excluded.updated_at",
             params![
                 binding.owner_identity_id,
@@ -2160,6 +2230,16 @@ pub(crate) fn upsert_sync_thread_binding(
         }
     }
     Ok(())
+}
+
+fn is_direct_binding_canonical_upgrade(
+    current: &(String, String),
+    next: &(String, String),
+) -> bool {
+    current.0 == "direct"
+        && next.0 == "direct"
+        && current.1.starts_with("dm:did:")
+        && next.1.starts_with("dm:peer-scope:v1:")
 }
 
 fn apply_remote_read_state(
@@ -2778,6 +2858,88 @@ fn validate_group_owner(
     }
 }
 
+fn validate_message_owner(
+    message: &super::messages::MessageRecord,
+    owner_identity_id: &str,
+) -> crate::ImResult<()> {
+    if message.owner_identity_id == owner_identity_id {
+        Ok(())
+    } else {
+        Err(crate::ImError::IdentityBindingConflict {
+            detail: "message sync fact belongs to a different local owner".to_owned(),
+        })
+    }
+}
+
+fn message_event_thread_binding(
+    event: &DeltaApplyEventV2,
+    owner_identity_id: &str,
+) -> crate::ImResult<Option<SyncThreadBinding>> {
+    for binding in &event.thread_bindings {
+        if binding.owner_identity_id != owner_identity_id {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "sync thread binding belongs to a different local owner".to_owned(),
+            });
+        }
+    }
+    if event.messages.is_empty() {
+        return Ok(None);
+    }
+    if event.event_type != "message.created"
+        || event.messages.len() != 1
+        || event.thread_bindings.len() != 1
+    {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "hydrated message.created requires exactly one message and one thread binding",
+        ));
+    }
+    let binding = &event.thread_bindings[0];
+    let message = &event.messages[0];
+    if binding.thread_kind != message.wire_thread_kind {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "hydrated message thread binding kind conflicts with its wire identity",
+        ));
+    }
+    Ok(Some(binding.clone()))
+}
+
+fn canonicalize_message_event_thread_bindings(
+    bindings: &mut [SyncThreadBinding],
+    event_type: &str,
+    owner_identity_id: &str,
+    canonical_conversation_ids: &BTreeSet<String>,
+) -> crate::ImResult<()> {
+    for binding in bindings.iter() {
+        if binding.owner_identity_id != owner_identity_id {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "sync thread binding belongs to a different local owner".to_owned(),
+            });
+        }
+    }
+    if event_type != "message.created"
+        || bindings.is_empty()
+        || canonical_conversation_ids.is_empty()
+    {
+        return Ok(());
+    }
+    if canonical_conversation_ids.len() != 1 {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "hydrated message.created thread binding requires one canonical conversation",
+        ));
+    }
+    let conversation_id = canonical_conversation_ids
+        .iter()
+        .next()
+        .expect("one canonical conversation was validated");
+    for binding in bindings {
+        binding.conversation_id.clone_from(conversation_id);
+    }
+    Ok(())
+}
+
 fn group_state_is_stale(
     connection: &Connection,
     group: &super::groups::GroupRecord,
@@ -3065,6 +3227,156 @@ mod tests {
     }
 
     #[test]
+    fn message_delta_binds_remote_thread_to_resolved_persona_conversation() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        bootstrap_message_sync_state(
+            &db,
+            &MessageSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                scan_seq: "0".to_owned(),
+                bootstrap_state: "active".to_owned(),
+                last_server_time: None,
+                last_success_at: Some(1),
+                last_error_code: None,
+                metadata_json: None,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let peer_did = "did:wba:awiki.info:user:bob";
+        let canonical_conversation_id = super::super::peer_personas::project_verified_handle(
+            &mut db,
+            &binding.owner_identity_id,
+            &binding.current_did,
+            &crate::directory::HandleLookupResult {
+                handle: crate::ids::Handle::parse("bob.awiki.info", "").unwrap(),
+                did: crate::ids::Did::parse(peer_did).unwrap(),
+                user_id: "user-bob".to_owned(),
+                domain: Some("awiki.info".to_owned()),
+                status: Some("active".to_owned()),
+                binding_generation: Some("1".to_owned()),
+                profile: None,
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
+        let provisional_conversation_id =
+            super::super::owner_scope::direct_conversation_id(peer_did);
+        assert_ne!(canonical_conversation_id, provisional_conversation_id);
+        upsert_sync_thread_binding(
+            &db,
+            &SyncThreadBinding {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                remote_thread_key: "remote-thread-1".to_owned(),
+                thread_kind: "direct".to_owned(),
+                conversation_id: provisional_conversation_id.clone(),
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+
+        apply_delta_v2(
+            &db,
+            DeltaApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                next_scan_seq: "1".to_owned(),
+                server_time: "2026-07-31T00:00:00Z".to_owned(),
+                events: vec![DeltaApplyEventV2 {
+                    event_id: "event-1".to_owned(),
+                    event_seq: "1".to_owned(),
+                    event_type: "message.created".to_owned(),
+                    messages: vec![super::super::messages::MessageRecord {
+                        msg_id: "message-1".to_owned(),
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        owner_did: binding.current_did.clone(),
+                        conversation_id: provisional_conversation_id.clone(),
+                        thread_id: provisional_conversation_id.clone(),
+                        direction: 0,
+                        sender_did: peer_did.to_owned(),
+                        receiver_did: binding.current_did.clone(),
+                        content_type: "text/plain".to_owned(),
+                        content: "hello".to_owned(),
+                        server_seq: Some(1),
+                        sent_at: "2026-07-31T00:00:00Z".to_owned(),
+                        stored_at: "2026-07-31T00:00:00Z".to_owned(),
+                        credential_name: binding.owner_identity_id.clone(),
+                        ..super::super::messages::MessageRecord::default()
+                    }
+                    .with_resolved_wire_thread("direct", peer_did)],
+                    thread_bindings: vec![SyncThreadBinding {
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        remote_thread_key: "remote-thread-1".to_owned(),
+                        thread_kind: "direct".to_owned(),
+                        conversation_id: provisional_conversation_id,
+                        updated_at: 2,
+                    }],
+                    ..DeltaApplyEventV2::default()
+                }],
+            },
+        )
+        .unwrap();
+
+        let stored_message_conversation = db
+            .query_row(
+                "SELECT conversation_id FROM messages
+                 WHERE owner_identity_id = ?1 AND msg_id = 'message-1'",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        let stored_binding_conversation = db
+            .query_row(
+                "SELECT conversation_id FROM sync_thread_bindings
+                 WHERE owner_identity_id = ?1
+                   AND remote_thread_key = 'remote-thread-1'",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert_eq!(stored_message_conversation, canonical_conversation_id);
+        assert_eq!(stored_binding_conversation, canonical_conversation_id);
+        assert!(load_sync_thread_binding_for_conversation(
+            &db,
+            &binding.owner_identity_id,
+            &canonical_conversation_id,
+            "direct",
+        )
+        .unwrap()
+        .is_some());
+        let conflicting = upsert_sync_thread_binding(
+            &db,
+            &SyncThreadBinding {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                remote_thread_key: "remote-thread-1".to_owned(),
+                thread_kind: "direct".to_owned(),
+                conversation_id: "dm:peer-scope:v1:other".to_owned(),
+                updated_at: 3,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            conflicting,
+            crate::ImError::Service {
+                code: Some(code),
+                ..
+            } if code == "SYNC_THREAD_BINDING_CONFLICT"
+        ));
+    }
+
+    #[test]
     fn sync_client_instance_id_reuses_failed_retry_and_changes_with_new_database() {
         let first_file = tempfile::NamedTempFile::new().unwrap();
         let (first, retry) = {
@@ -3106,8 +3418,8 @@ mod tests {
     }
 
     #[test]
-    fn v2_required_resolution_failure_rolls_back_receipt_and_cursor() {
-        let db = Connection::open_in_memory().unwrap();
+    fn v2_unresolved_message_commits_cursor_and_replays_canonical_thread_binding() {
+        let mut db = Connection::open_in_memory().unwrap();
         db.pragma_update(None, "foreign_keys", "ON").unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         let binding = binding();
@@ -3145,31 +3457,38 @@ mod tests {
         }
         .with_resolved_wire_thread("direct", "did:example:unknown");
 
-        assert!(matches!(
-            apply_delta_v2(
-                &db,
-                DeltaApplyInputV2 {
-                    owner_identity_id: binding.owner_identity_id.clone(),
-                    owner_did: binding.current_did.clone(),
-                    account_id: binding.account_id.clone(),
-                    protocol_device_id: binding.protocol_device_id.clone(),
-                    device_auth_generation: binding.device_auth_generation.clone(),
-                    stream_epoch: "1".to_owned(),
-                    next_scan_seq: "11".to_owned(),
-                    server_time: "2026-07-28T10:00:00Z".to_owned(),
-                    events: vec![DeltaApplyEventV2 {
-                        event_id: "event-11".to_owned(),
-                        event_seq: "11".to_owned(),
-                        event_type: "message.created".to_owned(),
-                        messages: vec![unresolved],
-                        groups: Vec::new(),
-                        thread_bindings: Vec::new(),
-                        read_states: Vec::new(),
+        let outcome = apply_delta_v2(
+            &db,
+            DeltaApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                next_scan_seq: "11".to_owned(),
+                server_time: "2026-07-28T10:00:00Z".to_owned(),
+                events: vec![DeltaApplyEventV2 {
+                    event_id: "event-11".to_owned(),
+                    event_seq: "11".to_owned(),
+                    event_type: "message.created".to_owned(),
+                    messages: vec![unresolved],
+                    groups: Vec::new(),
+                    thread_bindings: vec![SyncThreadBinding {
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        remote_thread_key: "remote-thread-unknown".to_owned(),
+                        thread_kind: "direct".to_owned(),
+                        conversation_id: "dm:did:example:unknown".to_owned(),
+                        updated_at: 11,
                     }],
-                }
-            ),
-            Err(crate::ImError::IdentityUnresolved { .. })
-        ));
+                    read_states: Vec::new(),
+                }],
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome.applied_event_ids, ["event-11"]);
+        assert!(outcome.projected_message_event_ids.is_empty());
+        assert_eq!(outcome.backlogged_messages, 1);
         assert_eq!(
             db.query_row(
                 "SELECT COUNT(*) FROM sync_applied_events
@@ -3178,11 +3497,77 @@ mod tests {
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
+            1
+        );
+        let MessageSyncStateAccess::Ready(applied_state) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("expected ready v2 sync state");
+        };
+        assert_eq!(applied_state.scan_seq, "11");
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
             0
         );
         assert_eq!(
-            load_message_sync_state(&db, &binding.owner_identity_id).unwrap(),
-            MessageSyncStateAccess::Ready(state)
+            db.query_row("SELECT COUNT(*) FROM sync_thread_bindings", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0,
+            "a provisional DID conversation binding must not become durable"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM inbound_resolution_thread_bindings",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+
+        let canonical_conversation_id = super::super::peer_personas::project_verified_handle(
+            &mut db,
+            &binding.owner_identity_id,
+            &binding.current_did,
+            &crate::directory::HandleLookupResult {
+                handle: crate::ids::Handle::parse("unknown.awiki.info", "").unwrap(),
+                did: crate::ids::Did::parse("did:example:unknown").unwrap(),
+                user_id: "user-unknown".to_owned(),
+                domain: Some("awiki.info".to_owned()),
+                status: Some("active".to_owned()),
+                binding_generation: Some("1".to_owned()),
+                profile: None,
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
+        let replayed: (String, String) = db
+            .query_row(
+                "SELECT m.conversation_id, b.conversation_id
+                 FROM messages AS m
+                 JOIN sync_thread_bindings AS b
+                   ON b.owner_identity_id = m.owner_identity_id
+                  AND b.remote_thread_key = 'remote-thread-unknown'
+                 WHERE m.owner_identity_id = ?1 AND m.msg_id = 'message-11'",
+                [&binding.owner_identity_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            replayed,
+            (canonical_conversation_id.clone(), canonical_conversation_id)
+        );
+        assert_eq!(
+            super::super::inbound_resolution_backlog::pending_count(
+                &db,
+                &binding.owner_identity_id,
+            )
+            .unwrap(),
+            0
         );
     }
 
@@ -4609,6 +4994,130 @@ mod tests {
         assert_eq!(
             outcome.invalidation.thread_ids,
             vec![conversation_id.to_owned()]
+        );
+    }
+
+    #[test]
+    fn v2_snapshot_backlogs_unresolved_message_without_losing_its_thread_binding() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        bootstrap_message_sync_state(
+            &db,
+            &MessageSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                scan_seq: "10".to_owned(),
+                bootstrap_state: "active".to_owned(),
+                last_server_time: None,
+                last_success_at: Some(1),
+                last_error_code: None,
+                metadata_json: None,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        upsert_recovery_state(
+            &db,
+            &RecoveryState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                mode: "compact_recovery".to_owned(),
+                requested_from_epoch: "1".to_owned(),
+                requested_from_seq: "10".to_owned(),
+                recovery_id_hash: Some("recovery-hash-unresolved".to_owned()),
+                snapshot_scan_seq: Some("20".to_owned()),
+                status: "applying".to_owned(),
+                retry_count: 0,
+                last_error_code: None,
+                started_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let provisional_conversation_id = "dm:did:example:snapshot-peer";
+        let outcome = apply_snapshot_v2(
+            &db,
+            SnapshotApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                expected_stream_epoch: "1".to_owned(),
+                expected_scan_seq: "10".to_owned(),
+                allow_missing_previous: false,
+                recovery_id_hash: "recovery-hash-unresolved".to_owned(),
+                stream_epoch: "2".to_owned(),
+                snapshot_scan_seq: "20".to_owned(),
+                server_time: "2026-07-31T10:00:02Z".to_owned(),
+                events: vec![DeltaApplyEventV2 {
+                    event_id: "snapshot-event-20".to_owned(),
+                    event_seq: "20".to_owned(),
+                    event_type: "message.created".to_owned(),
+                    messages: vec![super::super::messages::MessageRecord {
+                        msg_id: "snapshot-message-20".to_owned(),
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        owner_did: binding.current_did.clone(),
+                        conversation_id: provisional_conversation_id.to_owned(),
+                        thread_id: provisional_conversation_id.to_owned(),
+                        direction: 0,
+                        sender_did: "did:example:snapshot-peer".to_owned(),
+                        receiver_did: binding.current_did.clone(),
+                        content_type: "text/plain".to_owned(),
+                        content: "snapshot body".to_owned(),
+                        sent_at: "2026-07-31T10:00:00Z".to_owned(),
+                        stored_at: "2026-07-31T10:00:00Z".to_owned(),
+                        credential_name: binding.owner_identity_id.clone(),
+                        ..Default::default()
+                    }
+                    .with_resolved_wire_thread("direct", "did:example:snapshot-peer")],
+                    thread_bindings: vec![SyncThreadBinding {
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        remote_thread_key: "snapshot-remote-thread".to_owned(),
+                        thread_kind: "direct".to_owned(),
+                        conversation_id: provisional_conversation_id.to_owned(),
+                        updated_at: 20,
+                    }],
+                    ..Default::default()
+                }],
+                groups: Vec::new(),
+                read_states: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome.backlogged_messages, 1);
+        assert!(outcome.projected_message_event_ids.is_empty());
+        let MessageSyncStateAccess::Ready(state) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("snapshot must commit its cursor");
+        };
+        assert_eq!(
+            (state.stream_epoch.as_str(), state.scan_seq.as_str()),
+            ("2", "20")
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT remote_thread_key FROM inbound_resolution_thread_bindings
+                 WHERE owner_identity_id = ?1 AND message_id = 'snapshot-message-20'",
+                [&binding.owner_identity_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "snapshot-remote-thread"
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_thread_bindings", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
         );
     }
 

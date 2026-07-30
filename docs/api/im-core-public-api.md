@@ -188,11 +188,14 @@ cutover 的 journal，将当前 target 保留为 private safety copy 后恢复�
 backup。公共结果只包含 schema、聚合计数、alias mapping 和 backup/safety-copy
 availability，不返回 backup 路径、消息内容或凭证。
 
-当前 target 为 schema 34。pre-open canonical runner 只拥有 schema 27；已经完成
-canonical cutover 的 schema 28 到 34 必须返回 `not_required`，随后由普通 Core open
+当前 target 为 schema 35。pre-open canonical runner 只拥有 schema 27；已经完成
+canonical cutover 的 schema 28 到 35 必须返回 `not_required`，随后由普通 Core open
 推进或校验。普通 open 严格识别 release/0714 schema 28-31 以及两条开发线曾产生的
 v32-v34 合法形态，并在单一事务中收敛为 hydration projection、subject-scoped checkpoint、
-可证明的旧 Direct WireIdentity 修复、v2 account/message sync 和 read recovery 的并集。
+可证明的旧 Direct WireIdentity 修复、v2 account/message sync、read recovery，以及
+未解析消息与 remote-thread binding 的 durable association。schema 35 的 association
+使 Persona replay 能原子写入 canonical message/binding，不能把暂定 DID conversation
+写成 durable binding。
 未知、残缺或混合得无法证明的同号形态必须 fail closed，不能被猜测性迁移或静默删除。
 
 P2+ API：
@@ -828,7 +831,9 @@ Reliable sync 补充：
 - Direct read state 可以暂时只引用服务端不透明 `conversation_ref`，即使 48 小时/500 条
   snapshot window 内没有建立 canonical conversation 的消息，也允许把该状态存入 owner-scoped
   durable backlog 并提交 snapshot/cursor。后续普通消息建立精确 remote-thread binding 时，
-  Core 在同一事务 replay 并删除 backlog；不得根据 DID 猜测 canonical conversation。
+  Core 必须先用 verified Persona canonicalize 消息，再把该 canonical conversation ID 与
+  remote thread binding 在同一事务提交并 replay/删除 backlog；不得把 hydration 阶段的
+  `dm:<DID>` 暂定值写成 durable binding，也不得根据 DID 猜测 canonical conversation。
 - `message.read_state_updated` 必须显式携带 `thread_kind`；Core 不根据 thread key 猜测。
   只有 read state 的 delta/snapshot 也必须在事务提交后产生对应 conversation/thread patch。
 - `ensure_conversation(ConversationReadRef)` 幂等提交空会话存在性。Direct 必须已有

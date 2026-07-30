@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use serde_json::{json, Map, Value};
@@ -6,32 +6,38 @@ use sha2::{Digest, Sha256};
 
 use crate::internal::auth::session::AsyncSessionProvider;
 use crate::internal::message_runtime::read::MESSAGE_RPC_ENDPOINT;
-use crate::internal::transport::AsyncAuthenticatedRpcTransport;
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRpcTransport};
 
-pub(crate) struct MessageSyncRuntimeV2<'a, P, T> {
+const PENDING_PERSONA_RESOLUTION_LIMIT: u32 = 32;
+
+pub(crate) struct MessageSyncRuntimeV2<'a, P, T, R> {
     client: &'a crate::core::ImClient,
     session_provider: P,
     transport: T,
+    directory_transport: R,
 }
 
-impl<'a, P, T> MessageSyncRuntimeV2<'a, P, T> {
+impl<'a, P, T, R> MessageSyncRuntimeV2<'a, P, T, R> {
     pub(crate) fn new(
         client: &'a crate::core::ImClient,
         session_provider: P,
         transport: T,
+        directory_transport: R,
     ) -> Self {
         Self {
             client,
             session_provider,
             transport,
+            directory_transport,
         }
     }
 }
 
-impl<P, T> MessageSyncRuntimeV2<'_, P, T>
+impl<P, T, R> MessageSyncRuntimeV2<'_, P, T, R>
 where
     P: AsyncSessionProvider,
     T: AsyncAuthenticatedRpcTransport,
+    R: AsyncRpcTransport,
 {
     pub(crate) async fn sync_now(
         mut self,
@@ -54,6 +60,22 @@ where
         let db = self.client.core_inner().local_state_db().await?;
         let owner_identity_id = binding.owner_identity_id.clone();
         let mut result = empty_outcome();
+        let pending_peer_dids = db
+            .list_pending_inbound_resolution_peer_dids(
+                owner_identity_id.clone(),
+                PENDING_PERSONA_RESOLUTION_LIMIT,
+            )
+            .await?;
+        let replayed_conversations = self
+            .resolve_unresolved_peer_dids(&db, &binding, pending_peer_dids, &mut result.warnings)
+            .await?;
+        if !replayed_conversations.is_empty() {
+            result
+                .changed_conversation_ids
+                .extend(replayed_conversations);
+            self.client
+                .emit_committed_local_message_projection("sync_v2_identity_replay");
+        }
         let mut state = match db
             .load_message_sync_state(owner_identity_id.clone())
             .await?
@@ -158,6 +180,13 @@ where
                     )
                 })
                 .collect::<crate::ImResult<Vec<_>>>()?;
+            let direct_peer_dids = direct_peer_dids_from_events(&apply_events);
+            let resolved_conversations = self
+                .resolve_unresolved_peer_dids(&db, &binding, direct_peer_dids, &mut result.warnings)
+                .await?;
+            result
+                .changed_conversation_ids
+                .extend(resolved_conversations);
             let outcome = db
                 .apply_sync_delta_v2(crate::internal::local_state::sync_v2::DeltaApplyInputV2 {
                     owner_identity_id: binding.owner_identity_id.clone(),
@@ -177,6 +206,7 @@ where
             result.duplicates_skipped = result
                 .duplicates_skipped
                 .saturating_add(u32::try_from(outcome.duplicate_events).unwrap_or(u32::MAX));
+            append_backlog_warning(&mut result.warnings, outcome.backlogged_messages);
             result
                 .changed_conversation_ids
                 .extend(outcome.invalidation.conversation_ids.clone());
@@ -219,6 +249,40 @@ where
                 return Ok(best_effort_cleanup(&db, &state, result).await);
             }
         }
+    }
+
+    async fn resolve_unresolved_peer_dids(
+        &mut self,
+        db: &crate::internal::local_state::actor::LocalStateDb,
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        dids: Vec<String>,
+        warnings: &mut Vec<String>,
+    ) -> crate::ImResult<Vec<String>> {
+        let dids = db
+            .filter_unresolved_peer_dids(binding.owner_identity_id.clone(), dids)
+            .await?;
+        let mut conversations = Vec::new();
+        for did in dids {
+            let did = crate::ids::Did::parse(&did)?;
+            let lookup =
+                crate::internal::directory_runtime::lookup_handle_by_did_for_projection_async(
+                    self.client,
+                    &mut self.directory_transport,
+                    &did,
+                )
+                .await;
+            let Ok(lookup) = lookup else {
+                push_identity_resolution_deferred(warnings);
+                continue;
+            };
+            match crate::directory::project_handle_lookup_async(self.client, &lookup).await {
+                Ok(()) => conversations.push(lookup.direct_conversation_id()),
+                Err(_) => push_identity_resolution_deferred(warnings),
+            }
+        }
+        conversations.sort();
+        conversations.dedup();
+        Ok(conversations)
     }
 
     async fn drain_read_outbox(
@@ -433,6 +497,13 @@ where
                 )
             })
             .collect::<crate::ImResult<Vec<_>>>()?;
+        let direct_peer_dids = direct_peer_dids_from_events(&events);
+        let resolved_conversations = self
+            .resolve_unresolved_peer_dids(db, binding, direct_peer_dids, &mut result.warnings)
+            .await?;
+        result
+            .changed_conversation_ids
+            .extend(resolved_conversations);
         let groups = snapshot
             .groups
             .iter()
@@ -658,6 +729,33 @@ where
         )
         .await?;
         Ok(state)
+    }
+}
+
+fn direct_peer_dids_from_events(
+    events: &[crate::internal::local_state::sync_v2::DeltaApplyEventV2],
+) -> Vec<String> {
+    events
+        .iter()
+        .flat_map(|event| event.messages.iter())
+        .filter_map(crate::internal::local_state::inbound_resolution_backlog::direct_peer_did)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn append_backlog_warning(warnings: &mut Vec<String>, backlogged_messages: usize) {
+    if backlogged_messages > 0 {
+        warnings.push(format!("identity_unresolved_backlog:{backlogged_messages}"));
+    }
+}
+
+fn push_identity_resolution_deferred(warnings: &mut Vec<String>) {
+    if !warnings
+        .iter()
+        .any(|warning| warning == "identity_resolution_deferred")
+    {
+        warnings.push("identity_resolution_deferred".to_owned());
     }
 }
 
@@ -1812,6 +1910,19 @@ mod tests {
         }
     }
 
+    struct NoopAsyncDirectoryTransport;
+
+    impl AsyncRpcTransport for NoopAsyncDirectoryTransport {
+        async fn rpc(
+            &mut self,
+            _endpoint: &str,
+            _method: &str,
+            _params: Value,
+        ) -> crate::ImResult<Value> {
+            unreachable!("group-only sync tests do not resolve Direct peers")
+        }
+    }
+
     fn sync_snapshot_request() -> crate::messages::MessageSyncRequest {
         crate::messages::MessageSyncRequest {
             reason: "app_resume".to_owned(),
@@ -1962,6 +2073,101 @@ mod tests {
             "created_at": "2026-07-28T12:00:04Z",
             "client_msg_id": message_id
         })
+    }
+
+    fn sync_direct_message_event(
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        event_id: &str,
+        event_seq: &str,
+        message_id: &str,
+        peer_did: &str,
+        remote_thread_key: &str,
+    ) -> Value {
+        json!({
+            "event_id": event_id,
+            "stream_epoch": "1",
+            "event_seq": event_seq,
+            "event_type": "message.created",
+            "schema_version": 1,
+            "ignore_safe": false,
+            "account_id": binding.account_id,
+            "recipient_device_id": null,
+            "origin_did": peer_did,
+            "origin_device_id": "device-peer",
+            "aggregate_kind": "direct_message",
+            "aggregate_id": message_id,
+            "state_version": null,
+            "thread_key": remote_thread_key,
+            "occurred_at": "2026-07-31T00:00:01Z",
+            "payload": {
+                "message_kind": "direct_plain",
+                "direction": "incoming",
+                "sender_did_snapshot": peer_did,
+                "recipient_did_snapshot": binding.current_did,
+                "client_message_id": message_id
+            },
+            "source": {}
+        })
+    }
+
+    fn sync_direct_message(
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        message_id: &str,
+        peer_did: &str,
+        content: &str,
+    ) -> Value {
+        json!({
+            "id": message_id,
+            "thread_kind": "direct",
+            "sender_did": peer_did,
+            "receiver_did": binding.current_did,
+            "content_type": "text/plain",
+            "content": content,
+            "server_seq": "1",
+            "created_at": "2026-07-31T00:00:01Z",
+            "client_msg_id": message_id
+        })
+    }
+
+    struct DirectLookupTransport {
+        expected_did: String,
+        calls: Rc<RefCell<u32>>,
+    }
+
+    struct FailingDirectoryTransport;
+
+    impl AsyncRpcTransport for FailingDirectoryTransport {
+        async fn rpc(
+            &mut self,
+            _endpoint: &str,
+            _method: &str,
+            _params: Value,
+        ) -> crate::ImResult<Value> {
+            Err(crate::ImError::TransportUnavailable {
+                detail: "directory unavailable in test".to_owned(),
+            })
+        }
+    }
+
+    impl AsyncRpcTransport for DirectLookupTransport {
+        async fn rpc(
+            &mut self,
+            _endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            assert_eq!(method, "lookup");
+            assert_eq!(params["did"], self.expected_did);
+            *self.calls.borrow_mut() += 1;
+            Ok(json!({
+                "did": self.expected_did,
+                "full_handle": "peer.awiki.info",
+                "user_id": "user-peer",
+                "domain": "awiki.info",
+                "status": "active",
+                "binding_generation": "1"
+            }))
+        }
     }
 
     fn sync_snapshot_response(
@@ -2162,6 +2368,318 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn first_direct_message_resolves_authoritative_persona_before_v2_commit() {
+        let fixture = SyncSnapshotFixture::new("first-direct-persona");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "0").await;
+        let peer_did = "did:wba:awiki.info:user:peer:e1_peer";
+        let event_id = "event-first-direct";
+        let message_id = "message-first-direct";
+        let remote_thread_key = "remote-thread-first-direct";
+        let message_calls = Rc::new(RefCell::new(Vec::new()));
+        let message_transport = SyncSnapshotTransport::queued(
+            Rc::clone(&message_calls),
+            vec![
+                Ok(sync_snapshot_delta(
+                    "1",
+                    "1",
+                    vec![sync_direct_message_event(
+                        &binding,
+                        event_id,
+                        "1",
+                        message_id,
+                        peer_did,
+                        remote_thread_key,
+                    )],
+                )),
+                Ok(json!({
+                    "items": [{
+                        "event_id": event_id,
+                        "message": sync_direct_message(
+                            &binding,
+                            message_id,
+                            peer_did,
+                            "first direct body",
+                        )
+                    }],
+                    "unavailable": []
+                })),
+            ],
+        );
+        let directory_calls = Rc::new(RefCell::new(0_u32));
+
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            message_transport,
+            DirectLookupTransport {
+                expected_did: peer_did.to_owned(),
+                calls: Rc::clone(&directory_calls),
+            },
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(*directory_calls.borrow(), 1);
+        assert_eq!(outcome.committed_incoming_messages.len(), 1);
+        assert_eq!(outcome.committed_incoming_messages[0].event_id, event_id);
+        assert!(!outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("identity_unresolved_backlog:")));
+        let db = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        let projection: (String, String) = db
+            .query_row(
+                "SELECT m.conversation_id, b.conversation_id
+                 FROM messages AS m
+                 JOIN sync_thread_bindings AS b
+                   ON b.owner_identity_id = m.owner_identity_id
+                  AND b.remote_thread_key = ?1
+                 WHERE m.owner_identity_id = ?2 AND m.msg_id = ?3",
+                (
+                    remote_thread_key,
+                    binding.owner_identity_id.as_str(),
+                    message_id,
+                ),
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let expected_conversation_id =
+            crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+                "awiki.info",
+                "user-peer",
+                "peer.awiki.info",
+                Some("active"),
+            )
+            .unwrap()
+            .direct_conversation_id();
+        assert_eq!(
+            projection,
+            (
+                expected_conversation_id.clone(),
+                expected_conversation_id.clone(),
+            )
+        );
+        assert!(outcome
+            .changed_conversation_ids
+            .contains(&expected_conversation_id));
+        assert_eq!(
+            crate::internal::local_state::inbound_resolution_backlog::pending_count(
+                &db,
+                &binding.owner_identity_id,
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_snapshot_resolves_authoritative_persona_before_v2_commit() {
+        let fixture = SyncSnapshotFixture::new("snapshot-direct-persona");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let peer_did = "did:wba:awiki.info:user:snapshot-peer:e1_peer";
+        let event_id = "event-snapshot-direct";
+        let message_id = "message-snapshot-direct";
+        let remote_thread_key = "remote-thread-snapshot-direct";
+        let directory_calls = Rc::new(RefCell::new(0_u32));
+        let mut snapshot_event = sync_direct_message_event(
+            &binding,
+            event_id,
+            "19",
+            message_id,
+            peer_did,
+            remote_thread_key,
+        );
+        snapshot_event["stream_epoch"] = json!("2");
+        let transport = SyncSnapshotTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![
+                Ok(sync_snapshot_recovery(
+                    "recovery-direct",
+                    "snapshot-token-direct",
+                    "2",
+                    "20",
+                )),
+                Ok(sync_snapshot_response(
+                    &binding,
+                    "2",
+                    "20",
+                    vec![json!({
+                        "event": snapshot_event,
+                        "message": sync_direct_message(
+                            &binding,
+                            message_id,
+                            peer_did,
+                            "snapshot direct body",
+                        )
+                    })],
+                )),
+                Ok(sync_snapshot_delta("2", "20", vec![])),
+            ],
+        );
+
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            transport,
+            DirectLookupTransport {
+                expected_did: peer_did.to_owned(),
+                calls: Rc::clone(&directory_calls),
+            },
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(*directory_calls.borrow(), 1);
+        assert!(fixture.has_message_content("snapshot direct body"));
+        assert!(!outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("identity_unresolved_backlog:")));
+        let expected_conversation_id =
+            crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+                "awiki.info",
+                "user-peer",
+                "peer.awiki.info",
+                Some("active"),
+            )
+            .unwrap()
+            .direct_conversation_id();
+        let db = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT m.conversation_id
+                 FROM messages AS m
+                 WHERE m.owner_identity_id = ?1 AND m.msg_id = ?2",
+                (binding.owner_identity_id.as_str(), message_id),
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            expected_conversation_id
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT conversation_id FROM sync_thread_bindings
+                 WHERE owner_identity_id = ?1 AND remote_thread_key = ?2",
+                (binding.owner_identity_id.as_str(), remote_thread_key),
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            expected_conversation_id
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_direct_persona_resolution_replays_on_next_v2_sync() {
+        let fixture = SyncSnapshotFixture::new("deferred-direct-persona");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "0").await;
+        let peer_did = "did:wba:awiki.info:user:deferred:e1_peer";
+        let event_id = "event-deferred-direct";
+        let message_id = "message-deferred-direct";
+        let remote_thread_key = "remote-thread-deferred-direct";
+        let first = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::new(RefCell::new(Vec::new())),
+                vec![
+                    Ok(sync_snapshot_delta(
+                        "1",
+                        "1",
+                        vec![sync_direct_message_event(
+                            &binding,
+                            event_id,
+                            "1",
+                            message_id,
+                            peer_did,
+                            remote_thread_key,
+                        )],
+                    )),
+                    Ok(json!({
+                        "items": [{
+                            "event_id": event_id,
+                            "message": sync_direct_message(
+                                &binding,
+                                message_id,
+                                peer_did,
+                                "deferred direct body",
+                            )
+                        }],
+                        "unavailable": []
+                    })),
+                ],
+            ),
+            FailingDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+        assert!(first
+            .warnings
+            .iter()
+            .any(|warning| warning == "identity_unresolved_backlog:1"));
+        assert!(!fixture.has_message_content("deferred direct body"));
+
+        let directory_calls = Rc::new(RefCell::new(0_u32));
+        let second = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::new(RefCell::new(Vec::new())),
+                vec![Ok(sync_snapshot_delta("1", "1", vec![]))],
+            ),
+            DirectLookupTransport {
+                expected_did: peer_did.to_owned(),
+                calls: Rc::clone(&directory_calls),
+            },
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(*directory_calls.borrow(), 1);
+        assert!(fixture.has_message_content("deferred direct body"));
+        let expected_conversation_id =
+            crate::internal::canonical_identity::PeerPersona::from_verified_handle(
+                "awiki.info",
+                "user-peer",
+                "peer.awiki.info",
+                Some("active"),
+            )
+            .unwrap()
+            .direct_conversation_id();
+        assert!(second
+            .changed_conversation_ids
+            .contains(&expected_conversation_id));
+        let db = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT conversation_id FROM sync_thread_bindings
+                 WHERE owner_identity_id = ?1 AND remote_thread_key = ?2",
+                (binding.owner_identity_id.as_str(), remote_thread_key),
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            expected_conversation_id
+        );
+        assert_eq!(
+            crate::internal::local_state::inbound_resolution_backlog::pending_count(
+                &db,
+                &binding.owner_identity_id,
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn sync_snapshot_recovery_preserves_old_messages_and_only_commits_post_anchor_delta() {
         let fixture = SyncSnapshotFixture::new("preserve-and-post-anchor");
         let client = fixture.client();
@@ -2236,11 +2754,15 @@ mod tests {
             ],
         );
 
-        let outcome =
-            MessageSyncRuntimeV2::new(&client, ReadySyncSnapshotSessionProvider, transport)
-                .sync_now(sync_snapshot_request())
-                .await
-                .unwrap();
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            transport,
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
 
         assert!(fixture.has_message_content("must survive compact recovery"));
         assert!(fixture.has_message_content("snapshot ordinary message"));
@@ -2338,6 +2860,7 @@ mod tests {
                     Ok(invalid_snapshot),
                 ],
             ),
+            NoopAsyncDirectoryTransport,
         )
         .sync_now(sync_snapshot_request())
         .await
@@ -2399,6 +2922,7 @@ mod tests {
                     Ok(sync_snapshot_delta("3", "41", vec![])),
                 ],
             ),
+            NoopAsyncDirectoryTransport,
         )
         .sync_now(sync_snapshot_request())
         .await
@@ -2470,6 +2994,7 @@ mod tests {
                     )),
                 ],
             ),
+            NoopAsyncDirectoryTransport,
         )
         .sync_now(sync_snapshot_request())
         .await
@@ -2526,6 +3051,7 @@ mod tests {
                     Ok(sync_snapshot_delta("2", "21", vec![])),
                 ],
             ),
+            NoopAsyncDirectoryTransport,
         )
         .sync_now(sync_snapshot_request())
         .await
@@ -2687,6 +3213,7 @@ mod tests {
                     Ok(sync_snapshot_delta("1", "12", vec![])),
                 ],
             ),
+            NoopAsyncDirectoryTransport,
         )
         .sync_now(sync_snapshot_request())
         .await
@@ -2793,6 +3320,7 @@ mod tests {
                     Ok(sync_snapshot_delta("1", "12", vec![])),
                 ],
             ),
+            NoopAsyncDirectoryTransport,
         )
         .sync_now(sync_snapshot_request())
         .await
@@ -2895,6 +3423,7 @@ mod tests {
             &client,
             ReadySyncSnapshotSessionProvider,
             SyncSnapshotTransport::queued(Rc::new(RefCell::new(Vec::new())), vec![Ok(pseudo_ack)]),
+            NoopAsyncDirectoryTransport,
         )
         .sync_now(sync_snapshot_request())
         .await

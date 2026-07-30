@@ -574,13 +574,19 @@ absent so a route cannot bypass Persona validation or be written twice.
 UI/profile consumers must eventually read display data by `peer_persona_id`;
 DID remains a credential snapshot or route address, not a profile identity key.
 
-Inbound Direct sync performs the same Persona lookup inside
-the checkpoint transaction. If the peer DID is not yet bound to a verified
-Persona, the immutable message projection is serialized into the owner-scoped
-`inbound_resolution_backlog`; only after that durable write may the global
-checkpoint advance. A later verified Handle projection replays matching rows
-into `messages` and removes them from the backlog without changing their
-`wire_thread_kind`, `wire_thread_ref`, or sender/receiver DID snapshots.
+Inbound Direct v2 sync first filters wire peer DIDs against the local verified
+Persona projection and performs an authoritative DID-to-Handle lookup only for
+unresolved peers. The network lookup runs before the local apply transaction;
+it never holds the SQLite transaction open. If authority is unavailable or the
+peer DID is still not bound to a verified Persona, the local apply transaction
+serializes the immutable message and its opaque remote-thread binding into the
+owner-scoped `inbound_resolution_backlog`, records the applied event, and
+advances the checkpoint atomically. A later verified Handle projection replays
+matching rows into `messages`, writes the same remote-thread key against the
+canonical Persona conversation, and removes both backlog rows without changing
+their `wire_thread_kind`, `wire_thread_ref`, or sender/receiver DID snapshots.
+Every subsequent v2 sync retries a bounded set of pending peer DIDs, so a
+transient authority outage cannot strand an already acknowledged event.
 
 Remote history, thread catch-up, and realtime incoming projection use that same
 canonical ingress rule even though they do not advance the account checkpoint.
@@ -833,7 +839,15 @@ Direct read-state backlog. Snapshot/delta may advance after transactionally
 storing a current read state whose recent message was outside the 48-hour/500
 message window; a later ordinary message binding replays and removes that
 backlog in the same transaction. `thread_read_state.remote_state_version`
-provides monotonic stale/conflict rejection.
+provides monotonic stale/conflict rejection. For `message.created`, the remote
+thread binding is committed only after the message has passed verified-Persona
+canonicalization, and both rows use that resulting conversation ID in the same
+transaction. A provisional DID-derived conversation from wire hydration must
+never become the durable binding for a resolved peer. If an earlier schema-34
+build already stored that exact `dm:<DID>` provisional binding, the next
+verified message fact may perform the single allowed
+`dm:<DID>` → `dm:peer-scope:v1:<hash>` canonical upgrade; canonical-to-canonical
+and all Group rebinding remain conflicts.
 
 `syncNow` closes compact recovery inside one call:
 delta (or existing-device bootstrap recovery) → process-local opaque token →

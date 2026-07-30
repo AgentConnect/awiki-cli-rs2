@@ -102,6 +102,30 @@ WHERE i.owner_identity_id = ?1
     }))
 }
 
+pub(crate) fn unresolved_dids(
+    connection: &Connection,
+    owner_identity_id: &str,
+    dids: &[String],
+) -> crate::ImResult<Vec<String>> {
+    let owner_identity_id = owner_identity_id.trim();
+    if owner_identity_id.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("owner_identity_id".to_owned()),
+            "owner identity id is required",
+        ));
+    }
+    let mut unresolved = Vec::new();
+    for did in dids {
+        let did = crate::ids::Did::parse(did.trim())?;
+        if resolve_by_did(connection, owner_identity_id, did.as_str())?.is_none() {
+            unresolved.push(did.as_str().to_owned());
+        }
+    }
+    unresolved.sort();
+    unresolved.dedup();
+    Ok(unresolved)
+}
+
 pub(crate) fn upsert(connection: &Connection, record: &PeerPersonaRecord) -> crate::ImResult<()> {
     validate(record)?;
     let now = now();

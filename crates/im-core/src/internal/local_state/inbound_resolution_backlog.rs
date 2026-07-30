@@ -24,6 +24,21 @@ CREATE TABLE IF NOT EXISTS inbound_resolution_backlog (
 );
 CREATE INDEX IF NOT EXISTS idx_inbound_resolution_backlog_pending_peer
 ON inbound_resolution_backlog(owner_identity_id, resolution_state, peer_did, event_seq);
+
+CREATE TABLE IF NOT EXISTS inbound_resolution_thread_bindings (
+    owner_identity_id TEXT NOT NULL,
+    event_id          TEXT NOT NULL,
+    message_id        TEXT NOT NULL,
+    remote_thread_key TEXT NOT NULL,
+    thread_kind       TEXT NOT NULL,
+    updated_at        INTEGER NOT NULL,
+    PRIMARY KEY (owner_identity_id, event_id, message_id),
+    CHECK (thread_kind IN ('direct', 'group')),
+    CHECK (length(trim(remote_thread_key)) > 0),
+    FOREIGN KEY (owner_identity_id, event_id, message_id)
+        REFERENCES inbound_resolution_backlog(owner_identity_id, event_id, message_id)
+        ON DELETE CASCADE
+);
 "#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,7 +226,32 @@ pub(crate) fn store(
     record: &super::messages::MessageRecord,
     error: &crate::ImError,
 ) -> crate::ImResult<()> {
+    store_with_thread_binding(connection, source, record, error, None)
+}
+
+pub(crate) fn store_with_thread_binding(
+    connection: &Connection,
+    source: BacklogSource<'_>,
+    record: &super::messages::MessageRecord,
+    error: &crate::ImError,
+    thread_binding: Option<&super::sync_v2::SyncThreadBinding>,
+) -> crate::ImResult<()> {
     create_schema(connection)?;
+    if let Some(binding) = thread_binding {
+        if binding.owner_identity_id != record.owner_identity_id {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "backlogged thread binding belongs to a different local owner".to_owned(),
+            });
+        }
+        if binding.remote_thread_key.trim().is_empty()
+            || !matches!(binding.thread_kind.as_str(), "direct" | "group")
+        {
+            return Err(crate::ImError::invalid_input(
+                Some("thread_binding".to_owned()),
+                "backlogged thread binding must have a canonical key and kind",
+            ));
+        }
+    }
     let state = if matches!(
         error,
         crate::ImError::IdentityBindingConflict { .. }
@@ -264,6 +304,27 @@ ON CONFLICT(owner_identity_id, event_id, message_id) DO UPDATE SET
             ],
         )
         .map_err(super::local_state_unavailable)?;
+    if let Some(binding) = thread_binding {
+        connection
+            .execute(
+                r#"INSERT INTO inbound_resolution_thread_bindings
+    (owner_identity_id, event_id, message_id, remote_thread_key, thread_kind, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+ON CONFLICT(owner_identity_id, event_id, message_id) DO UPDATE SET
+    remote_thread_key = excluded.remote_thread_key,
+    thread_kind = excluded.thread_kind,
+    updated_at = excluded.updated_at"#,
+                rusqlite::params![
+                    record.owner_identity_id.trim(),
+                    source.event_id.trim(),
+                    record.msg_id.trim(),
+                    binding.remote_thread_key.trim(),
+                    binding.thread_kind.trim(),
+                    binding.updated_at,
+                ],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
     Ok(())
 }
 
@@ -282,10 +343,15 @@ pub(crate) fn replay_for_persona(
     for did in dids {
         let mut statement = connection
             .prepare(
-                r#"SELECT event_id, event_type, message_id, message_record_json
-FROM inbound_resolution_backlog
-WHERE owner_identity_id = ?1 AND resolution_state = 'pending' AND peer_did = ?2
-ORDER BY LENGTH(event_seq), event_seq, event_id, message_id"#,
+                r#"SELECT b.event_id, b.event_type, b.message_id, b.message_record_json,
+       t.remote_thread_key, t.thread_kind, t.updated_at
+FROM inbound_resolution_backlog AS b
+LEFT JOIN inbound_resolution_thread_bindings AS t
+  ON t.owner_identity_id = b.owner_identity_id
+ AND t.event_id = b.event_id
+ AND t.message_id = b.message_id
+WHERE b.owner_identity_id = ?1 AND b.resolution_state = 'pending' AND b.peer_did = ?2
+ORDER BY LENGTH(b.event_seq), b.event_seq, b.event_id, b.message_id"#,
             )
             .map_err(super::local_state_unavailable)?;
         let found = statement
@@ -295,6 +361,9 @@ ORDER BY LENGTH(event_seq), event_seq, event_id, message_id"#,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
                 ))
             })
             .map_err(super::local_state_unavailable)?;
@@ -303,10 +372,50 @@ ORDER BY LENGTH(event_seq), event_seq, event_id, message_id"#,
         }
     }
     let mut replayed = 0usize;
-    for (event_id, event_type, message_id, payload) in rows {
+    for (
+        event_id,
+        event_type,
+        message_id,
+        payload,
+        remote_thread_key,
+        thread_kind,
+        binding_updated_at,
+    ) in rows
+    {
         let record = decode_message_record(&event_type, &payload)?;
         let record = canonicalize_inbound_message(connection, record)?;
         super::messages::upsert_message(connection, &record)?;
+        match (remote_thread_key, thread_kind, binding_updated_at) {
+            (Some(remote_thread_key), Some(thread_kind), Some(updated_at)) => {
+                super::sync_v2::upsert_sync_thread_binding(
+                    connection,
+                    &super::sync_v2::SyncThreadBinding {
+                        owner_identity_id: owner_identity_id.trim().to_owned(),
+                        remote_thread_key,
+                        thread_kind,
+                        conversation_id: record.conversation_id.clone(),
+                        updated_at,
+                    },
+                )?;
+            }
+            (None, None, None) => {}
+            _ => {
+                return Err(crate::ImError::LocalStateUnavailable {
+                    detail: "backlogged thread binding is incomplete".to_owned(),
+                });
+            }
+        }
+        connection
+            .execute(
+                r#"DELETE FROM inbound_resolution_thread_bindings
+WHERE owner_identity_id = ?1 AND event_id = ?2 AND message_id = ?3"#,
+                (
+                    owner_identity_id.trim(),
+                    event_id.as_str(),
+                    message_id.as_str(),
+                ),
+            )
+            .map_err(super::local_state_unavailable)?;
         connection
             .execute(
                 r#"DELETE FROM inbound_resolution_backlog
@@ -317,6 +426,46 @@ WHERE owner_identity_id = ?1 AND event_id = ?2 AND message_id = ?3"#,
         replayed = replayed.saturating_add(1);
     }
     Ok(replayed)
+}
+
+pub(crate) fn list_pending_peer_dids(
+    connection: &Connection,
+    owner_identity_id: &str,
+    limit: u32,
+) -> crate::ImResult<Vec<String>> {
+    create_schema(connection)?;
+    let owner_identity_id = owner_identity_id.trim();
+    if owner_identity_id.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("owner_identity_id".to_owned()),
+            "owner identity id is required",
+        ));
+    }
+    if limit == 0 || limit > 100 {
+        return Err(crate::ImError::invalid_input(
+            Some("limit".to_owned()),
+            "pending Persona resolution limit must be between 1 and 100",
+        ));
+    }
+    let mut statement = connection
+        .prepare(
+            r#"SELECT peer_did
+FROM inbound_resolution_backlog
+WHERE owner_identity_id = ?1
+  AND resolution_state = 'pending'
+  AND length(trim(peer_did)) > 0
+GROUP BY peer_did
+ORDER BY MIN(LENGTH(event_seq)), MIN(event_seq), peer_did
+LIMIT ?2"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map((owner_identity_id, i64::from(limit)), |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(super::local_state_unavailable)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(super::local_state_unavailable)
 }
 
 pub(crate) fn pending_count(
@@ -489,7 +638,8 @@ fn legacy_hydration_state(
         _ => MessageHydrationState::LegacyProbe,
     }
 }
-fn direct_peer_did(record: &super::messages::MessageRecord) -> Option<String> {
+
+pub(crate) fn direct_peer_did(record: &super::messages::MessageRecord) -> Option<String> {
     if is_group(record) {
         return None;
     }

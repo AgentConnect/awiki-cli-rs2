@@ -721,7 +721,12 @@ pub struct RealtimeSyncHint {
    projection。Direct 的 peer DID 尚未绑定 verified Persona 时，不创建 `dm:<DID>`：先把
    保留原 WireIdentity 的消息写入 owner-scoped `inbound_resolution_backlog`，成功后才能写入
    `next_event_seq` checkpoint。后续权威 Handle projection 会幂等重放对应 backlog；冲突保持
-   blocked/conflict-visible，不猜测合并。
+   blocked/conflict-visible，不猜测合并。已经存在 verified Persona 时，Core 先完成消息的
+   canonical conversation 投影，再把服务端 opaque thread key 绑定到同一个 canonical ID；
+   hydration 阶段的 DID 暂定 conversation 不得成为 durable `sync_thread_bindings` 记录。
+   v2 runtime 在事务前仅对本地未解析 DID 执行权威 DID→Handle lookup；lookup 暂时失败时，
+   消息、remote thread binding、event receipt 和 cursor 在同一事务进入 durable backlog，
+   后续 `syncNow` 有界重试并由 verified Persona projection 原子 replay。
 5. 返回 `events_applied`、`pages_fetched` 和 `last_applied_event_seq` 作为诊断和 UI 状态；
    `events_applied` 只统计本设备实际可见并应用的事件；`last_applied_event_seq` 是服务端扫描后
    提交的 owner checkpoint，不是 public checkpoint setter。`sync.delta` 按认证设备投影时，

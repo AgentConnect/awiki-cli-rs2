@@ -70,15 +70,16 @@ assert(restored.targetSafetyCopyAvailable);
 ```
 
 Restore is not an in-process rollback for an open Core. It only accepts a
-completed canonical-upgrade journal, keeps the current schema-34 target as a private
+completed canonical-upgrade journal, keeps the current schema-35 target as a private
 safety copy, and is idempotent across interruption. The public result exposes
 versions/availability only, never filesystem backup paths.
 
 Schema 28 stores have already completed the canonical-conversation cutover.
-Ordinary Core open upgrades reviewed release predecessor shapes through schema 34.
+Ordinary Core open upgrades reviewed release predecessor shapes through schema 35.
 It also recognizes the complete current/release shapes previously issued with versions
 32 through 34 and atomically fills the missing hydration/checkpoint or v2 sync/read-recovery
-side. Partial or unrecognized same-number shapes fail closed; applications must not invoke
+side plus the schema-35 unresolved-message thread-binding association. Partial or
+unrecognized same-number shapes fail closed; applications must not invoke
 the release/0710 runner again or perform an automatic delete/archive fallback.
 
 ## DTO policy
@@ -500,8 +501,10 @@ single canonical conversation ID.
 For an online first inbound Direct, Core resolves the wire peer DID through the
 Handle authority and commits that verified Persona projection before the
 message. A missing, conflicting, malformed, or DID-mismatched lookup remains in
-the durable backlog and emits no authoritative patch; the SDK never synthesizes
-a Persona from the DID itself.
+the durable backlog and emits no authoritative patch; later `syncNow` calls retry
+a bounded pending set and atomically replay the message plus its remote-thread
+binding after verified Persona projection. The SDK never synthesizes a Persona
+from the DID itself.
 
 These APIs currently live under `client.messages` for SDK compatibility. If a
 future `client.conversations` namespace is added, it must wrap the same core
@@ -643,7 +646,9 @@ Schema 32 introduces Core-private v2 binding, cursor, applied-event receipt,
 recovery, and read-mutation outbox tables; schema 33 adds the private per-owner
 bootstrap installation ID. Schema 34 adds owner-scoped remote thread bindings,
 the unresolved Direct read-state backlog, and monotonic remote read-state
-versions. `syncNow` is the v2 ordinary Direct/Group main path; none of those
+versions. Schema 35 durably associates an unresolved message with its opaque
+remote-thread binding so Persona replay writes both against one canonical
+conversation. `syncNow` is the v2 ordinary Direct/Group main path; none of those
 rows, account/device binding, cursor, recovery token, snapshot cutoff/limit, or
 snapshot count is exposed to Dart. `syncDelta` remains a separate v1
 compatibility facade. Message edit, recall, delete, tombstone, Push, and
@@ -689,8 +694,12 @@ final diagnostics = await client.messages.syncDiagnostics();
   framing/escaping headroom under the service's 16 MiB hard response budget,
   then atomically commits receipts, canonical local projections, and the next
   cursor only after all chunks are complete.
-- Required hydration, schema, canonical identity, or route failure leaves both
-  receipt and cursor unchanged.
+- Required hydration, schema, owner mismatch, or non-resolution route failure
+  leaves both receipt and cursor unchanged. A peer that is only
+  `identity_unresolved` is different: Core atomically stores the message and
+  remote-thread binding in the durable resolution backlog together with the
+  receipt/cursor advance, then retries authoritative DID-to-Handle resolution
+  on later sync calls.
 - A compact-recovery response is handled inside the same call:
   delta/bootstrap → process-local opaque token → strict snapshot validation and
   atomic merge → post-anchor delta. The snapshot merges current Direct/Group

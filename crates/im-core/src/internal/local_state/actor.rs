@@ -122,6 +122,16 @@ enum LocalStateCommand {
             crate::ImResult<super::inbound_resolution_backlog::RemoteMessageIngestOutcome>,
         >,
     },
+    ListPendingInboundResolutionPeerDids {
+        owner_identity_id: String,
+        limit: u32,
+        reply: oneshot::Sender<crate::ImResult<Vec<String>>>,
+    },
+    FilterUnresolvedPeerDids {
+        owner_identity_id: String,
+        dids: Vec<String>,
+        reply: oneshot::Sender<crate::ImResult<Vec<String>>>,
+    },
     StoreCatchUpMessages {
         records: Vec<super::messages::MessageRecord>,
         source_event_type: String,
@@ -833,6 +843,36 @@ impl LocalStateDb {
         self.send(LocalStateCommand::StoreRemoteMessages {
             records,
             source_event_type: source_event_type.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_pending_inbound_resolution_peer_dids(
+        &self,
+        owner_identity_id: impl Into<String>,
+        limit: u32,
+    ) -> crate::ImResult<Vec<String>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListPendingInboundResolutionPeerDids {
+            owner_identity_id: owner_identity_id.into(),
+            limit,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn filter_unresolved_peer_dids(
+        &self,
+        owner_identity_id: impl Into<String>,
+        dids: Vec<String>,
+    ) -> crate::ImResult<Vec<String>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::FilterUnresolvedPeerDids {
+            owner_identity_id: owner_identity_id.into(),
+            dids,
             reply,
         })
         .await?;
@@ -2013,6 +2053,27 @@ fn run_actor(
                         .map_err(super::local_state_unavailable)?;
                     Ok(outcome)
                 })();
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListPendingInboundResolutionPeerDids {
+                owner_identity_id,
+                limit,
+                reply,
+            } => {
+                let result = super::inbound_resolution_backlog::list_pending_peer_dids(
+                    &connection,
+                    &owner_identity_id,
+                    limit,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::FilterUnresolvedPeerDids {
+                owner_identity_id,
+                dids,
+                reply,
+            } => {
+                let result =
+                    super::peer_personas::unresolved_dids(&connection, &owner_identity_id, &dids);
                 let _ = reply.send(result);
             }
             LocalStateCommand::StoreCatchUpMessages {

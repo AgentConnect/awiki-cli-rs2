@@ -3264,6 +3264,7 @@ impl<'a> MessageService<'a> {
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .sync_now(request)
         .await;

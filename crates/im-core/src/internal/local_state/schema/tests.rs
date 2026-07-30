@@ -1530,6 +1530,7 @@ fn local_state_schema_converges_single_side_v34_shapes_idempotently() {
     ensure_schema(&current).unwrap();
     assert_eq!(current_schema_version(&current).unwrap(), SCHEMA_VERSION);
     assert_merged_v34_shape(&current);
+    assert_schema_object_exists(&current, "table", "inbound_resolution_thread_bindings");
 
     let release = Connection::open_in_memory().unwrap();
     install_v34_fixture(&release);
@@ -1537,6 +1538,7 @@ fn local_state_schema_converges_single_side_v34_shapes_idempotently() {
     ensure_schema(&release).unwrap();
     assert_eq!(current_schema_version(&release).unwrap(), SCHEMA_VERSION);
     assert_merged_v34_shape(&release);
+    assert_schema_object_exists(&release, "table", "inbound_resolution_thread_bindings");
     assert_eq!(
         release
             .query_row(
@@ -1553,6 +1555,7 @@ fn local_state_schema_converges_single_side_v34_shapes_idempotently() {
 #[test]
 fn local_state_schema_v27_remains_preopen_upgrade_gate() {
     let db = Connection::open_in_memory().unwrap();
+    ensure_sync_state_schema(&db).unwrap();
     replace_sync_state_with_release_shape(&db);
     db.pragma_update(None, "user_version", 27).unwrap();
 
@@ -1887,6 +1890,7 @@ fn install_complete_v28_schema(db: &Connection) {
         "TEXT NOT NULL DEFAULT ''",
     )
     .unwrap();
+    ensure_sync_state_schema(db).unwrap();
     replace_sync_state_with_release_shape(db);
     db.execute_batch(THREAD_READ_STATE_SQL).unwrap();
     db.execute_batch(MESSAGE_IDENTITY_ALIASES_SQL).unwrap();

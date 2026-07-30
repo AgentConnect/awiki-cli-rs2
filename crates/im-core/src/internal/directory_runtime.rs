@@ -486,6 +486,24 @@ where
     transport.rpc(call.endpoint, call.method, call.params).await
 }
 
+pub(crate) async fn lookup_handle_by_did_for_projection_async<T>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    did: &crate::ids::Did,
+) -> crate::ImResult<crate::directory::HandleLookupResult>
+where
+    T: AsyncRpcTransport,
+{
+    let raw = lookup_by_did_async(transport, did.as_str()).await?;
+    let lookup = handle_lookup_from_value_with_client(client, &raw)?;
+    if lookup.did != *did {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "DID lookup returned a different verified identity".to_owned(),
+        });
+    }
+    Ok(lookup)
+}
+
 fn resolve_profile_by_did<T>(transport: &mut T, did: &str) -> crate::ImResult<Value>
 where
     T: RpcTransport,
