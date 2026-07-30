@@ -1180,7 +1180,7 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
             "transport_unavailable",
             1,
             err.to_string(),
-            "Start the websocket listener/daemon or switch runtime.mode back to http.",
+            "Check the configured transport and network connectivity. If this send may have reached the service, reconcile message history before retrying.",
         ),
         MessageAdapterError::PathUnavailable(message) => ExitError::new(
             "invalid_argument",
@@ -1333,7 +1333,7 @@ mod tests {
         );
         assert_eq!(
             exit.detail.hint,
-            "Start the websocket listener/daemon or switch runtime.mode back to http."
+            "Check the configured transport and network connectivity. If this send may have reached the service, reconcile message history before retrying."
         );
     }
 

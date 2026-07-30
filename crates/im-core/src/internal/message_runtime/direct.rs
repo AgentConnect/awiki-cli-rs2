@@ -86,10 +86,12 @@ where
             "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
             "body": payload.body.clone(),
         });
-        let raw = self.transport.authenticated_rpc(
+        let raw = crate::internal::idempotent_submission::submit_idempotent_rpc(
+            &mut self.transport,
             MESSAGE_RPC_ENDPOINT,
             payload.method.as_str(),
             params,
+            crate::internal::idempotent_submission::RpcReplayIdentity::Message,
         )?;
         let mut result = direct_result_from_value(raw.clone())?;
         fill_direct_result_defaults(&mut result, &payload.meta, &target_did);
@@ -150,10 +152,14 @@ where
             "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
             "body": payload.body.clone(),
         });
-        let raw = self
-            .transport
-            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, payload.method.as_str(), params)
-            .await?;
+        let raw = crate::internal::idempotent_submission::submit_idempotent_rpc_async(
+            &mut self.transport,
+            MESSAGE_RPC_ENDPOINT,
+            payload.method.as_str(),
+            params,
+            crate::internal::idempotent_submission::RpcReplayIdentity::Message,
+        )
+        .await?;
         let mut result = direct_result_from_value(raw.clone())?;
         fill_direct_result_defaults(&mut result, &payload.meta, &target_did);
         let sdk_result = sdk_result_from_direct_result(&result, sender_did, peer, &body)?;

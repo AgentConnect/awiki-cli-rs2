@@ -425,7 +425,12 @@ where
 {
     let call =
         crate::internal::identity_wire::directory::build_handle_lookup_by_handle_rpc_call(handle)?;
-    transport.rpc(call.endpoint, call.method, call.params)
+    crate::internal::idempotent_submission::submit_read_rpc(
+        transport,
+        call.endpoint,
+        call.method,
+        call.params,
+    )
 }
 
 async fn lookup_by_handle_async<T>(transport: &mut T, handle: &str) -> crate::ImResult<Value>
@@ -434,7 +439,13 @@ where
 {
     let call =
         crate::internal::identity_wire::directory::build_handle_lookup_by_handle_rpc_call(handle)?;
-    transport.rpc(call.endpoint, call.method, call.params).await
+    crate::internal::idempotent_submission::submit_read_rpc_async(
+        transport,
+        call.endpoint,
+        call.method,
+        call.params,
+    )
+    .await
 }
 
 fn map_directory_not_found(err: crate::ImError, peer: &str) -> crate::ImError {
@@ -475,7 +486,12 @@ where
     T: RpcTransport,
 {
     let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(did)?;
-    transport.rpc(call.endpoint, call.method, call.params)
+    crate::internal::idempotent_submission::submit_read_rpc(
+        transport,
+        call.endpoint,
+        call.method,
+        call.params,
+    )
 }
 
 async fn lookup_by_did_async<T>(transport: &mut T, did: &str) -> crate::ImResult<Value>
@@ -483,7 +499,13 @@ where
     T: AsyncRpcTransport,
 {
     let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(did)?;
-    transport.rpc(call.endpoint, call.method, call.params).await
+    crate::internal::idempotent_submission::submit_read_rpc_async(
+        transport,
+        call.endpoint,
+        call.method,
+        call.params,
+    )
+    .await
 }
 
 pub(crate) async fn lookup_handle_by_did_for_projection_async<T>(
@@ -700,6 +722,54 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    struct RecordingTransport {
+        calls: Vec<(String, String, Value)>,
+        results: Vec<crate::ImResult<Value>>,
+    }
+
+    impl RpcTransport for RecordingTransport {
+        fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+            self.calls
+                .push((endpoint.to_owned(), method.to_owned(), params));
+            self.results.remove(0)
+        }
+    }
+
+    impl AsyncRpcTransport for RecordingTransport {
+        async fn rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            RpcTransport::rpc(self, endpoint, method, params)
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_lookup_async_replays_a_transport_failure_once() {
+        let mut transport = RecordingTransport {
+            calls: Vec::new(),
+            results: vec![transport_unavailable(), Ok(handle_lookup_value())],
+        };
+
+        let result = lookup_by_handle_async(&mut transport, "alice.awiki.info")
+            .await
+            .unwrap();
+
+        assert_eq!(result, handle_lookup_value());
+        assert_eq!(transport.calls.len(), 2);
+        assert_eq!(transport.calls[0], transport.calls[1]);
+        assert_eq!(
+            transport.calls[0],
+            (
+                "/user-service/handle/rpc".to_owned(),
+                "lookup".to_owned(),
+                json!({"handle": "alice.awiki.info"}),
+            )
+        );
+    }
+
     #[test]
     fn handle_lookup_preserves_authoritative_binding_generation() {
         let lookup = handle_lookup_from_value(&json!({
@@ -728,5 +798,22 @@ mod tests {
         .unwrap();
 
         assert_eq!(lookup.binding_generation, None);
+    }
+
+    fn handle_lookup_value() -> Value {
+        json!({
+            "did": "did:wba:awiki.info:alice:e1_current",
+            "full_handle": "alice.awiki.info",
+            "user_id": "user-alice",
+            "domain": "awiki.info",
+            "status": "active",
+            "binding_generation": "3"
+        })
+    }
+
+    fn transport_unavailable() -> crate::ImResult<Value> {
+        Err(crate::ImError::TransportUnavailable {
+            detail: "connection reset".to_owned(),
+        })
     }
 }

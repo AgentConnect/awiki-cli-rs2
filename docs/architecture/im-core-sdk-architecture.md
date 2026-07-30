@@ -682,6 +682,23 @@ The API is for fast first paint. Apps should show local conversation timeline ro
 
 Conversation-surface sends should use `messages.send_conversation_text()` / Dart `client.messages.sendConversationText(...)`, `messages.send_conversation_payload()` / Dart `client.messages.sendConversationPayload(...)`, or `attachments.send_conversation()` / Dart `client.attachments.sendConversation(...)` when the caller already has a `ConversationReadRef`. `im-core` resolves the canonical conversation through its owner-scoped route projection, writes a durable pending projection row under that same canonical ID before network send, updates the row to accepted/sent/failed as the network result arrives, and emits committed patches only after the SQLite transaction succeeds. The returned `SendMessageResult.message.metadata.conversation_identity` must expose that same canonical ID after direct-route normalization; it must not retain the transport target Handle or DID identity used before the network send. The first message in a peer-scope conversation does not require a pre-existing message row and must not be bootstrapped with a legacy DID conversation alias.
 
+Plain Direct and Group sends generate `message_id` and `operation_id` before
+signing and transport submission. If the transport reports
+`TransportUnavailable`, Core may replay the already-built request exactly once
+only when both identifiers are present. The replay must reuse the same signed
+parameters byte-for-value; it must not rebuild the payload, rotate either
+identifier, retarget the message, or retry service/application failures.
+Exhausting that replay leaves the outcome unknown, so CLI/App layers must
+reconcile authoritative history before creating a new send operation.
+
+Group lifecycle mutations use the same bounded submission boundary with their
+service-owned idempotency scope. They require a non-empty `operation_id`, and an
+exact replay preserves the original origin proof and payload digest. Reads and
+mutations have different retry contracts: authoritative Directory Handle lookup RPCs
+may replay the exact same endpoint, method, and parameters once after
+`TransportUnavailable`, because they have no mutation outcome to duplicate.
+Mutations without a declared replay identity do not inherit either behavior.
+
 `MessageMetadata.send_state`, `MessageMetadata.retry_plan`, and `MessageMetadata.conversation_identity` are the SDK facts for pending/accepted/sent/failed presentation. AWiki Me may render those states, but it must not create a second durable optimistic message store or decide send correctness from memory-only pending rows. Attachment local file preview may exist only as transient UI state during upload; list/detail timeline truth, retry correctness, and final send state must come from the SDK durable projection. Secure/E2EE conversation-surface local echo remains fail-closed where unsupported by the secure route.
 
 ## 14. Reliable Message Sync

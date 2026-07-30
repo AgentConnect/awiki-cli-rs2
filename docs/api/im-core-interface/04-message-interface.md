@@ -235,6 +235,25 @@ same durable row with accepted/sent/failed state. AWiki Me renders
 `MessageMetadata.send_state` / retry fields from SDK DTOs; it must not create a
 second durable optimistic message source.
 
+The plain Direct/Group transport boundary performs at most one automatic replay
+after `TransportUnavailable`. This is allowed only after Core has generated both
+`message_id` and `operation_id`, and the second call reuses the exact same signed
+RPC parameters. Core does not replay service errors and does not rebuild a
+request with new identifiers. If the second transport call also fails, callers
+must treat the outcome as unknown and reconcile authoritative message history
+before starting a new operation.
+
+Group lifecycle mutations follow the same rule with their non-empty
+`operation_id` idempotency scope. The retry reuses the original signed RPC
+parameters and payload digest. The rule does not make arbitrary RPC methods
+retryable.
+
+Authoritative Directory lookups used by Direct target resolution are read-only
+RPCs. Core may replay the exact endpoint, method, and parameters once when such
+a lookup returns `TransportUnavailable`; service/application failures are not
+replayed. This read contract is separate from mutation idempotency and does not
+make unaudited mutations retryable.
+
 Direct conversation send keeps a stable peer scope when the conversation is bound
 to a Handle/user identity. The normal send path uses the resolved DID already
 stored for the conversation and does not perform a Handle lookup before every

@@ -183,10 +183,12 @@ where
             "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
             "body": payload.body,
         });
-        let raw = self.transport.authenticated_rpc(
+        let raw = crate::internal::idempotent_submission::submit_idempotent_rpc(
+            &mut self.transport,
             MESSAGE_RPC_ENDPOINT,
             payload.method.as_str(),
             params,
+            crate::internal::idempotent_submission::RpcReplayIdentity::Operation,
         )?;
         Ok(crate::groups::GroupReadResult::from_raw_response(
             raw,
@@ -368,10 +370,14 @@ where
             "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
             "body": payload.body,
         });
-        let raw = self
-            .transport
-            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, payload.method.as_str(), params)
-            .await?;
+        let raw = crate::internal::idempotent_submission::submit_idempotent_rpc_async(
+            &mut self.transport,
+            MESSAGE_RPC_ENDPOINT,
+            payload.method.as_str(),
+            params,
+            crate::internal::idempotent_submission::RpcReplayIdentity::Operation,
+        )
+        .await?;
         Ok(crate::groups::GroupReadResult::from_raw_response(
             raw,
             Vec::new(),
@@ -649,6 +655,57 @@ mod tests {
         );
         assert_eq!(calls[2].method, "group.leave");
         assert_eq!(calls[2].params["body"], json!({}));
+    }
+
+    #[tokio::test]
+    async fn group_lifecycle_async_replays_exact_create_after_transport_failure() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        GroupLifecycleRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            TransportFailsOnce {
+                calls: Rc::clone(&calls),
+                failed: false,
+                response: json!({"group_did":"did:example:group"}),
+            },
+        )
+        .create_async(
+            crate::groups::GroupCreateRequest {
+                name: "Demo Group".to_string(),
+                creator_handle: None,
+                description: None,
+                avatar_uri: None,
+                discoverability: None,
+                admission_mode: None,
+                message_security_profile: None,
+                security: crate::groups::GroupSecurityRequirement::Default,
+                e2ee: false,
+                slug: None,
+                goal: None,
+                rules: None,
+                message_prompt: None,
+                doc_url: None,
+                attachments_allowed: None,
+                max_members: None,
+                member_max_messages: None,
+                member_max_total_chars: None,
+            },
+            Some(fixture.credentials()),
+        )
+        .await
+        .unwrap();
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].method, "group.create");
+        assert_eq!(calls[0].params, calls[1].params);
+        assert!(!calls[0].params["meta"]["operation_id"]
+            .as_str()
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -1023,6 +1080,34 @@ mod tests {
                 method: method.to_string(),
                 params,
             });
+            Ok(self.response.clone())
+        }
+    }
+
+    struct TransportFailsOnce {
+        calls: Rc<RefCell<Vec<RecordedCall>>>,
+        failed: bool,
+        response: Value,
+    }
+
+    impl crate::internal::transport::AsyncAuthenticatedRpcTransport for TransportFailsOnce {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            self.calls.borrow_mut().push(RecordedCall {
+                endpoint: endpoint.to_string(),
+                method: method.to_string(),
+                params,
+            });
+            if !self.failed {
+                self.failed = true;
+                return Err(crate::ImError::TransportUnavailable {
+                    detail: "connection reset after submit".to_owned(),
+                });
+            }
             Ok(self.response.clone())
         }
     }
