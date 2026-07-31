@@ -1,3 +1,14 @@
+macos_libraries = Dir.glob(
+  File.join(
+    __dir__,
+    'Frameworks/AwikiImCore.xcframework/macos-*/libawiki_im_core.a',
+  ),
+)
+unless macos_libraries.length == 1
+  raise "Expected exactly one macOS AwikiImCore XCFramework slice, found #{macos_libraries.length}"
+end
+macos_slice = File.basename(File.dirname(macos_libraries.first))
+
 Pod::Spec.new do |s|
   s.name             = 'awiki_im_core'
   s.version          = '0.1.0'
@@ -11,9 +22,9 @@ Pod::Spec.new do |s|
   s.source_files     = 'Classes/**/*'
   s.vendored_frameworks = 'Frameworks/AwikiImCore.xcframework'
   s.pod_target_xcconfig = {
-    'OTHER_LDFLAGS' => '$(inherited) -force_load $(PODS_XCFRAMEWORKS_BUILD_DIR)/awiki_im_core/libawiki_im_core.a'
+    'OTHER_LDFLAGS' => "$(inherited) -force_load $(PODS_TARGET_SRCROOT)/Frameworks/AwikiImCore.xcframework/#{macos_slice}/libawiki_im_core.a"
   }
   s.user_target_xcconfig = {
-    'OTHER_LDFLAGS' => '$(inherited) -force_load $(PODS_XCFRAMEWORKS_BUILD_DIR)/awiki_im_core/libawiki_im_core.a -Wl,-export_dynamic'
+    'OTHER_LDFLAGS' => "$(inherited) -force_load $(PODS_ROOT)/../Flutter/ephemeral/.symlinks/plugins/awiki_im_core/macos/Frameworks/AwikiImCore.xcframework/#{macos_slice}/libawiki_im_core.a -Wl,-export_dynamic"
   }
 end
