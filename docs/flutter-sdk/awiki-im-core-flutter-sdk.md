@@ -242,12 +242,15 @@ raw P3 payload。Flutter Web 保留同形 API，但该 native 流程仍返回 un
 
 ## Multi-device Handle Recovery
 
-V1 does not expose a Handle Recovery lifecycle, rollout flag, old-admin notice
-API, or native/Web stub. Recovery is a future, independently designed security
-capability; it must not be implemented by reusing Device Join or the
-single-original-device Legacy-to-Manifest upgrade. Applications must not infer
-Recovery support from identity registration, Join, root transfer, group rebind
-repair, or other operational repair APIs.
+V1 does not expose a Manifest Handle Recovery lifecycle, rollout flag,
+old-admin notice API, or native/Web stub. A narrow production-compatibility
+exception exists only for a phone-owned Legacy Handle: `registerHandle` may
+receive a normal registered result for a newly generated canonical vNext DID
+when User Service atomically preserves the existing `user_id` and Handle. This
+one-shot Legacy recovery is not Device Join, does not replace an existing
+Manifest identity, and does not imply the future multi-device Recovery
+capability. The single-original-device Legacy-to-Manifest upgrade remains the
+preferred same-DID path whenever the original root key is available.
 
 ## Management-device root-key transfer
 

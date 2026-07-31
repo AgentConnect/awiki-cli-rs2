@@ -6,6 +6,24 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+const VNEXT_DEVICE_PROFILES: &[&str] = &[
+    anp::authentication::PROFILE_CORE_BINDING_V2,
+    anp::authentication::PROFILE_IDENTITY_DISCOVERY_V2,
+    anp::authentication::PROFILE_DIRECT_BASE_V2,
+    anp::authentication::PROFILE_DIRECT_E2EE_V2,
+    anp::authentication::PROFILE_GROUP_BASE_V2,
+    anp::authentication::PROFILE_GROUP_E2EE_V2,
+];
+
+const MANAGED_DOCUMENT_FIELDS: &[&str] = &[
+    "verificationMethod",
+    "authentication",
+    "assertionMethod",
+    "keyAgreement",
+    "deviceManifest",
+    "proof",
+];
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GeneratedLegacyUpgrade {
     pub(crate) did: crate::ids::Did,
@@ -45,27 +63,6 @@ pub(crate) fn build_legacy_upgrade(
             .and_then(Value::as_str)
             .ok_or(crate::ImError::PermissionDenied)?,
     )?;
-    let root_key_id = format!("{}#key-1", did.as_str());
-    let root_private = anp::PrivateKeyMaterial::from_pem(root_private_pem)
-        .map_err(|_| crate::ImError::PermissionDenied)?;
-    let root_public = root_private.public_key();
-    let root_public_multibase =
-        crate::internal::identity_generation::public_key_multibase(&root_public)?;
-    let root_matches = legacy_document
-        .get("verificationMethod")
-        .and_then(Value::as_array)
-        .and_then(|methods| {
-            methods
-                .iter()
-                .find(|method| method.get("id").and_then(Value::as_str) == Some(&root_key_id))
-        })
-        .and_then(|method| method.get("publicKeyMultibase"))
-        .and_then(Value::as_str)
-        == Some(root_public_multibase.as_str());
-    if !root_matches {
-        return Err(crate::ImError::PermissionDenied);
-    }
-
     let protocol_device_id = crate::ids::ProtocolDeviceId::generate()?;
     let signing_key_id = format!("{}#{}-sign", did.as_str(), protocol_device_id.as_str());
     let e2ee_key_id = format!("{}#{}-e2ee", did.as_str(), protocol_device_id.as_str());
@@ -75,56 +72,117 @@ pub(crate) fn build_legacy_upgrade(
     let e2ee_private = anp::PrivateKeyMaterial::X25519(
         x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng),
     );
-    let mut target_document = legacy_document.clone();
-    let object = target_document
-        .as_object_mut()
-        .ok_or(crate::ImError::PermissionDenied)?;
-    object
-        .entry("verificationMethod")
-        .or_insert_with(|| json!([]))
-        .as_array_mut()
-        .ok_or(crate::ImError::PermissionDenied)?
-        .extend([
-            json!({
-                "id": signing_key_id.clone(),
-                "type": "Multikey",
-                "controller": did.as_str(),
-                "publicKeyMultibase": crate::internal::identity_generation::public_key_multibase(
-                    &signing_private.public_key()
-                )?,
-            }),
-            json!({
-                "id": e2ee_key_id.clone(),
-                "type": "X25519KeyAgreementKey2019",
-                "controller": did.as_str(),
-                "publicKeyMultibase": crate::internal::identity_generation::public_key_multibase(
-                    &e2ee_private.public_key()
-                )?,
-            }),
-        ]);
-    append_relationship(object, "authentication", &signing_key_id)?;
-    append_relationship(object, "assertionMethod", &signing_key_id)?;
-    append_relationship(object, "keyAgreement", &e2ee_key_id)?;
-    object.insert(
-        "deviceManifest".to_owned(),
-        json!({
-            "type": "ANPDeviceManifest",
-            "devices": [{
-                "device_id": protocol_device_id.as_str(),
-                "signing_key_id": signing_key_id.clone(),
-                "e2ee_key_id": e2ee_key_id.clone(),
-                "profiles": [
-                    anp::authentication::PROFILE_CORE_BINDING_V2,
-                    anp::authentication::PROFILE_IDENTITY_DISCOVERY_V2,
-                    anp::authentication::PROFILE_DIRECT_BASE_V2,
-                    anp::authentication::PROFILE_DIRECT_E2EE_V2,
-                    anp::authentication::PROFILE_GROUP_BASE_V2,
-                    anp::authentication::PROFILE_GROUP_E2EE_V2
-                ]
-            }]
-        }),
+    let mut generated = GeneratedLegacyUpgrade {
+        did,
+        protocol_device_id,
+        signing_key_id,
+        signing_private_pem: signing_private.to_pem(),
+        e2ee_key_id,
+        e2ee_private_pem: e2ee_private.to_pem(),
+        target_document: Value::Null,
+        target_document_hash: String::new(),
+    };
+    rebuild_legacy_upgrade_target(&mut generated, legacy_document, root_private_pem)?;
+    Ok(generated)
+}
+
+/// Rebuild the canonical target from a proven-current Legacy document while
+/// preserving the exact pending device identity and private keys.
+///
+/// This is the only safe stale-proof recovery path: callers must first prove
+/// that the remote DID is still Legacy. A remotely committed Manifest keeps
+/// the original target document so exact-document idempotence remains intact.
+pub(crate) fn rebuild_legacy_upgrade_target(
+    generated: &mut GeneratedLegacyUpgrade,
+    legacy_document: &Value,
+    root_private_pem: &str,
+) -> crate::ImResult<()> {
+    if legacy_document.get("deviceManifest").is_some() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let did = crate::ids::Did::parse(
+        legacy_document
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(crate::ImError::PermissionDenied)?,
+    )?;
+    if did != generated.did {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let expected_signing_key_id = format!(
+        "{}#{}-sign",
+        did.as_str(),
+        generated.protocol_device_id.as_str()
     );
-    crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+    let expected_e2ee_key_id = format!(
+        "{}#{}-e2ee",
+        did.as_str(),
+        generated.protocol_device_id.as_str()
+    );
+    if generated.signing_key_id != expected_signing_key_id
+        || generated.e2ee_key_id != expected_e2ee_key_id
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    let root_key_id = format!("{}#key-1", did.as_str());
+    let root_method = unique_verification_method(legacy_document, &root_key_id)?;
+    let root_private = anp::PrivateKeyMaterial::from_pem(root_private_pem)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let document_root_public =
+        crate::internal::identity_wire::document::extract_identity_public_key(root_method)?;
+    if root_private.public_key().to_pem() != document_root_public.to_pem() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let signing_private = anp::PrivateKeyMaterial::from_pem(&generated.signing_private_pem)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let e2ee_private = anp::PrivateKeyMaterial::from_pem(&generated.e2ee_private_pem)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    if !matches!(&signing_private, anp::PrivateKeyMaterial::Ed25519(_))
+        || !matches!(&e2ee_private, anp::PrivateKeyMaterial::X25519(_))
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let daemon_method = validated_legacy_daemon_method(legacy_document, &did)?;
+    let signing_method = json!({
+        "id": generated.signing_key_id.clone(),
+        "type": "Multikey",
+        "controller": did.as_str(),
+        "publicKeyMultibase": crate::internal::identity_generation::public_key_multibase(
+            &signing_private.public_key()
+        )?,
+    });
+    let e2ee_method = json!({
+        "id": generated.e2ee_key_id.clone(),
+        "type": "X25519KeyAgreementKey2019",
+        "controller": did.as_str(),
+        "publicKeyMultibase": crate::internal::identity_generation::public_key_multibase(
+            &e2ee_private.public_key()
+        )?,
+    });
+    let device = anp::authentication::DeviceManifestEntry {
+        device_id: generated.protocol_device_id.as_str().to_owned(),
+        signing_key_id: generated.signing_key_id.clone(),
+        e2ee_key_id: generated.e2ee_key_id.clone(),
+        profiles: VNEXT_DEVICE_PROFILES
+            .iter()
+            .map(|profile| (*profile).to_owned())
+            .collect(),
+    };
+    let base_document = legacy_base_document(legacy_document)?;
+    let mut target_document = anp::authentication::build_vnext_did_document(
+        &base_document,
+        &root_key_id,
+        root_method,
+        &device,
+        &signing_method,
+        &e2ee_method,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?;
+    if let Some(method) = daemon_method {
+        append_daemon_method(&mut target_document, &did, method)?;
+    }
+    crate::internal::identity_daemon_subkey::resign_did_document_with_fresh_key1_proof(
         &mut target_document,
         &did,
         root_private_pem,
@@ -133,95 +191,129 @@ pub(crate) fn build_legacy_upgrade(
         .map_err(|_| crate::ImError::PermissionDenied)?
         .filter(|manifest| manifest.devices.len() == 1)
         .ok_or(crate::ImError::PermissionDenied)?;
-    let target_document_hash =
+    generated.target_document_hash =
         crate::internal::identity_wire::document::document_hash(&target_document)?;
-    Ok(GeneratedLegacyUpgrade {
-        did,
-        protocol_device_id,
-        signing_key_id,
-        signing_private_pem: signing_private.to_pem(),
-        e2ee_key_id,
-        e2ee_private_pem: e2ee_private.to_pem(),
-        target_document,
-        target_document_hash,
-    })
+    generated.target_document = target_document;
+    Ok(())
 }
 
-fn append_relationship(
-    object: &mut serde_json::Map<String, Value>,
-    field: &str,
-    key_id: &str,
-) -> crate::ImResult<()> {
-    let values = object
-        .entry(field)
-        .or_insert_with(|| json!([]))
-        .as_array_mut()
+fn unique_verification_method<'a>(document: &'a Value, key_id: &str) -> crate::ImResult<&'a Value> {
+    let methods = document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
         .ok_or(crate::ImError::PermissionDenied)?;
-    values.push(Value::String(key_id.to_owned()));
+    let mut matches = methods
+        .iter()
+        .filter(|method| method.get("id").and_then(Value::as_str) == Some(key_id));
+    let method = matches.next().ok_or(crate::ImError::PermissionDenied)?;
+    if matches.next().is_some() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(method)
+}
+
+fn legacy_base_document(document: &Value) -> crate::ImResult<Value> {
+    let mut base = document
+        .as_object()
+        .cloned()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    for field in MANAGED_DOCUMENT_FIELDS {
+        base.remove(*field);
+    }
+    Ok(Value::Object(base))
+}
+
+fn validated_legacy_daemon_method<'a>(
+    document: &'a Value,
+    did: &crate::ids::Did,
+) -> crate::ImResult<Option<&'a Value>> {
+    let daemon_key_id = crate::internal::identity_daemon_subkey::expected_verification_method(did);
+    let methods = document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let matching = methods
+        .iter()
+        .filter(|method| method.get("id").and_then(Value::as_str) == Some(&daemon_key_id))
+        .collect::<Vec<_>>();
+    let referenced = relationship_count(document, "authentication", &daemon_key_id);
+    if matching.is_empty() && referenced == 0 {
+        return Ok(None);
+    }
+    if matching.len() != 1 || referenced != 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let method = matching[0];
+    let object = method.as_object().ok_or(crate::ImError::PermissionDenied)?;
+    if object.len() != 4
+        || object.get("id").and_then(Value::as_str) != Some(daemon_key_id.as_str())
+        || object.get("type").and_then(Value::as_str) != Some("Multikey")
+        || object.get("controller").and_then(Value::as_str) != Some(did.as_str())
+        || object
+            .get("publicKeyMultibase")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        || !matches!(
+            crate::internal::identity_wire::document::extract_identity_public_key(method)?,
+            anp::PublicKeyMaterial::Ed25519(_)
+        )
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    for relationship in [
+        "assertionMethod",
+        "keyAgreement",
+        "capabilityInvocation",
+        "capabilityDelegation",
+    ] {
+        if relationship_count(document, relationship, &daemon_key_id) != 0 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    Ok(Some(method))
+}
+
+fn relationship_count(document: &Value, field: &str, key_id: &str) -> usize {
+    document
+        .get(field)
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter(|value| match value {
+                    Value::String(value) => value == key_id,
+                    Value::Object(object) => {
+                        object.get("id").and_then(Value::as_str) == Some(key_id)
+                    }
+                    _ => false,
+                })
+                .count()
+        })
+        .unwrap_or_default()
+}
+
+fn append_daemon_method(
+    document: &mut Value,
+    did: &crate::ids::Did,
+    method: &Value,
+) -> crate::ImResult<()> {
+    let object = document
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    object
+        .get_mut("verificationMethod")
+        .and_then(Value::as_array_mut)
+        .ok_or(crate::ImError::PermissionDenied)?
+        .push(method.clone());
+    object
+        .get_mut("authentication")
+        .and_then(Value::as_array_mut)
+        .ok_or(crate::ImError::PermissionDenied)?
+        .push(Value::String(
+            crate::internal::identity_daemon_subkey::expected_verification_method(did),
+        ));
     Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builder_preserves_legacy_services_delegation_and_key_relationships() {
-        let generated =
-            crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
-                "example.test",
-                "alice",
-                None,
-                None,
-            )
-            .unwrap();
-        let legacy = generated.identity;
-        let service = legacy.did_document.get("service").cloned();
-        let old_methods = legacy.did_document["verificationMethod"]
-            .as_array()
-            .unwrap()
-            .clone();
-        let old_authentication = legacy.did_document["authentication"]
-            .as_array()
-            .unwrap()
-            .clone();
-        let old_assertion = legacy.did_document["assertionMethod"]
-            .as_array()
-            .unwrap()
-            .clone();
-        let old_agreement = legacy.did_document["keyAgreement"]
-            .as_array()
-            .unwrap()
-            .clone();
-
-        let upgrade = build_legacy_upgrade(&legacy.did_document, &legacy.key1_private_pem).unwrap();
-
-        assert_eq!(upgrade.target_document.get("service").cloned(), service);
-        for method in old_methods {
-            assert!(upgrade.target_document["verificationMethod"]
-                .as_array()
-                .unwrap()
-                .contains(&method));
-        }
-        for (field, old) in [
-            ("authentication", old_authentication),
-            ("assertionMethod", old_assertion),
-            ("keyAgreement", old_agreement),
-        ] {
-            for relationship in old {
-                assert!(upgrade.target_document[field]
-                    .as_array()
-                    .unwrap()
-                    .contains(&relationship));
-            }
-        }
-        assert_eq!(
-            anp::authentication::validate_device_manifest(&upgrade.target_document)
-                .unwrap()
-                .unwrap()
-                .devices
-                .len(),
-            1
-        );
-    }
-}
+mod tests;

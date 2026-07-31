@@ -424,10 +424,22 @@ Legacy upgrade 是 Core 内部可恢复事务；host 必须等待
 `transport_unavailable|service_error|permission_denied|auth_required|local_state_unavailable|legacy_upgrade_failed`
 之一，既不泄露响应正文，也不会把 native future 仍在执行误判为已取消。
 
+正式兼容基线是 AWiki Me `0.1.5+14` / im-core `d7c853a...`。升级保留同一 DID、
+root key、Handle、local identity ID、Vault 历史和本地业务数据，但不会复制 Legacy
+managed fields：Core 通过 ANP builder 重新生成唯一的 vNext managed fields，只保留合法的
+authentication-only daemon 委托，并用真实 root key 算法生成新的
+`assertionMethod` proof。Host 不得在 Dart 层读取或重写 DID 文档、私钥或 SQLite 来参与迁移。
+pending 记录固定保存同一组 device ID/keys 和目标文档；重试时远端若已是该精确目标则直接收敛，
+若明确仍是 Legacy 才允许保留原 device keys 刷新 root proof，任何其他 Manifest 或无法确认的远端
+状态都失败关闭。
+
 `register_handle` 是唯一注册入口。新注册生成带 bootstrap Manifest 的 DID 和独立设备
 keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest 的旧客户端仍走 Legacy
-兼容。Handle 已存在时返回 typed `join_required`，不创建第二个身份，host 使用其中的一次性
-account verification grant 进入 Device Join。新注册本地提交后必须发布 exact-device P5
+兼容。Handle 已存在且已经是完整 Manifest 时返回 typed `join_required`，不创建第二个身份，
+host 使用其中的一次性 account verification grant 进入 Device Join。若服务端确认该 Handle
+仍是 Legacy 且本次 phone factor 与原绑定完全一致，`register` 可以作为窄范围兼容路径把它
+原子恢复为新的 canonical vNext DID，同时保留原 `user_id`、Handle 和递增后的 binding
+generation；这不是 Manifest Recovery，也不能替换已有 Manifest 身份。新注册本地提交后必须发布 exact-device P5
 PreKey Bundle；失败保留同一 PendingRegistration 精确重试。公共 DTO 不暴露私钥、pending、
 内部 checkpoint 或 refresh token。`HandleRegistrationResult.account_id` 仅在
 `registered` 结果中返回服务端 canonical `user_id`；`join_required` 不伪造账号 ID。

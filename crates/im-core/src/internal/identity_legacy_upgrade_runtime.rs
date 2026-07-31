@@ -87,8 +87,8 @@ async fn upgrade_inner(
         crate::internal::identity_legacy_upgrade_pending::PendingLegacyUpgradeStore::from_core(
             core,
         )?;
-    let (pending_ref, mut pending) = match pending_store.load(&alias)? {
-        Some(value) => value,
+    let (pending_ref, mut pending, resumed_pending) = match pending_store.load(&alias)? {
+        Some((secret_ref, pending)) => (secret_ref, pending, true),
         None => {
             let generated = crate::internal::identity_legacy_upgrade::build_legacy_upgrade(
                 &legacy_document,
@@ -102,27 +102,57 @@ async fn upgrade_inner(
                     generated,
                 )?;
             let secret_ref = pending_store.save(&pending)?;
-            (secret_ref, pending)
+            (secret_ref, pending, false)
         }
     };
+    let mut remote_already_committed = false;
+    if resumed_pending
+        && pending.phase
+            == crate::internal::identity_legacy_upgrade_pending::PendingLegacyUpgradePhase::Prepared
+    {
+        let mut resolver_transport = crate::internal::transport::CoreHttpTransport::new(&client);
+        let remote_document = crate::internal::discovery::did_document::resolve_did_document_async(
+            &mut resolver_transport,
+            pending.generated.did.as_str(),
+        )
+        .await?;
+        match pending.reconcile_remote_document(&remote_document, &root_private_pem)? {
+            crate::internal::identity_legacy_upgrade_pending::PendingLegacyUpgradeRemoteState::TargetCommitted => {
+                // The update committed and only its response/local commit was
+                // lost. Keep the exact document for server idempotence.
+                remote_already_committed = true;
+            }
+            crate::internal::identity_legacy_upgrade_pending::PendingLegacyUpgradeRemoteState::LegacyRebuilt => {
+                // The public source of truth is still Legacy. The proof and
+                // source extensions are fresh, but device keys stay stable.
+                pending_store.save(&pending)?;
+            }
+        }
+    }
     pending.mark_running();
     pending_store.save(&pending)?;
     if pending.phase
         == crate::internal::identity_legacy_upgrade_pending::PendingLegacyUpgradePhase::Prepared
     {
-        let call = crate::internal::identity_wire::update_document::build_update_document_rpc_call(
-            crate::internal::identity_wire::UpdateDocumentRpcParams {
-                did_document: pending.generated.target_document.clone(),
-                is_public: None,
-                is_agent: None,
-                role: None,
-                endpoint_url: None,
-            },
-        );
-        let mut legacy_transport = crate::internal::transport::CoreHttpTransport::new(&client);
-        let update_result = legacy_transport
-            .authenticated_rpc(call.endpoint, call.method, call.params)
-            .await;
+        let update_error = if remote_already_committed {
+            None
+        } else {
+            let call =
+                crate::internal::identity_wire::update_document::build_update_document_rpc_call(
+                    crate::internal::identity_wire::UpdateDocumentRpcParams {
+                        did_document: pending.generated.target_document.clone(),
+                        is_public: None,
+                        is_agent: None,
+                        role: None,
+                        endpoint_url: None,
+                    },
+                );
+            let mut legacy_transport = crate::internal::transport::CoreHttpTransport::new(&client);
+            legacy_transport
+                .authenticated_rpc(call.endpoint, call.method, call.params)
+                .await
+                .err()
+        };
 
         let provider: Arc<dyn crate::internal::key_provider::KeyMaterialProvider> =
             Arc::new(PendingDeviceProvider {
@@ -148,7 +178,7 @@ async fn upgrade_inner(
         let access_token = match device_transport.refresh_jwt_async().await {
             Ok(token) => token,
             Err(probe_error) => {
-                return Err(update_result.err().unwrap_or(probe_error));
+                return Err(update_error.unwrap_or(probe_error));
             }
         };
         let registry_call = crate::internal::identity_wire::device_join::build_registry_call(

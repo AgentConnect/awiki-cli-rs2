@@ -1,6 +1,6 @@
 use anp::proof::{
-    generate_w3c_proof, ProofGenerationOptions, CRYPTOSUITE_EDDSA_JCS_2022,
-    PROOF_TYPE_DATA_INTEGRITY,
+    generate_w3c_proof, ProofGenerationOptions, CRYPTOSUITE_DIDWBA_SECP256K1_2025,
+    CRYPTOSUITE_EDDSA_JCS_2022, PROOF_TYPE_DATA_INTEGRITY,
 };
 use rand::RngCore;
 use serde_json::{json, Value};
@@ -237,6 +237,42 @@ pub(crate) fn resign_did_document_with_key1(
     .map_err(|err| crate::ImError::Serialization {
         detail: format!("resign DID Document proof after daemon subkey registration: {err}"),
     })?;
+    *did_document = signed;
+    Ok(())
+}
+
+/// Replace any inherited proof with a fresh canonical root proof.
+///
+/// Legacy promotion uses this entry point because an old proof purpose or
+/// cryptosuite is source history, not part of the vNext target contract.
+pub(crate) fn resign_did_document_with_fresh_key1_proof(
+    did_document: &mut Value,
+    did: &crate::ids::Did,
+    key1_private_pem: &str,
+) -> crate::ImResult<()> {
+    let private_key = anp::PrivateKeyMaterial::from_pem(key1_private_pem)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let cryptosuite = match private_key {
+        anp::PrivateKeyMaterial::Ed25519(_) => CRYPTOSUITE_EDDSA_JCS_2022,
+        anp::PrivateKeyMaterial::Secp256k1(_) => CRYPTOSUITE_DIDWBA_SECP256K1_2025,
+        _ => return Err(crate::ImError::PermissionDenied),
+    };
+    let domain = crate::internal::identity_join_activation_pending::service_domain_from_did(did)?;
+    let options = ProofGenerationOptions {
+        proof_purpose: Some("assertionMethod".to_owned()),
+        proof_type: Some(PROOF_TYPE_DATA_INTEGRITY.to_owned()),
+        cryptosuite: Some(cryptosuite.to_owned()),
+        created: None,
+        domain: Some(domain),
+        challenge: Some(fresh_proof_challenge()),
+    };
+    let signed = generate_w3c_proof(
+        did_document,
+        &private_key,
+        &format!("{}#key-1", did.as_str()),
+        options,
+    )
+    .map_err(|_| crate::ImError::PermissionDenied)?;
     *did_document = signed;
     Ok(())
 }

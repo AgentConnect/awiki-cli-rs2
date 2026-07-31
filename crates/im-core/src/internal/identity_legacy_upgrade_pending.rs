@@ -24,6 +24,12 @@ pub(crate) enum PendingLegacyUpgradeAttempt {
     RetryRequired,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingLegacyUpgradeRemoteState {
+    TargetCommitted,
+    LegacyRebuilt,
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PendingLegacyUpgrade {
@@ -122,6 +128,40 @@ impl PendingLegacyUpgrade {
         self.attempt = PendingLegacyUpgradeAttempt::RetryRequired;
         self.last_attempt_at = now();
         self.failure_code = Some(code.to_owned());
+    }
+
+    pub(crate) fn rebuild_from_proven_remote_legacy(
+        &mut self,
+        remote_document: &serde_json::Value,
+        root_private_pem: &str,
+    ) -> crate::ImResult<()> {
+        if self.phase != PendingLegacyUpgradePhase::Prepared
+            || self.checkpoint.is_some()
+            || self.access_token.is_some()
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        crate::internal::identity_legacy_upgrade::rebuild_legacy_upgrade_target(
+            &mut self.generated,
+            remote_document,
+            root_private_pem,
+        )?;
+        self.source_document_hash =
+            crate::internal::identity_wire::document::document_hash(remote_document)?;
+        self.validate()
+    }
+
+    pub(crate) fn reconcile_remote_document(
+        &mut self,
+        remote_document: &serde_json::Value,
+        root_private_pem: &str,
+    ) -> crate::ImResult<PendingLegacyUpgradeRemoteState> {
+        let remote_hash = crate::internal::identity_wire::document::document_hash(remote_document)?;
+        if remote_hash == self.generated.target_document_hash {
+            return Ok(PendingLegacyUpgradeRemoteState::TargetCommitted);
+        }
+        self.rebuild_from_proven_remote_legacy(remote_document, root_private_pem)?;
+        Ok(PendingLegacyUpgradeRemoteState::LegacyRebuilt)
     }
 }
 
@@ -275,9 +315,157 @@ mod tests {
         let (_, loaded) = restarted_store.load("alice").unwrap().unwrap();
 
         assert_eq!(loaded.attempt, PendingLegacyUpgradeAttempt::RetryRequired);
+        assert_eq!(loaded.generated, pending.generated);
         assert_eq!(
             loaded.failure_code.as_deref(),
             Some("transport_unavailable")
         );
+    }
+
+    #[test]
+    fn remote_reconciliation_preserves_exact_committed_target_and_pending_keys() {
+        let legacy =
+            crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
+                "example.test",
+                "alice",
+                None,
+                None,
+            )
+            .unwrap()
+            .identity;
+        let generated = crate::internal::identity_legacy_upgrade::build_legacy_upgrade(
+            &legacy.did_document,
+            &legacy.key1_private_pem,
+        )
+        .unwrap();
+        let root_ref = SecretRef {
+            workspace_id: "workspace-1".to_owned(),
+            device_id: "vault-device-1".to_owned(),
+            identity_id: Some(legacy.unique_id),
+            did: Some(legacy.did.as_str().to_owned()),
+            kind: SecretKind::IdentityRootPrivate,
+            key_id: format!("{}#key-1", legacy.did.as_str()),
+            key_version: 1,
+        };
+        let mut pending = PendingLegacyUpgrade::new(
+            "alice".to_owned(),
+            crate::internal::identity_wire::document::document_hash(&legacy.did_document).unwrap(),
+            root_ref,
+            generated.clone(),
+        )
+        .unwrap();
+
+        let state = pending
+            .reconcile_remote_document(&generated.target_document, &legacy.key1_private_pem)
+            .unwrap();
+
+        assert_eq!(state, PendingLegacyUpgradeRemoteState::TargetCommitted);
+        assert_eq!(pending.generated, generated);
+    }
+
+    #[test]
+    fn remote_legacy_retry_refreshes_proof_without_generating_a_second_device() {
+        let legacy =
+            crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
+                "example.test",
+                "alice",
+                None,
+                None,
+            )
+            .unwrap()
+            .identity;
+        let generated = crate::internal::identity_legacy_upgrade::build_legacy_upgrade(
+            &legacy.did_document,
+            &legacy.key1_private_pem,
+        )
+        .unwrap();
+        let root_ref = SecretRef {
+            workspace_id: "workspace-1".to_owned(),
+            device_id: "vault-device-1".to_owned(),
+            identity_id: Some(legacy.unique_id),
+            did: Some(legacy.did.as_str().to_owned()),
+            kind: SecretKind::IdentityRootPrivate,
+            key_id: format!("{}#key-1", legacy.did.as_str()),
+            key_version: 1,
+        };
+        let mut pending = PendingLegacyUpgrade::new(
+            "alice".to_owned(),
+            crate::internal::identity_wire::document::document_hash(&legacy.did_document).unwrap(),
+            root_ref,
+            generated.clone(),
+        )
+        .unwrap();
+        let mut current_remote_legacy = legacy.did_document.clone();
+        current_remote_legacy["x-awiki-server-extension"] = serde_json::json!({"revision": 2});
+
+        let state = pending
+            .reconcile_remote_document(&current_remote_legacy, &legacy.key1_private_pem)
+            .unwrap();
+
+        assert_eq!(state, PendingLegacyUpgradeRemoteState::LegacyRebuilt);
+        assert_eq!(
+            pending.generated.protocol_device_id,
+            generated.protocol_device_id
+        );
+        assert_eq!(pending.generated.signing_key_id, generated.signing_key_id);
+        assert_eq!(
+            pending.generated.signing_private_pem,
+            generated.signing_private_pem
+        );
+        assert_eq!(pending.generated.e2ee_key_id, generated.e2ee_key_id);
+        assert_eq!(
+            pending.generated.e2ee_private_pem,
+            generated.e2ee_private_pem
+        );
+        assert_ne!(
+            pending.generated.target_document_hash,
+            generated.target_document_hash
+        );
+        assert_eq!(
+            pending.generated.target_document["x-awiki-server-extension"],
+            serde_json::json!({"revision": 2})
+        );
+    }
+
+    #[test]
+    fn retry_rejects_a_different_remote_manifest_without_replacing_pending_material() {
+        let legacy =
+            crate::internal::identity_generation::generate_handle_identity_with_default_daemon_subkey(
+                "example.test",
+                "alice",
+                None,
+                None,
+            )
+            .unwrap()
+            .identity;
+        let generated = crate::internal::identity_legacy_upgrade::build_legacy_upgrade(
+            &legacy.did_document,
+            &legacy.key1_private_pem,
+        )
+        .unwrap();
+        let root_ref = SecretRef {
+            workspace_id: "workspace-1".to_owned(),
+            device_id: "vault-device-1".to_owned(),
+            identity_id: Some(legacy.unique_id),
+            did: Some(legacy.did.as_str().to_owned()),
+            kind: SecretKind::IdentityRootPrivate,
+            key_id: format!("{}#key-1", legacy.did.as_str()),
+            key_version: 1,
+        };
+        let mut pending = PendingLegacyUpgrade::new(
+            "alice".to_owned(),
+            crate::internal::identity_wire::document::document_hash(&legacy.did_document).unwrap(),
+            root_ref,
+            generated.clone(),
+        )
+        .unwrap();
+        let mut different_manifest = generated.target_document.clone();
+        different_manifest["x-awiki-other-commit"] = serde_json::json!(true);
+
+        assert!(matches!(
+            pending.reconcile_remote_document(&different_manifest, &legacy.key1_private_pem),
+            Err(crate::ImError::PermissionDenied)
+        ));
+        assert_eq!(pending.generated, generated);
     }
 }

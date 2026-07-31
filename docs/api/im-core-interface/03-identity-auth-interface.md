@@ -179,14 +179,25 @@ pub struct DeleteLocalIdentityResult {
 查询与升级调用的即时失败使用同一分类。Host 必须等待 Core 的 typed 结果，不能用较短的
 通用 UI timeout 包裹升级 future；Dart timeout 不会取消 native 事务，会制造并发重试。
 
+正式 AWiki Me `0.1.5+14` 的原位升级必须保持同一 DID/root/Handle/local identity，
+并由 Core 通过 ANP builder 从清理过 managed fields 的 Legacy base 构建规范 vNext 文档。
+旧 `#key-2/#key-3` 只保留为 Vault 历史材料；合法 `#daemon-key-1` 以
+authentication-only 形式保留；新 proof 固定为 `assertionMethod`，签名套件由真实 root
+key 算法决定。Host 不参与文档或私钥迁移。
+Core pending record 固定保存同一组 device ID/keys；重试先读取远端 DID，精确目标按已提交收敛，
+仅在远端明确仍为 Legacy 时保留 keys 刷新 proof，遇到其他 Manifest 或无法解析的远端状态立即
+失败关闭。
+
 `register_handle` 是新旧客户端共用的唯一注册入口。新注册在本地生成带 bootstrap
 Manifest 的 DID 和独立设备 signing/E2EE key，通过同一个 `register` RPC 原子创建
 用户、DID checkpoint 和首设备 Registry。Phone OTP 使用闭合参数
 `{phone,purpose:"awiki.identity.register.v1",handle,domain,full_handle}`；Phone、Email、
 AlreadyVerified 和 Invite 的既有验证能力继续保留。
 
-如果 Handle 已存在，注册正常返回 typed `join_required`，其中包含现有 DID 和一次性
-account verification grant；Core 不创建第二个 DID、不提交本地身份，也不发布 P5。
+如果 Handle 已存在且已经是完整 Manifest，注册正常返回 typed `join_required`，其中包含现有
+DID 和一次性 account verification grant；Core 不创建第二个 DID、不提交本地身份，也不发布
+P5。若服务端确认它仍是 phone-owned Legacy，注册响应可以表示服务端已原子恢复到本次新生成的
+vNext DID；该窄兼容路径保留原 `user_id`/Handle，不允许替换已有 Manifest 身份。
 新注册本地提交成功后必须生成并发布 exact-device P5 PreKey Bundle，发布失败保留同一
 PendingRegistration 供精确重试，不重放 `register`。V1 只保存 access token，不保存设备
 refresh token，也没有 Genesis 或独立设备 Token RPC。

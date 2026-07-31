@@ -140,7 +140,32 @@ Core treats that key as the existing DID root, creates new independent device
 keys and ID, and submits the same-DID/same-Handle single-device Manifest through
 the existing document-update path. The encrypted pending upgrade is reused
 after ambiguous failure. V1 does not support concurrent upgrade from copied
-Legacy roots, Join before upgrade, or recovery after the original root is lost.
+Legacy roots or Join before upgrade. It does not expose Manifest Recovery; if a
+published Legacy identity has lost its original root, the separate phone-owned
+Legacy compatibility path may preserve the account/Handle while replacing the
+DID with a new canonical vNext identity.
+
+The production compatibility source for this in-place path is AWiki Me
+`0.1.5+14` (`c19a01a5e434ac41ead73915ef7fcbc2a27e3a5a`) with im-core
+`d7c853a986a29e0c0457284a6b2c3d81ec637e10`. Core does not clone that Legacy
+document's managed fields. It verifies the stored `key-1` private key against
+the root verification method semantically, removes the old
+`verificationMethod/authentication/assertionMethod/keyAgreement/deviceManifest/proof`,
+builds the canonical vNext fields through the ANP SDK, and then restores only a
+valid authentication-only `#daemon-key-1`. Ordinary top-level extensions and
+service entries remain unchanged. Legacy `#key-2/#key-3` stay in Vault history
+for decryption compatibility but are not published as vNext managed methods.
+The target receives a fresh `assertionMethod` root proof whose cryptosuite is
+selected from the actual Ed25519 or secp256k1 root key.
+
+The encrypted pending record owns the exact generated device ID, signing/E2EE
+keys, target document and hash. After an ambiguous response, Core first resolves
+the remote DID: the exact target means the remote commit already happened and
+the original pending document is reused; a proven-current Legacy document may
+refresh the root proof and server-owned extensions while retaining the same
+device keys; any different Manifest or unresolved remote state fails closed.
+This prevents both stale-proof retry failure and accidental creation of a
+second bootstrap device.
 
 Device authentication is access-only. Core explicitly selects the current
 `device_signing_key_id` for a fresh DID-WBA signature. Any successful User
