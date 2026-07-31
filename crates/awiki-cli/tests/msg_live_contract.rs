@@ -197,6 +197,14 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
             "total": 1,
             "source": "remote_http"
         }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "did": alice_did,
+            "user_id": "user-alice",
+            "handle": "alice",
+            "full_handle": "alice.awiki.ai",
+            "domain": "awiki.ai",
+            "status": "active"
+        }))),
         TestResponse::ok(r#"{"jsonrpc":"2.0","result":{"updated_count":1},"id":"req-1"}"#),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
@@ -260,10 +268,11 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert_eq!(mark_json["data"]["message_ids"], json!(["msg-direct-1"]));
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
     assert!(requests[1].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(requests[2].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
+    assert!(requests[3].starts_with("POST /im/rpc HTTP/1.1"));
 
     let inbox_body: Value = serde_json::from_str(request_body(&requests[0])).expect("inbox body");
     assert_eq!(inbox_body["method"], "inbox.get");
@@ -280,7 +289,11 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert_eq!(history_body["params"]["body"]["peer_did"], alice_did);
     assert_eq!(history_body["params"]["body"]["limit"], 5);
 
-    let mark_body: Value = serde_json::from_str(request_body(&requests[2])).expect("mark body");
+    let lookup_body: Value = serde_json::from_str(request_body(&requests[2])).expect("lookup body");
+    assert_eq!(lookup_body["method"], "lookup");
+    assert_eq!(lookup_body["params"]["did"], alice_did);
+
+    let mark_body: Value = serde_json::from_str(request_body(&requests[3])).expect("mark body");
     assert_eq!(mark_body["method"], "inbox.mark_read");
     assert_eq!(
         mark_body["params"]["body"]["message_ids"],

@@ -101,7 +101,7 @@ fn msg_mark_read_websocket_mode_reports_http_failure_without_bridge_fallback() {
         .join("runtime")
         .join("missing.sock");
     let server = TestServer::new(vec![TestResponse::internal_error(
-        r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"http mark-read failed"},"id":"req-1"}"#,
+        r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"http mark-read failed"},"id":"req-1"}"#,
     )]);
     write_msg_ws_config(
         workspace.path(),

@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 use std::path::Path;
 use std::sync::Arc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::error::{ProtocolError, SubProtocolError};
 use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL};
 use tokio_tungstenite::tungstenite::http::{HeaderMap, Request};
 use tokio_tungstenite::tungstenite::Error as TungsteniteError;
@@ -39,14 +40,26 @@ impl AsyncWsTransport {
         bearer_token: &str,
         ca_bundle: Option<&str>,
     ) -> Result<Self, AsyncWsConnectError> {
-        let request = build_async_ws_request(websocket_url, bearer_token)?;
         let connector = async_ws_rustls_connector(ca_bundle).await?;
-        let (stream, response) = if let Some(connector) = connector {
+        let request = build_async_ws_request(websocket_url, bearer_token, true)?;
+        let connected = if let Some(connector) = connector.clone() {
             connect_async_tls_with_config(request, None, false, Some(connector)).await
         } else {
             tokio_tungstenite::connect_async(request).await
-        }
-        .map_err(async_ws_connect_error)?;
+        };
+        let (stream, response) = match connected {
+            Ok(connected) => connected,
+            Err(error) if is_missing_async_ws_subprotocol(&error) => {
+                let request = build_async_ws_request(websocket_url, bearer_token, false)?;
+                if let Some(connector) = connector {
+                    connect_async_tls_with_config(request, None, false, Some(connector)).await
+                } else {
+                    tokio_tungstenite::connect_async(request).await
+                }
+                .map_err(async_ws_connect_error)?
+            }
+            Err(error) => return Err(async_ws_connect_error(error)),
+        };
         let sync_changed_v2 = validate_async_ws_subprotocol(response.headers())?;
         Ok(Self {
             stream,
@@ -105,6 +118,7 @@ impl AsyncWsTransport {
 fn build_async_ws_request(
     websocket_url: &str,
     bearer_token: &str,
+    request_sync_changed_v2: bool,
 ) -> Result<Request<()>, AsyncWsConnectError> {
     let mut request = websocket_url
         .into_client_request()
@@ -115,13 +129,24 @@ fn build_async_ws_request(
         async_ws_connect_message(format!("build websocket authorization header: {err}"))
     })?;
     request.headers_mut().insert(AUTHORIZATION, authorization);
-    request.headers_mut().insert(
-        SEC_WEBSOCKET_PROTOCOL,
-        crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL
-            .parse()
-            .expect("static websocket subprotocol is a valid header value"),
-    );
+    if request_sync_changed_v2 {
+        request.headers_mut().insert(
+            SEC_WEBSOCKET_PROTOCOL,
+            crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL
+                .parse()
+                .expect("static websocket subprotocol is a valid header value"),
+        );
+    }
     Ok(request)
+}
+
+fn is_missing_async_ws_subprotocol(error: &TungsteniteError) -> bool {
+    matches!(
+        error,
+        TungsteniteError::Protocol(ProtocolError::SecWebSocketSubProtocolError(
+            SubProtocolError::NoSubProtocol
+        ))
+    )
 }
 
 fn validate_async_ws_subprotocol(headers: &HeaderMap) -> Result<bool, AsyncWsConnectError> {
@@ -250,7 +275,7 @@ mod tests {
 
     #[test]
     fn async_ws_requests_sync_changed_v2_subprotocol() {
-        let request = build_async_ws_request("wss://example.test/im/ws", "token").unwrap();
+        let request = build_async_ws_request("wss://example.test/im/ws", "token", true).unwrap();
         assert_eq!(
             request
                 .headers()
@@ -260,5 +285,25 @@ mod tests {
                 .unwrap(),
             crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL
         );
+    }
+
+    #[tokio::test]
+    async fn async_ws_reconnects_without_subprotocol_for_legacy_server() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                tokio_tungstenite::accept_async(stream).await.unwrap();
+            }
+        });
+
+        let transport =
+            AsyncWsTransport::connect(&format!("ws://{address}/im/ws"), "legacy-token", None)
+                .await
+                .unwrap();
+
+        assert!(!transport.sync_changed_v2);
+        server.await.unwrap();
     }
 }

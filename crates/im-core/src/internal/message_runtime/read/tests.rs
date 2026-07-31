@@ -3621,7 +3621,10 @@ fn self_reported_scoped_thread_without_verified_route_cannot_mint_p5_cache() {
     let records = remote_projection_records(&client, &page.items, &provenance).unwrap();
     assert_eq!(records.len(), 1);
     assert!(p5_cache_binding_from_record(&records[0]).is_none());
-    assert!(!p5_cache_record_has_direct_route(&records[0]));
+    assert!(
+        p5_cache_record_has_direct_route(&records[0]),
+        "authenticated Direct endpoints may preserve their wire route without attesting a P5 cache"
+    );
 }
 
 #[test]

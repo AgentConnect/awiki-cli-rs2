@@ -3847,11 +3847,14 @@ fn p5_projection_wire_peer_did(
             let canonical_thread = scope.as_ref().map(
                 crate::internal::message_runtime::local_projection::direct_conversation_id_for_peer_scope,
             );
+            let record_wire_route_matches = (record.wire_thread_kind.trim() == "direct"
+                && record.wire_thread_ref.trim() == wire_peer_did)
+                || (record.wire_thread_kind.trim() == "thread"
+                    && record.wire_thread_ref.trim() == thread.as_str());
             verified_route_matches
                 && canonical_thread.as_deref() == Some(thread.as_str())
                 && record.conversation_id.trim() == thread.as_str()
-                && record.wire_thread_kind.trim() == "thread"
-                && record.wire_thread_ref.trim() == thread.as_str()
+                && record_wire_route_matches
                 && metadata_attribute(&message.metadata, "peer_current_did") == Some(wire_peer_did)
                 && metadata_attribute(&message.metadata, "resolved_target_did")
                     == Some(wire_peer_did)
