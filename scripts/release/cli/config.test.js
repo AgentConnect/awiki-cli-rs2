@@ -63,8 +63,9 @@ test('server and release configuration schemas are strict', () => {
     const release = path.resolve(__dirname, 'release-config.json');
     const parsed = readReleaseConfig(release);
     assert.equal(parsed.channels.beta.version, '1.0.20-beta.1');
-    assert.equal(parsed.channels.stable.version, '1.0.31');
-    assert.equal(parsed.channels.stable.min_supported_version, '1.0.31');
+    assert.equal(parsed.channels.stable.version, '1.0.32');
+    assert.equal(parsed.channels.stable.min_supported_version, '1.0.32');
+    assert.equal(parsed.anp_commit, 'e8d8b6a9d50add23a7506c48e641649a7e4b6a49');
     assert.deepEqual(parsed.targets, [
       'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64',
     ]);
@@ -84,4 +85,14 @@ test('server and release configuration schemas are strict', () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('daemon release checks out the configured immutable ANP revision', () => {
+  const workflow = fs.readFileSync(
+    path.resolve(__dirname, '../../../.github/workflows/build-daemon-release.yml'),
+    'utf8',
+  );
+  assert.match(workflow, /name: Read pinned ANP SDK revision/);
+  assert.match(workflow, /ref: \$\{\{ steps\.release\.outputs\.anp_commit \}\}/);
+  assert.doesNotMatch(workflow, /repository: agent-network-protocol\/anp\s+ref: master/);
 });

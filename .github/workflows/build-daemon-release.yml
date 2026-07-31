@@ -44,11 +44,20 @@ jobs:
           ref: ${{ inputs.source_ref }}
           path: awiki-cli-rs2
 
-      - name: Checkout ANP SDK
+      - name: Read pinned ANP SDK revision
+        id: release
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release/cli/config.js release scripts/release/cli/release-config.json >/dev/null
+          echo "anp_commit=$(node scripts/release/cli/config.js release scripts/release/cli/release-config.json anp_commit)" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout pinned ANP SDK
         uses: actions/checkout@v6
         with:
           repository: agent-network-protocol/anp
-          ref: master
+          ref: ${{ steps.release.outputs.anp_commit }}
           path: anp/anp
 
       - name: Install Rust toolchain
