@@ -519,13 +519,7 @@ impl<'a> CoreHttpTransport<'a> {
             detail: err.to_string(),
         })?;
         let response = self.execute_json_request("POST", &url, body, false)?;
-        if response.status_code >= 400 {
-            return Err(service_error_from_http(
-                response.status_code,
-                &response.body,
-            ));
-        }
-        let result = crate::internal::json_rpc::decode_response(&response.body)?;
+        let result = decode_rpc_http_response(response.status_code, &response.body)?;
         self.capture_token(&url, &response.headers)?;
         Ok(result)
     }
@@ -547,13 +541,7 @@ impl<'a> CoreHttpTransport<'a> {
         let response = self
             .execute_json_request_async("POST", &url, body, false)
             .await?;
-        if response.status_code >= 400 {
-            return Err(service_error_from_http(
-                response.status_code,
-                &response.body,
-            ));
-        }
-        let result = crate::internal::json_rpc::decode_response(&response.body)?;
+        let result = decode_rpc_http_response(response.status_code, &response.body)?;
         self.capture_token(&url, &response.headers)?;
         Ok(result)
     }
@@ -802,13 +790,7 @@ impl<'a> CoreHttpTransport<'a> {
             detail: err.to_string(),
         })?;
         let response = self.execute_json_request("POST", &url, body, true)?;
-        if response.status_code >= 400 {
-            return Err(service_error_from_http(
-                response.status_code,
-                &response.body,
-            ));
-        }
-        let result = crate::internal::json_rpc::decode_response(&response.body)?;
+        let result = decode_rpc_http_response(response.status_code, &response.body)?;
         let header_token = crate::internal::key_provider::ProviderBackedDidAuth::response_token(
             &response.headers,
         )?;
@@ -857,13 +839,7 @@ impl<'a> CoreHttpTransport<'a> {
         let response = self
             .execute_json_request_async("POST", &url, body, true)
             .await?;
-        if response.status_code >= 400 {
-            return Err(service_error_from_http(
-                response.status_code,
-                &response.body,
-            ));
-        }
-        let result = crate::internal::json_rpc::decode_response(&response.body)?;
+        let result = decode_rpc_http_response(response.status_code, &response.body)?;
         let header_token = crate::internal::key_provider::ProviderBackedDidAuth::response_token(
             &response.headers,
         )?;
@@ -2146,11 +2122,19 @@ fn validate_pending_registration_registry_value(
 }
 
 fn registration_is_explicitly_absent(error: &crate::ImError) -> bool {
+    const ACTIVE_DID_NOT_FOUND: &str = "did_auth.active_did_not_found";
     match error {
         crate::ImError::Service {
             status_code: Some(404),
             ..
         } => true,
+        crate::ImError::Service {
+            code: Some(code),
+            data: Some(data),
+            ..
+        } if code == "-32000" => {
+            data.get("awiki_code").and_then(Value::as_str) == Some(ACTIVE_DID_NOT_FOUND)
+        }
         crate::ImError::Service {
             code: Some(code), ..
         } => code == "-32002",

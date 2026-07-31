@@ -373,6 +373,36 @@ fn registration_reconciliation_registry_requires_the_exact_single_device() {
 }
 
 #[test]
+fn registration_reconciliation_requires_exact_structured_absence_reason() {
+    let body = serde_json::to_vec(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+            "code": -32000,
+            "message": "DID is not active",
+            "data": {"awiki_code": "did_auth.active_did_not_found"}
+        }
+    }))
+    .unwrap();
+    let absent = decode_rpc_http_response(401, &body).unwrap_err();
+    assert!(registration_is_explicitly_absent(&absent));
+
+    for data in [
+        None,
+        Some(json!({"awiki_code": "did_auth.invalid_signature"})),
+        Some(json!({"awiki_code": "did_auth.active_did_not_found_extra"})),
+    ] {
+        let error = crate::ImError::Service {
+            status_code: Some(401),
+            code: Some("-32000".to_owned()),
+            message: "Unauthenticated".to_owned(),
+            data,
+        };
+        assert!(!registration_is_explicitly_absent(&error));
+    }
+}
+
+#[test]
 fn skill_onboarding_rpc_error_preserves_reason_on_non_success_http_status() {
     let body = serde_json::to_vec(&json!({
         "jsonrpc": "2.0",

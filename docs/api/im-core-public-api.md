@@ -431,6 +431,10 @@ account verification grant 进入 Device Join。新注册本地提交后必须�
 PreKey Bundle；失败保留同一 PendingRegistration 精确重试。公共 DTO 不暴露私钥、pending、
 内部 checkpoint 或 refresh token。`HandleRegistrationResult.account_id` 仅在
 `registered` 结果中返回服务端 canonical `user_id`；`join_required` 不伪造账号 ID。
+注册写入发生传输不确定性时，Core 先用同一 pending DID 对账；所有 JSON-RPC HTTP 状态都
+保留服务端 `code/data`。只有 User Service 返回精确
+`error.data.awiki_code=did_auth.active_did_not_found`（或既有明确 not-found 契约）时，
+Core 才判定远端未提交并重试同一份注册材料；不得解析错误文案或把所有未认证错误当成缺失。
 
 ### 5.1 Device Join host facade
 
