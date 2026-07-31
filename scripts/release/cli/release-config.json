@@ -6,8 +6,8 @@
       "min_supported_version": "1.0.20-beta.1"
     },
     "stable": {
-      "version": "1.0.30",
-      "min_supported_version": "1.0.30"
+      "version": "1.0.31",
+      "min_supported_version": "1.0.31"
     }
   },
   "anp_commit": "690272e62f7fba0aeea8c65896a1806b6ef5b3b4",
