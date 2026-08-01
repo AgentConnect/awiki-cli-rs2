@@ -11,6 +11,7 @@ use im_core::prelude::{
     ImEvent, Message, MessageBodyView, MessageReceivedEvent, RealtimeConnectionState,
     SystemNotificationChangedEvent, SystemNotificationKind, SystemNotificationState, ThreadRef,
 };
+use im_core::realtime::RealtimeSyncHint;
 use std::sync::{Arc, Mutex};
 use time::OffsetDateTime;
 
@@ -24,11 +25,11 @@ pub struct CliRealtimeEventSink<'a> {
 }
 
 impl CliRealtimeEventSink<'_> {
-    pub fn emit(&mut self, event: ImEvent) -> im_core::ImResult<()> {
+    pub fn emit_remote(&mut self, event: ImEvent) -> im_core::ImResult<CliImEventResult> {
         let mut guard = self.status.lock().map_err(|_| im_core::ImError::Internal {
             message: "listener status mutex poisoned".to_string(),
         })?;
-        handle_im_event(
+        let result = handle_reliable_remote_event(
             Some(self.host_notify.as_ref()),
             &mut guard,
             event,
@@ -37,8 +38,69 @@ impl CliRealtimeEventSink<'_> {
             Some(self.did),
         );
         let _ = listener::write_status(&guard.status_file, &guard);
-        Ok(())
+        Ok(result)
     }
+
+    pub fn emit_committed_message(
+        &mut self,
+        message: Message,
+    ) -> im_core::ImResult<CliImEventResult> {
+        let mut guard = self.status.lock().map_err(|_| im_core::ImError::Internal {
+            message: "listener status mutex poisoned".to_string(),
+        })?;
+        let result = handle_im_event(
+            Some(self.host_notify.as_ref()),
+            &mut guard,
+            ImEvent::MessageReceived(MessageReceivedEvent {
+                message,
+                attachment_summary: None,
+                download_action: None,
+                sync: None,
+                warnings: Vec::new(),
+            }),
+            None,
+            Some(self.identity_name),
+            Some(self.did),
+        );
+        let _ = listener::write_status(&guard.status_file, &guard);
+        Ok(result)
+    }
+}
+
+pub fn handle_reliable_remote_event(
+    host_notify_sink: Option<&dyn HostNotifySink>,
+    status: &mut Status,
+    event: ImEvent,
+    received_at: Option<OffsetDateTime>,
+    identity_name: Option<&str>,
+    did: Option<&str>,
+) -> CliImEventResult {
+    if reliable_remote_event_is_sync_only(&event) {
+        return CliImEventResult {
+            route: CliImEventRoute::Ignored,
+            reliable_sync_requested: true,
+            ..CliImEventResult::default()
+        };
+    }
+    handle_im_event(
+        host_notify_sink,
+        status,
+        event,
+        received_at,
+        identity_name,
+        did,
+    )
+}
+
+fn reliable_remote_event_is_sync_only(event: &ImEvent) -> bool {
+    matches!(
+        event,
+        ImEvent::MessageReceived(_)
+            | ImEvent::MessageUpdated(_)
+            | ImEvent::GroupUpdated(_)
+            | ImEvent::SystemNotificationChanged(_)
+            | ImEvent::UnknownNotification(_)
+    )
 }
 
 pub fn handle_im_event(
@@ -49,11 +111,17 @@ pub fn handle_im_event(
     identity_name: Option<&str>,
     did: Option<&str>,
 ) -> CliImEventResult {
-    let mut result = CliImEventResult::default();
+    let mut result = CliImEventResult {
+        reliable_sync_requested: event_requires_reliable_sync(&event),
+        ..CliImEventResult::default()
+    };
     match event {
         ImEvent::ConnectionStateChanged(event) => {
             result.route = CliImEventRoute::ConnectionStateChanged;
+            let was_connected = named_session_is_connected(status, identity_name);
+            let connected = event.state == RealtimeConnectionState::Connected;
             update_connection_status(status, identity_name, did, event.state, event.reason);
+            result.connection_became_connected = connected && !was_connected;
         }
         ImEvent::MessageReceived(event) => {
             let route = message_route(&event.message);
@@ -127,6 +195,44 @@ pub struct CliImEventResult {
     pub dispatched_host_notification: bool,
     pub host_notify_last_error: Option<String>,
     pub host_notify_status_changed: bool,
+    /// The event is only a scheduling hint. The listener must still call the
+    /// public v2 `sync_now_async` boundary before considering state converged.
+    pub reliable_sync_requested: bool,
+    /// True only for a disconnected -> connected transition of this identity.
+    pub connection_became_connected: bool,
+}
+
+fn event_requires_reliable_sync(event: &ImEvent) -> bool {
+    matches!(event, ImEvent::UnknownNotification(_))
+        || event_sync_hint(event)
+            .is_some_and(|hint| hint.sync_dirty || hint.gap_detected || hint.has_unknown_domain)
+}
+
+fn event_sync_hint(event: &ImEvent) -> Option<&RealtimeSyncHint> {
+    match event {
+        ImEvent::MessageReceived(event) => event.sync.as_ref(),
+        ImEvent::MessageUpdated(event) => event.sync.as_ref(),
+        ImEvent::GroupUpdated(event) => event.sync.as_ref(),
+        ImEvent::SystemNotificationChanged(event) => event.sync.as_ref(),
+        ImEvent::UnknownNotification(event) => event.sync.as_ref(),
+        ImEvent::ConnectionStateChanged(_)
+        | ImEvent::LocalNotification(_)
+        | ImEvent::HostNotification(_) => None,
+    }
+}
+
+fn named_session_is_connected(status: &Status, identity_name: Option<&str>) -> bool {
+    let Some(identity_name) = identity_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return status.sessions.iter().any(|session| session.connected);
+    };
+    status
+        .sessions
+        .iter()
+        .find(|session| session.identity_name == identity_name)
+        .is_some_and(|session| session.connected)
 }
 
 fn update_connection_status(

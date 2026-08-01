@@ -11,16 +11,18 @@ pub use self::dto::{
     ConversationQuery, ConversationReadRef, ConversationResolutionState, ConversationSnapshotItem,
     ConversationSnapshotMessage, ConversationSnapshotMessageBody, ConversationStorageThreadRef,
     ConversationStorePatch, DelegatedSigningOptions, DeliveryState, HistoryQuery, InboxAuth,
-    InboxHistoryOptions, InboxQuery, InboxScope, LocalHistoryQuery, MarkConversationReadRequest,
-    MarkReadResult, MarkThreadReadRequest, MarkThreadReadResult, Message, MessageBody,
-    MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageKind, MessageMetadata,
-    MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
-    MessageSecurityMode, MessageSecurityPolicy, MessageSendState, MessageSendStateKind,
-    MessageSyncDiagnostics, MessageSyncDirtyDomain, MessageSyncMode, MessageSyncOutcome,
-    MessageSyncRequest, MessageSyncRetryState, MessageSyncStatus, MessageTarget, ReadWatermark,
-    ScopedInboxToken, SendConversationPayloadRequest, SendConversationTextRequest,
-    SendMessageRequest, SendMessageResult, SyncConversationAfterRequest, SyncDeltaRequest,
-    SyncDeltaResult, SyncThreadAfterRequest, SyncThreadAfterResult, ThreadMessagePatchSession,
+    InboxHistoryOptions, InboxQuery, InboxScope, IncomingMessageRecoveryItem,
+    IncomingMessageRecoveryPage, IncomingMessageRecoveryPageToken, IncomingMessageRecoveryQuery,
+    LocalHistoryQuery, MarkConversationReadRequest, MarkReadResult, MarkThreadReadRequest,
+    MarkThreadReadResult, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
+    MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessagePage,
+    MessageRetryAction, MessageRetryPlan, MessageSecurityMode, MessageSecurityPolicy,
+    MessageSendState, MessageSendStateKind, MessageSyncDiagnostics, MessageSyncDirtyDomain,
+    MessageSyncMode, MessageSyncOutcome, MessageSyncRequest, MessageSyncRetryState,
+    MessageSyncStatus, MessageTarget, ReadWatermark, ScopedInboxToken,
+    SendConversationPayloadRequest, SendConversationTextRequest, SendMessageRequest,
+    SendMessageResult, SyncConversationAfterRequest, SyncDeltaRequest, SyncDeltaResult,
+    SyncThreadAfterRequest, SyncThreadAfterResult, ThreadMessagePatchSession,
     ThreadMessageStorePatch, ThreadRef,
 };
 pub(crate) use self::service::{
@@ -32,5 +34,5 @@ pub use self::mention::{
     MessageMention, MessageMentionPayload, MessageMentionRange, MessageMentionRangeUnit,
     MessageMentionRole, MessageMentionSelector, MessageMentionTarget,
 };
-pub use self::service::MessageService;
+pub use self::service::{MessageService, LOCAL_INCOMING_RECOVERY_LIMIT_MAX};
 pub use crate::attachments::AttachmentInput;

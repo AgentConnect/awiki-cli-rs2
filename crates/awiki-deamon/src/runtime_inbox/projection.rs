@@ -486,9 +486,7 @@ pub fn repair_runtime_controller_inbox_projection(
 ) -> Result<()> {
     let runtime_agent = state.load_agent_definition(runtime_agent_did)?;
     let im_core = ImCoreAdapter::open(config)?;
-    let identity = state.load_agent_identity(runtime_agent_did)?;
-    let jwt_token = state.load_agent_auth_token(runtime_agent_did)?;
-    let client = im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref())?;
+    let client = im_core.client_for_agent(config, state, runtime_agent_did)?;
     repair_scoped_direct_conversations(
         &client,
         &config.im_core_sqlite_path,

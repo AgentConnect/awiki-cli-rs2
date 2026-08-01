@@ -2,7 +2,7 @@ use awiki_cli::host_runtime::host_notify::{HostNotificationData, HostNotificatio
 use awiki_cli::host_runtime::host_notify_sink::HostNotifySink;
 use awiki_cli::host_runtime::listener::{HostNotifyStatus, SessionStatus, Status};
 use awiki_cli::host_runtime::listener_im_event_adapter::{
-    handle_im_event, CliImEventRoute, IM_EVENT_UNKNOWN_WARNING_PREFIX,
+    handle_im_event, handle_reliable_remote_event, CliImEventRoute, IM_EVENT_UNKNOWN_WARNING_PREFIX,
 };
 use im_core::prelude::{
     AttachmentDownloadAction, AttachmentMessageSummary, ConnectionStateChanged, GroupRef,
@@ -11,7 +11,9 @@ use im_core::prelude::{
     PeerRef, RealtimeConnectionState, SystemNotificationChangedEvent, SystemNotificationKind,
     SystemNotificationSnapshot, SystemNotificationState, ThreadRef, UnknownNotificationEvent,
 };
+use im_core::realtime::{RealtimeSyncHint, SyncDomain};
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 #[test]
@@ -330,6 +332,7 @@ fn im_event_connection_state_updates_only_named_session() {
     );
 
     assert_eq!(result.route, CliImEventRoute::ConnectionStateChanged);
+    assert!(result.connection_became_connected);
     let bob = status
         .sessions
         .iter()
@@ -345,6 +348,105 @@ fn im_event_connection_state_updates_only_named_session() {
         .expect("alice session");
     assert!(!alice.connected);
     assert_eq!(alice.last_error, "keep");
+
+    let duplicate = handle_im_event(
+        None,
+        &mut status,
+        ImEvent::ConnectionStateChanged(ConnectionStateChanged {
+            state: RealtimeConnectionState::Connected,
+            reason: None,
+        }),
+        None,
+        Some("bob"),
+        Some("did:bob"),
+    );
+    assert!(!duplicate.connection_became_connected);
+}
+
+#[test]
+fn dirty_gap_and_unknown_hints_request_reliable_v2_sync() {
+    let mut status = status();
+    let mut event = direct_message_event("msg-dirty-1", "dirty");
+    let ImEvent::MessageReceived(message) = &mut event else {
+        panic!("expected message event");
+    };
+    message.sync = Some(RealtimeSyncHint {
+        event_id: None,
+        event_seq: Some("9".to_owned()),
+        event_type: None,
+        domains: BTreeSet::from([SyncDomain::Message]),
+        reason: Some("message_changed".to_owned()),
+        sync_dirty: true,
+        gap_detected: false,
+        has_unknown_domain: false,
+    });
+
+    let dirty =
+        handle_reliable_remote_event(None, &mut status, event, None, Some("bob"), Some("did:bob"));
+    assert!(dirty.reliable_sync_requested);
+    assert_eq!(dirty.route, CliImEventRoute::Ignored);
+    assert!(!dirty.dispatched_host_notification);
+
+    let mut gap_event = direct_message_event("msg-gap-1", "gap");
+    let ImEvent::MessageReceived(message) = &mut gap_event else {
+        panic!("expected message event");
+    };
+    message.sync = Some(RealtimeSyncHint {
+        event_id: None,
+        event_seq: Some("10".to_owned()),
+        event_type: None,
+        domains: BTreeSet::from([SyncDomain::Message]),
+        reason: Some("gap_detected".to_owned()),
+        sync_dirty: false,
+        gap_detected: true,
+        has_unknown_domain: false,
+    });
+    let gap = handle_reliable_remote_event(
+        None,
+        &mut status,
+        gap_event,
+        None,
+        Some("bob"),
+        Some("did:bob"),
+    );
+    assert!(gap.reliable_sync_requested);
+    assert_eq!(gap.route, CliImEventRoute::Ignored);
+
+    let unknown = handle_reliable_remote_event(
+        None,
+        &mut status,
+        ImEvent::UnknownNotification(UnknownNotificationEvent {
+            content_type: None,
+            notification_type: Some("future.notification".to_owned()),
+            reason: "unknown notification".to_owned(),
+            sync: None,
+        }),
+        None,
+        Some("bob"),
+        Some("did:bob"),
+    );
+    assert!(unknown.reliable_sync_requested);
+    assert_eq!(unknown.route, CliImEventRoute::Ignored);
+}
+
+#[test]
+fn exact_v2_remote_message_without_hint_is_fail_safe_sync_only() {
+    let sink = RecordingHostNotifySink::default();
+    let mut status = status();
+
+    let result = handle_reliable_remote_event(
+        Some(&sink),
+        &mut status,
+        direct_message_event("msg-no-hint-1", "must reconcile first"),
+        None,
+        Some("bob"),
+        Some("did:bob"),
+    );
+
+    assert!(result.reliable_sync_requested);
+    assert_eq!(result.route, CliImEventRoute::Ignored);
+    assert!(!result.dispatched_host_notification);
+    assert!(sink.events.lock().unwrap().is_empty());
 }
 
 #[test]

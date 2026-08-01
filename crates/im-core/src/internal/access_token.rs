@@ -5,6 +5,7 @@ use time::OffsetDateTime;
 const EXPECTED_ISSUER: &str = "user-service";
 const EXPECTED_PURPOSE: &str = "awiki.device.access.v1";
 const EXPECTED_USER_SERVICE_AUDIENCE: &str = "awiki-user-service";
+const EXPECTED_MESSAGE_SERVICE_AUDIENCE: &str = "awiki-message-service";
 const CLOCK_SKEW_SECONDS: i64 = 30;
 
 #[derive(Debug, Clone)]
@@ -90,15 +91,14 @@ fn require_string(claims: &Value, field: &str, expected: &str) -> crate::ImResul
 }
 
 fn validate_audience(claims: &Value) -> crate::ImResult<()> {
-    let contains = match claims.get("aud") {
-        Some(Value::String(value)) => value == EXPECTED_USER_SERVICE_AUDIENCE,
-        Some(Value::Array(values)) => values
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|value| value == EXPECTED_USER_SERVICE_AUDIENCE),
-        _ => false,
+    let audiences = match claims.get("aud") {
+        Some(Value::String(value)) => BTreeSet::from([value.as_str()]),
+        Some(Value::Array(values)) => values.iter().filter_map(Value::as_str).collect(),
+        _ => BTreeSet::new(),
     };
-    if !contains {
+    if !audiences.contains(EXPECTED_USER_SERVICE_AUDIENCE)
+        || !audiences.contains(EXPECTED_MESSAGE_SERVICE_AUDIENCE)
+    {
         return Err(crate::ImError::PermissionDenied);
     }
     Ok(())
@@ -269,6 +269,17 @@ mod tests {
         expected.key_id = &root_key;
         assert_eq!(
             validate_device_access_token(&jwt(root), &expected),
+            Err(crate::ImError::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn device_access_requires_both_service_audiences() {
+        let mut missing_message_service = admin_claims();
+        missing_message_service["aud"] = json!([EXPECTED_USER_SERVICE_AUDIENCE]);
+
+        assert_eq!(
+            validate_device_access_token(&jwt(missing_message_service), &expected_admin(),),
             Err(crate::ImError::PermissionDenied)
         );
     }

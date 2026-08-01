@@ -27,6 +27,7 @@ pub mod daemon_cli;
 pub mod foreground;
 pub mod im_core_adapter;
 pub mod inbox;
+mod legacy_migration;
 pub mod local_rpc;
 pub mod outbox;
 pub mod plugins;
@@ -132,6 +133,7 @@ pub struct DaemonStatus {
     pub im_core_sqlite_path: PathBuf,
     pub daemon_schema_version: i64,
     pub im_core_schema_version: Option<u32>,
+    pub sync_probe: crate::state::DaemonSyncProbe,
 }
 
 pub fn run_command(command: DaemonCommand) -> Result<DaemonStatus> {
@@ -250,6 +252,7 @@ async fn initialize_and_report(state_root: PathBuf) -> Result<DaemonStatus> {
         im_core_sqlite_path: config.im_core_sqlite_path,
         daemon_schema_version: state_summary.schema_version,
         im_core_schema_version: im_core_status.schema_version,
+        sync_probe: state.load_sync_probe()?,
     })
 }
 
@@ -272,6 +275,7 @@ async fn initialize_state_for_management(
         im_core_sqlite_path: config.im_core_sqlite_path.clone(),
         daemon_schema_version: state_summary.schema_version,
         im_core_schema_version: im_core_status.schema_version,
+        sync_probe: state.load_sync_probe()?,
     };
     Ok((config, state, status))
 }

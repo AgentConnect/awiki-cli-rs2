@@ -45,6 +45,31 @@ pub enum IdentityDeviceRole {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum IdentityDeviceAuthorizationStatus {
+    Active,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentIdentityKind {
+    Skill,
+    Daemon,
+    Runtime,
+}
+
+impl AgentIdentityKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Skill => "skill",
+            Self::Daemon => "daemon",
+            Self::Runtime => "runtime",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum IdentityDeviceReadiness {
     Legacy,
     MemberReady,
@@ -133,6 +158,148 @@ impl std::fmt::Debug for HostedIdentityMaterial {
                 "auth_token",
                 &self.auth_token.as_ref().map(|_| "<redacted-token>"),
             )
+            .finish()
+    }
+}
+
+/// Fresh vNext Agent identity material produced for a trusted in-process host.
+///
+/// This secret-bearing value intentionally does not implement Serde. Hosts
+/// must move it directly into their SecretVault-backed pending record and must
+/// never log it or persist it as ordinary application data.
+#[derive(Clone, PartialEq)]
+pub struct VNextAgentBootstrapMaterial {
+    pub kind: AgentIdentityKind,
+    pub handle_local_part: String,
+    pub identity_id: String,
+    pub did: crate::ids::Did,
+    pub did_document: serde_json::Value,
+    pub document_hash: String,
+    pub protocol_device_id: crate::ids::ProtocolDeviceId,
+    pub root_key_id: String,
+    pub root_private_key_pem: String,
+    pub root_public_key_pem: String,
+    pub device_signing_key_id: String,
+    pub device_signing_private_key_pem: String,
+    pub device_signing_public_key_pem: String,
+    pub device_e2ee_key_id: String,
+    pub device_e2ee_private_key_pem: String,
+    pub device_e2ee_public_key_pem: String,
+    pub daemon_subkey_package: Option<DaemonSubkeyPrivatePackage>,
+}
+
+impl std::fmt::Debug for VNextAgentBootstrapMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VNextAgentBootstrapMaterial")
+            .field("kind", &self.kind)
+            .field("handle_local_part", &self.handle_local_part)
+            .field("identity_id", &self.identity_id)
+            .field("did", &self.did)
+            .field("did_document", &"<redacted-did-document>")
+            .field("document_hash", &self.document_hash)
+            .field("protocol_device_id", &self.protocol_device_id)
+            .field("root_key_material", &"<redacted-key-material>")
+            .field("device_signing_key_material", &"<redacted-key-material>")
+            .field("device_e2ee_key_material", &"<redacted-key-material>")
+            .field("daemon_subkey_package", &"<redacted-private-package>")
+            .finish()
+    }
+}
+
+/// Crash-recovery classification for a same-DID Legacy Agent upgrade.
+///
+/// `TargetCommitted` means the remote document is byte-for-byte the prepared
+/// target and callers must not issue `update_document` again. `LegacyRebuilt`
+/// preserves the exact pending device identity and keys while refreshing the
+/// target proof and source-owned document extensions from the remote Legacy
+/// document.
+#[derive(Clone, PartialEq)]
+pub enum VNextAgentLegacyUpgradeReconciliation {
+    TargetCommitted,
+    LegacyRebuilt { target: VNextAgentBootstrapMaterial },
+}
+
+impl std::fmt::Debug for VNextAgentLegacyUpgradeReconciliation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TargetCommitted => f.write_str("TargetCommitted"),
+            Self::LegacyRebuilt { target } => f
+                .debug_struct("LegacyRebuilt")
+                .field("target", target)
+                .finish(),
+        }
+    }
+}
+
+/// Exact committed bootstrap-device session recovered after a lost Legacy
+/// upgrade response. The access token is deliberately redacted from `Debug`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct VNextAgentLegacyUpgradeSession {
+    pub did: crate::ids::Did,
+    pub user_id: String,
+    pub binding_generation: String,
+    pub access_token: String,
+}
+
+impl std::fmt::Debug for VNextAgentLegacyUpgradeSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VNextAgentLegacyUpgradeSession")
+            .field("did", &self.did)
+            .field("user_id", &self.user_id)
+            .field("binding_generation", &self.binding_generation)
+            .field("access_token", &"<redacted-token>")
+            .finish()
+    }
+}
+
+/// Exact vNext Device Identity material owned by a trusted in-process host.
+///
+/// Unlike [`HostedIdentityMaterial`], this type carries a validated account,
+/// device and credential-generation binding. It intentionally does not
+/// implement Serde; the host remains responsible for encrypted-at-rest secret
+/// storage and should construct this value only at the im-core call boundary.
+#[derive(Clone, PartialEq)]
+pub struct HostBackedDeviceIdentityMaterial {
+    pub identity_id: String,
+    pub did: String,
+    pub handle: Option<String>,
+    pub display_name: Option<String>,
+    pub account_id: String,
+    pub binding_generation: String,
+    pub did_document: serde_json::Value,
+    pub protocol_device_id: crate::ids::ProtocolDeviceId,
+    pub device_signing_key_id: String,
+    pub device_signing_private_key_pem: String,
+    pub device_e2ee_key_id: String,
+    pub device_e2ee_private_key_pem: String,
+    pub root_key_id: String,
+    pub root_private_key_pem: String,
+    pub authorization_status: IdentityDeviceAuthorizationStatus,
+    pub role: IdentityDeviceRole,
+    pub management_ready: bool,
+    pub auth_generation: String,
+    pub access_token: String,
+}
+
+impl std::fmt::Debug for HostBackedDeviceIdentityMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostBackedDeviceIdentityMaterial")
+            .field("identity_id", &self.identity_id)
+            .field("did", &self.did)
+            .field("handle", &self.handle)
+            .field("display_name", &self.display_name)
+            .field("account_id", &self.account_id)
+            .field("binding_generation", &self.binding_generation)
+            .field("did_document", &"<redacted-did-document>")
+            .field("protocol_device_id", &self.protocol_device_id)
+            .field("device_signing_key_material", &"<redacted-key-material>")
+            .field("device_e2ee_key_material", &"<redacted-key-material>")
+            .field("root_key_material", &"<redacted-key-material>")
+            .field("authorization_status", &self.authorization_status)
+            .field("role", &self.role)
+            .field("management_ready", &self.management_ready)
+            .field("auth_generation", &self.auth_generation)
+            .field("access_token", &"<redacted-token>")
             .finish()
     }
 }

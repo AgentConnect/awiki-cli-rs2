@@ -43,15 +43,22 @@ pub use crate::email::EmailService;
 pub use crate::error::{DeviceRevokeOutcomeCategory, IdentityVaultFailure, ImError, ImResult};
 pub use crate::groups::GroupService;
 pub use crate::identity::{
-    ActiveSyncAccountBinding, DeleteLocalIdentityResult, HostedIdentityMaterial,
-    IdentitySecretStorageBackend, IdentitySelector, IdentitySummary, IdentityVaultMigrationReport,
-    IdentityVaultStatus, IdentityVaultVerificationReport,
+    ActiveSyncAccountBinding, AgentIdentityKind, DeleteLocalIdentityResult,
+    HostBackedDeviceIdentityMaterial, HostedIdentityMaterial, IdentityDeviceAuthorizationStatus,
+    IdentityDeviceRole, IdentitySecretStorageBackend, IdentitySelector, IdentitySummary,
+    IdentityVaultMigrationReport, IdentityVaultStatus, IdentityVaultVerificationReport,
+    VNextAgentBootstrapMaterial, VNextAgentLegacyUpgradeReconciliation,
+    VNextAgentLegacyUpgradeSession,
 };
 #[cfg(feature = "sqlite")]
 pub use crate::local_state_upgrade::{
     inspect_local_state_upgrade, restore_local_state_backup, upgrade_local_state,
     LocalStateConversationAliasMapping, LocalStateRestoreResult, LocalStateUpgradeEligibility,
     LocalStateUpgradeInspection, LocalStateUpgradeResult, LocalStateUpgradeStatus,
+};
+pub use crate::messages::{
+    IncomingMessageRecoveryItem, IncomingMessageRecoveryPage, IncomingMessageRecoveryPageToken,
+    IncomingMessageRecoveryQuery,
 };
 pub use crate::onboarding::{
     SkillClaimPhase, SkillClaimRequest, SkillClaimResult, SkillClaimStatus, SkillOnboardingService,

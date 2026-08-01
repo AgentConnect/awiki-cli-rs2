@@ -48,6 +48,49 @@ fn onboarding_claim_requires_stdin_and_rejects_token_argument() {
 }
 
 #[test]
+fn onboarding_legacy_recovery_requires_stdin_and_never_accepts_token_argv() {
+    let missing_stdin = awiki_cmd(&[
+        "onboarding",
+        "recover-legacy-claim",
+        "--service-base-url",
+        "https://awiki.info",
+        "--expected-controller-handle",
+        "alice.awiki.info",
+        "--expected-agent-handle",
+        "skill-test.awiki.info",
+    ]);
+    assert_code(&missing_stdin, 2);
+    assert_stdout_empty(&missing_stdin);
+    assert_text_contains(
+        error_json(&missing_stdin)["error"]["message"]
+            .as_str()
+            .unwrap_or_default(),
+        "--token-stdin",
+    );
+
+    let raw = "awsk1_legacy-recovery-secret";
+    let token_argument = awiki_cmd(&[
+        "onboarding",
+        "recover-legacy-claim",
+        "--token",
+        raw,
+        "--service-base-url",
+        "https://awiki.info",
+        "--expected-controller-handle",
+        "alice.awiki.info",
+        "--expected-agent-handle",
+        "skill-test.awiki.info",
+    ]);
+    assert_code(&token_argument, 2);
+    assert_stdout_empty(&token_argument);
+    assert!(!String::from_utf8_lossy(&token_argument.stderr).contains(raw));
+    assert_eq!(
+        error_json(&token_argument)["error"]["code"],
+        "invalid_argument"
+    );
+}
+
+#[test]
 fn unknown_local_flags_are_reported_as_invalid_arguments_before_handler_execution() {
     for args in [
         &["status", "--bogus"][..],

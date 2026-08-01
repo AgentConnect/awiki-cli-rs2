@@ -660,7 +660,7 @@ fn messages_read_runtime_rejects_scoped_inbox_token_until_enabled() {
 #[test]
 fn messages_read_runtime_persists_inbox_projection_for_conversations() {
     let fixture = Fixture::new();
-    fixture.seed_verified_peer_identity("user-bob", "bob.awiki.test", &["did:example:bob"]);
+    fixture.seed_verified_peer_identity("user-bob", "bob.anpclaw.com", &["did:example:bob"]);
     let client = fixture.client();
     let runtime = MessageReadRuntime::new(
         &client,

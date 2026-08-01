@@ -34,7 +34,7 @@ fn greeting_pending_is_retryable_and_contains_only_public_result_fields() {
         error_code: Some("skill_onboarding_greeting_pending".to_owned()),
     };
 
-    let error = greeting_pending_error(&result);
+    let error = greeting_pending_error(&result, "awiki-cli onboarding claim");
     assert_eq!(error.exit_code, 5);
     assert_eq!(error.detail.code, "skill_onboarding_greeting_pending");
     assert!(error.detail.retryable);
@@ -43,4 +43,64 @@ fn greeting_pending_is_retryable_and_contains_only_public_result_fields() {
     assert!(!rendered.contains("token"));
     assert!(!rendered.contains("jwt"));
     assert!(!rendered.contains("private"));
+}
+
+#[test]
+fn pending_v1_claim_points_to_real_recovery_command_without_suggesting_reclaim() {
+    let error = map_claim_error(im_core::ImError::SkillOnboarding {
+        code: "skill_onboarding_legacy_claim_recovery_required".to_owned(),
+        phase: "legacy_journal".to_owned(),
+        retryable: false,
+    });
+
+    assert_eq!(
+        error.detail.code,
+        "skill_onboarding_legacy_claim_recovery_required"
+    );
+    assert!(error.detail.hint.contains("recover-legacy-claim"));
+    assert!(error.detail.hint.contains("do not delete"));
+    assert!(error
+        .detail
+        .hint
+        .contains("do not delete the journal or start a new claim"));
+}
+
+#[test]
+fn missing_v1_pending_material_requires_operator_reconciliation() {
+    let error = map_legacy_claim_recovery_error(im_core::ImError::SkillOnboarding {
+        code: "blocked_requires_operator_reconciliation".to_owned(),
+        phase: "legacy_pending_identity".to_owned(),
+        retryable: false,
+    });
+
+    assert_eq!(
+        error.detail.code,
+        "blocked_requires_operator_reconciliation"
+    );
+    assert!(!error.detail.retryable);
+    assert!(error.detail.hint.contains("Preserve the workspace"));
+    assert!(error.detail.hint.contains("do not run a new claim"));
+    let rendered = serde_json::to_string(&error.detail).unwrap();
+    for forbidden in ["access_token", "jwt", "private", "cursor"] {
+        assert!(!rendered.contains(forbidden));
+    }
+}
+
+#[test]
+fn legacy_migration_retry_is_stable_and_secret_free() {
+    let status = im_core::identity::LegacyUpgradeStatus::RetryRequired {
+        identity_id: "skill-local-id".to_owned(),
+        code: "transport_unavailable".to_owned(),
+    };
+    let error = legacy_migration_retry_error("transport_unavailable", &status);
+
+    assert_eq!(error.exit_code, 5);
+    assert_eq!(error.detail.code, "skill_legacy_migration_retry_required");
+    assert!(error.detail.retryable);
+    assert!(error.detail.hint.contains("onboarding migrate-legacy"));
+    let rendered = serde_json::to_string(&error.detail).unwrap();
+    assert!(rendered.contains("transport_unavailable"));
+    for forbidden in ["access_token", "jwt", "private", "cursor"] {
+        assert!(!rendered.contains(forbidden));
+    }
 }

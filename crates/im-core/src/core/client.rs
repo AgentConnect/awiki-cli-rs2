@@ -36,6 +36,9 @@ impl ImClient {
     }
 
     pub(crate) fn exact_protocol_device_id(&self) -> crate::ImResult<String> {
+        if let Some(seed) = self.runtime.owner.sync_account.as_ref() {
+            return Ok(seed.protocol_device_id.as_str().to_owned());
+        }
         let summary = self.core_handle().identities().device_summary(
             crate::identity::IdentitySelector::Id(self.current_identity().id.clone()),
         )?;
@@ -48,6 +51,14 @@ impl ImClient {
             .protocol_device_id
             .map(|device_id| device_id.as_str().to_owned())
             .ok_or(crate::ImError::PermissionDenied)
+    }
+
+    pub(crate) fn realtime_requires_sync_changed_v2(&self) -> crate::ImResult<bool> {
+        if self.runtime.owner.sync_account.is_none() {
+            return Ok(false);
+        }
+        self.sync_account_context()?;
+        Ok(true)
     }
 
     pub(crate) fn sync_account_context(

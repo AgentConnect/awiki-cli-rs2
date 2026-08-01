@@ -63,6 +63,50 @@ fn onboarding_claim_schema_accepts_only_stdin_secret_input() {
 }
 
 #[test]
+fn onboarding_legacy_migration_is_an_explicit_same_did_product_command() {
+    let onboarding = schema_for(&["onboarding", "migrate-legacy"]);
+    let command = schema_command(&onboarding);
+
+    assert_eq!(command["name"], "onboarding.migrate-legacy");
+    assert_eq!(command["primary_owner"], "im_core_onboarding");
+    assert_eq!(command["side_effect"], true);
+    assert!(
+        command["flags"].is_null()
+            || command["flags"]
+                .as_array()
+                .is_some_and(|flags| flags.is_empty())
+    );
+    let raw = serde_json::to_string(command).unwrap();
+    assert!(raw.contains("same-DID Legacy upgrade"));
+    assert!(!raw.contains("private key"));
+    assert!(!raw.contains("access_token"));
+}
+
+#[test]
+fn onboarding_legacy_claim_recovery_reuses_original_did_and_stdin_secret_only() {
+    let onboarding = schema_for(&["onboarding", "recover-legacy-claim"]);
+    let command = schema_command(&onboarding);
+
+    assert_eq!(command["name"], "onboarding.recover-legacy-claim");
+    assert_eq!(command["primary_owner"], "im_core_onboarding");
+    assert_eq!(command["side_effect"], true);
+    assert_eq!(
+        schema_flag_names(command),
+        vec![
+            "service-base-url",
+            "expected-controller-handle",
+            "expected-agent-handle",
+            "token-stdin",
+        ]
+    );
+    let raw = serde_json::to_string(command).unwrap();
+    assert!(raw.contains("exact pending DID and key material"));
+    assert!(raw.contains("never deletes recovery artifacts"));
+    assert!(!raw.contains("token-value"));
+    assert!(!raw.contains("access_token"));
+}
+
+#[test]
 fn schema_command_list_preserves_go_catalog_order_for_drift_prone_groups() {
     let output = awiki_cmd(&["schema"]);
     assert_success(&output);
@@ -417,6 +461,8 @@ fn cli_dispatch_names() -> BTreeSet<&'static str> {
         "help",
         "init",
         "onboarding.claim",
+        "onboarding.recover-legacy-claim",
+        "onboarding.migrate-legacy",
         "completion.bash",
         "completion.zsh",
         "completion.fish",

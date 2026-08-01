@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use anyhow::{bail, Context};
+use anyhow::bail;
 use im_core::ids::{GroupRef, PeerRef};
 use im_core::messages::{
     DeliveryState, MessageBodyView as TestMessageBodyView, MessageMetadata, SendMessageResult,
@@ -50,23 +50,21 @@ impl AgentRegistrationClient for MockRegistrationClient {
         &self,
         request: AgentRegistrationExchangeRequest,
     ) -> Result<AgentRegistrationExchangeResult> {
-        let did = request
-            .did_document
-            .get("id")
-            .and_then(Value::as_str)
-            .context("mock registration did document missing id")?
-            .to_string();
+        let account_id = format!("user_{}", request.handle);
+        let (did, handle, access_token) =
+            crate::registration::mock_vnext_exchange_fields(&request, &account_id)?;
         Ok(AgentRegistrationExchangeResult {
             token_id: format!("agtok_{}_{}", request.agent_kind.as_str(), request.handle),
             did,
-            user_id: Some(format!("user_{}", request.handle)),
+            user_id: Some(account_id),
             agent_kind: request.agent_kind,
             controller_user_id: "user-alice".to_string(),
             controller_full_handle: "alice.anpclaw.com".to_string(),
             controller_did: request.controller_did,
-            handle: request.handle,
+            handle,
+            binding_generation: Some("1".to_string()),
             status: "registered".to_string(),
-            access_token: Some("jwt-agent-secret".to_string()),
+            access_token: Some(access_token),
         })
     }
 }
@@ -189,8 +187,7 @@ impl RuntimeWelcomeSender for MockWelcomeSender {
     fn send_welcome(
         &self,
         _config: &DaemonConfig,
-        identity: &crate::agent::AgentIdentityRecord,
-        jwt_token: Option<&str>,
+        agent_did: &str,
         controller_did: &str,
         text: &str,
         security: RuntimeMessageSecurity,
@@ -200,8 +197,8 @@ impl RuntimeWelcomeSender for MockWelcomeSender {
             .lock()
             .expect("welcome sender lock poisoned")
             .push(WelcomeSendCall {
-                agent_did: identity.agent_did.clone(),
-                jwt_token: jwt_token.map(str::to_string),
+                agent_did: agent_did.to_string(),
+                jwt_token: None,
                 controller_did: controller_did.to_string(),
                 text: text.to_string(),
                 security,
@@ -220,7 +217,7 @@ impl RuntimeWelcomeSender for MockWelcomeSender {
                 id: im_core::ids::MessageId::parse(&message_id)?,
                 thread: ThreadRef::Direct(PeerRef::parse(controller_did, "")?),
                 direction: MessageDirection::Outgoing,
-                sender: PeerRef::parse(&identity.agent_did, "")?,
+                sender: PeerRef::parse(agent_did, "")?,
                 receiver: Some(PeerRef::parse(controller_did, "")?),
                 group: None,
                 body: MessageBodyView::Text {
@@ -523,8 +520,16 @@ fn daemon_bootstrap_public_key(
     state: &DaemonState,
     daemon_agent_did: &str,
 ) -> anp::PublicKeyMaterial {
-    let identity = state.load_agent_identity(daemon_agent_did).unwrap();
-    anp::PrivateKeyMaterial::from_pem(&identity.e2ee_agreement_private_key_pem)
+    let private_key_pem = match state.load_agent_device_identity(daemon_agent_did).unwrap() {
+        Some(identity) => identity.device_e2ee_private_key_pem,
+        None => {
+            state
+                .load_agent_identity(daemon_agent_did)
+                .unwrap()
+                .e2ee_agreement_private_key_pem
+        }
+    };
+    anp::PrivateKeyMaterial::from_pem(&private_key_pem)
         .unwrap()
         .public_key()
 }
@@ -574,9 +579,6 @@ fn write_bootstrap_did_document_cache(config: &DaemonConfig, payload: &Value) {
 fn runtime_welcome_send_uses_runtime_identity_text_and_idempotency() {
     let (root, config, state) = fixture();
     let created = create_hermes_runtime(root.path(), &config, &state);
-    state
-        .store_agent_auth_token(&created.agent_did, "jwt-runtime-secret")
-        .unwrap();
     let controller_did = controller_did_for_runtime(&state, &created.agent_did).unwrap();
     let idempotency_key = welcome_idempotency_key(&created.agent_did, &controller_did);
     let sender = MockWelcomeSender::default();
@@ -594,7 +596,7 @@ fn runtime_welcome_send_uses_runtime_identity_text_and_idempotency() {
     let calls = sender.calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].agent_did, created.agent_did);
-    assert_eq!(calls[0].jwt_token.as_deref(), Some("jwt-runtime-secret"));
+    assert_eq!(calls[0].jwt_token, None);
     assert_eq!(calls[0].controller_did, "did:human:alice");
     assert_eq!(calls[0].text, "Agent 已准备好。");
     assert_eq!(calls[0].security, RuntimeMessageSecurity::DefaultPlain);
@@ -2723,16 +2725,58 @@ fn conversation_id_projects_direct_peer_without_message_content() {
     );
 }
 
-#[test]
-fn runtime_agent_inbox_poll_scopes_keep_direct_and_group_paths() {
-    let scopes = runtime_agent_inbox_poll_scopes();
+#[tokio::test]
+async fn direct_websocket_payload_only_marks_dirty_and_never_executes_business_routing() {
+    let (_root, _config, state) = fixture();
+    let agent_did = "did:wba:anpclaw.com:agent:runtime:e1";
+    let message_id = "ws-uncommitted-message";
+    let message = Message {
+        id: im_core::ids::MessageId::parse(message_id).unwrap(),
+        thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+        direction: MessageDirection::Incoming,
+        sender: PeerRef::parse("did:human:alice", "").unwrap(),
+        receiver: Some(PeerRef::parse(agent_did, "").unwrap()),
+        group: None,
+        body: MessageBodyView::Text {
+            text: "must not execute before HTTP commit".to_owned(),
+            kind: im_core::messages::MessageKind::Text,
+        },
+        sent_at: None,
+        received_at: None,
+        metadata: im_core::messages::MessageMetadata::default(),
+    };
+    let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
+    let processed = process_realtime_event(
+        &state,
+        &mut coordinator,
+        runtime_realtime::DaemonRealtimeEvent {
+            source: runtime_realtime::RealtimeSource {
+                agent_did: agent_did.to_owned(),
+                endpoint_kind: runtime_realtime::RealtimeEndpointKind::MessageService,
+                session_id: "session-1".to_owned(),
+                generation: 1,
+            },
+            event: im_core::realtime::ImEvent::MessageReceived(
+                im_core::realtime::MessageReceivedEvent {
+                    message,
+                    attachment_summary: None,
+                    download_action: None,
+                    sync: None,
+                    warnings: Vec::new(),
+                },
+            ),
+            channel_pressure: false,
+        },
+    )
+    .await
+    .unwrap();
 
-    assert_eq!(
-        scopes.map(RuntimeInboxPollScope::as_str),
-        ["direct", "group"]
-    );
-    assert_eq!(scopes[0].inbox_scope(), InboxScope::DirectOnly);
-    assert_eq!(scopes[1].inbox_scope(), InboxScope::GroupOnly);
+    assert_eq!(processed, 0);
+    assert_eq!(coordinator.dirty_agent_count(), 1);
+    assert!(state
+        .load_processed_message(agent_did, message_id)
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -3070,16 +3114,11 @@ fn foreground_control_tick_respects_remaining_runtime_limit() {
 async fn realtime_message_event_uses_runtime_processed_dedupe() {
     let (root, config, state) = fixture();
     let created = create_hermes_runtime(root.path(), &config, &state);
-    state
-        .store_agent_auth_token(&created.agent_did, "jwt-runtime-secret")
-        .unwrap();
     let im_core = ImCoreAdapter::open(&config).unwrap();
     let registration = UserServiceAgentRegistrationClient::new(&config.user_service_base_url)
         .expect("registration client");
-    let identity = state.load_agent_identity(&created.agent_did).unwrap();
-    let jwt_token = state.load_agent_auth_token(&created.agent_did).unwrap();
     let client = im_core
-        .client_for_agent_identity(&config, &identity, jwt_token.as_deref())
+        .client_for_agent(&config, &state, &created.agent_did)
         .unwrap();
     let hermes_gateway = StdioHermesGateway::default();
     let mut processed = HashSet::new();

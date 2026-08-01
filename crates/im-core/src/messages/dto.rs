@@ -551,6 +551,53 @@ pub struct CommittedIncomingMessage {
     pub message: Message,
 }
 
+/// One hydrated incoming message recovered from the active identity's local
+/// projection. Ownership and account binding are derived by Core.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncomingMessageRecoveryItem {
+    pub logical_message_id: String,
+    pub message: Message,
+}
+
+/// Core-issued continuation token for local incoming recovery scans.
+///
+/// The token is intentionally opaque to hosts and is bound to the exact
+/// account/device identity that created it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct IncomingMessageRecoveryPageToken {
+    pub(crate) owner_identity_id: String,
+    pub(crate) account_id: String,
+    pub(crate) current_did: String,
+    pub(crate) protocol_device_id: String,
+    pub(crate) identity_generation: String,
+    pub(crate) device_auth_generation: String,
+    pub(crate) timestamp: String,
+    pub(crate) server_sequence_key: i64,
+    pub(crate) logical_message_id: String,
+}
+
+impl std::fmt::Debug for IncomingMessageRecoveryPageToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("IncomingMessageRecoveryPageToken")
+            .field(&"<opaque>")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomingMessageRecoveryQuery {
+    pub limit: u32,
+    pub page_token: Option<IncomingMessageRecoveryPageToken>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomingMessageRecoveryPage {
+    pub items: Vec<IncomingMessageRecoveryItem>,
+    pub next_page_token: Option<IncomingMessageRecoveryPageToken>,
+    pub has_more: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageSyncOutcome {
     pub status: MessageSyncStatus,

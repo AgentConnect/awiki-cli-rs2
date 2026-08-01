@@ -2,6 +2,8 @@ pub struct MessageService<'a> {
     client: &'a crate::core::ImClient,
 }
 
+pub const LOCAL_INCOMING_RECOVERY_LIMIT_MAX: u32 = 1_000;
+
 #[cfg(test)]
 mod direct_send_result_identity_tests {
     use crate::internal::local_state::owner_scope::{
@@ -140,6 +142,392 @@ mod direct_send_result_identity_tests {
             .iter()
             .find(|attribute| attribute.key == key)
             .map(|attribute| attribute.value.clone())
+    }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod incoming_recovery_tests {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use serde_json::json;
+    use std::fs;
+
+    #[tokio::test]
+    async fn exact_client_reads_only_its_hydrated_incoming_projection_oldest_first() {
+        let fixture = Fixture::new();
+        let bootstrap = fixture
+            .core
+            .generate_vnext_agent_bootstrap(
+                crate::identity::AgentIdentityKind::Daemon,
+                "daemon-recovery",
+            )
+            .unwrap();
+        let owner_identity_id = bootstrap.identity_id.clone();
+        let owner_did = bootstrap.did.as_str().to_owned();
+        let client = fixture
+            .core
+            .client_with_device_identity_material(host_material(
+                &bootstrap,
+                "daemon-recovery.awiki.info",
+                "daemon-account",
+            ))
+            .unwrap();
+        for record in [
+            record(
+                "msg-later",
+                &owner_identity_id,
+                &owner_did,
+                0,
+                "2026-08-01T00:02:00Z",
+                crate::internal::local_state::messages::MessageHydrationState::Hydrated,
+            ),
+            record(
+                "msg-oldest",
+                &owner_identity_id,
+                &owner_did,
+                0,
+                "2026-08-01T00:01:00Z",
+                crate::internal::local_state::messages::MessageHydrationState::Hydrated,
+            ),
+            record(
+                "msg-outgoing",
+                &owner_identity_id,
+                &owner_did,
+                1,
+                "2026-08-01T00:00:00Z",
+                crate::internal::local_state::messages::MessageHydrationState::Hydrated,
+            ),
+            record(
+                "msg-discovered",
+                &owner_identity_id,
+                &owner_did,
+                0,
+                "2026-08-01T00:00:00Z",
+                crate::internal::local_state::messages::MessageHydrationState::Discovered,
+            ),
+            record(
+                "msg-other-owner",
+                "other-owner",
+                &owner_did,
+                0,
+                "2026-08-01T00:00:00Z",
+                crate::internal::local_state::messages::MessageHydrationState::Hydrated,
+            ),
+            record(
+                "msg-other-did",
+                &owner_identity_id,
+                "did:wba:awiki.info:agent:daemon:other:e1_other",
+                0,
+                "2026-08-01T00:00:00Z",
+                crate::internal::local_state::messages::MessageHydrationState::Hydrated,
+            ),
+        ] {
+            fixture.seed(record);
+        }
+
+        let first = client
+            .messages()
+            .local_hydrated_incoming_recovery_async(crate::messages::IncomingMessageRecoveryQuery {
+                limit: 1,
+                page_token: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(first.items[0].logical_message_id, "msg-oldest");
+        assert!(first.has_more);
+        let first_token = first.next_page_token.clone().unwrap();
+        let second = client
+            .messages()
+            .local_hydrated_incoming_recovery_async(crate::messages::IncomingMessageRecoveryQuery {
+                limit: 1,
+                page_token: first.next_page_token,
+            })
+            .await
+            .unwrap();
+        assert_eq!(second.items[0].logical_message_id, "msg-later");
+        assert!(!second.has_more);
+        assert!(second.next_page_token.is_none());
+
+        let other_bootstrap = fixture
+            .core
+            .generate_vnext_agent_bootstrap(
+                crate::identity::AgentIdentityKind::Daemon,
+                "daemon-other",
+            )
+            .unwrap();
+        let other_client = fixture
+            .core
+            .client_with_device_identity_material(host_material(
+                &other_bootstrap,
+                "daemon-other.awiki.info",
+                "other-account",
+            ))
+            .unwrap();
+        assert!(matches!(
+            other_client
+                .messages()
+                .local_hydrated_incoming_recovery_async(
+                    crate::messages::IncomingMessageRecoveryQuery {
+                        limit: 1,
+                        page_token: Some(first_token),
+                    },
+                )
+                .await,
+            Err(crate::ImError::IdentityBindingConflict { .. })
+        ));
+        assert_eq!(
+            client
+                .messages()
+                .local_hydrated_incoming_recovery_async(
+                    crate::messages::IncomingMessageRecoveryQuery {
+                        limit: 1,
+                        page_token: None,
+                    },
+                )
+                .await
+                .unwrap()
+                .items[0]
+                .logical_message_id,
+            "msg-oldest"
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_limit_is_closed_and_hosted_client_has_no_binding() {
+        let fixture = Fixture::new();
+        let bootstrap = fixture
+            .core
+            .generate_vnext_agent_bootstrap(
+                crate::identity::AgentIdentityKind::Daemon,
+                "daemon-hosted",
+            )
+            .unwrap();
+        let hosted = fixture
+            .core
+            .client_with_identity_material(crate::identity::HostedIdentityMaterial {
+                identity_id: bootstrap.identity_id.clone(),
+                did: bootstrap.did.as_str().to_owned(),
+                handle: Some("daemon-hosted.awiki.info".to_owned()),
+                display_name: Some("Hosted daemon".to_owned()),
+                did_document: bootstrap.did_document.clone(),
+                default_signing_private_key_pem: bootstrap.root_private_key_pem.clone(),
+                e2ee_agreement_private_key_pem: Some(bootstrap.device_e2ee_private_key_pem.clone()),
+                auth_token: None,
+            })
+            .unwrap();
+
+        assert!(matches!(
+            hosted
+                .messages()
+                .local_hydrated_incoming_recovery_async(
+                    crate::messages::IncomingMessageRecoveryQuery {
+                        limit: 1,
+                        page_token: None,
+                    },
+                )
+                .await,
+            Err(crate::ImError::UnsupportedCapability { capability })
+                if capability == "active-sync-account-binding"
+        ));
+        let legacy = fixture.legacy_client();
+        assert!(matches!(
+            legacy
+                .messages()
+                .local_hydrated_incoming_recovery_async(
+                    crate::messages::IncomingMessageRecoveryQuery {
+                        limit: 1,
+                        page_token: None,
+                    },
+                )
+                .await,
+            Err(crate::ImError::UnsupportedCapability { capability })
+                if capability == "active-sync-account-binding"
+        ));
+        for invalid in [0, super::LOCAL_INCOMING_RECOVERY_LIMIT_MAX + 1] {
+            assert!(matches!(
+                hosted
+                    .messages()
+                    .local_hydrated_incoming_recovery_async(
+                        crate::messages::IncomingMessageRecoveryQuery {
+                            limit: invalid,
+                            page_token: None,
+                        },
+                    )
+                    .await,
+                Err(crate::ImError::InvalidInput { field: Some(field), .. }) if field == "limit"
+            ));
+        }
+    }
+
+    struct Fixture {
+        _root: tempfile::TempDir,
+        core: crate::core::ImCore,
+        sqlite_path: std::path::PathBuf,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let workspace = root.path().join("workspace");
+            for directory in ["identities", "local", "cache", "tmp"] {
+                fs::create_dir_all(workspace.join(directory)).unwrap();
+            }
+            let sqlite_path = workspace.join("local/im.sqlite");
+            let core = crate::core::ImCore::new(
+                crate::ImCoreConfig {
+                    service_base_url: crate::ServiceEndpoint::parse("https://awiki.info").unwrap(),
+                    did_domain: "awiki.info".to_owned(),
+                    user_service_endpoint: None,
+                    message_service_endpoint: None,
+                    mail_service_endpoint: None,
+                    anp_service_endpoint: None,
+                    anp_service_did: None,
+                    ca_bundle: None,
+                    transport_policy: crate::MessageTransportPolicy::HttpOnly,
+                },
+                crate::ImCorePaths {
+                    identities: crate::IdentityRegistryPaths {
+                        identity_root_dir: workspace.join("identities"),
+                        registry_path: workspace.join("identities/registry.json"),
+                        default_identity_path: Some(workspace.join("identities/default")),
+                    },
+                    local_state: crate::LocalStatePaths {
+                        sqlite_path: sqlite_path.clone(),
+                    },
+                    runtime: crate::RuntimePaths {
+                        cache_dir: workspace.join("cache"),
+                        temp_dir: workspace.join("tmp"),
+                    },
+                },
+            )
+            .unwrap();
+            Self {
+                _root: root,
+                core,
+                sqlite_path,
+            }
+        }
+
+        fn seed(&self, record: crate::internal::local_state::messages::MessageRecord) {
+            let connection =
+                crate::internal::local_state::open_writable(&self.sqlite_path).unwrap();
+            crate::internal::local_state::messages::upsert_message(&connection, &record).unwrap();
+        }
+
+        fn legacy_client(&self) -> crate::core::ImClient {
+            let identity_root = &self.core.inner().sdk_paths().identities.identity_root_dir;
+            fs::create_dir_all(identity_root.join("legacy")).unwrap();
+            fs::write(
+                identity_root.join("registry.json"),
+                json!({
+                    "default_identity": "legacy",
+                    "identities": [{
+                        "id": "legacy-id",
+                        "did": "did:wba:awiki.info:agent:daemon:legacy:e1_legacy",
+                        "local_alias": "legacy",
+                        "ready_for_auth": true,
+                        "ready_for_messaging": true,
+                        "missing": []
+                    }]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            self.core
+                .client(crate::identity::IdentitySelector::LocalAlias(
+                    "legacy".to_owned(),
+                ))
+                .unwrap()
+        }
+    }
+
+    fn host_material(
+        bootstrap: &crate::identity::VNextAgentBootstrapMaterial,
+        handle: &str,
+        account_id: &str,
+    ) -> crate::identity::HostBackedDeviceIdentityMaterial {
+        crate::identity::HostBackedDeviceIdentityMaterial {
+            identity_id: bootstrap.identity_id.clone(),
+            did: bootstrap.did.as_str().to_owned(),
+            handle: Some(handle.to_owned()),
+            display_name: Some("Recovery daemon".to_owned()),
+            account_id: account_id.to_owned(),
+            binding_generation: "1".to_owned(),
+            did_document: bootstrap.did_document.clone(),
+            protocol_device_id: bootstrap.protocol_device_id.clone(),
+            device_signing_key_id: bootstrap.device_signing_key_id.clone(),
+            device_signing_private_key_pem: bootstrap.device_signing_private_key_pem.clone(),
+            device_e2ee_key_id: bootstrap.device_e2ee_key_id.clone(),
+            device_e2ee_private_key_pem: bootstrap.device_e2ee_private_key_pem.clone(),
+            root_key_id: bootstrap.root_key_id.clone(),
+            root_private_key_pem: bootstrap.root_private_key_pem.clone(),
+            authorization_status: crate::identity::IdentityDeviceAuthorizationStatus::Active,
+            role: crate::identity::IdentityDeviceRole::Admin,
+            management_ready: true,
+            auth_generation: "1".to_owned(),
+            access_token: access_token(bootstrap, account_id),
+        }
+    }
+
+    fn access_token(
+        bootstrap: &crate::identity::VNextAgentBootstrapMaterial,
+        account_id: &str,
+    ) -> String {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let claims = json!({
+            "iss": "user-service",
+            "aud": ["awiki-user-service", "awiki-message-service"],
+            "sub": bootstrap.did.as_str(),
+            "type": "access",
+            "purpose": "awiki.device.access.v1",
+            "did": bootstrap.did.as_str(),
+            "user_id": account_id,
+            "device_id": bootstrap.protocol_device_id.as_str(),
+            "key_id": bootstrap.device_signing_key_id,
+            "auth_generation": 1,
+            "scopes": ["device:manage", "device:read", "message:connect"],
+            "iat": now,
+            "nbf": now,
+            "exp": now + 300,
+            "jti": "daemon-recovery-token"
+        });
+        format!(
+            "e30.{}.signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+        )
+    }
+
+    fn record(
+        message_id: &str,
+        owner_identity_id: &str,
+        owner_did: &str,
+        direction: i64,
+        timestamp: &str,
+        hydration_state: crate::internal::local_state::messages::MessageHydrationState,
+    ) -> crate::internal::local_state::messages::MessageRecord {
+        crate::internal::local_state::messages::MessageRecord {
+            msg_id: message_id.to_owned(),
+            owner_identity_id: owner_identity_id.to_owned(),
+            owner_did: owner_did.to_owned(),
+            conversation_id: "dm:did:wba:awiki.info:user:peer:e1_peer".to_owned(),
+            thread_id: "dm:did:wba:awiki.info:user:peer:e1_peer".to_owned(),
+            direction,
+            sender_did: if direction == 0 {
+                "did:wba:awiki.info:user:peer:e1_peer".to_owned()
+            } else {
+                owner_did.to_owned()
+            },
+            receiver_did: if direction == 0 {
+                owner_did.to_owned()
+            } else {
+                "did:wba:awiki.info:user:peer:e1_peer".to_owned()
+            },
+            content_type: "text/plain".to_owned(),
+            content: message_id.to_owned(),
+            hydration_state,
+            sent_at: timestamp.to_owned(),
+            stored_at: timestamp.to_owned(),
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        }
     }
 }
 
@@ -2964,6 +3352,119 @@ impl<'a> MessageService<'a> {
     ) -> crate::ImResult<super::MessagePage> {
         self.local_history_with_metadata_async(conversation.as_thread_ref()?, query)
             .await
+    }
+
+    /// Reads one bounded, deterministic oldest-first page of hydrated incoming
+    /// messages for this exact active vNext client. The owner/account scope is
+    /// derived by Core; continuation uses an opaque, owner-bound local token.
+    pub async fn local_hydrated_incoming_recovery_async(
+        &self,
+        query: super::IncomingMessageRecoveryQuery,
+    ) -> crate::ImResult<super::IncomingMessageRecoveryPage> {
+        if !(1..=LOCAL_INCOMING_RECOVERY_LIMIT_MAX).contains(&query.limit) {
+            return Err(crate::ImError::invalid_input(
+                Some("limit".to_owned()),
+                format!("limit must be between 1 and {LOCAL_INCOMING_RECOVERY_LIMIT_MAX}"),
+            ));
+        }
+        let binding = self.client.active_sync_account_binding().await?;
+        if binding.owner_identity_id != self.client.current_identity().id.as_str()
+            || binding.current_did != self.client.did().as_str()
+        {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "active sync binding does not match the client owner".to_owned(),
+            });
+        }
+        if query.page_token.as_ref().is_some_and(|token| {
+            token.owner_identity_id != binding.owner_identity_id
+                || token.account_id != binding.account_id
+                || token.current_did != binding.current_did
+                || token.protocol_device_id != binding.protocol_device_id
+                || token.identity_generation != binding.identity_generation
+                || token.device_auth_generation != binding.device_auth_generation
+        }) {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "incoming recovery page token does not match the active binding".to_owned(),
+            });
+        }
+        #[cfg(feature = "sqlite")]
+        {
+            let after = query.page_token.as_ref().map(|token| {
+                crate::internal::local_state::messages::HydratedIncomingMessageCursor {
+                    timestamp: token.timestamp.clone(),
+                    server_sequence_key: token.server_sequence_key,
+                    message_id: token.logical_message_id.clone(),
+                }
+            });
+            let mut records = self
+                .client
+                .core_inner()
+                .local_state_db()
+                .await?
+                .list_hydrated_incoming_messages(
+                    binding.owner_identity_id.clone(),
+                    binding.current_did.clone(),
+                    i64::from(query.limit).saturating_add(1),
+                    after,
+                )
+                .await?;
+            let has_more = records.len() > usize::try_from(query.limit).unwrap_or(usize::MAX);
+            if has_more {
+                records.truncate(usize::try_from(query.limit).unwrap_or(usize::MAX));
+            }
+            let next_page_token = if has_more {
+                records.last().map(|record| {
+                    let cursor =
+                        crate::internal::local_state::messages::hydrated_incoming_message_cursor(
+                            record,
+                        );
+                    super::IncomingMessageRecoveryPageToken {
+                        owner_identity_id: binding.owner_identity_id.clone(),
+                        account_id: binding.account_id.clone(),
+                        current_did: binding.current_did.clone(),
+                        protocol_device_id: binding.protocol_device_id.clone(),
+                        identity_generation: binding.identity_generation.clone(),
+                        device_auth_generation: binding.device_auth_generation.clone(),
+                        timestamp: cursor.timestamp,
+                        server_sequence_key: cursor.server_sequence_key,
+                        logical_message_id: cursor.message_id,
+                    }
+                })
+            } else {
+                None
+            };
+            let items = records
+                .iter()
+                .map(|record| {
+                    let message =
+                        crate::internal::message_runtime::conversations::message_from_record(
+                            record,
+                        )?;
+                    if message.direction != super::MessageDirection::Incoming {
+                        return Err(crate::ImError::IdentityBindingConflict {
+                            detail: "local incoming recovery projection changed direction"
+                                .to_owned(),
+                        });
+                    }
+                    Ok(super::IncomingMessageRecoveryItem {
+                        logical_message_id: message.id.as_str().to_owned(),
+                        message,
+                    })
+                })
+                .collect::<crate::ImResult<Vec<_>>>()?;
+            Ok(super::IncomingMessageRecoveryPage {
+                items,
+                next_page_token,
+                has_more,
+            })
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = binding;
+            Err(crate::ImError::unsupported(
+                "local-hydrated-incoming-recovery",
+            ))
+        }
     }
 
     pub fn mark_read(

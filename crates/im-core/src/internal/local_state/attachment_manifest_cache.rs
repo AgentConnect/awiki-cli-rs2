@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn attachment_manifest_cache_adds_wire_message_id_to_existing_table() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
-        db.execute_batch(&format!(
+        db.execute_batch(
             r#"
 CREATE TABLE attachment_manifest_cache (
     owner_identity_id TEXT NOT NULL,
@@ -247,10 +247,8 @@ CREATE TABLE attachment_manifest_cache (
     stored_at TEXT NOT NULL,
     PRIMARY KEY (owner_identity_id, thread_kind, thread_id, message_id)
 );
-PRAGMA user_version = {};
 "#,
-            crate::internal::local_state::schema::SCHEMA_VERSION
-        ))
+        )
         .unwrap();
 
         upsert_attachment_manifest_cache(

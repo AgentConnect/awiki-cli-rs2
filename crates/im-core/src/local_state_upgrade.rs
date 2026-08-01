@@ -218,11 +218,11 @@ mod tests {
             let paths = LocalStatePaths {
                 sqlite_path: directory.path().join("im.sqlite"),
             };
-            let connection =
-                crate::internal::local_state::open_writable(&paths.sqlite_path).unwrap();
-            connection
-                .pragma_update(None, "user_version", source_schema_version)
-                .unwrap();
+            let connection = rusqlite::Connection::open(&paths.sqlite_path).unwrap();
+            crate::internal::local_state::schema::tests::install_release_predecessor_fixture(
+                &connection,
+                source_schema_version,
+            );
             drop(connection);
 
             let inspection = inspect_local_state_upgrade(&paths).unwrap();

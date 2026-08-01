@@ -19,15 +19,23 @@ pub(crate) struct LocalOwnerContext {
 
 pub(crate) struct SyncAccountSeed {
     pub(crate) account_id: String,
+    pub(crate) protocol_device_id: crate::ids::ProtocolDeviceId,
     pub(crate) identity_generation: std::sync::OnceLock<String>,
     pub(crate) device_auth_generation: String,
+    pub(crate) device_signing_key_id: String,
+    pub(crate) role: crate::internal::identity_device_state::DeviceAuthorizationRole,
+    pub(crate) management_ready: bool,
 }
 
 impl SyncAccountSeed {
     pub(crate) fn new(
         account_id: String,
+        protocol_device_id: crate::ids::ProtocolDeviceId,
         identity_generation: Option<String>,
         device_auth_generation: String,
+        device_signing_key_id: String,
+        role: crate::internal::identity_device_state::DeviceAuthorizationRole,
+        management_ready: bool,
     ) -> Self {
         let generation = std::sync::OnceLock::new();
         if let Some(identity_generation) = identity_generation {
@@ -35,8 +43,12 @@ impl SyncAccountSeed {
         }
         Self {
             account_id,
+            protocol_device_id,
             identity_generation: generation,
             device_auth_generation,
+            device_signing_key_id,
+            role,
+            management_ready,
         }
     }
 }

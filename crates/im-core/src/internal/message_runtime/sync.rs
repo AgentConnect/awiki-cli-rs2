@@ -316,8 +316,7 @@ where
             crate::ids::PageLimit(limit),
             Some(&group),
         )?;
-        let result =
-            thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
+        let result = thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
         let proof = catch_up_hydration_proof(
             self.client,
             crate::messages::ThreadRef::Group(group),
@@ -368,8 +367,7 @@ where
             crate::ids::PageLimit(limit),
             Some(&group),
         )?;
-        let result =
-            thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
+        let result = thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
         let proof = catch_up_hydration_proof(
             self.client,
             crate::messages::ThreadRef::Group(group),
@@ -458,17 +456,14 @@ where
             final_projectable_count,
         )?;
         let mut result = direct_history_after_result(page.items, after_server_seq, raw, limit)?;
-        let proof = catch_up_hydration_proof(
-            self.client,
-            hydration_thread,
-            after_server_seq,
-            &result,
-        )?;
-        let outcome = crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages(
-            self.client,
-            &result.messages,
-            proof,
-        )?;
+        let proof =
+            catch_up_hydration_proof(self.client, hydration_thread, after_server_seq, &result)?;
+        let outcome =
+            crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages(
+                self.client,
+                &result.messages,
+                proof,
+            )?;
         append_projection_backlog_warnings(&mut result.warnings, outcome);
         if outcome.stored_messages > 0 || outcome.hydration_probes_resolved > 0 {
             self.client
@@ -546,17 +541,14 @@ where
         )?;
         let mut result =
             thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
-        let proof = catch_up_hydration_proof(
-            self.client,
-            hydration_thread,
-            after_server_seq,
-            &result,
-        )?;
-        let outcome = crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages(
-            self.client,
-            &result.messages,
-            proof,
-        )?;
+        let proof =
+            catch_up_hydration_proof(self.client, hydration_thread, after_server_seq, &result)?;
+        let outcome =
+            crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages(
+                self.client,
+                &result.messages,
+                proof,
+            )?;
         append_projection_backlog_warnings(&mut result.warnings, outcome);
         if outcome.stored_messages > 0 || outcome.hydration_probes_resolved > 0 {
             self.client
@@ -862,8 +854,7 @@ where
             crate::ids::PageLimit(limit),
             Some(&group),
         )?;
-        let result =
-            thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
+        let result = thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
         let proof = catch_up_hydration_proof(
             self.client,
             crate::messages::ThreadRef::Group(group),
@@ -914,8 +905,7 @@ where
             crate::ids::PageLimit(limit),
             Some(&group),
         )?;
-        let result =
-            thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
+        let result = thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
         let proof = catch_up_hydration_proof(
             self.client,
             crate::messages::ThreadRef::Group(group),
@@ -1008,12 +998,8 @@ where
             final_projectable_count,
         )?;
         let mut result = direct_history_after_result(page.items, after_server_seq, raw, limit)?;
-        let proof = catch_up_hydration_proof(
-            self.client,
-            hydration_thread,
-            after_server_seq,
-            &result,
-        )?;
+        let proof =
+            catch_up_hydration_proof(self.client, hydration_thread, after_server_seq, &result)?;
         let outcome = crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages_async(
             self.client,
             &result.messages,
@@ -1101,12 +1087,8 @@ where
         )?;
         let mut result =
             thread_after_result(page.items, after_server_seq, raw, limit, page_contract)?;
-        let proof = catch_up_hydration_proof(
-            self.client,
-            hydration_thread,
-            after_server_seq,
-            &result,
-        )?;
+        let proof =
+            catch_up_hydration_proof(self.client, hydration_thread, after_server_seq, &result)?;
         let outcome = crate::internal::message_runtime::local_projection::persist_catch_up_remote_messages_async(
             self.client,
             &result.messages,

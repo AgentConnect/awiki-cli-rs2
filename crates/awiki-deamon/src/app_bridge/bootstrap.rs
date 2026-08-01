@@ -512,12 +512,17 @@ fn decrypt_secure_bootstrap_envelope(
     daemon_agent_did: &str,
     envelope: &DaemonSecureBootstrapEnvelope,
 ) -> Result<DecryptedSecureBootstrap> {
-    let daemon_identity = state
-        .load_agent_identity(daemon_agent_did)
-        .context("load daemon identity for secure bootstrap decrypt")?;
-    let recipient_private =
-        anp::PrivateKeyMaterial::from_pem(&daemon_identity.e2ee_agreement_private_key_pem)
-            .context("parse daemon bootstrap agreement private key")?;
+    let agreement_private_key_pem = match state.load_agent_device_identity(daemon_agent_did)? {
+        Some(identity) => identity.device_e2ee_private_key_pem,
+        None => {
+            state
+                .load_agent_identity(daemon_agent_did)
+                .context("load legacy daemon identity for secure bootstrap decrypt")?
+                .e2ee_agreement_private_key_pem
+        }
+    };
+    let recipient_private = anp::PrivateKeyMaterial::from_pem(&agreement_private_key_pem)
+        .context("parse daemon bootstrap agreement private key")?;
     let recipient_private = match recipient_private {
         anp::PrivateKeyMaterial::X25519(key) => key,
         _ => bail!("daemon bootstrap agreement key must be X25519"),

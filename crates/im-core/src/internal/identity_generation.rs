@@ -101,21 +101,57 @@ pub(crate) fn generate_vnext_handle_identity_with_default_daemon_subkey(
     service_endpoint: Option<&crate::config::ServiceEndpoint>,
     service_did: Option<&crate::ids::Did>,
 ) -> crate::ImResult<GeneratedVNextIdentityWithDaemonSubkey> {
-    let local_part = local_part.trim().to_ascii_lowercase();
-    if local_part.is_empty() {
-        return Err(crate::ImError::invalid_input(
-            Some("handle".to_owned()),
-            "Handle local-part is required",
-        ));
-    }
+    let local_part = canonical_handle_local_part(local_part)?;
     let mut generated = generate_vnext_identity_with_path_segments(
         hostname,
         ["user", local_part.as_str()],
         service_endpoint,
         service_did,
     )?;
+    add_handle_service_and_resign(&mut generated, hostname, &local_part)?;
+    Ok(generated)
+}
+
+/// Shared vNext builder for independent Agent accounts.
+///
+/// All consumers use the same root/device/Manifest algorithm; only the
+/// identity-kind path segment differs from ordinary App identities.
+pub(crate) fn generate_vnext_agent_handle_identity(
+    hostname: &str,
+    kind: crate::identity::AgentIdentityKind,
+    local_part: &str,
+    service_endpoint: Option<&crate::config::ServiceEndpoint>,
+    service_did: Option<&crate::ids::Did>,
+) -> crate::ImResult<GeneratedVNextIdentityWithDaemonSubkey> {
+    let local_part = canonical_handle_local_part(local_part)?;
+    let mut generated = generate_vnext_identity_with_path_segments(
+        hostname,
+        ["agent", kind.as_str(), local_part.as_str()],
+        service_endpoint,
+        service_did,
+    )?;
+    add_handle_service_and_resign(&mut generated, hostname, &local_part)?;
+    Ok(generated)
+}
+
+fn canonical_handle_local_part(local_part: &str) -> crate::ImResult<String> {
+    let local_part = local_part.trim().to_ascii_lowercase();
+    if !anp::wns::validate_local_part(&local_part) {
+        return Err(crate::ImError::invalid_input(
+            Some("handle".to_owned()),
+            "Handle local-part must be a canonical WNS local-part",
+        ));
+    }
+    Ok(local_part)
+}
+
+fn add_handle_service_and_resign(
+    generated: &mut GeneratedVNextIdentityWithDaemonSubkey,
+    hostname: &str,
+    local_part: &str,
+) -> crate::ImResult<()> {
     let handle_service =
-        anp::wns::build_handle_service_entry(generated.did.as_str(), &local_part, hostname.trim());
+        anp::wns::build_handle_service_entry(generated.did.as_str(), local_part, hostname.trim());
     let services = generated
         .did_document
         .as_object_mut()
@@ -134,7 +170,7 @@ pub(crate) fn generate_vnext_handle_identity_with_default_daemon_subkey(
         &generated.daemon_subkey_package,
         &generated.did_document,
     )?;
-    Ok(generated)
+    Ok(())
 }
 
 fn generate_vnext_identity_with_path_segments<I, S>(

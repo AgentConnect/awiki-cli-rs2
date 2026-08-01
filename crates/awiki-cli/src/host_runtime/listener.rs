@@ -34,6 +34,26 @@ pub struct HostNotifyStatus {
     pub last_error: String,
 }
 
+/// Product-safe runtime evidence for the reliable message reader. This is a
+/// deliberately closed projection: identities, tokens, cursors, message data,
+/// and WebSocket frames never belong in listener status JSON.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReliableSyncStatus {
+    /// True only when every known identity session in the current listener
+    /// boot is connected through Core's exact-v2 handshake.
+    pub v2_subprotocol_negotiated: bool,
+    /// Durable evidence that this workspace completed at least one reliable
+    /// V2 bootstrap/reconcile successfully.
+    pub v2_bootstrap_completed: bool,
+    /// The protocol used by the most recent successful reconcile. Failed
+    /// attempts never populate or overwrite this value.
+    pub last_reconcile_protocol: String,
+    /// This first-party listener is V2-only; any true value is a rollout
+    /// violation rather than a supported fallback mode.
+    pub legacy_sync_used: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Status {
     #[serde(default)]
@@ -66,6 +86,8 @@ pub struct Status {
     pub sessions: Vec<SessionStatus>,
     #[serde(default)]
     pub host_notify: HostNotifyStatus,
+    #[serde(default)]
+    pub reliable_sync: ReliableSyncStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -216,6 +238,11 @@ pub fn merge_saved_runtime_status(status: &mut Status, saved: Status) {
     if status.pid != 0 && saved.pid != 0 && saved.pid != status.pid {
         return;
     }
+    if !status.boot_id.is_empty() && !saved.boot_id.is_empty() && status.boot_id != saved.boot_id {
+        status.reliable_sync = saved.reliable_sync;
+        status.reliable_sync.v2_subprotocol_negotiated = false;
+        return;
+    }
     status.started_at = saved.started_at;
     status.sessions = saved.sessions;
     if status.pid == 0 {
@@ -223,6 +250,7 @@ pub fn merge_saved_runtime_status(status: &mut Status, saved: Status) {
     }
     status.boot_id = saved.boot_id;
     status.host_notify.last_error = saved.host_notify.last_error;
+    status.reliable_sync = saved.reliable_sync;
     if !status.running {
         return;
     }
@@ -345,6 +373,80 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn reliable_sync_status_is_a_closed_secret_free_four_field_projection() {
+        let value = serde_json::to_value(ReliableSyncStatus {
+            v2_subprotocol_negotiated: true,
+            v2_bootstrap_completed: true,
+            last_reconcile_protocol: "sync_v2".to_owned(),
+            legacy_sync_used: false,
+        })
+        .unwrap();
+        let object = value.as_object().unwrap();
+        assert_eq!(object.len(), 4);
+        for field in [
+            "v2_subprotocol_negotiated",
+            "v2_bootstrap_completed",
+            "last_reconcile_protocol",
+            "legacy_sync_used",
+        ] {
+            assert!(object.contains_key(field));
+        }
+        let raw = value.to_string();
+        for forbidden in ["token", "cursor", "message", "frame", "did", "account_id"] {
+            assert!(!raw.contains(forbidden));
+        }
+
+        assert!(
+            serde_json::from_value::<ReliableSyncStatus>(serde_json::json!({
+                "v2_subprotocol_negotiated": true,
+                "v2_bootstrap_completed": true,
+                "last_reconcile_protocol": "sync_v2",
+                "legacy_sync_used": false,
+                "cursor": "forbidden"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn status_json_always_contains_reliable_sync_probe() {
+        let value = to_value(Status::default());
+        let reliable_sync = value
+            .get("reliable_sync")
+            .and_then(Value::as_object)
+            .expect("required reliable_sync status");
+        assert_eq!(reliable_sync.len(), 4);
+    }
+
+    #[test]
+    fn stale_saved_negotiation_never_satisfies_a_new_listener_boot() {
+        let mut current = Status {
+            boot_id: "boot-new".to_owned(),
+            pid: 42,
+            reliable_sync: ReliableSyncStatus::default(),
+            ..Status::default()
+        };
+        let saved = Status {
+            boot_id: "boot-old".to_owned(),
+            pid: 42,
+            reliable_sync: ReliableSyncStatus {
+                v2_subprotocol_negotiated: true,
+                v2_bootstrap_completed: true,
+                last_reconcile_protocol: "sync_v2".to_owned(),
+                legacy_sync_used: false,
+            },
+            ..Status::default()
+        };
+
+        merge_saved_runtime_status(&mut current, saved);
+
+        assert_eq!(current.boot_id, "boot-new");
+        assert!(!current.reliable_sync.v2_subprotocol_negotiated);
+        assert!(current.reliable_sync.v2_bootstrap_completed);
+        assert_eq!(current.reliable_sync.last_reconcile_protocol, "sync_v2");
+    }
+
+    #[test]
     fn session_warnings_reports_disconnected_sessions() {
         let warnings = session_warnings(&[
             SessionStatus {
@@ -419,6 +521,12 @@ mod tests {
                 last_error: "sink boom".to_string(),
                 ..HostNotifyStatus::default()
             },
+            reliable_sync: ReliableSyncStatus {
+                v2_subprotocol_negotiated: true,
+                v2_bootstrap_completed: true,
+                last_reconcile_protocol: "sync_v2".to_owned(),
+                legacy_sync_used: false,
+            },
             ..Status::default()
         };
 
@@ -439,6 +547,8 @@ mod tests {
             "http://127.0.0.1:9999/hooks/agent"
         );
         assert_eq!(status.host_notify.last_error, "sink boom");
+        assert_eq!(status.reliable_sync.last_reconcile_protocol, "sync_v2");
+        assert!(status.reliable_sync.v2_bootstrap_completed);
     }
 
     #[test]

@@ -1,6 +1,5 @@
 ---
 name: awiki
-version: 1.0.0
 description: Unified entry skill for awiki-cli, providing agent identity and IM capabilities, including direct messaging, group chat, attachment send/receive, and supported end-to-end encrypted text and attachment workflows; responsible for routing related tasks, minimal loading, safety rules, and confirmation rules.
 metadata:
   type: entry
@@ -208,8 +207,11 @@ prove AWiki Me presentation.
 - Treat every command whose `awiki-cli schema [command]` metadata has `side_effect: true` as requiring explicit confirmation. The groups below describe the current public surface; this schema rule also covers commands added later.
 - `init`
 - `upgrade`
+- Onboarding write operations: `onboarding claim`, `onboarding recover-legacy-claim`, `onboarding migrate-legacy`
 - Tenant write operations: `tenant create`, `tenant setup`, `tenant use`, `tenant reconfigure`
 - All identity write operations: `id register`, `id bind`, `id refresh-token`, `id recover`, `id use`, `id profile set`, `id import-v1`
+- Device lifecycle write operations: `id device join start`, `id device join poll`, `id device join verify`, `id device join approve`, `id device join reject`, `id device join cancel`, `id device revoke`
+- Root-key transfer write operation: `id device root-key send`
 - Messaging write operations: `msg send`, `msg attachment download`, `msg mark-read`
 - Mail write operations: `mail mark-read`, `mail send`, `mail attachment download`
 - Group write operations: `group create`, `group join`, `group add`, `group remove`, `group leave`, `group update`

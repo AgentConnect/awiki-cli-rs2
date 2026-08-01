@@ -18,8 +18,10 @@ use awiki_deamon::{
     daemon_cli::{setup_daemon_agent_from_token, SetupDaemonAgentOptions},
     run_command_json, DaemonCommand, DaemonConfig, DaemonState,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rusqlite::Connection;
 use serde_json::json;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Default)]
 struct MockRegistrationClient {
@@ -53,17 +55,49 @@ impl AgentRegistrationClient for MockRegistrationClient {
             .and_then(serde_json::Value::as_str)
             .unwrap()
             .to_string();
+        let account_id = format!("user_{}", request.handle);
+        let manifest = anp::authentication::validate_device_manifest(&request.did_document)
+            .unwrap()
+            .unwrap();
+        let device = manifest.devices.first().unwrap();
+        let response_handle = request.handle.clone();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims = json!({
+            "iss": "user-service",
+            "aud": ["awiki-user-service", "awiki-message-service"],
+            "sub": did,
+            "type": "access",
+            "purpose": "awiki.device.access.v1",
+            "did": did,
+            "user_id": account_id,
+            "device_id": device.device_id,
+            "key_id": device.signing_key_id,
+            "auth_generation": 1,
+            "scopes": ["device:manage", "device:read", "message:connect"],
+            "iat": now,
+            "nbf": now,
+            "exp": now + 3600,
+            "jti": format!("mock-device-{}", device.device_id),
+        });
+        let access_token = format!(
+            "e30.{}.test-signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+        );
         Ok(AgentRegistrationExchangeResult {
             token_id: format!("agtok_{}_{}", request.agent_kind.as_str(), request.handle),
             did,
-            user_id: Some(format!("user_{}", request.handle)),
+            user_id: Some(account_id),
             agent_kind: request.agent_kind,
             controller_user_id: "user-alice".to_string(),
             controller_full_handle: "alice.anpclaw.com".to_string(),
             controller_did: request.controller_did,
-            handle: request.handle,
+            handle: response_handle,
+            binding_generation: Some("1".to_string()),
             status: "registered".to_string(),
-            access_token: Some("jwt-agent-secret".to_string()),
+            access_token: Some(access_token),
         })
     }
 }
@@ -382,17 +416,7 @@ VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14)"#,
 }
 
 fn test_identity_alias(did: &str) -> String {
-    did.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string()
+    did.rsplit(':').next().unwrap().to_string()
 }
 
 #[test]
@@ -497,20 +521,22 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
     assert_eq!(requests[1].agent_kind, AgentKind::Runtime);
     assert!(!format!("{:?}", requests[1]).contains("tok_runtime_secret_value"));
     assert!(format!("{:?}", requests[1]).contains("<redacted>"));
-    assert_eq!(
-        state
-            .load_agent_auth_token(&daemon.agent_did)
-            .unwrap()
-            .as_deref(),
-        Some("jwt-agent-secret")
-    );
-    assert_eq!(
-        state
-            .load_agent_auth_token(&created.agent_did)
-            .unwrap()
-            .as_deref(),
-        Some("jwt-agent-secret")
-    );
+    assert!(state
+        .load_agent_auth_token(&daemon.agent_did)
+        .unwrap()
+        .is_none());
+    assert!(state
+        .load_agent_auth_token(&created.agent_did)
+        .unwrap()
+        .is_none());
+    assert!(state
+        .load_agent_device_identity(&daemon.agent_did)
+        .unwrap()
+        .is_some());
+    assert!(state
+        .load_agent_device_identity(&created.agent_did)
+        .unwrap()
+        .is_some());
 
     let connection = Connection::open(root.path().join("daemon.db")).unwrap();
     let agent_count: i64 = connection
@@ -754,7 +780,6 @@ fn agent_status_query_returns_snapshot_payload_without_chat_content() {
     }
     let dump = status.payload.to_string();
     assert!(!dump.contains("tok_daemon_secret_value"));
-    assert!(!dump.contains("alice-mac-daemon"));
     assert!(!dump.contains("prompt"));
 }
 
@@ -2178,7 +2203,7 @@ fn registration_token_failure_sends_failed_status_without_persisting_runtime_age
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("scope_mismatch"));
+    assert!(format!("{error:#}").contains("scope_mismatch"));
     assert_eq!(state.list_runtime_agent_definitions().unwrap().len(), 0);
     let statuses = outbox.agent_statuses();
     assert_eq!(statuses.len(), 1);

@@ -11,6 +11,15 @@ pub(crate) struct HostedKeyMaterialProvider {
     auth_state: Mutex<crate::internal::auth::state::AuthStateSnapshot>,
 }
 
+pub(crate) struct HostBackedDeviceKeyMaterialProvider {
+    did_document: Value,
+    device_signing_key_id: String,
+    device_signing_private_pem: String,
+    root_private_pem: String,
+    e2ee_agreement_private_pem: String,
+    auth_state: Mutex<crate::internal::auth::state::AuthStateSnapshot>,
+}
+
 impl HostedKeyMaterialProvider {
     pub(crate) fn new(material: &crate::identity::HostedIdentityMaterial) -> crate::ImResult<Self> {
         Ok(Self {
@@ -42,6 +51,22 @@ impl HostedKeyMaterialProvider {
     }
 }
 
+impl HostBackedDeviceKeyMaterialProvider {
+    pub(crate) fn new(
+        material: &crate::identity::HostBackedDeviceIdentityMaterial,
+    ) -> crate::ImResult<Self> {
+        validate_host_backed_device_material(material)?;
+        Ok(Self {
+            did_document: material.did_document.clone(),
+            device_signing_key_id: material.device_signing_key_id.clone(),
+            device_signing_private_pem: material.device_signing_private_key_pem.clone(),
+            root_private_pem: material.root_private_key_pem.clone(),
+            e2ee_agreement_private_pem: material.device_e2ee_private_key_pem.clone(),
+            auth_state: Mutex::new(auth_state_from_token(Some(&material.access_token))?),
+        })
+    }
+}
+
 impl fmt::Debug for HostedKeyMaterialProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HostedKeyMaterialProvider")
@@ -51,6 +76,20 @@ impl fmt::Debug for HostedKeyMaterialProvider {
             .field("e2ee_agreement_private_pem", &"<redacted-private-key>")
             .field("auth_state", &"<redacted-auth-state>")
             .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for HostBackedDeviceKeyMaterialProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HostBackedDeviceKeyMaterialProvider")
+            .field("backend", &"host-backed-device-memory")
+            .field("did_document", &"<redacted-hosted-did-document>")
+            .field("device_signing_key_id", &self.device_signing_key_id)
+            .field("device_signing_private_pem", &"<redacted-private-key>")
+            .field("root_private_pem", &"<redacted-private-key>")
+            .field("e2ee_agreement_private_pem", &"<redacted-private-key>")
+            .field("auth_state", &"<redacted-auth-state>")
+            .finish()
     }
 }
 
@@ -121,6 +160,184 @@ impl super::KeyMaterialProvider for HostedKeyMaterialProvider {
         *guard = next;
         Ok(())
     }
+}
+
+impl super::KeyMaterialProvider for HostBackedDeviceKeyMaterialProvider {
+    fn did_document(&self) -> crate::ImResult<Value> {
+        Ok(self.did_document.clone())
+    }
+
+    fn optional_did_document(&self) -> crate::ImResult<Option<Value>> {
+        Ok(Some(self.did_document.clone()))
+    }
+
+    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
+        Ok(self.device_signing_private_pem.clone())
+    }
+
+    fn device_request_signing_material(
+        &self,
+    ) -> crate::ImResult<super::DeviceRequestSigningMaterial> {
+        Ok(super::DeviceRequestSigningMaterial {
+            key_id: self.device_signing_key_id.clone(),
+            private_key_pem: self.device_signing_private_pem.clone(),
+        })
+    }
+
+    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
+        Ok(self.root_private_pem.clone())
+    }
+
+    fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
+        Ok(self.e2ee_agreement_private_pem.clone())
+    }
+
+    fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
+        self.auth_state
+            .lock()
+            .map_err(|_| crate::ImError::Internal {
+                message: "host-backed device auth state lock poisoned".to_owned(),
+            })
+            .map(|snapshot| snapshot.clone())
+    }
+
+    fn valid_auth_token(&self) -> crate::ImResult<Option<String>> {
+        Ok(self.auth_state()?.bearer_token)
+    }
+
+    fn persist_auth_token(&self, token: &str) -> crate::ImResult<()> {
+        let next = auth_state_from_token(Some(token))?;
+        let mut guard = self
+            .auth_state
+            .lock()
+            .map_err(|_| crate::ImError::Internal {
+                message: "host-backed device auth state lock poisoned".to_owned(),
+            })?;
+        *guard = next;
+        Ok(())
+    }
+}
+
+fn validate_host_backed_device_material(
+    material: &crate::identity::HostBackedDeviceIdentityMaterial,
+) -> crate::ImResult<()> {
+    let did = crate::ids::Did::parse(&material.did)?;
+    if material.identity_id.trim().is_empty()
+        || material.identity_id.trim() != material.identity_id
+        || material.account_id.trim().is_empty()
+        || material.account_id.trim() != material.account_id
+        || material.did_document.get("id").and_then(Value::as_str) != Some(did.as_str())
+        || !anp::authentication::validate_did_document_binding(&material.did_document, true)
+        || material.authorization_status
+            != crate::identity::IdentityDeviceAuthorizationStatus::Active
+        || material.role != crate::identity::IdentityDeviceRole::Admin
+        || !material.management_ready
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let binding_generation = anp::wns::BindingGeneration::new(material.binding_generation.clone())
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    if binding_generation.to_string() != material.binding_generation {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let auth_generation = material
+        .auth_generation
+        .parse::<u64>()
+        .ok()
+        .filter(|generation| *generation > 0)
+        .filter(|generation| generation.to_string() == material.auth_generation)
+        .ok_or(crate::ImError::PermissionDenied)?;
+
+    let manifest = anp::authentication::validate_device_manifest(&material.did_document)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let matching_devices = manifest
+        .devices
+        .iter()
+        .filter(|device| device.device_id == material.protocol_device_id.as_str())
+        .collect::<Vec<_>>();
+    if matching_devices.len() != 1
+        || matching_devices[0].signing_key_id != material.device_signing_key_id
+        || matching_devices[0].e2ee_key_id != material.device_e2ee_key_id
+        || material.root_key_id != format!("{}#key-1", did.as_str())
+        || material.root_key_id == material.device_signing_key_id
+        || material.root_key_id == material.device_e2ee_key_id
+        || material.device_signing_key_id == material.device_e2ee_key_id
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+
+    validate_private_key_binding(
+        &material.did_document,
+        &material.root_key_id,
+        &material.root_private_key_pem,
+        PrivateKeyRole::Root,
+    )?;
+    validate_private_key_binding(
+        &material.did_document,
+        &material.device_signing_key_id,
+        &material.device_signing_private_key_pem,
+        PrivateKeyRole::DeviceSigning,
+    )?;
+    validate_private_key_binding(
+        &material.did_document,
+        &material.device_e2ee_key_id,
+        &material.device_e2ee_private_key_pem,
+        PrivateKeyRole::DeviceE2ee,
+    )?;
+    crate::internal::access_token::validate_device_access_token(
+        &material.access_token,
+        &crate::internal::access_token::ExpectedDeviceAccess {
+            did: did.as_str(),
+            user_id: &material.account_id,
+            device_id: material.protocol_device_id.as_str(),
+            key_id: &material.device_signing_key_id,
+            auth_generation,
+            role: crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
+            management_ready: true,
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+enum PrivateKeyRole {
+    Root,
+    DeviceSigning,
+    DeviceE2ee,
+}
+
+fn validate_private_key_binding(
+    document: &Value,
+    key_id: &str,
+    private_key_pem: &str,
+    role: PrivateKeyRole,
+) -> crate::ImResult<()> {
+    let methods = document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let mut matching = methods
+        .iter()
+        .filter(|method| method.get("id").and_then(Value::as_str) == Some(key_id));
+    let method = matching.next().ok_or(crate::ImError::PermissionDenied)?;
+    if matching.next().is_some() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let private = anp::PrivateKeyMaterial::from_pem(private_key_pem)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let algorithm_matches = match role {
+        PrivateKeyRole::Root | PrivateKeyRole::DeviceSigning => {
+            matches!(&private, anp::PrivateKeyMaterial::Ed25519(_))
+        }
+        PrivateKeyRole::DeviceE2ee => {
+            matches!(&private, anp::PrivateKeyMaterial::X25519(_))
+        }
+    };
+    let public = crate::internal::identity_wire::document::extract_identity_public_key(method)?;
+    if !algorithm_matches || private.public_key().to_pem() != public.to_pem() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
 }
 
 fn validate_request_signing_key(

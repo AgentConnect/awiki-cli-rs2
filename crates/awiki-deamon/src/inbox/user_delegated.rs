@@ -170,15 +170,9 @@ impl MessageSyncPayloadSender for ImCoreMessageSyncPayloadSender<'_> {
         idempotency_key: &str,
         payload: Value,
     ) -> Result<Option<String>> {
-        let daemon_identity = self.state.load_agent_identity(&binding.daemon_agent_did)?;
-        let jwt_token = self
-            .state
-            .load_agent_auth_token(&binding.daemon_agent_did)?;
-        let client = self.im_core.client_for_agent_identity(
-            self.config,
-            &daemon_identity,
-            jwt_token.as_deref(),
-        )?;
+        let client =
+            self.im_core
+                .client_for_agent(self.config, self.state, &binding.daemon_agent_did)?;
         let outbox = ImCoreAgentOutbox::new(client);
         let result = outbox.send_payload_with_delivery(
             &binding.user_did,

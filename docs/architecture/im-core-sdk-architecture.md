@@ -274,8 +274,35 @@ key, or a constant generation. When an older identity index has no
 verifies the exact full Handle and current DID, persists the returned
 generation, and only then returns the binding. Transport failure remains a
 typed transport error; malformed or mismatched authority data fails closed.
-Legacy and hosted clients return unsupported rather than receiving a guessed
-binding.
+Legacy and generic hosted clients return unsupported rather than receiving a
+guessed binding. A trusted native host may instead construct the formal
+`HostBackedDeviceIdentityMaterial` boundary. Core accepts that boundary only
+after the canonical vNext document, the uniquely matching Manifest device,
+root/device key roles and private/public bindings, active ready-admin
+authorization, canonical Handle/device generations, and the complete Device
+Access principal have been validated together. The validated `SyncAccountSeed`
+stores the exact `ProtocolDeviceId`, so a host-backed client does not depend on
+a file-backed Identity Registry entry and still produces the same six-field
+binding as an App client. Generic `HostedIdentityMaterial` keeps its old
+Legacy semantics and never receives a sync account seed.
+
+The local Device Access validator decodes JWT claims and validates their exact
+binding, scopes, audiences, purpose and time window; it does not verify the JWT
+signature. This is safe only because the API is a trusted in-process host seam
+fed from the authenticated exchange result. User Service and Message Service
+signature verification plus Message Service live-Registry revalidation remain
+the credential authority and session-fencing boundary. Documentation and host
+UI must not describe local construction as cryptographic token verification.
+
+Independent Skill, Daemon, and Runtime Agent accounts share one Core builder.
+`generate_vnext_agent_bootstrap` fixes the DID path to
+`agent/{skill|daemon|runtime}/{canonical-handle-local}`, produces one random
+bootstrap device, and keeps root, device-signing, and device-E2EE keys
+independent. Existing Legacy Agents use the narrow
+`prepare_vnext_agent_legacy_upgrade` builder: it reuses the Core Legacy upgrade
+algorithm, proves the old root against the old document, requires the requested
+Agent-kind DID path and exact Handle service, and preserves the DID, root and
+Handle while adding the fresh device. Neither builder performs remote writes.
 
 Both generations are canonical positive decimal strings and are never narrowed
 to a machine integer. The local binding reducer is monotonic: neither
@@ -411,6 +438,7 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 - `core`: environment entrypoint, identity-bound client, bootstrap, errors, common IDs and paging types.
 - `identity`: local registry, default identity, Handle registration, one-time Legacy upgrade, recovery, device Join/admin promotion, permanent device revoke and Identity-only pending recovery, profile, contact binding, and DID replacement plan.
 - `onboarding`: environment-level Skill Agent claim for an initialized, empty workspace. It verifies the scoped Token before key generation, persists a recoverable pending identity, exchanges it for a new DID identity, authenticates, and sends the deterministic Controller greeting before completion.
+- Skill onboarding v2 creates an exact Agent/device identity and publishes its PreKey before the deterministic greeting. A separate explicit legacy-recovery entrypoint consumes the v1 journal/pending bundle, replays the original exchange without creating a second DID, performs same-DID Legacy upgrade, and only then commits the v2 journal. Missing v1 pending material is an operator-reconciliation block, never an instruction to request another Token.
 - `auth`: DID-WBA, access-only session persistence, device-signed token renewal, refresh, status, and retry support for business services.
 - `local_state`: SQLite schema, owner isolation, messages, contacts, groups, email notification, secure outbox, realtime projection, and reliable sync checkpoints.
 - `discovery`: endpoint and capability selection from config, DID documents, profile, and service metadata.
@@ -439,6 +467,7 @@ Transport is explicit through configuration and capability checks:
 - Remote messages are untrusted input.
 - CLI/App output must not expose JWTs, private keys, raw secure state, ciphertext internals, MLS artifacts, provider stdout/stderr, or host secrets.
 - Skill onboarding requests use a redacted, non-serializable Token type. Token HTTP requests reject redirects; journals contain only non-secret scope and recovery state. A non-empty or ambiguous workspace fails closed.
+- Skill exchange response parsing tolerates additive fields while required identity/account/device/token fields remain exact. v1 artifacts are deleted only after the v2 identity and journal commit; orphaned artifacts without an identifying journal are not broadly deleted.
 - Host notification payloads must contain approved event summaries, not raw message instructions.
 - Diagnostics may expose lower-level details only behind explicit debug/diagnostic gates.
 - Whole-roster Group security decisions use a bounded, version-bound
@@ -479,6 +508,18 @@ architecture summary.
 
 Identity private material is an internal SDK concern. Business flows must not read `private_key_path`, `e2ee_agreement_private_key_path`, PEM files, or `auth.json` directly. DID-WBA auth, direct/group message signing, attachment signing, and secure direct static key loading go through the internal `KeyMaterialProvider` contract. That contract exposes separate device-request-signing and DID-Document-root accessors: daily authentication and messaging consume `device_request_signing_material` as an atomic `(verification method, private key)` pair, while only DID Document creation/re-sign/update may request the root accessor. A caller must not combine the current device private key with the first `authentication` entry from the shared DID Document because its ordering is account-wide and may name another device. Legacy `key-1` identities retain their dual-role behavior only through an explicit compatibility adapter. vNext vault refs require a device-signing key but make the root ref optional, so a member device can authenticate without possessing DID root control material and root-only operations fail closed.
 
+`VNextAgentBootstrapMaterial` and `HostBackedDeviceIdentityMaterial` are narrow
+trusted-native-host exceptions to the otherwise internal private-material
+boundary. They deliberately implement neither Serialize nor Deserialize, and
+their Debug projections redact DID documents, private keys, bearer tokens and
+daemon private packages. A host may hold them only in-process long enough to
+seal a pending/active record into its own SecretVault and reconstruct the
+host-backed value at the Core call boundary. They are not general private-key
+getters or signing APIs. The first version accepts only active ready-admin
+host-backed devices with mandatory root material; a future rootless member
+host boundary requires a separate explicit contract rather than weakening this
+one.
+
 The compatibility default remains file-backed when a host opens `ImCore` without
 explicit vault options:
 
@@ -513,7 +554,7 @@ Known residual risks after the App/CLI/daemon vault integration:
 - App root key rotation, backup, recovery UX, and secure deletion of old plaintext compatibility files are not implemented.
 - `id vault cleanup-plaintext` is a migration-gated/preflight surface unless a CLI-safe live cleanup API is added. Do not document it as deleting legacy files in this build.
 - Explicit delegated `key_ref` flows support `vault:` refs and should use them for new daemon-owned delegated keys. `file:` / `local:` / bare path refs remain compatibility inputs and can still read caller-provided delegated private key files.
-- The daemon Message/im-core SDK main path uses hosted in-memory identity material and no longer writes `private.key`, `e2ee-agreement-private.pem`, or `auth.json` for that path. Legacy DID-auth compatibility helpers may still create those files for user-service inventory/auth paths and should be treated as compatibility-only.
+- The daemon Message/im-core SDK vNext path uses validated host-backed Device Identity material and does not write `private.key`, `e2ee-agreement-private.pem`, or `auth.json` into Core identity directories. Generic hosted material remains a Legacy/delegated compatibility boundary and cannot activate account sync.
 - The App bootstrap path can still receive a daemon subkey private key plaintext DTO. This is a temporary compatibility exception and should be replaced by an encrypted bootstrap envelope in a separate change.
 - Direct E2EE session/prekey local state is encrypted at rest through SecretVault envelopes. Group MLS private state is outside this hardening pass.
 - `awiki-deamon` `agent_auth_state` bearer tokens are persisted as daemon SecretVault refs with a sentinel in the `jwt_token` column; do not log or expose them.
@@ -822,6 +863,25 @@ convergence. When the Handle authority lookup succeeds, Persona projection and
 the inbound message commit happen in that order in the same local-state actor
 sequence, so a first inbound Direct becomes patch-visible under its canonical
 Persona conversation without briefly materializing a DID conversation.
+
+WebSocket subprotocol strictness is derived from the validated client identity,
+not from App/CLI/Agent labels or a host flag. A client with an exact sync
+account seed always offers and requires `awiki.sync.changed.v2`; a missing echo
+or `NoSubProtocol` is a transport/provisioning failure and the async transport
+must not reconnect without a subprotocol. Only a Legacy or generic hosted
+client with no exact binding may use the compatibility fallback. The hint still
+does not advance the reliable cursor.
+
+Daemon crash compensation reads committed local messages through an exact-client
+Core API, never by enumerating conversations or accepting a caller-provided
+owner/account/raw cursor. The API filters to the bound owner's hydrated incoming
+projection and returns deterministic oldest-first keyset pages. Its Core-issued
+continuation token is an opaque Rust type bound to the full active
+owner/account/DID/device/generation tuple; cross-owner reuse fails closed.
+Per-page limits are closed and hosts must impose a separate per-run total bound
+while following `has_more`, so an already-ledgered prefix cannot starve later
+backlog. This local token is not a Message Service Sync v2 cursor and does not
+advance reliable sync state.
 
 Schema version 20 introduced `sync_state`. Schema 32 makes its event-stream
 ownership explicit on top of the reviewed release/0714 schema-31 predecessor:

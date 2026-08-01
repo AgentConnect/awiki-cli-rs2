@@ -4,11 +4,11 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::{bail, Chain, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::agent::{
-    agent_data_paths, generate_agent_identity, normalize_handle, resolve_runtime,
-    runtime_profile_id, workspace_id, workspace_path, AgentDefinition, AgentKind,
-    GENERIC_CLI_RUNTIME_PLUGIN_ID,
+    agent_data_paths, normalize_handle, resolve_runtime, runtime_profile_id, workspace_id,
+    workspace_path, AgentDefinition, AgentKind, GENERIC_CLI_RUNTIME_PLUGIN_ID,
 };
 use crate::controller_scope::{verify_daemon_controller_sender, VerifiedControllerSender};
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
@@ -27,14 +27,15 @@ use crate::runtime_inbox::{
     RuntimeInboxScope, RuntimeInboxThreadKind, RuntimeInboxThreadQuery,
 };
 use crate::state::{
-    controller_scope_key, CliRuntimeProfileRecord, DaemonState, RuntimeAgentCreateRequestRecord,
+    controller_scope_key, AgentDeviceIdentityRecord, CliRuntimeProfileRecord, DaemonState,
+    PendingAgentRegistrationRecord, RuntimeAgentCreateRequestRecord,
 };
 use crate::upgrade::{
     upgrade_daemon_with_progress_and_cancel, DaemonUpgradeCancelToken, DaemonUpgradeProgress,
     DaemonUpgradeRequest, DAEMON_UPGRADE_CANCELLED_ERROR,
 };
 use crate::workspace::WorkspaceMode;
-use crate::DaemonConfig;
+use crate::{DaemonConfig, ImCoreAdapter};
 
 const AGENT_COMMAND_SCHEMA: &str = "awiki.agent.command.v1";
 const AGENT_STATUS_SCHEMA: &str = "awiki.agent.status.v1";
@@ -52,6 +53,49 @@ const LEGACY_MESSAGE_AGENT_BINDING_DISABLE: &str = "message_agent.binding.disabl
 const RUNTIME_INBOX_QUERY: &str = "runtime.inbox.query";
 const RUNTIME_INBOX_THREAD_QUERY: &str = "runtime.inbox.thread.query";
 const STATUS_QUERY_MIN_INTERVAL_MS: i64 = 10_000;
+
+#[derive(Clone, Serialize, Deserialize)]
+struct PendingVNextRegistrationSecret {
+    registration_token: String,
+    identity_id: String,
+    did: String,
+    did_document: Value,
+    document_hash: String,
+    protocol_device_id: String,
+    root_key_id: String,
+    root_private_key_pem: String,
+    root_public_key_pem: String,
+    device_signing_key_id: String,
+    device_signing_private_key_pem: String,
+    device_signing_public_key_pem: String,
+    device_e2ee_key_id: String,
+    device_e2ee_private_key_pem: String,
+    device_e2ee_public_key_pem: String,
+    daemon_subkey_package_json: Option<Value>,
+}
+
+impl std::fmt::Debug for PendingVNextRegistrationSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingVNextRegistrationSecret")
+            .field("registration_token", &"<redacted-token>")
+            .field("identity_id", &self.identity_id)
+            .field("did", &self.did)
+            .field("did_document", &"<redacted-did-document>")
+            .field("document_hash", &self.document_hash)
+            .field("protocol_device_id", &self.protocol_device_id)
+            .field("root_key_material", &"<redacted-key-material>")
+            .field("device_signing_key_material", &"<redacted-key-material>")
+            .field("device_e2ee_key_material", &"<redacted-key-material>")
+            .field("daemon_subkey_package", &"<redacted-private-package>")
+            .finish()
+    }
+}
+
+struct PreparedVNextRegistration {
+    registration_id: String,
+    secret: PendingVNextRegistrationSecret,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IncomingAgentPayloadMessage {
@@ -615,30 +659,43 @@ where
         if existing.controller_did != controller_did {
             bail!("existing daemon agent controller_did does not match requested controller_did");
         }
+        state.scrub_completed_agent_registration(&existing.agent_did)?;
         return Ok(existing);
     }
-    let identity = generate_agent_identity(config, AgentKind::Daemon, &handle)?;
-    let exchange = registration_client.exchange_token(AgentRegistrationExchangeRequest {
-        token: registration_token,
-        agent_kind: AgentKind::Daemon,
-        controller_did: controller_did.to_string(),
-        handle: handle.clone(),
-        name: None,
-        did_document: identity.did_document.clone(),
-        endpoint_url: identity.endpoint_url.clone(),
-        key_algorithm: identity.key_algorithm.clone(),
-        public_key: identity.public_key.clone(),
-        allow_existing_agent_did: false,
-    })?;
+    let prepared = prepare_vnext_agent_registration(
+        config,
+        state,
+        AgentKind::Daemon,
+        controller_did,
+        &handle,
+        &handle,
+        registration_token,
+    )?;
+    let exchange = exchange_vnext_agent_registration(
+        state,
+        registration_client,
+        &prepared,
+        AgentKind::Daemon,
+        controller_did,
+        &handle,
+        None,
+    )?;
     verify_exchange_result(&exchange, AgentKind::Daemon, controller_did, &handle)?;
-    if exchange.did != identity.did {
+    if exchange.did != prepared.secret.did {
         bail!("registration token exchange returned a different DID");
     }
     let exchange_scope_key = controller_scope_key(
         &exchange.controller_user_id,
         &exchange.controller_full_handle,
     )?;
-    state.store_agent_identity(&identity.into_record(handle.clone(), AgentKind::Daemon))?;
+    activate_vnext_agent_identity(
+        config,
+        state,
+        &prepared,
+        &exchange,
+        AgentKind::Daemon,
+        &handle,
+    )?;
     let (local_agent_db_path, message_db_path) = agent_data_paths(&exchange.did)?;
     let definition = AgentDefinition {
         agent_did: exchange.did.clone(),
@@ -657,7 +714,7 @@ where
         status: "active".to_string(),
     };
     state.upsert_agent_definition(&definition)?;
-    store_exchange_auth_token(state, &exchange)?;
+    state.scrub_completed_agent_registration(&definition.agent_did)?;
     Ok(definition)
 }
 
@@ -786,29 +843,41 @@ where
             .with_context(|| format!("unsupported preferred_language: {value}"))?,
         None => default_preferred_language(),
     };
-    let identity = generate_agent_identity(config, AgentKind::Runtime, &handle)?;
-    let exchange = registration_client.exchange_token(AgentRegistrationExchangeRequest {
-        token: RegistrationToken::new(payload.args.registration_token.clone())?,
-        agent_kind: AgentKind::Runtime,
-        controller_did: controller_did.to_string(),
-        handle: handle.clone(),
-        name: Some(display_name.clone()),
-        did_document: identity.did_document.clone(),
-        endpoint_url: identity.endpoint_url.clone(),
-        key_algorithm: identity.key_algorithm.clone(),
-        public_key: identity.public_key.clone(),
-        allow_existing_agent_did: false,
-    })?;
+    let prepared = prepare_vnext_agent_registration(
+        config,
+        state,
+        AgentKind::Runtime,
+        controller_did,
+        &handle,
+        &display_name,
+        RegistrationToken::new(payload.args.registration_token.clone())?,
+    )?;
+    let exchange = exchange_vnext_agent_registration(
+        state,
+        registration_client,
+        &prepared,
+        AgentKind::Runtime,
+        controller_did,
+        &handle,
+        Some(display_name.clone()),
+    )?;
     verify_exchange_result(&exchange, AgentKind::Runtime, controller_did, &handle)?;
     if exchange.controller_user_id != daemon_agent.controller_user_id
         || exchange.controller_full_handle != daemon_agent.controller_full_handle
     {
         bail!("registration token exchange returned wrong controller scope");
     }
-    if exchange.did != identity.did {
+    if exchange.did != prepared.secret.did {
         bail!("registration token exchange returned a different DID");
     }
-    state.store_agent_identity(&identity.into_record(handle.clone(), AgentKind::Runtime))?;
+    activate_vnext_agent_identity(
+        config,
+        state,
+        &prepared,
+        &exchange,
+        AgentKind::Runtime,
+        &display_name,
+    )?;
 
     let profile = RuntimeAgentProfile {
         agent_did: exchange.did.clone(),
@@ -920,8 +989,6 @@ where
         }
     }
 
-    store_exchange_auth_token(state, &exchange)?;
-
     let outcome = RuntimeAgentCreateOutcome {
         command_id: payload.command_id.clone(),
         client_request_id: client_request_id.map(str::to_string),
@@ -950,6 +1017,7 @@ where
             updated_at_ms: now,
         })?;
     }
+    state.scrub_completed_agent_registration(&outcome.agent_did)?;
     Ok(outcome)
 }
 
@@ -2520,21 +2588,245 @@ fn validate_application_json_payload(message: &IncomingAgentPayloadMessage) -> R
     Ok(())
 }
 
-fn store_exchange_auth_token(
+fn prepare_vnext_agent_registration(
+    config: &DaemonConfig,
     state: &DaemonState,
-    exchange: &AgentRegistrationExchangeResult,
-) -> Result<()> {
-    if let Some(token) = exchange
-        .access_token
-        .as_deref()
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-    {
-        state
-            .store_agent_auth_token(&exchange.did, token)
-            .context("store agent auth token from registration exchange")?;
+    agent_kind: AgentKind,
+    controller_did: &str,
+    handle: &str,
+    display_name: &str,
+    registration_token: RegistrationToken,
+) -> Result<PreparedVNextRegistration> {
+    let dedupe_material = format!(
+        "vnext-agent-registration\n{}\n{}\n{}",
+        agent_kind.as_str(),
+        controller_did,
+        handle
+    );
+    let dedupe_key = format!(
+        "agent-registration:v1:{:x}",
+        Sha256::digest(dedupe_material)
+    );
+    if let Some(existing) = state.load_pending_agent_registration_by_dedupe_key(&dedupe_key)? {
+        if existing.status == "blocked" {
+            bail!("pending agent registration is blocked and requires operator recovery");
+        }
+        let secret: PendingVNextRegistrationSecret =
+            serde_json::from_value(existing.secret_payload_json)
+                .context("open pending vNext Agent registration payload")?;
+        return Ok(PreparedVNextRegistration {
+            registration_id: existing.registration_id,
+            secret,
+        });
     }
+
+    let im_core = ImCoreAdapter::open(config)?;
+    let generated = im_core.generate_vnext_agent_bootstrap(agent_kind, handle)?;
+    let daemon_subkey_package_json = generated
+        .daemon_subkey_package
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .context("serialize daemon authentication subkey package")?;
+    let secret = PendingVNextRegistrationSecret {
+        registration_token: registration_token.as_str().to_owned(),
+        identity_id: generated.identity_id,
+        did: generated.did.as_str().to_owned(),
+        did_document: generated.did_document,
+        document_hash: generated.document_hash,
+        protocol_device_id: generated.protocol_device_id.as_str().to_owned(),
+        root_key_id: generated.root_key_id,
+        root_private_key_pem: generated.root_private_key_pem,
+        root_public_key_pem: generated.root_public_key_pem,
+        device_signing_key_id: generated.device_signing_key_id,
+        device_signing_private_key_pem: generated.device_signing_private_key_pem,
+        device_signing_public_key_pem: generated.device_signing_public_key_pem,
+        device_e2ee_key_id: generated.device_e2ee_key_id,
+        device_e2ee_private_key_pem: generated.device_e2ee_private_key_pem,
+        device_e2ee_public_key_pem: generated.device_e2ee_public_key_pem,
+        daemon_subkey_package_json,
+    };
+    let document_digest = secret.document_hash.clone();
+    let request_digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&json!({
+            "agent_kind": agent_kind.as_str(),
+            "controller_did": controller_did,
+            "handle": handle,
+            "display_name": display_name,
+            "did": secret.did,
+            "document_digest": document_digest,
+        }))?)
+    );
+    let registration_id = format!(
+        "agentreg_{}",
+        format!(
+            "{:x}",
+            Sha256::digest(format!("{dedupe_key}\n{}", secret.did))
+        )
+        .chars()
+        .take(24)
+        .collect::<String>()
+    );
+    let now = crate::security::runtime_token::current_time_millis()?;
+    state.store_pending_agent_registration(&PendingAgentRegistrationRecord {
+        registration_id: registration_id.clone(),
+        dedupe_key,
+        agent_kind,
+        controller_did: controller_did.to_owned(),
+        handle: handle.to_owned(),
+        display_name: display_name.to_owned(),
+        agent_did: secret.did.clone(),
+        protocol_device_id: secret.protocol_device_id.clone(),
+        document_digest,
+        request_digest,
+        secret_payload_json: serde_json::to_value(&secret)?,
+        status: "pending".to_owned(),
+        attempt_count: 0,
+        last_error_code: None,
+        last_error_summary: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+    })?;
+    Ok(PreparedVNextRegistration {
+        registration_id,
+        secret,
+    })
+}
+
+fn exchange_vnext_agent_registration<C>(
+    state: &DaemonState,
+    registration_client: &C,
+    prepared: &PreparedVNextRegistration,
+    agent_kind: AgentKind,
+    controller_did: &str,
+    handle: &str,
+    name: Option<String>,
+) -> Result<AgentRegistrationExchangeResult>
+where
+    C: AgentRegistrationClient,
+{
+    let request = AgentRegistrationExchangeRequest {
+        token: RegistrationToken::new(prepared.secret.registration_token.clone())?,
+        agent_kind,
+        controller_did: controller_did.to_owned(),
+        handle: handle.to_owned(),
+        name,
+        did_document: prepared.secret.did_document.clone(),
+        endpoint_url: None,
+        key_algorithm: "Ed25519".to_owned(),
+        public_key: prepared.secret.root_public_key_pem.clone(),
+        allow_existing_agent_did: false,
+    };
+    match registration_client.exchange_token(request) {
+        Ok(exchange) => Ok(exchange),
+        Err(error) => {
+            state.mark_pending_agent_registration_attempt(
+                &prepared.registration_id,
+                "retryable",
+                Some("registration_exchange_failed"),
+                None,
+            )?;
+            Err(error).context("exchange pending vNext Agent registration")
+        }
+    }
+}
+
+fn activate_vnext_agent_identity(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    prepared: &PreparedVNextRegistration,
+    exchange: &AgentRegistrationExchangeResult,
+    agent_kind: AgentKind,
+    display_name: &str,
+) -> Result<()> {
+    let validation = (|| -> Result<AgentDeviceIdentityRecord> {
+        let account_id = exchange
+            .user_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("vNext Agent registration response missing user_id")?;
+        if account_id == exchange.controller_user_id {
+            bail!("vNext Agent account must be independent from its controller account");
+        }
+        let binding_generation = exchange
+            .binding_generation
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("vNext Agent registration response missing binding_generation")?;
+        let access_token = exchange
+            .access_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("vNext Agent registration response missing Device Access token")?;
+        let full_handle = agent_full_handle(&exchange.handle, &prepared.secret.did)?;
+        let identity = AgentDeviceIdentityRecord {
+            identity_id: prepared.secret.identity_id.clone(),
+            agent_did: prepared.secret.did.clone(),
+            handle: exchange.handle.clone(),
+            display_name: display_name.to_owned(),
+            agent_kind,
+            account_id: account_id.to_owned(),
+            full_handle,
+            binding_generation: binding_generation.to_owned(),
+            did_document: prepared.secret.did_document.clone(),
+            protocol_device_id: prepared.secret.protocol_device_id.clone(),
+            root_key_id: prepared.secret.root_key_id.clone(),
+            root_private_key_pem: prepared.secret.root_private_key_pem.clone(),
+            device_signing_key_id: prepared.secret.device_signing_key_id.clone(),
+            device_signing_private_key_pem: prepared.secret.device_signing_private_key_pem.clone(),
+            device_e2ee_key_id: prepared.secret.device_e2ee_key_id.clone(),
+            device_e2ee_private_key_pem: prepared.secret.device_e2ee_private_key_pem.clone(),
+            daemon_subkey_package_json: prepared.secret.daemon_subkey_package_json.clone(),
+            authorization_status: "active".to_owned(),
+            role: "admin".to_owned(),
+            management_ready: true,
+            auth_generation: 1,
+            access_token: access_token.to_owned(),
+            document_version: 1,
+            document_hash: prepared.secret.document_hash.clone(),
+            registry_version: 1,
+            identity_status: "active".to_owned(),
+            legacy_migration_state: "not_required".to_owned(),
+            last_error_code: None,
+        };
+        identity.validate()?;
+        ImCoreAdapter::open(config)?
+            .client_for_agent_device_identity(&identity)
+            .context("validate vNext Agent exact device binding")?;
+        Ok(identity)
+    })();
+    let identity = match validation {
+        Ok(identity) => identity,
+        Err(error) => {
+            state.mark_pending_agent_registration_attempt(
+                &prepared.registration_id,
+                "blocked",
+                Some("device_access_binding_invalid"),
+                None,
+            )?;
+            return Err(error);
+        }
+    };
+    state.promote_pending_agent_device_identity(&prepared.registration_id, &identity)?;
     Ok(())
+}
+
+fn agent_full_handle(handle: &str, did: &str) -> Result<String> {
+    let handle = normalize_handle(handle)?;
+    if handle.contains('.') {
+        return Ok(handle);
+    }
+    let domain = did
+        .strip_prefix("did:wba:")
+        .and_then(|value| value.split(':').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("vNext Agent DID is missing its WBA domain")?;
+    Ok(format!("{handle}.{domain}"))
 }
 
 fn verify_exchange_result(

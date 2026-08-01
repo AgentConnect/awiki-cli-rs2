@@ -477,9 +477,7 @@ fn emit_daemon_heartbeat<O>(
 where
     O: AgentManagementOutbox,
 {
-    let identity = state.load_agent_identity(&daemon.agent_did)?;
-    let jwt_token = state.load_agent_auth_token(&daemon.agent_did)?;
-    let _client = im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref())?;
+    let _client = im_core.client_for_agent(config, state, &daemon.agent_did)?;
     outbox.send_agent_status(&AgentStatusResponse {
         conversation_id: None,
         agent_did: daemon.agent_did.clone(),
@@ -614,21 +612,30 @@ fn daemon_bootstrap_key_summary(
     state: &DaemonState,
     daemon: &AgentDefinition,
 ) -> Option<DaemonBootstrapKeySummary> {
-    let identity = state.load_agent_identity(&daemon.agent_did).ok()?;
-    daemon_bootstrap_key_summary_from_did_document(&identity.did_document, &daemon.agent_did)
+    let (did_document, expected_key_id) = match state.load_agent_device_identity(&daemon.agent_did)
+    {
+        Ok(Some(identity)) => (identity.did_document, identity.device_e2ee_key_id),
+        _ => (
+            state
+                .load_agent_identity(&daemon.agent_did)
+                .ok()?
+                .did_document,
+            format!(
+                "{}#{}",
+                daemon.agent_did.trim(),
+                anp::authentication::VM_KEY_E2EE_AGREEMENT
+            ),
+        ),
+    };
+    daemon_bootstrap_key_summary_from_did_document(&did_document, &expected_key_id)
         .ok()
         .flatten()
 }
 
 fn daemon_bootstrap_key_summary_from_did_document(
     did_document: &Value,
-    daemon_agent_did: &str,
+    expected_key_id: &str,
 ) -> Result<Option<DaemonBootstrapKeySummary>> {
-    let expected_key_id = format!(
-        "{}#{}",
-        daemon_agent_did.trim(),
-        anp::authentication::VM_KEY_E2EE_AGREEMENT
-    );
     let Some(methods) = did_document
         .get("verificationMethod")
         .and_then(Value::as_array)
@@ -636,7 +643,7 @@ fn daemon_bootstrap_key_summary_from_did_document(
         return Ok(None);
     };
     let Some(method) = methods.iter().find(|method| {
-        method.get("id").and_then(Value::as_str).map(str::trim) == Some(expected_key_id.as_str())
+        method.get("id").and_then(Value::as_str).map(str::trim) == Some(expected_key_id)
     }) else {
         return Ok(None);
     };
@@ -650,7 +657,7 @@ fn daemon_bootstrap_key_summary_from_did_document(
     let bytes = x25519_public_key_bytes_from_multibase(&public_key_multibase)
         .context("extract daemon bootstrap public key")?;
     Ok(Some(DaemonBootstrapKeySummary {
-        key_id: expected_key_id,
+        key_id: expected_key_id.to_owned(),
         public_key_multibase,
         public_key_b64u: URL_SAFE_NO_PAD.encode(bytes),
         key_algorithm: "x25519".to_string(),
@@ -1931,7 +1938,7 @@ fn sanitize_public_error(message: &str) -> String {
 )]
 mod tests {
     use super::*;
-    use crate::agent::{generate_agent_identity, AgentDefinition};
+    use crate::agent::AgentDefinition;
     use crate::outbox::MemoryRuntimeOutbox;
     use crate::plugins::generic_cli::GENERIC_CLI_RUNTIME_PLUGIN_ID;
     use crate::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
@@ -2207,12 +2214,16 @@ mod tests {
         config.ensure_state_layout().unwrap();
         let state = DaemonState::open_with_root_key_bytes(&config, [24_u8; 32]);
         state.initialize().unwrap();
-        let identity = generate_agent_identity(&config, AgentKind::Daemon, "alice-mac-daemon")
-            .unwrap()
-            .into_record("alice-mac-daemon".to_string(), AgentKind::Daemon);
+        let identity = crate::registration::store_mock_vnext_device_identity(
+            &config,
+            &state,
+            AgentKind::Daemon,
+            "alice-mac-daemon",
+        )
+        .unwrap();
         let mut daemon = daemon();
         daemon.agent_did = identity.agent_did.clone();
-        state.store_agent_identity(&identity).unwrap();
+        daemon.handle = identity.full_handle.clone();
         state.upsert_agent_definition(&daemon).unwrap();
 
         let payload = daemon_snapshot_payload(&config, &state, &daemon).unwrap();
@@ -2221,11 +2232,7 @@ mod tests {
         let config_summary = &diagnostics["config_summary"];
         assert_eq!(
             config_summary["bootstrap_key_id"],
-            format!(
-                "{}#{}",
-                daemon.agent_did,
-                anp::authentication::VM_KEY_E2EE_AGREEMENT
-            )
+            identity.device_e2ee_key_id
         );
         assert_eq!(
             diagnostics["config_summary"]["bootstrap_key_status"],
@@ -2258,12 +2265,15 @@ mod tests {
         config.ensure_state_layout().unwrap();
         let state = DaemonState::open_with_root_key_bytes(&config, [24_u8; 32]);
         state.initialize().unwrap();
-        let identity = generate_agent_identity(&config, AgentKind::Daemon, "alice-mac-daemon")
-            .unwrap()
-            .into_record("alice-mac-daemon".to_string(), AgentKind::Daemon);
+        let identity = crate::registration::store_mock_vnext_device_identity(
+            &config,
+            &state,
+            AgentKind::Daemon,
+            "alice-mac-daemon",
+        )
+        .unwrap();
         let mut daemon = daemon();
         daemon.agent_did = identity.agent_did.clone();
-        state.store_agent_identity(&identity).unwrap();
         state.upsert_agent_definition(&daemon).unwrap();
 
         let items = latest_status_items(&config, &state, &daemon, 1_700_000_000_000).unwrap();
@@ -2274,11 +2284,7 @@ mod tests {
 
         assert_eq!(
             daemon_item.diagnostics_summary["config_summary"]["bootstrap_key_id"],
-            format!(
-                "{}#{}",
-                daemon.agent_did,
-                anp::authentication::VM_KEY_E2EE_AGREEMENT
-            )
+            identity.device_e2ee_key_id
         );
         assert_eq!(
             daemon_item.diagnostics_summary["config_summary"]["bootstrap_key_status"],
@@ -2302,12 +2308,15 @@ mod tests {
         config.ensure_state_layout().unwrap();
         let state = DaemonState::open(&config).unwrap();
         state.initialize().unwrap();
-        let identity = generate_agent_identity(&config, AgentKind::Daemon, "alice-mac-daemon")
-            .unwrap()
-            .into_record("alice-mac-daemon".to_string(), AgentKind::Daemon);
+        let identity = crate::registration::store_mock_vnext_device_identity(
+            &config,
+            &state,
+            AgentKind::Daemon,
+            "alice-mac-daemon",
+        )
+        .unwrap();
         let mut daemon = daemon();
         daemon.agent_did = identity.agent_did.clone();
-        state.store_agent_identity(&identity).unwrap();
         state.upsert_agent_definition(&daemon).unwrap();
         let im_core = ImCoreAdapter::open(&config).unwrap();
         im_core.initialize_local_state().await.unwrap();
@@ -2330,11 +2339,7 @@ mod tests {
         assert_eq!(config_summary["bootstrap_key_status"], "ready");
         assert_eq!(
             config_summary["bootstrap_key_id"],
-            format!(
-                "{}#{}",
-                daemon.agent_did,
-                anp::authentication::VM_KEY_E2EE_AGREEMENT
-            )
+            identity.device_e2ee_key_id
         );
         assert_eq!(config_summary["bootstrap_key_algorithm"], "x25519");
         assert!(config_summary["bootstrap_public_key_multibase"]

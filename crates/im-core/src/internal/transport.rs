@@ -328,6 +328,7 @@ impl<'a> CoreHttpTransport<'a> {
     pub(crate) fn new(client: &'a crate::core::ImClient) -> Self {
         let runtime = client.runtime();
         let jwt_token = runtime.key_provider.valid_auth_token().ok().flatten();
+        let expected_device_access = expected_device_access_for_client(client);
         let mut auth = crate::internal::key_provider::ProviderBackedDidAuth::new(
             runtime.key_provider.clone(),
             anp::authentication::AuthMode::HttpSignatures,
@@ -349,7 +350,7 @@ impl<'a> CoreHttpTransport<'a> {
             auth,
             jwt_token,
             pending_auth_commit: None,
-            expected_device_access: None,
+            expected_device_access,
             alternate_expected_device_access: None,
             ephemeral_bearer: false,
             last_auth_retry_consumed: false,
@@ -362,6 +363,7 @@ impl<'a> CoreHttpTransport<'a> {
     /// stale generation-bound bearer token.
     pub(crate) fn new_signature_only(client: &'a crate::core::ImClient) -> Self {
         let runtime = client.runtime();
+        let expected_device_access = expected_device_access_for_client(client);
         Self {
             client,
             http: crate::internal::http::HttpClient::from_config(client.core_inner().sdk_config()),
@@ -371,7 +373,7 @@ impl<'a> CoreHttpTransport<'a> {
             ),
             jwt_token: None,
             pending_auth_commit: None,
-            expected_device_access: None,
+            expected_device_access,
             alternate_expected_device_access: None,
             ephemeral_bearer: false,
             last_auth_retry_consumed: false,
@@ -809,7 +811,7 @@ impl<'a> CoreHttpTransport<'a> {
             .or(header_token)
             .ok_or(crate::ImError::AuthRequired)?;
         if self.jwt_token.as_deref() != Some(token.as_str()) {
-            validate_access_token_for_client(self.client, &token)?;
+            self.validate_received_access_token(&token)?;
             self.client
                 .runtime()
                 .key_provider
@@ -858,7 +860,7 @@ impl<'a> CoreHttpTransport<'a> {
             .or(header_token)
             .ok_or(crate::ImError::AuthRequired)?;
         if self.jwt_token.as_deref() != Some(token.as_str()) {
-            validate_access_token_for_client(self.client, &token)?;
+            self.validate_received_access_token(&token)?;
             self.client
                 .runtime()
                 .key_provider
@@ -881,40 +883,7 @@ impl<'a> CoreHttpTransport<'a> {
             crate::internal::key_provider::ProviderBackedDidAuth::response_token(headers)?
         {
             if !token.trim().is_empty() {
-                if let Some(expected) = &self.expected_device_access {
-                    let primary = crate::internal::access_token::validate_device_access_token(
-                        &token,
-                        &crate::internal::access_token::ExpectedDeviceAccess {
-                            did: &expected.did,
-                            user_id: &expected.user_id,
-                            device_id: &expected.device_id,
-                            key_id: &expected.key_id,
-                            auth_generation: expected.auth_generation,
-                            role: expected.role,
-                            management_ready: expected.management_ready,
-                        },
-                    );
-                    if primary.is_err() {
-                        let alternate = self
-                            .alternate_expected_device_access
-                            .as_ref()
-                            .ok_or(crate::ImError::PermissionDenied)?;
-                        crate::internal::access_token::validate_device_access_token(
-                            &token,
-                            &crate::internal::access_token::ExpectedDeviceAccess {
-                                did: &alternate.did,
-                                user_id: &alternate.user_id,
-                                device_id: &alternate.device_id,
-                                key_id: &alternate.key_id,
-                                auth_generation: alternate.auth_generation,
-                                role: alternate.role,
-                                management_ready: alternate.management_ready,
-                            },
-                        )?;
-                    }
-                } else {
-                    validate_access_token_for_client(self.client, &token)?;
-                }
+                self.validate_received_access_token(&token)?;
                 if !self.ephemeral_bearer {
                     if self
                         .client
@@ -932,6 +901,21 @@ impl<'a> CoreHttpTransport<'a> {
             }
         }
         Ok(())
+    }
+
+    fn validate_received_access_token(&self, token: &str) -> crate::ImResult<()> {
+        let Some(expected) = &self.expected_device_access else {
+            return validate_access_token_for_client(self.client, token);
+        };
+        let primary = validate_expected_device_access_token(token, expected);
+        if primary.is_ok() {
+            return Ok(());
+        }
+        let alternate = self
+            .alternate_expected_device_access
+            .as_ref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        validate_expected_device_access_token(token, alternate)
     }
 
     fn hydrate_pending_device_user_id(&mut self, get_me: &Value) -> crate::ImResult<()> {
@@ -1006,6 +990,45 @@ impl<'a> CoreHttpTransport<'a> {
             }
         }
     }
+}
+
+fn expected_device_access_for_client(
+    client: &crate::core::ImClient,
+) -> Option<ExpectedDeviceAccessOwned> {
+    // File-backed identities can advance auth_generation in the identity index
+    // while an ImClient remains alive. They must keep using the dynamic index
+    // validator; only host-backed identities freeze exact claims in this seed.
+    if client.current_identity().local_alias.is_some() {
+        return None;
+    }
+    let seed = client.runtime().owner.sync_account.as_ref()?;
+    Some(ExpectedDeviceAccessOwned {
+        did: client.did().as_str().to_owned(),
+        user_id: seed.account_id.clone(),
+        device_id: seed.protocol_device_id.as_str().to_owned(),
+        key_id: seed.device_signing_key_id.clone(),
+        auth_generation: seed.device_auth_generation.parse::<u64>().unwrap_or(0),
+        role: seed.role,
+        management_ready: seed.management_ready,
+    })
+}
+
+fn validate_expected_device_access_token(
+    token: &str,
+    expected: &ExpectedDeviceAccessOwned,
+) -> crate::ImResult<()> {
+    crate::internal::access_token::validate_device_access_token(
+        token,
+        &crate::internal::access_token::ExpectedDeviceAccess {
+            did: &expected.did,
+            user_id: &expected.user_id,
+            device_id: &expected.device_id,
+            key_id: &expected.key_id,
+            auth_generation: expected.auth_generation,
+            role: expected.role,
+            management_ready: expected.management_ready,
+        },
+    )
 }
 
 impl<'a> CorePlainTransport<'a> {

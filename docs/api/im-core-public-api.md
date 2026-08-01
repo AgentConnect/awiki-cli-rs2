@@ -152,7 +152,11 @@ pub struct SkillClaimRequest {
 impl SkillOnboardingService<'_> {
     pub async fn claim_async(&self, request: SkillClaimRequest)
         -> ImResult<SkillClaimResult>;
+    pub async fn recover_legacy_claim_async(&self, request: SkillClaimRequest)
+        -> ImResult<SkillClaimResult>;
     pub fn claim(&self, request: SkillClaimRequest) -> ImResult<SkillClaimResult>;
+    pub fn recover_legacy_claim(&self, request: SkillClaimRequest)
+        -> ImResult<SkillClaimResult>;
 }
 ```
 
@@ -162,6 +166,15 @@ workspace。相同 journal 可恢复同一 DID；其他非空或无法识别状�
 Handle、确定性 greeting message ID、phase/status 和稳定错误码，不含 Token、JWT 或
 私钥。问候尚未被 Message Service 接受时返回 `greeting_pending + retryable=true`，
 重试继续使用同一 DID 和 message ID，不重新注册。
+
+新 claim 使用 v2 Agent/device identity、Device Access 和 PreKey 发布阶段。workspace 中
+存在 v1 journal/pending material 时，普通 claim 返回
+`skill_onboarding_legacy_claim_recovery_required`，调用方必须显式调用
+`recover_legacy_claim_async`，不得删除旧状态、申请第二个 Token 或生成第二个 DID。
+恢复会精确重放原 v1 exchange、持久化旧 identity、执行 same-DID Legacy upgrade，再从
+已提交的 vNext DID document 重算 journal hash 并继续 PreKey/greeting。v1 journal 对应的
+pending secret/file 缺失或孤立时返回稳定
+`blocked_requires_operator_reconciliation`，不把裸 I/O 错误伪装成可重试注册。
 
 ### 3.2 Core open 前的 local-state 升级与恢复
 
@@ -300,6 +313,8 @@ pub struct IdentityReadiness {
 
 pub enum IdentityDeviceMode { Legacy, VNext }
 pub enum IdentityDeviceRole { Member, Admin }
+pub enum IdentityDeviceAuthorizationStatus { Active, Revoked }
+pub enum AgentIdentityKind { Skill, Daemon, Runtime }
 pub enum IdentityDeviceReadiness {
     Legacy,
     MemberReady,
@@ -326,6 +341,32 @@ pub struct ActiveSyncAccountBinding {
     pub protocol_device_id: String,
     pub identity_generation: String,
     pub device_auth_generation: String,
+}
+
+// Secret-bearing trusted-host DTOs. Neither type implements Serde and both
+// redact documents, private keys, tokens, and private packages from Debug.
+pub struct VNextAgentBootstrapMaterial { /* typed Agent/device/key material */ }
+pub struct HostBackedDeviceIdentityMaterial { /* exact account/device access */ }
+
+impl ImCore {
+    pub fn generate_vnext_agent_bootstrap(
+        &self,
+        kind: AgentIdentityKind,
+        handle_local_part: &str,
+    ) -> ImResult<VNextAgentBootstrapMaterial>;
+
+    pub fn prepare_vnext_agent_legacy_upgrade(
+        &self,
+        kind: AgentIdentityKind,
+        handle_local_part: &str,
+        legacy_did_document: serde_json::Value,
+        root_private_key_pem: String,
+    ) -> ImResult<VNextAgentBootstrapMaterial>;
+
+    pub fn client_with_device_identity_material(
+        &self,
+        material: HostBackedDeviceIdentityMaterial,
+    ) -> ImResult<ImClient>;
 }
 
 pub struct IdentityRegistry<'a> {
@@ -407,6 +448,31 @@ fail closed；网络不可用、权威数据不一致和本地绑定冲突保留
 不得回退到 `IdentitySummary.device_id`、DID、Vault context device id 或常量 `1`。
 两个 generation 和后续 cursor 都以 canonical decimal string 暴露，以支持超过
 `u64` 的值而不损失精度。
+
+`generate_vnext_agent_bootstrap` 是 Skill/Daemon/Runtime 独立 Agent Account 的唯一
+共享生成器，DID path 固定为
+`agent/{skill|daemon|runtime}/{canonical-handle-local}`，并生成唯一随机 bootstrap
+Device 和互相独立的 root/device-signing/device-E2EE keys。
+`prepare_vnext_agent_legacy_upgrade` 只构造 same-DID 更新目标：旧 root 必须与旧文档
+匹配，请求的 Agent kind 必须与 DID path 匹配，Handle service 必须唯一且属于同一
+DID；函数保留 DID/root/Handle，不执行远端 `update_document`。
+
+`HostBackedDeviceIdentityMaterial` 只供同进程受信 native host 在 SecretVault 解封后
+立即构造。Core 会一起校验 canonical Manifest、唯一 matching device、key IDs 与
+private/public binding、Agent 自己的 account、canonical generations、active/admin/ready
+状态，以及 Device Access 的 DID/user/device/key/generation、精确 scopes、双 audience、
+purpose 和有效期。第一版 root 是 mandatory；rootless member 需要未来单独 API。
+校验成功后 Core 从正式 seed 派生 exact device 和六字段 binding；旧
+`HostedIdentityMaterial` 仍然没有 binding。
+
+这里的本地 Device Access 校验只解码并核对 claims/时效，不验证 JWT 签名；该 API
+因此只允许受信同进程 host 使用。Token 的密码学权威性来自 User/Message Service
+验签，运行期 fencing 来自 Message Service 对 live Device Registry 的重检。Host
+不得把本地构造成功表述为 JWT cryptographic verification。
+
+Realtime 子协议严格性也从该 exact binding 自动派生。exact vNext 必须收到
+`awiki.sync.changed.v2` 回显，`NoSubProtocol` 或缺失回显直接返回 transport error，
+不能无子协议重连；只有无 exact binding 的 Legacy/Hosted client 可走兼容 fallback。
 
 普通消息 v2 同步对每个合法 binding 默认生效，不存在 public API 级账号/设备 allowlist 或
 百分比灰度。host 只可通过全局配置做应急回滚；该配置不改变 cursor、replica 或 Event
@@ -793,10 +859,23 @@ impl MessageService<'_> {
         conversation: ConversationReadRef,
         limit: Option<u32>,
     ) -> ImResult<ThreadMessageStorePatch>;
+    pub async fn local_hydrated_incoming_recovery_async(
+        &self,
+        query: IncomingMessageRecoveryQuery,
+    ) -> ImResult<IncomingMessageRecoveryPage>;
 }
 ```
 
 Reliable sync 补充：
+
+- `local_hydrated_incoming_recovery_async` 是 Daemon crash compensation 的 Rust-only
+  本地读取边界。它只接受 `limit` 和 Core 签发的 opaque typed page token；owner、account、
+  DID、device 和 generation 全部从 exact active binding 派生，Legacy/Hosted fail closed。
+  page 只含 hydrated incoming typed `Message`，按稳定 oldest-first keyset 顺序返回
+  `items/next_page_token/has_more`，单页 `limit` 为 `1..=1000`。Token 对外字段私有，绑定
+  owner/account/device/generations，不能跨 identity 复用，也不是 Sync v2 cursor。Daemon
+  必须设置每轮总扫描 hard cap，并在 `has_more` 时逐页推进；固定反复读取第一页会造成
+  ledger 前缀饥饿。
 
 - `sync_now(MessageSyncRequest { reason, limit })` 是 v2 普通 Direct/Group 主链路。
   account、device、cursor 均由 Core 内部从 active binding 和 SQLite 获取，public outcome

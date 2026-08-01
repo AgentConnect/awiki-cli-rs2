@@ -1798,6 +1798,40 @@ VALUES ('owner-legacy', 'did:example:legacy', 'device-1', 'message-old', 'device
     db.pragma_update(None, "user_version", 31).unwrap();
 }
 
+pub(crate) fn install_release_predecessor_fixture(db: &Connection, version: i64) {
+    match version {
+        28 => install_v28_fixture(db),
+        29 => install_v29_fixture(db),
+        30 => install_v30_fixture(db),
+        31 => install_v31_fixture(db),
+        other => panic!("unsupported release predecessor fixture version {other}"),
+    }
+}
+
+pub(crate) fn downgrade_current_schema_to_release_v30_fixture(db: &Connection) {
+    db.execute_batch(
+        r#"
+DROP VIEW IF EXISTS threads;
+DROP VIEW IF EXISTS inbox;
+DROP VIEW IF EXISTS outbox;
+CREATE TABLE messages_release_v30 AS
+SELECT msg_id, owner_identity_id, owner_did, conversation_id,
+       wire_thread_kind, wire_thread_ref, wire_identity_resolution_state,
+       thread_id, direction, sender_did, receiver_did, group_id, group_did,
+       content_type, content, title, server_seq, sent_at, stored_at, is_e2ee,
+       is_read, sender_name, metadata, mentions_current_user, credential_name
+FROM messages;
+DROP TABLE messages;
+ALTER TABLE messages_release_v30 RENAME TO messages;
+CREATE UNIQUE INDEX messages_release_v30_owner_msg
+ON messages(owner_identity_id, msg_id);
+"#,
+    )
+    .unwrap();
+    replace_sync_state_with_release_shape(db);
+    db.pragma_update(None, "user_version", 30).unwrap();
+}
+
 fn install_v32_fixture(db: &Connection) {
     install_v31_fixture(db);
     db.execute_batch(crate::internal::local_state::sync_v2::SYNC_V2_SCHEMA_SQL)

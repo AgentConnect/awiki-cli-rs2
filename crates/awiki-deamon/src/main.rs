@@ -312,7 +312,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
 
     match command.as_str() {
         "install" => {
-            let token = token.context("--token is required")?;
+            let token = token
+                .or_else(|| std::env::var("AWIKI_DAEMON_INSTALL_TOKEN").ok())
+                .context("--token or AWIKI_DAEMON_INSTALL_TOKEN is required")?;
             Ok(DaemonCommand::Install {
                 options: InstallOptions {
                     token,

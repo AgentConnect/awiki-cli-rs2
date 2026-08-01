@@ -5,7 +5,7 @@ pub(crate) mod vault;
 
 pub(crate) use self::did_auth::ProviderBackedDidAuth;
 pub(crate) use self::file::FileBackedKeyMaterialProvider;
-pub(crate) use self::hosted::HostedKeyMaterialProvider;
+pub(crate) use self::hosted::{HostBackedDeviceKeyMaterialProvider, HostedKeyMaterialProvider};
 pub(crate) use self::vault::LegacyVaultKeyMaterialRefs;
 
 #[derive(Clone)]

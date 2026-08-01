@@ -1940,6 +1940,7 @@ fn sync_account_seed(
     Ok(Some(
         crate::internal::identity_runtime::SyncAccountSeed::new(
             account_id.to_owned(),
+            authorization.protocol_device_id.clone(),
             identity_generation,
             // DeviceAuthorizationProjection is the frozen signed v1 token /
             // registry boundary and therefore remains u64. Convert exactly
@@ -1947,6 +1948,9 @@ fn sync_account_seed(
             // and SQLite repositories keep the generation as a canonical
             // decimal String and never narrow it back to u64.
             authorization.auth_generation.to_string(),
+            authorization.signing_key_id.clone(),
+            authorization.role,
+            authorization.management_ready,
         ),
     ))
 }

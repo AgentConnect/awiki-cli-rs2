@@ -14,7 +14,7 @@ use super::listener_shutdown_signal::{
     wait_for_foreground_shutdown_async,
 };
 use crate::host_runtime;
-use crate::host_runtime::listener_im_event_adapter::CliRealtimeEventSink;
+use crate::host_runtime::listener_im_event_adapter::{CliImEventRoute, CliRealtimeEventSink};
 use crate::m_core_cli_adapter::realtime::{
     self as im_core_realtime_adapter, ListenerRunHostKind, ListenerRunnerMode,
 };
@@ -26,7 +26,12 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const RELIABLE_SYNC_LIMIT: u32 = 100;
+const RELIABLE_SYNC_RECONCILE_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const RELIABLE_SYNC_INITIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
+const RELIABLE_SYNC_MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 pub fn run_foreground(resolved: Resolved) -> anyhow::Result<()> {
     run_listener(resolved, ListenerRunHostKind::Foreground)
@@ -172,15 +177,44 @@ impl ListenerSupervisor {
     async fn start_known_sessions_async(&self) -> anyhow::Result<()> {
         let core = crate::m_core_cli_adapter::build_im_core_async(&self.resolved).await?;
         let identities = core.identities().list_async().await?;
-        for summary in identities {
-            let identity_name = summary
-                .local_alias
-                .as_deref()
-                .unwrap_or_else(|| summary.id.as_str());
-            let did = summary.did.as_str();
-            if let Err(err) = self.ensure_known_session_async(identity_name, did).await {
-                self.record_session_error(identity_name, did, &err.to_string());
+        let sessions: Vec<(String, String)> = identities
+            .iter()
+            .map(|summary| {
+                (
+                    summary
+                        .local_alias
+                        .clone()
+                        .unwrap_or_else(|| summary.id.as_str().to_owned()),
+                    summary.did.as_str().to_owned(),
+                )
+            })
+            .collect();
+        {
+            let mut status = self.lock_status();
+            for (identity_name, did) in &sessions {
+                upsert_session(
+                    &mut status,
+                    SessionStatus {
+                        identity_name: identity_name.clone(),
+                        did: did.clone(),
+                        connected: false,
+                        last_error: String::new(),
+                    },
+                );
             }
+            status.reliable_sync.v2_subprotocol_negotiated = false;
+            let _ = listener::write_status(&status.status_file, &status);
+        }
+        for (identity_name, did) in sessions {
+            spawn_im_core_runner_session_async(
+                self.resolved.clone(),
+                self.status.clone(),
+                self.host_notify.clone(),
+                self.shutdown.clone(),
+                identity_name,
+                did,
+            )
+            .await;
         }
         self.refresh_status();
         Ok(())
@@ -336,6 +370,7 @@ async fn spawn_im_core_runner_session_async(
                 last_error: String::new(),
             },
         );
+        guard.reliable_sync.v2_subprotocol_negotiated = false;
         let _ = listener::write_status(&guard.status_file, &guard);
     }
     let selector = im_core::IdentitySelector::LocalAlias(identity_name.clone());
@@ -352,6 +387,17 @@ async fn spawn_im_core_runner_session_async(
         }
     };
     let did = client.did().as_str().to_string();
+    if let Err(error) = client.active_sync_account_binding().await {
+        mark_session_disconnected(
+            &status,
+            &identity_name,
+            did,
+            Some(SessionDisconnectReason::Other(v2_binding_error_text(
+                &error,
+            ))),
+        );
+        return;
+    }
     let mut session = match client
         .realtime()
         .start_async(im_core_realtime_adapter::listener_realtime_options())
@@ -383,13 +429,37 @@ async fn spawn_im_core_runner_session_async(
     };
     tokio::spawn(async move {
         let mut event_error = None;
+        let mut scheduler = ListenerSyncScheduler::new();
+        let mut sync_task = None;
+        let mut reconcile_timer = tokio::time::interval_at(
+            tokio::time::Instant::now() + RELIABLE_SYNC_RECONCILE_INTERVAL,
+            RELIABLE_SYNC_RECONCILE_INTERVAL,
+        );
+        reconcile_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             if shutdown.load(Ordering::SeqCst) {
                 let _ = session.stop().await;
                 break;
             }
+            if sync_task.is_none() {
+                if let Some(reason) = scheduler.take_ready(Instant::now()) {
+                    let sync_client = client.clone();
+                    sync_task = Some(tokio::spawn(async move {
+                        sync_client
+                            .messages()
+                            .sync_now_async(im_core::messages::MessageSyncRequest {
+                                reason: reason.as_str().to_owned(),
+                                limit: Some(RELIABLE_SYNC_LIMIT),
+                            })
+                            .await
+                    }));
+                }
+            }
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                _ = reconcile_timer.tick() => {
+                    scheduler.request(ListenerSyncReason::Timer);
+                }
                 event = events.recv() => {
                     let Some(event) = event else {
                         break;
@@ -400,13 +470,77 @@ async fn spawn_im_core_runner_session_async(
                         identity_name: &identity_name,
                         did: &did,
                     };
-                    if let Err(err) = event_sink.emit(event) {
-                        event_error = Some(err.to_string());
-                        let _ = session.stop().await;
-                        break;
+                    match event_sink.emit_remote(event) {
+                        Ok(result) => {
+                            if result.route == CliImEventRoute::ConnectionStateChanged {
+                                record_v2_subprotocol_negotiated(&status);
+                            }
+                            if result.connection_became_connected {
+                                scheduler.observe_connected_transition();
+                            }
+                            if result.reliable_sync_requested {
+                                scheduler.request(ListenerSyncReason::RealtimeHint);
+                            }
+                        }
+                        Err(err) => {
+                            event_error = Some(err.to_string());
+                            let _ = session.stop().await;
+                            break;
+                        }
+                    }
+                }
+                sync_result = async {
+                    sync_task
+                        .as_mut()
+                        .expect("guarded reliable sync task")
+                        .await
+                }, if sync_task.is_some() => {
+                    sync_task = None;
+                    match sync_result {
+                        Ok(Ok(outcome)) => {
+                            if let Err(error) = emit_committed_sync_messages(
+                                &status,
+                                &host_notify,
+                                &identity_name,
+                                &did,
+                                &outcome,
+                            ) {
+                                event_error = Some(error.to_string());
+                                let _ = session.stop().await;
+                                break;
+                            }
+                            match record_reliable_sync_outcome(&status, outcome.status) {
+                                ListenerSyncDisposition::Success => {
+                                    scheduler.complete_success();
+                                }
+                                ListenerSyncDisposition::Retryable => {
+                                    scheduler.complete_retryable(Instant::now());
+                                }
+                                ListenerSyncDisposition::AuthRevoked => {
+                                    event_error = Some("reliable v2 sync authorization was revoked".to_owned());
+                                    let _ = session.stop().await;
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            if listener_sync_error_is_terminal(&error) {
+                                event_error = Some("reliable v2 sync authorization is unavailable".to_owned());
+                                let _ = session.stop().await;
+                                break;
+                            }
+                            scheduler.complete_retryable(Instant::now());
+                        }
+                        Err(_) => {
+                            scheduler.complete_retryable(Instant::now());
+                        }
                     }
                 }
             }
+        }
+        if let Some(task) = sync_task.take() {
+            task.abort();
+            let _ = task.await;
         }
         let exit = session
             .join()
@@ -441,6 +575,184 @@ async fn spawn_im_core_runner_session_async(
             Some(SessionDisconnectReason::Other(error)),
         );
     });
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListenerSyncReason {
+    Startup,
+    Reconnect,
+    RealtimeHint,
+    Timer,
+    Retry,
+}
+
+impl ListenerSyncReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Startup => "cli_listener_startup",
+            Self::Reconnect => "cli_listener_reconnect",
+            Self::RealtimeHint => "cli_listener_realtime_hint",
+            Self::Timer => "cli_listener_timer",
+            Self::Retry => "cli_listener_retry",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ListenerSyncScheduler {
+    pending: Option<ListenerSyncReason>,
+    retry_not_before: Option<Instant>,
+    retry_delay: Duration,
+    observed_connected_transition: bool,
+}
+
+impl ListenerSyncScheduler {
+    fn new() -> Self {
+        Self {
+            pending: Some(ListenerSyncReason::Startup),
+            retry_not_before: None,
+            retry_delay: RELIABLE_SYNC_INITIAL_RETRY_DELAY,
+            observed_connected_transition: false,
+        }
+    }
+
+    fn request(&mut self, reason: ListenerSyncReason) {
+        if self.pending.is_none() {
+            self.pending = Some(reason);
+        }
+    }
+
+    fn observe_connected_transition(&mut self) {
+        if self.observed_connected_transition {
+            self.request(ListenerSyncReason::Reconnect);
+        } else {
+            self.observed_connected_transition = true;
+        }
+    }
+
+    fn take_ready(&mut self, now: Instant) -> Option<ListenerSyncReason> {
+        if self
+            .retry_not_before
+            .is_some_and(|not_before| now < not_before)
+        {
+            return None;
+        }
+        let reason = self.pending.take()?;
+        self.retry_not_before = None;
+        Some(reason)
+    }
+
+    fn complete_success(&mut self) {
+        self.retry_not_before = None;
+        self.retry_delay = RELIABLE_SYNC_INITIAL_RETRY_DELAY;
+    }
+
+    fn complete_retryable(&mut self, now: Instant) {
+        self.pending = Some(ListenerSyncReason::Retry);
+        self.retry_not_before = Some(now + self.retry_delay);
+        self.retry_delay = self
+            .retry_delay
+            .saturating_mul(2)
+            .min(RELIABLE_SYNC_MAX_RETRY_DELAY);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListenerSyncDisposition {
+    Success,
+    Retryable,
+    AuthRevoked,
+}
+
+fn listener_sync_disposition(
+    status: im_core::messages::MessageSyncStatus,
+) -> ListenerSyncDisposition {
+    match status {
+        im_core::messages::MessageSyncStatus::Idle
+        | im_core::messages::MessageSyncStatus::Changed => ListenerSyncDisposition::Success,
+        im_core::messages::MessageSyncStatus::RecoveryRequired
+        | im_core::messages::MessageSyncStatus::RetryableFailure => {
+            ListenerSyncDisposition::Retryable
+        }
+        im_core::messages::MessageSyncStatus::AuthRevoked => ListenerSyncDisposition::AuthRevoked,
+    }
+}
+
+fn record_reliable_sync_outcome(
+    listener_status: &Arc<Mutex<Status>>,
+    sync_status: im_core::messages::MessageSyncStatus,
+) -> ListenerSyncDisposition {
+    let disposition = listener_sync_disposition(sync_status);
+    if disposition == ListenerSyncDisposition::Success {
+        record_v2_bootstrap_completed(listener_status);
+    }
+    disposition
+}
+
+fn listener_sync_error_is_terminal(error: &im_core::ImError) -> bool {
+    matches!(
+        error,
+        im_core::ImError::AuthRequired
+            | im_core::ImError::SessionExpired
+            | im_core::ImError::PermissionDenied
+            | im_core::ImError::IdentityBindingConflict { .. }
+            | im_core::ImError::UnsupportedCapability { .. }
+    )
+}
+
+fn emit_committed_sync_messages(
+    status: &Arc<Mutex<Status>>,
+    host_notify: &Arc<HostNotifySinkImpl>,
+    identity_name: &str,
+    did: &str,
+    outcome: &im_core::messages::MessageSyncOutcome,
+) -> im_core::ImResult<()> {
+    for committed in &outcome.committed_incoming_messages {
+        let mut event_sink = CliRealtimeEventSink {
+            status,
+            host_notify,
+            identity_name,
+            did,
+        };
+        event_sink.emit_committed_message(committed.message.clone())?;
+    }
+    Ok(())
+}
+
+fn v2_binding_error_text(error: &im_core::ImError) -> String {
+    if matches!(error, im_core::ImError::UnsupportedCapability { .. }) {
+        return "reliable v2 sync requires a VNext device identity; run `awiki-cli onboarding migrate-legacy` for an existing Skill identity".to_owned();
+    }
+    format!("reliable v2 sync binding is unavailable: {error}")
+}
+
+fn record_v2_subprotocol_negotiated(status: &Arc<Mutex<Status>>) {
+    let Ok(mut guard) = status.lock() else {
+        return;
+    };
+    let all_sessions_connected =
+        !guard.sessions.is_empty() && guard.sessions.iter().all(|session| session.connected);
+    guard.reliable_sync.v2_subprotocol_negotiated = all_sessions_connected;
+    let _ = listener::write_status(&guard.status_file, &guard);
+}
+
+fn record_v2_bootstrap_completed(status: &Arc<Mutex<Status>>) {
+    update_reliable_sync_status(status, |reliable_sync| {
+        reliable_sync.v2_bootstrap_completed = true;
+        reliable_sync.last_reconcile_protocol = "sync_v2".to_owned();
+        reliable_sync.legacy_sync_used = false;
+    });
+}
+
+fn update_reliable_sync_status(
+    status: &Arc<Mutex<Status>>,
+    update: impl FnOnce(&mut crate::host_runtime::listener::ReliableSyncStatus),
+) {
+    let Ok(mut guard) = status.lock() else {
+        return;
+    };
+    update(&mut guard.reliable_sync);
+    let _ = listener::write_status(&guard.status_file, &guard);
 }
 
 fn realtime_exit_error_text(exit: &im_core::prelude::RealtimeExit) -> String {
@@ -491,6 +803,7 @@ fn mark_session_disconnected(
             last_error,
         },
     );
+    guard.reliable_sync.v2_subprotocol_negotiated = false;
     let _ = listener::write_status(&guard.status_file, &guard);
 }
 
@@ -566,6 +879,178 @@ async fn wait_for_shutdown_signal_async(shutdown: Arc<AtomicBool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reliable_sync_scheduler_starts_once_and_coalesces_hints_during_sync() {
+        let now = Instant::now();
+        let mut scheduler = ListenerSyncScheduler::new();
+
+        assert_eq!(scheduler.take_ready(now), Some(ListenerSyncReason::Startup));
+        assert_eq!(scheduler.take_ready(now), None);
+
+        scheduler.request(ListenerSyncReason::RealtimeHint);
+        scheduler.request(ListenerSyncReason::Timer);
+        scheduler.complete_success();
+        assert_eq!(
+            scheduler.take_ready(now),
+            Some(ListenerSyncReason::RealtimeHint),
+            "multiple hints received while a sync is active must coalesce"
+        );
+        assert_eq!(scheduler.take_ready(now), None);
+    }
+
+    #[test]
+    fn reliable_sync_scheduler_reconnects_after_first_connected_transition_only() {
+        let now = Instant::now();
+        let mut scheduler = ListenerSyncScheduler::new();
+        assert_eq!(scheduler.take_ready(now), Some(ListenerSyncReason::Startup));
+
+        scheduler.observe_connected_transition();
+        assert_eq!(scheduler.take_ready(now), None);
+        scheduler.observe_connected_transition();
+        assert_eq!(
+            scheduler.take_ready(now),
+            Some(ListenerSyncReason::Reconnect)
+        );
+    }
+
+    #[test]
+    fn reliable_sync_scheduler_applies_bounded_retry_backoff() {
+        let now = Instant::now();
+        let mut scheduler = ListenerSyncScheduler::new();
+        assert_eq!(scheduler.take_ready(now), Some(ListenerSyncReason::Startup));
+
+        scheduler.complete_retryable(now);
+        assert_eq!(scheduler.take_ready(now), None);
+        assert_eq!(
+            scheduler.take_ready(now + RELIABLE_SYNC_INITIAL_RETRY_DELAY),
+            Some(ListenerSyncReason::Retry)
+        );
+        assert_eq!(scheduler.retry_delay, Duration::from_secs(2));
+
+        let mut retry_at = now + RELIABLE_SYNC_INITIAL_RETRY_DELAY;
+        for _ in 0..10 {
+            scheduler.complete_retryable(retry_at);
+            retry_at += scheduler.retry_delay;
+            assert_eq!(
+                scheduler.take_ready(retry_at),
+                Some(ListenerSyncReason::Retry)
+            );
+        }
+        assert_eq!(scheduler.retry_delay, RELIABLE_SYNC_MAX_RETRY_DELAY);
+    }
+
+    #[test]
+    fn reliable_sync_status_classification_stops_auth_revocation() {
+        assert_eq!(
+            listener_sync_disposition(im_core::messages::MessageSyncStatus::Idle),
+            ListenerSyncDisposition::Success
+        );
+        assert_eq!(
+            listener_sync_disposition(im_core::messages::MessageSyncStatus::RetryableFailure),
+            ListenerSyncDisposition::Retryable
+        );
+        assert_eq!(
+            listener_sync_disposition(im_core::messages::MessageSyncStatus::AuthRevoked),
+            ListenerSyncDisposition::AuthRevoked
+        );
+        assert!(listener_sync_error_is_terminal(
+            &im_core::ImError::PermissionDenied
+        ));
+    }
+
+    #[test]
+    fn failed_first_sync_does_not_claim_a_successful_v2_reconcile() {
+        let status = Arc::new(Mutex::new(single_connected_session_status()));
+        record_v2_subprotocol_negotiated(&status);
+
+        assert_eq!(
+            record_reliable_sync_outcome(
+                &status,
+                im_core::messages::MessageSyncStatus::RetryableFailure,
+            ),
+            ListenerSyncDisposition::Retryable
+        );
+
+        let guard = status.lock().unwrap();
+        assert!(guard.reliable_sync.v2_subprotocol_negotiated);
+        assert!(!guard.reliable_sync.v2_bootstrap_completed);
+        assert!(guard.reliable_sync.last_reconcile_protocol.is_empty());
+        assert!(!guard.reliable_sync.legacy_sync_used);
+    }
+
+    #[test]
+    fn successful_sync_records_only_v2_runtime_facts() {
+        let status = Arc::new(Mutex::new(single_connected_session_status()));
+        record_v2_subprotocol_negotiated(&status);
+        assert_eq!(
+            record_reliable_sync_outcome(&status, im_core::messages::MessageSyncStatus::Idle),
+            ListenerSyncDisposition::Success
+        );
+
+        let guard = status.lock().unwrap();
+        assert!(guard.reliable_sync.v2_subprotocol_negotiated);
+        assert!(guard.reliable_sync.v2_bootstrap_completed);
+        assert_eq!(guard.reliable_sync.last_reconcile_protocol, "sync_v2");
+        assert!(!guard.reliable_sync.legacy_sync_used);
+    }
+
+    #[test]
+    fn v2_negotiation_is_current_boot_all_session_aggregate() {
+        let status = Arc::new(Mutex::new(Status {
+            sessions: vec![
+                SessionStatus {
+                    identity_name: "skill-a".to_owned(),
+                    connected: true,
+                    ..SessionStatus::default()
+                },
+                SessionStatus {
+                    identity_name: "skill-b".to_owned(),
+                    connected: false,
+                    ..SessionStatus::default()
+                },
+            ],
+            ..Status::default()
+        }));
+
+        record_v2_subprotocol_negotiated(&status);
+        assert!(
+            !status
+                .lock()
+                .unwrap()
+                .reliable_sync
+                .v2_subprotocol_negotiated
+        );
+        status.lock().unwrap().sessions[1].connected = true;
+        record_v2_subprotocol_negotiated(&status);
+        assert!(
+            status
+                .lock()
+                .unwrap()
+                .reliable_sync
+                .v2_subprotocol_negotiated
+        );
+        status.lock().unwrap().sessions[0].connected = false;
+        record_v2_subprotocol_negotiated(&status);
+        assert!(
+            !status
+                .lock()
+                .unwrap()
+                .reliable_sync
+                .v2_subprotocol_negotiated
+        );
+    }
+
+    fn single_connected_session_status() -> Status {
+        Status {
+            sessions: vec![SessionStatus {
+                identity_name: "skill".to_owned(),
+                connected: true,
+                ..SessionStatus::default()
+            }],
+            ..Status::default()
+        }
+    }
 
     #[test]
     fn disconnected_last_error_preserves_shutdown_and_records_reader_errors_like_go() {

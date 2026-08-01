@@ -95,13 +95,14 @@ impl WsTransport {
         websocket_url: &str,
         bearer_token: &str,
         ca_bundle: Option<&str>,
+        require_sync_changed_v2: bool,
     ) -> WsResult<Self> {
         let parsed = ParsedWsUrl::parse(websocket_url)?;
         let mut stream = connect_stream(&parsed, ca_bundle)?;
         let key = websocket_key();
         write_handshake_request(&mut stream, &parsed, bearer_token, &key)?;
         let headers = read_http_headers(&mut stream)?;
-        let sync_changed_v2 = validate_handshake_response(&headers, &key)?;
+        let sync_changed_v2 = validate_handshake_response(&headers, &key, require_sync_changed_v2)?;
         Ok(Self {
             stream,
             default_read_timeout: Some(DEFAULT_READ_TIMEOUT),
@@ -631,7 +632,11 @@ fn read_http_headers(stream: &mut Box<dyn ReadWrite>) -> WsResult<String> {
     ))
 }
 
-fn validate_handshake_response(headers: &str, key: &str) -> WsResult<bool> {
+fn validate_handshake_response(
+    headers: &str,
+    key: &str,
+    require_sync_changed_v2: bool,
+) -> WsResult<bool> {
     let mut lines = headers.lines();
     let status_line = lines
         .next()
@@ -669,6 +674,11 @@ fn validate_handshake_response(headers: &str, key: &str) -> WsResult<bool> {
     {
         return Err(ws_message(
             "websocket server selected an unsupported sync subprotocol",
+        ));
+    }
+    if require_sync_changed_v2 && selected_subprotocol.is_none() {
+        return Err(ws_message(
+            "exact-device websocket requires awiki.sync.changed.v2",
         ));
     }
     Ok(selected_subprotocol.is_some())
@@ -832,16 +842,17 @@ mod tests {
         let valid = format!(
             "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: awiki.sync.changed.v2\r\n\r\n"
         );
-        assert!(validate_handshake_response(&valid, key).unwrap());
+        assert!(validate_handshake_response(&valid, key, false).unwrap());
 
         let missing =
             format!("HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\n\r\n");
-        assert!(!validate_handshake_response(&missing, key).unwrap());
+        assert!(!validate_handshake_response(&missing, key, false).unwrap());
+        assert!(validate_handshake_response(&missing, key, true).is_err());
 
         let wrong = format!(
             "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: awiki.sync.changed.v1\r\n\r\n"
         );
-        assert!(validate_handshake_response(&wrong, key).is_err());
+        assert!(validate_handshake_response(&wrong, key, false).is_err());
     }
 
     #[test]

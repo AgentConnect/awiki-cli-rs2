@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use im_core::messages::SyncDeltaRequest;
+use anyhow::{bail, Context, Result};
+use im_core::messages::MessageSyncRequest;
 use im_core::realtime::{
     ImEvent, RealtimeConnectionState, RealtimeEventStream, RealtimeExitReason, RealtimeOptions,
     RealtimeSession, RealtimeStatus, RealtimeSyncHint,
@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::sanitize_error_message;
-use crate::agent::{AgentDefinition, AgentIdentityRecord};
+use crate::agent::AgentDefinition;
 use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
 
 const REALTIME_EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -139,6 +139,13 @@ impl RuntimeRealtimeSupervisor {
         }
     }
 
+    pub(super) async fn stop_revoked_session(&mut self, agent_did: &str) {
+        // AuthRevoked is persisted for the exact Agent device before this is
+        // called, so every in-memory session for that Agent is stale even when
+        // the triggering work came from a timer without a RealtimeSource.
+        self.stop_agent_session(agent_did).await;
+    }
+
     pub(super) async fn reconcile_active_agents(&mut self) -> Result<()> {
         let agents = self.state.list_agent_definitions()?;
         let active_agent_dids = agents
@@ -199,30 +206,35 @@ impl RuntimeRealtimeSupervisor {
     }
 
     fn load_agent_snapshot(&self, agent: &AgentDefinition) -> Result<RealtimeAgentSnapshot> {
-        let identity = self
+        let device_identity = self
             .state
-            .load_agent_identity(&agent.agent_did)
-            .with_context(|| format!("load realtime identity for agent {}", agent.agent_did))?;
-        let jwt_token = self
-            .state
-            .load_agent_auth_token(&agent.agent_did)
-            .with_context(|| format!("load realtime auth token for agent {}", agent.agent_did))?;
-        let fingerprint =
-            realtime_agent_fingerprint(&self.config, agent, &identity, jwt_token.as_deref())?;
+            .load_agent_device_identity(&agent.agent_did)?
+            .with_context(|| {
+                format!(
+                    "agent_identity_migration_required: exact device identity missing for {}",
+                    agent.agent_did
+                )
+            })?;
+        if device_identity.identity_status != "active" {
+            bail!(
+                "agent_device_identity_unavailable: {} is {}",
+                agent.agent_did,
+                device_identity.identity_status
+            );
+        }
+        let fingerprint = realtime_agent_fingerprint(&self.config, agent, Some(&device_identity))?;
+        let client = self
+            .im_core
+            .client_for_agent(&self.config, &self.state, &agent.agent_did)?;
         Ok(RealtimeAgentSnapshot {
             agent: agent.clone(),
-            identity,
-            jwt_token,
+            client,
             fingerprint,
         })
     }
 
     async fn start_agent_session(&mut self, snapshot: RealtimeAgentSnapshot) -> Result<()> {
-        let client = self.im_core.client_for_agent_identity(
-            &self.config,
-            &snapshot.identity,
-            snapshot.jwt_token.as_deref(),
-        )?;
+        let client = snapshot.client;
         let mut session = client
             .realtime()
             .start_async(RealtimeOptions::default())
@@ -345,7 +357,6 @@ struct DirtyAgentSync {
     due_at: Instant,
     attempt_count: u32,
     degraded_poll: bool,
-    snapshot_required: bool,
 }
 
 impl DirtyAgentSync {
@@ -358,19 +369,20 @@ impl DirtyAgentSync {
             due_at: now + RELIABLE_SYNC_DEBOUNCE,
             attempt_count: 0,
             degraded_poll: false,
-            snapshot_required: false,
         }
     }
 }
 
 pub(super) struct RuntimeRealtimeSyncCoordinator {
     dirty: HashMap<String, DirtyAgentSync>,
+    auth_revoked_generation: HashMap<String, u64>,
 }
 
 impl RuntimeRealtimeSyncCoordinator {
     pub(super) fn new() -> Self {
         Self {
             dirty: HashMap::new(),
+            auth_revoked_generation: HashMap::new(),
         }
     }
 
@@ -452,14 +464,19 @@ impl RuntimeRealtimeSyncCoordinator {
         thread: Option<im_core::messages::ThreadRef>,
         group: Option<im_core::ids::GroupRef>,
     ) {
+        if self
+            .auth_revoked_generation
+            .get(&source.agent_did)
+            .is_some_and(|generation| *generation == source.generation)
+        {
+            return;
+        }
+        self.auth_revoked_generation.remove(&source.agent_did);
         let now = Instant::now();
         let entry = self
             .dirty
             .entry(source.agent_did.clone())
             .or_insert_with(|| DirtyAgentSync::new(now, Some(source.clone())));
-        if entry.snapshot_required {
-            return;
-        }
         entry.source = Some(source.clone());
         let was_empty = entry.reasons.is_empty();
         entry.reasons.insert(reason.as_str());
@@ -483,7 +500,6 @@ impl RuntimeRealtimeSyncCoordinator {
         let now = Instant::now();
         self.dirty
             .values()
-            .filter(|entry| !entry.snapshot_required)
             .map(|entry| entry.due_at.saturating_duration_since(now))
             .min()
             .unwrap_or(DEGRADED_POLL_FALLBACK_INTERVAL)
@@ -495,7 +511,7 @@ impl RuntimeRealtimeSyncCoordinator {
         let due_agent_dids = self
             .dirty
             .iter()
-            .filter(|(_, entry)| !entry.snapshot_required && entry.due_at <= now)
+            .filter(|(_, entry)| entry.due_at <= now)
             .map(|(agent_did, _)| agent_did.clone())
             .collect::<Vec<_>>();
         due_agent_dids
@@ -536,35 +552,28 @@ impl RuntimeRealtimeSyncCoordinator {
         }
     }
 
-    pub(super) fn mark_snapshot_required(&mut self, work: &RuntimeRealtimeSyncWork) {
-        let now = Instant::now();
-        let entry = self
-            .dirty
-            .entry(work.agent_did.clone())
-            .or_insert_with(|| DirtyAgentSync::new(now, work.source.clone()));
-        entry.snapshot_required = true;
-        entry.reasons.insert("snapshot_required");
-        entry.degraded_poll = false;
+    pub(super) fn mark_auth_revoked(&mut self, work: &RuntimeRealtimeSyncWork) {
+        self.dirty.remove(&work.agent_did);
+        self.auth_revoked_generation.insert(
+            work.agent_did.clone(),
+            work.source.as_ref().map_or(0, |source| source.generation),
+        );
     }
 
     pub(super) fn dirty_agent_count(&self) -> usize {
-        self.dirty
-            .values()
-            .filter(|entry| !entry.snapshot_required)
-            .count()
+        self.dirty.values().count()
     }
 }
 
-pub(super) async fn run_realtime_sync_delta(
+pub(super) async fn run_realtime_sync_now(
     client: &im_core::ImClient,
     work: &RuntimeRealtimeSyncWork,
-) -> im_core::ImResult<im_core::messages::SyncDeltaResult> {
+) -> im_core::ImResult<im_core::messages::MessageSyncOutcome> {
     client
         .messages()
-        .sync_delta_async(SyncDeltaRequest {
+        .sync_now_async(MessageSyncRequest {
+            reason: format!("daemon_realtime:{}", work.reasons.join(",")),
             limit: Some(100),
-            device_id: None,
-            reason: Some(format!("daemon_realtime:{}", work.reasons.join(","))),
         })
         .await
 }
@@ -630,8 +639,7 @@ impl Drop for RuntimeRealtimeSupervisor {
 
 struct RealtimeAgentSnapshot {
     agent: AgentDefinition,
-    identity: AgentIdentityRecord,
-    jwt_token: Option<String>,
+    client: im_core::ImClient,
     fingerprint: String,
 }
 
@@ -773,20 +781,21 @@ impl RealtimeExitWarning for RealtimeExitReason {
 fn realtime_agent_fingerprint(
     config: &DaemonConfig,
     agent: &AgentDefinition,
-    identity: &AgentIdentityRecord,
-    jwt_token: Option<&str>,
+    device_identity: Option<&crate::state::AgentDeviceIdentityRecord>,
 ) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(agent.agent_did.as_bytes());
     hasher.update(agent.status.as_bytes());
-    hasher.update(identity.handle.as_bytes());
-    hasher.update(serde_json::to_vec(&identity.did_document)?);
-    hasher.update(identity.public_key.as_bytes());
-    hasher.update(identity.auth_private_key_pem.as_bytes());
-    hasher.update(identity.e2ee_signing_private_key_pem.as_bytes());
-    hasher.update(identity.e2ee_agreement_private_key_pem.as_bytes());
-    if let Some(token) = jwt_token {
-        hasher.update(token.as_bytes());
+    if let Some(device_identity) = device_identity {
+        hasher.update(device_identity.identity_id.as_bytes());
+        hasher.update(device_identity.handle.as_bytes());
+        hasher.update(serde_json::to_vec(&device_identity.did_document)?);
+        hasher.update(device_identity.account_id.as_bytes());
+        hasher.update(device_identity.binding_generation.as_bytes());
+        hasher.update(device_identity.protocol_device_id.as_bytes());
+        hasher.update(device_identity.auth_generation.to_le_bytes());
+        hasher.update(device_identity.document_hash.as_bytes());
+        hasher.update(device_identity.access_token.as_bytes());
     }
     hasher.update(config.service_base_url.as_bytes());
     hasher.update(config.message_service_base_url.as_bytes());
@@ -1055,18 +1064,37 @@ mod tests {
     }
 
     #[test]
-    fn sync_coordinator_snapshot_required_blocks_future_due_work() {
+    fn sync_coordinator_auth_revoked_blocks_same_session_generation() {
         let source = source("did:agent:a", 1);
         let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
         coordinator.mark_session_ended(&source);
 
         std::thread::sleep(RELIABLE_SYNC_DEBOUNCE + Duration::from_millis(20));
         let work = coordinator.take_due_work().pop().unwrap();
-        coordinator.mark_snapshot_required(&work);
+        coordinator.mark_auth_revoked(&work);
         coordinator.mark_sync_hint(&source, Some(&sync_hint(true)), None, None);
 
         assert!(coordinator.take_due_work().is_empty());
         assert_eq!(coordinator.dirty_agent_count(), 0);
+    }
+
+    #[test]
+    fn sync_coordinator_auth_revoked_allows_new_session_generation() {
+        let revoked_source = source("did:agent:a", 1);
+        let replacement_source = source("did:agent:a", 2);
+        let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
+        coordinator.mark_session_ended(&revoked_source);
+
+        std::thread::sleep(RELIABLE_SYNC_DEBOUNCE + Duration::from_millis(20));
+        let work = coordinator.take_due_work().pop().unwrap();
+        coordinator.mark_auth_revoked(&work);
+        coordinator.mark_connection_state(&replacement_source, RealtimeConnectionState::Connected);
+
+        std::thread::sleep(RELIABLE_SYNC_DEBOUNCE + Duration::from_millis(20));
+        let work = coordinator.take_due_work();
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].source.as_ref(), Some(&replacement_source));
+        assert_eq!(work[0].reasons, vec!["reconnected"]);
     }
 
     #[test]

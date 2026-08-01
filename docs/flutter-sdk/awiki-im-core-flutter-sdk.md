@@ -107,6 +107,8 @@ never be used as its fallback.
 Skill Token claim is intentionally not exposed through the Dart facade in v1. The raw one-time
 Token is consumed only by the CLI/Rust onboarding path; App code signs and copies the instruction
 but does not pass the Token into im-core, persist it, or manage the resulting Skill Agent identity.
+The explicit v1-journal recovery entrypoint is likewise Rust/CLI-only; Flutter must not delete
+legacy onboarding artifacts or start a replacement claim that would create a second Agent DID.
 
 ## Identity secret storage
 
@@ -183,6 +185,20 @@ closed; App adapters must surface the typed error and must not derive a
 fallback from `IdentitySummary.deviceId`, DID, or local vault settings. Flutter
 Web exposes the same method shape but throws `UnsupportedError` because no
 native Core exists.
+
+The Rust-only trusted-host APIs `generate_vnext_agent_bootstrap`,
+`prepare_vnext_agent_legacy_upgrade`, and
+`client_with_device_identity_material` are intentionally not exposed through
+the Dart/Flutter facade. Their DTOs contain root/device private material and a
+Device Access token, do not implement Serde, and exist only for a native
+Daemon/Skill host that immediately transfers secrets to its own SecretVault.
+Flutter App identities continue to use the persisted native Identity Registry
+and the ordinary `activeSyncAccountBinding()` facade.
+
+The Rust-only `local_hydrated_incoming_recovery_async` typed-page API is also
+not exposed through Dart. It exists for Daemon crash compensation, requires an
+exact active binding, and uses a Core-issued owner-bound continuation token;
+it is not an App timeline API or a public Sync v2 cursor.
 
 ## Multi-device Join
 
@@ -925,6 +941,11 @@ if (capability.runnerExposed) {
 ```
 
 WebSocket remains an `im-core` internal transport concern. Transport details such as WebSocket URLs, raw frames, ping/pong, request IDs, bearer headers, and dispatch queues are internal to `im-core` and must not become Dart public API. App code should configure only `AwikiImCoreConfig.transportPolicy` and consume `client.events` / `client.connectionStates`.
+
+For any native client with an exact vNext account/device binding, Core requires
+the server to echo `awiki.sync.changed.v2`. `NoSubProtocol` is surfaced as a
+typed transport failure and is never retried as a Legacy connection. Flutter
+must not add a client-kind flag or fallback switch for this behavior.
 
 Flutter Web still receives a stub and does not support native realtime.
 

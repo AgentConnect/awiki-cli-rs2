@@ -10,11 +10,12 @@ pub use self::device_revoke::{
     DeviceRevokeRequest, DeviceRevokeResult, DeviceRevokeService, DeviceRevokeStatus,
 };
 pub use self::dto::{
-    ActiveSyncAccountBinding, ContactBindingMethod, ContactBindingMethodKind,
+    ActiveSyncAccountBinding, AgentIdentityKind, ContactBindingMethod, ContactBindingMethodKind,
     ContactBindingRequest, ContactBindingResult, ContactBindingState,
     DaemonSubkeyAuthorizationRevokeResult, DaemonSubkeyPrivatePackage, DefaultIdentityChange,
     DeleteLocalIdentityResult, HandleRegistrationJoinRequired, HandleRegistrationResult,
-    HandleRegistrationState, HostedIdentityMaterial, IdentityDeviceMode, IdentityDeviceReadiness,
+    HandleRegistrationState, HostBackedDeviceIdentityMaterial, HostedIdentityMaterial,
+    IdentityDeviceAuthorizationStatus, IdentityDeviceMode, IdentityDeviceReadiness,
     IdentityDeviceRole, IdentityDeviceSummary, IdentityMissingItem, IdentityReadiness,
     IdentitySecretStorageBackend, IdentitySelector, IdentitySummary, IdentityVaultMigrationReport,
     IdentityVaultStatus, IdentityVaultVerificationReport, InitialProfile, LegacyUpgradeStatus,
@@ -22,8 +23,9 @@ pub use self::dto::{
     ReplaceDidAffectedLocalState, ReplaceDidBackupManifestPreview, ReplaceDidBackupPlan,
     ReplaceDidExecutionRequest, ReplaceDidExecutionResult, ReplaceDidGeneratedIdentity,
     ReplaceDidLocalRebindPlan, ReplaceDidPlan, ReplaceDidPlanRequest, ReplaceDidRemoteCallPreview,
-    VerificationInput, DAEMON_SUBKEY_PACKAGE_SCHEMA_V1, DAEMON_SUBKEY_PACKAGE_SCHEMA_V2,
-    DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM,
+    VNextAgentBootstrapMaterial, VNextAgentLegacyUpgradeReconciliation,
+    VNextAgentLegacyUpgradeSession, VerificationInput, DAEMON_SUBKEY_PACKAGE_SCHEMA_V1,
+    DAEMON_SUBKEY_PACKAGE_SCHEMA_V2, DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM,
 };
 pub use self::join::{
     DeviceJoinAccountVerificationGrant, DeviceJoinApprovalPrompt, DeviceJoinAuthorizationStatus,

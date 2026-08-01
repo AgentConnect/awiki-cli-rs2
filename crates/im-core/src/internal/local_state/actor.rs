@@ -324,6 +324,13 @@ enum LocalStateCommand {
         message_ids: Vec<String>,
         reply: oneshot::Sender<crate::ImResult<Vec<super::messages::MessageRecord>>>,
     },
+    ListHydratedIncomingMessages {
+        owner_identity_id: String,
+        owner_did: String,
+        limit: i64,
+        after: Option<super::messages::HydratedIncomingMessageCursor>,
+        reply: oneshot::Sender<crate::ImResult<Vec<super::messages::MessageRecord>>>,
+    },
     ListMessagesForThreadRef {
         owner_identity_id: String,
         owner_did: String,
@@ -1343,6 +1350,25 @@ impl LocalStateDb {
         self.send(LocalStateCommand::ListDecryptedSecureMessages {
             owner_identity_id: owner_identity_id.into(),
             message_ids,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_hydrated_incoming_messages(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        limit: i64,
+        after: Option<super::messages::HydratedIncomingMessageCursor>,
+    ) -> crate::ImResult<Vec<super::messages::MessageRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListHydratedIncomingMessages {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            limit,
+            after,
             reply,
         })
         .await?;
@@ -2443,6 +2469,22 @@ fn run_actor(
                     &connection,
                     &owner_identity_id,
                     &message_ids,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListHydratedIncomingMessages {
+                owner_identity_id,
+                owner_did,
+                limit,
+                after,
+                reply,
+            } => {
+                let result = super::messages::list_hydrated_incoming_messages_for_owner_identity(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    limit,
+                    after.as_ref(),
                 );
                 let _ = reply.send(result);
             }

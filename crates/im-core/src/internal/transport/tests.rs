@@ -3,7 +3,124 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::json;
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+const HOST_ACCOUNT_ID: &str = "agent-account-refresh";
+
+fn host_backed_core(root: &std::path::Path, endpoint: &str) -> crate::core::ImCore {
+    crate::core::ImCore::new(
+        crate::config::ImCoreConfig {
+            service_base_url: crate::config::ServiceEndpoint::parse(endpoint).unwrap(),
+            did_domain: "awiki.test".to_owned(),
+            user_service_endpoint: None,
+            message_service_endpoint: None,
+            mail_service_endpoint: None,
+            anp_service_endpoint: None,
+            anp_service_did: None,
+            ca_bundle: None,
+            transport_policy: crate::config::MessageTransportPolicy::HttpOnly,
+        },
+        crate::paths::ImCorePaths {
+            identities: crate::paths::IdentityRegistryPaths {
+                identity_root_dir: root.join("identities"),
+                registry_path: root.join("identities").join("registry.json"),
+                default_identity_path: Some(root.join("identities").join("default")),
+            },
+            local_state: crate::paths::LocalStatePaths {
+                sqlite_path: root.join("local").join("im.sqlite"),
+            },
+            runtime: crate::paths::RuntimePaths {
+                cache_dir: root.join("cache"),
+                temp_dir: root.join("tmp"),
+            },
+        },
+    )
+    .unwrap()
+}
+
+fn host_device_access_token(
+    bootstrap: &crate::identity::VNextAgentBootstrapMaterial,
+    account_id: &str,
+    device_id: &str,
+    key_id: &str,
+    auth_generation: u64,
+    scopes: &[&str],
+    jti: &str,
+) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let claims = json!({
+        "iss": "user-service",
+        "aud": ["awiki-user-service", "awiki-message-service"],
+        "sub": bootstrap.did.as_str(),
+        "type": "access",
+        "purpose": "awiki.device.access.v1",
+        "did": bootstrap.did.as_str(),
+        "user_id": account_id,
+        "device_id": device_id,
+        "key_id": key_id,
+        "auth_generation": auth_generation,
+        "scopes": scopes,
+        "iat": now,
+        "nbf": now,
+        "exp": now + 3600,
+        "jti": jti,
+    });
+    format!(
+        "e30.{}.test-signature",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+    )
+}
+
+fn host_backed_client(
+    core: &crate::core::ImCore,
+) -> (
+    crate::core::ImClient,
+    crate::identity::VNextAgentBootstrapMaterial,
+    String,
+) {
+    let bootstrap = core
+        .generate_vnext_agent_bootstrap(
+            crate::identity::AgentIdentityKind::Daemon,
+            "refresh-daemon",
+        )
+        .unwrap();
+    let initial_token = host_device_access_token(
+        &bootstrap,
+        HOST_ACCOUNT_ID,
+        bootstrap.protocol_device_id.as_str(),
+        &bootstrap.device_signing_key_id,
+        1,
+        &["device:manage", "device:read", "message:connect"],
+        "host-bootstrap-token",
+    );
+    let client = core
+        .client_with_device_identity_material(crate::identity::HostBackedDeviceIdentityMaterial {
+            identity_id: bootstrap.identity_id.clone(),
+            did: bootstrap.did.as_str().to_owned(),
+            handle: Some(format!("{}.awiki.test", bootstrap.handle_local_part)),
+            display_name: Some("Refresh daemon".to_owned()),
+            account_id: HOST_ACCOUNT_ID.to_owned(),
+            binding_generation: "1".to_owned(),
+            did_document: bootstrap.did_document.clone(),
+            protocol_device_id: bootstrap.protocol_device_id.clone(),
+            device_signing_key_id: bootstrap.device_signing_key_id.clone(),
+            device_signing_private_key_pem: bootstrap.device_signing_private_key_pem.clone(),
+            device_e2ee_key_id: bootstrap.device_e2ee_key_id.clone(),
+            device_e2ee_private_key_pem: bootstrap.device_e2ee_private_key_pem.clone(),
+            root_key_id: bootstrap.root_key_id.clone(),
+            root_private_key_pem: bootstrap.root_private_key_pem.clone(),
+            authorization_status: crate::identity::IdentityDeviceAuthorizationStatus::Active,
+            role: crate::identity::IdentityDeviceRole::Admin,
+            management_ready: true,
+            auth_generation: "1".to_owned(),
+            access_token: initial_token.clone(),
+        })
+        .unwrap();
+    (client, bootstrap, initial_token)
+}
 
 fn assert_transport_unavailable<T>(result: crate::ImResult<T>, expected: &str) {
     match result {
@@ -293,6 +410,166 @@ async fn ephemeral_bearer_401_does_not_retry_or_persist_response_token() {
     );
 }
 
+#[tokio::test]
+async fn host_backed_401_refresh_accepts_and_persists_exact_device_access() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let core = host_backed_core(root.path(), &format!("http://{address}"));
+    let (client, bootstrap, initial_token) = host_backed_client(&core);
+    let refreshed_token = host_device_access_token(
+        &bootstrap,
+        HOST_ACCOUNT_ID,
+        bootstrap.protocol_device_id.as_str(),
+        &bootstrap.device_signing_key_id,
+        1,
+        &["device:manage", "device:read", "message:connect"],
+        "host-refreshed-token",
+    );
+    let server_token = refreshed_token.clone();
+    let server = std::thread::spawn(move || {
+        let (mut first_stream, _) = listener.accept().unwrap();
+        let first = read_request_headers(&mut first_stream);
+        write_unauthorized(&mut first_stream);
+
+        let (mut second_stream, _) = listener.accept().unwrap();
+        let second = read_request_headers(&mut second_stream);
+        write_rpc_success_with_token(&mut second_stream, &server_token);
+        (first, second)
+    });
+
+    let mut transport = CoreHttpTransport::new(&client);
+    let expected = transport
+        .expected_device_access
+        .as_ref()
+        .expect("host-backed transport must carry exact Device Access claims");
+    assert_eq!(expected.did, bootstrap.did.as_str());
+    assert_eq!(expected.user_id, HOST_ACCOUNT_ID);
+    assert_eq!(expected.device_id, bootstrap.protocol_device_id.as_str());
+    assert_eq!(expected.key_id, bootstrap.device_signing_key_id);
+    assert_eq!(expected.auth_generation, 1);
+    assert_eq!(
+        expected.role,
+        crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
+    );
+    assert!(expected.management_ready);
+
+    let result = AsyncAuthenticatedRpcTransport::authenticated_rpc(
+        &mut transport,
+        "/user-service/did/rpc",
+        "get_me",
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result, json!({"ok": true}));
+    let (first, second) = server.join().unwrap();
+    assert!(first
+        .to_ascii_lowercase()
+        .contains(&format!("authorization: bearer {initial_token}").to_ascii_lowercase()));
+    assert!(!second.contains(&initial_token));
+    assert_eq!(
+        client
+            .runtime()
+            .key_provider
+            .valid_auth_token()
+            .unwrap()
+            .as_deref(),
+        Some(refreshed_token.as_str())
+    );
+    assert_eq!(
+        transport.jwt_token.as_deref(),
+        Some(refreshed_token.as_str())
+    );
+}
+
+#[test]
+fn host_backed_response_token_rejects_wrong_exact_claims_without_secret_leak_or_store() {
+    let root = tempfile::tempdir().unwrap();
+    let core = host_backed_core(root.path(), "https://awiki.test");
+    let (client, bootstrap, initial_token) = host_backed_client(&core);
+    let admin_scopes = ["device:manage", "device:read", "message:connect"];
+    let member_scopes = [
+        "device:read",
+        "device:root-import-complete",
+        "message:connect",
+    ];
+    let cases = [
+        host_device_access_token(
+            &bootstrap,
+            "wrong-account-secret",
+            bootstrap.protocol_device_id.as_str(),
+            &bootstrap.device_signing_key_id,
+            1,
+            &admin_scopes,
+            "wrong-account-token",
+        ),
+        host_device_access_token(
+            &bootstrap,
+            HOST_ACCOUNT_ID,
+            "wrong-device-secret",
+            &bootstrap.device_signing_key_id,
+            1,
+            &admin_scopes,
+            "wrong-device-token",
+        ),
+        host_device_access_token(
+            &bootstrap,
+            HOST_ACCOUNT_ID,
+            bootstrap.protocol_device_id.as_str(),
+            &bootstrap.device_signing_key_id,
+            2,
+            &admin_scopes,
+            "wrong-generation-token",
+        ),
+        host_device_access_token(
+            &bootstrap,
+            HOST_ACCOUNT_ID,
+            bootstrap.protocol_device_id.as_str(),
+            "did:wba:awiki.test:wrong-signing-key-secret",
+            1,
+            &admin_scopes,
+            "wrong-key-token",
+        ),
+        host_device_access_token(
+            &bootstrap,
+            HOST_ACCOUNT_ID,
+            bootstrap.protocol_device_id.as_str(),
+            &bootstrap.device_signing_key_id,
+            1,
+            &member_scopes,
+            "wrong-readiness-token",
+        ),
+    ];
+
+    let mut transport = CoreHttpTransport::new(&client);
+    for token in cases {
+        let headers = BTreeMap::from([(
+            "Authentication-Info".to_owned(),
+            format!("access_token={token}"),
+        )]);
+        let error = transport
+            .capture_token("https://awiki.test/user-service/did/rpc", &headers)
+            .unwrap_err();
+        assert_eq!(error, crate::ImError::PermissionDenied);
+        let rendered = format!("{error:?} {error}");
+        assert!(!rendered.contains(&token));
+        assert!(!rendered.contains("wrong-account-secret"));
+        assert!(!rendered.contains("wrong-device-secret"));
+        assert!(!rendered.contains("wrong-signing-key-secret"));
+        assert_eq!(
+            client
+                .runtime()
+                .key_provider
+                .valid_auth_token()
+                .unwrap()
+                .as_deref(),
+            Some(initial_token.as_str())
+        );
+        assert!(transport.pending_auth_commit.is_none());
+    }
+}
+
 fn read_request_headers(stream: &mut std::net::TcpStream) -> String {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -313,6 +590,28 @@ fn write_unauthorized_with_token(stream: &mut std::net::TcpStream) {
             b"HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 2\r\nAuthentication-Info: access_token=server-poison-token\r\nConnection: close\r\n\r\n{}",
         )
         .unwrap();
+    stream.flush().unwrap();
+}
+
+fn write_unauthorized(stream: &mut std::net::TcpStream) {
+    stream
+        .write_all(
+            b"HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        )
+        .unwrap();
+    stream.flush().unwrap();
+}
+
+fn write_rpc_success_with_token(stream: &mut std::net::TcpStream, token: &str) {
+    let body = br#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#;
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAuthentication-Info: access_token={}\r\nConnection: close\r\n\r\n",
+        body.len(),
+        token
+    )
+    .unwrap();
+    stream.write_all(body).unwrap();
     stream.flush().unwrap();
 }
 

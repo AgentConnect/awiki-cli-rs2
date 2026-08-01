@@ -4,8 +4,8 @@ use base64::{
     Engine as _,
 };
 use im_core::vault::{
-    DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealSecretRequest, SecretBytes,
-    SecretRef, SecretVault, DEVICE_VAULT_ROOT_KEY_LEN,
+    DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealIfAbsentResult,
+    SealSecretRequest, SecretBytes, SecretRef, SecretVault, DEVICE_VAULT_ROOT_KEY_LEN,
 };
 use rand::rngs::OsRng;
 use rand::RngCore;
@@ -60,8 +60,26 @@ impl DaemonSecretVault {
         Ok(secret_ref)
     }
 
+    pub fn seal_if_absent(
+        &self,
+        request: SealSecretRequest,
+    ) -> im_core::ImResult<SealIfAbsentResult> {
+        let result = self.inner.seal_if_absent(request)?;
+        if let SealIfAbsentResult::Sealed(secret_ref) = &result {
+            if let Err(error) = self.inner.open(secret_ref) {
+                let _ = self.inner.delete(secret_ref);
+                return Err(error);
+            }
+        }
+        Ok(result)
+    }
+
     pub fn open(&self, secret_ref: &SecretRef) -> im_core::ImResult<SecretBytes> {
         self.inner.open(secret_ref)
+    }
+
+    pub fn delete(&self, secret_ref: &SecretRef) -> im_core::ImResult<()> {
+        self.inner.delete(secret_ref)
     }
 
     pub fn list(&self) -> im_core::ImResult<Vec<SecretRef>> {

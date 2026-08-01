@@ -125,6 +125,220 @@ impl ImCore {
         crate::onboarding::SkillOnboardingService::new(self)
     }
 
+    /// Builds one independent vNext Agent DID with exactly one bootstrap
+    /// device. The returned secret material is intended for immediate transfer
+    /// into a trusted host's SecretVault-backed pending record.
+    pub fn generate_vnext_agent_bootstrap(
+        &self,
+        kind: crate::identity::AgentIdentityKind,
+        handle_local_part: &str,
+    ) -> crate::ImResult<crate::identity::VNextAgentBootstrapMaterial> {
+        let local_part = canonical_agent_handle_local_part(handle_local_part)?;
+        let generated = crate::internal::identity_generation::generate_vnext_agent_handle_identity(
+            &self.inner.sdk_config().did_domain,
+            kind,
+            &local_part,
+            self.inner.sdk_config().anp_service_endpoint.as_ref(),
+            self.inner.sdk_config().anp_service_did.as_ref(),
+        )?;
+        vnext_agent_bootstrap_material(kind, local_part, generated, true)
+    }
+
+    /// Prepares a same-DID vNext target for an existing Legacy Agent.
+    ///
+    /// The old root key and Handle service are verified and preserved. Only a
+    /// fresh bootstrap device signing/E2EE key pair and random device ID are
+    /// added. This function does not perform the remote `update_document` or
+    /// persist any secret material.
+    pub fn prepare_vnext_agent_legacy_upgrade(
+        &self,
+        kind: crate::identity::AgentIdentityKind,
+        handle_local_part: &str,
+        legacy_did_document: serde_json::Value,
+        root_private_key_pem: String,
+    ) -> crate::ImResult<crate::identity::VNextAgentBootstrapMaterial> {
+        let local_part = canonical_agent_handle_local_part(handle_local_part)?;
+        validate_preserved_agent_handle(
+            &legacy_did_document,
+            kind,
+            &local_part,
+            &self.inner.sdk_config().did_domain,
+        )?;
+        let generated = crate::internal::identity_legacy_upgrade::build_legacy_upgrade(
+            &legacy_did_document,
+            &root_private_key_pem,
+        )?;
+        let root_private = anp::PrivateKeyMaterial::from_pem(&root_private_key_pem)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        let signing_private = anp::PrivateKeyMaterial::from_pem(&generated.signing_private_pem)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        let e2ee_private = anp::PrivateKeyMaterial::from_pem(&generated.e2ee_private_pem)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        let did = generated.did;
+        let identity_id = did
+            .as_str()
+            .rsplit(':')
+            .next()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(did.as_str())
+            .to_owned();
+        Ok(crate::identity::VNextAgentBootstrapMaterial {
+            kind,
+            handle_local_part: local_part,
+            identity_id,
+            root_key_id: format!("{}#key-1", did.as_str()),
+            root_public_key_pem: root_private.public_key().to_pem(),
+            root_private_key_pem,
+            device_signing_key_id: generated.signing_key_id,
+            device_signing_public_key_pem: signing_private.public_key().to_pem(),
+            device_signing_private_key_pem: generated.signing_private_pem,
+            device_e2ee_key_id: generated.e2ee_key_id,
+            device_e2ee_public_key_pem: e2ee_private.public_key().to_pem(),
+            device_e2ee_private_key_pem: generated.e2ee_private_pem,
+            did,
+            did_document: generated.target_document,
+            document_hash: generated.target_document_hash,
+            protocol_device_id: generated.protocol_device_id,
+            daemon_subkey_package: None,
+        })
+    }
+
+    /// Reconciles a crash-interrupted same-DID Agent Legacy upgrade without
+    /// issuing a remote mutation. A committed target is reported explicitly;
+    /// a still-Legacy remote document rebuilds the target with the exact same
+    /// device identity and private keys but a fresh root proof and extensions.
+    pub fn reconcile_vnext_agent_legacy_upgrade(
+        &self,
+        source_legacy_did_document: &serde_json::Value,
+        mut target: crate::identity::VNextAgentBootstrapMaterial,
+        remote_did_document: &serde_json::Value,
+        root_private_key_pem: &str,
+    ) -> crate::ImResult<crate::identity::VNextAgentLegacyUpgradeReconciliation> {
+        validate_vnext_agent_legacy_target(self, &target)?;
+        validate_preserved_agent_handle(
+            source_legacy_did_document,
+            target.kind,
+            &target.handle_local_part,
+            &self.inner.sdk_config().did_domain,
+        )?;
+        let root_private = anp::PrivateKeyMaterial::from_pem(root_private_key_pem)
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        if root_private.public_key().to_pem() != target.root_public_key_pem {
+            return Err(crate::ImError::PermissionDenied);
+        }
+
+        let generated = legacy_upgrade_generated_from_target(&target);
+        let mut source_rebuilt = generated.clone();
+        crate::internal::identity_legacy_upgrade::rebuild_legacy_upgrade_target(
+            &mut source_rebuilt,
+            source_legacy_did_document,
+            root_private_key_pem,
+        )?;
+        if document_without_proof(&source_rebuilt.target_document)
+            != document_without_proof(&target.did_document)
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+
+        let remote_hash =
+            crate::internal::identity_wire::document::document_hash(remote_did_document)?;
+        if remote_hash == target.document_hash && remote_did_document == &target.did_document {
+            return Ok(crate::identity::VNextAgentLegacyUpgradeReconciliation::TargetCommitted);
+        }
+        validate_preserved_agent_handle(
+            remote_did_document,
+            target.kind,
+            &target.handle_local_part,
+            &self.inner.sdk_config().did_domain,
+        )?;
+        let mut rebuilt = generated;
+        crate::internal::identity_legacy_upgrade::rebuild_legacy_upgrade_target(
+            &mut rebuilt,
+            remote_did_document,
+            root_private_key_pem,
+        )?;
+        target.did_document = rebuilt.target_document;
+        target.document_hash = rebuilt.target_document_hash;
+        validate_vnext_agent_legacy_target(self, &target)?;
+        Ok(crate::identity::VNextAgentLegacyUpgradeReconciliation::LegacyRebuilt { target })
+    }
+
+    /// Recovers an exact bootstrap-device session after the reconciler proves
+    /// that the target document committed remotely. This performs only signed
+    /// `get_me`, Registry validation and authoritative Handle lookup; it never
+    /// calls `update_document`.
+    pub async fn refresh_committed_vnext_agent_legacy_upgrade_session(
+        &self,
+        target: &crate::identity::VNextAgentBootstrapMaterial,
+    ) -> crate::ImResult<crate::identity::VNextAgentLegacyUpgradeSession> {
+        validate_vnext_agent_legacy_target(self, target)?;
+        let full_handle = format!(
+            "{}.{}",
+            target.handle_local_part,
+            self.inner.sdk_config().did_domain
+        );
+        let client = self.client_with_identity_material_and_signing_key_id(
+            crate::identity::HostedIdentityMaterial {
+                identity_id: target.identity_id.clone(),
+                did: target.did.as_str().to_owned(),
+                handle: Some(full_handle.clone()),
+                display_name: Some("AWiki Agent".to_owned()),
+                did_document: target.did_document.clone(),
+                default_signing_private_key_pem: target.device_signing_private_key_pem.clone(),
+                e2ee_agreement_private_key_pem: Some(target.device_e2ee_private_key_pem.clone()),
+                auth_token: None,
+            },
+            &target.device_signing_key_id,
+        )?;
+        let mut transport = crate::internal::transport::CoreHttpTransport::new_pending_device(
+            &client,
+            client.runtime().key_provider.clone(),
+            crate::internal::transport::ExpectedDeviceAccessOwned {
+                did: target.did.as_str().to_owned(),
+                user_id: String::new(),
+                device_id: target.protocol_device_id.as_str().to_owned(),
+                key_id: target.device_signing_key_id.clone(),
+                auth_generation: 1,
+                role: crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
+                management_ready: true,
+            },
+        );
+        let access_token = transport.refresh_jwt_async().await?;
+        let user_id = transport.pending_device_user_id()?;
+        let registry_call =
+            crate::internal::identity_wire::device_join::build_registry_call(&target.did, false);
+        let raw = crate::internal::transport::AsyncAuthenticatedRpcTransport::authenticated_rpc(
+            &mut transport,
+            registry_call.endpoint,
+            registry_call.method,
+            registry_call.params,
+        )
+        .await?;
+        validate_vnext_agent_legacy_registry(target, raw)?;
+        let lookup = crate::internal::handle_discovery::resolve_authoritative_handle_binding_async(
+            &client,
+            &full_handle,
+        )
+        .await?;
+        if lookup.did != target.did {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let binding_generation = lookup
+            .binding_generation
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let canonical_generation = anp::wns::BindingGeneration::new(binding_generation.clone())
+            .map_err(|_| crate::ImError::PermissionDenied)?;
+        if canonical_generation.to_string() != binding_generation {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        Ok(crate::identity::VNextAgentLegacyUpgradeSession {
+            did: target.did.clone(),
+            user_id,
+            binding_generation,
+            access_token,
+        })
+    }
+
     pub fn client(&self, selector: crate::identity::IdentitySelector) -> crate::ImResult<ImClient> {
         let runtime = self.identities().load_runtime(selector)?;
         Ok(ImClient::new(self.inner.clone(), runtime))
@@ -149,6 +363,86 @@ impl ImCore {
         material: crate::identity::HostedIdentityMaterial,
     ) -> crate::ImResult<ImClient> {
         self.client_with_identity_material_inner(material, None)
+    }
+
+    /// Creates an exact-device client from material held by a trusted host.
+    ///
+    /// The material is accepted only when the canonical vNext document,
+    /// Manifest, private keys and Device Access claims form one exact active
+    /// ready-admin authorization. Ordinary Hosted/Legacy material continues to
+    /// use [`Self::client_with_identity_material`] and receives no sync binding.
+    pub fn client_with_device_identity_material(
+        &self,
+        material: crate::identity::HostBackedDeviceIdentityMaterial,
+    ) -> crate::ImResult<ImClient> {
+        let identity_id = crate::ids::IdentityId::parse(&material.identity_id)?;
+        let did = crate::ids::Did::parse(&material.did)?;
+        let expected_identity_id = did
+            .as_str()
+            .rsplit(':')
+            .next()
+            .filter(|value| !value.is_empty())
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if identity_id.as_str() != expected_identity_id {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let handle = material
+            .handle
+            .as_deref()
+            .map(|handle| crate::ids::Handle::parse(handle, &self.inner.sdk_config().did_domain))
+            .transpose()?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        validate_handle_service_for_did(&material.did_document, &did, &handle)?;
+        let protocol_device_id = material.protocol_device_id.clone();
+        let account_id = material.account_id.clone();
+        let binding_generation = material.binding_generation.clone();
+        let auth_generation_number = material
+            .auth_generation
+            .parse::<u64>()
+            .ok()
+            .filter(|generation| *generation > 0)
+            .filter(|generation| generation.to_string() == material.auth_generation)
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let device_signing_key_id = material.device_signing_key_id.clone();
+        let display_name = material.display_name.clone();
+        let key_provider = std::sync::Arc::new(
+            crate::internal::key_provider::HostBackedDeviceKeyMaterialProvider::new(&material)?,
+        );
+        let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
+            summary: crate::identity::IdentitySummary {
+                id: identity_id.clone(),
+                did: did.clone(),
+                handle: Some(handle),
+                display_name,
+                local_alias: None,
+                device_id: Some(protocol_device_id.as_str().to_owned()),
+                is_default: false,
+                readiness: crate::identity::IdentityReadiness {
+                    ready_for_auth: true,
+                    ready_for_messaging: true,
+                    missing: Vec::new(),
+                },
+            },
+            did_document_path: std::path::PathBuf::new(),
+            private_key_path: std::path::PathBuf::new(),
+            e2ee_agreement_private_key_path: std::path::PathBuf::new(),
+            auth_state_path: std::path::PathBuf::new(),
+            key_provider,
+            owner: crate::internal::identity_runtime::LocalOwnerContext {
+                identity_id,
+                current_did: did,
+                sync_account: Some(crate::internal::identity_runtime::SyncAccountSeed::new(
+                    account_id,
+                    protocol_device_id,
+                    Some(binding_generation),
+                    auth_generation_number.to_string(),
+                    device_signing_key_id,
+                    crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
+                    true,
+                )),
+            },
+        };
+        Ok(ImClient::new(self.inner.clone(), runtime))
     }
 
     pub(crate) fn client_with_identity_material_and_signing_key_id(
@@ -214,6 +508,281 @@ impl ImCore {
     }
 }
 
+fn legacy_upgrade_generated_from_target(
+    target: &crate::identity::VNextAgentBootstrapMaterial,
+) -> crate::internal::identity_legacy_upgrade::GeneratedLegacyUpgrade {
+    crate::internal::identity_legacy_upgrade::GeneratedLegacyUpgrade {
+        did: target.did.clone(),
+        protocol_device_id: target.protocol_device_id.clone(),
+        signing_key_id: target.device_signing_key_id.clone(),
+        signing_private_pem: target.device_signing_private_key_pem.clone(),
+        e2ee_key_id: target.device_e2ee_key_id.clone(),
+        e2ee_private_pem: target.device_e2ee_private_key_pem.clone(),
+        target_document: target.did_document.clone(),
+        target_document_hash: target.document_hash.clone(),
+    }
+}
+
+fn document_without_proof(document: &serde_json::Value) -> serde_json::Value {
+    let mut document = document.clone();
+    if let Some(object) = document.as_object_mut() {
+        object.remove("proof");
+    }
+    document
+}
+
+fn validate_vnext_agent_legacy_target(
+    core: &ImCore,
+    target: &crate::identity::VNextAgentBootstrapMaterial,
+) -> crate::ImResult<()> {
+    let canonical_local_part = canonical_agent_handle_local_part(&target.handle_local_part)?;
+    let expected_identity_id = target
+        .did
+        .as_str()
+        .rsplit(':')
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let document_hash =
+        crate::internal::identity_wire::document::document_hash(&target.did_document)?;
+    let expected_root_key_id = format!("{}#key-1", target.did.as_str());
+    let expected_signing_key_id = format!(
+        "{}#{}-sign",
+        target.did.as_str(),
+        target.protocol_device_id.as_str()
+    );
+    let expected_e2ee_key_id = format!(
+        "{}#{}-e2ee",
+        target.did.as_str(),
+        target.protocol_device_id.as_str()
+    );
+    if canonical_local_part != target.handle_local_part
+        || target.identity_id != expected_identity_id
+        || target
+            .did_document
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            != Some(target.did.as_str())
+        || document_hash != target.document_hash
+        || target.root_key_id != expected_root_key_id
+        || target.device_signing_key_id != expected_signing_key_id
+        || target.device_e2ee_key_id != expected_e2ee_key_id
+        || !anp::authentication::validate_did_document_binding(&target.did_document, true)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    validate_preserved_agent_handle(
+        &target.did_document,
+        target.kind,
+        &target.handle_local_part,
+        &core.inner.sdk_config().did_domain,
+    )?;
+    let manifest = anp::authentication::validate_device_manifest(&target.did_document)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if manifest.devices.len() != 1
+        || manifest.devices[0].device_id != target.protocol_device_id.as_str()
+        || manifest.devices[0].signing_key_id != target.device_signing_key_id
+        || manifest.devices[0].e2ee_key_id != target.device_e2ee_key_id
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    validate_bootstrap_private_key(
+        &target.did_document,
+        &target.root_key_id,
+        &target.root_private_key_pem,
+        &target.root_public_key_pem,
+        BootstrapPrivateKeyRole::Signing,
+    )?;
+    validate_bootstrap_private_key(
+        &target.did_document,
+        &target.device_signing_key_id,
+        &target.device_signing_private_key_pem,
+        &target.device_signing_public_key_pem,
+        BootstrapPrivateKeyRole::Signing,
+    )?;
+    validate_bootstrap_private_key(
+        &target.did_document,
+        &target.device_e2ee_key_id,
+        &target.device_e2ee_private_key_pem,
+        &target.device_e2ee_public_key_pem,
+        BootstrapPrivateKeyRole::Agreement,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum BootstrapPrivateKeyRole {
+    Signing,
+    Agreement,
+}
+
+fn validate_bootstrap_private_key(
+    document: &serde_json::Value,
+    key_id: &str,
+    private_key_pem: &str,
+    expected_public_key_pem: &str,
+    role: BootstrapPrivateKeyRole,
+) -> crate::ImResult<()> {
+    let methods = document
+        .get("verificationMethod")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let matching = methods
+        .iter()
+        .filter(|method| method.get("id").and_then(serde_json::Value::as_str) == Some(key_id))
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let private = anp::PrivateKeyMaterial::from_pem(private_key_pem)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let algorithm_matches = match role {
+        BootstrapPrivateKeyRole::Signing => {
+            matches!(&private, anp::PrivateKeyMaterial::Ed25519(_))
+        }
+        BootstrapPrivateKeyRole::Agreement => {
+            matches!(&private, anp::PrivateKeyMaterial::X25519(_))
+        }
+    };
+    let public =
+        crate::internal::identity_wire::document::extract_identity_public_key(matching[0])?;
+    if !algorithm_matches
+        || private.public_key().to_pem() != public.to_pem()
+        || private.public_key().to_pem() != expected_public_key_pem
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn validate_vnext_agent_legacy_registry(
+    target: &crate::identity::VNextAgentBootstrapMaterial,
+    raw: serde_json::Value,
+) -> crate::ImResult<()> {
+    let registry = crate::internal::identity_wire::device_join::parse_registry_result(
+        raw,
+        &target.did,
+        false,
+    )?;
+    let matching = registry
+        .devices
+        .iter()
+        .filter(|device| device.device_id == target.protocol_device_id.as_str())
+        .collect::<Vec<_>>();
+    if registry.devices.len() != 1
+        || matching.len() != 1
+        || matching[0].signing_key_id != target.device_signing_key_id
+        || matching[0].e2ee_key_id != target.device_e2ee_key_id
+        || matching[0].role
+            != crate::internal::identity_device_state::DeviceAuthorizationRole::Admin
+        || !matching[0].management_ready
+        || matching[0].auth_generation != 1
+        || registry.checkpoint.document_hash != target.document_hash
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn canonical_agent_handle_local_part(value: &str) -> crate::ImResult<String> {
+    let value = value.trim().to_ascii_lowercase();
+    if !anp::wns::validate_local_part(&value) {
+        return Err(crate::ImError::invalid_input(
+            Some("handle_local_part".to_owned()),
+            "Agent Handle local-part must be a canonical WNS local-part without a domain",
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_preserved_agent_handle(
+    document: &serde_json::Value,
+    kind: crate::identity::AgentIdentityKind,
+    local_part: &str,
+    domain: &str,
+) -> crate::ImResult<()> {
+    let did = crate::ids::Did::parse(
+        document
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(crate::ImError::PermissionDenied)?,
+    )?;
+    let expected_agent_prefix = format!("did:wba:{}:agent:{}:", domain.trim(), kind.as_str());
+    if !did.as_str().starts_with(&expected_agent_prefix)
+        || !anp::authentication::validate_did_document_binding(document, true)
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let handle = crate::ids::Handle::parse(format!("{local_part}.{}", domain.trim()), "")?;
+    validate_handle_service_for_did(document, &did, &handle)
+}
+
+pub(crate) fn validate_handle_service_for_did(
+    document: &serde_json::Value,
+    did: &crate::ids::Did,
+    handle: &crate::ids::Handle,
+) -> crate::ImResult<()> {
+    if document.get("id").and_then(serde_json::Value::as_str) != Some(did.as_str()) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let (local_part, domain) = handle
+        .as_str()
+        .split_once('.')
+        .filter(|(local_part, domain)| !local_part.is_empty() && !domain.is_empty())
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let normalized_handle = anp::wns::normalize_handle(handle.as_str())
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    if normalized_handle != handle.as_str() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let expected_endpoint = anp::wns::build_resolution_url(local_part, domain);
+    let handle_services = anp::wns::extract_handle_service_from_did_document(document);
+    if handle_services.len() != 1 {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let service = &handle_services[0];
+    let expected_absolute_id = format!("{}#handle", did.as_str());
+    let service_id = service.get("id").and_then(serde_json::Value::as_str);
+    if (!matches!(service_id, Some("#handle")) && service_id != Some(expected_absolute_id.as_str()))
+        || service
+            .get("serviceEndpoint")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_endpoint.as_str())
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn vnext_agent_bootstrap_material(
+    kind: crate::identity::AgentIdentityKind,
+    local_part: String,
+    generated: crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey,
+    include_daemon_subkey: bool,
+) -> crate::ImResult<crate::identity::VNextAgentBootstrapMaterial> {
+    let document_hash =
+        crate::internal::identity_wire::document::document_hash(&generated.did_document)?;
+    Ok(crate::identity::VNextAgentBootstrapMaterial {
+        kind,
+        handle_local_part: local_part,
+        identity_id: generated.unique_id,
+        did: generated.did,
+        did_document: generated.did_document,
+        document_hash,
+        protocol_device_id: generated.protocol_device_id,
+        root_key_id: generated.root_key_id,
+        root_private_key_pem: generated.root_private_pem,
+        root_public_key_pem: generated.root_public_pem,
+        device_signing_key_id: generated.device_signing_key_id,
+        device_signing_private_key_pem: generated.device_signing_private_pem,
+        device_signing_public_key_pem: generated.device_signing_public_pem,
+        device_e2ee_key_id: generated.device_e2ee_key_id,
+        device_e2ee_private_key_pem: generated.device_e2ee_private_pem,
+        device_e2ee_public_key_pem: generated.device_e2ee_public_pem,
+        daemon_subkey_package: include_daemon_subkey.then_some(generated.daemon_subkey_package),
+    })
+}
+
 impl ImCoreInner {
     pub(crate) fn sdk_config(&self) -> &crate::ImCoreConfig {
         &self.sdk_config
@@ -261,6 +830,145 @@ impl ImCoreInner {
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_legacy_reconcile_preserves_device_keys_and_fails_closed_on_other_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let core = test_core(root.path());
+        let mut legacy =
+            crate::internal::identity_generation::generate_identity_with_default_daemon_subkey(
+                "awiki.test",
+                ["agent", "daemon", "edgehost"],
+                None,
+                None,
+            )
+            .unwrap()
+            .identity;
+        legacy
+            .did_document
+            .get_mut("service")
+            .and_then(serde_json::Value::as_array_mut)
+            .unwrap()
+            .push(anp::wns::build_handle_service_entry(
+                legacy.did.as_str(),
+                "edgehost",
+                "awiki.test",
+            ));
+        crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+            &mut legacy.did_document,
+            &legacy.did,
+            &legacy.key1_private_pem,
+        )
+        .unwrap();
+        let target = core
+            .prepare_vnext_agent_legacy_upgrade(
+                crate::identity::AgentIdentityKind::Daemon,
+                "edgehost",
+                legacy.did_document.clone(),
+                legacy.key1_private_pem.clone(),
+            )
+            .unwrap();
+
+        let committed = core
+            .reconcile_vnext_agent_legacy_upgrade(
+                &legacy.did_document,
+                target.clone(),
+                &target.did_document,
+                &legacy.key1_private_pem,
+            )
+            .unwrap();
+        assert_eq!(
+            committed,
+            crate::identity::VNextAgentLegacyUpgradeReconciliation::TargetCommitted
+        );
+
+        let mut refreshed_legacy = legacy.did_document.clone();
+        refreshed_legacy["agentExtension"] = serde_json::json!({"revision": 2});
+        crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+            &mut refreshed_legacy,
+            &legacy.did,
+            &legacy.key1_private_pem,
+        )
+        .unwrap();
+        let rebuilt = core
+            .reconcile_vnext_agent_legacy_upgrade(
+                &legacy.did_document,
+                target.clone(),
+                &refreshed_legacy,
+                &legacy.key1_private_pem,
+            )
+            .unwrap();
+        let crate::identity::VNextAgentLegacyUpgradeReconciliation::LegacyRebuilt {
+            target: rebuilt,
+        } = rebuilt
+        else {
+            panic!("expected rebuilt Legacy target");
+        };
+        assert_eq!(rebuilt.did, target.did);
+        assert_eq!(rebuilt.protocol_device_id, target.protocol_device_id);
+        assert_eq!(
+            rebuilt.device_signing_private_key_pem,
+            target.device_signing_private_key_pem
+        );
+        assert_eq!(
+            rebuilt.device_e2ee_private_key_pem,
+            target.device_e2ee_private_key_pem
+        );
+        assert_eq!(
+            rebuilt.did_document.get("agentExtension"),
+            Some(&serde_json::json!({"revision": 2}))
+        );
+
+        let other_target = core
+            .prepare_vnext_agent_legacy_upgrade(
+                crate::identity::AgentIdentityKind::Daemon,
+                "edgehost",
+                legacy.did_document.clone(),
+                legacy.key1_private_pem.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            core.reconcile_vnext_agent_legacy_upgrade(
+                &legacy.did_document,
+                target,
+                &other_target.did_document,
+                &legacy.key1_private_pem,
+            )
+            .unwrap_err(),
+            crate::ImError::PermissionDenied
+        );
+    }
+
+    fn test_core(root: &std::path::Path) -> ImCore {
+        ImCore::new(
+            crate::ImCoreConfig {
+                service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
+                did_domain: "awiki.test".to_owned(),
+                user_service_endpoint: None,
+                message_service_endpoint: None,
+                mail_service_endpoint: None,
+                anp_service_endpoint: None,
+                anp_service_did: None,
+                ca_bundle: None,
+                transport_policy: crate::MessageTransportPolicy::HttpOnly,
+            },
+            crate::ImCorePaths {
+                identities: crate::IdentityRegistryPaths {
+                    identity_root_dir: root.join("identities"),
+                    registry_path: root.join("identities").join("registry.json"),
+                    default_identity_path: Some(root.join("identities").join("default")),
+                },
+                local_state: crate::LocalStatePaths {
+                    sqlite_path: root.join("local").join("im.sqlite"),
+                },
+                runtime: crate::RuntimePaths {
+                    cache_dir: root.join("cache"),
+                    temp_dir: root.join("tmp"),
+                },
+            },
+        )
+        .unwrap()
+    }
 
     #[tokio::test]
     async fn local_state_db_concurrent_first_open_shares_actor() {

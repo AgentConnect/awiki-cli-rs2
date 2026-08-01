@@ -2433,19 +2433,13 @@ ON thread_read_state(owner_identity_id, conversation_id);
     #[test]
     fn v31_forward_migration_drops_only_legacy_private_delivery_state() {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch(DIRECT_E2EE_V2_SCHEMA).unwrap();
-        install_pre_v34_thread_read_state_fixture(&connection);
+        crate::internal::local_state::schema::tests::install_release_predecessor_fixture(
+            &connection,
+            30,
+        );
         connection
             .execute_batch(
                 r#"
-CREATE TABLE direct_e2ee_v2_private_outbound (
-    owner_identity_id TEXT NOT NULL,
-    local_device_id TEXT NOT NULL,
-    operation_id TEXT NOT NULL,
-    PRIMARY KEY (owner_identity_id, local_device_id, operation_id)
-);
-CREATE TABLE direct_e2ee_v2_private_outbound_tombstones (operation_id TEXT PRIMARY KEY);
-
 INSERT INTO direct_e2ee_v2_sessions (
     owner_identity_id, owner_did, local_device_id, peer_did, peer_device_id,
     session_id, state_blob, revision, disabled, created_at, updated_at
@@ -2556,7 +2550,9 @@ INSERT INTO direct_e2ee_v2_prekey_bundles (
         }
         let prekey_count: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM direct_e2ee_v2_prekey_bundles WHERE bundle_id = 'ordinary-bundle'",
+                "SELECT COUNT(*) FROM direct_e2ee_v2_prekey_bundles
+                 WHERE owner_identity_id = 'identity-1'
+                   AND bundle_id = 'ordinary-bundle'",
                 [],
                 |row| row.get(0),
             )
@@ -2596,7 +2592,9 @@ INSERT INTO direct_e2ee_v2_prekey_bundles (
         );
         drop(store);
 
-        connection.pragma_update(None, "user_version", 30).unwrap();
+        crate::internal::local_state::schema::tests::downgrade_current_schema_to_release_v30_fixture(
+            &connection,
+        );
         crate::internal::local_state::schema::ensure_schema(&connection).unwrap();
         assert_eq!(
             crate::internal::local_state::schema::current_schema_version(&connection).unwrap(),

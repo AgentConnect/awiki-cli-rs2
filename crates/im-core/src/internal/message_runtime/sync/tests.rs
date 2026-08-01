@@ -1925,7 +1925,10 @@ async fn sync_thread_after_group_clamps_cursor_behind_hydration_hole() {
     .unwrap();
 
     assert_eq!(calls.borrow()[0].params["body"]["after_server_seq"], "5");
-    assert_eq!(calls.borrow()[0].params["body"]["thread_key"], "did:example:group");
+    assert_eq!(
+        calls.borrow()[0].params["body"]["thread_key"],
+        "did:example:group"
+    );
     assert_eq!(
         fixture.message_content(canonical_message_id).as_deref(),
         Some("group hydration marker")

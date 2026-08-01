@@ -39,6 +39,7 @@ impl AsyncWsTransport {
         websocket_url: &str,
         bearer_token: &str,
         ca_bundle: Option<&str>,
+        require_sync_changed_v2: bool,
     ) -> Result<Self, AsyncWsConnectError> {
         let connector = async_ws_rustls_connector(ca_bundle).await?;
         let request = build_async_ws_request(websocket_url, bearer_token, true)?;
@@ -49,7 +50,7 @@ impl AsyncWsTransport {
         };
         let (stream, response) = match connected {
             Ok(connected) => connected,
-            Err(error) if is_missing_async_ws_subprotocol(&error) => {
+            Err(error) if is_missing_async_ws_subprotocol(&error) && !require_sync_changed_v2 => {
                 let request = build_async_ws_request(websocket_url, bearer_token, false)?;
                 if let Some(connector) = connector {
                     connect_async_tls_with_config(request, None, false, Some(connector)).await
@@ -60,7 +61,8 @@ impl AsyncWsTransport {
             }
             Err(error) => return Err(async_ws_connect_error(error)),
         };
-        let sync_changed_v2 = validate_async_ws_subprotocol(response.headers())?;
+        let sync_changed_v2 =
+            validate_async_ws_subprotocol(response.headers(), require_sync_changed_v2)?;
         Ok(Self {
             stream,
             ping_counter: 0,
@@ -149,7 +151,10 @@ fn is_missing_async_ws_subprotocol(error: &TungsteniteError) -> bool {
     )
 }
 
-fn validate_async_ws_subprotocol(headers: &HeaderMap) -> Result<bool, AsyncWsConnectError> {
+fn validate_async_ws_subprotocol(
+    headers: &HeaderMap,
+    require_sync_changed_v2: bool,
+) -> Result<bool, AsyncWsConnectError> {
     let selected = headers
         .get(SEC_WEBSOCKET_PROTOCOL)
         .and_then(|value| value.to_str().ok());
@@ -158,6 +163,11 @@ fn validate_async_ws_subprotocol(headers: &HeaderMap) -> Result<bool, AsyncWsCon
     {
         return Err(async_ws_connect_message(
             "websocket server selected an unsupported sync subprotocol",
+        ));
+    }
+    if require_sync_changed_v2 && selected.is_none() {
+        return Err(async_ws_connect_message(
+            "exact-device websocket requires awiki.sync.changed.v2",
         ));
     }
     Ok(selected.is_some())
@@ -256,13 +266,13 @@ mod tests {
     #[test]
     fn async_ws_allows_v1_fallback_and_rejects_wrong_selected_subprotocol() {
         let mut headers = HeaderMap::new();
-        assert!(!validate_async_ws_subprotocol(&headers).unwrap());
+        assert!(!validate_async_ws_subprotocol(&headers, false).unwrap());
 
         headers.insert(
             SEC_WEBSOCKET_PROTOCOL,
             "awiki.sync.changed.v1".parse().unwrap(),
         );
-        assert!(validate_async_ws_subprotocol(&headers).is_err());
+        assert!(validate_async_ws_subprotocol(&headers, false).is_err());
 
         headers.insert(
             SEC_WEBSOCKET_PROTOCOL,
@@ -270,7 +280,7 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        assert!(validate_async_ws_subprotocol(&headers).unwrap());
+        assert!(validate_async_ws_subprotocol(&headers, false).unwrap());
     }
 
     #[test]
@@ -298,12 +308,41 @@ mod tests {
             }
         });
 
-        let transport =
-            AsyncWsTransport::connect(&format!("ws://{address}/im/ws"), "legacy-token", None)
-                .await
-                .unwrap();
+        let transport = AsyncWsTransport::connect(
+            &format!("ws://{address}/im/ws"),
+            "legacy-token",
+            None,
+            false,
+        )
+        .await
+        .unwrap();
 
         assert!(!transport.sync_changed_v2);
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn async_ws_exact_device_does_not_retry_without_v2_subprotocol() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio_tungstenite::accept_async(stream).await.unwrap();
+            if let Ok(Ok((stream, _))) =
+                tokio::time::timeout(std::time::Duration::from_millis(250), listener.accept()).await
+            {
+                tokio_tungstenite::accept_async(stream).await.unwrap();
+                true
+            } else {
+                false
+            }
+        });
+
+        let result =
+            AsyncWsTransport::connect(&format!("ws://{address}/im/ws"), "device-token", None, true)
+                .await;
+
+        assert!(result.is_err());
+        assert!(!server.await.unwrap());
     }
 }

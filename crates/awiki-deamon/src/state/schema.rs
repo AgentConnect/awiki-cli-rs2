@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 34;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 35;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -258,6 +258,94 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             agent_did TEXT PRIMARY KEY,
             jwt_token TEXT NOT NULL,
             jwt_token_ref_json TEXT,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_device_identity (
+            agent_did TEXT PRIMARY KEY,
+            handle TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            agent_kind TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            full_handle TEXT NOT NULL,
+            binding_generation TEXT NOT NULL,
+            did_document_json TEXT NOT NULL,
+            protocol_device_id TEXT NOT NULL,
+            root_key_id TEXT NOT NULL,
+            root_private_key_ref_json TEXT NOT NULL,
+            device_signing_key_id TEXT NOT NULL,
+            device_signing_private_key_ref_json TEXT NOT NULL,
+            device_e2ee_key_id TEXT NOT NULL,
+            device_e2ee_private_key_ref_json TEXT NOT NULL,
+            daemon_subkey_package_ref_json TEXT,
+            authorization_status TEXT NOT NULL,
+            role TEXT NOT NULL,
+            management_ready INTEGER NOT NULL,
+            auth_generation INTEGER NOT NULL,
+            access_token_ref_json TEXT NOT NULL,
+            document_version INTEGER NOT NULL,
+            document_hash TEXT NOT NULL,
+            registry_version INTEGER NOT NULL,
+            identity_status TEXT NOT NULL,
+            legacy_migration_state TEXT NOT NULL,
+            last_error_code TEXT,
+            identity_id TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            UNIQUE(account_id, protocol_device_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_device_identity_status
+        ON agent_device_identity(identity_status, legacy_migration_state);
+
+        CREATE TABLE IF NOT EXISTS agent_registration_pending (
+            registration_id TEXT PRIMARY KEY,
+            dedupe_key TEXT NOT NULL UNIQUE,
+            agent_kind TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            handle TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            agent_did TEXT NOT NULL,
+            protocol_device_id TEXT NOT NULL,
+            document_digest TEXT NOT NULL,
+            request_digest TEXT NOT NULL,
+            secret_ref_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            last_error_summary TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_registration_pending_status
+        ON agent_registration_pending(status, updated_at_ms);
+
+        CREATE TABLE IF NOT EXISTS agent_sync_probe (
+            agent_did TEXT PRIMARY KEY,
+            v2_subprotocol_negotiated INTEGER NOT NULL DEFAULT 0,
+            v2_bootstrap_completed INTEGER NOT NULL DEFAULT 0,
+            last_reconcile_protocol TEXT,
+            legacy_sync_used INTEGER NOT NULL DEFAULT 0,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_legacy_upgrade_pending (
+            agent_did TEXT PRIMARY KEY,
+            agent_kind TEXT NOT NULL,
+            protocol_device_id TEXT NOT NULL,
+            target_document_hash TEXT NOT NULL,
+            secret_ref_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_identity_migration_state (
+            agent_did TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            last_error_code TEXT NOT NULL,
             updated_at_ms INTEGER NOT NULL
         );
 
@@ -616,6 +704,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_agent_identity_vault_refs_v32(connection)?;
     migrate_user_delegated_identity_vault_refs_v33(connection)?;
     migrate_legacy_message_agent_binding_v34(connection)?;
+    migrate_agent_device_identity_v35(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -623,6 +712,101 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_agent_device_identity_v35(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_device_identity (
+            agent_did TEXT PRIMARY KEY,
+            handle TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            agent_kind TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            full_handle TEXT NOT NULL,
+            binding_generation TEXT NOT NULL,
+            did_document_json TEXT NOT NULL,
+            protocol_device_id TEXT NOT NULL,
+            root_key_id TEXT NOT NULL,
+            root_private_key_ref_json TEXT NOT NULL,
+            device_signing_key_id TEXT NOT NULL,
+            device_signing_private_key_ref_json TEXT NOT NULL,
+            device_e2ee_key_id TEXT NOT NULL,
+            device_e2ee_private_key_ref_json TEXT NOT NULL,
+            daemon_subkey_package_ref_json TEXT,
+            authorization_status TEXT NOT NULL,
+            role TEXT NOT NULL,
+            management_ready INTEGER NOT NULL,
+            auth_generation INTEGER NOT NULL,
+            access_token_ref_json TEXT NOT NULL,
+            document_version INTEGER NOT NULL,
+            document_hash TEXT NOT NULL,
+            registry_version INTEGER NOT NULL,
+            identity_status TEXT NOT NULL,
+            legacy_migration_state TEXT NOT NULL,
+            last_error_code TEXT,
+            identity_id TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            UNIQUE(account_id, protocol_device_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_device_identity_status
+        ON agent_device_identity(identity_status, legacy_migration_state);
+
+        CREATE TABLE IF NOT EXISTS agent_registration_pending (
+            registration_id TEXT PRIMARY KEY,
+            dedupe_key TEXT NOT NULL UNIQUE,
+            agent_kind TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            handle TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            agent_did TEXT NOT NULL,
+            protocol_device_id TEXT NOT NULL,
+            document_digest TEXT NOT NULL,
+            request_digest TEXT NOT NULL,
+            secret_ref_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            last_error_summary TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_registration_pending_status
+        ON agent_registration_pending(status, updated_at_ms);
+
+        CREATE TABLE IF NOT EXISTS agent_sync_probe (
+            agent_did TEXT PRIMARY KEY,
+            v2_subprotocol_negotiated INTEGER NOT NULL DEFAULT 0,
+            v2_bootstrap_completed INTEGER NOT NULL DEFAULT 0,
+            last_reconcile_protocol TEXT,
+            legacy_sync_used INTEGER NOT NULL DEFAULT 0,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_legacy_upgrade_pending (
+            agent_did TEXT PRIMARY KEY,
+            agent_kind TEXT NOT NULL,
+            protocol_device_id TEXT NOT NULL,
+            target_document_hash TEXT NOT NULL,
+            secret_ref_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_identity_migration_state (
+            agent_did TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            last_error_code TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+        "#,
     )?;
     Ok(())
 }

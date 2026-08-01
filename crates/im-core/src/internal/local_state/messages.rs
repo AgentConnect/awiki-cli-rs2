@@ -1880,6 +1880,129 @@ pub(crate) struct ThreadLocalHistoryRecords {
 }
 
 #[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HydratedIncomingMessageCursor {
+    pub(crate) timestamp: String,
+    pub(crate) server_sequence_key: i64,
+    pub(crate) message_id: String,
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn list_hydrated_incoming_messages_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    limit: i64,
+    after: Option<&HydratedIncomingMessageCursor>,
+) -> crate::ImResult<Vec<MessageRecord>> {
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let owner_did = required("owner_did", owner_did)?;
+    if limit <= 0 {
+        return Err(crate::ImError::invalid_input(
+            Some("limit".to_owned()),
+            "limit must be positive",
+        ));
+    }
+    if after.is_some_and(|cursor| {
+        cursor.timestamp.trim().is_empty() || cursor.message_id.trim().is_empty()
+    }) {
+        return Err(crate::ImError::invalid_input(
+            Some("page_token".to_owned()),
+            "page token is invalid",
+        ));
+    }
+    let mut query = String::from(
+        r#"
+SELECT msg_id,
+       owner_identity_id,
+       owner_did,
+       conversation_id,
+       wire_thread_kind,
+       wire_thread_ref,
+       wire_identity_resolution_state,
+       thread_id,
+       direction,
+       sender_did,
+       receiver_did,
+       group_id,
+       group_did,
+       content_type,
+       content,
+       title,
+       server_seq,
+       hydration_state,
+       sent_at,
+       stored_at,
+       is_e2ee,
+       is_read,
+       sender_name,
+       metadata,
+       mentions_current_user,
+       credential_name
+FROM messages
+WHERE owner_identity_id = ?1
+  AND owner_did = ?2
+  AND direction = 0
+  AND hydration_state = 'hydrated'"#,
+    );
+    if after.is_some() {
+        query.push_str(
+            r#"
+  AND (
+       COALESCE(NULLIF(sent_at, ''), stored_at) > ?3
+    OR (COALESCE(NULLIF(sent_at, ''), stored_at) = ?3
+        AND COALESCE(server_seq, -1) > ?4)
+    OR (COALESCE(NULLIF(sent_at, ''), stored_at) = ?3
+        AND COALESCE(server_seq, -1) = ?4
+        AND msg_id > ?5)
+  )"#,
+        );
+    }
+    query.push_str(
+        r#"
+ORDER BY COALESCE(NULLIF(sent_at, ''), stored_at) ASC,
+         COALESCE(server_seq, -1) ASC,
+         msg_id ASC
+LIMIT ?"#,
+    );
+    let mut statement = connection
+        .prepare(&query)
+        .map_err(super::local_state_unavailable)?;
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(6);
+    params.push(&owner_identity_id);
+    params.push(&owner_did);
+    if let Some(after) = after {
+        params.push(&after.timestamp);
+        params.push(&after.server_sequence_key);
+        params.push(&after.message_id);
+    }
+    params.push(&limit);
+    let rows = statement
+        .query_map(params.as_slice(), message_record_from_row)
+        .map_err(super::local_state_unavailable)?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row.map_err(super::local_state_unavailable)?);
+    }
+    Ok(records)
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn hydrated_incoming_message_cursor(
+    record: &MessageRecord,
+) -> HydratedIncomingMessageCursor {
+    HydratedIncomingMessageCursor {
+        timestamp: if record.sent_at.trim().is_empty() {
+            record.stored_at.clone()
+        } else {
+            record.sent_at.clone()
+        },
+        server_sequence_key: record.server_seq.unwrap_or(-1),
+        message_id: record.msg_id.clone(),
+    }
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn list_messages_for_thread_ref_for_owner_identity(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,

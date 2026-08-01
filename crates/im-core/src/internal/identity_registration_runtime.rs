@@ -26,6 +26,20 @@ pub(crate) struct IdentityRegistrationRuntime<'a, T> {
     transport: T,
 }
 
+pub(crate) struct VNextBootstrapSaveInput<'a> {
+    pub(crate) generated:
+        &'a crate::internal::identity_generation::GeneratedVNextIdentityWithDaemonSubkey,
+    pub(crate) document_hash: &'a str,
+    pub(crate) local_alias: &'a str,
+    pub(crate) display_name: &'a str,
+    pub(crate) user_id: &'a str,
+    pub(crate) handle: &'a str,
+    pub(crate) full_handle: &'a str,
+    pub(crate) binding_generation: &'a str,
+    pub(crate) access_token: &'a str,
+    pub(crate) make_default: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RegistrationTarget {
     local_part: String,
@@ -788,7 +802,7 @@ fn commit_pending_registration(
     let storage = crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
     let stored =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
-            .save_identity_with_secret_storage(registration_save_input(pending, remote), storage)?;
+            .save_identity_with_secret_storage(registration_save_input(pending, remote)?, storage)?;
     registration_result(pending, stored, previous_default, method)
 }
 
@@ -811,7 +825,7 @@ async fn commit_pending_registration_async(
     let stored =
         crate::internal::identity_store::IdentityStore::save_identity_with_secret_storage_async(
             core.inner().sdk_paths().identities.clone(),
-            registration_save_input(pending, remote),
+            registration_save_input(pending, remote)?,
             storage,
         )
         .await?;
@@ -821,45 +835,75 @@ async fn commit_pending_registration_async(
 fn registration_save_input(
     pending: &crate::internal::identity_registration_pending::PendingRegistration,
     remote: &crate::internal::identity_registration_pending::PendingRegistrationRemoteResult,
-) -> crate::internal::identity_store::SaveIdentityInput {
-    crate::internal::identity_store::SaveIdentityInput {
-        local_alias: pending.local_alias.clone(),
-        did: pending.generated.did.clone(),
-        unique_id: pending.generated.unique_id.clone(),
-        user_id: remote.user_id.clone(),
-        display_name: pending.display_name.clone(),
-        handle: remote.handle.clone(),
-        full_handle: remote.full_handle.clone(),
-        binding_generation: Some(remote.binding_generation.clone()),
-        jwt_token: remote.access_token.clone(),
-        did_document: Some(pending.generated.did_document.clone()),
-        key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
-            root_key_id: pending.generated.root_key_id.clone(),
-            device_signing_key_id: pending.generated.device_signing_key_id.clone(),
-            device_e2ee_key_id: pending.generated.device_e2ee_key_id.clone(),
-        },
-        device_state: Some(bootstrap_device_state(pending)),
-        key1_private_pem: pending.generated.root_private_pem.clone(),
-        key1_public_pem: pending.generated.root_public_pem.clone(),
-        e2ee_signing_private_pem: pending.generated.device_signing_private_pem.clone(),
-        e2ee_agreement_private_pem: pending.generated.device_e2ee_private_pem.clone(),
-        daemon_subkey_package: Some(pending.generated.daemon_subkey_package.clone()),
+) -> crate::ImResult<crate::internal::identity_store::SaveIdentityInput> {
+    vnext_bootstrap_save_input(VNextBootstrapSaveInput {
+        generated: &pending.generated,
+        document_hash: &pending.document_hash,
+        local_alias: &pending.local_alias,
+        display_name: &pending.display_name,
+        user_id: &remote.user_id,
+        handle: &remote.handle,
+        full_handle: &remote.full_handle,
+        binding_generation: &remote.binding_generation,
+        access_token: &remote.access_token,
         make_default: pending.make_default,
-    }
+    })
 }
 
-fn bootstrap_device_state(
-    pending: &crate::internal::identity_registration_pending::PendingRegistration,
-) -> crate::internal::identity_device_state::IdentityDeviceState {
-    crate::internal::identity_device_state::IdentityDeviceState {
+pub(crate) fn vnext_bootstrap_save_input(
+    input: VNextBootstrapSaveInput<'_>,
+) -> crate::ImResult<crate::internal::identity_store::SaveIdentityInput> {
+    let generated = input.generated;
+    if crate::internal::identity_wire::document::document_hash(&generated.did_document)?
+        != input.document_hash
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let expected_identity_id = generated
+        .did
+        .as_str()
+        .rsplit(':')
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if generated.unique_id != expected_identity_id {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let handle = crate::ids::Handle::parse(input.full_handle, "")?;
+    crate::core::validate_handle_service_for_did(&generated.did_document, &generated.did, &handle)?;
+    let _validated_provider =
+        crate::internal::key_provider::HostBackedDeviceKeyMaterialProvider::new(
+            &crate::identity::HostBackedDeviceIdentityMaterial {
+                identity_id: generated.unique_id.clone(),
+                did: generated.did.as_str().to_owned(),
+                handle: Some(input.full_handle.to_owned()),
+                display_name: Some(input.display_name.to_owned()),
+                account_id: input.user_id.to_owned(),
+                binding_generation: input.binding_generation.to_owned(),
+                did_document: generated.did_document.clone(),
+                protocol_device_id: generated.protocol_device_id.clone(),
+                device_signing_key_id: generated.device_signing_key_id.clone(),
+                device_signing_private_key_pem: generated.device_signing_private_pem.clone(),
+                device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
+                device_e2ee_private_key_pem: generated.device_e2ee_private_pem.clone(),
+                root_key_id: generated.root_key_id.clone(),
+                root_private_key_pem: generated.root_private_pem.clone(),
+                authorization_status: crate::identity::IdentityDeviceAuthorizationStatus::Active,
+                role: crate::identity::IdentityDeviceRole::Admin,
+                management_ready: true,
+                auth_generation: "1".to_owned(),
+                access_token: input.access_token.to_owned(),
+            },
+        )?;
+    let device_state = crate::internal::identity_device_state::IdentityDeviceState {
         schema_version:
             crate::internal::identity_device_state::IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
         mode: crate::internal::identity_device_state::IdentityDeviceMode::VNext,
         authorization: Some(
             crate::internal::identity_device_state::DeviceAuthorizationProjection {
-                protocol_device_id: pending.generated.protocol_device_id.clone(),
-                signing_key_id: pending.generated.device_signing_key_id.clone(),
-                e2ee_key_id: pending.generated.device_e2ee_key_id.clone(),
+                protocol_device_id: generated.protocol_device_id.clone(),
+                signing_key_id: generated.device_signing_key_id.clone(),
+                e2ee_key_id: generated.device_e2ee_key_id.clone(),
                 status: crate::internal::identity_device_state::DeviceAuthorizationStatus::Active,
                 role: crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
                 management_ready: true,
@@ -869,11 +913,35 @@ fn bootstrap_device_state(
         checkpoint: Some(
             crate::internal::identity_device_state::IdentityInternalCheckpoint {
                 document_version: 1,
-                document_hash: pending.document_hash.clone(),
+                document_hash: input.document_hash.to_owned(),
                 registry_version: 1,
             },
         ),
-    }
+    };
+    Ok(crate::internal::identity_store::SaveIdentityInput {
+        local_alias: input.local_alias.to_owned(),
+        did: generated.did.clone(),
+        unique_id: generated.unique_id.clone(),
+        user_id: input.user_id.to_owned(),
+        display_name: input.display_name.to_owned(),
+        handle: input.handle.to_owned(),
+        full_handle: input.full_handle.to_owned(),
+        binding_generation: Some(input.binding_generation.to_owned()),
+        jwt_token: input.access_token.to_owned(),
+        did_document: Some(generated.did_document.clone()),
+        key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
+            root_key_id: generated.root_key_id.clone(),
+            device_signing_key_id: generated.device_signing_key_id.clone(),
+            device_e2ee_key_id: generated.device_e2ee_key_id.clone(),
+        },
+        device_state: Some(device_state),
+        key1_private_pem: generated.root_private_pem.clone(),
+        key1_public_pem: generated.root_public_pem.clone(),
+        e2ee_signing_private_pem: generated.device_signing_private_pem.clone(),
+        e2ee_agreement_private_pem: generated.device_e2ee_private_pem.clone(),
+        daemon_subkey_package: Some(generated.daemon_subkey_package.clone()),
+        make_default: input.make_default,
+    })
 }
 
 fn registration_result(
@@ -935,7 +1003,7 @@ fn publish_v2_prekeys_after_registration(
     runtime.block_on(publish_v2_prekeys_after_registration_async(core, did))
 }
 
-async fn publish_v2_prekeys_after_registration_async(
+pub(crate) async fn publish_v2_prekeys_after_registration_async(
     core: &crate::core::ImCore,
     did: &crate::ids::Did,
 ) -> crate::ImResult<()> {

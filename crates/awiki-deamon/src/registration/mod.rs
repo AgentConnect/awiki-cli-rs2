@@ -34,6 +34,7 @@ pub struct AgentRegistrationExchangeResult {
     pub controller_full_handle: String,
     pub controller_did: String,
     pub handle: String,
+    pub binding_generation: Option<String>,
     pub status: String,
     pub access_token: Option<String>,
 }
@@ -50,6 +51,7 @@ impl fmt::Debug for AgentRegistrationExchangeResult {
             .field("controller_full_handle", &self.controller_full_handle)
             .field("controller_did", &self.controller_did)
             .field("handle", &self.handle)
+            .field("binding_generation", &self.binding_generation)
             .field("status", &self.status)
             .field(
                 "access_token",
@@ -136,6 +138,61 @@ pub trait AgentRegistrationClient {
     ) -> Result<AgentRegistrationExchangeResult>;
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct AgentLegacyUpgradeRequest {
+    pub agent_kind: AgentKind,
+    pub did_document: Value,
+    pub endpoint_url: Option<String>,
+    pub legacy_auth: DidAuthMaterial,
+}
+
+impl fmt::Debug for AgentLegacyUpgradeRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AgentLegacyUpgradeRequest")
+            .field("agent_kind", &self.agent_kind)
+            .field("did_document", &"<redacted-did-document>")
+            .field("endpoint_url", &self.endpoint_url)
+            .field("legacy_auth", &self.legacy_auth)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentLegacyUpgradeResult {
+    pub did: String,
+    pub user_id: String,
+    pub binding_generation: String,
+    pub access_token: String,
+}
+
+impl fmt::Debug for AgentLegacyUpgradeResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AgentLegacyUpgradeResult")
+            .field("did", &self.did)
+            .field("user_id", &self.user_id)
+            .field("binding_generation", &self.binding_generation)
+            .field("access_token", &"<redacted-token>")
+            .finish()
+    }
+}
+
+pub trait AgentLegacyUpgradeClient {
+    fn resolve_agent_document(&self, did: &str) -> Result<Value>;
+
+    fn recover_committed_agent_device(
+        &self,
+        im_core: &crate::ImCoreAdapter,
+        target: &im_core::VNextAgentBootstrapMaterial,
+    ) -> Result<AgentLegacyUpgradeResult>;
+
+    fn update_agent_document(
+        &self,
+        request: AgentLegacyUpgradeRequest,
+    ) -> Result<AgentLegacyUpgradeResult>;
+}
+
 pub trait AgentInventoryClient {
     fn verify_token(&self, token: &RegistrationToken) -> Result<RegistrationTokenMetadata>;
 
@@ -181,6 +238,7 @@ pub trait AgentInventoryClient {
 pub struct UserServiceAgentRegistrationClient {
     rpc_url: String,
     inventory_rpc_url: String,
+    did_auth_rpc_url: String,
     http: reqwest::Client,
 }
 
@@ -225,6 +283,7 @@ impl fmt::Debug for UserServiceAgentRegistrationClient {
         f.debug_struct("UserServiceAgentRegistrationClient")
             .field("rpc_url", &self.rpc_url)
             .field("inventory_rpc_url", &self.inventory_rpc_url)
+            .field("did_auth_rpc_url", &self.did_auth_rpc_url)
             .finish_non_exhaustive()
     }
 }
@@ -251,10 +310,24 @@ impl UserServiceAgentRegistrationClient {
         } else {
             format!("{trimmed}/user-service/agent-inventory/rpc")
         };
+        let did_auth_rpc_url = if trimmed.ends_with("/user-service/did-auth/rpc") {
+            trimmed.to_string()
+        } else if let Some((prefix, _)) = trimmed.split_once("/user-service/") {
+            format!("{prefix}/user-service/did-auth/rpc")
+        } else {
+            format!("{trimmed}/user-service/did-auth/rpc")
+        };
         Ok(Self {
             rpc_url,
             inventory_rpc_url,
-            http: reqwest::Client::new(),
+            did_auth_rpc_url,
+            // Registration and DID-auth requests carry bearer credentials or
+            // signatures bound to the original URL. Never replay them through
+            // an HTTP redirect, even when the redirect remains same-origin.
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .context("build user-service HTTP client")?,
         })
     }
 
@@ -283,6 +356,64 @@ impl UserServiceAgentRegistrationClient {
             read_user_service_json_rpc_response(response, "agent registration token exchange")
                 .await?;
         parse_exchange_response(&bytes)
+    }
+
+    pub async fn update_agent_document_async(
+        &self,
+        request: AgentLegacyUpgradeRequest,
+    ) -> Result<AgentLegacyUpgradeResult> {
+        let call = im_core::compat::identity::build_update_document_rpc_call(
+            im_core::compat::identity::UpdateDocumentRpcParams {
+                did_document: request.did_document,
+                is_public: None,
+                is_agent: Some(true),
+                role: Some(format!("agent:{}", request.agent_kind.as_str())),
+                endpoint_url: request.endpoint_url,
+            },
+        );
+        let body_bytes = call.payload().to_string().into_bytes();
+        let headers = did_auth_headers(&self.did_auth_rpc_url, &body_bytes, &request.legacy_auth)?;
+        let mut http_request = self.http.post(&self.did_auth_rpc_url).body(body_bytes);
+        for (key, value) in headers {
+            http_request = http_request.header(key, value);
+        }
+        let response = http_request
+            .send()
+            .await
+            .with_context(|| format!("call user-service DID Auth {}", self.did_auth_rpc_url))?;
+        let bytes = read_user_service_json_rpc_response(response, "Agent Legacy upgrade").await?;
+        parse_legacy_upgrade_response(&bytes)
+    }
+
+    pub async fn resolve_agent_document_async(&self, did: &str) -> Result<Value> {
+        let url = agent_did_document_url(&self.did_auth_rpc_url, did)?;
+        let response = self
+            .http
+            .get(&url)
+            .header("accept", "application/json")
+            .send()
+            .await
+            .with_context(|| format!("resolve Agent DID document {did}"))?;
+        let status = response.status();
+        if status.is_redirection() {
+            bail!("Agent DID document HTTP redirect rejected: HTTP status {status}");
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .context("read Agent DID document response")?;
+        if !status.is_success() {
+            bail!("Agent DID document resolution failed: HTTP status {status}");
+        }
+        let document: Value =
+            serde_json::from_slice(&bytes).context("parse resolved Agent DID document response")?;
+        if document.get("id").and_then(Value::as_str) != Some(did)
+            || (did.starts_with("did:wba:")
+                && !anp::authentication::validate_did_document_binding(&document, true))
+        {
+            bail!("resolved Agent DID document binding is invalid");
+        }
+        Ok(document)
     }
 
     pub async fn verify_token_async(
@@ -528,6 +659,144 @@ impl AgentRegistrationClient for UserServiceAgentRegistrationClient {
         }
         self.exchange_token_in_new_runtime(request)
     }
+}
+
+impl AgentLegacyUpgradeClient for UserServiceAgentRegistrationClient {
+    fn resolve_agent_document(&self, did: &str) -> Result<Value> {
+        let did = did.to_owned();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let client = self.clone();
+            let join = std::thread::Builder::new()
+                .name("awiki-agent-did-resolution".to_string())
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .context("create Agent DID resolution runtime")?;
+                    runtime.block_on(client.resolve_agent_document_async(&did))
+                })
+                .context("spawn Agent DID resolution runtime thread")?;
+            return join
+                .join()
+                .map_err(|_| anyhow::anyhow!("Agent DID resolution runtime thread panicked"))?;
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("create Agent DID resolution runtime")?;
+        runtime.block_on(self.resolve_agent_document_async(&did))
+    }
+
+    fn recover_committed_agent_device(
+        &self,
+        im_core: &crate::ImCoreAdapter,
+        target: &im_core::VNextAgentBootstrapMaterial,
+    ) -> Result<AgentLegacyUpgradeResult> {
+        let recovered = im_core.refresh_committed_vnext_agent_legacy_upgrade_session(target)?;
+        Ok(AgentLegacyUpgradeResult {
+            did: recovered.did.as_str().to_owned(),
+            user_id: recovered.user_id,
+            binding_generation: recovered.binding_generation,
+            access_token: recovered.access_token,
+        })
+    }
+
+    fn update_agent_document(
+        &self,
+        request: AgentLegacyUpgradeRequest,
+    ) -> Result<AgentLegacyUpgradeResult> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let client = self.clone();
+            let join = std::thread::Builder::new()
+                .name("awiki-agent-legacy-upgrade".to_string())
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .context("create Agent Legacy upgrade runtime")?;
+                    runtime.block_on(client.update_agent_document_async(request))
+                })
+                .context("spawn Agent Legacy upgrade RPC runtime thread")?;
+            return join.join().map_err(|_| {
+                anyhow::anyhow!("Agent Legacy upgrade RPC runtime thread panicked")
+            })?;
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("create Agent Legacy upgrade runtime")?;
+        runtime.block_on(self.update_agent_document_async(request))
+    }
+}
+
+fn agent_did_document_url(service_rpc_url: &str, did: &str) -> Result<String> {
+    let suffix = did
+        .strip_prefix("did:wba:")
+        .or_else(|| did.strip_prefix("did:web:"))
+        .context("unsupported Agent DID method for resolution")?;
+    let mut segments = suffix.split(':');
+    let domain = segments
+        .next()
+        .filter(|value| !value.is_empty())
+        .context("Agent DID domain is missing")?;
+    if domain.contains('%') || domain.contains('/') || domain.contains('\\') {
+        bail!("Agent DID domain is invalid");
+    }
+    let path = segments
+        .map(percent_decode_did_segment)
+        .collect::<Result<Vec<_>>>()?;
+    let resolution_path = if path.is_empty() {
+        "/.well-known/did.json".to_owned()
+    } else {
+        format!("/{}/did.json", path.join("/"))
+    };
+    let service_url = reqwest::Url::parse(service_rpc_url)
+        .context("parse user-service URL for Agent DID resolution")?;
+    let service_host = service_url.host_str().unwrap_or_default();
+    let use_configured_origin = service_host.eq_ignore_ascii_case(domain)
+        || service_host.eq_ignore_ascii_case("localhost")
+        || service_host == "127.0.0.1"
+        || service_host == "::1";
+    if use_configured_origin {
+        let mut origin = format!("{}://{}", service_url.scheme(), service_host);
+        if let Some(port) = service_url.port() {
+            origin.push_str(&format!(":{port}"));
+        }
+        return Ok(format!("{origin}{resolution_path}"));
+    }
+    Ok(format!("https://{domain}{resolution_path}"))
+}
+
+fn percent_decode_did_segment(value: &str) -> Result<String> {
+    if value.is_empty() {
+        bail!("Agent DID path segment is empty");
+    }
+    let mut decoded = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                bail!("Agent DID path percent encoding is invalid");
+            }
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3])?;
+            decoded.push(u8::from_str_radix(hex, 16).context("decode Agent DID path segment")?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    let decoded = String::from_utf8(decoded).context("Agent DID path segment is not utf-8")?;
+    if decoded.is_empty()
+        || decoded.contains('/')
+        || decoded.contains('\\')
+        || decoded == "."
+        || decoded == ".."
+    {
+        bail!("Agent DID path segment is invalid");
+    }
+    Ok(decoded)
 }
 
 impl AgentInventoryClient for UserServiceAgentRegistrationClient {
@@ -817,10 +1086,33 @@ fn parse_exchange_response(bytes: &[u8]) -> Result<AgentRegistrationExchangeResu
         controller_user_id: required_string(&result, "controller_user_id")?,
         controller_full_handle: required_string(&result, "controller_full_handle")?,
         handle: required_string(&result, "handle")?,
+        binding_generation: optional_string(&result, "binding_generation"),
         status: required_string(&result, "status")?,
         access_token: optional_auth_token(&result),
     };
     Ok(parsed)
+}
+
+fn parse_legacy_upgrade_response(bytes: &[u8]) -> Result<AgentLegacyUpgradeResult> {
+    let result = parse_json_rpc_result(bytes, "Agent Legacy upgrade")?;
+    let did = required_string(&result, "did")?;
+    let user_id = required_string(&result, "user_id")?;
+    let binding_generation = required_string(&result, "binding_generation")?;
+    let access_token = required_string(&result, "access_token")?;
+    if did.trim().is_empty()
+        || user_id.trim().is_empty()
+        || access_token.trim().is_empty()
+        || binding_generation.starts_with('0')
+        || !binding_generation.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        bail!("Agent Legacy upgrade response contains an invalid exact-device binding");
+    }
+    Ok(AgentLegacyUpgradeResult {
+        did,
+        user_id,
+        binding_generation,
+        access_token,
+    })
 }
 
 fn parse_verify_response(bytes: &[u8]) -> Result<RegistrationTokenMetadata> {
@@ -842,6 +1134,11 @@ async fn read_user_service_json_rpc_response(
     context: &str,
 ) -> Result<Vec<u8>> {
     let status = response.status();
+    if status.is_redirection() {
+        // Do not expose Location: it is untrusted and unnecessary diagnostic
+        // data. More importantly, never include request credentials here.
+        bail!("{context} HTTP redirect rejected: HTTP status {status}");
+    }
     let bytes = response
         .bytes()
         .await
@@ -993,8 +1290,130 @@ fn optional_auth_token(value: &Value) -> Option<String> {
 }
 
 #[cfg(test)]
+pub(crate) fn mock_vnext_exchange_fields(
+    request: &AgentRegistrationExchangeRequest,
+    account_id: &str,
+) -> Result<(String, String, String)> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let did = request
+        .did_document
+        .get("id")
+        .and_then(Value::as_str)
+        .context("mock vNext DID document missing id")?
+        .to_owned();
+    let manifest = anp::authentication::validate_device_manifest(&request.did_document)
+        .map_err(|error| anyhow::anyhow!("mock vNext Manifest is invalid: {error}"))?
+        .context("mock vNext DID document missing Manifest")?;
+    if manifest.devices.len() != 1 {
+        bail!("mock vNext Manifest must contain exactly one device");
+    }
+    let device = &manifest.devices[0];
+    let response_handle = request.handle.clone();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock before Unix epoch")?
+        .as_secs();
+    let claims = json!({
+        "iss": "user-service",
+        "aud": ["awiki-user-service", "awiki-message-service"],
+        "sub": did,
+        "type": "access",
+        "purpose": "awiki.device.access.v1",
+        "did": did,
+        "user_id": account_id,
+        "device_id": device.device_id,
+        "key_id": device.signing_key_id,
+        "auth_generation": 1,
+        "scopes": ["device:manage", "device:read", "message:connect"],
+        "iat": now,
+        "nbf": now,
+        "exp": now + 3600,
+        "jti": format!("mock-device-{}", device.device_id),
+    });
+    let token = format!(
+        "e30.{}.test-signature",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims)?)
+    );
+    Ok((did, response_handle, token))
+}
+
+#[cfg(test)]
+pub(crate) fn store_mock_vnext_device_identity(
+    config: &crate::DaemonConfig,
+    state: &crate::state::DaemonState,
+    agent_kind: AgentKind,
+    handle_local_part: &str,
+) -> Result<crate::state::AgentDeviceIdentityRecord> {
+    let adapter = crate::ImCoreAdapter::open(config)?;
+    let generated = adapter.generate_vnext_agent_bootstrap(agent_kind, handle_local_part)?;
+    let account_id = format!("test-account-{handle_local_part}");
+    let request = AgentRegistrationExchangeRequest {
+        token: RegistrationToken::new("test-registration-token")?,
+        agent_kind,
+        controller_did: "did:wba:test:controller".to_owned(),
+        handle: handle_local_part.to_owned(),
+        name: None,
+        did_document: generated.did_document.clone(),
+        endpoint_url: None,
+        key_algorithm: "Ed25519".to_owned(),
+        public_key: generated.device_signing_public_key_pem.clone(),
+        allow_existing_agent_did: false,
+    };
+    let (did, response_handle, access_token) = mock_vnext_exchange_fields(&request, &account_id)?;
+    let full_handle = if response_handle.contains('.') {
+        response_handle.clone()
+    } else {
+        format!("{}.{}", response_handle, config.did_domain)
+    };
+    let identity = crate::state::AgentDeviceIdentityRecord {
+        identity_id: generated.identity_id,
+        agent_did: did,
+        handle: response_handle,
+        display_name: handle_local_part.to_owned(),
+        agent_kind,
+        account_id,
+        full_handle,
+        binding_generation: "1".to_owned(),
+        did_document: generated.did_document,
+        protocol_device_id: generated.protocol_device_id.as_str().to_owned(),
+        root_key_id: generated.root_key_id,
+        root_private_key_pem: generated.root_private_key_pem,
+        device_signing_key_id: generated.device_signing_key_id,
+        device_signing_private_key_pem: generated.device_signing_private_key_pem,
+        device_e2ee_key_id: generated.device_e2ee_key_id,
+        device_e2ee_private_key_pem: generated.device_e2ee_private_key_pem,
+        daemon_subkey_package_json: generated
+            .daemon_subkey_package
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()?,
+        authorization_status: "active".to_owned(),
+        role: "admin".to_owned(),
+        management_ready: true,
+        auth_generation: 1,
+        access_token,
+        document_version: 1,
+        document_hash: generated.document_hash,
+        registry_version: 1,
+        identity_status: "active".to_owned(),
+        legacy_migration_state: "not_required".to_owned(),
+        last_error_code: None,
+    };
+    adapter.client_for_agent_device_identity(&identity)?;
+    state.store_agent_device_identity(&identity)?;
+    Ok(identity)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn token_debug_is_redacted() {
@@ -1062,5 +1481,103 @@ mod tests {
         assert_eq!(parsed.access_token.as_deref(), Some("jwt-agent-secret"));
         assert!(!format!("{parsed:?}").contains("jwt-agent-secret"));
         assert!(format!("{parsed:?}").contains("<redacted-token>"));
+    }
+
+    fn redirect_exchange_request(token: &str) -> AgentRegistrationExchangeRequest {
+        AgentRegistrationExchangeRequest {
+            token: RegistrationToken::new(token).unwrap(),
+            agent_kind: AgentKind::Daemon,
+            controller_did: "did:wba:awiki.info:controller".to_owned(),
+            handle: "redirect-test".to_owned(),
+            name: Some("redirect-test".to_owned()),
+            did_document: serde_json::json!({"id": "did:wba:awiki.info:agent:daemon:redirect"}),
+            endpoint_url: None,
+            key_algorithm: "Ed25519".to_owned(),
+            public_key: "test-public-key".to_owned(),
+            allow_existing_agent_did: false,
+        }
+    }
+
+    fn spawn_redirect_server(
+        status: u16,
+        location: String,
+    ) -> (String, Arc<AtomicUsize>, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let join = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            observed.fetch_add(1, Ordering::SeqCst);
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut request = [0_u8; 16 * 1024];
+            let _ = stream.read(&mut request);
+            write!(
+                stream,
+                "HTTP/1.1 {status} Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            drop(stream);
+
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_millis(300);
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((_stream, _)) => {
+                        observed.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("accept redirected request: {error}"),
+                }
+            }
+        });
+        (format!("http://{address}"), requests, join)
+    }
+
+    #[tokio::test]
+    async fn exchange_token_rejects_same_origin_redirect_without_replaying_token() {
+        let secret = "registration-token-must-not-leak-same-origin";
+        let (base_url, requests, join) =
+            spawn_redirect_server(307, "/redirected-registration".to_owned());
+        let client = UserServiceAgentRegistrationClient::new(&base_url).unwrap();
+
+        let error = client
+            .exchange_token_async(redirect_exchange_request(secret))
+            .await
+            .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains("HTTP redirect rejected"));
+        assert!(!error.contains(secret));
+        join.join().unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn exchange_token_rejects_cross_origin_redirect_without_replaying_token() {
+        let secret = "registration-token-must-not-leak-cross-origin";
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        target.set_nonblocking(true).unwrap();
+        let target_address = target.local_addr().unwrap();
+        let (base_url, requests, join) =
+            spawn_redirect_server(308, format!("http://{target_address}/credential-collector"));
+        let client = UserServiceAgentRegistrationClient::new(&base_url).unwrap();
+
+        let error = client
+            .exchange_token_async(redirect_exchange_request(secret))
+            .await
+            .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains("HTTP redirect rejected"));
+        assert!(!error.contains(secret));
+        join.join().unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(
+            target.accept().is_err(),
+            "token request followed cross-origin redirect"
+        );
     }
 }
