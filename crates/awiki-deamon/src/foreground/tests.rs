@@ -2810,6 +2810,63 @@ fn runtime_processed_message_id_prefers_group_event_sequence() {
 }
 
 #[test]
+fn hydrated_group_recovery_keeps_core_logical_id_separate_from_daemon_dedupe_key() {
+    let message = Message {
+        id: im_core::ids::MessageId::parse("opaque-message-id").unwrap(),
+        thread: ThreadRef::Group(im_core::ids::GroupRef::parse("did:example:group").unwrap()),
+        direction: MessageDirection::Incoming,
+        sender: PeerRef::parse("did:human:bob", "").unwrap(),
+        receiver: None,
+        group: Some(im_core::ids::GroupRef::parse("did:example:group").unwrap()),
+        body: MessageBodyView::Text {
+            text: "hello group".to_string(),
+            kind: im_core::messages::MessageKind::Text,
+        },
+        sent_at: None,
+        received_at: None,
+        metadata: im_core::messages::MessageMetadata {
+            attributes: vec![im_core::messages::MessageMetadataAttribute {
+                key: "group_event_seq".to_string(),
+                value: "9".to_string(),
+            }],
+            ..im_core::messages::MessageMetadata::default()
+        },
+    };
+
+    validate_hydrated_recovery_message_binding(message.id.as_str(), &message).unwrap();
+    assert_eq!(
+        runtime_processed_message_id(&message),
+        "group:did:example:group:9"
+    );
+    assert_ne!(runtime_processed_message_id(&message), message.id.as_str());
+}
+
+#[test]
+fn hydrated_recovery_rejects_a_core_logical_id_message_mismatch() {
+    let message = Message {
+        id: im_core::ids::MessageId::parse("msg_foreground").unwrap(),
+        thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+        direction: MessageDirection::Incoming,
+        sender: PeerRef::parse("did:human:alice", "").unwrap(),
+        receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
+        group: None,
+        body: MessageBodyView::Text {
+            text: "hello direct".to_string(),
+            kind: im_core::messages::MessageKind::Text,
+        },
+        sent_at: None,
+        received_at: None,
+        metadata: im_core::messages::MessageMetadata::default(),
+    };
+
+    let error =
+        validate_hydrated_recovery_message_binding("different-message-id", &message).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("logical message binding is inconsistent"));
+}
+
+#[test]
 fn runtime_processed_message_id_falls_back_to_message_id() {
     let message = Message {
         id: im_core::ids::MessageId::parse("msg_foreground").unwrap(),

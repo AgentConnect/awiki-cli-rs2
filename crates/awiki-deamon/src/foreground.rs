@@ -1034,10 +1034,7 @@ async fn process_hydrated_runtime_recovery(
             .with_context(|| format!("scan hydrated incoming projection for Agent {agent_did}"))?;
         scanned = scanned.saturating_add(page.items.len());
         for item in page.items {
-            let derived_id = runtime_processed_message_id(&item.message);
-            if derived_id != item.logical_message_id {
-                bail!("Core hydrated recovery logical message binding is inconsistent");
-            }
+            validate_hydrated_recovery_message_binding(&item.logical_message_id, &item.message)?;
             let group_history =
                 is_group_message(&item.message).then(|| std::slice::from_ref(&item.message));
             if process_runtime_inbox_message(
@@ -1265,6 +1262,16 @@ fn runtime_processed_message_id(message: &Message) -> String {
             .unwrap_or_else(|| format!("group:{}:{}", group.as_str(), message.id.as_str())),
         _ => message.id.as_str().to_string(),
     }
+}
+
+fn validate_hydrated_recovery_message_binding(
+    logical_message_id: &str,
+    message: &Message,
+) -> Result<()> {
+    if logical_message_id != message.id.as_str() {
+        bail!("Core hydrated recovery logical message binding is inconsistent");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
