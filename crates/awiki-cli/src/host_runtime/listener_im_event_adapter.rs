@@ -98,7 +98,6 @@ fn reliable_remote_event_is_sync_only(event: &ImEvent) -> bool {
         ImEvent::MessageReceived(_)
             | ImEvent::MessageUpdated(_)
             | ImEvent::GroupUpdated(_)
-            | ImEvent::SystemNotificationChanged(_)
             | ImEvent::UnknownNotification(_)
     )
 }

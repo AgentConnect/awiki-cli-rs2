@@ -269,6 +269,82 @@ fn join_requested_system_notification_wakes_host_with_redacted_review_event() {
 }
 
 #[test]
+fn reliable_remote_join_requested_wakes_host_after_core_commit() {
+    let sink = RecordingHostNotifySink::default();
+    let mut status = status();
+
+    let result = handle_reliable_remote_event(
+        Some(&sink),
+        &mut status,
+        ImEvent::SystemNotificationChanged(SystemNotificationChangedEvent {
+            notification: SystemNotificationSnapshot {
+                event_id: "evt-system-reliable-1".to_owned(),
+                did: "did:wba:example:agents:bob:e1_bob".to_owned(),
+                join_session_id: "join-system-reliable-1".to_owned(),
+                kind: SystemNotificationKind::JoinRequested,
+                state: SystemNotificationState::Pending,
+                session_revision: 1,
+                issued_at: "2026-07-23T02:00:00Z".to_owned(),
+                expires_at: "2026-07-23T02:10:00Z".to_owned(),
+                first_seen_at: "2026-07-23T02:00:01Z".to_owned(),
+                terminal: false,
+            },
+            sync: None,
+        }),
+        None,
+        Some("bob"),
+        Some("did:wba:example:agents:bob:e1_bob"),
+    );
+
+    assert_eq!(result.route, CliImEventRoute::DeviceJoinRequested);
+    assert!(result.dispatched_host_notification);
+    assert!(!result.reliable_sync_requested);
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].topic, "im.device.join.requested");
+    assert_eq!(events[0].id, "evt-system-reliable-1");
+    let serialized = serde_json::to_value(&events[0]).expect("serialize host event");
+    let data = serialized["data"]
+        .as_object()
+        .expect("device Join host event data");
+    assert_eq!(
+        data.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "channel",
+            "event_id",
+            "expires_at",
+            "issued_at",
+            "join_session_id",
+            "recipient_did",
+        ])
+    );
+    assert_eq!(
+        data.get("join_session_id")
+            .and_then(serde_json::Value::as_str),
+        Some("join-system-reliable-1")
+    );
+    assert_eq!(
+        data.get("recipient_did")
+            .and_then(serde_json::Value::as_str),
+        Some("did:wba:example:agents:bob:e1_bob")
+    );
+    let raw = serde_json::to_string(&events[0]).expect("serialize host event");
+    for forbidden in [
+        "sas",
+        "challenge",
+        "proof",
+        "token",
+        "session_revision",
+        "first_seen_at",
+    ] {
+        assert!(
+            !raw.contains(forbidden),
+            "host event leaked forbidden field {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn non_pending_system_notification_does_not_wake_join_review() {
     let sink = RecordingHostNotifySink::default();
     let mut status = status();
