@@ -710,7 +710,11 @@ final diagnostics = await client.messages.syncDiagnostics();
   older local messages. The successful call ends in the existing
   `MessageSyncStatus.changed` or `MessageSyncStatus.idle`; snapshot or
   post-anchor failure ends in `retryableFailure`, while an authorization or
-  generation fence ends in `authRevoked`. There is no second recover API.
+  generation fence ends in `authRevoked`. HTTP 401/403 from authenticated
+  sync or its JWT refresh, JSON-RPC `1401` after Core's bounded auth retry,
+  and the live Registry fence codes `anp.device_not_eligible` /
+  `anp.device_state_changed` are also terminal `authRevoked`, not retryable
+  network failures. There is no second recover API.
 - The raw recovery token remains on the Rust process stack only and is never
   written to SQLite or logs. Dart cannot observe or persist the token, recovery
   cursor/anchor, cutoff, policy limit, or returned snapshot count.

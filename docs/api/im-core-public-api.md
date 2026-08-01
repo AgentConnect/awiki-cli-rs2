@@ -822,7 +822,11 @@ Reliable sync 补充：
   delta（或 existing-device bootstrap）→ 只存在于 Rust 进程栈的不透明 token →
   snapshot 严格校验/原子 merge → post-anchor delta。成功只返回既有 `changed` / `idle`；
   snapshot 或 post-anchor delta 失败返回 `retryable_failure`，授权或 generation fence 返回
-  `auth_revoked`。没有第二个 public recover API，raw token、cursor/anchor、cutoff、policy
+  `auth_revoked`；同步链路在认证刷新或服务调用中收到 HTTP 401/403，或 Core transport
+  完成有界认证重试后仍收到 JSON-RPC `1401`，或在线 Registry 校验返回
+  `anp.device_not_eligible` / `anp.device_state_changed`，也属于终止性
+  `auth_revoked`，不得进入网络重试循环。没有第二个 public recover API，raw token、
+  cursor/anchor、cutoff、policy
   limit、snapshot 返回数量都不得进入 Rust public DTO、Dart/Flutter、CLI、App、SQLite 或日志。
   snapshot 合并当前 read/Group 状态和最近普通消息，但不得删除更早的本地消息；receipts、
   projections、cursor 和 recovery completion 在同一 SQLite 事务提交。Core 按 owner

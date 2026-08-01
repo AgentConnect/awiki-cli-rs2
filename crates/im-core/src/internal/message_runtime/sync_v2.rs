@@ -1424,6 +1424,13 @@ pub(crate) fn failure_outcome(
             crate::messages::MessageSyncStatus::AuthRevoked,
             "AUTH_REVOKED".to_owned(),
         ),
+        crate::ImError::Service {
+            status_code: Some(401 | 403),
+            ..
+        } => (
+            crate::messages::MessageSyncStatus::AuthRevoked,
+            "AUTH_REVOKED".to_owned(),
+        ),
         crate::ImError::Service { code, .. }
             if code.as_deref() == Some("SYNC_RECOVERY_REQUIRED") =>
         {
@@ -1436,7 +1443,10 @@ pub(crate) fn failure_outcome(
             if matches!(
                 code.as_deref(),
                 Some(
-                    "SYNC_ACCOUNT_BINDING_MISMATCH"
+                    "1401"
+                        | "anp.device_not_eligible"
+                        | "anp.device_state_changed"
+                        | "SYNC_ACCOUNT_BINDING_MISMATCH"
                         | "SYNC_DEVICE_BINDING_MISMATCH"
                         | "SYNC_AUTH_GENERATION_MISMATCH"
                 )
@@ -1540,6 +1550,67 @@ fn incomplete_read_ack(message: impl Into<String>) -> crate::ImError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failure_outcome_treats_http_auth_rejection_as_terminal() {
+        for status_code in [401, 403] {
+            let outcome = failure_outcome(&crate::ImError::Service {
+                status_code: Some(status_code),
+                code: None,
+                message: "authorization rejected".to_owned(),
+                data: None,
+            })
+            .expect("HTTP auth rejection must produce a typed sync outcome");
+
+            assert_eq!(
+                outcome.status,
+                crate::messages::MessageSyncStatus::AuthRevoked
+            );
+            assert_eq!(outcome.error_code.as_deref(), Some("AUTH_REVOKED"));
+        }
+    }
+
+    #[test]
+    fn failure_outcome_treats_exhausted_rpc_auth_as_terminal() {
+        for code in [
+            "1401",
+            "anp.device_not_eligible",
+            "anp.device_state_changed",
+        ] {
+            let outcome = failure_outcome(&crate::ImError::Service {
+                status_code: Some(200),
+                code: Some(code.to_owned()),
+                message: "authentication rejected".to_owned(),
+                data: None,
+            })
+            .expect("device auth fence must produce a typed sync outcome");
+
+            assert_eq!(
+                outcome.status,
+                crate::messages::MessageSyncStatus::AuthRevoked
+            );
+            assert_eq!(outcome.error_code.as_deref(), Some(code));
+        }
+    }
+
+    #[test]
+    fn failure_outcome_keeps_server_failures_retryable() {
+        for status_code in [500, 502, 503] {
+            let outcome = failure_outcome(&crate::ImError::Service {
+                status_code: Some(status_code),
+                code: Some("INTERNAL_ERROR".to_owned()),
+                message: "server failure".to_owned(),
+                data: None,
+            })
+            .expect("server failure must produce a typed sync outcome");
+
+            assert_eq!(
+                outcome.status,
+                crate::messages::MessageSyncStatus::RetryableFailure
+            );
+            assert_eq!(outcome.error_code.as_deref(), Some("INTERNAL_ERROR"));
+        }
+    }
     use crate::internal::auth::session::SessionProvider;
     use crate::vault::{DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore};
     use std::cell::RefCell;

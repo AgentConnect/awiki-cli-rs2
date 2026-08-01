@@ -910,6 +910,12 @@ workflow cannot replace a newer cursor. Snapshot parsing is closed-schema and
 rejects unknown top-level/policy/exclusion/read/Group fields, duplicate event
 IDs or sequences, messages before the server cutoff, and malformed state
 timestamps. Core does not calculate or widen the 48-hour/500-message policy.
+An HTTP 401 or 403 observed anywhere in this authenticated sync operation,
+including JWT refresh, a JSON-RPC `1401` remaining after the transport's
+bounded auth retry, or the live Registry fence codes
+`anp.device_not_eligible` / `anp.device_state_changed`, is classified as
+terminal `authRevoked`; transport and server failures outside that
+authorization boundary remain retryable.
 
 The existing `sync_state` table remains the active checkpoint for the v1
 `sync.delta` compatibility implementation; v2 `syncNow` uses
