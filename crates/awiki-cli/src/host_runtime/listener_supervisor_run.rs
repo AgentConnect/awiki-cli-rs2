@@ -589,11 +589,10 @@ enum ListenerSyncReason {
 impl ListenerSyncReason {
     fn as_str(self) -> &'static str {
         match self {
-            Self::Startup => "cli_listener_startup",
-            Self::Reconnect => "cli_listener_reconnect",
-            Self::RealtimeHint => "cli_listener_realtime_hint",
-            Self::Timer => "cli_listener_timer",
-            Self::Retry => "cli_listener_retry",
+            Self::Startup => "session_start",
+            Self::Reconnect => "websocket_reconnect",
+            Self::RealtimeHint => "websocket_hint",
+            Self::Timer | Self::Retry => "foreground_reconcile",
         }
     }
 }
@@ -938,6 +937,18 @@ mod tests {
             );
         }
         assert_eq!(scheduler.retry_delay, RELIABLE_SYNC_MAX_RETRY_DELAY);
+    }
+
+    #[test]
+    fn reliable_sync_reasons_use_the_sync_v2_wire_vocabulary() {
+        assert_eq!(ListenerSyncReason::Startup.as_str(), "session_start");
+        assert_eq!(
+            ListenerSyncReason::Reconnect.as_str(),
+            "websocket_reconnect"
+        );
+        assert_eq!(ListenerSyncReason::RealtimeHint.as_str(), "websocket_hint");
+        assert_eq!(ListenerSyncReason::Timer.as_str(), "foreground_reconcile");
+        assert_eq!(ListenerSyncReason::Retry.as_str(), "foreground_reconcile");
     }
 
     #[test]

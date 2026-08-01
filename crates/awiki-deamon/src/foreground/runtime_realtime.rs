@@ -572,10 +572,20 @@ pub(super) async fn run_realtime_sync_now(
     client
         .messages()
         .sync_now_async(MessageSyncRequest {
-            reason: format!("daemon_realtime:{}", work.reasons.join(",")),
+            reason: sync_v2_reason_for_realtime_work(&work.reasons).to_owned(),
             limit: Some(100),
         })
         .await
+}
+
+fn sync_v2_reason_for_realtime_work(reasons: &[&str]) -> &'static str {
+    if reasons.contains(&RealtimeDirtyReason::SyncHint.as_str()) {
+        "websocket_hint"
+    } else if reasons.contains(&RealtimeDirtyReason::Reconnected.as_str()) {
+        "websocket_reconnect"
+    } else {
+        "foreground_reconcile"
+    }
 }
 
 fn sync_retry_delay(attempt_count: u32) -> Duration {
@@ -1122,6 +1132,58 @@ mod tests {
         assert!(retry_a >= RELIABLE_SYNC_RETRY_BASE);
         assert!(retry_a < RELIABLE_SYNC_RETRY_BASE + Duration::from_secs(1));
         assert_ne!(retry_a, retry_b);
+    }
+
+    #[test]
+    fn realtime_dirty_reasons_map_to_the_closed_sync_v2_wire_vocabulary() {
+        let cases = [
+            (RealtimeDirtyReason::SyncHint, "websocket_hint"),
+            (RealtimeDirtyReason::GapDetected, "foreground_reconcile"),
+            (RealtimeDirtyReason::TargetedContext, "foreground_reconcile"),
+            (RealtimeDirtyReason::Reconnected, "websocket_reconnect"),
+            (RealtimeDirtyReason::Disconnected, "foreground_reconcile"),
+            (
+                RealtimeDirtyReason::UnknownNotification,
+                "foreground_reconcile",
+            ),
+            (RealtimeDirtyReason::SessionEnded, "foreground_reconcile"),
+            (RealtimeDirtyReason::ChannelPressure, "foreground_reconcile"),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(
+                sync_v2_reason_for_realtime_work(&[reason.as_str()]),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn realtime_dirty_reason_combinations_keep_the_most_specific_wire_trigger() {
+        assert_eq!(
+            sync_v2_reason_for_realtime_work(&[]),
+            "foreground_reconcile"
+        );
+        assert_eq!(
+            sync_v2_reason_for_realtime_work(&[
+                RealtimeDirtyReason::Reconnected.as_str(),
+                RealtimeDirtyReason::UnknownNotification.as_str(),
+            ]),
+            "websocket_reconnect"
+        );
+        assert_eq!(
+            sync_v2_reason_for_realtime_work(&[
+                RealtimeDirtyReason::Reconnected.as_str(),
+                RealtimeDirtyReason::SyncHint.as_str(),
+            ]),
+            "websocket_hint"
+        );
+        assert_eq!(
+            sync_v2_reason_for_realtime_work(&[
+                RealtimeDirtyReason::GapDetected.as_str(),
+                RealtimeDirtyReason::TargetedContext.as_str(),
+            ]),
+            "foreground_reconcile"
+        );
     }
 
     #[tokio::test]
