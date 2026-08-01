@@ -331,6 +331,14 @@ enum LocalStateCommand {
         after: Option<super::messages::HydratedIncomingMessageCursor>,
         reply: oneshot::Sender<crate::ImResult<Vec<super::messages::MessageRecord>>>,
     },
+    ListLocalInboxMessages {
+        owner_identity_id: String,
+        owner_did: String,
+        scope: crate::messages::InboxScope,
+        unread_only: bool,
+        limit: i64,
+        reply: oneshot::Sender<crate::ImResult<Vec<super::messages::MessageRecord>>>,
+    },
     ListMessagesForThreadRef {
         owner_identity_id: String,
         owner_did: String,
@@ -1369,6 +1377,27 @@ impl LocalStateDb {
             owner_did: owner_did.into(),
             limit,
             after,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_local_inbox_messages(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        scope: crate::messages::InboxScope,
+        unread_only: bool,
+        limit: i64,
+    ) -> crate::ImResult<Vec<super::messages::MessageRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListLocalInboxMessages {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            scope,
+            unread_only,
+            limit,
             reply,
         })
         .await?;
@@ -2485,6 +2514,24 @@ fn run_actor(
                     &owner_did,
                     limit,
                     after.as_ref(),
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListLocalInboxMessages {
+                owner_identity_id,
+                owner_did,
+                scope,
+                unread_only,
+                limit,
+                reply,
+            } => {
+                let result = super::messages::list_local_inbox_messages_for_owner_identity(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    scope,
+                    unread_only,
+                    limit,
                 );
                 let _ = reply.send(result);
             }

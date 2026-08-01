@@ -133,8 +133,8 @@ fn message_cutover_trace_call_sites_stay_in_thin_adapter() {
         "message sends should keep a thin adapter RPC phase"
     );
     assert!(
-        adapter.contains("cli_trace::rpc_phase(\"inbox.get\")"),
-        "message inbox should keep a thin adapter RPC phase"
+        adapter.contains("cli_trace::rpc_phase(\"sync.v2.foreground_reconcile\")"),
+        "message inbox should trace its foreground v2 reconciliation"
     );
     assert!(
         !adapter.contains("\"message_fallback_refresh\""),

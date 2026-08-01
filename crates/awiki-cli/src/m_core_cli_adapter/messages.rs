@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use im_core::messages::{MessageSyncOutcome, MessageSyncRequest, MessageSyncStatus};
 use im_core::prelude::{
     AttachmentDestination, AttachmentInput, AttachmentSelection, AttachmentSendRequest,
     AttachmentSendResult, Cursor, DeliveryState, DownloadAttachmentRequest,
@@ -499,16 +500,26 @@ pub async fn read_inbox_via_im_core_async(
     query: InboxQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
-    let mut rpc_phase = crate::cli_trace::rpc_phase("inbox.get");
-    let page = client
-        .messages()
-        .inbox_with_metadata_async(query.clone())
-        .await
-        .map_err(|err| {
-            rpc_phase.finish();
-            im_error_to_message_error(err)
-        })?;
+    let mut rpc_phase = crate::cli_trace::rpc_phase("sync.v2.foreground_reconcile");
+    let page = async {
+        let outcome = client
+            .messages()
+            .sync_now_async(MessageSyncRequest {
+                reason: foreground_inbox_sync_reason().to_owned(),
+                limit: Some(100),
+            })
+            .await
+            .map_err(im_error_to_message_error)?;
+        require_foreground_inbox_sync(&outcome)?;
+        client
+            .messages()
+            .local_inbox_projection_with_metadata_async(query.clone())
+            .await
+            .map_err(im_error_to_message_error)
+    }
+    .await;
     rpc_phase.finish();
+    let page = page?;
     let raw = message_page_to_cli_raw(&page);
     let mut messages = messages_from_raw(&raw);
     let source = source_with_default(&raw);
@@ -532,6 +543,25 @@ pub async fn read_inbox_via_im_core_async(
         summary: format!("Loaded {total} inbox messages"),
         warnings: Vec::new(),
     })
+}
+
+fn foreground_inbox_sync_reason() -> &'static str {
+    "foreground_reconcile"
+}
+
+fn require_foreground_inbox_sync(outcome: &MessageSyncOutcome) -> Result<(), MessageAdapterError> {
+    match outcome.status {
+        MessageSyncStatus::Idle | MessageSyncStatus::Changed => Ok(()),
+        MessageSyncStatus::RecoveryRequired => Err(MessageAdapterError::LocalStateUnavailable(
+            "foreground message recovery did not complete".to_owned(),
+        )),
+        MessageSyncStatus::RetryableFailure => Err(MessageAdapterError::TransportUnavailable(
+            "foreground message reconciliation did not complete".to_owned(),
+        )),
+        MessageSyncStatus::AuthRevoked => Err(MessageAdapterError::IdentityRequired(
+            "foreground message synchronization authorization is unavailable".to_owned(),
+        )),
+    }
 }
 
 pub fn read_history_via_im_core(

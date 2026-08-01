@@ -289,6 +289,29 @@ mod incoming_recovery_tests {
                 .logical_message_id,
             "msg-oldest"
         );
+
+        for _ in 0..2 {
+            let inbox = client
+                .messages()
+                .local_inbox_projection_with_metadata_async(crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::DirectOnly,
+                    limit: crate::ids::PageLimit(2),
+                    cursor: None,
+                    unread_only: false,
+                    inbox_history_options: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                inbox
+                    .items
+                    .iter()
+                    .map(|message| message.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["msg-later", "msg-oldest"]
+            );
+            assert_eq!(inbox.source.as_deref(), Some("local_projection"));
+        }
     }
 
     #[tokio::test]
@@ -338,6 +361,20 @@ mod incoming_recovery_tests {
                         page_token: None,
                     },
                 )
+                .await,
+            Err(crate::ImError::UnsupportedCapability { capability })
+                if capability == "active-sync-account-binding"
+        ));
+        assert!(matches!(
+            legacy
+                .messages()
+                .local_inbox_projection_with_metadata_async(crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::All,
+                    limit: crate::ids::PageLimit(1),
+                    cursor: None,
+                    unread_only: false,
+                    inbox_history_options: None,
+                })
                 .await,
             Err(crate::ImError::UnsupportedCapability { capability })
                 if capability == "active-sync-account-binding"
@@ -509,6 +546,9 @@ mod incoming_recovery_tests {
             owner_identity_id: owner_identity_id.to_owned(),
             owner_did: owner_did.to_owned(),
             conversation_id: "dm:did:wba:awiki.info:user:peer:e1_peer".to_owned(),
+            wire_thread_kind: "direct".to_owned(),
+            wire_thread_ref: "did:wba:awiki.info:user:peer:e1_peer".to_owned(),
+            wire_identity_resolution_state: "resolved".to_owned(),
             thread_id: "dm:did:wba:awiki.info:user:peer:e1_peer".to_owned(),
             direction,
             sender_did: if direction == 0 {
@@ -3152,6 +3192,77 @@ impl<'a> MessageService<'a> {
         .inbox_async(crate::internal::message_runtime::read::InboxRead { query })
         .await
         .map(message_page_from_read_result)?
+    }
+
+    /// Reads the exact active vNext owner's committed local incoming Inbox.
+    /// This method never performs a remote Inbox or synchronization request.
+    pub async fn local_inbox_projection_with_metadata_async(
+        &self,
+        query: super::InboxQuery,
+    ) -> crate::ImResult<super::MessagePage> {
+        if query.cursor.is_some() {
+            return Err(crate::ImError::invalid_input(
+                Some("cursor".to_owned()),
+                "local inbox projection does not accept a remote cursor",
+            ));
+        }
+        if query.inbox_history_options.is_some() {
+            return Err(crate::ImError::unsupported(
+                "delegated-local-inbox-projection",
+            ));
+        }
+        if query.limit.0 == 0 {
+            return Err(crate::ImError::invalid_input(
+                Some("limit".to_owned()),
+                "limit must be greater than zero",
+            ));
+        }
+        let binding = self.client.active_sync_account_binding().await?;
+        if binding.owner_identity_id != self.client.current_identity().id.as_str()
+            || binding.current_did != self.client.did().as_str()
+        {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "active sync binding does not match the local Inbox owner".to_owned(),
+            });
+        }
+        #[cfg(feature = "sqlite")]
+        {
+            let requested_limit = i64::from(query.limit.0);
+            let mut records = self
+                .client
+                .core_inner()
+                .local_state_db()
+                .await?
+                .list_local_inbox_messages(
+                    binding.owner_identity_id,
+                    binding.current_did,
+                    query.scope,
+                    query.unread_only,
+                    requested_limit.saturating_add(1),
+                )
+                .await?;
+            let has_more = records.len() > usize::try_from(requested_limit).unwrap_or(usize::MAX);
+            if has_more {
+                records.truncate(usize::try_from(requested_limit).unwrap_or(usize::MAX));
+            }
+            let items = records
+                .iter()
+                .map(crate::internal::message_runtime::conversations::message_from_record)
+                .collect::<crate::ImResult<Vec<_>>>()?;
+            return Ok(super::MessagePage {
+                items,
+                next_cursor: None,
+                has_more,
+                source: Some("local_projection".to_owned()),
+                resolved_dids: Vec::new(),
+                warnings: Vec::new(),
+            });
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = binding;
+            Err(crate::ImError::unsupported("local-inbox-projection"))
+        }
     }
 
     pub fn history(

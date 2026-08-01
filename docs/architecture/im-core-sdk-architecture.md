@@ -793,6 +793,11 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   enforces a 16 MiB hard response budget, Core uses ordered chunks of 8 to leave
   headroom for compact-JSON framing and escaping; any unavailable item in any
   chunk aborts the full delta page.
+- Foreground CLI Inbox compensation uses the same exact-device v2 reader with
+  reason `foreground_reconcile`, then reads only the committed exact-owner local
+  Inbox projection. It does not call legacy `inbox.get`, does not depend on a
+  WebSocket hint, and does not return stale projection when reconciliation ends
+  in recovery-required, retryable, or auth-revoked state.
 - Before the first bootstrap for a local owner, Core persists a cryptographically
   random opaque `client_instance_id` in the local sync database. Lost responses,
   process restarts, and retries reuse it; a new/cleared local database generates

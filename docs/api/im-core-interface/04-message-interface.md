@@ -624,6 +624,13 @@ pub struct LocalHistoryQuery {
 4. direct、group 和 raw thread ref 使用与 conversation mark-read 一致的 owner-scoped conversation-id 归一化。
 5. App 首屏应先显示 `local_conversation_timeline`，再后台调用 `sync_conversation_after` 或 repair/load core projection；远端 history/backfill 返回的 messages 只有持久化后才能成为 UI 事实。
 
+普通 CLI 前台 `msg inbox` 先用 `sync_now_async(reason = "foreground_reconcile")`
+完成 v2 bootstrap/delta/hydration，再调用
+`local_inbox_projection_with_metadata_async(query)` 读取 exact-owner committed projection。
+本地 Inbox API 不发 `inbox.get`，不接受 remote cursor 或 delegated options，按 scope/unread
+在 SQLite 中过滤后再 limit，并以 newest-first 返回；同步为 recovery、retryable 或 auth-revoked
+状态时 CLI fail closed，不读取旧投影。
+
 P1 不把 `mark_read` 放进 `InboxQuery`。当前实现把 mark-read 作为
 `MessageService` 的显式方法，避免 inbox/history 查询和 read ack 语义耦合。
 

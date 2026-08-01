@@ -796,6 +796,10 @@ impl MessageService<'_> {
         request: SendConversationPayloadRequest,
     ) -> ImResult<SendMessageResult>;
     pub fn inbox(&self, query: InboxQuery) -> ImResult<Page<Message>>;
+    pub async fn local_inbox_projection_with_metadata_async(
+        &self,
+        query: InboxQuery,
+    ) -> ImResult<MessagePage>;
     pub fn history(&self, thread: ThreadRef, query: HistoryQuery) -> ImResult<Page<Message>>;
     pub fn local_history(
         &self,

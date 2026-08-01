@@ -2003,6 +2003,83 @@ pub(crate) fn hydrated_incoming_message_cursor(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn list_local_inbox_messages_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    scope: crate::messages::InboxScope,
+    unread_only: bool,
+    limit: i64,
+) -> crate::ImResult<Vec<MessageRecord>> {
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let owner_did = required("owner_did", owner_did)?;
+    if limit <= 0 {
+        return Err(crate::ImError::invalid_input(
+            Some("limit".to_owned()),
+            "limit must be positive",
+        ));
+    }
+    let scope = match scope {
+        crate::messages::InboxScope::All => "all",
+        crate::messages::InboxScope::DirectOnly => "direct",
+        crate::messages::InboxScope::GroupOnly => "group",
+    };
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT msg_id,
+       owner_identity_id,
+       owner_did,
+       conversation_id,
+       wire_thread_kind,
+       wire_thread_ref,
+       wire_identity_resolution_state,
+       thread_id,
+       direction,
+       sender_did,
+       receiver_did,
+       group_id,
+       group_did,
+       content_type,
+       content,
+       title,
+       server_seq,
+       hydration_state,
+       sent_at,
+       stored_at,
+       is_e2ee,
+       is_read,
+       sender_name,
+       metadata,
+       mentions_current_user,
+       credential_name
+FROM messages
+WHERE owner_identity_id = ?1
+  AND owner_did = ?2
+  AND direction = 0
+  AND hydration_state = 'hydrated'
+  AND (?3 = 'all' OR wire_thread_kind = ?3)
+  AND (?4 = 0 OR is_read = 0)
+ORDER BY COALESCE(NULLIF(sent_at, ''), stored_at) DESC,
+         COALESCE(server_seq, -1) DESC,
+         msg_id DESC
+LIMIT ?5"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    let records = statement
+        .query_map(
+            rusqlite::params![owner_identity_id, owner_did, scope, unread_only, limit],
+            message_record_from_row,
+        )
+        .map_err(super::local_state_unavailable)?;
+    let mut result = Vec::new();
+    for record in records {
+        result.push(record.map_err(super::local_state_unavailable)?);
+    }
+    Ok(result)
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn list_messages_for_thread_ref_for_owner_identity(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
@@ -4456,6 +4533,153 @@ fn now_utc_like() -> String {
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_inbox_filters_before_limit_and_returns_unread_newest_first() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let owner_identity_id = "owner-id";
+        let owner_did = "did:example:owner";
+        for record in [
+            local_inbox_record(
+                "group-newest",
+                owner_identity_id,
+                owner_did,
+                "group",
+                false,
+                "2026-08-02T00:06:00Z",
+            ),
+            local_inbox_record(
+                "group-next",
+                owner_identity_id,
+                owner_did,
+                "group",
+                false,
+                "2026-08-02T00:05:00Z",
+            ),
+            local_inbox_record(
+                "direct-newest-unread",
+                owner_identity_id,
+                owner_did,
+                "direct",
+                false,
+                "2026-08-02T00:04:00Z",
+            ),
+            local_inbox_record(
+                "direct-read",
+                owner_identity_id,
+                owner_did,
+                "direct",
+                true,
+                "2026-08-02T00:03:00Z",
+            ),
+            local_inbox_record(
+                "direct-oldest-unread",
+                owner_identity_id,
+                owner_did,
+                "direct",
+                false,
+                "2026-08-02T00:02:00Z",
+            ),
+            local_inbox_record(
+                "other-owner",
+                "other-owner-id",
+                owner_did,
+                "direct",
+                false,
+                "2026-08-02T00:07:00Z",
+            ),
+        ] {
+            upsert_message(&db, &record).unwrap();
+        }
+
+        let direct = list_local_inbox_messages_for_owner_identity(
+            &db,
+            owner_identity_id,
+            owner_did,
+            crate::messages::InboxScope::DirectOnly,
+            true,
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            direct
+                .iter()
+                .map(|record| record.msg_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["direct-newest-unread", "direct-oldest-unread"]
+        );
+
+        let all = list_local_inbox_messages_for_owner_identity(
+            &db,
+            owner_identity_id,
+            owner_did,
+            crate::messages::InboxScope::All,
+            false,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            all.iter()
+                .map(|record| record.msg_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["group-newest", "group-next", "direct-newest-unread"]
+        );
+    }
+
+    fn local_inbox_record(
+        message_id: &str,
+        owner_identity_id: &str,
+        owner_did: &str,
+        thread_kind: &str,
+        is_read: bool,
+        sent_at: &str,
+    ) -> MessageRecord {
+        let is_group = thread_kind == "group";
+        MessageRecord {
+            msg_id: message_id.to_owned(),
+            owner_identity_id: owner_identity_id.to_owned(),
+            owner_did: owner_did.to_owned(),
+            conversation_id: if is_group {
+                "group:example".to_owned()
+            } else {
+                "dm:peer-scope:v1:example".to_owned()
+            },
+            wire_thread_kind: thread_kind.to_owned(),
+            wire_thread_ref: if is_group {
+                "did:example:group".to_owned()
+            } else {
+                "did:example:peer".to_owned()
+            },
+            wire_identity_resolution_state: "resolved".to_owned(),
+            thread_id: if is_group {
+                "group:example".to_owned()
+            } else {
+                "dm:peer-scope:v1:example".to_owned()
+            },
+            direction: 0,
+            sender_did: "did:example:peer".to_owned(),
+            receiver_did: owner_did.to_owned(),
+            group_id: if is_group {
+                "did:example:group".to_owned()
+            } else {
+                String::new()
+            },
+            group_did: if is_group {
+                "did:example:group".to_owned()
+            } else {
+                String::new()
+            },
+            content_type: "text/plain".to_owned(),
+            content: message_id.to_owned(),
+            server_seq: None,
+            hydration_state: MessageHydrationState::Hydrated,
+            sent_at: sent_at.to_owned(),
+            stored_at: sent_at.to_owned(),
+            is_read,
+            ..MessageRecord::default()
+        }
+    }
 
     #[test]
     fn decrypted_secure_lookup_uses_unresolved_durable_projection() {
