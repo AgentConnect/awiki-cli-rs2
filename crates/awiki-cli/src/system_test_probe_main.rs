@@ -20,18 +20,22 @@
 //! 7. Direct-wire checks scan a bounded sequence of exact-device `inbox.get` pages with the
 //!    current Core/Vault session, but return only match/shape booleans and counts, never raw wire
 //!    content or pagination state.
+//! 8. Agent bootstrap checks keep Device Access and Daemon Vault records inside Rust and expose
+//!    only a closed bool-or-null projection; account, DID, device, key, and claim values never
+//!    cross the probe boundary.
 
 use std::collections::BTreeSet;
+use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
-use im_core::identity::{IdentityDeviceReadiness, IdentityDeviceRole};
+use im_core::identity::{IdentityDeviceMode, IdentityDeviceReadiness, IdentityDeviceRole};
 use rand::RngCore;
 use reqwest::header::{
     HeaderValue as ReqwestHeaderValue, AUTHORIZATION as REQWEST_AUTHORIZATION, CONTENT_TYPE,
@@ -59,6 +63,8 @@ const ACCOUNT_STATE_RPC_PATH: &str = "/user-service/account-state/rpc";
 const AGENT_INVENTORY_RPC_PATH: &str = "/user-service/agent-inventory/rpc";
 const DID_AUTH_RPC_PATH: &str = "/user-service/did-auth/rpc";
 const ME_RPC_PATH: &str = "/user-service/me/rpc";
+const DAEMON_STATE_ROOT_ENV: &str = "AWIKI_SYSTEM_TEST_PROBE_DAEMON_STATE_ROOT";
+const DAEMON_AGENT_KIND_ENV: &str = "AWIKI_SYSTEM_TEST_PROBE_DAEMON_AGENT_KIND";
 
 const INVALID_REQUEST: &str = "probe.invalid_request";
 const INVALID_STATE: &str = "probe.invalid_state";
@@ -91,6 +97,7 @@ struct ProbeRequest {
 
 enum Action {
     DeviceReadiness,
+    AgentBootstrapIdentity(AgentBootstrapIdentityParams),
     OpenWs,
     WaitWsClosed { timeout_ms: u64 },
     CloseWs,
@@ -111,6 +118,10 @@ enum Action {
     AccountStateRegistry(RegistrySnapshotParams),
     RedeemHeldTicket { expected_digest_b64u: String },
     Shutdown,
+}
+
+struct AgentBootstrapIdentityParams {
+    controller_account_id: String,
 }
 
 struct AttachmentTicketParams {
@@ -245,7 +256,16 @@ struct Probe {
     websocket_url: String,
     ca_bundle: Option<String>,
     local_did: String,
+    local_account_id: String,
     local_device_id: String,
+    local_signing_key_id: String,
+    local_e2ee_key_id: String,
+    local_binding_generation: String,
+    local_device_auth_generation: String,
+    local_manifest_single_device: bool,
+    local_document_hash: Option<String>,
+    local_key_roles_separated: bool,
+    source_controller_account_id: Option<String>,
     device_role: &'static str,
     device_readiness: &'static str,
     local_root_state: &'static str,
@@ -296,7 +316,7 @@ async fn main() {
 }
 
 async fn run() -> Result<(), ProbeFailure> {
-    let mut probe = Probe::from_workspace().await?;
+    let mut probe = Probe::from_source().await?;
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let stdout = io::stdout();
@@ -342,6 +362,22 @@ async fn run() -> Result<(), ProbeFailure> {
 }
 
 impl Probe {
+    async fn from_source() -> Result<Self, ProbeFailure> {
+        match env::var_os(DAEMON_STATE_ROOT_ENV) {
+            Some(state_root) => {
+                let kind =
+                    env::var(DAEMON_AGENT_KIND_ENV).map_err(|_| ProbeFailure::InvalidState)?;
+                Self::from_daemon(Path::new(&state_root), &kind).await
+            }
+            None => {
+                if env::var_os(DAEMON_AGENT_KIND_ENV).is_some() {
+                    return Err(ProbeFailure::InvalidState);
+                }
+                Self::from_workspace().await
+            }
+        }
+    }
+
     async fn from_workspace() -> Result<Self, ProbeFailure> {
         let resolved = awiki_cli::workspace_config::resolve(Default::default())
             .map_err(|_| ProbeFailure::Runtime)?;
@@ -353,10 +389,23 @@ impl Probe {
             .device_summary_async(im_core::IdentitySelector::Default)
             .await
             .map_err(|_| ProbeFailure::Runtime)?;
+        if device_summary.mode != IdentityDeviceMode::VNext {
+            return Err(ProbeFailure::InvalidState);
+        }
         let local_device_id = device_summary
             .protocol_device_id
             .as_ref()
             .map(|value| value.as_str().to_owned())
+            .ok_or(ProbeFailure::Runtime)?;
+        let local_signing_key_id = device_summary
+            .signing_key_id
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(ProbeFailure::Runtime)?;
+        let local_e2ee_key_id = device_summary
+            .e2ee_key_id
+            .clone()
+            .filter(|value| !value.trim().is_empty())
             .ok_or(ProbeFailure::Runtime)?;
         let device_role = match device_summary.role {
             Some(IdentityDeviceRole::Member) => "member",
@@ -394,6 +443,22 @@ impl Probe {
             .map(Zeroizing::new)
             .ok_or(ProbeFailure::Runtime)?;
         let local_did = client.did().as_str().to_owned();
+        let binding = client
+            .active_sync_account_binding()
+            .await
+            .map_err(|_| ProbeFailure::Runtime)?;
+        if binding.current_did != local_did || binding.protocol_device_id != local_device_id {
+            return Err(ProbeFailure::Runtime);
+        }
+        let local_root_key_id = format!("{local_did}#key-1");
+        let local_document = workspace_manifest_projection(
+            Path::new(&resolved.paths.identity_dir),
+            &local_did,
+            &local_device_id,
+            &local_root_key_id,
+            &local_signing_key_id,
+            &local_e2ee_key_id,
+        );
         let service_did = im_core::ids::Did::parse(&resolved.anp_service_did)
             .map_err(|_| ProbeFailure::Runtime)?
             .as_str()
@@ -449,10 +514,158 @@ impl Probe {
             websocket_url,
             ca_bundle,
             local_did,
+            local_account_id: binding.account_id,
             local_device_id,
+            local_signing_key_id,
+            local_e2ee_key_id,
+            local_binding_generation: binding.identity_generation,
+            local_device_auth_generation: binding.device_auth_generation,
+            local_manifest_single_device: local_document.manifest_single_device,
+            local_document_hash: local_document.document_hash,
+            local_key_roles_separated: local_document.key_roles_separated,
+            source_controller_account_id: None,
             device_role,
             device_readiness,
             local_root_state,
+            service_did,
+            ws: None,
+            held_ticket: None,
+        })
+    }
+
+    async fn from_daemon(state_root: &Path, kind: &str) -> Result<Self, ProbeFailure> {
+        let expected_kind =
+            awiki_deamon::agent::AgentKind::parse(kind).map_err(|_| ProbeFailure::InvalidState)?;
+        let config = awiki_deamon::DaemonConfig::for_state_root(state_root)
+            .map_err(|_| ProbeFailure::Runtime)?;
+        config.validate().map_err(|_| ProbeFailure::Runtime)?;
+        let state = awiki_deamon::DaemonState::open(&config).map_err(|_| ProbeFailure::Runtime)?;
+        let definitions = state
+            .list_agent_definitions()
+            .map_err(|_| ProbeFailure::Runtime)?
+            .into_iter()
+            .filter(|item| item.status == "active" && item.agent_kind == expected_kind)
+            .collect::<Vec<_>>();
+        if definitions.len() != 1 {
+            return Err(ProbeFailure::InvalidState);
+        }
+        let definition = &definitions[0];
+        let identity = state
+            .load_agent_device_identity(&definition.agent_did)
+            .map_err(|_| ProbeFailure::Runtime)?
+            .ok_or(ProbeFailure::InvalidState)?;
+        identity.validate().map_err(|_| ProbeFailure::Runtime)?;
+        if identity.agent_kind != expected_kind || identity.agent_did != definition.agent_did {
+            return Err(ProbeFailure::InvalidState);
+        }
+        let mut local_document = project_local_document(
+            &identity.did_document,
+            &identity.agent_did,
+            &identity.protocol_device_id,
+            &identity.root_key_id,
+            &identity.device_signing_key_id,
+            &identity.device_e2ee_key_id,
+        );
+        if local_document.document_hash.as_deref() != Some(identity.document_hash.as_str()) {
+            local_document.document_hash = None;
+        }
+        let adapter =
+            awiki_deamon::ImCoreAdapter::open(&config).map_err(|_| ProbeFailure::Runtime)?;
+        let client = adapter
+            .client_for_agent_device_identity(&identity)
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let binding = client
+            .active_sync_account_binding()
+            .await
+            .map_err(|_| ProbeFailure::Runtime)?;
+        if binding.account_id != identity.account_id
+            || binding.current_did != identity.agent_did
+            || binding.protocol_device_id != identity.protocol_device_id
+            || binding.identity_generation != identity.binding_generation
+            || binding.device_auth_generation != identity.auth_generation.to_string()
+        {
+            return Err(ProbeFailure::Runtime);
+        }
+        let mut session = client
+            .auth()
+            .ensure_session_async(im_core::auth::AuthScope::Messaging)
+            .await
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let bearer = session
+            .bearer_token
+            .take()
+            .filter(|value| !value.trim().is_empty())
+            .map(Zeroizing::new)
+            .ok_or(ProbeFailure::Runtime)?;
+        let service_did = im_core::ids::Did::parse(&config.anp_service_did)
+            .map_err(|_| ProbeFailure::Runtime)?
+            .as_str()
+            .to_owned();
+        let message_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
+            &config.message_service_base_url,
+            RPC_PATH,
+        ))
+        .map_err(|_| ProbeFailure::Runtime)?;
+        validate_service_url(&message_rpc_url)?;
+        let account_state_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
+            &config.user_service_base_url,
+            ACCOUNT_STATE_RPC_PATH,
+        ))
+        .map_err(|_| ProbeFailure::Runtime)?;
+        let agent_inventory_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
+            &config.user_service_base_url,
+            AGENT_INVENTORY_RPC_PATH,
+        ))
+        .map_err(|_| ProbeFailure::Runtime)?;
+        let did_auth_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
+            &config.user_service_base_url,
+            DID_AUTH_RPC_PATH,
+        ))
+        .map_err(|_| ProbeFailure::Runtime)?;
+        let me_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
+            &config.user_service_base_url,
+            ME_RPC_PATH,
+        ))
+        .map_err(|_| ProbeFailure::Runtime)?;
+        for url in [
+            &account_state_rpc_url,
+            &agent_inventory_rpc_url,
+            &did_auth_rpc_url,
+            &me_rpc_url,
+        ] {
+            validate_service_url(url)?;
+        }
+        let websocket_url =
+            im_core::realtime::realtime_client_construction_plan(&config.message_service_base_url)
+                .map_err(|_| ProbeFailure::Runtime)?
+                .endpoints
+                .websocket_url;
+
+        Ok(Self {
+            _client: Some(client),
+            http: build_http_client(None)?,
+            bearer,
+            message_rpc_url,
+            account_state_rpc_url,
+            agent_inventory_rpc_url,
+            did_auth_rpc_url,
+            me_rpc_url,
+            websocket_url,
+            ca_bundle: None,
+            local_did: identity.agent_did,
+            local_account_id: identity.account_id,
+            local_device_id: identity.protocol_device_id,
+            local_signing_key_id: identity.device_signing_key_id,
+            local_e2ee_key_id: identity.device_e2ee_key_id,
+            local_binding_generation: identity.binding_generation,
+            local_device_auth_generation: identity.auth_generation.to_string(),
+            local_manifest_single_device: local_document.manifest_single_device,
+            local_document_hash: local_document.document_hash,
+            local_key_roles_separated: local_document.key_roles_separated,
+            source_controller_account_id: Some(definition.controller_user_id.clone()),
+            device_role: "admin",
+            device_readiness: "admin_ready",
+            local_root_state: "active",
             service_did,
             ws: None,
             held_ticket: None,
@@ -470,6 +683,58 @@ impl Probe {
                 }),
                 false,
             )),
+            Action::AgentBootstrapIdentity(params) => {
+                let registry = self
+                    .required_user_rpc(&self.did_auth_rpc_url, "device_registry_get", json!({}))
+                    .await?;
+                let manifest = self
+                    .required_user_rpc(
+                        &self.account_state_rpc_url,
+                        "account_state.manifest_get",
+                        json!({}),
+                    )
+                    .await?;
+                let (device_access_standard, sync_capability_absent) =
+                    device_access_projection_matches(
+                        &self.bearer,
+                        &self.local_did,
+                        &self.local_account_id,
+                        &self.local_device_id,
+                        &self.local_signing_key_id,
+                        &self.local_device_auth_generation,
+                    );
+                Ok((
+                    json!({
+                        "agent_account_independent": self.local_account_id != params.controller_account_id,
+                        "controller_binding_matches": controller_binding_projection(
+                            self.source_controller_account_id.as_deref(),
+                            &params.controller_account_id,
+                        ),
+                        "manifest_single_device": self.local_manifest_single_device,
+                        "registry_single_ready_admin": bootstrap_registry_matches(
+                            &registry,
+                            &self.local_did,
+                            &self.local_device_id,
+                            &self.local_signing_key_id,
+                            &self.local_e2ee_key_id,
+                            &self.local_device_auth_generation,
+                            self.local_document_hash.as_deref().unwrap_or(""),
+                        ),
+                        "key_roles_separated": self.local_key_roles_separated,
+                        "bootstrap_generations_one": self.local_binding_generation == "1"
+                            && self.local_device_auth_generation == "1"
+                            && bootstrap_manifest_matches(
+                                &manifest,
+                                &self.local_account_id,
+                                &self.local_did,
+                                &self.local_binding_generation,
+                            ),
+                        "device_access_standard": device_access_standard,
+                        "sync_capability_absent": sync_capability_absent,
+                    }),
+                    false,
+                ))
+            }
             Action::OpenWs => {
                 if self.ws.is_some() {
                     return Err(ProbeFailure::InvalidState);
@@ -1131,6 +1396,12 @@ fn parse_request(raw: &str) -> Result<ProbeRequest, ProbeFailure> {
             require_exact_keys(params, &[])?;
             Action::DeviceReadiness
         }
+        "agent_bootstrap_identity" => {
+            require_exact_keys(params, &["controller_account_id"])?;
+            Action::AgentBootstrapIdentity(AgentBootstrapIdentityParams {
+                controller_account_id: required_string(params, "controller_account_id", 512)?,
+            })
+        }
         "open_ws" => {
             require_exact_keys(params, &[])?;
             Action::OpenWs
@@ -1520,6 +1791,343 @@ fn result_with_code(key: &str, value: bool, code: Option<&'static str>) -> Value
         result.insert("anp_code".to_owned(), Value::String(code.to_owned()));
     }
     Value::Object(result)
+}
+
+#[derive(Default)]
+struct LocalDocumentProjection {
+    manifest_single_device: bool,
+    document_hash: Option<String>,
+    key_roles_separated: bool,
+}
+
+fn workspace_manifest_projection(
+    identity_root: &Path,
+    local_did: &str,
+    local_device_id: &str,
+    local_root_key_id: &str,
+    local_signing_key_id: &str,
+    local_e2ee_key_id: &str,
+) -> LocalDocumentProjection {
+    let result = (|| -> Result<LocalDocumentProjection, ProbeFailure> {
+        let index =
+            fs::read(identity_root.join("index.json")).map_err(|_| ProbeFailure::Runtime)?;
+        let index: Value = serde_json::from_slice(&index).map_err(|_| ProbeFailure::Runtime)?;
+        let identities = index
+            .get("identities")
+            .and_then(Value::as_array)
+            .ok_or(ProbeFailure::Runtime)?;
+        let matching = identities
+            .iter()
+            .filter_map(Value::as_object)
+            .filter(|entry| entry.get("did").and_then(Value::as_str) == Some(local_did))
+            .collect::<Vec<_>>();
+        if matching.len() != 1 {
+            return Ok(LocalDocumentProjection::default());
+        }
+        let dir_name = required_response_string(matching[0], "dir_name")?;
+        let relative = Path::new(dir_name);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Ok(LocalDocumentProjection::default());
+        }
+        let identity_dir = identity_root.join(relative);
+        let document_path = ["did.json", "did_document.json"]
+            .into_iter()
+            .map(|name| identity_dir.join(name))
+            .find(|path| path.is_file())
+            .ok_or(ProbeFailure::Runtime)?;
+        let document = fs::read(document_path).map_err(|_| ProbeFailure::Runtime)?;
+        let document: Value =
+            serde_json::from_slice(&document).map_err(|_| ProbeFailure::Runtime)?;
+        Ok(project_local_document(
+            &document,
+            local_did,
+            local_device_id,
+            local_root_key_id,
+            local_signing_key_id,
+            local_e2ee_key_id,
+        ))
+    })();
+    result.unwrap_or_default()
+}
+
+fn project_local_document(
+    document: &Value,
+    local_did: &str,
+    local_device_id: &str,
+    local_root_key_id: &str,
+    local_signing_key_id: &str,
+    local_e2ee_key_id: &str,
+) -> LocalDocumentProjection {
+    LocalDocumentProjection {
+        manifest_single_device: manifest_matches(
+            document,
+            local_did,
+            local_device_id,
+            local_signing_key_id,
+            local_e2ee_key_id,
+        ),
+        document_hash: canonical_document_hash(document),
+        key_roles_separated: key_roles_separated(
+            document,
+            local_root_key_id,
+            local_signing_key_id,
+            local_e2ee_key_id,
+        ),
+    }
+}
+
+fn canonical_document_hash(document: &Value) -> Option<String> {
+    let canonical = serde_json_canonicalizer::to_vec(document).ok()?;
+    Some(format!(
+        "sha256:{}",
+        URL_SAFE_NO_PAD.encode(Sha256::digest(canonical))
+    ))
+}
+
+fn key_roles_separated(
+    document: &Value,
+    local_root_key_id: &str,
+    local_signing_key_id: &str,
+    local_e2ee_key_id: &str,
+) -> bool {
+    let Some(methods) = document.get("verificationMethod").and_then(Value::as_array) else {
+        return false;
+    };
+    let material = |key_id: &str| -> Option<Vec<u8>> {
+        let matching = methods
+            .iter()
+            .filter_map(Value::as_object)
+            .filter(|method| method.get("id").and_then(Value::as_str) == Some(key_id))
+            .collect::<Vec<_>>();
+        if matching.len() != 1 {
+            return None;
+        }
+        let method = matching[0];
+        let fields = ["publicKeyJwk", "publicKeyMultibase", "publicKeyBase58"]
+            .into_iter()
+            .filter_map(|key| method.get(key).map(|value| (key, value)))
+            .collect::<Vec<_>>();
+        if fields.len() != 1 {
+            return None;
+        }
+        serde_json_canonicalizer::to_vec(&json!({fields[0].0: fields[0].1})).ok()
+    };
+    let Some(root) = material(local_root_key_id) else {
+        return false;
+    };
+    let Some(signing) = material(local_signing_key_id) else {
+        return false;
+    };
+    let Some(e2ee) = material(local_e2ee_key_id) else {
+        return false;
+    };
+    local_root_key_id != local_signing_key_id
+        && local_root_key_id != local_e2ee_key_id
+        && local_signing_key_id != local_e2ee_key_id
+        && root != signing
+        && root != e2ee
+        && signing != e2ee
+}
+
+fn manifest_matches(
+    document: &Value,
+    local_did: &str,
+    local_device_id: &str,
+    local_signing_key_id: &str,
+    local_e2ee_key_id: &str,
+) -> bool {
+    let Ok(Some(manifest)) = anp::authentication::validate_device_manifest(document) else {
+        return false;
+    };
+    if document.get("id").and_then(Value::as_str) != Some(local_did) || manifest.devices.len() != 1
+    {
+        return false;
+    }
+    let device = &manifest.devices[0];
+    device.device_id == local_device_id
+        && device.signing_key_id == local_signing_key_id
+        && device.e2ee_key_id == local_e2ee_key_id
+}
+
+fn bootstrap_registry_matches(
+    result: &Value,
+    local_did: &str,
+    local_device_id: &str,
+    local_signing_key_id: &str,
+    local_e2ee_key_id: &str,
+    local_auth_generation: &str,
+    local_document_hash: &str,
+) -> bool {
+    let checked = (|| -> Result<bool, ProbeFailure> {
+        let object = result.as_object().ok_or(ProbeFailure::Runtime)?;
+        if required_response_string(object, "did")? != local_did {
+            return Ok(false);
+        }
+        let checkpoint = object
+            .get("checkpoint")
+            .and_then(Value::as_object)
+            .ok_or(ProbeFailure::Runtime)?;
+        if canonical_u64(checkpoint, "document_version")? != 1
+            || canonical_u64(checkpoint, "registry_version")? != 1
+            || local_document_hash.is_empty()
+            || required_response_string(checkpoint, "document_hash")? != local_document_hash
+        {
+            return Ok(false);
+        }
+        let devices = object
+            .get("devices")
+            .and_then(Value::as_array)
+            .ok_or(ProbeFailure::Runtime)?;
+        if devices.len() != 1 {
+            return Ok(false);
+        }
+        let device = devices[0].as_object().ok_or(ProbeFailure::Runtime)?;
+        let expected_generation = local_auth_generation
+            .parse::<u64>()
+            .ok()
+            .filter(|value| value.to_string() == local_auth_generation)
+            .ok_or(ProbeFailure::Runtime)?;
+        Ok(
+            required_response_string(device, "device_id")? == local_device_id
+                && required_response_string(device, "signing_key_id")? == local_signing_key_id
+                && required_response_string(device, "e2ee_key_id")? == local_e2ee_key_id
+                && required_response_string(device, "status")? == "active"
+                && required_response_string(device, "role")? == "admin"
+                && device.get("management_ready").and_then(Value::as_bool) == Some(true)
+                && canonical_u64(device, "auth_generation")? == expected_generation,
+        )
+    })();
+    checked.unwrap_or(false)
+}
+
+fn bootstrap_manifest_matches(
+    result: &Value,
+    local_account_id: &str,
+    local_did: &str,
+    local_binding_generation: &str,
+) -> bool {
+    let checked = (|| -> Result<bool, ProbeFailure> {
+        let object = result.as_object().ok_or(ProbeFailure::Runtime)?;
+        let versions = object
+            .get("versions")
+            .and_then(Value::as_object)
+            .ok_or(ProbeFailure::Runtime)?;
+        Ok(
+            required_response_string(object, "account_id")? == local_account_id
+                && required_response_string(object, "current_did")? == local_did
+                && canonical_decimal_string(object, "identity_generation")?
+                    == local_binding_generation
+                && local_binding_generation == "1"
+                && canonical_decimal_string(versions, "device_registry")? == "1",
+        )
+    })();
+    checked.unwrap_or(false)
+}
+
+fn controller_binding_projection(
+    source_controller_account_id: Option<&str>,
+    expected_controller_account_id: &str,
+) -> Option<bool> {
+    source_controller_account_id.map(|value| value == expected_controller_account_id)
+}
+
+fn device_access_projection_matches(
+    token: &Zeroizing<String>,
+    local_did: &str,
+    local_account_id: &str,
+    local_device_id: &str,
+    local_signing_key_id: &str,
+    local_auth_generation: &str,
+) -> (bool, bool) {
+    let checked = (|| -> Result<(bool, bool), ProbeFailure> {
+        let mut parts = token.split('.');
+        let (Some(_header), Some(payload), Some(signature), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(ProbeFailure::Runtime);
+        };
+        if payload.is_empty() || signature.is_empty() {
+            return Err(ProbeFailure::Runtime);
+        }
+        let payload = URL_SAFE_NO_PAD
+            .decode(payload)
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let claims: Value = serde_json::from_slice(&payload).map_err(|_| ProbeFailure::Runtime)?;
+        let claims = claims.as_object().ok_or(ProbeFailure::Runtime)?;
+        let sync_capability_absent = !claims.contains_key("sync_capability");
+        let expected_generation = local_auth_generation
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value > 0 && value.to_string() == local_auth_generation)
+            .ok_or(ProbeFailure::Runtime)?;
+        let audiences = exact_unique_string_set(claims, "aud")?;
+        let scopes = exact_unique_string_set(claims, "scopes")?;
+        let issued_at = canonical_u64(claims, "iat")?;
+        let not_before = canonical_u64(claims, "nbf")?;
+        let expires_at = canonical_u64(claims, "exp")?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| ProbeFailure::Runtime)?
+            .as_secs();
+        let standard = required_response_string(claims, "iss")? == "user-service"
+            && required_response_string(claims, "type")? == "access"
+            && required_response_string(claims, "purpose")? == "awiki.device.access.v1"
+            && required_response_string(claims, "sub")? == local_did
+            && required_response_string(claims, "did")? == local_did
+            && required_response_string(claims, "user_id")? == local_account_id
+            && required_response_string(claims, "device_id")? == local_device_id
+            && required_response_string(claims, "key_id")? == local_signing_key_id
+            && canonical_u64(claims, "auth_generation")? == expected_generation
+            && audiences
+                == BTreeSet::from([
+                    "awiki-message-service".to_owned(),
+                    "awiki-user-service".to_owned(),
+                ])
+            && scopes
+                == BTreeSet::from([
+                    "device:manage".to_owned(),
+                    "device:read".to_owned(),
+                    "message:connect".to_owned(),
+                ])
+            && issued_at == not_before
+            && expires_at > issued_at
+            && not_before <= now
+            && expires_at > now
+            && !required_response_string(claims, "jti")?.is_empty()
+            && !claims.contains_key("profile")
+            && sync_capability_absent;
+        Ok((standard, sync_capability_absent))
+    })();
+    checked.unwrap_or((false, false))
+}
+
+fn exact_unique_string_set(
+    object: &Map<String, Value>,
+    key: &str,
+) -> Result<BTreeSet<String>, ProbeFailure> {
+    let values = object
+        .get(key)
+        .and_then(Value::as_array)
+        .filter(|values| !values.is_empty() && values.len() <= 16)
+        .ok_or(ProbeFailure::Runtime)?;
+    let set = values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|value| !value.trim().is_empty() && value.len() <= 128)
+                .map(str::to_owned)
+                .ok_or(ProbeFailure::Runtime)
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if set.len() != values.len() {
+        return Err(ProbeFailure::Runtime);
+    }
+    Ok(set)
 }
 
 struct DirectWirePageProgress {
@@ -2220,6 +2828,235 @@ mod tests {
     }
 
     #[test]
+    fn agent_bootstrap_identity_request_is_closed_and_exact() {
+        let request = match parse_request(
+            r#"{"id":"agent-1","action":"agent_bootstrap_identity","params":{"controller_account_id":"controller-account"}}"#,
+        ) {
+            Ok(request) => request,
+            Err(_) => panic!("closed Agent bootstrap request"),
+        };
+        let Action::AgentBootstrapIdentity(params) = request.action else {
+            panic!("Agent bootstrap action")
+        };
+        assert_eq!(params.controller_account_id, "controller-account");
+
+        for raw in [
+            r#"{"id":"agent-2","action":"agent_bootstrap_identity","params":{}}"#,
+            r#"{"id":"agent-3","action":"agent_bootstrap_identity","params":{"controller_account_id":"controller-account","access_token":"secret"}}"#,
+        ] {
+            assert!(parse_request(raw).is_err());
+        }
+    }
+
+    #[test]
+    fn agent_bootstrap_registry_projection_requires_one_ready_admin() {
+        let device_id = "device-local";
+        let signing_key_id = format!("{LOCAL_DID}#device-local-sign");
+        let e2ee_key_id = format!("{LOCAL_DID}#device-local-e2ee");
+        let registry = json!({
+            "did": LOCAL_DID,
+            "checkpoint": {
+                "document_version": 1,
+                "document_hash": "document-hash",
+                "registry_version": 1,
+            },
+            "devices": [{
+                "device_id": device_id,
+                "signing_key_id": signing_key_id,
+                "e2ee_key_id": e2ee_key_id,
+                "status": "active",
+                "role": "admin",
+                "management_ready": true,
+                "auth_generation": 1,
+            }],
+        });
+        assert!(bootstrap_registry_matches(
+            &registry,
+            LOCAL_DID,
+            device_id,
+            &signing_key_id,
+            &e2ee_key_id,
+            "1",
+            "document-hash",
+        ));
+
+        for mutation in [
+            json!({"registry_version": 2}),
+            json!({"management_ready": false}),
+            json!({"auth_generation": 2}),
+            json!({"document_hash": "other-document-hash"}),
+        ] {
+            let mut invalid = registry.clone();
+            if let Some(registry_version) = mutation.get("registry_version") {
+                invalid["checkpoint"]["registry_version"] = registry_version.clone();
+            }
+            if let Some(management_ready) = mutation.get("management_ready") {
+                invalid["devices"][0]["management_ready"] = management_ready.clone();
+            }
+            if let Some(auth_generation) = mutation.get("auth_generation") {
+                invalid["devices"][0]["auth_generation"] = auth_generation.clone();
+            }
+            if let Some(document_hash) = mutation.get("document_hash") {
+                invalid["checkpoint"]["document_hash"] = document_hash.clone();
+            }
+            assert!(!bootstrap_registry_matches(
+                &invalid,
+                LOCAL_DID,
+                device_id,
+                &signing_key_id,
+                &e2ee_key_id,
+                "1",
+                "document-hash",
+            ));
+        }
+    }
+
+    #[test]
+    fn agent_bootstrap_manifest_requires_exact_remote_generation_and_principal() {
+        let manifest = json!({
+            "account_id": "account-local",
+            "current_did": LOCAL_DID,
+            "identity_generation": "1",
+            "versions": {"device_registry": "1"},
+        });
+        assert!(bootstrap_manifest_matches(
+            &manifest,
+            "account-local",
+            LOCAL_DID,
+            "1",
+        ));
+        for (pointer, value) in [
+            ("/account_id", json!("account-other")),
+            ("/current_did", json!("did:wba:example.test:agent:other")),
+            ("/identity_generation", json!("2")),
+            ("/versions/device_registry", json!("2")),
+        ] {
+            let mut invalid = manifest.clone();
+            *invalid.pointer_mut(pointer).expect("manifest field") = value;
+            assert!(!bootstrap_manifest_matches(
+                &invalid,
+                "account-local",
+                LOCAL_DID,
+                "1",
+            ));
+        }
+    }
+
+    #[test]
+    fn agent_bootstrap_controller_binding_projection_is_three_state() {
+        assert_eq!(
+            controller_binding_projection(None, "controller-account"),
+            None
+        );
+        assert_eq!(
+            controller_binding_projection(Some("controller-account"), "controller-account"),
+            Some(true)
+        );
+        assert_eq!(
+            controller_binding_projection(Some("other-account"), "controller-account"),
+            Some(false)
+        );
+        assert!(
+            json!({"controller_binding_matches": controller_binding_projection(
+                None,
+                "controller-account"
+            )})["controller_binding_matches"]
+                .is_null()
+        );
+    }
+
+    #[test]
+    fn agent_bootstrap_key_roles_require_distinct_public_material() {
+        let root_id = format!("{LOCAL_DID}#key-1");
+        let signing_id = format!("{LOCAL_DID}#device-local-sign");
+        let e2ee_id = format!("{LOCAL_DID}#device-local-e2ee");
+        let document = json!({
+            "verificationMethod": [
+                {"id": root_id, "publicKeyJwk": {"kty": "OKP", "crv": "Ed25519", "x": "root"}},
+                {"id": signing_id, "publicKeyJwk": {"kty": "OKP", "crv": "Ed25519", "x": "signing"}},
+                {"id": e2ee_id, "publicKeyJwk": {"kty": "OKP", "crv": "X25519", "x": "e2ee"}},
+            ],
+        });
+        assert!(key_roles_separated(
+            &document,
+            &root_id,
+            &signing_id,
+            &e2ee_id,
+        ));
+
+        let mut reused = document;
+        reused["verificationMethod"][1]["publicKeyJwk"] =
+            reused["verificationMethod"][0]["publicKeyJwk"].clone();
+        assert!(!key_roles_separated(
+            &reused,
+            &root_id,
+            &signing_id,
+            &e2ee_id,
+        ));
+    }
+
+    #[test]
+    fn agent_device_access_projection_is_secret_free_and_rejects_extensions() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Unix time")
+            .as_secs();
+        let device_id = "device-local";
+        let signing_key_id = format!("{LOCAL_DID}#device-local-sign");
+        let claims = json!({
+            "iss": "user-service",
+            "aud": ["awiki-user-service", "awiki-message-service"],
+            "sub": LOCAL_DID,
+            "type": "access",
+            "purpose": "awiki.device.access.v1",
+            "did": LOCAL_DID,
+            "user_id": "agent-account",
+            "device_id": device_id,
+            "key_id": signing_key_id,
+            "auth_generation": 1,
+            "scopes": ["device:manage", "device:read", "message:connect"],
+            "iat": now,
+            "nbf": now,
+            "exp": now + 3600,
+            "jti": "device-access-token-id",
+        });
+        let token = Zeroizing::new(format!(
+            "e30.{}.test-signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("claims"))
+        ));
+        assert_eq!(
+            device_access_projection_matches(
+                &token,
+                LOCAL_DID,
+                "agent-account",
+                device_id,
+                &signing_key_id,
+                "1",
+            ),
+            (true, true)
+        );
+
+        let mut extended = claims;
+        extended["sync_capability"] = json!("sync-v2-secret");
+        let token = Zeroizing::new(format!(
+            "e30.{}.test-signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&extended).expect("claims"))
+        ));
+        assert_eq!(
+            device_access_projection_matches(
+                &token,
+                LOCAL_DID,
+                "agent-account",
+                device_id,
+                &signing_key_id,
+                "1",
+            ),
+            (false, false)
+        );
+        assert!(!format!("{:?}", (false, false)).contains("sync-v2-secret"));
+    }
+
+    #[test]
     fn direct_wire_projection_request_is_exact_and_rejects_invalid_selectors() {
         let exact = match parse_request(
             &json!({
@@ -2585,6 +3422,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_bootstrap_action_returns_only_closed_authoritative_projection() {
+        let observed_authorization = Arc::new(Mutex::new(Vec::new()));
+        let (base_url, server) =
+            spawn_agent_bootstrap_fake_server(observed_authorization.clone()).await;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Unix time")
+            .as_secs();
+        let signing_key_id = format!("{LOCAL_DID}#device-local-sign");
+        let claims = json!({
+            "iss": "user-service",
+            "aud": ["awiki-user-service", "awiki-message-service"],
+            "sub": LOCAL_DID,
+            "type": "access",
+            "purpose": "awiki.device.access.v1",
+            "did": LOCAL_DID,
+            "user_id": "account-local",
+            "device_id": "dev-local-1",
+            "key_id": signing_key_id,
+            "auth_generation": 1,
+            "scopes": ["device:manage", "device:read", "message:connect"],
+            "iat": now,
+            "nbf": now,
+            "exp": now + 3600,
+            "jti": "bootstrap-jti-secret",
+        });
+        let mut probe = test_probe(&base_url);
+        probe.bearer = Zeroizing::new(format!(
+            "e30.{}.bootstrap-signature-secret",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("claims"))
+        ));
+        let output = execute_line(
+            &mut probe,
+            r#"{"id":21,"action":"agent_bootstrap_identity","params":{"controller_account_id":"controller-account-secret"}}"#,
+        )
+        .await;
+        server.await.expect("Agent bootstrap fake server task");
+
+        assert_eq!(
+            output["result"],
+            json!({
+                "agent_account_independent": true,
+                "controller_binding_matches": null,
+                "manifest_single_device": true,
+                "registry_single_ready_admin": true,
+                "key_roles_separated": true,
+                "bootstrap_generations_one": true,
+                "device_access_standard": true,
+                "sync_capability_absent": true,
+            })
+        );
+        let serialized = serde_json::to_string(&output).expect("serialize bootstrap output");
+        for forbidden in [
+            "bootstrap-signature-secret",
+            "bootstrap-jti-secret",
+            "controller-account-secret",
+            "account-local",
+            LOCAL_DID,
+            "dev-local-1",
+            "device-local-sign",
+            "document-hash",
+        ] {
+            assert!(!serialized.contains(forbidden));
+        }
+        assert_eq!(
+            observed_authorization
+                .lock()
+                .expect("authorization observations")
+                .as_slice(),
+            &[true, true]
+        );
+    }
+
+    #[tokio::test]
     async fn fake_server_exercises_closed_protocol_without_secret_output() {
         let observed_authorization = Arc::new(Mutex::new(Vec::new()));
         let (base_url, server) = spawn_fake_server(observed_authorization.clone()).await;
@@ -2777,7 +3688,16 @@ mod tests {
             websocket_url: base_url.replacen("http://", "ws://", 1),
             ca_bundle: None,
             local_did: LOCAL_DID.to_owned(),
+            local_account_id: "account-local".to_owned(),
             local_device_id: "dev-local-1".to_owned(),
+            local_signing_key_id: format!("{LOCAL_DID}#device-local-sign"),
+            local_e2ee_key_id: format!("{LOCAL_DID}#device-local-e2ee"),
+            local_binding_generation: "1".to_owned(),
+            local_device_auth_generation: "1".to_owned(),
+            local_manifest_single_device: true,
+            local_document_hash: Some("document-hash".to_owned()),
+            local_key_roles_separated: true,
+            source_controller_account_id: None,
             device_role: "admin",
             device_readiness: "admin_ready",
             local_root_state: "active",
@@ -3141,6 +4061,79 @@ mod tests {
                     .write_all(response.as_bytes())
                     .await
                     .expect("write fake response");
+            }
+        });
+        (base_url, server)
+    }
+
+    async fn spawn_agent_bootstrap_fake_server(
+        observed_authorization: Arc<Mutex<Vec<bool>>>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind Agent bootstrap fake server");
+        let address = listener
+            .local_addr()
+            .expect("Agent bootstrap fake server address");
+        let base_url = format!("http://{address}");
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener
+                    .accept()
+                    .await
+                    .expect("accept Agent bootstrap request");
+                let request = read_http_request(&mut socket).await;
+                observed_authorization
+                    .lock()
+                    .expect("authorization observations")
+                    .push(
+                        request
+                            .to_ascii_lowercase()
+                            .contains("authorization: bearer e30."),
+                    );
+                let (_, body) = request
+                    .split_once("\r\n\r\n")
+                    .expect("Agent bootstrap request body");
+                let payload: Value =
+                    serde_json::from_str(body).expect("Agent bootstrap request JSON");
+                let result = match payload.get("method").and_then(Value::as_str) {
+                    Some("device_registry_get") => json!({
+                        "did": LOCAL_DID,
+                        "checkpoint": {
+                            "document_version": 1,
+                            "document_hash": "document-hash",
+                            "registry_version": 1,
+                        },
+                        "devices": [{
+                            "device_id": "dev-local-1",
+                            "signing_key_id": format!("{LOCAL_DID}#device-local-sign"),
+                            "e2ee_key_id": format!("{LOCAL_DID}#device-local-e2ee"),
+                            "status": "active",
+                            "role": "admin",
+                            "management_ready": true,
+                            "auth_generation": 1,
+                        }],
+                    }),
+                    Some("account_state.manifest_get") => json!({
+                        "account_id": "account-local",
+                        "current_did": LOCAL_DID,
+                        "identity_generation": "1",
+                        "versions": {"device_registry": "1"},
+                    }),
+                    _ => panic!("unexpected Agent bootstrap RPC method"),
+                };
+                let response = json_response(
+                    200,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": "system-test-probe",
+                        "result": result,
+                    }),
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write Agent bootstrap response");
             }
         });
         (base_url, server)

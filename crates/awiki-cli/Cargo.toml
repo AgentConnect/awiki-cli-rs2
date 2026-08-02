@@ -18,13 +18,16 @@ required-features = ["system-test-probe"]
 [features]
 default = []
 system-test-probe = [
+    "dep:awiki-deamon",
     "dep:futures-util",
     "dep:reqwest",
+    "dep:serde_json_canonicalizer",
     "dep:tokio-tungstenite",
     "im-core/internal-test-helpers",
 ]
 
 [dependencies]
+awiki-deamon = { path = "../awiki-deamon", optional = true }
 awiki-user-dirs.workspace = true
 anyhow.workspace = true
 anp.workspace = true
@@ -36,6 +39,7 @@ reqwest = { workspace = true, optional = true }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_json_canonicalizer = { workspace = true, optional = true }
 sha2.workspace = true
 rusqlite.workspace = true
 time.workspace = true
@@ -55,6 +59,3 @@ windows-sys = { version = "0.52", features = [
     "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }
-
-[dev-dependencies]
-serde_json_canonicalizer.workspace = true
