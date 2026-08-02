@@ -1949,6 +1949,7 @@ fn sync_account_seed(
             // decimal String and never narrow it back to u64.
             authorization.auth_generation.to_string(),
             authorization.signing_key_id.clone(),
+            authorization.e2ee_key_id.clone(),
             authorization.role,
             authorization.management_ready,
         ),

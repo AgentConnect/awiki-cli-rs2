@@ -506,7 +506,7 @@ fn dirty_gap_and_unknown_hints_request_reliable_v2_sync() {
 }
 
 #[test]
-fn exact_v2_remote_message_without_hint_is_fail_safe_sync_only() {
+fn ordinary_v2_remote_message_without_hint_is_fail_safe_sync_only() {
     let sink = RecordingHostNotifySink::default();
     let mut status = status();
 
@@ -523,6 +523,40 @@ fn exact_v2_remote_message_without_hint_is_fail_safe_sync_only() {
     assert_eq!(result.route, CliImEventRoute::Ignored);
     assert!(!result.dispatched_host_notification);
     assert!(sink.events.lock().unwrap().is_empty());
+}
+
+#[test]
+fn verified_p5_message_dispatches_without_account_sync_reconcile() {
+    let sink = RecordingHostNotifySink::default();
+    let mut status = status();
+    let mut event = direct_message_event("msg-p5-verified-1", "verified P5 message");
+    let ImEvent::MessageReceived(received) = &mut event else {
+        panic!("expected message event");
+    };
+    received.message.metadata.attributes.extend([
+        MessageMetadataAttribute {
+            key: "security".to_owned(),
+            value: "direct-e2ee".to_owned(),
+        },
+        MessageMetadataAttribute {
+            key: "decryption_state".to_owned(),
+            value: "decrypted".to_owned(),
+        },
+    ]);
+
+    let result = handle_reliable_remote_event(
+        Some(&sink),
+        &mut status,
+        event,
+        None,
+        Some("bob"),
+        Some("did:bob"),
+    );
+
+    assert!(!result.reliable_sync_requested);
+    assert_eq!(result.route, CliImEventRoute::DirectIncoming);
+    assert!(result.dispatched_host_notification);
+    assert_eq!(sink.events().len(), 1);
 }
 
 #[test]

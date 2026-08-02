@@ -93,13 +93,27 @@ pub fn handle_reliable_remote_event(
 }
 
 fn reliable_remote_event_is_sync_only(event: &ImEvent) -> bool {
-    matches!(
-        event,
-        ImEvent::MessageReceived(_)
-            | ImEvent::MessageUpdated(_)
-            | ImEvent::GroupUpdated(_)
-            | ImEvent::UnknownNotification(_)
-    )
+    match event {
+        ImEvent::MessageReceived(event) => !message_is_verified_direct_e2ee(&event.message),
+        ImEvent::MessageUpdated(_) | ImEvent::GroupUpdated(_) | ImEvent::UnknownNotification(_) => {
+            true
+        }
+        ImEvent::ConnectionStateChanged(_)
+        | ImEvent::SystemNotificationChanged(_)
+        | ImEvent::LocalNotification(_)
+        | ImEvent::HostNotification(_) => false,
+    }
+}
+
+fn message_is_verified_direct_e2ee(message: &Message) -> bool {
+    let attribute = |key: &str, expected: &str| {
+        message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == key && attribute.value == expected)
+    };
+    attribute("security", "direct-e2ee") && attribute("decryption_state", "decrypted")
 }
 
 pub fn handle_im_event(

@@ -404,6 +404,7 @@ impl ImCore {
             .filter(|generation| generation.to_string() == material.auth_generation)
             .ok_or(crate::ImError::PermissionDenied)?;
         let device_signing_key_id = material.device_signing_key_id.clone();
+        let device_e2ee_key_id = material.device_e2ee_key_id.clone();
         let display_name = material.display_name.clone();
         let key_provider = std::sync::Arc::new(
             crate::internal::key_provider::HostBackedDeviceKeyMaterialProvider::new(&material)?,
@@ -437,6 +438,7 @@ impl ImCore {
                     Some(binding_generation),
                     auth_generation_number.to_string(),
                     device_signing_key_id,
+                    device_e2ee_key_id,
                     crate::internal::identity_device_state::DeviceAuthorizationRole::Admin,
                     true,
                 )),

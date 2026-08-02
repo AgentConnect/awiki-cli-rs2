@@ -23,6 +23,7 @@ pub(crate) struct SyncAccountSeed {
     pub(crate) identity_generation: std::sync::OnceLock<String>,
     pub(crate) device_auth_generation: String,
     pub(crate) device_signing_key_id: String,
+    pub(crate) device_e2ee_key_id: String,
     pub(crate) role: crate::internal::identity_device_state::DeviceAuthorizationRole,
     pub(crate) management_ready: bool,
 }
@@ -34,6 +35,7 @@ impl SyncAccountSeed {
         identity_generation: Option<String>,
         device_auth_generation: String,
         device_signing_key_id: String,
+        device_e2ee_key_id: String,
         role: crate::internal::identity_device_state::DeviceAuthorizationRole,
         management_ready: bool,
     ) -> Self {
@@ -47,6 +49,7 @@ impl SyncAccountSeed {
             identity_generation: generation,
             device_auth_generation,
             device_signing_key_id,
+            device_e2ee_key_id,
             role,
             management_ready,
         }
