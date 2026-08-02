@@ -1057,6 +1057,12 @@ the Join orchestrator; the public snapshot and change stream remain secret-free.
 `system.notification` sync events advance only the reliable account checkpoint and schedule
 exact-device Inbox hydration. Neither sync hints nor full notifications produce message,
 conversation, history, search, unread/read-watermark, attachment, or chat realtime projection.
+The CLI production listener initializes the exact-device system-notification change store before
+declaring its WebSocket session ready or starting Account Sync V2. It consumes both the initial
+pending-state `Reset` and later committed `Changed` snapshots through the typed
+`SystemNotificationChanged` adapter. `RepairRequired` rebuilds and reseeds the watch, while
+monotonic Join-session revision fencing suppresses replayed host wakes. This is an independent
+control-plane stream and never falls back to ordinary Inbox or Legacy notification delivery.
 
 ## 16. Conversation Read State
 

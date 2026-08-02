@@ -229,6 +229,17 @@ The listener may emit a host wake only after IM Core has verified and committed 
 typed `SystemNotificationChanged` snapshot whose kind is `JoinRequested`, state
 is `pending`, and terminal flag is false.
 
+For an exact-device account session, the production listener establishes the
+Core `system_notifications().watch(...)` stream before the WebSocket session can
+become ready or its first Account Sync V2 run can commit. The initial `Reset`
+recovers pending requests committed while the listener was offline; subsequent
+`Changed` items carry commits made by Account Sync V2. Both enter the same typed
+adapter below. A `RepairRequired` change rebuilds and reseeds the watch instead
+of silently dropping the gap. The listener fences replayed seeds and changes by
+the Join session's monotonic revision, so the same pending request does not
+produce a second host wake. This path does not hydrate ordinary messages and has
+no Legacy notification fallback.
+
 Normalized `data`:
 
 ```json
@@ -334,6 +345,11 @@ Tests should cover:
 - sink failure not blocking SQLite persistence
 - one pending Core-verified `JoinRequested` producing a redacted
   `im.device.join.requested` event
+- an existing pending request being recovered from the initial watch seed
+- Account Sync V2 committed changes and repaired watch seeds producing no
+  duplicate wake for the same Join revision
+- subscriber lag rebuilding and reseeding the watch without losing a new
+  pending request
 - non-pending/terminal system notifications producing no approval wake
 - OpenClaw/Hermes rendering requiring explicit user choice without auto
   verification, rejection, approval, role selection, or SAS disclosure

@@ -20,6 +20,7 @@ use crate::m_core_cli_adapter::realtime::{
 };
 use crate::workspace_config::Resolved;
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -398,6 +399,22 @@ async fn spawn_im_core_runner_session_async(
         );
         return;
     }
+    // Seed the exact-device notification projection before the realtime
+    // session can report readiness or the first account Sync v2 run can
+    // commit. Sync v2 publishes committed notification changes only to an
+    // initialized Core watch store.
+    let mut system_notifications = match watch_system_notifications(&client).await {
+        Ok(session) => session,
+        Err(error) => {
+            mark_session_disconnected(
+                &status,
+                &identity_name,
+                did,
+                Some(SessionDisconnectReason::Other(error.to_string())),
+            );
+            return;
+        }
+    };
     let mut session = match client
         .realtime()
         .start_async(im_core_realtime_adapter::listener_realtime_options())
@@ -430,6 +447,7 @@ async fn spawn_im_core_runner_session_async(
     tokio::spawn(async move {
         let mut event_error = None;
         let mut scheduler = ListenerSyncScheduler::new();
+        let mut notification_state = ListenerSystemNotificationState::default();
         let mut sync_task = None;
         let mut reconcile_timer = tokio::time::interval_at(
             tokio::time::Instant::now() + RELIABLE_SYNC_RECONCILE_INTERVAL,
@@ -486,6 +504,51 @@ async fn spawn_im_core_runner_session_async(
                             event_error = Some(err.to_string());
                             let _ = session.stop().await;
                             break;
+                        }
+                    }
+                }
+                change = system_notifications.next_change() => {
+                    let Some(change) = change else {
+                        match watch_system_notifications(&client).await {
+                            Ok(rebuilt) => {
+                                system_notifications = rebuilt;
+                                continue;
+                            }
+                            Err(error) => {
+                                event_error = Some(error.to_string());
+                                let _ = session.stop().await;
+                                break;
+                            }
+                        }
+                    };
+                    match notification_state.plan(change) {
+                        ListenerSystemNotificationPlan::Emit(items) => {
+                            for item in items {
+                                if let Err(error) = emit_listener_system_notification(
+                                    &status,
+                                    &host_notify,
+                                    &identity_name,
+                                    &did,
+                                    item,
+                                ) {
+                                    event_error = Some(error.to_string());
+                                    let _ = session.stop().await;
+                                    break;
+                                }
+                            }
+                            if event_error.is_some() {
+                                break;
+                            }
+                        }
+                        ListenerSystemNotificationPlan::Rebuild => {
+                            match watch_system_notifications(&client).await {
+                                Ok(rebuilt) => system_notifications = rebuilt,
+                                Err(error) => {
+                                    event_error = Some(error.to_string());
+                                    let _ = session.stop().await;
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -575,6 +638,94 @@ async fn spawn_im_core_runner_session_async(
             Some(SessionDisconnectReason::Other(error)),
         );
     });
+}
+
+fn emit_listener_system_notification(
+    status: &Arc<Mutex<Status>>,
+    host_notify: &Arc<HostNotifySinkImpl>,
+    identity_name: &str,
+    did: &str,
+    notification: im_core::system_notifications::SystemNotificationSnapshot,
+) -> im_core::ImResult<()> {
+    let mut event_sink = CliRealtimeEventSink {
+        status,
+        host_notify,
+        identity_name,
+        did,
+    };
+    event_sink.emit_remote(im_core::prelude::ImEvent::SystemNotificationChanged(
+        im_core::prelude::SystemNotificationChangedEvent {
+            notification,
+            sync: None,
+        },
+    ))?;
+    Ok(())
+}
+
+async fn watch_system_notifications(
+    client: &im_core::ImClient,
+) -> im_core::ImResult<im_core::system_notifications::SystemNotificationChangeSession> {
+    client
+        .system_notifications()
+        .watch(im_core::system_notifications::SystemNotificationListQuery {
+            limit: Some(500),
+            include_terminal: false,
+        })
+        .await
+}
+
+#[derive(Debug, Default)]
+struct ListenerSystemNotificationState {
+    latest_session_revision: HashMap<String, u64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ListenerSystemNotificationPlan {
+    Emit(Vec<im_core::system_notifications::SystemNotificationSnapshot>),
+    Rebuild,
+}
+
+impl ListenerSystemNotificationState {
+    fn plan(
+        &mut self,
+        change: im_core::system_notifications::SystemNotificationChange,
+    ) -> ListenerSystemNotificationPlan {
+        use im_core::system_notifications::SystemNotificationChange;
+
+        match change {
+            SystemNotificationChange::Reset { items } => {
+                ListenerSystemNotificationPlan::Emit(self.admit(items))
+            }
+            SystemNotificationChange::Changed { item } => {
+                ListenerSystemNotificationPlan::Emit(self.admit([item]))
+            }
+            SystemNotificationChange::RepairRequired { .. } => {
+                ListenerSystemNotificationPlan::Rebuild
+            }
+        }
+    }
+
+    fn admit(
+        &mut self,
+        items: impl IntoIterator<Item = im_core::system_notifications::SystemNotificationSnapshot>,
+    ) -> Vec<im_core::system_notifications::SystemNotificationSnapshot> {
+        let mut admitted = Vec::new();
+        for item in items {
+            let session_id = item.join_session_id.trim();
+            if session_id.is_empty()
+                || self
+                    .latest_session_revision
+                    .get(session_id)
+                    .is_some_and(|revision| *revision >= item.session_revision)
+            {
+                continue;
+            }
+            self.latest_session_revision
+                .insert(session_id.to_owned(), item.session_revision);
+            admitted.push(item);
+        }
+        admitted
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -878,6 +1029,11 @@ async fn wait_for_shutdown_signal_async(shutdown: Arc<AtomicBool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use im_core::system_notifications::{
+        SystemNotificationChange, SystemNotificationKind, SystemNotificationSnapshot,
+        SystemNotificationState,
+    };
+    use serde_json::Value;
 
     #[test]
     fn reliable_sync_scheduler_starts_once_and_coalesces_hints_during_sync() {
@@ -896,6 +1052,116 @@ mod tests {
             "multiple hints received while a sync is active must coalesce"
         );
         assert_eq!(scheduler.take_ready(now), None);
+    }
+
+    #[test]
+    fn sync_v2_committed_notification_emits_one_exact_redacted_join_wake() {
+        let temp = TempDir::new("system-notification-wake");
+        let events_path = temp.path().join("host-events.jsonl");
+        let host_notify = Arc::new(HostNotifySinkImpl::File(
+            super::super::host_notify_sink::new_file_host_notify_sink(
+                events_path.to_str().unwrap(),
+            )
+            .unwrap(),
+        ));
+        let status = Arc::new(Mutex::new(Status {
+            status_file: temp
+                .path()
+                .join("listener-status.json")
+                .display()
+                .to_string(),
+            ..Status::default()
+        }));
+        let mut state = ListenerSystemNotificationState::default();
+        let pending = system_notification("evt-join-1", "join-1", 1, false);
+
+        let ListenerSystemNotificationPlan::Emit(items) =
+            state.plan(SystemNotificationChange::Changed {
+                item: pending.clone(),
+            })
+        else {
+            panic!("committed notification must emit");
+        };
+        assert_eq!(items, vec![pending.clone()]);
+        for item in items {
+            emit_listener_system_notification(&status, &host_notify, "admin", &pending.did, item)
+                .unwrap();
+        }
+        assert_eq!(
+            state.plan(SystemNotificationChange::Changed { item: pending }),
+            ListenerSystemNotificationPlan::Emit(Vec::new()),
+            "a replay of the same committed revision must not wake twice"
+        );
+        let terminal = system_notification("evt-join-terminal", "join-1", 2, true);
+        let ListenerSystemNotificationPlan::Emit(items) =
+            state.plan(SystemNotificationChange::Changed { item: terminal })
+        else {
+            panic!("terminal revision must still advance local dedupe state");
+        };
+        for item in items {
+            emit_listener_system_notification(
+                &status,
+                &host_notify,
+                "admin",
+                "did:wba:example:agents:admin:e1_admin",
+                item,
+            )
+            .unwrap();
+        }
+
+        let lines = fs::read_to_string(&events_path).unwrap();
+        let events = lines
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["topic"], "im.device.join.requested");
+        assert_eq!(events[0]["id"], "evt-join-1");
+        assert_eq!(
+            events[0]["data"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([
+                "channel".to_owned(),
+                "event_id".to_owned(),
+                "expires_at".to_owned(),
+                "issued_at".to_owned(),
+                "join_session_id".to_owned(),
+                "recipient_did".to_owned(),
+            ])
+        );
+    }
+
+    #[test]
+    fn startup_seed_and_repair_reseed_are_monotonic() {
+        let mut state = ListenerSystemNotificationState::default();
+        let first = system_notification("evt-join-1", "join-1", 1, false);
+        let second = system_notification("evt-join-2", "join-2", 1, false);
+
+        assert_eq!(
+            state.plan(SystemNotificationChange::Reset {
+                items: vec![first.clone()],
+            }),
+            ListenerSystemNotificationPlan::Emit(vec![first.clone()]),
+            "listener startup must recover an already committed pending Join"
+        );
+        assert_eq!(
+            state.plan(SystemNotificationChange::RepairRequired {
+                reason: "subscriber_lag".to_owned(),
+            }),
+            ListenerSystemNotificationPlan::Rebuild,
+            "lag must force an authoritative watch rebuild"
+        );
+        assert_eq!(
+            state.plan(SystemNotificationChange::Reset {
+                items: vec![first, second.clone()],
+            }),
+            ListenerSystemNotificationPlan::Emit(vec![second]),
+            "repair seed must retain unseen work without replaying an old wake"
+        );
     }
 
     #[test]
@@ -1097,5 +1363,62 @@ mod tests {
             "previous reader error",
             "closeCurrentClient-style shutdown does not mutate lastError"
         );
+    }
+
+    fn system_notification(
+        event_id: &str,
+        join_session_id: &str,
+        session_revision: u64,
+        terminal: bool,
+    ) -> SystemNotificationSnapshot {
+        SystemNotificationSnapshot {
+            event_id: event_id.to_owned(),
+            did: "did:wba:example:agents:admin:e1_admin".to_owned(),
+            join_session_id: join_session_id.to_owned(),
+            kind: if terminal {
+                SystemNotificationKind::JoinCompleted
+            } else {
+                SystemNotificationKind::JoinRequested
+            },
+            state: if terminal {
+                SystemNotificationState::Consumed
+            } else {
+                SystemNotificationState::Pending
+            },
+            session_revision,
+            issued_at: "2026-08-02T13:14:00Z".to_owned(),
+            expires_at: "2026-08-02T13:24:00Z".to_owned(),
+            first_seen_at: "2026-08-02T13:14:01Z".to_owned(),
+            terminal,
+        }
+    }
+
+    struct TempDir {
+        path: std::path::PathBuf,
+    }
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "awiki-listener-{label}-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 }
