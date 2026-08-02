@@ -1174,7 +1174,7 @@ fn message_to_cli_json(message: &im_core::prelude::Message) -> Value {
         "content_type": message_content_type(message),
         "sent_at": message.sent_at.clone().unwrap_or_default(),
         "received_at": message.received_at.clone().unwrap_or_default(),
-        "is_read": false,
+        "is_read": message_is_read(message),
         "secure": message_is_secure(message),
         "direction": match message.direction {
             MessageDirection::Outgoing => 1,
@@ -1195,7 +1195,7 @@ fn message_to_cli_json(message: &im_core::prelude::Message) -> Value {
         value["type"] = json!("attachment_manifest");
     }
     for attribute in &message.metadata.attributes {
-        if attribute.key == "raw_content" {
+        if matches!(attribute.key.as_str(), "raw_content" | "is_read") {
             continue;
         }
         if !attribute.key.trim().is_empty() {
@@ -1244,6 +1244,15 @@ fn message_content_type(message: &im_core::prelude::Message) -> String {
 fn message_is_secure(message: &im_core::prelude::Message) -> bool {
     message_attribute(&message.metadata.attributes, "security")
         .is_some_and(|value| matches!(value.as_str(), "direct-e2ee" | "group-e2ee"))
+}
+
+fn message_is_read(message: &im_core::prelude::Message) -> bool {
+    message_attribute(&message.metadata.attributes, "is_read").is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "y" | "on"
+        )
+    })
 }
 
 fn sdk_send_trace_operation(request: &SendMessageRequest) -> &'static str {

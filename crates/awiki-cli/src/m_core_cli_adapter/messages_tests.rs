@@ -8,6 +8,21 @@ fn foreground_message_reads_use_standard_reconcile_reason() {
 }
 
 #[test]
+fn cli_message_read_state_is_boolean_and_drives_unread_filter() {
+    let read = thread_scoped_send_result(&[("is_read", "true")]).message;
+    let unread = thread_scoped_send_result(&[("is_read", "false")]).message;
+    let read_json = message_to_cli_json(&read);
+    let unread_json = message_to_cli_json(&unread);
+
+    assert_eq!(read_json["is_read"], Value::Bool(true));
+    assert_eq!(unread_json["is_read"], Value::Bool(false));
+    assert_eq!(
+        apply_inbox_filters(vec![read_json, unread_json.clone()], "", true, 20),
+        vec![unread_json]
+    );
+}
+
+#[test]
 fn foreground_message_reads_projection_only_after_terminal_sync_success() {
     for status in [MessageSyncStatus::Idle, MessageSyncStatus::Changed] {
         assert!(require_foreground_message_sync(&sync_outcome(status)).is_ok());

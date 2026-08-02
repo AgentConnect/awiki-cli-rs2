@@ -304,6 +304,8 @@ fn msg_mark_read_with_sync_v2_binding_writes_thread_read_state() {
         TestResponse::sync_delta_message(),
         TestResponse::message_batch(),
         TestResponse::mark_read_state(),
+        TestResponse::sync_delta_empty(),
+        TestResponse::sync_delta_empty(),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
     let register = awiki_cmd(
@@ -370,6 +372,40 @@ fn msg_mark_read_with_sync_v2_binding_writes_thread_read_state() {
             .unwrap(),
         1
     );
+
+    let refreshed = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "msg",
+            "inbox",
+            "--scope",
+            "all",
+            "--limit",
+            "3",
+        ],
+        workspace.path(),
+    );
+    let refreshed = success_json(&refreshed);
+    assert_eq!(refreshed["data"]["messages"][0]["is_read"], true);
+
+    let unread = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "msg",
+            "inbox",
+            "--scope",
+            "all",
+            "--limit",
+            "3",
+            "--unread",
+        ],
+        workspace.path(),
+    );
+    let unread = success_json(&unread);
+    assert_eq!(unread["data"]["messages"], json!([]));
+    assert_eq!(unread["data"]["total"], 0);
 }
 
 #[test]

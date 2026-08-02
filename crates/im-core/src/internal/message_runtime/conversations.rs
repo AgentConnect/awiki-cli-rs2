@@ -610,6 +610,11 @@ pub(crate) fn message_from_record(
         retry_target,
     );
     let mut attributes = metadata_attributes(&record.metadata);
+    attributes.retain(|attribute| attribute.key != "is_read");
+    attributes.push(crate::messages::MessageMetadataAttribute {
+        key: "is_read".to_owned(),
+        value: record.is_read.to_string(),
+    });
     if record.is_e2ee && metadata_attribute_value(&attributes, "security").is_none() {
         attributes.push(crate::messages::MessageMetadataAttribute {
             key: "security".to_owned(),
@@ -921,6 +926,40 @@ mod tests {
             metadata_attribute(&message.metadata, "secure_wire_content_type"),
             Some("application/anp-direct-init+json")
         );
+    }
+
+    #[test]
+    fn message_record_publishes_canonical_read_state_metadata() {
+        for (stored_read, stale_metadata, expected) in [
+            (true, r#"{"is_read":"false"}"#, "true"),
+            (false, r#"{"is_read":"true"}"#, "false"),
+        ] {
+            let message =
+                message_from_record(&crate::internal::local_state::messages::MessageRecord {
+                    msg_id: format!("msg-read-{expected}"),
+                    owner_identity_id: "alice-id".to_owned(),
+                    owner_did: "did:example:alice".to_owned(),
+                    conversation_id: "dm:did:example:bob".to_owned(),
+                    thread_id: "dm:did:example:bob".to_owned(),
+                    direction: 0,
+                    sender_did: "did:example:bob".to_owned(),
+                    receiver_did: "did:example:alice".to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: "read projection".to_owned(),
+                    is_read: stored_read,
+                    metadata: stale_metadata.to_owned(),
+                    ..crate::internal::local_state::messages::MessageRecord::default()
+                })
+                .unwrap();
+            let read_attributes = message
+                .metadata
+                .attributes
+                .iter()
+                .filter(|attribute| attribute.key == "is_read")
+                .collect::<Vec<_>>();
+            assert_eq!(read_attributes.len(), 1);
+            assert_eq!(read_attributes[0].value, expected);
+        }
     }
 
     #[test]
