@@ -25,6 +25,12 @@ pub(crate) trait AsyncAuthenticatedRpcTransport {
         method: &str,
         params: Value,
     ) -> crate::ImResult<Value>;
+
+    /// Reloads bearer state after an authenticated control message may have
+    /// advanced the current device authorization generation.
+    fn reload_authentication_state(&mut self) -> crate::ImResult<()> {
+        Ok(())
+    }
 }
 
 pub(crate) trait AttachmentObjectTransport {
@@ -1249,6 +1255,11 @@ impl AsyncAuthenticatedRpcTransport for CoreHttpTransport<'_> {
             }
             result => result,
         }
+    }
+
+    fn reload_authentication_state(&mut self) -> crate::ImResult<()> {
+        *self = Self::new(self.client);
+        Ok(())
     }
 }
 

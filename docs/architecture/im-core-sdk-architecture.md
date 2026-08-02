@@ -803,8 +803,10 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   messages. Secure hydration uses the closed
   `body.security_profile=direct-e2ee` selector, decrypts/persists only admitted
   P5 v2 rows, acknowledges only their authenticated raw delivery IDs after the
-  local commit, and repeats bounded unread pages until `has_more=false` before
-  reading the committed exact-owner local Inbox projection. A failed/partial ACK
+  local commit, reloads bearer state before that ACK in case a Root control
+  advanced the device authorization generation, and repeats bounded unread
+  pages until `has_more=false` before reading the committed exact-owner local
+  Inbox projection. A failed/partial ACK
   preserves the committed local data but fails foreground reconciliation.
   The secure request defensively drops every non-P5 row and is not a Legacy or
   ordinary-message fallback. The flow does not depend on a WebSocket hint and

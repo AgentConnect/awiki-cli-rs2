@@ -632,7 +632,8 @@ pub struct LocalHistoryQuery {
 account/device binding，只发送带闭合 `body.security_profile=direct-e2ee` 的本域
 `inbox.get`，并在客户端再次丢弃所有非 P5 v2 row，只把成功认证解密的业务消息写入本地
 projection。每页本地提交后，Core 只 ACK 已成功消费的 P5 raw message ID，通过
-`inbox.mark_read` 移除该设备 unread 行，再按 `has_more` 拉取下一页；循环最多 100 页。
+`inbox.mark_read` 移除该设备 unread 行；ACK 前会重新加载 bearer，避免 Root 晋升后继续使用
+旧 device authorization generation，再按 `has_more` 拉取下一页；循环最多 100 页。
 ACK 失败、部分 ACK、页面无进展或达到硬上限时保留已提交数据但前台调用失败，不能反复读取
 第一页后伪装收敛。最后调用 `local_inbox_projection_with_metadata_async(query)` 读取 exact-owner
 committed projection。本地读取 API 自身仍不发 `inbox.get`，不接受 remote cursor 或
