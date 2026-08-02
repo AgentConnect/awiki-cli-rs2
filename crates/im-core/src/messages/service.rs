@@ -3584,6 +3584,10 @@ impl<'a> MessageService<'a> {
     ) -> crate::ImResult<super::MarkReadResult> {
         #[cfg(feature = "blocking")]
         {
+            if self.client.realtime_requires_sync_changed_v2()? {
+                validate_cached_mark_read_v2_binding(self.client)?;
+                return mark_message_ids_read_v2(self.client, ids);
+            }
             crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
                 self.client,
                 crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -3605,6 +3609,10 @@ impl<'a> MessageService<'a> {
         &self,
         ids: Vec<crate::ids::MessageId>,
     ) -> crate::ImResult<super::MarkReadResult> {
+        if self.client.realtime_requires_sync_changed_v2()? {
+            self.client.active_sync_account_binding().await?;
+            return mark_message_ids_read_v2_async(self.client, ids).await;
+        }
         crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -4086,6 +4094,172 @@ impl<'a> MessageService<'a> {
     ) -> crate::ImResult<super::ThreadMessageStorePatch> {
         self.repair_conversation_timeline_store(conversation, limit)
     }
+}
+
+#[cfg(all(feature = "sqlite", feature = "blocking"))]
+fn validate_cached_mark_read_v2_binding(client: &crate::core::ImClient) -> crate::ImResult<()> {
+    let context = client.sync_account_context()?;
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let binding = crate::internal::local_state::sync_v2::load_identity_account_binding(
+        &connection,
+        client.current_identity().id.as_str(),
+    )?
+    .ok_or_else(|| crate::ImError::unsupported("active-sync-account-binding"))?;
+    if binding.owner_identity_id != client.current_identity().id.as_str()
+        || binding.account_id != context.account_id
+        || binding.current_did != client.did().as_str()
+        || binding.protocol_device_id != context.protocol_device_id
+        || binding.device_auth_generation != context.device_auth_generation
+    {
+        return Err(crate::ImError::IdentityBindingConflict {
+            detail: "cached Sync V2 binding does not match the active client".to_owned(),
+        });
+    }
+    crate::internal::local_state::sync_v2::validate_positive_decimal(
+        "identity_generation",
+        &binding.identity_generation,
+    )
+}
+
+#[cfg(all(not(feature = "sqlite"), feature = "blocking"))]
+fn validate_cached_mark_read_v2_binding(_client: &crate::core::ImClient) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("active-sync-account-binding"))
+}
+
+#[cfg(all(feature = "sqlite", feature = "blocking"))]
+fn mark_message_ids_read_v2(
+    client: &crate::core::ImClient,
+    ids: Vec<crate::ids::MessageId>,
+) -> crate::ImResult<super::MarkReadResult> {
+    if ids.is_empty() {
+        return Err(crate::ImError::MessageNotFound {
+            message_id: "message_ids".to_owned(),
+        });
+    }
+    let requested_ids = ids
+        .iter()
+        .map(|id| id.as_str().to_owned())
+        .collect::<Vec<_>>();
+    let plans = resolve_mark_read_v2_watermarks(client, &requested_ids)?;
+    let mut updated_count = 0_u32;
+    let mut warnings = Vec::new();
+    for plan in plans {
+        let conversation = super::ConversationReadRef::new(plan.conversation_id)?;
+        let remote_thread = resolve_service_conversation_thread(client, &conversation)?.thread;
+        let result = crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
+            client,
+            crate::internal::auth::session::FileSessionProvider::new(client),
+            crate::internal::transport::CoreHttpTransport::new(client),
+        )
+        .mark_thread_read(
+            crate::internal::message_runtime::mark_read::MarkThreadReadInput {
+                request: super::MarkThreadReadRequest {
+                    thread: conversation.as_thread_ref()?,
+                    watermark: Some(super::ReadWatermark {
+                        last_read_message_id: Some(crate::ids::MessageId::parse(&plan.message_id)?),
+                        last_read_thread_seq: Some(plan.server_seq),
+                        read_at: Some(chrono::Utc::now()),
+                    }),
+                    fallback_max_message_ids: None,
+                },
+                remote_thread: Some(remote_thread),
+            },
+        )?
+        .sdk_result;
+        updated_count = updated_count.saturating_add(result.updated_count);
+        warnings.extend(result.warnings);
+    }
+    Ok(super::MarkReadResult {
+        updated_count,
+        message_ids: ids,
+        warnings,
+    })
+}
+
+#[cfg(all(not(feature = "sqlite"), feature = "blocking"))]
+fn mark_message_ids_read_v2(
+    _client: &crate::core::ImClient,
+    _ids: Vec<crate::ids::MessageId>,
+) -> crate::ImResult<super::MarkReadResult> {
+    Err(crate::ImError::unsupported("message-mark-read-sync-v2"))
+}
+
+#[cfg(feature = "sqlite")]
+async fn mark_message_ids_read_v2_async(
+    client: &crate::core::ImClient,
+    ids: Vec<crate::ids::MessageId>,
+) -> crate::ImResult<super::MarkReadResult> {
+    if ids.is_empty() {
+        return Err(crate::ImError::MessageNotFound {
+            message_id: "message_ids".to_owned(),
+        });
+    }
+    let requested_ids = ids
+        .iter()
+        .map(|id| id.as_str().to_owned())
+        .collect::<Vec<_>>();
+    let plans = resolve_mark_read_v2_watermarks(client, &requested_ids)?;
+    let mut updated_count = 0_u32;
+    let mut warnings = Vec::new();
+    for plan in plans {
+        let conversation = super::ConversationReadRef::new(plan.conversation_id)?;
+        let remote_thread = resolve_service_conversation_thread_async(client, &conversation)
+            .await?
+            .thread;
+        let result = crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
+            client,
+            crate::internal::auth::session::FileSessionProvider::new(client),
+            crate::internal::transport::CoreHttpTransport::new(client),
+        )
+        .mark_thread_read_async(
+            crate::internal::message_runtime::mark_read::MarkThreadReadInput {
+                request: super::MarkThreadReadRequest {
+                    thread: conversation.as_thread_ref()?,
+                    watermark: Some(super::ReadWatermark {
+                        last_read_message_id: Some(crate::ids::MessageId::parse(&plan.message_id)?),
+                        last_read_thread_seq: Some(plan.server_seq),
+                        read_at: Some(chrono::Utc::now()),
+                    }),
+                    fallback_max_message_ids: None,
+                },
+                remote_thread: Some(remote_thread),
+            },
+        )
+        .await?
+        .sdk_result;
+        updated_count = updated_count.saturating_add(result.updated_count);
+        warnings.extend(result.warnings);
+    }
+    Ok(super::MarkReadResult {
+        updated_count,
+        message_ids: ids,
+        warnings,
+    })
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn mark_message_ids_read_v2_async(
+    _client: &crate::core::ImClient,
+    _ids: Vec<crate::ids::MessageId>,
+) -> crate::ImResult<super::MarkReadResult> {
+    Err(crate::ImError::unsupported("message-mark-read-sync-v2"))
+}
+
+#[cfg(feature = "sqlite")]
+fn resolve_mark_read_v2_watermarks(
+    client: &crate::core::ImClient,
+    message_ids: &[String],
+) -> crate::ImResult<Vec<crate::internal::local_state::messages::V2MarkReadWatermark>> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    crate::internal::local_state::messages::resolve_v2_mark_read_watermarks_for_owner_identity(
+        &connection,
+        client.current_identity().id.as_str(),
+        message_ids,
+    )
 }
 
 #[cfg(all(feature = "sqlite", feature = "blocking"))]

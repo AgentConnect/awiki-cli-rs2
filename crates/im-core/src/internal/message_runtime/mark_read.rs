@@ -280,6 +280,14 @@ where
                     }
                 }
                 Err(error) if is_read_state_unsupported_error(&error) => {
+                    if !legacy_read_state_fallback_allowed(self.client) {
+                        retry_read_send_sync(
+                            self.client,
+                            claimed.as_ref(),
+                            error_service_code(&error).unwrap_or("READ_STATE_UNSUPPORTED"),
+                        )?;
+                        return Err(error);
+                    }
                     let fallback = legacy_fallback_mark_thread_read_sync(
                         self.client,
                         &mut self.session_provider,
@@ -596,6 +604,15 @@ where
                     }
                 }
                 Err(error) if is_read_state_unsupported_error(&error) => {
+                    if !legacy_read_state_fallback_allowed(self.client) {
+                        retry_read_send_async(
+                            self.client,
+                            claimed.as_ref(),
+                            error_service_code(&error).unwrap_or("READ_STATE_UNSUPPORTED"),
+                        )
+                        .await?;
+                        return Err(error);
+                    }
                     let fallback = legacy_fallback_mark_thread_read_async(
                         self.client,
                         &mut self.session_provider,
@@ -685,6 +702,10 @@ where
             local_only_ids: Vec::new(),
         })
     }
+}
+
+fn legacy_read_state_fallback_allowed(client: &crate::core::ImClient) -> bool {
+    matches!(client.realtime_requires_sync_changed_v2(), Ok(false))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

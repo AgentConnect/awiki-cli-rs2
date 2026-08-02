@@ -180,9 +180,8 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
         TestResponse::sync_delta_direct(),
         TestResponse::message_batch(),
         TestResponse::directory_lookup(),
-        TestResponse::direct_history(),
-        TestResponse::directory_lookup(),
-        TestResponse::mark_read(),
+        TestResponse::sync_delta_empty(),
+        TestResponse::mark_read_state(),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
     let register = awiki_cmd(
@@ -290,104 +289,85 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
         "foreground_reconcile"
     );
 
-    let history_request = requests
-        .iter()
-        .find(|request| {
-            serde_json::from_str::<Value>(request_body(request))
-                .ok()
-                .is_some_and(|body| body["method"] == "direct.get_history")
-        })
-        .expect("history request");
-    let history_body: Value =
-        serde_json::from_str(request_body(history_request)).expect("history body");
-    assert_eq!(history_body["method"], "direct.get_history");
-    assert_eq!(history_body["params"]["body"]["peer_did"], alice_did);
-    assert_eq!(history_body["params"]["body"]["limit"], 5);
-
-    let lookup_request = requests
-        .iter()
-        .find(|request| {
-            serde_json::from_str::<Value>(request_body(request))
-                .ok()
-                .is_some_and(|body| body["method"] == "lookup")
-        })
-        .expect("lookup request");
-    let lookup_body: Value =
-        serde_json::from_str(request_body(lookup_request)).expect("lookup body");
-    assert_eq!(lookup_body["method"], "lookup");
-    assert_eq!(lookup_body["params"]["did"], alice_did);
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| method.as_str() == "sync.delta")
+            .count(),
+        2
+    );
+    assert!(!methods.iter().any(|method| method == "direct.get_history"));
 
     let mark_request = requests
         .iter()
         .find(|request| {
             serde_json::from_str::<Value>(request_body(request))
                 .ok()
-                .is_some_and(|body| body["method"] == "inbox.mark_read")
+                .is_some_and(|body| body["method"] == "read_state.mark_read")
         })
         .expect("mark-read request");
     let mark_body: Value = serde_json::from_str(request_body(mark_request)).expect("mark body");
-    assert_eq!(mark_body["method"], "inbox.mark_read");
+    assert_eq!(mark_body["method"], "read_state.mark_read");
+    assert_eq!(mark_body["params"]["body"]["read_up_to_server_seq"], "1");
     assert_eq!(
-        mark_body["params"]["body"]["message_ids"],
-        json!(["msg-direct-1"])
+        mark_body["params"]["body"]["read_up_to_message_id"],
+        "msg-direct-1"
     );
+    assert!(!methods.iter().any(|method| method == "inbox.mark_read"));
 }
 
 #[test]
 fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
     let workspace = TempDir::new("msg-live-handle-history").expect("workspace");
-    let bob = register_ready_msg_identity(workspace.path(), "bob-msg", "bob", "jwt-bob");
-    let bob_did = bob.did.as_str();
     let alice_old = "did:wba:awiki.ai:alice:e1_old";
     let alice_new = "did:wba:awiki.ai:alice:e1_new";
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::prekey_publication(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_empty(),
+    ]);
+    write_msg_config(workspace.path(), &server.base_url());
+    let (bob_identity_id, bob_did) = register_sync_v2_identity(workspace.path(), "bob");
     seed_contact(
         workspace.path(),
-        &bob.unique_id,
-        bob_did,
+        &bob_identity_id,
+        &bob_did,
         alice_old,
         "alice",
         "2026-04-07T01:00:00Z",
     );
     seed_direct_message(
         workspace.path(),
-        &bob.unique_id,
-        bob_did,
+        &bob_identity_id,
+        &bob_did,
         alice_old,
         "msg-old",
         "hello from old DID",
         "2026-04-07T01:00:00Z",
     );
-    let remote_message = json!({
-        "id": "msg-new",
-        "type": "text",
-        "sender_did": alice_new,
-        "receiver_did": bob_did,
-        "content_type": "text/plain",
-        "content": "hello from new DID",
-        "sent_at": "2026-04-07T02:00:00Z",
-        "is_read": false,
-    });
-    let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({
-            "did": alice_new,
-            "user_id": "user-alice",
-            "handle": "alice.awiki.ai",
-            "full_handle": "alice.awiki.ai",
-            "domain": "awiki.ai",
-            "status": "active"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "messages": [remote_message],
-            "total": 1,
-            "source": "remote_http"
-        }))),
-    ]);
-    write_msg_config(workspace.path(), &server.base_url());
+    seed_contact(
+        workspace.path(),
+        &bob_identity_id,
+        &bob_did,
+        alice_new,
+        "alice",
+        "2026-04-07T02:00:00Z",
+    );
+    seed_direct_message(
+        workspace.path(),
+        &bob_identity_id,
+        &bob_did,
+        alice_new,
+        "msg-new",
+        "hello from new DID",
+        "2026-04-07T02:00:00Z",
+    );
 
     let history = awiki_cmd(
         &[
             "--identity",
-            "bob-msg",
+            "bob",
             "msg",
             "history",
             "--with",
@@ -399,89 +379,110 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
     );
     assert_success(&history);
     let envelope = success_json(&history);
-    assert_eq!(envelope["summary"], "Loaded 1 direct history messages");
-    assert_eq!(envelope["data"]["source"], "remote_http");
+    assert_eq!(envelope["summary"], "Loaded 2 direct history messages");
+    assert_eq!(envelope["data"]["source"], "local");
     assert_eq!(envelope["data"]["messages"][0]["msg_id"], "msg-new");
-    assert_eq!(
-        envelope["data"]["resolved_dids"],
-        json!([alice_new, alice_old])
-    );
+    assert_eq!(envelope["data"]["messages"][1]["msg_id"], "msg-old");
+    assert_eq!(envelope["data"]["resolved_dids"], json!([]));
 
     let bindings = query_rows(
         workspace.path(),
         "SELECT did, is_current FROM contact_handle_bindings WHERE handle = 'alice' ORDER BY is_current DESC, last_seen_at DESC",
     );
-    assert_eq!(bindings.len(), 1);
-    assert_eq!(bindings[0]["did"], alice_old);
+    assert_eq!(bindings.len(), 2);
+    assert_eq!(bindings[0]["did"], alice_new);
     assert_eq!(bindings[0]["is_current"], 1);
+    assert_eq!(bindings[1]["did"], alice_old);
+    assert_eq!(bindings[1]["is_current"], 0);
+
+    let methods = server
+        .requests()
+        .iter()
+        .map(|request| {
+            serde_json::from_str::<Value>(request_body(request)).expect("request body")["method"]
+                .as_str()
+                .expect("request method")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods,
+        [
+            "register",
+            "direct.e2ee.publish_prekey_bundle",
+            "sync.bootstrap",
+            "sync.delta"
+        ]
+    );
 }
 
 #[test]
 fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_cache_like_go() {
     let workspace = TempDir::new("msg-live-secure-handle-history").expect("workspace");
-    let bob = register_ready_msg_identity(workspace.path(), "bob-msg", "bob", "jwt-bob");
-    let bob_did = bob.did.as_str();
     let alice_old = "did:wba:awiki.ai:alice:e1_old";
     let alice_new = "did:wba:awiki.ai:alice:e1_new";
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::prekey_publication(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_empty(),
+    ]);
+    write_msg_config(workspace.path(), &server.base_url());
+    let (bob_identity_id, bob_did) = register_sync_v2_identity(workspace.path(), "bob");
     seed_contact(
         workspace.path(),
-        &bob.unique_id,
-        bob_did,
+        &bob_identity_id,
+        &bob_did,
         alice_old,
         "alice",
         "2026-04-07T01:00:00Z",
     );
     seed_direct_message_with_type(
         workspace.path(),
-        &bob.unique_id,
-        bob_did,
+        &bob_identity_id,
+        &bob_did,
         alice_old,
         "msg-wire",
         "application/anp-direct-cipher+json",
         r#"{"session_id":"sid-1"}"#,
         "2026-04-07T02:00:00Z",
     );
+    execute_sql(
+        workspace.path(),
+        "UPDATE messages SET hydration_state = 'discovered' WHERE msg_id = 'msg-wire'".to_string(),
+    );
     seed_direct_message_with_type(
         workspace.path(),
-        &bob.unique_id,
-        bob_did,
+        &bob_identity_id,
+        &bob_did,
         alice_old,
         "msg-plain",
         "text/plain",
         "hello from old DID",
         "2026-04-07T01:00:00Z",
     );
-    let remote_message = json!({
-        "id": "msg-new",
-        "type": "text",
-        "sender_did": alice_new,
-        "receiver_did": bob_did,
-        "content_type": "text/plain",
-        "content": "hello from new DID",
-        "sent_at": "2026-04-07T03:00:00Z",
-        "is_read": false,
-    });
-    let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({
-            "did": alice_new,
-            "user_id": "user-alice",
-            "handle": "alice.awiki.ai",
-            "full_handle": "alice.awiki.ai",
-            "domain": "awiki.ai",
-            "status": "active"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "messages": [remote_message],
-            "total": 1,
-            "source": "remote_http"
-        }))),
-    ]);
-    write_msg_config(workspace.path(), &server.base_url());
+    seed_contact(
+        workspace.path(),
+        &bob_identity_id,
+        &bob_did,
+        alice_new,
+        "alice",
+        "2026-04-07T03:00:00Z",
+    );
+    seed_direct_message(
+        workspace.path(),
+        &bob_identity_id,
+        &bob_did,
+        alice_new,
+        "msg-new",
+        "hello from new DID",
+        "2026-04-07T03:00:00Z",
+    );
 
     let history = awiki_cmd(
         &[
             "--identity",
-            "bob-msg",
+            "bob",
             "msg",
             "history",
             "--with",
@@ -497,8 +498,9 @@ fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_ca
         .cloned()
         .unwrap();
 
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 2);
     assert_eq!(messages[0]["msg_id"], "msg-new");
+    assert_eq!(messages[1]["msg_id"], "msg-plain");
     assert!(!messages.iter().any(|message| {
         message["msg_id"] == "msg-wire"
             || message["content_type"] == "application/anp-direct-cipher+json"
@@ -512,6 +514,31 @@ fn register_ready_msg_identity(
     jwt_token: &str,
 ) -> TestIdentity {
     register_generated_msg_identity(workspace, identity_name, handle, jwt_token)
+}
+
+fn register_sync_v2_identity(workspace: &Path, handle: &str) -> (String, String) {
+    let register = awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            handle,
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace,
+    );
+    let registered = success_json(&register);
+    let identity = &registered["data"]["identity"];
+    (
+        identity["unique_id"]
+            .as_str()
+            .expect("registered identity ID")
+            .to_owned(),
+        identity["did"].as_str().expect("registered DID").to_owned(),
+    )
 }
 
 fn register_generated_msg_identity(
@@ -714,7 +741,7 @@ fn seed_contact(
     execute_sql(
         workspace,
         format!(
-            "INSERT INTO contact_handle_bindings (owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at, credential_name) VALUES ('{owner_identity_id}', '{owner_did}', '{handle}', '{peer_did}', 1, '{seen_at}', '{seen_at}', 'bob-msg') ON CONFLICT(owner_identity_id, handle, did) DO UPDATE SET is_current = excluded.is_current, last_seen_at = excluded.last_seen_at, credential_name = excluded.credential_name",
+            "UPDATE contact_handle_bindings SET is_current = 0 WHERE owner_identity_id = '{owner_identity_id}' AND handle = '{handle}' AND did <> '{peer_did}'; INSERT INTO contact_handle_bindings (owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at, credential_name) VALUES ('{owner_identity_id}', '{owner_did}', '{handle}', '{peer_did}', 1, '{seen_at}', '{seen_at}', 'bob-msg') ON CONFLICT(owner_identity_id, handle, did) DO UPDATE SET is_current = excluded.is_current, last_seen_at = excluded.last_seen_at, credential_name = excluded.credential_name",
         ),
     );
 }
@@ -780,15 +807,6 @@ fn sqlite_value_to_json(value: ValueRef<'_>) -> Value {
     }
 }
 
-fn json_rpc_result(result: Value) -> String {
-    json!({
-        "jsonrpc": "2.0",
-        "result": result,
-        "id": "req-1",
-    })
-    .to_string()
-}
-
 #[derive(Debug, Clone)]
 struct TestResponse {
     status: u16,
@@ -819,6 +837,10 @@ impl TestResponse {
         Self::ok("__DYNAMIC_SYNC_DELTA_DIRECT_RESPONSE__")
     }
 
+    fn sync_delta_empty() -> Self {
+        Self::ok("__DYNAMIC_SYNC_DELTA_EMPTY_RESPONSE__")
+    }
+
     fn message_batch() -> Self {
         Self::ok("__DYNAMIC_MESSAGE_BATCH_RESPONSE__")
     }
@@ -827,12 +849,8 @@ impl TestResponse {
         Self::ok("__DYNAMIC_DIRECTORY_LOOKUP_RESPONSE__")
     }
 
-    fn direct_history() -> Self {
-        Self::ok("__DYNAMIC_DIRECT_HISTORY_RESPONSE__")
-    }
-
-    fn mark_read() -> Self {
-        Self::ok("__DYNAMIC_MARK_READ_RESPONSE__")
+    fn mark_read_state() -> Self {
+        Self::ok("__DYNAMIC_MARK_READ_STATE_RESPONSE__")
     }
 }
 
@@ -964,6 +982,18 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
                 }),
             )
         }
+        "__DYNAMIC_SYNC_DELTA_EMPTY_RESPONSE__" => rpc_result_for_request(
+            request,
+            json!({
+                "mode": "delta",
+                "server_time": "2026-08-02T00:00:02Z",
+                "events": [],
+                "next_cursor": {"stream_epoch": "1", "scan_seq": "1"},
+                "has_more": false,
+                "recovery": null,
+                "warnings": []
+            }),
+        ),
         "__DYNAMIC_MESSAGE_BATCH_RESPONSE__" => {
             let binding = device_binding_from_request(request);
             rpc_result_for_request(
@@ -989,19 +1019,28 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
                 "binding_generation": "1"
             }),
         ),
-        "__DYNAMIC_DIRECT_HISTORY_RESPONSE__" => {
-            let binding = device_binding_from_request(request);
+        "__DYNAMIC_MARK_READ_STATE_RESPONSE__" => {
+            let rpc: Value = serde_json::from_str(request_body(request)).expect("mark-read RPC");
+            let body = &rpc["params"]["body"];
             rpc_result_for_request(
                 request,
                 json!({
-                    "messages": [direct_message(&binding.did)],
-                    "total": 1,
-                    "source": "remote_http"
+                    "user_did": body["user_did"].clone(),
+                    "thread": body["thread"].clone(),
+                    "updated_count": 1,
+                    "remote_acknowledged": true,
+                    "partial": false,
+                    "fallback_used": false,
+                    "pending_remote_ack": false,
+                    "read_watermark_server_seq": body["read_up_to_server_seq"].clone(),
+                    "previous_read_watermark_server_seq": null,
+                    "read_watermark_message_id": body["read_up_to_message_id"].clone(),
+                    "advanced": true,
+                    "read_at": "2026-08-02T00:00:03Z",
+                    "unread_count": 0,
+                    "warnings": []
                 }),
             )
-        }
-        "__DYNAMIC_MARK_READ_RESPONSE__" => {
-            rpc_result_for_request(request, json!({"updated_count": 1}))
         }
         body => body.to_owned(),
     }

@@ -3428,6 +3428,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn filtered_exact_device_empty_delta_persists_cursor_across_runs() {
+        let fixture = SyncSnapshotFixture::new("filtered-exact-device-empty-delta");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        let first = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![Ok(sync_snapshot_delta("1", "11", Vec::new()))],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+        assert_eq!(first.status, crate::messages::MessageSyncStatus::Idle);
+        assert_eq!(first.events_applied, 0);
+        let advanced = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;
+        assert_eq!(advanced.scan_seq, "11");
+
+        MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![Ok(sync_snapshot_delta("1", "11", Vec::new()))],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].method, "sync.delta");
+        assert_eq!(calls[1].method, "sync.delta");
+        assert_eq!(
+            calls[0].params.pointer("/body/cursor/scan_seq"),
+            Some(&json!("10"))
+        );
+        assert_eq!(
+            calls[1].params.pointer("/body/cursor/scan_seq"),
+            Some(&json!("11"))
+        );
+    }
+
+    #[tokio::test]
     async fn sync_snapshot_missing_state_bootstrap_recovery_closes_with_delta_ack() {
         let fixture = SyncSnapshotFixture::new("bootstrap-recovery");
         let client = fixture.client();

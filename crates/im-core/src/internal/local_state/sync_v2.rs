@@ -2027,9 +2027,15 @@ fn ordinary_group_read_target(
                 SELECT server_seq,
                        CASE
                            WHEN json_valid(COALESCE(metadata, ''))
-                           THEN NULLIF(
-                               TRIM(json_extract(metadata, '$.raw_message_id')),
-                               ''
+                           THEN COALESCE(
+                               NULLIF(
+                                   TRIM(json_extract(metadata, '$.raw_message_id')),
+                                   ''
+                               ),
+                               NULLIF(
+                                   TRIM(json_extract(metadata, '$.operation_id')),
+                                   ''
+                               )
                            )
                            ELSE NULL
                        END AS raw_message_id

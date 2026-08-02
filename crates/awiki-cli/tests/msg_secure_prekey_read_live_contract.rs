@@ -1,5 +1,6 @@
 mod support;
 
+use base64::Engine;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -8,10 +9,7 @@ use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use support::{
-    write_default_tenant_registry, write_ready_identity, write_tenant_config, TestIdentity,
-    TestIdentityOptions,
-};
+use support::{write_default_tenant_registry, write_tenant_config};
 
 #[test]
 fn msg_inbox_target_filter_is_unsupported_before_legacy_secure_prekey_side_effects() {
@@ -39,30 +37,23 @@ fn msg_inbox_target_filter_is_unsupported_before_legacy_secure_prekey_side_effec
 #[test]
 fn msg_history_live_reads_without_legacy_secure_prekey_publish_side_effect() {
     let workspace = TempDir::new("msg-secure-prekey-history").expect("workspace");
-    let bob =
-        register_generated_msg_identity(workspace.path(), "bob-secure-history", "bob", "jwt-bob");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
-    let message = json!({
-        "id": "msg-secure-prekey-history-1",
-        "type": "text",
-        "sender_did": alice_did,
-        "receiver_did": bob.did,
-        "content_type": "text/plain",
-        "content": "hello bob",
-        "sent_at": "2026-04-07T01:02:03Z",
-        "is_read": false,
-    });
-    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
-        "messages": [message],
-        "total": 1,
-        "source": "remote_http"
-    })))]);
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::prekey_publication(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_direct(),
+        TestResponse::message_batch(),
+        TestResponse::directory_lookup(),
+    ]);
     write_msg_config(workspace.path(), &server.base_url());
+    register_sync_v2_identity(workspace.path(), "bob");
+    let history_request_start = server.requests().len();
 
     let history = awiki_cmd(
         &[
             "--identity",
-            "bob-secure-history",
+            "bob",
             "msg",
             "history",
             "--with",
@@ -75,96 +66,95 @@ fn msg_history_live_reads_without_legacy_secure_prekey_publish_side_effect() {
     assert_success(&history);
     let history_json = success_json(&history);
     assert_eq!(history_json["summary"], "Loaded 1 direct history messages");
+    assert_eq!(history_json["data"]["source"], "local");
     assert_eq!(
         history_json["data"]["messages"][0]["id"],
-        "msg-secure-prekey-history-1"
+        "msg-secure-prekey-read-1"
     );
     assert!(history_json.get("warnings").is_none());
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
     let bodies = request_json_bodies(&requests);
-    assert_eq!(rpc_methods(&bodies), vec!["direct.get_history"]);
-    assert_eq!(bodies[0]["params"]["body"]["peer_did"], alice_did);
+    assert_eq!(
+        rpc_methods(&bodies[..history_request_start]),
+        vec!["register", "direct.e2ee.publish_prekey_bundle"]
+    );
+    assert_sync_v2_history_without_legacy_secure_side_effects(&bodies[history_request_start..]);
 }
 
 #[test]
 fn msg_history_live_keeps_read_success_without_legacy_secure_prekey_warning() {
     let workspace = TempDir::new("msg-secure-prekey-history-success").expect("workspace");
-    let bob =
-        register_generated_msg_identity(workspace.path(), "bob-secure-success", "bob", "jwt-bob");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
-    let message = json!({
-        "id": "msg-secure-prekey-success-1",
-        "type": "text",
-        "sender_did": alice_did,
-        "receiver_did": bob.did,
-        "content_type": "text/plain",
-        "content": "hello after warning",
-        "sent_at": "2026-04-07T01:02:03Z",
-        "is_read": false,
-    });
-    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
-        "messages": [message],
-        "total": 1,
-        "source": "remote_http"
-    })))]);
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::prekey_publication(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_direct(),
+        TestResponse::message_batch(),
+        TestResponse::directory_lookup(),
+    ]);
     write_msg_config(workspace.path(), &server.base_url());
+    register_sync_v2_identity(workspace.path(), "bob");
+    let history_request_start = server.requests().len();
 
     let history = awiki_cmd(
-        &[
-            "--identity",
-            "bob-secure-success",
-            "msg",
-            "history",
-            "--with",
-            alice_did,
-        ],
+        &["--identity", "bob", "msg", "history", "--with", alice_did],
         workspace.path(),
     );
     assert_success(&history);
     let history_json = success_json(&history);
     assert_eq!(history_json["summary"], "Loaded 1 direct history messages");
+    assert_eq!(history_json["data"]["source"], "local");
     assert_eq!(
         history_json["data"]["messages"][0]["id"],
-        "msg-secure-prekey-success-1"
+        "msg-secure-prekey-read-1"
     );
     assert!(history_json.get("warnings").is_none());
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
     let bodies = request_json_bodies(&requests);
-    assert_eq!(rpc_methods(&bodies), vec!["direct.get_history"]);
-}
-
-fn register_generated_msg_identity(
-    workspace: &Path,
-    identity_name: &str,
-    handle: &str,
-    jwt_token: &str,
-) -> TestIdentity {
-    let identity = write_ready_identity(
-        workspace,
-        TestIdentityOptions {
-            identity_name,
-            handle,
-            display_name: identity_name,
-            jwt_token,
-            make_default: true,
-        },
-    );
-    migrate_identity_to_vault(workspace);
-    identity
-}
-
-fn migrate_identity_to_vault(workspace: &Path) {
-    let output = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
     assert_eq!(
-        output.status.code(),
-        Some(0),
-        "vault migration failed; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        rpc_methods(&bodies[..history_request_start]),
+        vec!["register", "direct.e2ee.publish_prekey_bundle"]
+    );
+    assert_sync_v2_history_without_legacy_secure_side_effects(&bodies[history_request_start..]);
+}
+
+fn register_sync_v2_identity(workspace: &Path, handle: &str) {
+    let register = awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            handle,
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace,
+    );
+    assert_success(&register);
+}
+
+fn assert_sync_v2_history_without_legacy_secure_side_effects(bodies: &[Value]) {
+    let methods = rpc_methods(bodies);
+    assert_eq!(
+        methods,
+        vec![
+            "sync.bootstrap",
+            "sync.delta",
+            "message.get_batch",
+            "lookup",
+        ]
+    );
+    assert!(!methods.contains(&"direct.get_history"));
+    assert!(!methods.contains(&"direct.e2ee.publish_prekey_bundle"));
+    assert!(!methods.iter().any(|method| method.contains("prekey")));
+    assert_eq!(
+        bodies[1]["params"]["body"]["reason"],
+        "foreground_reconcile"
     );
 }
 
@@ -263,15 +253,6 @@ fn rpc_methods(bodies: &[Value]) -> Vec<&str> {
         .collect()
 }
 
-fn json_rpc_result(result: Value) -> String {
-    json!({
-        "jsonrpc": "2.0",
-        "result": result,
-        "id": "req-1",
-    })
-    .to_string()
-}
-
 #[derive(Debug, Clone)]
 struct TestResponse {
     status: u16,
@@ -284,6 +265,30 @@ impl TestResponse {
             status: 200,
             body: body.to_string(),
         }
+    }
+
+    fn registration() -> Self {
+        Self::ok("__DYNAMIC_REGISTRATION_RESPONSE__")
+    }
+
+    fn prekey_publication() -> Self {
+        Self::ok("__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__")
+    }
+
+    fn sync_bootstrap() -> Self {
+        Self::ok("__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__")
+    }
+
+    fn sync_delta_direct() -> Self {
+        Self::ok("__DYNAMIC_SYNC_DELTA_DIRECT_RESPONSE__")
+    }
+
+    fn message_batch() -> Self {
+        Self::ok("__DYNAMIC_MESSAGE_BATCH_RESPONSE__")
+    }
+
+    fn directory_lookup() -> Self {
+        Self::ok("__DYNAMIC_DIRECTORY_LOOKUP_RESPONSE__")
     }
 }
 
@@ -362,15 +367,248 @@ fn handle_connection(
     response: TestResponse,
 ) {
     let request = read_http_request(&mut stream);
+    let body = dynamic_response_body(&request, &response.body);
     requests.lock().expect("requests mutex").push(request);
-    let body = response.body.as_bytes();
+    let body = body.as_bytes();
     let raw = format!(
         "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         response.status,
         body.len(),
-        response.body
+        String::from_utf8_lossy(body)
     );
     stream.write_all(raw.as_bytes()).expect("write response");
+}
+
+fn dynamic_response_body(request: &str, marker: &str) -> String {
+    match marker {
+        "__DYNAMIC_REGISTRATION_RESPONSE__" => registration_response(request),
+        "__DYNAMIC_PREKEY_PUBLICATION_RESPONSE__" => prekey_publication_response(request),
+        "__DYNAMIC_SYNC_BOOTSTRAP_RESPONSE__" => {
+            let binding = device_binding_from_request(request);
+            rpc_result_for_request(
+                request,
+                json!({
+                    "mode": "tail_only",
+                    "account_id": binding.account_id,
+                    "device_id": binding.device_id,
+                    "server_time": "2026-08-02T00:00:00Z",
+                    "cursor": {"stream_epoch": "1", "scan_seq": "0"},
+                    "read_state_baseline": [],
+                    "group_state_baseline": [],
+                    "warnings": []
+                }),
+            )
+        }
+        "__DYNAMIC_SYNC_DELTA_DIRECT_RESPONSE__" => {
+            let binding = device_binding_from_request(request);
+            rpc_result_for_request(
+                request,
+                json!({
+                    "mode": "delta",
+                    "server_time": "2026-08-02T00:00:01Z",
+                    "events": [{
+                        "event_id": "event-secure-prekey-read-1",
+                        "stream_epoch": "1",
+                        "event_seq": "1",
+                        "event_type": "message.created",
+                        "schema_version": 1,
+                        "ignore_safe": false,
+                        "account_id": binding.account_id,
+                        "recipient_device_id": null,
+                        "origin_did": "did:wba:awiki.ai:alice:e1_alice",
+                        "origin_device_id": "device-alice",
+                        "aggregate_kind": "direct_message",
+                        "aggregate_id": "msg-secure-prekey-read-1",
+                        "state_version": null,
+                        "thread_key": "remote-thread-alice",
+                        "occurred_at": "2026-08-02T00:00:01Z",
+                        "payload": {
+                            "message_kind": "direct_plain",
+                            "direction": "incoming",
+                            "sender_did_snapshot": "did:wba:awiki.ai:alice:e1_alice",
+                            "recipient_did_snapshot": binding.did,
+                            "client_message_id": "msg-secure-prekey-read-1"
+                        },
+                        "source": {}
+                    }],
+                    "next_cursor": {"stream_epoch": "1", "scan_seq": "1"},
+                    "has_more": false,
+                    "recovery": null,
+                    "warnings": []
+                }),
+            )
+        }
+        "__DYNAMIC_MESSAGE_BATCH_RESPONSE__" => {
+            let binding = device_binding_from_request(request);
+            rpc_result_for_request(
+                request,
+                json!({
+                    "items": [{
+                        "event_id": "event-secure-prekey-read-1",
+                        "message": direct_message(&binding.did)
+                    }],
+                    "unavailable": []
+                }),
+            )
+        }
+        "__DYNAMIC_DIRECTORY_LOOKUP_RESPONSE__" => rpc_result_for_request(
+            request,
+            json!({
+                "did": "did:wba:awiki.ai:alice:e1_alice",
+                "user_id": "user-alice",
+                "handle": "alice",
+                "full_handle": "alice.awiki.ai",
+                "domain": "awiki.ai",
+                "status": "active",
+                "binding_generation": "1"
+            }),
+        ),
+        body => body.to_owned(),
+    }
+}
+
+fn direct_message(receiver_did: &str) -> Value {
+    json!({
+        "id": "msg-secure-prekey-read-1",
+        "type": "text",
+        "thread_kind": "direct",
+        "sender_did": "did:wba:awiki.ai:alice:e1_alice",
+        "receiver_did": receiver_did,
+        "content_type": "text/plain",
+        "content": "hello bob",
+        "server_seq": "1",
+        "created_at": "2026-08-02T00:00:01Z",
+        "sent_at": "2026-08-02T00:00:01Z",
+        "client_msg_id": "msg-secure-prekey-read-1",
+        "is_read": false,
+        "peer_user_id": "user-alice",
+        "peer_full_handle": "alice.awiki.ai"
+    })
+}
+
+fn registration_response(request: &str) -> String {
+    let rpc: Value =
+        serde_json::from_str(request_body(request)).expect("registration request JSON");
+    let params = &rpc["params"];
+    let document = &params["did_document"];
+    let did = document["id"].as_str().expect("registration DID");
+    let device = &document["deviceManifest"]["devices"][0];
+    let device_id = device["device_id"]
+        .as_str()
+        .expect("registration device ID");
+    let key_id = device["signing_key_id"]
+        .as_str()
+        .expect("registration signing key ID");
+    let handle = params["handle"].as_str().expect("registration handle");
+    let account_id = format!("user-{handle}");
+    json!({
+        "jsonrpc": "2.0",
+        "result": {
+            "state": "registered",
+            "did": did,
+            "user_id": account_id,
+            "message": "Registration successful",
+            "access_token": device_access_token(did, &account_id, device_id, key_id),
+            "handle": handle,
+            "domain": "awiki.ai",
+            "full_handle": format!("{handle}.awiki.ai"),
+            "binding_generation": "1"
+        },
+        "id": rpc["id"].clone()
+    })
+    .to_string()
+}
+
+fn prekey_publication_response(request: &str) -> String {
+    let rpc: Value = serde_json::from_str(request_body(request)).expect("prekey request JSON");
+    let bundle = &rpc["params"]["body"]["prekey_bundle"];
+    let published_opk_count = rpc["params"]["body"]["one_time_prekeys"]
+        .as_array()
+        .map(Vec::len)
+        .expect("one-time prekeys");
+    rpc_result_for_request(
+        request,
+        json!({
+            "published": true,
+            "owner_did": bundle["owner_did"].clone(),
+            "owner_device_id": bundle["owner_device_id"].clone(),
+            "bundle_id": bundle["bundle_id"].clone(),
+            "published_at": "2026-08-02T00:00:00Z",
+            "published_opk_count": published_opk_count
+        }),
+    )
+}
+
+fn rpc_result_for_request(request: &str, result: Value) -> String {
+    let rpc: Value = serde_json::from_str(request_body(request)).expect("RPC request JSON");
+    json!({"jsonrpc": "2.0", "result": result, "id": rpc["id"].clone()}).to_string()
+}
+
+struct DeviceBinding {
+    did: String,
+    account_id: String,
+    device_id: String,
+}
+
+fn device_binding_from_request(request: &str) -> DeviceBinding {
+    let token = request
+        .lines()
+        .find_map(|line| {
+            line.split_once(':').and_then(|(name, value)| {
+                name.trim()
+                    .eq_ignore_ascii_case("authorization")
+                    .then(|| value.trim().strip_prefix("Bearer ").map(str::to_owned))
+                    .flatten()
+            })
+        })
+        .expect("device bearer token");
+    let payload = token.split('.').nth(1).expect("JWT payload");
+    let claims: Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("decode JWT payload"),
+    )
+    .expect("JWT claims");
+    DeviceBinding {
+        did: claims["did"].as_str().expect("token DID").to_owned(),
+        account_id: claims["user_id"]
+            .as_str()
+            .expect("token account ID")
+            .to_owned(),
+        device_id: claims["device_id"]
+            .as_str()
+            .expect("token device ID")
+            .to_owned(),
+    }
+}
+
+fn device_access_token(did: &str, account_id: &str, device_id: &str, key_id: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let claims = json!({
+        "iss": "user-service",
+        "aud": ["awiki-user-service", "awiki-message-service"],
+        "sub": did,
+        "type": "access",
+        "purpose": "awiki.device.access.v1",
+        "did": did,
+        "user_id": account_id,
+        "device_id": device_id,
+        "key_id": key_id,
+        "auth_generation": 1,
+        "scopes": ["device:manage", "device:read", "message:connect"],
+        "iat": now,
+        "nbf": now,
+        "exp": now + 3600,
+        "jti": format!("msg-secure-prekey-read-{device_id}")
+    });
+    format!(
+        "e30.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).expect("serialize device access token"))
+    )
 }
 
 fn read_http_request(stream: &mut TcpStream) -> String {

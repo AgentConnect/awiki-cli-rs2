@@ -296,6 +296,83 @@ fn msg_inbox_foreground_reconciles_sync_v2_without_hint_and_reads_exact_local_pr
 }
 
 #[test]
+fn msg_mark_read_with_sync_v2_binding_writes_thread_read_state() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_message(),
+        TestResponse::message_batch(),
+        TestResponse::mark_read_state(),
+    ]);
+    write_msg_config(workspace.path(), &server.base_url());
+    let register = awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+    );
+    success_json(&register);
+    let inbox = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "msg",
+            "inbox",
+            "--scope",
+            "all",
+            "--limit",
+            "3",
+        ],
+        workspace.path(),
+    );
+    let inbox = success_json(&inbox);
+    let message_id = inbox["data"]["messages"][0]["id"]
+        .as_str()
+        .expect("projected message id");
+
+    let mark_read = awiki_cmd(
+        &["--identity", "alice", "msg", "mark-read", message_id],
+        workspace.path(),
+    );
+    let envelope = success_json(&mark_read);
+
+    assert_eq!(envelope["summary"], "Marked 1 messages as read");
+    assert_eq!(envelope["data"]["action"], "mark_read");
+    assert_eq!(envelope["data"]["updated_count"], 1);
+    assert_eq!(envelope["data"]["message_ids"], json!([message_id]));
+    let methods = server
+        .requests()
+        .iter()
+        .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
+        .filter_map(|body| body["method"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods.last().map(String::as_str),
+        Some("read_state.mark_read")
+    );
+    assert!(!methods.iter().any(|method| method == "inbox.mark_read"));
+    let connection = open_local_state(workspace.path());
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM thread_read_state WHERE read_watermark_seq = '1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
 fn msg_history_default_cutover_direct_reconciles_sync_v2_and_reads_local_history() {
     let workspace = TempDir::new().expect("workspace");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
@@ -787,6 +864,10 @@ impl TestResponse {
     fn sync_delta_empty() -> Self {
         Self::ok("__DYNAMIC_SYNC_DELTA_EMPTY_RESPONSE__")
     }
+
+    fn mark_read_state() -> Self {
+        Self::ok("__DYNAMIC_MARK_READ_STATE_RESPONSE__")
+    }
 }
 
 struct TestServer {
@@ -960,6 +1041,29 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
                 "warnings": []
             }),
         ),
+        "__DYNAMIC_MARK_READ_STATE_RESPONSE__" => {
+            let rpc: Value = serde_json::from_str(request_body(request)).expect("mark-read RPC");
+            let body = &rpc["params"]["body"];
+            rpc_result_for_request(
+                request,
+                json!({
+                    "user_did": body["user_did"].clone(),
+                    "thread": body["thread"].clone(),
+                    "updated_count": 1,
+                    "remote_acknowledged": true,
+                    "partial": false,
+                    "fallback_used": false,
+                    "pending_remote_ack": false,
+                    "read_watermark_server_seq": body["read_up_to_server_seq"].clone(),
+                    "previous_read_watermark_server_seq": null,
+                    "read_watermark_message_id": body["read_up_to_message_id"].clone(),
+                    "advanced": true,
+                    "read_at": "2026-08-02T00:00:03Z",
+                    "unread_count": 0,
+                    "warnings": []
+                }),
+            )
+        }
         body => body.to_owned(),
     }
 }

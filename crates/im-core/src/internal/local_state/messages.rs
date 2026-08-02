@@ -1820,6 +1820,14 @@ pub(crate) struct MarkReadClassification {
 }
 
 #[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct V2MarkReadWatermark {
+    pub(crate) conversation_id: String,
+    pub(crate) message_id: String,
+    pub(crate) server_seq: String,
+}
+
+#[cfg(feature = "sqlite")]
 impl MarkReadClassification {
     pub(crate) fn local_ids(&self) -> Vec<String> {
         let mut ids = self.direct_ids.clone();
@@ -2448,6 +2456,108 @@ pub(crate) fn classify_mark_read_ids_for_owner_identity(
 ) -> crate::ImResult<MarkReadClassification> {
     let rows = list_message_classification_rows(connection, owner_identity_id, message_ids)?;
     classify_mark_read_ids_from_rows(message_ids, rows)
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn resolve_v2_mark_read_watermarks_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    message_ids: &[String],
+) -> crate::ImResult<Vec<V2MarkReadWatermark>> {
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
+    required("owner_identity_id", &owner_identity_id)?;
+    let requested_ids = message_ids
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let identity_rows =
+        resolve_message_identity_rows(connection, &owner_identity_id, &requested_ids)?;
+    let mut by_conversation = BTreeMap::<String, V2MarkReadWatermark>::new();
+
+    for requested_id in requested_ids {
+        let identity =
+            identity_rows
+                .get(requested_id)
+                .ok_or_else(|| crate::ImError::MessageNotFound {
+                    message_id: requested_id.to_owned(),
+                })?;
+        let row = connection
+            .query_row(
+                r#"
+SELECT COALESCE(NULLIF(TRIM(conversation_id), ''), TRIM(thread_id)),
+       msg_id,
+       server_seq,
+       direction,
+       hydration_state
+FROM messages
+WHERE owner_identity_id = ?1 AND msg_id = ?2
+LIMIT 1"#,
+                (&owner_identity_id, &identity.canonical_msg_id),
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                        row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                    ))
+                },
+            )
+            .optional()
+            .map_err(super::local_state_unavailable)?
+            .ok_or_else(|| crate::ImError::MessageNotFound {
+                message_id: requested_id.to_owned(),
+            })?;
+        let (conversation_id, message_id, server_seq, direction, hydration_state) = row;
+        if direction != 0 || hydration_state.trim() != "hydrated" {
+            return Err(crate::ImError::MessageNotFound {
+                message_id: requested_id.to_owned(),
+            });
+        }
+        let server_seq = server_seq.filter(|value| *value > 0).ok_or_else(|| {
+            crate::ImError::IdentityBindingConflict {
+                detail: format!("message {requested_id} has no committed Sync V2 thread sequence"),
+            }
+        })?;
+        let sync_binding = super::sync_v2::load_sync_thread_binding_for_conversation(
+            connection,
+            &owner_identity_id,
+            &conversation_id,
+            if conversation_id.starts_with("group:") {
+                "group"
+            } else {
+                "direct"
+            },
+        )?
+        .ok_or_else(|| crate::ImError::IdentityBindingConflict {
+            detail: format!("message {requested_id} has no exact Sync V2 thread binding"),
+        })?;
+        if sync_binding.conversation_id != conversation_id {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: format!(
+                    "message {requested_id} Sync V2 thread binding changed concurrently"
+                ),
+            });
+        }
+        let candidate = V2MarkReadWatermark {
+            conversation_id: conversation_id.clone(),
+            message_id,
+            server_seq: server_seq.to_string(),
+        };
+        match by_conversation.get(&conversation_id) {
+            Some(current)
+                if current
+                    .server_seq
+                    .parse::<i64>()
+                    .is_ok_and(|value| value >= server_seq) => {}
+            _ => {
+                by_conversation.insert(conversation_id, candidate);
+            }
+        }
+    }
+
+    Ok(by_conversation.into_values().collect())
 }
 
 #[cfg(feature = "sqlite")]
@@ -7400,6 +7510,113 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
             0
         );
         assert_summary_matches_rebuild(&db, owner_identity_id, &conversation_id);
+    }
+
+    #[test]
+    fn v2_mark_read_watermarks_group_ids_by_thread_and_take_max_sequence() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let owner_identity_id = "owner-id";
+        let owner_did = "did:example:owner";
+        let direct_conversation = "dm:did:example:peer";
+        let group_did = "did:example:groups:demo";
+        let group_conversation =
+            crate::internal::local_state::owner_scope::group_conversation_id(group_did);
+        crate::internal::local_state::sync_v2::upsert_identity_account_binding(
+            &db,
+            &crate::internal::local_state::sync_v2::IdentityAccountBinding {
+                owner_identity_id: owner_identity_id.to_owned(),
+                account_id: "account-owner".to_owned(),
+                handle_scope: Some("owner.awiki.info".to_owned()),
+                current_did: owner_did.to_owned(),
+                protocol_device_id: "device-owner".to_owned(),
+                identity_generation: "1".to_owned(),
+                device_auth_generation: "1".to_owned(),
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+
+        for (message_id, conversation_id, sequence, group) in [
+            ("direct-low", direct_conversation, 10, None),
+            ("direct-high", direct_conversation, 20, None),
+            (
+                "group-canonical",
+                group_conversation.as_str(),
+                15,
+                Some(group_did),
+            ),
+        ] {
+            upsert_message(
+                &db,
+                &MessageRecord {
+                    msg_id: message_id.to_owned(),
+                    owner_identity_id: owner_identity_id.to_owned(),
+                    owner_did: owner_did.to_owned(),
+                    conversation_id: conversation_id.to_owned(),
+                    thread_id: conversation_id.to_owned(),
+                    direction: 0,
+                    sender_did: group.unwrap_or("did:example:peer").to_owned(),
+                    receiver_did: owner_did.to_owned(),
+                    group_id: group.unwrap_or_default().to_owned(),
+                    group_did: group.unwrap_or_default().to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: message_id.to_owned(),
+                    server_seq: Some(sequence),
+                    sent_at: format!("2026-08-02T00:00:{sequence:02}Z"),
+                    stored_at: format!("2026-08-02T00:00:{sequence:02}Z"),
+                    metadata: (message_id == "group-canonical")
+                        .then(|| serde_json::json!({"raw_message_id": "group-alias"}).to_string())
+                        .unwrap_or_default(),
+                    ..MessageRecord::default()
+                },
+            )
+            .unwrap();
+        }
+        for (remote_thread_key, thread_kind, conversation_id) in [
+            ("did:example:peer", "direct", direct_conversation),
+            (group_did, "group", group_conversation.as_str()),
+        ] {
+            crate::internal::local_state::sync_v2::upsert_sync_thread_binding(
+                &db,
+                &crate::internal::local_state::sync_v2::SyncThreadBinding {
+                    owner_identity_id: owner_identity_id.to_owned(),
+                    remote_thread_key: remote_thread_key.to_owned(),
+                    thread_kind: thread_kind.to_owned(),
+                    conversation_id: conversation_id.to_owned(),
+                    updated_at: 1,
+                },
+            )
+            .unwrap();
+        }
+
+        let result = resolve_v2_mark_read_watermarks_for_owner_identity(
+            &db,
+            owner_identity_id,
+            &[
+                "direct-low".to_owned(),
+                "group-alias".to_owned(),
+                "direct-high".to_owned(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            result,
+            vec![
+                V2MarkReadWatermark {
+                    conversation_id: direct_conversation.to_owned(),
+                    message_id: "direct-high".to_owned(),
+                    server_seq: "20".to_owned(),
+                },
+                V2MarkReadWatermark {
+                    conversation_id: group_conversation,
+                    message_id: format!("{group_did}:15"),
+                    server_seq: "15".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]
