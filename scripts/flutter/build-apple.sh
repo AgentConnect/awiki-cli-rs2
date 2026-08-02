@@ -180,7 +180,7 @@ for target in "${MACOS_TARGETS[@]}"; do
     --release \
     --target "${target}" \
     --no-default-features \
-    --features blocking,sqlite,http,macos
+    --features blocking,sqlite,http,macos,group-e2ee
 done
 
 mkdir -p "${IOS_FRAMEWORK_DIR}" "${MACOS_FRAMEWORK_DIR}" "${IOS_INCLUDE_DIR}" "${MACOS_INCLUDE_DIR}"
