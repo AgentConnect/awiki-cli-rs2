@@ -3178,7 +3178,7 @@ async fn realtime_message_event_uses_runtime_processed_dedupe() {
         .client_for_agent(&config, &state, &created.agent_did)
         .unwrap();
     let hermes_gateway = StdioHermesGateway::default();
-    let mut processed = HashSet::new();
+    let mut runtime_routes = RuntimeRouteDispatcher::new(QueueSchedulerNotifier::new());
     let message = plain_direct_message("msg_realtime_dedupe");
 
     record_runtime_processed_message(&state, &created.agent_did, "msg_realtime_dedupe", "done")
@@ -3192,14 +3192,55 @@ async fn realtime_message_event_uses_runtime_processed_dedupe() {
         &registration,
         &client,
         &created.agent_did,
-        &mut processed,
+        &mut runtime_routes,
         message,
     )
     .await
     .unwrap();
 
     assert_eq!(processed_count, 0);
-    assert!(processed.is_empty());
+    assert!(runtime_routes.processed.is_empty());
+}
+
+#[test]
+fn runtime_execution_dispatch_excludes_management_payloads() {
+    let (root, config, state) = fixture();
+    let created = create_hermes_runtime(root.path(), &config, &state);
+    let text = plain_direct_message("msg_runtime_dispatch_text");
+    assert!(should_dispatch_runtime_execution(&state, &created.agent_did, &text).unwrap());
+
+    let mut management = text;
+    management.body = TestMessageBodyView::Payload {
+        payload: json!({
+            "schema": "awiki.agent.command.v1",
+            "command": "runtime.agent.delete",
+            "args": {"runtime_agent_did": created.agent_did},
+        }),
+    };
+    assert!(!should_dispatch_runtime_execution(&state, &created.agent_did, &management).unwrap());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn runtime_execution_worker_does_not_block_foreground_runtime() {
+    let mut dispatcher = RuntimeRouteDispatcher::new(QueueSchedulerNotifier::new());
+    let completed = Arc::new(AtomicUsize::new(0));
+    let completed_from_worker = Arc::clone(&completed);
+    dispatcher.dispatch_blocking("agent:message".to_string(), move || {
+        std::thread::sleep(Duration::from_millis(100));
+        completed_from_worker.store(1, Ordering::SeqCst);
+        false
+    });
+
+    tokio::time::timeout(
+        Duration::from_millis(50),
+        tokio::time::sleep(Duration::from_millis(10)),
+    )
+    .await
+    .expect("foreground timer must remain responsive");
+    assert_eq!(completed.load(Ordering::SeqCst), 0);
+
+    dispatcher.shutdown().await;
+    assert_eq!(completed.load(Ordering::SeqCst), 1);
 }
 
 #[test]
