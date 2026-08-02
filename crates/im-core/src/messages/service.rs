@@ -3265,6 +3265,51 @@ impl<'a> MessageService<'a> {
         }
     }
 
+    /// Reconciles exact-device P5 Direct messages into the local projection.
+    ///
+    /// The operation is a complement to ordinary account Sync v2, not a
+    /// fallback for it. When the host-local P5 gate is disabled it performs no
+    /// network request. When enabled it requires an exact active vNext account
+    /// and device binding and asks the Home Message Service for only
+    /// `direct-e2ee` Inbox rows.
+    #[doc(hidden)]
+    pub async fn hydrate_exact_device_secure_inbox_async(
+        &self,
+        limit: crate::ids::PageLimit,
+    ) -> crate::ImResult<Vec<String>> {
+        if !self.client.core_inner().direct_e2ee_v2_enabled() {
+            return Ok(Vec::new());
+        }
+        let binding = self.client.active_sync_account_binding().await?;
+        if binding.owner_identity_id != self.client.current_identity().id.as_str()
+            || binding.current_did != self.client.did().as_str()
+        {
+            return Err(crate::ImError::IdentityBindingConflict {
+                detail: "active sync binding does not match the secure Inbox owner".to_owned(),
+            });
+        }
+        #[cfg(feature = "sqlite")]
+        {
+            let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
+            let mut directory_transport =
+                crate::internal::transport::CoreHttpTransport::new(self.client);
+            return crate::internal::message_runtime::read::hydrate_exact_device_secure_inbox_async(
+                self.client,
+                &mut transport,
+                &mut directory_transport,
+                limit.0,
+            )
+            .await;
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = (binding, limit);
+            Err(crate::ImError::unsupported(
+                "exact-device-secure-inbox-hydration",
+            ))
+        }
+    }
+
     pub fn history(
         &self,
         thread: super::ThreadRef,

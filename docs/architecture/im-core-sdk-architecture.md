@@ -793,11 +793,18 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   enforces a 16 MiB hard response budget, Core uses ordered chunks of 8 to leave
   headroom for compact-JSON framing and escaping; any unavailable item in any
   chunk aborts the full delta page.
-- Foreground CLI Inbox compensation uses the same exact-device v2 reader with
-  reason `foreground_reconcile`, then reads only the committed exact-owner local
-  Inbox projection. It does not call legacy `inbox.get`, does not depend on a
-  WebSocket hint, and does not return stale projection when reconciliation ends
-  in recovery-required, retryable, or auth-revoked state.
+- Foreground CLI Inbox compensation first uses the same exact-device v2 reader
+  with reason `foreground_reconcile` for ordinary messages. When the independent
+  P5 gate is enabled, it then performs one bounded exact-device secure hydration
+  through the local-only `inbox.get` contract with the closed
+  `body.security_profile=direct-e2ee` selector, decrypts/persists only admitted
+  P5 v2 rows, acknowledges only their authenticated raw delivery IDs after the
+  local commit, and repeats bounded unread pages until `has_more=false` before
+  reading the committed exact-owner local Inbox projection. A failed/partial ACK
+  preserves the committed local data but fails foreground reconciliation.
+  The secure request defensively drops every non-P5 row and is not a Legacy or
+  ordinary-message fallback. The flow does not depend on a WebSocket hint and
+  does not return stale projection when either required reconciliation fails.
 - Before the first bootstrap for a local owner, Core persists a cryptographically
   random opaque `client_instance_id` in the local sync database. Lost responses,
   process restarts, and retries reuse it; a new/cleared local database generates

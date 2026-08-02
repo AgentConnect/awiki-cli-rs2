@@ -503,17 +503,27 @@ pub async fn read_inbox_via_im_core_async(
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
     let mut rpc_phase = crate::cli_trace::rpc_phase("sync.v2.foreground_reconcile");
-    let page = async {
+    let reconciled = async {
         reconcile_foreground_message_sync_async(client).await?;
-        client
+        let secure_warnings = if matches!(&query.scope, InboxScope::DirectOnly | InboxScope::All) {
+            client
+                .messages()
+                .hydrate_exact_device_secure_inbox_async(query.limit)
+                .await
+                .map_err(im_error_to_message_error)?
+        } else {
+            Vec::new()
+        };
+        let page = client
             .messages()
             .local_inbox_projection_with_metadata_async(query.clone())
             .await
-            .map_err(im_error_to_message_error)
+            .map_err(im_error_to_message_error)?;
+        Ok::<_, MessageAdapterError>((page, secure_warnings))
     }
     .await;
     rpc_phase.finish();
-    let page = page?;
+    let (page, secure_warnings) = reconciled?;
     let raw = message_page_to_cli_raw(&page);
     let mut messages = messages_from_raw(&raw);
     let source = source_with_default(&raw);
@@ -535,7 +545,7 @@ pub async fn read_inbox_via_im_core_async(
     Ok(CommandResult {
         data,
         summary: format!("Loaded {total} inbox messages"),
-        warnings: Vec::new(),
+        warnings: compact_warnings(secure_warnings),
     })
 }
 

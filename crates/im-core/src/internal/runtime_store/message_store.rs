@@ -872,7 +872,15 @@ mod tests {
 
         match patch {
             crate::messages::ThreadMessageStorePatch::Reset { items, .. } => {
-                assert_eq!(items, vec![message]);
+                let mut expected = message;
+                expected
+                    .metadata
+                    .attributes
+                    .push(crate::messages::MessageMetadataAttribute {
+                        key: "is_read".to_owned(),
+                        value: "true".to_owned(),
+                    });
+                assert_eq!(items, vec![expected]);
             }
             other => panic!("unexpected patch: {other:?}"),
         }

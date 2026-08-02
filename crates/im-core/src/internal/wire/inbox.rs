@@ -50,6 +50,25 @@ pub(crate) fn build_inbox_rpc_params(identity: &WireIdentity, request: InboxWire
     })
 }
 
+/// Builds the closed exact-device P5 Inbox hydration request.
+///
+/// This is deliberately separate from the generic/delegated local Inbox
+/// builder: ordinary messages reconcile through Sync v2, while this request
+/// may return only Direct E2EE rows for the authenticated device principal.
+pub(crate) fn build_exact_device_secure_inbox_rpc_params(
+    identity: &WireIdentity,
+    limit: u32,
+) -> Value {
+    json!({
+        "meta": common::local_meta(&identity.did, "anp.inbox.local.v1"),
+        "body": {
+            "user_did": identity.did,
+            "limit": limit,
+            "security_profile": "direct-e2ee",
+        },
+    })
+}
+
 pub(crate) fn build_mark_read_rpc_params(
     identity: &WireIdentity,
     request: MarkReadWireRequest,

@@ -800,6 +800,11 @@ impl MessageService<'_> {
         &self,
         query: InboxQuery,
     ) -> ImResult<MessagePage>;
+    #[doc(hidden)]
+    pub async fn hydrate_exact_device_secure_inbox_async(
+        &self,
+        limit: PageLimit,
+    ) -> ImResult<Vec<String>>;
     pub fn history(&self, thread: ThreadRef, query: HistoryQuery) -> ImResult<Page<Message>>;
     pub fn local_history(
         &self,
@@ -880,6 +885,17 @@ Reliable sync 补充：
   owner/account/device/generations，不能跨 identity 复用，也不是 Sync v2 cursor。Daemon
   必须设置每轮总扫描 hard cap，并在 `has_more` 时逐页推进；固定反复读取第一页会造成
   ledger 前缀饥饿。
+
+- `hydrate_exact_device_secure_inbox_async` 是 Rust host 的窄化 P5 Inbox 补偿边界。
+  host-local Direct E2EE gate 关闭时不发网络请求；开启时必须先取得 exact active vNext
+  account/device binding，并只发送带闭合
+  `body.security_profile=direct-e2ee` 的本域 `inbox.get`。Core 对响应再次只接纳 P5 v2
+  candidate；每页完成认证解密与 committed local projection 后，只用已成功消费的 P5 raw
+  message ID 调用 exact-device `inbox.mark_read`，再继续读取下一页，直到
+  `has_more=false` 或命中 100 页硬上限。ACK 缺失、部分成功、无进展或达到上限均返回错误，
+  但不回滚已提交的本地消息；成功结果仅返回安全 warning 文本。
+  该接口不返回远端消息页，不接纳 delegated/Legacy 身份，也绝不能用于补齐普通消息；
+  普通 Direct/Group 的唯一前台补偿仍是 `sync_now`。
 
 - `sync_now(MessageSyncRequest { reason, limit })` 是 v2 普通 Direct/Group 主链路。
   account、device、cursor 均由 Core 内部从 active binding 和 SQLite 获取，public outcome

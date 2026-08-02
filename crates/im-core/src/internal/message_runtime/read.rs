@@ -1601,6 +1601,121 @@ where
     })
 }
 
+/// Reconciles a bounded sequence of exact-device P5 Inbox pages into the
+/// committed local projection. Ordinary Direct messages are intentionally
+/// excluded here: their only foreground reconciliation path is account Sync v2.
+#[cfg(feature = "sqlite")]
+pub(crate) async fn hydrate_exact_device_secure_inbox_async<T, R>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    directory_transport: &mut R,
+    limit: u32,
+) -> crate::ImResult<Vec<String>>
+where
+    T: AsyncAuthenticatedRpcTransport,
+    R: AsyncRpcTransport,
+{
+    if limit == 0 || limit > 100 {
+        return Err(crate::ImError::invalid_input(
+            Some("limit".to_owned()),
+            "secure Inbox hydration limit must be between 1 and 100",
+        ));
+    }
+    const MAX_PAGES_PER_RUN: usize = 100;
+    let identity = crate::internal::wire::common::WireIdentity {
+        did: client.did().as_str().to_owned(),
+    };
+    let mut warnings = Vec::new();
+    for _ in 0..MAX_PAGES_PER_RUN {
+        let params = crate::internal::wire::inbox::build_exact_device_secure_inbox_rpc_params(
+            &identity, limit,
+        );
+        let mut raw = transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)
+            .await?;
+        let has_more = raw
+            .get("has_more")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        // The service selector is closed, but the client keeps an independent
+        // admission boundary so a mixed or older response can never reintroduce
+        // ordinary Inbox as a fallback around Sync v2.
+        let selected_count = raw
+            .get_mut("messages")
+            .and_then(Value::as_array_mut)
+            .map(|messages| {
+                messages.retain(is_p5_v2_projection_candidate);
+                messages.len()
+            })
+            .unwrap_or_default();
+        let mut p5_provenance =
+            project_secure_direct_messages_async(client, &mut raw, directory_transport).await;
+        annotate_direct_peer_scopes_async(
+            client,
+            &mut raw,
+            directory_transport,
+            None,
+            None,
+            Some(&mut p5_provenance),
+        )
+        .await;
+        let page = page_from_raw(client, &raw, crate::ids::PageLimit::new(limit)?)?;
+        if !page.items.is_empty() {
+            let outcome = persist_projection_async(client, &page.items, &p5_provenance).await?;
+            if outcome.stored_messages > 0 {
+                client.emit_committed_local_message_projection("secure_inbox_hydration");
+            }
+        }
+        warnings.extend(raw_warnings(&raw));
+
+        let acknowledged_ids = p5_provenance.consumed_raw_message_ids();
+        if acknowledged_ids.is_empty() {
+            if selected_count > 0 || has_more {
+                return Err(secure_inbox_protocol_error(
+                    "secure_inbox_hydration_no_progress",
+                    "secure Inbox hydration could not advance the unread page",
+                ));
+            }
+            return Ok(warnings);
+        }
+        let ack_params = crate::internal::wire::inbox::build_mark_read_rpc_params(
+            &identity,
+            crate::internal::wire::inbox::MarkReadWireRequest {
+                message_ids: acknowledged_ids.clone(),
+            },
+        )?;
+        let ack = transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.mark_read", ack_params)
+            .await?;
+        warnings.extend(raw_warnings(&ack));
+        let expected = i64::try_from(acknowledged_ids.len()).unwrap_or(i64::MAX);
+        if ack.get("updated_count").and_then(Value::as_i64) != Some(expected) {
+            return Err(secure_inbox_protocol_error(
+                "secure_inbox_ack_incomplete",
+                "secure Inbox acknowledgement did not cover the committed page",
+            ));
+        }
+        if !has_more {
+            return Ok(warnings);
+        }
+    }
+    Err(secure_inbox_protocol_error(
+        "secure_inbox_hydration_limit_reached",
+        "secure Inbox hydration did not converge within its bounded page limit",
+    ))
+}
+
+#[cfg(feature = "sqlite")]
+fn secure_inbox_protocol_error(code: &str, message: &str) -> crate::ImError {
+    crate::ImError::Service {
+        status_code: None,
+        code: Some(code.to_owned()),
+        message: message.to_owned(),
+        data: None,
+    }
+}
+
 #[cfg(feature = "sqlite")]
 pub(crate) async fn hydrate_reliable_direct_message_async(
     client: &crate::core::ImClient,
@@ -2738,6 +2853,8 @@ async fn project_secure_direct_messages_async_impl(
                         apply_p5_v2_product_outcome(&mut message_values[index], outcome);
                         if let Some(logical_message_id) = logical_message_id {
                             p5_provenance.record(&logical_message_id, cache_binding);
+                        } else {
+                            p5_provenance.record_consumed_raw_message_id(&cache_binding.message_id);
                         }
                     }
                     Err(_) => {
@@ -3116,6 +3233,8 @@ struct P5VerifiedScopedRoute {
 pub(crate) struct DirectP5ProjectionProvenance {
     bindings: HashMap<P5ProjectionInstanceKey, Vec<P5CacheBinding>>,
     verified_scoped_routes: HashMap<P5ProjectionInstanceKey, P5VerifiedScopedRoute>,
+    consumed_raw_message_ids: Vec<String>,
+    consumed_raw_message_id_set: HashSet<String>,
     expected_peer_did: Option<String>,
 }
 
@@ -3130,7 +3249,25 @@ impl DirectP5ProjectionProvenance {
             logical_message_id: logical_message_id.to_owned(),
             raw_message_id: raw_message_id.to_owned(),
         };
+        self.record_consumed_raw_message_id(raw_message_id);
         self.bindings.entry(key).or_default().push(binding);
+    }
+
+    fn record_consumed_raw_message_id(&mut self, raw_message_id: &str) {
+        let raw_message_id = raw_message_id.trim();
+        if raw_message_id.is_empty()
+            || !self
+                .consumed_raw_message_id_set
+                .insert(raw_message_id.to_owned())
+        {
+            return;
+        }
+        self.consumed_raw_message_ids
+            .push(raw_message_id.to_owned());
+    }
+
+    fn consumed_raw_message_ids(&self) -> Vec<String> {
+        self.consumed_raw_message_ids.clone()
     }
 
     fn retain_unambiguous_projected_instances(

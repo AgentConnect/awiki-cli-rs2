@@ -296,6 +296,99 @@ fn msg_inbox_foreground_reconciles_sync_v2_without_hint_and_reads_exact_local_pr
 }
 
 #[test]
+fn msg_inbox_reconciles_secure_exact_device_rows_without_ordinary_inbox_fallback() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_empty(),
+        TestResponse::ok(&json_rpc_result(json!({
+            "messages": [{
+                "id": "msg-ordinary-injected-by-secure-inbox",
+                "sender_did": "did:wba:awiki.ai:user:bob:e1_bob",
+                "receiver_did": "did:wba:awiki.ai:user:alice:e1_alice",
+                "content_type": "text/plain",
+                "content": "must not bypass sync v2",
+                "server_seq": 99
+            }],
+            "has_more": false,
+            "warnings": []
+        }))),
+    ]);
+    write_msg_config(workspace.path(), &server.base_url());
+    success_json(&awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+    ));
+
+    let output = awiki_cmd_with_direct_e2ee(
+        &[
+            "--identity",
+            "alice",
+            "msg",
+            "inbox",
+            "--scope",
+            "direct",
+            "--limit",
+            "7",
+        ],
+        workspace.path(),
+    );
+    let envelope = success_json(&output);
+    assert_eq!(envelope["data"]["messages"], json!([]));
+    assert_eq!(envelope["data"]["source"], "local_projection");
+
+    let rpc_bodies = server
+        .requests()
+        .iter()
+        .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
+        .collect::<Vec<_>>();
+    let methods = rpc_bodies
+        .iter()
+        .filter_map(|body| body["method"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods,
+        [
+            "register",
+            "direct.e2ee.publish_prekey_bundle",
+            "sync.bootstrap",
+            "sync.delta",
+            "inbox.get"
+        ]
+    );
+    let secure = rpc_bodies
+        .iter()
+        .find(|body| body["method"] == "inbox.get")
+        .unwrap();
+    assert_eq!(secure["params"]["body"]["limit"], 7);
+    assert_eq!(secure["params"]["body"]["security_profile"], "direct-e2ee");
+    assert_eq!(secure["params"]["body"].as_object().unwrap().len(), 3);
+
+    let connection = open_local_state(workspace.path());
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE msg_id = 'msg-ordinary-injected-by-secure-inbox'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0,
+        "secure hydration must not become an ordinary Inbox compatibility path"
+    );
+}
+
+#[test]
 fn msg_mark_read_with_sync_v2_binding_writes_thread_read_state() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
@@ -705,6 +798,24 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
         .env("HOME", workspace.join("home"))
         .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env_remove("AWIKI_WORKSPACE")
+        .env_remove("AWIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_HOME")
+        .env_remove("AVIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_FORMAT")
+        .env_remove("AVIKI_FORMAT");
+    command.output().expect("run awiki-cli")
+}
+
+fn awiki_cmd_with_direct_e2ee(args: &[&str], workspace: &Path) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    command
+        .args(args)
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env("AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_HOME")

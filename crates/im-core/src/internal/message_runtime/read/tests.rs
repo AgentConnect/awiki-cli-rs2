@@ -9,6 +9,7 @@ use crate::vault::{
 };
 use serde_json::{json, Value};
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -3348,6 +3349,231 @@ async fn cached_p5_projection_restores_logical_id_without_redecrypting_replay() 
 }
 
 #[tokio::test]
+async fn exact_device_secure_hydration_selects_p5_only_and_never_persists_ordinary_rows() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let first_wire = ordinary_p5_cache_message(
+        "wire-p5-secure-hydration-1",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    let second_wire = ordinary_p5_cache_message(
+        "wire-p5-secure-hydration-2",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![
+            p5_cached_incoming_record(
+                &client,
+                &first_wire,
+                "msg-logical-secure-hydration-1",
+                "authenticated secure plaintext 1",
+            ),
+            p5_cached_incoming_record(
+                &client,
+                &second_wire,
+                "msg-logical-secure-hydration-2",
+                "authenticated secure plaintext 2",
+            ),
+        ])
+        .await
+        .unwrap();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut transport = ScriptedAuthenticatedTransport {
+        calls: Rc::clone(&calls),
+        responses: VecDeque::from([
+            json!({
+                "messages": [
+                    first_wire,
+                    {
+                        "id": "msg-ordinary-must-not-fallback",
+                        "sender_did": "did:example:bob-new",
+                        "receiver_did": &fixture.did,
+                        "content_type": "text/plain",
+                        "content": "ordinary response injection"
+                    }
+                ],
+                "has_more": true,
+                "warnings": []
+            }),
+            json!({"updated_count": 1, "warnings": []}),
+            json!({
+                "messages": [second_wire],
+                "has_more": false,
+                "warnings": []
+            }),
+            json!({"updated_count": 1, "warnings": []}),
+        ]),
+    };
+
+    let warnings = hydrate_exact_device_secure_inbox_async(
+        &client,
+        &mut transport,
+        &mut StaticHandleDirectoryTransport,
+        20,
+    )
+    .await
+    .unwrap();
+
+    assert!(warnings.is_empty());
+    let calls = calls.borrow();
+    assert_eq!(
+        calls
+            .iter()
+            .map(|call| call.method.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "inbox.get",
+            "inbox.mark_read",
+            "inbox.get",
+            "inbox.mark_read"
+        ]
+    );
+    for call in calls.iter().filter(|call| call.method == "inbox.get") {
+        assert_eq!(call.params["body"]["user_did"], fixture.did);
+        assert_eq!(call.params["body"]["limit"], 20);
+        assert_eq!(call.params["body"]["security_profile"], "direct-e2ee");
+        assert_eq!(call.params["body"].as_object().unwrap().len(), 3);
+    }
+    assert_eq!(
+        calls[1].params["body"]["message_ids"],
+        json!(["wire-p5-secure-hydration-1"])
+    );
+    assert_eq!(
+        calls[3].params["body"]["message_ids"],
+        json!(["wire-p5-secure-hydration-2"])
+    );
+    drop(calls);
+
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",
+                (
+                    client.current_identity().id.as_str(),
+                    "msg-logical-secure-hydration-1"
+                ),
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",
+                (
+                    client.current_identity().id.as_str(),
+                    "msg-logical-secure-hydration-2"
+                ),
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",
+                (
+                    client.current_identity().id.as_str(),
+                    "msg-ordinary-must-not-fallback"
+                ),
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn exact_device_secure_hydration_keeps_committed_projection_when_ack_is_incomplete() {
+    let fixture = VNextCacheFixture::new();
+    let client = fixture.client(true);
+    let wire = ordinary_p5_cache_message(
+        "wire-p5-secure-ack-failure",
+        "did:example:bob-new",
+        "device-bob",
+        &fixture.did,
+        &fixture.device_id,
+    );
+    client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .store_messages(vec![p5_cached_incoming_record(
+            &client,
+            &wire,
+            "msg-logical-secure-ack-failure",
+            "committed before ACK",
+        )])
+        .await
+        .unwrap();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut transport = ScriptedAuthenticatedTransport {
+        calls: Rc::clone(&calls),
+        responses: VecDeque::from([
+            json!({"messages": [wire], "has_more": false, "warnings": []}),
+            json!({"updated_count": 0, "warnings": []}),
+        ]),
+    };
+
+    let error = hydrate_exact_device_secure_inbox_async(
+        &client,
+        &mut transport,
+        &mut StaticHandleDirectoryTransport,
+        20,
+    )
+    .await
+    .expect_err("an incomplete ACK must fail the foreground hydration");
+
+    assert!(matches!(
+        error,
+        crate::ImError::Service { code: Some(code), .. }
+            if code == "secure_inbox_ack_incomplete"
+    ));
+    assert_eq!(
+        calls
+            .borrow()
+            .iter()
+            .map(|call| call.method.as_str())
+            .collect::<Vec<_>>(),
+        ["inbox.get", "inbox.mark_read"]
+    );
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )
+    .unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",
+                (
+                    client.current_identity().id.as_str(),
+                    "msg-logical-secure-ack-failure"
+                ),
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn verified_scoped_thread_p5_projection_persists_wire_route_and_replays() {
     let fixture = VNextCacheFixture::new();
     let client = fixture.client(true);
@@ -5856,6 +6082,11 @@ struct RecordingTransport {
     response: Value,
 }
 
+struct ScriptedAuthenticatedTransport {
+    calls: Rc<RefCell<Vec<RecordedCall>>>,
+    responses: VecDeque<Value>,
+}
+
 struct AllInboxRecordingTransport {
     calls: Rc<RefCell<Vec<RecordedCall>>>,
     direct_response: Value,
@@ -5919,6 +6150,26 @@ impl AsyncAuthenticatedRpcTransport for RecordingTransport {
         params: Value,
     ) -> crate::ImResult<Value> {
         AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+    }
+}
+
+impl AsyncAuthenticatedRpcTransport for ScriptedAuthenticatedTransport {
+    async fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> crate::ImResult<Value> {
+        self.calls.borrow_mut().push(RecordedCall {
+            endpoint: endpoint.to_owned(),
+            method: method.to_owned(),
+            params,
+        });
+        self.responses
+            .pop_front()
+            .ok_or_else(|| crate::ImError::Internal {
+                message: "scripted authenticated response exhausted".to_owned(),
+            })
     }
 }
 
