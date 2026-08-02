@@ -560,6 +560,86 @@ fn verified_p5_message_dispatches_without_account_sync_reconcile() {
 }
 
 #[test]
+fn outgoing_or_group_p5_projection_stays_on_account_sync_path() {
+    for mut event in [
+        direct_message_event("msg-p5-own-sync-1", "outgoing own-device sync"),
+        group_message_event(),
+    ] {
+        let ImEvent::MessageReceived(received) = &mut event else {
+            panic!("expected message event");
+        };
+        received.message.metadata.attributes.extend([
+            MessageMetadataAttribute {
+                key: "security".to_owned(),
+                value: "direct-e2ee".to_owned(),
+            },
+            MessageMetadataAttribute {
+                key: "decryption_state".to_owned(),
+                value: "decrypted".to_owned(),
+            },
+        ]);
+        if matches!(received.message.thread, ThreadRef::Direct(_)) {
+            received.message.direction = MessageDirection::Outgoing;
+        }
+
+        let sink = RecordingHostNotifySink::default();
+        let result = handle_reliable_remote_event(
+            Some(&sink),
+            &mut status(),
+            event,
+            None,
+            Some("bob"),
+            Some("did:bob"),
+        );
+
+        assert!(result.reliable_sync_requested);
+        assert_eq!(result.route, CliImEventRoute::Ignored);
+        assert!(!result.dispatched_host_notification);
+        assert!(sink.events().is_empty());
+    }
+}
+
+#[test]
+fn conflicting_p5_verification_attributes_fail_closed_to_account_sync() {
+    for (key, conflicting_value) in [("security", "plaintext"), ("decryption_state", "failed")] {
+        let sink = RecordingHostNotifySink::default();
+        let mut status = status();
+        let mut event = direct_message_event("msg-p5-conflict-1", "conflicting P5 metadata");
+        let ImEvent::MessageReceived(received) = &mut event else {
+            panic!("expected message event");
+        };
+        received.message.metadata.attributes.extend([
+            MessageMetadataAttribute {
+                key: "security".to_owned(),
+                value: "direct-e2ee".to_owned(),
+            },
+            MessageMetadataAttribute {
+                key: "decryption_state".to_owned(),
+                value: "decrypted".to_owned(),
+            },
+            MessageMetadataAttribute {
+                key: key.to_owned(),
+                value: conflicting_value.to_owned(),
+            },
+        ]);
+
+        let result = handle_reliable_remote_event(
+            Some(&sink),
+            &mut status,
+            event,
+            None,
+            Some("bob"),
+            Some("did:bob"),
+        );
+
+        assert!(result.reliable_sync_requested);
+        assert_eq!(result.route, CliImEventRoute::Ignored);
+        assert!(!result.dispatched_host_notification);
+        assert!(sink.events().is_empty());
+    }
+}
+
+#[test]
 fn im_core_runner_legacy_raw_filter_keeps_only_secure_direct_on_legacy_path() {
     let secure = json!({
         "method": "direct.incoming",

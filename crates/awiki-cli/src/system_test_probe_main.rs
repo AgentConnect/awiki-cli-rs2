@@ -17,8 +17,9 @@
 //!    bearer tokens.
 //! 6. The test-only Account State fail-once code is accepted only for Agent Inventory reads and
 //!    is mapped to one secret-free probe code; every other RPC rejection keeps its prior mapping.
-//! 7. Direct-wire checks call the exact-device `inbox.get` view with the current Core/Vault
-//!    session, but return only match/shape booleans and counts, never raw wire content.
+//! 7. Direct-wire checks scan a bounded sequence of exact-device `inbox.get` pages with the
+//!    current Core/Vault session, but return only match/shape booleans and counts, never raw wire
+//!    content or pagination state.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -75,6 +76,8 @@ const DIRECT_E2EE: &str = "direct-e2ee";
 const ATTACHMENT_V2: &str = "anp.attachment.v2";
 const DIRECT_INIT_CONTENT_TYPE: &str = "application/anp-direct-init+json";
 const DIRECT_CIPHER_CONTENT_TYPE: &str = "application/anp-direct-cipher+json";
+const DIRECT_WIRE_INBOX_PAGE_LIMIT: i64 = 100;
+const DIRECT_WIRE_INBOX_MAX_PAGES: usize = 20;
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -529,20 +532,7 @@ impl Probe {
                 }
             },
             Action::DirectWireProjection(params) => {
-                let rpc_params = im_core::realtime::wire::build_inbox_rpc_params(
-                    &im_core::realtime::wire::WireIdentity {
-                        did: self.local_did.clone(),
-                    },
-                    im_core::realtime::wire::InboxWireRequest {
-                        limit: 50,
-                        auth: None,
-                    },
-                );
-                let result = match self.rpc::<Value>("inbox.get", rpc_params).await? {
-                    RpcOutcome::Success(result) => result,
-                    RpcOutcome::Rejected(_) => return Err(ProbeFailure::Transport),
-                };
-                Ok((closed_direct_wire_projection(&result, &params)?, false))
+                Ok((self.direct_wire_projection(&params).await?, false))
             }
             Action::AccountStateManifest => {
                 let result = self
@@ -841,6 +831,50 @@ impl Probe {
             )),
             ObjectOutcome::Success(_) => Ok(redeem_result(digest_matches, false, None)),
         }
+    }
+
+    async fn direct_wire_projection(
+        &self,
+        params: &DirectWireProjectionParams,
+    ) -> Result<Value, ProbeFailure> {
+        let mut matching_messages = Vec::new();
+        let mut skip = 0_i64;
+
+        for _ in 0..DIRECT_WIRE_INBOX_MAX_PAGES {
+            let mut rpc_params = im_core::realtime::wire::build_inbox_rpc_params(
+                &im_core::realtime::wire::WireIdentity {
+                    did: self.local_did.clone(),
+                },
+                im_core::realtime::wire::InboxWireRequest {
+                    limit: DIRECT_WIRE_INBOX_PAGE_LIMIT,
+                    auth: None,
+                },
+            );
+            rpc_params
+                .get_mut("body")
+                .and_then(Value::as_object_mut)
+                .ok_or(ProbeFailure::Runtime)?
+                .insert("skip".to_owned(), json!(skip));
+            let result = match self.rpc::<Value>("inbox.get", rpc_params).await? {
+                RpcOutcome::Success(result) => result,
+                RpcOutcome::Rejected(_) => return Err(ProbeFailure::Transport),
+            };
+            let progress = append_direct_wire_matches(&result, params, &mut matching_messages)?;
+            if !progress.has_more {
+                return closed_direct_wire_projection(
+                    &json!({"messages": matching_messages}),
+                    params,
+                );
+            }
+            if progress.message_count == 0 {
+                return Err(ProbeFailure::Runtime);
+            }
+            let consumed =
+                i64::try_from(progress.message_count).map_err(|_| ProbeFailure::Runtime)?;
+            skip = skip.checked_add(consumed).ok_or(ProbeFailure::Runtime)?;
+        }
+
+        Err(ProbeFailure::Runtime)
     }
 
     async fn get_object(&self, held: &HeldTicket) -> Result<ObjectOutcome, ProbeFailure> {
@@ -1228,8 +1262,11 @@ fn parse_direct_wire_projection_params(
         "cipher" => DirectWireShape::Cipher,
         _ => return Err(ProbeFailure::InvalidRequest),
     };
-    let forbidden_plaintext =
-        Zeroizing::new(required_string(params, "forbidden_plaintext", 16 * 1024)?);
+    let forbidden_plaintext = Zeroizing::new(required_opaque_string(
+        params,
+        "forbidden_plaintext",
+        16 * 1024,
+    )?);
     Ok(DirectWireProjectionParams {
         peer_did,
         message_id,
@@ -1380,6 +1417,19 @@ fn required_string(
     Ok(value.to_owned())
 }
 
+fn required_opaque_string(
+    params: &Map<String, Value>,
+    key: &str,
+    max_len: usize,
+) -> Result<String, ProbeFailure> {
+    params
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= max_len)
+        .map(str::to_owned)
+        .ok_or(ProbeFailure::InvalidRequest)
+}
+
 fn required_did(params: &Map<String, Value>, key: &str) -> Result<String, ProbeFailure> {
     let did = required_string(params, key, 2048)?;
     im_core::ids::Did::parse(&did).map_err(|_| ProbeFailure::InvalidRequest)?;
@@ -1472,29 +1522,68 @@ fn result_with_code(key: &str, value: bool, code: Option<&'static str>) -> Value
     Value::Object(result)
 }
 
+struct DirectWirePageProgress {
+    message_count: usize,
+    has_more: bool,
+}
+
+fn append_direct_wire_matches(
+    result: &Value,
+    params: &DirectWireProjectionParams,
+    matching: &mut Vec<Value>,
+) -> Result<DirectWirePageProgress, ProbeFailure> {
+    let result = result.as_object().ok_or(ProbeFailure::Runtime)?;
+    let messages = result
+        .get("messages")
+        .and_then(Value::as_array)
+        .filter(|messages| messages.len() <= DIRECT_WIRE_INBOX_PAGE_LIMIT as usize)
+        .ok_or(ProbeFailure::Runtime)?;
+    let has_more = result
+        .get("has_more")
+        .and_then(Value::as_bool)
+        .ok_or(ProbeFailure::Runtime)?;
+
+    for message in messages {
+        let message_object = message.as_object().ok_or(ProbeFailure::Runtime)?;
+        let message_id = required_response_string(message_object, "id")?;
+        if message_id != params.message_id {
+            continue;
+        }
+        let sender_did = required_response_string(message_object, "sender_did")?;
+        if sender_did == params.peer_did {
+            matching.push(message.clone());
+        }
+    }
+
+    Ok(DirectWirePageProgress {
+        message_count: messages.len(),
+        has_more,
+    })
+}
+
 fn closed_direct_wire_projection(
     result: &Value,
     params: &DirectWireProjectionParams,
 ) -> Result<Value, ProbeFailure> {
     let messages = result
         .as_object()
-        .and_then(|object| object.get("messages"))
+        .and_then(|result| result.get("messages"))
         .and_then(Value::as_array)
         .ok_or(ProbeFailure::Runtime)?;
     let mut matching = Vec::new();
     for message in messages {
-        let message = message.as_object().ok_or(ProbeFailure::Runtime)?;
-        let message_id = required_response_string(message, "id")?;
+        let message_object = message.as_object().ok_or(ProbeFailure::Runtime)?;
+        let message_id = required_response_string(message_object, "id")?;
         if message_id == params.message_id {
-            let sender_did = required_response_string(message, "sender_did")?;
+            let sender_did = required_response_string(message_object, "sender_did")?;
             if sender_did == params.peer_did {
-                matching.push(message);
+                matching.push((message, message_object));
             }
         }
     }
 
     let canonical_match_count = bounded_count(matching.len())?;
-    let Some(message) = matching.first().filter(|_| matching.len() == 1) else {
+    let Some((message_value, message)) = matching.first().filter(|_| matching.len() == 1) else {
         return Ok(json!({
             "canonical_match_count": canonical_match_count,
             "content_type_matches": false,
@@ -1504,7 +1593,6 @@ fn closed_direct_wire_projection(
             "plaintext_absent": false,
         }));
     };
-
     let content = message.get("content").and_then(Value::as_object);
     let content_type_matches =
         string_field(message, "content_type") == Some(params.expected_shape.content_type());
@@ -1538,8 +1626,8 @@ fn closed_direct_wire_projection(
                     })
         }
     });
-    let encoded = serde_json::to_string(message).map_err(|_| ProbeFailure::Runtime)?;
-    let plaintext_absent = !encoded.contains(params.forbidden_plaintext.as_str());
+    let plaintext_absent =
+        !json_value_contains_decoded_string(message_value, params.forbidden_plaintext.as_str());
 
     Ok(json!({
         "canonical_match_count": canonical_match_count,
@@ -1549,6 +1637,19 @@ fn closed_direct_wire_projection(
         "shape_matches": shape_matches,
         "plaintext_absent": plaintext_absent,
     }))
+}
+
+fn json_value_contains_decoded_string(value: &Value, forbidden: &str) -> bool {
+    match value {
+        Value::String(value) => value.contains(forbidden),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| json_value_contains_decoded_string(value, forbidden)),
+        Value::Object(values) => values.iter().any(|(key, value)| {
+            key.contains(forbidden) || json_value_contains_decoded_string(value, forbidden)
+        }),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
+    }
 }
 
 fn canonical_nonnegative_wire_number(value: &Value) -> bool {
@@ -2087,7 +2188,7 @@ mod tests {
     const TICKET_SECRET: &str = "ticket-secret-must-not-leak";
     const SERVER_ERROR_SECRET: &str = "server-error-must-not-leak";
     const WIRE_CIPHERTEXT_SECRET: &str = "wire-ciphertext-must-not-leak";
-    const WIRE_PLAINTEXT_SECRET: &str = "wire-plaintext-must-not-leak";
+    const WIRE_PLAINTEXT_SECRET: &str = "wire plaintext \"quoted\" \\\n+second line";
 
     #[test]
     fn protocol_rejects_unknown_actions_and_extra_fields() {
@@ -2204,7 +2305,10 @@ mod tests {
             }
         });
         let init = closed_projection_or_panic(
-            &json!({"messages": [{"id": "unrelated"}, init_message.clone()]}),
+            &json!({
+                "messages": [{"id": "unrelated"}, init_message.clone()],
+                "has_more": false,
+            }),
             &init_params,
         );
         assert_eq!(init, successful_direct_wire_projection());
@@ -2225,12 +2329,17 @@ mod tests {
                 "ciphertext_b64u": WIRE_CIPHERTEXT_SECRET,
             }
         });
-        let cipher =
-            closed_projection_or_panic(&json!({"messages": [cipher_message]}), &cipher_params);
+        let cipher = closed_projection_or_panic(
+            &json!({"messages": [cipher_message], "has_more": false}),
+            &cipher_params,
+        );
         assert_eq!(cipher, successful_direct_wire_projection());
 
         let duplicate = closed_projection_or_panic(
-            &json!({"messages": [init_message.clone(), init_message.clone()]}),
+            &json!({
+                "messages": [init_message.clone(), init_message.clone()],
+                "has_more": false,
+            }),
             &init_params,
         );
         assert_eq!(
@@ -2246,9 +2355,12 @@ mod tests {
         );
 
         let mut plaintext_message = init_message;
-        plaintext_message["content"]["debug"] = json!(WIRE_PLAINTEXT_SECRET);
-        let plaintext =
-            closed_projection_or_panic(&json!({"messages": [plaintext_message]}), &init_params);
+        plaintext_message["content"]["debug"] =
+            json!({"nested": [format!("prefix {WIRE_PLAINTEXT_SECRET} suffix")]});
+        let plaintext = closed_projection_or_panic(
+            &json!({"messages": [plaintext_message], "has_more": false}),
+            &init_params,
+        );
         assert_eq!(plaintext["canonical_match_count"], 1);
         assert_eq!(plaintext["content_type_matches"], true);
         assert_eq!(plaintext["wire_kind_matches"], true);
@@ -2260,6 +2372,46 @@ mod tests {
             .expect("serialize closed wire projections");
         assert!(!encoded.contains(WIRE_CIPHERTEXT_SECRET));
         assert!(!encoded.contains(WIRE_PLAINTEXT_SECRET));
+    }
+
+    #[tokio::test]
+    async fn direct_wire_projection_uses_bounded_inbox_pages_and_closed_output() {
+        let observed_skips = Arc::new(Mutex::new(Vec::new()));
+        let (base_url, server) = spawn_direct_wire_pagination_server(observed_skips.clone()).await;
+        let mut probe = test_probe(&base_url);
+        let request = json!({
+            "id": "wire-page",
+            "action": "direct_wire_projection",
+            "params": {
+                "peer_did": SENDER_DID,
+                "message_id": "message-page-2",
+                "expected_shape": "init",
+                "forbidden_plaintext": WIRE_PLAINTEXT_SECRET,
+            }
+        })
+        .to_string();
+
+        let output = execute_line(&mut probe, &request).await;
+        server.await.expect("direct-wire pagination server task");
+
+        assert_eq!(output["result"], successful_direct_wire_projection());
+        assert_eq!(
+            observed_skips
+                .lock()
+                .expect("direct-wire skip observations")
+                .as_slice(),
+            &[0, DIRECT_WIRE_INBOX_PAGE_LIMIT]
+        );
+        let encoded = serde_json::to_string(&output).expect("serialize closed pagination output");
+        for forbidden in [
+            TOKEN_SECRET,
+            WIRE_CIPHERTEXT_SECRET,
+            WIRE_PLAINTEXT_SECRET,
+            "message-page-2",
+            SENDER_DID,
+        ] {
+            assert!(!encoded.contains(forbidden));
+        }
     }
 
     fn direct_wire_params(
@@ -2989,6 +3141,82 @@ mod tests {
                     .write_all(response.as_bytes())
                     .await
                     .expect("write fake response");
+            }
+        });
+        (base_url, server)
+    }
+
+    async fn spawn_direct_wire_pagination_server(
+        observed_skips: Arc<Mutex<Vec<i64>>>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind direct-wire pagination server");
+        let address = listener
+            .local_addr()
+            .expect("direct-wire pagination address");
+        let base_url = format!("http://{address}");
+        let server = tokio::spawn(async move {
+            for page_index in 0..2 {
+                let (mut socket, _) = listener.accept().await.expect("accept inbox request");
+                let request = read_http_request(&mut socket).await;
+                let (_, body) = request.split_once("\r\n\r\n").expect("inbox request body");
+                let payload: Value = serde_json::from_str(body).expect("inbox request JSON");
+                assert_eq!(payload["method"], "inbox.get");
+                assert_eq!(
+                    payload["params"]["body"]["limit"],
+                    DIRECT_WIRE_INBOX_PAGE_LIMIT
+                );
+                let skip = payload["params"]["body"]["skip"]
+                    .as_i64()
+                    .expect("inbox skip cursor");
+                observed_skips
+                    .lock()
+                    .expect("direct-wire skip observations")
+                    .push(skip);
+
+                let result = if page_index == 0 {
+                    json!({
+                        "messages": (0..DIRECT_WIRE_INBOX_PAGE_LIMIT)
+                            .map(|index| json!({"id": format!("unrelated-{index}")}))
+                            .collect::<Vec<_>>(),
+                        "total": DIRECT_WIRE_INBOX_PAGE_LIMIT + 1,
+                        "has_more": true,
+                    })
+                } else {
+                    json!({
+                        "messages": [{
+                            "id": "message-page-2",
+                            "sender_did": SENDER_DID,
+                            "type": "json",
+                            "content_type": DIRECT_INIT_CONTENT_TYPE,
+                            "content": {
+                                "session_id": "session-page-2",
+                                "suite": "suite-page-2",
+                                "sender_static_key_agreement_id":
+                                    "did:wba:example.test:user:sender#key-3",
+                                "recipient_bundle_id": "bundle-page-2",
+                                "recipient_signed_prekey_id": "spk-page-2",
+                                "sender_ephemeral_pub_b64u": "ephemeral-page-2",
+                                "ciphertext_b64u": WIRE_CIPHERTEXT_SECRET,
+                            }
+                        }],
+                        "total": DIRECT_WIRE_INBOX_PAGE_LIMIT + 1,
+                        "has_more": false,
+                    })
+                };
+                let response = json_response(
+                    200,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": "system-test-probe",
+                        "result": result,
+                    }),
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write inbox response");
             }
         });
         (base_url, server)

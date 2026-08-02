@@ -404,6 +404,10 @@ impl RuntimeP5TestClientFixture {
     }
 
     pub(crate) fn client(&self) -> crate::core::ImClient {
+        self.client_with_direct_e2ee_enabled(true)
+    }
+
+    pub(crate) fn client_with_direct_e2ee_enabled(&self, enabled: bool) -> crate::core::ImClient {
         crate::core::ImCore::new_with_options(
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
@@ -427,7 +431,7 @@ impl RuntimeP5TestClientFixture {
                         Self::VAULT_DEVICE_ID,
                     ),
                 )
-                .with_multi_device_direct_e2ee_enabled(true),
+                .with_multi_device_direct_e2ee_enabled(enabled),
         )
         .unwrap()
         .client(crate::identity::IdentitySelector::LocalAlias(

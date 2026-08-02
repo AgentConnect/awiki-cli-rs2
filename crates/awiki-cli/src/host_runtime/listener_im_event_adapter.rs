@@ -106,14 +106,23 @@ fn reliable_remote_event_is_sync_only(event: &ImEvent) -> bool {
 }
 
 fn message_is_verified_direct_e2ee(message: &Message) -> bool {
-    let attribute = |key: &str, expected: &str| {
-        message
-            .metadata
-            .attributes
-            .iter()
-            .any(|attribute| attribute.key == key && attribute.value == expected)
-    };
-    attribute("security", "direct-e2ee") && attribute("decryption_state", "decrypted")
+    message.direction == im_core::messages::MessageDirection::Incoming
+        && matches!(message.thread, ThreadRef::Direct(_))
+        && message.group.is_none()
+        && message_has_unambiguous_attribute(message, "security", "direct-e2ee")
+        && message_has_unambiguous_attribute(message, "decryption_state", "decrypted")
+}
+
+fn message_has_unambiguous_attribute(message: &Message, key: &str, expected: &str) -> bool {
+    let mut values = message
+        .metadata
+        .attributes
+        .iter()
+        .filter(|attribute| attribute.key == key)
+        .map(|attribute| attribute.value.as_str());
+    values
+        .next()
+        .is_some_and(|value| value == expected && values.all(|value| value == expected))
 }
 
 pub fn handle_im_event(

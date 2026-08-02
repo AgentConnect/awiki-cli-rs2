@@ -91,15 +91,17 @@ fn direct_secure_key_ids(
         .unwrap_or_else(|| (format!("{owner_did}#key-1"), format!("{owner_did}#key-3")))
 }
 
-pub(crate) fn agreement_private_key(
+pub(crate) fn agreement_key_material(
     client: &crate::core::ImClient,
-) -> crate::ImResult<PrivateKeyMaterial> {
+) -> crate::ImResult<(String, PrivateKeyMaterial)> {
     let material = agreement_material(client)?;
-    PrivateKeyMaterial::from_pem(&material.agreement_private_pem).map_err(|err| {
-        crate::ImError::Serialization {
-            detail: format!("parse direct E2EE agreement private key: {err}"),
-        }
-    })
+    let private_key =
+        PrivateKeyMaterial::from_pem(&material.agreement_private_pem).map_err(|err| {
+            crate::ImError::Serialization {
+                detail: format!("parse direct E2EE agreement private key: {err}"),
+            }
+        })?;
+    Ok((material.agreement_key_id, private_key))
 }
 
 pub(crate) fn local_did_document(client: &crate::core::ImClient) -> crate::ImResult<Value> {

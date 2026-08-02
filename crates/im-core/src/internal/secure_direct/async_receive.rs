@@ -144,10 +144,10 @@ impl<'a> AsyncDirectSecureIncomingProcessor<'a> {
                 AsyncDirectSecureReceiveFallback::NoEstablishedSession,
             ));
         };
-        let agreement_private = super::identity_material::agreement_private_key(self.client)?;
+        let (agreement_key_id, agreement_private) =
+            super::identity_material::agreement_key_material(self.client)?;
         let owner_identity_id = self.client.current_identity().id.as_str().to_owned();
         let owner_did = self.client.did().as_str().to_owned();
-        let agreement_key_id = format!("{owner_did}#key-3");
         let consume_one_time_prekey_id = input.init_body.recipient_one_time_prekey_id.clone();
         let accepted = crate::internal::runtime::worker::run_blocking(move || {
             accept_incoming_init_from_material(IncomingInitCryptoInput {
@@ -785,18 +785,33 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn incoming_init_exchange() -> IncomingInitExchange {
-        let sender_bundle = anp::authentication::create_did_wba_document(
-            "sender.async-receive.example",
-            anp::authentication::DidDocumentOptions::default(),
-        )
-        .unwrap();
         let recipient_bundle = anp::authentication::create_did_wba_document(
             "recipient.async-receive.example",
             anp::authentication::DidDocumentOptions::default(),
         )
         .unwrap();
-        let sender_static = sender_bundle.load_private_key("key-3").unwrap();
         let recipient_static = recipient_bundle.load_private_key("key-3").unwrap();
+        let recipient_did = recipient_bundle.did().unwrap().to_owned();
+        incoming_init_exchange_for_recipient(
+            recipient_did.clone(),
+            recipient_bundle.did_document,
+            format!("{recipient_did}#key-3"),
+            recipient_static,
+        )
+    }
+
+    pub(crate) fn incoming_init_exchange_for_recipient(
+        recipient_did: String,
+        recipient_document: Value,
+        recipient_agreement_key_id: String,
+        recipient_static: anp::PrivateKeyMaterial,
+    ) -> IncomingInitExchange {
+        let sender_bundle = anp::authentication::create_did_wba_document(
+            "sender.async-receive.example",
+            anp::authentication::DidDocumentOptions::default(),
+        )
+        .unwrap();
+        let sender_static = sender_bundle.load_private_key("key-3").unwrap();
         let recipient_spk = generated_x25519_private();
         let recipient_opk = generated_x25519_private();
         let anp::PrivateKeyMaterial::X25519(sender_static_key) = &sender_static else {
@@ -806,9 +821,7 @@ pub(crate) mod test_support {
             panic!("expected X25519 private key");
         };
         let sender_did = sender_bundle.did().unwrap().to_owned();
-        let recipient_did = recipient_bundle.did().unwrap().to_owned();
         let sender_document = sender_bundle.did_document.clone();
-        let recipient_document = recipient_bundle.did_document.clone();
         let recipient_signed_prekey = anp::direct_e2ee::SignedPrekey {
             key_id: "spk-alice".to_owned(),
             public_key_b64u: base64url(&x25519_public(&recipient_spk)),
@@ -822,7 +835,7 @@ pub(crate) mod test_support {
             bundle_id: "bundle-alice".to_owned(),
             owner_did: recipient_did.clone(),
             suite: MTI_DIRECT_E2EE_SUITE.to_owned(),
-            static_key_agreement_id: format!("{recipient_did}#key-3"),
+            static_key_agreement_id: recipient_agreement_key_id,
             signed_prekey: recipient_signed_prekey.clone(),
             proof: json!({}),
         };
@@ -1289,6 +1302,102 @@ mod tests {
             consumed.status,
             super::super::sqlite_store::DirectPrekeyStatus::Consumed
         );
+    }
+
+    #[tokio::test]
+    async fn async_direct_receive_uses_exact_device_agreement_id_when_v2_gate_is_disabled() {
+        let fixture = super::super::v2_product::v2_product_tests::RuntimeP5TestClientFixture::new(
+            "async-receive-exact-device",
+        );
+        let client = fixture.client_with_direct_e2ee_enabled(false);
+        assert!(!client.core_inner().direct_e2ee_v2_enabled());
+
+        let agreement = super::super::identity_material::agreement_material(&client).unwrap();
+        assert!(!agreement.agreement_key_id.ends_with("#key-3"));
+        let recipient_private =
+            PrivateKeyMaterial::from_pem(&agreement.agreement_private_pem).unwrap();
+        let exchange = incoming_init_exchange_for_recipient(
+            client.did().as_str().to_owned(),
+            super::super::identity_material::local_did_document(&client).unwrap(),
+            agreement.agreement_key_id.clone(),
+            recipient_private,
+        );
+        let owner_identity_id = client.current_identity().id.as_str().to_owned();
+        {
+            let connection =
+                crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+            let store =
+                super::super::sqlite_store::SqliteDirectSecureStateStore::new(&connection).unwrap();
+            store
+                .upsert_signed_prekey(&super::super::sqlite_store::DirectSignedPrekeyRecord {
+                    owner_identity_id: owner_identity_id.clone(),
+                    owner_did: exchange.recipient_did.clone(),
+                    key_id: exchange.recipient_signed_prekey.key_id.clone(),
+                    private_key_blob: exchange
+                        .recipient_signed_prekey_private
+                        .to_pem()
+                        .into_bytes(),
+                    public_key_blob: exchange
+                        .recipient_signed_prekey
+                        .public_key_b64u
+                        .as_bytes()
+                        .to_vec(),
+                    status: super::super::sqlite_store::DirectPrekeyStatus::Active,
+                    metadata_json: serde_json::to_string(&json!({
+                        "metadata": exchange.recipient_signed_prekey,
+                    }))
+                    .unwrap(),
+                    created_at: "2026-08-02T00:00:00Z".to_owned(),
+                    updated_at: "2026-08-02T00:00:00Z".to_owned(),
+                })
+                .unwrap();
+            store
+                .upsert_one_time_prekey(&super::super::sqlite_store::DirectOneTimePrekeyRecord {
+                    owner_identity_id: owner_identity_id.clone(),
+                    owner_did: exchange.recipient_did.clone(),
+                    key_id: exchange.recipient_one_time_prekey.key_id.clone(),
+                    private_key_blob: exchange
+                        .recipient_one_time_prekey_private
+                        .to_pem()
+                        .into_bytes(),
+                    public_key_blob: exchange
+                        .recipient_one_time_prekey
+                        .public_key_b64u
+                        .as_bytes()
+                        .to_vec(),
+                    status: super::super::sqlite_store::DirectPrekeyStatus::Available,
+                    metadata_json: serde_json::to_string(&json!({
+                        "metadata": exchange.recipient_one_time_prekey,
+                    }))
+                    .unwrap(),
+                    created_at: "2026-08-02T00:00:00Z".to_owned(),
+                    consumed_at: String::new(),
+                })
+                .unwrap();
+        }
+
+        let outcome = AsyncDirectSecureIncomingProcessor::new(&client)
+            .process_init_if_ready(
+                direct_init_notification(&exchange.metadata, &exchange.init_body),
+                exchange.sender_document,
+            )
+            .await
+            .unwrap();
+
+        let AsyncDirectSecureReceiveOutcome::Processed(result) = outcome else {
+            panic!("exact-device direct init should use the bound agreement key id");
+        };
+        assert_eq!(result["state"], json!("decrypted"));
+        assert_eq!(result["plaintext"]["text"], json!("hello from init"));
+        let saved = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .get_direct_secure_session(owner_identity_id, exchange.sender_did)
+            .await
+            .unwrap();
+        assert!(saved.is_some());
     }
 
     #[tokio::test]
