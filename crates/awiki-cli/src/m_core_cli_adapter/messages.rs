@@ -504,7 +504,6 @@ pub async fn read_inbox_via_im_core_async(
     require_messaging_ready(client)?;
     let mut rpc_phase = crate::cli_trace::rpc_phase("sync.v2.foreground_reconcile");
     let reconciled = async {
-        reconcile_foreground_message_sync_async(client).await?;
         let secure_warnings = if matches!(&query.scope, InboxScope::DirectOnly | InboxScope::All) {
             client
                 .messages()
@@ -514,6 +513,7 @@ pub async fn read_inbox_via_im_core_async(
         } else {
             Vec::new()
         };
+        reconcile_foreground_message_sync_async(client).await?;
         let page = client
             .messages()
             .local_inbox_projection_with_metadata_async(query.clone())

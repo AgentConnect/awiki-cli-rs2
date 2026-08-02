@@ -793,10 +793,12 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   enforces a 16 MiB hard response budget, Core uses ordered chunks of 8 to leave
   headroom for compact-JSON framing and escaping; any unavailable item in any
   chunk aborts the full delta page.
-- Foreground CLI Inbox compensation first uses the same exact-device v2 reader
-  with reason `foreground_reconcile` for ordinary messages. When the independent
-  P5 gate is enabled, it then performs one bounded exact-device secure hydration
-  through the local-only `inbox.get` contract with the closed
+- When the independent P5 gate is enabled, Foreground CLI Inbox compensation
+  first performs one bounded exact-device secure hydration through the local-only
+  `inbox.get` contract. This lets Root control messages finish local credential
+  promotion before a changed device authorization generation is used for ordinary
+  sync. It then uses the exact-device v2 reader with reason `foreground_reconcile`
+  for ordinary messages. Secure hydration uses the closed
   `body.security_profile=direct-e2ee` selector, decrypts/persists only admitted
   P5 v2 rows, acknowledges only their authenticated raw delivery IDs after the
   local commit, and repeats bounded unread pages until `has_more=false` before
