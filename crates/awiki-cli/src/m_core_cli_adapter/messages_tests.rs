@@ -3,25 +3,25 @@ use im_core::prelude::{Message, MessageMetadata, ThreadId};
 use serde_json::json;
 
 #[test]
-fn foreground_inbox_uses_standard_reconcile_reason() {
-    assert_eq!(foreground_inbox_sync_reason(), "foreground_reconcile");
+fn foreground_message_reads_use_standard_reconcile_reason() {
+    assert_eq!(foreground_message_sync_reason(), "foreground_reconcile");
 }
 
 #[test]
-fn foreground_inbox_reads_projection_only_after_terminal_sync_success() {
+fn foreground_message_reads_projection_only_after_terminal_sync_success() {
     for status in [MessageSyncStatus::Idle, MessageSyncStatus::Changed] {
-        assert!(require_foreground_inbox_sync(&sync_outcome(status)).is_ok());
+        assert!(require_foreground_message_sync(&sync_outcome(status)).is_ok());
     }
     assert!(matches!(
-        require_foreground_inbox_sync(&sync_outcome(MessageSyncStatus::RecoveryRequired)),
+        require_foreground_message_sync(&sync_outcome(MessageSyncStatus::RecoveryRequired)),
         Err(MessageAdapterError::LocalStateUnavailable(_))
     ));
     assert!(matches!(
-        require_foreground_inbox_sync(&sync_outcome(MessageSyncStatus::RetryableFailure)),
+        require_foreground_message_sync(&sync_outcome(MessageSyncStatus::RetryableFailure)),
         Err(MessageAdapterError::TransportUnavailable(_))
     ));
     assert!(matches!(
-        require_foreground_inbox_sync(&sync_outcome(MessageSyncStatus::AuthRevoked)),
+        require_foreground_message_sync(&sync_outcome(MessageSyncStatus::AuthRevoked)),
         Err(MessageAdapterError::IdentityRequired(_))
     ));
 }

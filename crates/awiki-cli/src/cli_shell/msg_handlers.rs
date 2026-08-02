@@ -648,22 +648,19 @@ impl App {
         let (thread, query) =
             crate::m_core_cli_adapter::messages::history_request(command, &resolved.did_domain)?;
         let mut plan = Map::new();
+        plan.insert(
+            "action".to_string(),
+            Value::String("sync.v2.foreground_reconcile_then_local_history".to_string()),
+        );
+        plan.insert("source".to_string(), Value::String("local".to_string()));
         let summary = match thread {
             im_core::prelude::ThreadRef::Direct(_) => {
                 let with = string_flag(command, "with");
-                plan.insert(
-                    "action".to_string(),
-                    Value::String("direct.get_history".to_string()),
-                );
                 plan.insert("with".to_string(), Value::String(with.clone()));
                 insert_completed_handle(&mut plan, "with_handle", &with, &resolved.did_domain);
                 "Dry run: direct history read planned"
             }
             im_core::prelude::ThreadRef::Group(group) => {
-                plan.insert(
-                    "action".to_string(),
-                    Value::String("group.list_messages".to_string()),
-                );
                 plan.insert(
                     "group".to_string(),
                     Value::String(group.as_str().to_string()),

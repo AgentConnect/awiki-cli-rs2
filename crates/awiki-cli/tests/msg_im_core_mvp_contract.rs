@@ -296,43 +296,55 @@ fn msg_inbox_foreground_reconciles_sync_v2_without_hint_and_reads_exact_local_pr
 }
 
 #[test]
-fn msg_history_default_cutover_direct_posts_im_core_rpc() {
+fn msg_history_default_cutover_direct_reconciles_sync_v2_and_reads_local_history() {
     let workspace = TempDir::new().expect("workspace");
-    let alice = register_generated_read_identity(
-        workspace.path(),
-        "alice-history-cutover",
-        "alice",
-        "jwt-alice",
-    );
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
-    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
-        "messages": [{
-            "id": "msg-history-cutover-1",
-            "sender_did": alice.did,
-            "receiver_did": bob_did,
-            "content": "hello history",
-            "content_type": "text/plain",
-            "sent_at": "2026-05-21T00:00:00Z",
-            "server_seq": 9
-        }],
-        "total": 1,
-        "source": "remote_http",
-        "resolved_dids": [bob_did]
-    })))]);
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_empty(),
+    ]);
     write_msg_config(workspace.path(), &server.base_url());
+    let register = awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+    );
+    let registered = success_json(&register);
+    let alice_did = registered["data"]["identity"]["did"]
+        .as_str()
+        .expect("registered DID");
+    let alice_identity_id = registered["data"]["identity"]["unique_id"]
+        .as_str()
+        .expect("registered identity ID");
+    seed_message(
+        workspace.path(),
+        alice_identity_id,
+        alice_did,
+        "msg-history-cutover-1",
+        "",
+        "text/plain",
+        "",
+    );
 
     let output = awiki_cmd(
         &[
             "--identity",
-            "alice-history-cutover",
+            "alice",
             "msg",
             "history",
             "--with",
             bob_did,
             "--limit",
             "4",
-            "--cursor",
-            "8",
         ],
         workspace.path(),
     );
@@ -344,57 +356,81 @@ fn msg_history_default_cutover_direct_posts_im_core_rpc() {
         "msg-history-cutover-1"
     );
     assert_eq!(envelope["data"]["with"], bob_did);
-    assert_eq!(envelope["data"]["source"], "remote_http");
+    assert_eq!(envelope["data"]["source"], "local");
+    assert_eq!(envelope["data"]["messages"][0]["direction"], 0);
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert_contains_header(&requests[0], "Authorization", "Bearer jwt-alice");
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
-    assert_eq!(body["method"], "direct.get_history");
-    assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
-    assert_eq!(body["params"]["body"]["user_did"], alice.did);
-    assert_eq!(body["params"]["body"]["peer_did"], bob_did);
-    assert_eq!(body["params"]["body"]["limit"], 4);
-    assert_eq!(body["params"]["body"]["since_seq"], "8");
+    let methods = requests
+        .iter()
+        .map(|request| {
+            serde_json::from_str::<Value>(request_body(request)).expect("request JSON")["method"]
+                .as_str()
+                .expect("RPC method")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods,
+        [
+            "register",
+            "direct.e2ee.publish_prekey_bundle",
+            "sync.bootstrap",
+            "sync.delta",
+        ]
+    );
+    assert!(!methods.iter().any(|method| method == "direct.get_history"));
 }
 
 #[test]
-fn msg_history_default_cutover_group_posts_im_core_rpc() {
+fn msg_history_default_cutover_group_reconciles_sync_v2_and_reads_local_history() {
     let workspace = TempDir::new().expect("workspace");
-    let alice = register_generated_read_identity(
-        workspace.path(),
-        "alice-group-history-cutover",
-        "alice",
-        "jwt-alice",
-    );
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
-    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
-        "messages": [{
-            "id": "msg-group-history-cutover-1",
-            "sender_did": alice.did,
-            "content": "hello group history",
-            "content_type": "text/plain",
-            "sent_at": "2026-05-21T00:00:00Z",
-            "group_event_seq": 12
-        }],
-        "total": 1,
-        "source": "remote_http"
-    })))]);
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_empty(),
+    ]);
     write_msg_config(workspace.path(), &server.base_url());
+    let register = awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+    );
+    let registered = success_json(&register);
+    let alice_did = registered["data"]["identity"]["did"]
+        .as_str()
+        .expect("registered DID");
+    let alice_identity_id = registered["data"]["identity"]["unique_id"]
+        .as_str()
+        .expect("registered identity ID");
+    seed_message(
+        workspace.path(),
+        alice_identity_id,
+        alice_did,
+        "msg-group-history-cutover-1",
+        group_did,
+        "text/plain",
+        "",
+    );
 
     let output = awiki_cmd(
         &[
             "--identity",
-            "alice-group-history-cutover",
+            "alice",
             "msg",
             "history",
             "--group",
             group_did,
             "--limit",
             "6",
-            "--cursor",
-            "11",
         ],
         workspace.path(),
     );
@@ -403,30 +439,32 @@ fn msg_history_default_cutover_group_posts_im_core_rpc() {
     assert_eq!(envelope["summary"], "Loaded 1 group history messages");
     assert_eq!(
         envelope["data"]["messages"][0]["id"],
-        format!("{group_did}:12")
-    );
-    assert_eq!(
-        envelope["data"]["messages"][0]["raw_message_id"],
         "msg-group-history-cutover-1"
     );
     assert_eq!(envelope["data"]["messages"][0]["group_did"], group_did);
     assert_eq!(envelope["data"]["group"], group_did);
-    assert_eq!(envelope["data"]["source"], "remote_http");
+    assert_eq!(envelope["data"]["source"], "local");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert_contains_header(&requests[0], "Authorization", "Bearer jwt-alice");
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
-    assert_eq!(body["method"], "group.list_messages");
-    assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
+    let methods = requests
+        .iter()
+        .map(|request| {
+            serde_json::from_str::<Value>(request_body(request)).expect("request JSON")["method"]
+                .as_str()
+                .expect("RPC method")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        body["params"]["meta"]["target"],
-        json!({"kind": "group", "did": group_did})
+        methods,
+        [
+            "register",
+            "direct.e2ee.publish_prekey_bundle",
+            "sync.bootstrap",
+            "sync.delta",
+        ]
     );
-    assert_eq!(body["params"]["body"]["group_did"], group_did);
-    assert_eq!(body["params"]["body"]["limit"], 6);
-    assert_eq!(body["params"]["body"]["since_seq"], "11");
+    assert!(!methods.iter().any(|method| method == "group.list_messages"));
 }
 
 #[test]

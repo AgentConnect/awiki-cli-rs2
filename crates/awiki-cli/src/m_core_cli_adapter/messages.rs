@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use im_core::messages::{MessageSyncOutcome, MessageSyncRequest, MessageSyncStatus};
+use im_core::messages::{
+    LocalHistoryQuery, MessageSyncOutcome, MessageSyncRequest, MessageSyncStatus,
+};
 use im_core::prelude::{
     AttachmentDestination, AttachmentInput, AttachmentSelection, AttachmentSendRequest,
     AttachmentSendResult, Cursor, DeliveryState, DownloadAttachmentRequest,
@@ -502,15 +504,7 @@ pub async fn read_inbox_via_im_core_async(
     require_messaging_ready(client)?;
     let mut rpc_phase = crate::cli_trace::rpc_phase("sync.v2.foreground_reconcile");
     let page = async {
-        let outcome = client
-            .messages()
-            .sync_now_async(MessageSyncRequest {
-                reason: foreground_inbox_sync_reason().to_owned(),
-                limit: Some(100),
-            })
-            .await
-            .map_err(im_error_to_message_error)?;
-        require_foreground_inbox_sync(&outcome)?;
+        reconcile_foreground_message_sync_async(client).await?;
         client
             .messages()
             .local_inbox_projection_with_metadata_async(query.clone())
@@ -545,11 +539,13 @@ pub async fn read_inbox_via_im_core_async(
     })
 }
 
-fn foreground_inbox_sync_reason() -> &'static str {
+fn foreground_message_sync_reason() -> &'static str {
     "foreground_reconcile"
 }
 
-fn require_foreground_inbox_sync(outcome: &MessageSyncOutcome) -> Result<(), MessageAdapterError> {
+fn require_foreground_message_sync(
+    outcome: &MessageSyncOutcome,
+) -> Result<(), MessageAdapterError> {
     match outcome.status {
         MessageSyncStatus::Idle | MessageSyncStatus::Changed => Ok(()),
         MessageSyncStatus::RecoveryRequired => Err(MessageAdapterError::LocalStateUnavailable(
@@ -561,6 +557,40 @@ fn require_foreground_inbox_sync(outcome: &MessageSyncOutcome) -> Result<(), Mes
         MessageSyncStatus::AuthRevoked => Err(MessageAdapterError::IdentityRequired(
             "foreground message synchronization authorization is unavailable".to_owned(),
         )),
+    }
+}
+
+fn reconcile_foreground_message_sync(
+    client: &im_core::ImClient,
+) -> Result<(), MessageAdapterError> {
+    let outcome = client
+        .messages()
+        .sync_now(MessageSyncRequest {
+            reason: foreground_message_sync_reason().to_owned(),
+            limit: Some(100),
+        })
+        .map_err(im_error_to_message_error)?;
+    require_foreground_message_sync(&outcome)
+}
+
+async fn reconcile_foreground_message_sync_async(
+    client: &im_core::ImClient,
+) -> Result<(), MessageAdapterError> {
+    let outcome = client
+        .messages()
+        .sync_now_async(MessageSyncRequest {
+            reason: foreground_message_sync_reason().to_owned(),
+            limit: Some(100),
+        })
+        .await
+        .map_err(im_error_to_message_error)?;
+    require_foreground_message_sync(&outcome)
+}
+
+fn local_history_query(query: HistoryQuery) -> LocalHistoryQuery {
+    LocalHistoryQuery {
+        limit: query.limit,
+        cursor: query.cursor,
     }
 }
 
@@ -605,10 +635,11 @@ fn read_direct_history_via_im_core(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
+    reconcile_foreground_message_sync(client)?;
     let target_is_handle = !peer.as_str().trim().starts_with("did:");
     let page = client
         .messages()
-        .history_with_metadata(ThreadRef::Direct(peer.clone()), query.clone())
+        .local_history_with_metadata(ThreadRef::Direct(peer.clone()), local_history_query(query))
         .map_err(im_error_to_message_error)?;
     let raw = message_page_to_cli_raw(&page);
     let messages = messages_from_raw(&raw);
@@ -636,10 +667,14 @@ async fn read_direct_history_via_im_core_async(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
+    reconcile_foreground_message_sync_async(client).await?;
     let target_is_handle = !peer.as_str().trim().starts_with("did:");
     let page = client
         .messages()
-        .history_with_metadata_async(ThreadRef::Direct(peer.clone()), query.clone())
+        .local_history_with_metadata_async(
+            ThreadRef::Direct(peer.clone()),
+            local_history_query(query),
+        )
         .await
         .map_err(im_error_to_message_error)?;
     let raw = message_page_to_cli_raw(&page);
@@ -668,9 +703,10 @@ fn read_group_history_via_im_core(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
+    reconcile_foreground_message_sync(client)?;
     let page = client
         .messages()
-        .history_with_metadata(ThreadRef::Group(group.clone()), query.clone())
+        .local_history_with_metadata(ThreadRef::Group(group.clone()), local_history_query(query))
         .map_err(im_error_to_message_error)?;
     let raw = message_page_to_cli_raw(&page);
     let messages = messages_from_raw(&raw);
@@ -695,9 +731,13 @@ async fn read_group_history_via_im_core_async(
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     require_messaging_ready(client)?;
+    reconcile_foreground_message_sync_async(client).await?;
     let page = client
         .messages()
-        .history_with_metadata_async(ThreadRef::Group(group.clone()), query.clone())
+        .local_history_with_metadata_async(
+            ThreadRef::Group(group.clone()),
+            local_history_query(query),
+        )
         .await
         .map_err(im_error_to_message_error)?;
     let raw = message_page_to_cli_raw(&page);
