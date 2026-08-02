@@ -1812,20 +1812,10 @@ fn workspace_manifest_projection(
         let index =
             fs::read(identity_root.join("index.json")).map_err(|_| ProbeFailure::Runtime)?;
         let index: Value = serde_json::from_slice(&index).map_err(|_| ProbeFailure::Runtime)?;
-        let identities = index
-            .get("identities")
-            .and_then(Value::as_array)
-            .ok_or(ProbeFailure::Runtime)?;
-        let matching = identities
-            .iter()
-            .filter_map(Value::as_object)
-            .filter(|entry| entry.get("did").and_then(Value::as_str) == Some(local_did))
-            .collect::<Vec<_>>();
-        if matching.len() != 1 {
+        let Some(dir_name) = workspace_identity_dir_name(&index, local_did)? else {
             return Ok(LocalDocumentProjection::default());
-        }
-        let dir_name = required_response_string(matching[0], "dir_name")?;
-        let relative = Path::new(dir_name);
+        };
+        let relative = Path::new(&dir_name);
         if relative.is_absolute()
             || relative
                 .components()
@@ -1852,6 +1842,35 @@ fn workspace_manifest_projection(
         ))
     })();
     result.unwrap_or_default()
+}
+
+fn workspace_identity_dir_name(
+    index: &Value,
+    local_did: &str,
+) -> Result<Option<String>, ProbeFailure> {
+    let object = index.as_object().ok_or(ProbeFailure::Runtime)?;
+    let mut entries = Vec::new();
+    if let Some(identities) = object.get("identities") {
+        let identities = identities.as_array().ok_or(ProbeFailure::Runtime)?;
+        entries.extend(identities.iter().filter_map(Value::as_object));
+    }
+    if let Some(credentials) = object.get("credentials") {
+        let credentials = credentials.as_object().ok_or(ProbeFailure::Runtime)?;
+        entries.extend(credentials.values().filter_map(Value::as_object));
+    }
+    if !object.contains_key("identities") && !object.contains_key("credentials") {
+        return Err(ProbeFailure::Runtime);
+    }
+    let matching = entries
+        .into_iter()
+        .filter(|entry| entry.get("did").and_then(Value::as_str) == Some(local_did))
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Ok(None);
+    }
+    Ok(Some(
+        required_response_string(matching[0], "dir_name")?.to_owned(),
+    ))
 }
 
 fn project_local_document(
@@ -2846,6 +2865,43 @@ mod tests {
         ] {
             assert!(parse_request(raw).is_err());
         }
+    }
+
+    #[test]
+    fn agent_bootstrap_workspace_index_accepts_current_and_legacy_shapes_exactly() {
+        let current = json!({
+            "schema_version": 3,
+            "credentials": {
+                "skill": {"did": LOCAL_DID, "dir_name": "current-dir"},
+            },
+        });
+        assert_eq!(
+            workspace_identity_dir_name(&current, LOCAL_DID)
+                .unwrap_or_else(|_| panic!("current index")),
+            Some("current-dir".to_owned())
+        );
+
+        let legacy = json!({
+            "identities": [{"did": LOCAL_DID, "dir_name": "legacy-dir"}],
+        });
+        assert_eq!(
+            workspace_identity_dir_name(&legacy, LOCAL_DID)
+                .unwrap_or_else(|_| panic!("legacy index")),
+            Some("legacy-dir".to_owned())
+        );
+
+        let duplicate = json!({
+            "credentials": {
+                "one": {"did": LOCAL_DID, "dir_name": "one"},
+                "two": {"did": LOCAL_DID, "dir_name": "two"},
+            },
+        });
+        assert_eq!(
+            workspace_identity_dir_name(&duplicate, LOCAL_DID)
+                .unwrap_or_else(|_| panic!("duplicate index")),
+            None
+        );
+        assert!(workspace_identity_dir_name(&json!({}), LOCAL_DID).is_err());
     }
 
     #[test]
