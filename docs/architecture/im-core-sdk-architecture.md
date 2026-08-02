@@ -760,8 +760,8 @@ reconcile authoritative history before creating a new send operation.
 Group lifecycle mutations use the same bounded submission boundary with their
 service-owned idempotency scope. They require a non-empty `operation_id`, and an
 exact replay preserves the original origin proof and payload digest. Reads and
-mutations have different retry contracts: authoritative Directory Handle lookup RPCs
-may replay the exact same endpoint, method, and parameters once after
+mutations have different retry contracts: authoritative Directory Handle lookup and
+Profile read RPCs may replay the exact same endpoint, method, and parameters once after
 `TransportUnavailable`, because they have no mutation outcome to duplicate.
 Mutations without a declared replay identity do not inherit either behavior.
 

@@ -1155,6 +1155,10 @@ string，允许 `"0"` 且不得转换为固定位宽整数。它只在相应私�
 
 `hydrate_display_profiles` 是本地 cache 读取 API，不会发起 WNS / User Service 远程请求。它用于联系人列表、会话列表、群成员列表等热路径水化展示资料；cache miss 时返回 `cache_hit = false`，调用方按 `display_name -> handle -> did` 的展示 fallback 处理。远程刷新仍应通过显式 `resolve_peer` / `public_profile` / 安全验证链路触发。
 
+远程 Directory Handle lookup、Profile resolve 和 public-profile 查询都是幂等读取；遇到
+`TransportUnavailable` 时，Core 仅以完全相同的 endpoint、method 和 params 重放一次，
+不会重放服务错误，也不会把该策略扩展到没有幂等身份的写操作。
+
 `relation_status(peer)` 是本地 contact projection 查询；`relationship_status(peer)` 是远端 DID relationship authoritative 查询，并合并本地 `is_contact` / `messaged` / `relationship` 投影。Relationship DTO 不暴露 user-service 内部 `from_user_id` / `to_user_id`。 Flutter facade 的 `client.directory.relationStatus(peer)` 明确桥接后者，并完整保留五个方向/阻塞布尔值；其中 `relationship` 仍只表示调用方的 outbound local projection，不能替代 combined state。
 
 P1 的 `messages().send(Direct)` 可以内部做最小目标解析，但不需要对外暴露完整 `DirectoryService`。
