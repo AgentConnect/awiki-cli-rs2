@@ -521,13 +521,36 @@ impl App {
         let resolved = self.resolve_config_for_workspace()?;
         let query = crate::m_core_cli_adapter::messages::inbox_query(command)?;
         if !self.globals.dry_run {
-            let client = crate::m_core_cli_adapter::build_im_client_async(
+            let mut client = crate::m_core_cli_adapter::build_im_client_async(
                 &resolved,
                 crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
             )
             .await?;
+            let refresh_after_hydration = matches!(
+                &query.scope,
+                im_core::messages::InboxScope::DirectOnly | im_core::messages::InboxScope::All
+            );
+            let secure_warnings =
+                crate::m_core_cli_adapter::messages::hydrate_secure_inbox_via_im_core_async(
+                    &client, &query,
+                )
+                .await
+                .map_err(|err| {
+                    message_exit(
+                        err,
+                        "Ensure the active identity is ready and the message service is reachable.",
+                    )
+                })?;
+            if refresh_after_hydration {
+                let selector = im_core::IdentitySelector::Did(client.did().clone());
+                client =
+                    crate::m_core_cli_adapter::build_im_client_async(&resolved, selector).await?;
+            }
             let result = crate::m_core_cli_adapter::messages::read_inbox_via_im_core_async(
-                &resolved, &client, query,
+                &resolved,
+                &client,
+                query,
+                secure_warnings,
             )
             .await
             .map_err(|err| {

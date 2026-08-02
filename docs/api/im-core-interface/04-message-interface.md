@@ -626,8 +626,9 @@ pub struct LocalHistoryQuery {
 
 独立 P5 gate 开启且 scope 包含 Direct 时，普通 CLI 前台 `msg inbox` 先调用
 `hydrate_exact_device_secure_inbox_async(limit)`，让 Root 等 exact-device 控制消息能在设备权限
-代际变化后先完成本地凭据晋升；随后再用 `sync_now_async(reason = "foreground_reconcile")`
-完成普通消息 v2 bootstrap/delta/hydration。该 Rust-only secure hydration 边界要求 exact active vNext
+代际变化后先完成本地凭据晋升；CLI 随后按同一个 DID 重新打开 `ImClient`，再用
+`sync_now_async(reason = "foreground_reconcile")` 完成普通消息 v2 bootstrap/delta/hydration，
+避免同一条命令继续携带晋升前的 device authorization generation。该 Rust-only secure hydration 边界要求 exact active vNext
 account/device binding，只发送带闭合 `body.security_profile=direct-e2ee` 的本域
 `inbox.get`，并在客户端再次丢弃所有非 P5 v2 row，只把成功认证解密的业务消息写入本地
 projection。每页本地提交后，Core 只 ACK 已成功消费的 P5 raw message ID，通过

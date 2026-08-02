@@ -159,7 +159,7 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
 }
 
 #[test]
-fn msg_inbox_hydrates_exact_device_controls_before_foreground_sync() {
+fn msg_inbox_hydrates_exact_device_controls_before_reopened_foreground_sync() {
     let workspace = TempDir::new("msg-ws-inbox-secure-before-sync").expect("workspace");
     let missing_socket = tenant_workspace(workspace.path())
         .join("runtime")

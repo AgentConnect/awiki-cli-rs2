@@ -797,8 +797,10 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   first performs one bounded exact-device secure hydration through the local-only
   `inbox.get` contract. This lets Root control messages finish local credential
   promotion before a changed device authorization generation is used for ordinary
-  sync. It then uses the exact-device v2 reader with reason `foreground_reconcile`
-  for ordinary messages. Secure hydration uses the closed
+  sync. The CLI reopens `ImClient` for the same DID after hydration so the same
+  command cannot retain the pre-promotion device authorization generation, then
+  uses the exact-device v2 reader with reason `foreground_reconcile` for ordinary
+  messages. Secure hydration uses the closed
   `body.security_profile=direct-e2ee` selector, decrypts/persists only admitted
   P5 v2 rows, acknowledges only their authenticated raw delivery IDs after the
   local commit, and repeats bounded unread pages until `has_more=false` before
