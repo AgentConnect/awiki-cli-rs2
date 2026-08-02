@@ -148,24 +148,66 @@ where
             result.pages_fetched = result.pages_fetched.saturating_add(1);
             result.warnings.extend(page.warnings.clone());
 
-            let message_event_ids = page
+            for event in page
+                .events
+                .iter()
+                .filter(|event| event.event_type == "system.notification")
+            {
+                validate_system_notification_event_contract(self.client, &binding, event)?;
+            }
+            let hydration_event_ids = page
+                .events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event.event_type.as_str(),
+                        "message.created" | "system.notification"
+                    )
+                })
+                .map(|event| event.event_id.clone())
+                .collect::<Vec<_>>();
+            let ordinary_hydration_count = page
                 .events
                 .iter()
                 .filter(|event| event.event_type == "message.created")
-                .map(|event| event.event_id.clone())
-                .collect::<Vec<_>>();
-            let hydrated = if message_event_ids.is_empty() {
+                .count();
+            let hydrated = if hydration_event_ids.is_empty() {
                 BTreeMap::new()
             } else {
-                let (hydrated, count) = hydrate_required_messages(
+                let (hydrated, _) = hydrate_required_messages(
                     &mut self.transport,
                     &wire_identity(self.client),
-                    &message_event_ids,
+                    &hydration_event_ids,
                 )
                 .await?;
-                result.messages_hydrated = result.messages_hydrated.saturating_add(count);
+                result.messages_hydrated = result
+                    .messages_hydrated
+                    .saturating_add(u32::try_from(ordinary_hydration_count).unwrap_or(u32::MAX));
                 hydrated
             };
+
+            let mut verified_system_notifications = BTreeMap::new();
+            for event in page
+                .events
+                .iter()
+                .filter(|event| event.event_type == "system.notification")
+            {
+                let hydrated_projection = hydrated.get(&event.event_id).ok_or_else(|| {
+                    sync_error(
+                        "SYNC_HYDRATION_INCOMPLETE",
+                        "system.notification has no exact hydrated projection",
+                    )
+                })?;
+                let input = prepare_system_notification(
+                    self.client,
+                    &binding,
+                    event,
+                    hydrated_projection,
+                    &mut self.directory_transport,
+                )
+                .await?;
+                verified_system_notifications.insert(event.event_id.clone(), input);
+            }
 
             let mut public_messages = BTreeMap::new();
             let apply_events = page
@@ -176,6 +218,7 @@ where
                         self.client,
                         event,
                         hydrated.get(&event.event_id),
+                        verified_system_notifications.remove(&event.event_id),
                         &mut public_messages,
                     )
                 })
@@ -224,6 +267,10 @@ where
                         );
                     }
                 }
+            }
+            for notification in &outcome.committed_system_notifications {
+                self.client
+                    .emit_committed_system_notification(notification.clone());
             }
             super::sync::emit_committed_sync_invalidation(self.client, &outcome.invalidation);
             state.scan_seq = page.next_cursor.scan_seq;
@@ -453,6 +500,12 @@ where
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "sync.snapshot", params)
             .await?;
         let snapshot = crate::internal::wire::sync_v2::parse_snapshot(&raw)?;
+        if snapshot.snapshot_schema != recovery.snapshot_schema {
+            return Err(sync_error(
+                "SYNC_INVALID_SNAPSHOT",
+                "sync.snapshot schema does not match the authorized recovery schema",
+            ));
+        }
         if snapshot.account_id != binding.account_id
             || snapshot.device_id != binding.protocol_device_id
         {
@@ -485,7 +538,7 @@ where
         .await?;
 
         let mut public_messages = BTreeMap::new();
-        let events = snapshot
+        let mut events = snapshot
             .recent_plain_messages
             .iter()
             .map(|item| {
@@ -493,10 +546,29 @@ where
                     self.client,
                     &item.event,
                     Some(&item.message),
+                    None,
                     &mut public_messages,
                 )
             })
             .collect::<crate::ImResult<Vec<_>>>()?;
+        for item in &snapshot.unexpired_system_notifications {
+            validate_system_notification_event_contract(self.client, binding, &item.event)?;
+            let verified = prepare_system_notification(
+                self.client,
+                binding,
+                &item.event,
+                &item.message,
+                &mut self.directory_transport,
+            )
+            .await?;
+            events.push(reduce_event(
+                self.client,
+                &item.event,
+                None,
+                Some(verified),
+                &mut public_messages,
+            )?);
+        }
         let direct_peer_dids = direct_peer_dids_from_events(&events);
         let resolved_conversations = self
             .resolve_unresolved_peer_dids(db, binding, direct_peer_dids, &mut result.warnings)
@@ -552,6 +624,9 @@ where
             .changed_conversation_ids
             .extend(outcome.invalidation.conversation_ids.clone());
         super::sync::emit_committed_sync_invalidation(self.client, &outcome.invalidation);
+        for snapshot in outcome.committed_system_notifications {
+            self.client.emit_committed_system_notification(snapshot);
+        }
         let next = crate::internal::local_state::sync_v2::MessageSyncState {
             owner_identity_id: binding.owner_identity_id.clone(),
             account_id: binding.account_id.clone(),
@@ -770,10 +845,272 @@ fn canonical_read_remote_thread_key(thread_kind: &str, remote_thread_key: &str) 
     }
 }
 
+fn validate_system_notification_event_contract(
+    client: &crate::core::ImClient,
+    binding: &crate::identity::ActiveSyncAccountBinding,
+    event: &crate::internal::wire::sync_v2::SyncEventV2,
+) -> crate::ImResult<()> {
+    if event.schema_version != 1 {
+        return Err(sync_error(
+            "SYNC_SCHEMA_UNSUPPORTED",
+            format!(
+                "required system.notification uses unsupported schema version {}",
+                event.schema_version
+            ),
+        ));
+    }
+    if event.ignore_safe {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "required system.notification must not be marked ignore_safe",
+        ));
+    }
+    if event.aggregate_kind != "system_notification"
+        || event.state_version.is_some()
+        || event.thread_key.is_some()
+        || event.origin_device_id.is_some()
+    {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "system.notification envelope fields violate the frozen schema",
+        ));
+    }
+    if event.recipient_device_id.as_deref() != Some(binding.protocol_device_id.as_str()) {
+        return Err(sync_error(
+            "SYNC_DEVICE_BINDING_MISMATCH",
+            "system.notification must target the active exact device",
+        ));
+    }
+    let origin_did = event.origin_did.as_deref().ok_or_else(|| {
+        sync_error(
+            "SYNC_INVALID_PAGE",
+            "system.notification is missing its service origin DID",
+        )
+    })?;
+    let expected_origin_prefix = format!(
+        "did:wba:{}:agents:system-notification:e1_",
+        client.did_domain()
+    );
+    let origin_fingerprint = origin_did
+        .strip_prefix(&expected_origin_prefix)
+        .ok_or_else(|| {
+            sync_error(
+                "SYNC_INVALID_PAGE",
+                "system.notification origin is not the local service notification Agent",
+            )
+        })?;
+    if origin_fingerprint.len() != 43
+        || !origin_fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "system.notification origin has an invalid e1 fingerprint",
+        ));
+    }
+
+    let payload = event.payload.as_object().ok_or_else(|| {
+        sync_error(
+            "SYNC_INVALID_PAGE",
+            "system.notification payload must be an object",
+        )
+    })?;
+    let expected_payload_fields = ["projection_kind", "event_id", "message_id"];
+    if payload.len() != expected_payload_fields.len()
+        || expected_payload_fields
+            .iter()
+            .any(|field| !payload.contains_key(*field))
+    {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "system.notification payload must contain exactly the frozen fields",
+        ));
+    }
+    let payload_string = |field: &str| {
+        payload
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.trim() == *value)
+            .ok_or_else(|| {
+                sync_error(
+                    "SYNC_INVALID_PAGE",
+                    format!("system.notification payload {field} must be canonical"),
+                )
+            })
+    };
+    if payload_string("projection_kind")? != "system_notification" {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "system.notification payload projection_kind is invalid",
+        ));
+    }
+    let notification_event_id = payload_string("event_id")?;
+    let message_id = payload_string("message_id")?;
+    if notification_event_id != message_id || event.aggregate_id != notification_event_id {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "system.notification business identifiers do not match",
+        ));
+    }
+    if event.event_id
+        != format!(
+            "system.notification:{notification_event_id}:{}",
+            binding.protocol_device_id
+        )
+    {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "system.notification sync event_id is not exact-device qualified",
+        ));
+    }
+
+    let source = event
+        .source
+        .as_ref()
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            sync_error(
+                "SYNC_INVALID_PAGE",
+                "system.notification source must be an object",
+            )
+        })?;
+    let expected_source_fields = ["method", "operation_id", "client_message_id"];
+    if source.len() != expected_source_fields.len()
+        || expected_source_fields
+            .iter()
+            .any(|field| !source.contains_key(*field))
+        || source.get("method").and_then(Value::as_str) != Some("direct.send")
+        || source.get("operation_id").and_then(Value::as_str) != Some(message_id)
+        || source.get("client_message_id").and_then(Value::as_str) != Some(message_id)
+    {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "system.notification source violates the frozen service binding",
+        ));
+    }
+    Ok(())
+}
+
+async fn prepare_system_notification<R>(
+    client: &crate::core::ImClient,
+    binding: &crate::identity::ActiveSyncAccountBinding,
+    event: &crate::internal::wire::sync_v2::SyncEventV2,
+    hydrated_projection: &Value,
+    directory_transport: &mut R,
+) -> crate::ImResult<crate::internal::system_notification::store::SystemNotificationApplyInput>
+where
+    R: AsyncRpcTransport,
+{
+    prepare_system_notification_at(
+        client,
+        binding,
+        event,
+        hydrated_projection,
+        directory_transport,
+        chrono::Utc::now(),
+    )
+    .await
+}
+
+async fn prepare_system_notification_at<R>(
+    client: &crate::core::ImClient,
+    binding: &crate::identity::ActiveSyncAccountBinding,
+    event: &crate::internal::wire::sync_v2::SyncEventV2,
+    hydrated_projection: &Value,
+    directory_transport: &mut R,
+    received_at: chrono::DateTime<chrono::Utc>,
+) -> crate::ImResult<crate::internal::system_notification::store::SystemNotificationApplyInput>
+where
+    R: AsyncRpcTransport,
+{
+    let wrapper = hydrated_projection.as_object().ok_or_else(|| {
+        sync_error(
+            "SYNC_HYDRATION_INCOMPLETE",
+            "system.notification hydration must be an object",
+        )
+    })?;
+    let expected_wrapper_fields = ["projection_kind", "meta", "auth", "body"];
+    if wrapper.len() != expected_wrapper_fields.len()
+        || expected_wrapper_fields
+            .iter()
+            .any(|field| !wrapper.contains_key(*field))
+        || !crate::internal::system_notification::wire::is_trusted_delivery_marker(
+            hydrated_projection,
+        )
+    {
+        return Err(sync_error(
+            "SYNC_HYDRATION_INCOMPLETE",
+            "system.notification hydration must be the exact trusted projection wrapper",
+        ));
+    }
+    let notification_event_id = event.payload["event_id"]
+        .as_str()
+        .expect("validated system notification event_id");
+    let message_id = event.payload["message_id"]
+        .as_str()
+        .expect("validated system notification message_id");
+    let meta = wrapper
+        .get("meta")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            sync_error(
+                "SYNC_HYDRATION_INCOMPLETE",
+                "system.notification trusted projection meta is missing",
+            )
+        })?;
+    if meta.get("message_id").and_then(Value::as_str) != Some(message_id)
+        || meta.get("operation_id").and_then(Value::as_str) != Some(message_id)
+        || meta.get("sender_did").and_then(Value::as_str) != event.origin_did.as_deref()
+        || meta
+            .get("target")
+            .and_then(Value::as_object)
+            .and_then(|target| target.get("did"))
+            .and_then(Value::as_str)
+            != Some(binding.current_did.as_str())
+    {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "system.notification hydrated projection conflicts with its sync envelope",
+        ));
+    }
+    let normalized =
+        crate::internal::system_notification::dispatch::normalize_delivery(hydrated_projection);
+    let verified = crate::internal::system_notification::verify::verify_with_transport_async(
+        directory_transport,
+        client.did().as_str(),
+        &normalized,
+        received_at,
+    )
+    .await?;
+    if verified.envelope.notification.event_id != notification_event_id
+        || verified.envelope.meta.message_id != message_id
+        || verified.envelope.meta.operation_id != message_id
+        || verified.envelope.meta.sender_did != event.origin_did.as_deref().unwrap_or_default()
+    {
+        return Err(sync_error(
+            "SYNC_INVALID_PAGE",
+            "system.notification verified envelope conflicts with its sync event",
+        ));
+    }
+    Ok(
+        crate::internal::system_notification::store::SystemNotificationApplyInput {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            owner_did: binding.current_did.clone(),
+            protocol_device_id: binding.protocol_device_id.clone(),
+            verified,
+            received_at,
+        },
+    )
+}
+
 fn reduce_event(
     client: &crate::core::ImClient,
     event: &crate::internal::wire::sync_v2::SyncEventV2,
     hydrated_message: Option<&Value>,
+    verified_system_notification: Option<
+        crate::internal::system_notification::store::SystemNotificationApplyInput,
+    >,
     public_messages: &mut BTreeMap<String, crate::messages::Message>,
 ) -> crate::ImResult<crate::internal::local_state::sync_v2::DeltaApplyEventV2> {
     if matches!(
@@ -782,6 +1119,7 @@ fn reduce_event(
             | "message.read_state_updated"
             | "group.member_changed"
             | "group.profile_updated"
+            | "system.notification"
     ) && event.ignore_safe
     {
         return Err(sync_error(
@@ -870,6 +1208,14 @@ fn reduce_event(
             apply
                 .groups
                 .push(super::sync::sync_delta_group_record(client, &synthetic)?);
+        }
+        "system.notification" => {
+            apply.system_notification = Some(verified_system_notification.ok_or_else(|| {
+                sync_error(
+                    "SYNC_HYDRATION_INCOMPLETE",
+                    "system.notification has no verified hydrated projection",
+                )
+            })?);
         }
         _ if event.ignore_safe => {}
         _ => {
@@ -1638,10 +1984,15 @@ mod tests {
 
     struct Fixture {
         root: std::path::PathBuf,
+        did_domain: String,
     }
 
     impl Fixture {
         fn new(prefix: &str) -> Self {
+            Self::new_with_identity(prefix, "did:example:alice", "awiki.test")
+        }
+
+        fn new_with_identity(prefix: &str, did: &str, did_domain: &str) -> Self {
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -1661,7 +2012,7 @@ mod tests {
                     "default_identity": "alice",
                     "identities": [{
                         "id": "alice-id",
-                        "did": "did:example:alice",
+                        "did": did,
                         "local_alias": "alice",
                         "ready_for_auth": true,
                         "ready_for_messaging": true,
@@ -1672,7 +2023,10 @@ mod tests {
             )
             .unwrap();
             std::fs::write(identity_dir.join("did.json"), "{}").unwrap();
-            Self { root }
+            Self {
+                root,
+                did_domain: did_domain.to_owned(),
+            }
         }
 
         fn client(&self) -> crate::core::ImClient {
@@ -1680,7 +2034,7 @@ mod tests {
                 crate::ImCoreConfig {
                     service_base_url: crate::ServiceEndpoint::parse("https://example.test")
                         .unwrap(),
-                    did_domain: "awiki.test".to_owned(),
+                    did_domain: self.did_domain.clone(),
                     user_service_endpoint: None,
                     message_service_endpoint: None,
                     mail_service_endpoint: None,
@@ -2971,6 +3325,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn schema_two_recovery_rejects_schema_one_snapshot_without_advancing_cursor() {
+        let fixture = SyncSnapshotFixture::new("schema-two-missing-snapshot-fields");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let mut recovery = sync_snapshot_recovery(
+            "recovery-schema-two",
+            "snapshot-token-schema-two",
+            "2",
+            "20",
+        );
+        recovery["recovery"]["snapshot_schema"] = json!(2);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let error = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![
+                    Ok(recovery),
+                    Ok(sync_snapshot_response(&binding, "2", "20", Vec::new())),
+                ],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::ImError::Service { code: Some(code), .. }
+                if code == "SYNC_INVALID_SNAPSHOT"
+        ));
+        let state = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;
+        assert_eq!(
+            (state.stream_epoch.as_str(), state.scan_seq.as_str()),
+            ("1", "10")
+        );
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["sync.delta", "sync.snapshot"]
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_two_empty_notification_snapshot_commits_and_resumes_delta() {
+        let fixture = SyncSnapshotFixture::new("schema-two-empty-notifications");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let mut recovery = sync_snapshot_recovery(
+            "recovery-schema-two-empty",
+            "snapshot-token-schema-two-empty",
+            "2",
+            "20",
+        );
+        recovery["recovery"]["snapshot_schema"] = json!(2);
+        let mut snapshot = sync_snapshot_response(&binding, "2", "20", Vec::new());
+        snapshot["snapshot_schema"] = json!(2);
+        snapshot["unexpired_system_notifications"] = json!([]);
+        snapshot["system_notification_policy"] = json!({
+            "scope": "exact_device_unexpired",
+            "complete_through_scan_seq": "20",
+            "returned_events": 0,
+            "complete": true
+        });
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![
+                    Ok(recovery),
+                    Ok(snapshot),
+                    Ok(sync_snapshot_delta("2", "21", Vec::new())),
+                ],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+        let state = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;
+        assert_eq!(
+            (state.stream_epoch.as_str(), state.scan_seq.as_str()),
+            ("2", "21")
+        );
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["sync.delta", "sync.snapshot", "sync.delta"]
+        );
+    }
+
+    #[tokio::test]
     async fn sync_snapshot_missing_state_bootstrap_recovery_closes_with_delta_ack() {
         let fixture = SyncSnapshotFixture::new("bootstrap-recovery");
         let client = fixture.client();
@@ -3872,7 +4329,7 @@ mod tests {
             payload: json!({}),
             source: None,
         };
-        let error = reduce_event(&client, &event, None, &mut BTreeMap::new()).unwrap_err();
+        let error = reduce_event(&client, &event, None, None, &mut BTreeMap::new()).unwrap_err();
         assert!(matches!(
             error,
             crate::ImError::Service {
@@ -3880,6 +4337,271 @@ mod tests {
                 ..
             } if code == "SYNC_UNKNOWN_REQUIRED_EVENT"
         ));
+    }
+
+    fn system_notification_contract_fixture(
+        binding: &crate::identity::ActiveSyncAccountBinding,
+    ) -> crate::internal::wire::sync_v2::SyncEventV2 {
+        let business_event_id = "evt-system-notification";
+        crate::internal::wire::sync_v2::SyncEventV2 {
+            event_id: format!(
+                "system.notification:{business_event_id}:{}",
+                binding.protocol_device_id
+            ),
+            stream_epoch: "1".to_owned(),
+            event_seq: "1".to_owned(),
+            event_type: "system.notification".to_owned(),
+            schema_version: 1,
+            ignore_safe: false,
+            account_id: binding.account_id.clone(),
+            recipient_device_id: Some(binding.protocol_device_id.clone()),
+            origin_did: Some(format!(
+                "did:wba:awiki.test:agents:system-notification:e1_{}",
+                "A".repeat(43)
+            )),
+            origin_device_id: None,
+            aggregate_kind: "system_notification".to_owned(),
+            aggregate_id: business_event_id.to_owned(),
+            state_version: None,
+            thread_key: None,
+            occurred_at: "2026-07-23T02:00:01Z".to_owned(),
+            payload: json!({
+                "projection_kind": "system_notification",
+                "event_id": business_event_id,
+                "message_id": business_event_id
+            }),
+            source: Some(json!({
+                "method": "direct.send",
+                "operation_id": business_event_id,
+                "client_message_id": business_event_id
+            })),
+        }
+    }
+
+    #[tokio::test]
+    async fn system_notification_event_contract_is_closed_and_exact_device_scoped() {
+        let fixture = SyncSnapshotFixture::new("system-notification-contract");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        let canonical = system_notification_contract_fixture(&binding);
+        validate_system_notification_event_contract(&client, &binding, &canonical).unwrap();
+
+        let mut invalid = Vec::new();
+        let mut event = canonical.clone();
+        event.payload["extra"] = json!(true);
+        invalid.push(event);
+        let mut event = canonical.clone();
+        event.payload["message_id"] = json!("evt-other");
+        invalid.push(event);
+        let mut event = canonical.clone();
+        event.recipient_device_id = None;
+        invalid.push(event);
+        let mut event = canonical.clone();
+        event.aggregate_id = "evt-other".to_owned();
+        invalid.push(event);
+        let mut event = canonical.clone();
+        event.origin_device_id = Some("service-device".to_owned());
+        invalid.push(event);
+        let mut event = canonical.clone();
+        event.source.as_mut().unwrap()["extra"] = json!(true);
+        invalid.push(event);
+        let mut event = canonical.clone();
+        event.source.as_mut().unwrap()["method"] = json!("direct.incoming");
+        invalid.push(event);
+        let mut event = canonical.clone();
+        event.schema_version = 2;
+        invalid.push(event);
+        let mut event = canonical;
+        event.ignore_safe = true;
+        invalid.push(event);
+
+        for event in invalid {
+            assert!(
+                validate_system_notification_event_contract(&client, &binding, &event).is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn system_notification_reducer_carries_verified_input_without_chat_projection() {
+        let fixture = SyncSnapshotFixture::new("system-notification-reducer");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        let event = system_notification_contract_fixture(&binding);
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/system-notification-v1.json",
+        );
+        let source: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
+        let mut request = source["p3_vector"]["request"].clone();
+        request["method"] = json!("direct.incoming");
+        let verified = crate::internal::system_notification::verify::VerifiedSystemNotification {
+            envelope: crate::internal::system_notification::wire::parse_envelope(&request).unwrap(),
+            payload_hash: "sha256:payload".to_owned(),
+            proof_hash: "sha256:proof".to_owned(),
+        };
+        let input = crate::internal::system_notification::store::SystemNotificationApplyInput {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            owner_did: binding.current_did.clone(),
+            protocol_device_id: binding.protocol_device_id.clone(),
+            verified,
+            received_at: chrono::DateTime::parse_from_rfc3339("2026-07-23T02:00:01Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        };
+        let mut public_messages = BTreeMap::new();
+        let apply = reduce_event(&client, &event, None, Some(input), &mut public_messages).unwrap();
+        assert!(apply.system_notification.is_some());
+        assert!(apply.messages.is_empty());
+        assert!(apply.groups.is_empty());
+        assert!(public_messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn malformed_system_notification_wrapper_fails_before_directory_or_apply() {
+        let fixture = SyncSnapshotFixture::new("system-notification-wrapper");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        let event = system_notification_contract_fixture(&binding);
+        let exact_shape = json!({
+            "projection_kind": "system_notification",
+            "meta": {},
+            "auth": {},
+            "body": {}
+        });
+        let mut with_extra = exact_shape.clone();
+        with_extra["id"] = json!("forbidden");
+        let mut missing = exact_shape;
+        missing.as_object_mut().unwrap().remove("auth");
+        for wrapper in [with_extra, missing] {
+            let error = prepare_system_notification_at(
+                &client,
+                &binding,
+                &event,
+                &wrapper,
+                &mut NoopAsyncDirectoryTransport,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                crate::ImError::Service { code: Some(code), .. }
+                    if code == "SYNC_HYDRATION_INCOMPLETE"
+            ));
+        }
+    }
+
+    struct FixtureDirectoryTransport {
+        documents: VecDeque<Value>,
+    }
+
+    impl AsyncRpcTransport for FixtureDirectoryTransport {
+        async fn rpc(
+            &mut self,
+            _endpoint: &str,
+            _method: &str,
+            _params: Value,
+        ) -> crate::ImResult<Value> {
+            unreachable!("fixture verification only resolves DID documents")
+        }
+
+        async fn directory_get_json_url(
+            &mut self,
+            _url: &str,
+            _headers: std::collections::BTreeMap<String, String>,
+        ) -> crate::ImResult<Value> {
+            self.documents
+                .pop_front()
+                .ok_or_else(|| crate::ImError::TransportUnavailable {
+                    detail: "fixture DID document unavailable".to_owned(),
+                })
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_system_notification_wrapper_reaches_full_verification_before_apply() {
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/system-notification-v1.json",
+        );
+        let source: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
+        let target_document_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/device-join-rpc-v1.json",
+        );
+        let target_source: Value =
+            serde_json::from_slice(&std::fs::read(target_document_path).unwrap()).unwrap();
+        let target_did = source["p3_vector"]["request"]["params"]["meta"]["target"]["did"]
+            .as_str()
+            .unwrap();
+        let origin_did = source["p3_vector"]["request"]["params"]["meta"]["sender_did"]
+            .as_str()
+            .unwrap();
+        let business_event_id = source["p3_vector"]["request"]["params"]["meta"]["message_id"]
+            .as_str()
+            .unwrap();
+        let fixture = Fixture::new_with_identity(
+            "system-notification-verified-wrapper",
+            target_did,
+            "example.com",
+        );
+        let client = fixture.client();
+        let binding = crate::identity::ActiveSyncAccountBinding {
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            account_id: "account-1".to_owned(),
+            current_did: target_did.to_owned(),
+            protocol_device_id: "dev-exact".to_owned(),
+            identity_generation: "1".to_owned(),
+            device_auth_generation: "1".to_owned(),
+        };
+        let mut event = system_notification_contract_fixture(&binding);
+        event.event_id = format!(
+            "system.notification:{business_event_id}:{}",
+            binding.protocol_device_id
+        );
+        event.aggregate_id = business_event_id.to_owned();
+        event.origin_did = Some(origin_did.to_owned());
+        event.payload = json!({
+            "projection_kind": "system_notification",
+            "event_id": business_event_id,
+            "message_id": business_event_id
+        });
+        event.source = Some(json!({
+            "method": "direct.send",
+            "operation_id": business_event_id,
+            "client_message_id": business_event_id
+        }));
+        validate_system_notification_event_contract(&client, &binding, &event).unwrap();
+
+        let params = source["p3_vector"]["request"]["params"]
+            .as_object()
+            .unwrap();
+        let wrapper = json!({
+            "projection_kind": "system_notification",
+            "meta": params["meta"],
+            "auth": params["auth"],
+            "body": params["body"]
+        });
+        let documents = || {
+            VecDeque::from([
+                target_source["approve_vector"]["new_document"].clone(),
+                source["p3_vector"]["origin_did_document"].clone(),
+            ])
+        };
+        let received_at = chrono::DateTime::parse_from_rfc3339("2026-07-23T02:00:01Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let error = prepare_system_notification_at(
+            &client,
+            &binding,
+            &event,
+            &wrapper,
+            &mut FixtureDirectoryTransport {
+                documents: documents(),
+            },
+            received_at,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, crate::ImError::InvalidInput { .. }));
     }
 
     #[test]
@@ -3926,6 +4648,7 @@ mod tests {
             &client,
             &event,
             Some(&hydrated_message),
+            None,
             &mut public_messages,
         )
         .unwrap();
@@ -4069,6 +4792,109 @@ mod tests {
             })
             .unwrap(),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_system_notification_batch_never_calls_legacy_or_advances_cursor() {
+        let fixture = SyncSnapshotFixture::new("system-notification-fail-closed");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "10").await;
+        let business_event_id = "evt-system-notification";
+        let sync_event_id = format!(
+            "system.notification:{business_event_id}:{}",
+            binding.protocol_device_id
+        );
+        let event = json!({
+            "event_id": sync_event_id.clone(),
+            "stream_epoch": "1",
+            "event_seq": "11",
+            "event_type": "system.notification",
+            "schema_version": 1,
+            "ignore_safe": false,
+            "account_id": binding.account_id.clone(),
+            "recipient_device_id": binding.protocol_device_id.clone(),
+            "origin_did": format!(
+                "did:wba:awiki.test:agents:system-notification:e1_{}",
+                "A".repeat(43)
+            ),
+            "origin_device_id": null,
+            "aggregate_kind": "system_notification",
+            "aggregate_id": business_event_id,
+            "state_version": null,
+            "thread_key": null,
+            "occurred_at": "2026-07-23T02:00:01Z",
+            "payload": {
+                "projection_kind": "system_notification",
+                "event_id": business_event_id,
+                "message_id": business_event_id
+            },
+            "source": {
+                "method": "direct.send",
+                "operation_id": business_event_id,
+                "client_message_id": business_event_id
+            }
+        });
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let error = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            SyncSnapshotTransport::queued(
+                Rc::clone(&calls),
+                vec![
+                    Ok(sync_snapshot_delta("1", "11", vec![event])),
+                    Ok(json!({
+                        "items": [{
+                            "event_id": sync_event_id,
+                            "message": {
+                                "projection_kind": "system_notification",
+                                "meta": {},
+                                "auth": {},
+                                "body": {},
+                                "id": "forbidden-top-level-field"
+                            }
+                        }],
+                        "unavailable": []
+                    })),
+                ],
+            ),
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::ImError::Service { code: Some(code), .. }
+                if code == "SYNC_HYDRATION_INCOMPLETE"
+        ));
+        let state = load_sync_snapshot_state(&client, &binding.owner_identity_id).await;
+        assert_eq!(state.scan_seq, "10");
+        let db = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM system_notification_receipts",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            ["sync.delta", "message.get_batch"]
         );
     }
 }

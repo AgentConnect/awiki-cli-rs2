@@ -366,7 +366,7 @@ pub(crate) struct BootstrapApplyInputV2 {
     pub(crate) read_states: Vec<ReadStateApplyV2>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct DeltaApplyEventV2 {
     pub(crate) event_id: String,
     pub(crate) event_seq: String,
@@ -375,6 +375,8 @@ pub(crate) struct DeltaApplyEventV2 {
     pub(crate) groups: Vec<super::groups::GroupRecord>,
     pub(crate) thread_bindings: Vec<SyncThreadBinding>,
     pub(crate) read_states: Vec<ReadStateApplyV2>,
+    pub(crate) system_notification:
+        Option<crate::internal::system_notification::store::SystemNotificationApplyInput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -432,7 +434,7 @@ pub(crate) struct ReadStateApplyV2 {
     pub(crate) occurred_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DeltaApplyInputV2 {
     pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
@@ -451,10 +453,12 @@ pub(crate) struct DeltaApplyOutcomeV2 {
     pub(crate) projected_message_event_ids: Vec<String>,
     pub(crate) duplicate_events: usize,
     pub(crate) backlogged_messages: usize,
+    pub(crate) committed_system_notifications:
+        Vec<crate::system_notifications::SystemNotificationSnapshot>,
     pub(crate) invalidation: super::sync_state::SyncDeltaInvalidation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SnapshotApplyInputV2 {
     pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
@@ -895,6 +899,7 @@ pub(crate) fn apply_delta_v2(
     let mut thread_bindings = Vec::new();
     let mut read_states = Vec::new();
     let mut backlogged_messages = 0usize;
+    let mut committed_system_notifications = Vec::new();
     for mut event in events {
         let event_id = event.event_id.clone();
         let inserted = record_applied_event(
@@ -910,6 +915,26 @@ pub(crate) fn apply_delta_v2(
         if !inserted {
             duplicate_events = duplicate_events.saturating_add(1);
             continue;
+        }
+        if let Some(notification) = event.system_notification.take() {
+            if notification.owner_identity_id != input.owner_identity_id
+                || notification.owner_did != input.owner_did
+                || notification.protocol_device_id != input.protocol_device_id
+            {
+                return Err(crate::ImError::IdentityBindingConflict {
+                    detail:
+                        "system notification projection does not match the active account device"
+                            .to_owned(),
+                });
+            }
+            if let crate::internal::system_notification::store::SystemNotificationApplyOutcome::Applied(
+                snapshot,
+            ) = crate::internal::system_notification::store::apply_transaction(
+                &transaction,
+                &notification,
+            )? {
+                committed_system_notifications.push(snapshot);
+            }
         }
         let mut projected_message = false;
         let mut canonical_conversation_ids = BTreeSet::new();
@@ -1038,6 +1063,7 @@ pub(crate) fn apply_delta_v2(
         projected_message_event_ids,
         duplicate_events,
         backlogged_messages,
+        committed_system_notifications,
         invalidation,
     })
 }
@@ -1113,6 +1139,7 @@ pub(crate) fn apply_snapshot_v2(
     let mut thread_bindings = Vec::new();
     let mut read_states = input.read_states;
     let mut backlogged_messages = 0usize;
+    let mut committed_system_notifications = Vec::new();
     for mut event in events {
         let event_id = event.event_id.clone();
         if compare_decimal(&event.event_seq, &input.snapshot_scan_seq)?
@@ -1136,6 +1163,26 @@ pub(crate) fn apply_snapshot_v2(
         if !inserted {
             duplicate_events = duplicate_events.saturating_add(1);
             continue;
+        }
+        if let Some(notification) = event.system_notification.take() {
+            if notification.owner_identity_id != input.owner_identity_id
+                || notification.owner_did != input.owner_did
+                || notification.protocol_device_id != input.protocol_device_id
+            {
+                return Err(crate::ImError::IdentityBindingConflict {
+                    detail:
+                        "system notification projection does not match the active account device"
+                            .to_owned(),
+                });
+            }
+            if let crate::internal::system_notification::store::SystemNotificationApplyOutcome::Applied(
+                snapshot,
+            ) = crate::internal::system_notification::store::apply_transaction(
+                &transaction,
+                &notification,
+            )? {
+                committed_system_notifications.push(snapshot);
+            }
         }
         let mut canonical_conversation_ids = BTreeSet::new();
         let had_messages = !event.messages.is_empty();
@@ -1256,6 +1303,7 @@ pub(crate) fn apply_snapshot_v2(
         projected_message_event_ids,
         duplicate_events,
         backlogged_messages,
+        committed_system_notifications,
         invalidation,
     })
 }
@@ -3227,6 +3275,136 @@ mod tests {
     }
 
     #[test]
+    fn system_notification_delta_is_atomic_idempotent_and_projects_no_chat() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        bootstrap_message_sync_state(
+            &db,
+            &MessageSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                scan_seq: "0".to_owned(),
+                bootstrap_state: "active".to_owned(),
+                last_server_time: None,
+                last_success_at: Some(1),
+                last_error_code: None,
+                metadata_json: None,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/system-notification-v1.json",
+        );
+        let fixture: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
+        let mut request = fixture["p3_vector"]["request"].clone();
+        request["method"] = serde_json::Value::String("direct.incoming".to_owned());
+        let envelope =
+            crate::internal::system_notification::wire::parse_envelope(&request).unwrap();
+        let received_at = chrono::DateTime::parse_from_rfc3339("2026-07-23T02:00:01Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let input = |proof_hash: &str| {
+            crate::internal::system_notification::store::SystemNotificationApplyInput {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                verified:
+                    crate::internal::system_notification::verify::VerifiedSystemNotification {
+                        envelope: envelope.clone(),
+                        payload_hash: "sha256:payload".to_owned(),
+                        proof_hash: proof_hash.to_owned(),
+                    },
+                received_at,
+            }
+        };
+        let delta =
+            |sync_event_id: &str, next_scan_seq: &str, proof_hash: &str| DeltaApplyInputV2 {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                next_scan_seq: next_scan_seq.to_owned(),
+                server_time: "2026-07-23T02:00:01Z".to_owned(),
+                events: vec![DeltaApplyEventV2 {
+                    event_id: sync_event_id.to_owned(),
+                    event_seq: next_scan_seq.to_owned(),
+                    event_type: "system.notification".to_owned(),
+                    system_notification: Some(input(proof_hash)),
+                    ..DeltaApplyEventV2::default()
+                }],
+            };
+
+        let outcome = apply_delta_v2(&db, delta("sync-event-1", "1", "sha256:proof")).unwrap();
+        assert_eq!(outcome.applied_event_ids, ["sync-event-1"]);
+        assert_eq!(outcome.committed_system_notifications.len(), 1);
+        assert!(outcome.projected_message_event_ids.is_empty());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM system_notification_receipts",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM system_notification_join_state",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
+            .unwrap(),
+            1
+        );
+
+        let duplicate = apply_delta_v2(&db, delta("sync-event-1", "1", "sha256:proof")).unwrap();
+        assert_eq!(duplicate.duplicate_events, 1);
+        assert!(duplicate.committed_system_notifications.is_empty());
+
+        let error = apply_delta_v2(&db, delta("sync-event-2", "2", "sha256:conflict")).unwrap_err();
+        assert!(matches!(error, crate::ImError::Service { .. }));
+        let MessageSyncStateAccess::Ready(state) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("failed delta must preserve the ready cursor")
+        };
+        assert_eq!(state.scan_seq, "1");
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM system_notification_receipts",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
     fn message_delta_binds_remote_thread_to_resolved_persona_conversation() {
         let mut db = Connection::open_in_memory().unwrap();
         db.pragma_update(None, "foreign_keys", "ON").unwrap();
@@ -3482,6 +3660,7 @@ mod tests {
                         updated_at: 11,
                     }],
                     read_states: Vec::new(),
+                    system_notification: None,
                 }],
             },
         )
@@ -5201,5 +5380,221 @@ mod tests {
             panic!("concurrent cursor must remain ready");
         };
         assert_eq!(current.scan_seq, "11");
+    }
+
+    #[test]
+    fn schema_two_snapshot_rolls_back_on_second_notification_then_commits_mixed_state() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let binding = binding();
+        upsert_identity_account_binding(&db, &binding).unwrap();
+        bootstrap_message_sync_state(
+            &db,
+            &MessageSyncState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                account_id: binding.account_id.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                device_auth_generation: binding.device_auth_generation.clone(),
+                stream_epoch: "1".to_owned(),
+                scan_seq: "10".to_owned(),
+                bootstrap_state: "active".to_owned(),
+                last_server_time: None,
+                last_success_at: Some(1),
+                last_error_code: None,
+                metadata_json: None,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        upsert_recovery_state(
+            &db,
+            &RecoveryState {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                mode: "compact_recovery".to_owned(),
+                requested_from_epoch: "1".to_owned(),
+                requested_from_seq: "10".to_owned(),
+                recovery_id_hash: Some("schema-two-recovery".to_owned()),
+                snapshot_scan_seq: Some("20".to_owned()),
+                status: "applying".to_owned(),
+                retry_count: 0,
+                last_error_code: None,
+                started_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/system-notification-v1.json",
+        );
+        let fixture: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
+        let mut request = fixture["p3_vector"]["request"].clone();
+        request["method"] = serde_json::Value::String("direct.incoming".to_owned());
+        let envelope =
+            crate::internal::system_notification::wire::parse_envelope(&request).unwrap();
+        let received_at = chrono::DateTime::parse_from_rfc3339("2026-07-23T02:00:01Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let notification = |proof_hash: &str| {
+            crate::internal::system_notification::store::SystemNotificationApplyInput {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                protocol_device_id: binding.protocol_device_id.clone(),
+                verified:
+                    crate::internal::system_notification::verify::VerifiedSystemNotification {
+                        envelope: envelope.clone(),
+                        payload_hash: "sha256:snapshot-payload".to_owned(),
+                        proof_hash: proof_hash.to_owned(),
+                    },
+                received_at,
+            }
+        };
+        let snapshot_input = |events| SnapshotApplyInputV2 {
+            owner_identity_id: binding.owner_identity_id.clone(),
+            owner_did: binding.current_did.clone(),
+            account_id: binding.account_id.clone(),
+            protocol_device_id: binding.protocol_device_id.clone(),
+            device_auth_generation: binding.device_auth_generation.clone(),
+            expected_stream_epoch: "1".to_owned(),
+            expected_scan_seq: "10".to_owned(),
+            allow_missing_previous: false,
+            recovery_id_hash: "schema-two-recovery".to_owned(),
+            stream_epoch: "2".to_owned(),
+            snapshot_scan_seq: "20".to_owned(),
+            server_time: "2026-07-23T02:00:01Z".to_owned(),
+            events,
+            groups: Vec::new(),
+            read_states: Vec::new(),
+        };
+        let system_event = |event_id: &str, event_seq: &str, proof_hash: &str| DeltaApplyEventV2 {
+            event_id: event_id.to_owned(),
+            event_seq: event_seq.to_owned(),
+            event_type: "system.notification".to_owned(),
+            system_notification: Some(notification(proof_hash)),
+            ..DeltaApplyEventV2::default()
+        };
+
+        assert!(apply_snapshot_v2(
+            &db,
+            snapshot_input(vec![
+                system_event("snapshot-system-18", "18", "sha256:proof-a"),
+                system_event("snapshot-system-19", "19", "sha256:proof-conflict"),
+            ]),
+        )
+        .is_err());
+        let MessageSyncStateAccess::Ready(state) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("failed snapshot must retain its prior cursor")
+        };
+        assert_eq!(
+            (state.stream_epoch.as_str(), state.scan_seq.as_str()),
+            ("1", "10")
+        );
+        for table in [
+            "sync_applied_events",
+            "system_notification_receipts",
+            "system_notification_join_state",
+        ] {
+            assert_eq!(
+                db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+                0,
+                "{table} must roll back"
+            );
+        }
+
+        let peer_did = "did:wba:awiki.info:user:snapshot-two-peer";
+        let conversation_id = super::super::peer_personas::project_verified_handle(
+            &mut db,
+            &binding.owner_identity_id,
+            &binding.current_did,
+            &crate::directory::HandleLookupResult {
+                handle: crate::ids::Handle::parse("snapshot-two-peer.awiki.info", "").unwrap(),
+                did: crate::ids::Did::parse(peer_did).unwrap(),
+                user_id: "snapshot-two-peer".to_owned(),
+                domain: Some("awiki.info".to_owned()),
+                status: Some("active".to_owned()),
+                binding_generation: Some("1".to_owned()),
+                profile: None,
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
+        let ordinary = DeltaApplyEventV2 {
+            event_id: "snapshot-plain-19".to_owned(),
+            event_seq: "19".to_owned(),
+            event_type: "message.created".to_owned(),
+            messages: vec![super::super::messages::MessageRecord {
+                msg_id: "snapshot-message-19".to_owned(),
+                owner_identity_id: binding.owner_identity_id.clone(),
+                owner_did: binding.current_did.clone(),
+                conversation_id: conversation_id.clone(),
+                thread_id: conversation_id.clone(),
+                direction: 0,
+                sender_did: peer_did.to_owned(),
+                receiver_did: binding.current_did.clone(),
+                content_type: "text/plain".to_owned(),
+                content: "mixed snapshot message".to_owned(),
+                server_seq: Some(19),
+                sent_at: "2026-07-23T02:00:00Z".to_owned(),
+                stored_at: "2026-07-23T02:00:01Z".to_owned(),
+                credential_name: binding.owner_identity_id.clone(),
+                ..Default::default()
+            }
+            .with_resolved_wire_thread("direct", peer_did)],
+            thread_bindings: vec![SyncThreadBinding {
+                owner_identity_id: binding.owner_identity_id.clone(),
+                remote_thread_key: "snapshot-two-remote-thread".to_owned(),
+                thread_kind: "direct".to_owned(),
+                conversation_id,
+                updated_at: 19,
+            }],
+            ..Default::default()
+        };
+        let outcome = apply_snapshot_v2(
+            &db,
+            snapshot_input(vec![
+                system_event("snapshot-system-18", "18", "sha256:proof-a"),
+                ordinary,
+            ]),
+        )
+        .unwrap();
+        assert_eq!(outcome.committed_system_notifications.len(), 1);
+        assert_eq!(outcome.projected_message_event_ids, ["snapshot-plain-19"]);
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM system_notification_receipts",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM messages", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let MessageSyncStateAccess::Ready(state) =
+            load_message_sync_state(&db, &binding.owner_identity_id).unwrap()
+        else {
+            panic!("valid mixed snapshot must commit its cursor")
+        };
+        assert_eq!(
+            (state.stream_epoch.as_str(), state.scan_seq.as_str()),
+            ("2", "20")
+        );
+        assert_eq!(
+            load_recovery_state(&db, &binding.owner_identity_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "completed"
+        );
     }
 }

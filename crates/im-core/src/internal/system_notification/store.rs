@@ -93,7 +93,7 @@ pub(crate) fn apply(
     Ok(outcome)
 }
 
-fn apply_transaction(
+pub(crate) fn apply_transaction(
     transaction: &Transaction<'_>,
     input: &SystemNotificationApplyInput,
 ) -> crate::ImResult<SystemNotificationApplyOutcome> {

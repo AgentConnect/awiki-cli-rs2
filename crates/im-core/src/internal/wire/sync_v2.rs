@@ -57,10 +57,12 @@ pub(crate) struct SyncRecoveryV2 {
     pub(crate) stream_epoch: String,
     pub(crate) snapshot_scan_seq: String,
     pub(crate) expires_at: String,
+    pub(crate) snapshot_schema: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SyncSnapshotV2 {
+    pub(crate) snapshot_schema: u32,
     pub(crate) account_id: String,
     pub(crate) device_id: String,
     pub(crate) server_time: String,
@@ -68,10 +70,17 @@ pub(crate) struct SyncSnapshotV2 {
     pub(crate) read_states: Vec<Value>,
     pub(crate) groups: Vec<Value>,
     pub(crate) recent_plain_messages: Vec<SnapshotPlainMessageV2>,
+    pub(crate) unexpired_system_notifications: Vec<SnapshotSystemNotificationV2>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SnapshotPlainMessageV2 {
+    pub(crate) event: SyncEventV2,
+    pub(crate) message: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SnapshotSystemNotificationV2 {
     pub(crate) event: SyncEventV2,
     pub(crate) message: Value,
 }
@@ -278,6 +287,7 @@ pub(crate) fn parse_bootstrap_response(raw: &Value) -> crate::ImResult<SyncBoots
                 stream_epoch: positive_decimal_field(recovery, "stream_epoch")?,
                 snapshot_scan_seq: decimal_field(recovery, "snapshot_scan_seq")?,
                 expires_at: canonical_string_field(recovery, "expires_at")?,
+                snapshot_schema: optional_snapshot_schema(recovery)?,
             },
         });
     }
@@ -366,6 +376,7 @@ pub(crate) fn parse_delta_response(raw: &Value) -> crate::ImResult<SyncDeltaResp
                 stream_epoch: positive_decimal_field(recovery, "stream_epoch")?,
                 snapshot_scan_seq: decimal_field(recovery, "snapshot_scan_seq")?,
                 expires_at: canonical_string_field(recovery, "expires_at")?,
+                snapshot_schema: optional_snapshot_schema(recovery)?,
             }));
         }
         Some("delta") => {}
@@ -409,20 +420,45 @@ pub(crate) fn parse_delta_response(raw: &Value) -> crate::ImResult<SyncDeltaResp
 
 pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
     let object = object(raw, "sync.snapshot response")?;
+    let snapshot_schema = match object.get("snapshot_schema") {
+        None => 1,
+        Some(Value::Number(value)) if value.as_u64() == Some(2) => 2,
+        Some(_) => return Err(invalid_page("snapshot_schema must be absent or equal 2")),
+    };
+    let schema_one_fields = [
+        "mode",
+        "account_id",
+        "device_id",
+        "server_time",
+        "snapshot_cursor",
+        "read_states",
+        "groups",
+        "recent_plain_messages",
+        "message_policy",
+        "excluded",
+    ];
+    let schema_two_fields = [
+        "mode",
+        "snapshot_schema",
+        "account_id",
+        "device_id",
+        "server_time",
+        "snapshot_cursor",
+        "read_states",
+        "groups",
+        "recent_plain_messages",
+        "message_policy",
+        "excluded",
+        "unexpired_system_notifications",
+        "system_notification_policy",
+    ];
     exact_fields(
         object,
-        &[
-            "mode",
-            "account_id",
-            "device_id",
-            "server_time",
-            "snapshot_cursor",
-            "read_states",
-            "groups",
-            "recent_plain_messages",
-            "message_policy",
-            "excluded",
-        ],
+        if snapshot_schema == 2 {
+            &schema_two_fields
+        } else {
+            &schema_one_fields
+        },
         "sync.snapshot response",
     )?;
     exact_mode(object, "compact_recovery")?;
@@ -567,6 +603,111 @@ pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
             "returned_logical_messages does not match recent_plain_messages",
         ));
     }
+    let unexpired_system_notifications = if snapshot_schema == 2 {
+        let items = object
+            .get("unexpired_system_notifications")
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid_page("unexpired_system_notifications must be an array"))?
+            .iter()
+            .map(|item| {
+                let item = self::object(item, "snapshot system notification")?;
+                exact_fields(
+                    item,
+                    &["event", "message"],
+                    "snapshot system notification",
+                )?;
+                let event = parse_event(
+                    item.get("event")
+                        .ok_or_else(|| invalid_page("snapshot notification event is required"))?,
+                )?;
+                if event.event_type != "system.notification"
+                    || event.account_id != account_id
+                    || event.stream_epoch != snapshot_cursor.stream_epoch
+                    || event.recipient_device_id.as_deref() != Some(device_id.as_str())
+                    || crate::internal::local_state::sync_v2::compare_decimal(
+                        &event.event_seq,
+                        &snapshot_cursor.scan_seq,
+                    )? == std::cmp::Ordering::Greater
+                {
+                    return Err(invalid_page(
+                        "snapshot system notification is outside the account/epoch/device/anchor boundary",
+                    ));
+                }
+                if !event_ids.insert(event.event_id.clone())
+                    || !event_seqs.insert(event.event_seq.clone())
+                {
+                    return Err(invalid_page(
+                        "snapshot event_id and event_seq must be unique across all projections",
+                    ));
+                }
+                let message = item
+                    .get("message")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| invalid_page("snapshot notification message must be an object"))?;
+                exact_fields(
+                    message,
+                    &["projection_kind", "meta", "auth", "body"],
+                    "snapshot notification message",
+                )?;
+                if !crate::internal::system_notification::wire::is_trusted_delivery_marker(
+                    item.get("message").unwrap(),
+                ) {
+                    return Err(invalid_page(
+                        "snapshot notification message must use the trusted projection marker",
+                    ));
+                }
+                Ok(SnapshotSystemNotificationV2 {
+                    event,
+                    message: item.get("message").unwrap().clone(),
+                })
+            })
+            .collect::<crate::ImResult<Vec<_>>>()?;
+        if items.len() > 100 {
+            return Err(invalid_page(
+                "snapshot contains more than 100 unexpired system notifications",
+            ));
+        }
+        for pair in items.windows(2) {
+            let ordering = crate::internal::local_state::sync_v2::compare_decimal(
+                &pair[0].event.event_seq,
+                &pair[1].event.event_seq,
+            )?
+            .then_with(|| pair[0].event.event_id.cmp(&pair[1].event.event_id));
+            if ordering != std::cmp::Ordering::Less {
+                return Err(invalid_page(
+                    "snapshot system notifications must be ordered by event_seq and event_id",
+                ));
+            }
+        }
+        let policy = self::object(
+            object
+                .get("system_notification_policy")
+                .ok_or_else(|| invalid_page("system_notification_policy is required"))?,
+            "snapshot system notification policy",
+        )?;
+        exact_fields(
+            policy,
+            &[
+                "scope",
+                "complete_through_scan_seq",
+                "returned_events",
+                "complete",
+            ],
+            "snapshot system notification policy",
+        )?;
+        if policy.get("scope").and_then(Value::as_str) != Some("exact_device_unexpired")
+            || decimal_field(policy, "complete_through_scan_seq")? != snapshot_cursor.scan_seq
+            || policy.get("returned_events").and_then(Value::as_u64) != Some(items.len() as u64)
+            || policy.get("complete").and_then(Value::as_bool) != Some(true)
+        {
+            return Err(invalid_page(
+                "system_notification_policy does not prove a complete exact-device snapshot",
+            ));
+        }
+        items
+    } else {
+        Vec::new()
+    };
     let read_states = object
         .get("read_states")
         .and_then(Value::as_array)
@@ -628,6 +769,7 @@ pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
         reject_e2ee_value(value)?;
     }
     Ok(SyncSnapshotV2 {
+        snapshot_schema,
         account_id,
         device_id,
         server_time,
@@ -635,6 +777,7 @@ pub(crate) fn parse_snapshot(raw: &Value) -> crate::ImResult<SyncSnapshotV2> {
         read_states,
         groups,
         recent_plain_messages,
+        unexpired_system_notifications,
     })
 }
 
@@ -649,6 +792,17 @@ fn exact_fields(
         )));
     }
     Ok(())
+}
+
+fn optional_snapshot_schema(object: &Map<String, Value>) -> crate::ImResult<u32> {
+    match object.get("snapshot_schema") {
+        None => Ok(1),
+        Some(value) => value
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| matches!(value, 1 | 2))
+            .ok_or_else(|| invalid_page("snapshot_schema must be 1 or 2")),
+    }
 }
 
 pub(crate) fn parse_message_batch(
@@ -1262,6 +1416,7 @@ mod tests {
             SyncDeltaResponseV2::RecoveryRequired(recovery) => recovery,
             SyncDeltaResponseV2::Delta(_) => panic!("expected recovery"),
         };
+        assert_eq!(recovery.snapshot_schema, 1);
         let params = build_snapshot_params(
             &WireIdentity {
                 did: "did:example:alice".to_owned(),
@@ -1292,7 +1447,114 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(snapshot.snapshot_cursor.scan_seq, "15020");
+        assert_eq!(snapshot.snapshot_schema, 1);
         assert!(snapshot.recent_plain_messages.is_empty());
+    }
+
+    #[test]
+    fn schema_two_snapshot_requires_complete_exact_device_notification_proof() {
+        let mut notification_event = event("system.notification:evt-1:device-1", "10");
+        notification_event["stream_epoch"] = json!("2");
+        notification_event["account_id"] = json!("account-1");
+        notification_event["event_type"] = json!("system.notification");
+        notification_event["recipient_device_id"] = json!("device-1");
+        notification_event["origin_device_id"] = Value::Null;
+        notification_event["aggregate_kind"] = json!("system_notification");
+        notification_event["aggregate_id"] = json!("evt-1");
+        notification_event["thread_key"] = Value::Null;
+        notification_event["payload"] = json!({
+            "projection_kind": "system_notification",
+            "event_id": "evt-1",
+            "message_id": "evt-1"
+        });
+        let base = json!({
+            "mode": "compact_recovery",
+            "snapshot_schema": 2,
+            "account_id": "account-1",
+            "device_id": "device-1",
+            "server_time": "2026-07-28T12:00:04Z",
+            "snapshot_cursor": {"stream_epoch": "2", "scan_seq": "10"},
+            "read_states": [],
+            "groups": [],
+            "recent_plain_messages": [],
+            "message_policy": {
+                "server_cutoff": "2026-07-26T12:00:03Z",
+                "max_logical_messages": 500,
+                "returned_logical_messages": 0
+            },
+            "excluded": {
+                "e2ee_messages": true,
+                "plain_messages_before_cutoff": true
+            },
+            "unexpired_system_notifications": [{
+                "event": notification_event,
+                "message": {
+                    "projection_kind": "system_notification",
+                    "meta": {},
+                    "auth": {},
+                    "body": {}
+                }
+            }],
+            "system_notification_policy": {
+                "scope": "exact_device_unexpired",
+                "complete_through_scan_seq": "10",
+                "returned_events": 1,
+                "complete": true
+            }
+        });
+        let parsed = parse_snapshot(&base).unwrap();
+        assert_eq!(parsed.snapshot_schema, 2);
+        assert_eq!(parsed.unexpired_system_notifications.len(), 1);
+
+        for mutation in ["complete", "anchor", "count", "wrapper", "target", "order"] {
+            let mut invalid = base.clone();
+            match mutation {
+                "complete" => invalid["system_notification_policy"]["complete"] = json!(false),
+                "anchor" => {
+                    invalid["system_notification_policy"]["complete_through_scan_seq"] = json!("9")
+                }
+                "count" => invalid["system_notification_policy"]["returned_events"] = json!(0),
+                "wrapper" => {
+                    invalid["unexpired_system_notifications"][0]["message"]["id"] =
+                        json!("forbidden")
+                }
+                "target" => {
+                    invalid["unexpired_system_notifications"][0]["event"]["recipient_device_id"] =
+                        json!("device-2")
+                }
+                "order" => {
+                    let mut earlier = invalid["unexpired_system_notifications"][0].clone();
+                    earlier["event"]["event_id"] = json!("system.notification:evt-2:device-1");
+                    earlier["event"]["event_seq"] = json!("9");
+                    earlier["event"]["aggregate_id"] = json!("evt-2");
+                    earlier["event"]["payload"]["event_id"] = json!("evt-2");
+                    earlier["event"]["payload"]["message_id"] = json!("evt-2");
+                    invalid["unexpired_system_notifications"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(earlier);
+                    invalid["system_notification_policy"]["returned_events"] = json!(2);
+                }
+                _ => unreachable!(),
+            }
+            assert!(parse_snapshot(&invalid).is_err(), "mutation {mutation}");
+        }
+        let mut too_many = base;
+        too_many["snapshot_cursor"]["scan_seq"] = json!("101");
+        too_many["system_notification_policy"]["complete_through_scan_seq"] = json!("101");
+        too_many["system_notification_policy"]["returned_events"] = json!(101);
+        let template = too_many["unexpired_system_notifications"][0].clone();
+        let items = too_many["unexpired_system_notifications"]
+            .as_array_mut()
+            .unwrap();
+        items.clear();
+        for seq in 1..=101 {
+            let mut item = template.clone();
+            item["event"]["event_id"] = json!(format!("system.notification:evt-{seq}:device-1"));
+            item["event"]["event_seq"] = json!(seq.to_string());
+            items.push(item);
+        }
+        assert!(parse_snapshot(&too_many).is_err());
     }
 
     #[test]
