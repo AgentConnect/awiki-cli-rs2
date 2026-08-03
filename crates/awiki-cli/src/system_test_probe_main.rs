@@ -131,6 +131,8 @@ enum Action {
     ProbeDownloadTicket(AttachmentTicketParams),
     ProbePrekey(PrekeyParams),
     DirectWireProjection(DirectWireProjectionParams),
+    HoldDirectWireProjection(HoldDirectWireProjectionParams),
+    ConfirmDirectWireProjection { message_id: Zeroizing<String> },
     AccountStateManifest,
     AccountStateAgent(AgentSnapshotParams),
     AccountStateAgentRename(AgentRenameParams),
@@ -579,6 +581,13 @@ struct DirectWireProjectionParams {
     forbidden_plaintext: Zeroizing<String>,
 }
 
+struct HoldDirectWireProjectionParams {
+    peer_did: String,
+    logical_message_id: String,
+    expected_shape: DirectWireShape,
+    forbidden_plaintext: Zeroizing<String>,
+}
+
 #[derive(Clone, Copy)]
 enum DirectWireShape {
     Init,
@@ -702,6 +711,10 @@ struct HeldTicket {
     object_uri: reqwest::Url,
 }
 
+struct HeldDirectWireProjection {
+    message_id: Zeroizing<String>,
+}
+
 struct Probe {
     _core: Option<im_core::ImCore>,
     _client: Option<im_core::ImClient>,
@@ -733,6 +746,7 @@ struct Probe {
     service_did: String,
     ws: Option<WsStream>,
     held_ticket: Option<HeldTicket>,
+    held_direct_wire_projection: Option<HeldDirectWireProjection>,
     daemon_state_root: Option<std::path::PathBuf>,
     daemon_continuity_baseline: Option<DaemonContinuityBaseline>,
 }
@@ -1002,6 +1016,7 @@ impl Probe {
             service_did,
             ws: None,
             held_ticket: None,
+            held_direct_wire_projection: None,
             daemon_state_root: None,
             daemon_continuity_baseline: None,
         })
@@ -1152,6 +1167,7 @@ impl Probe {
             service_did,
             ws: None,
             held_ticket: None,
+            held_direct_wire_projection: None,
             daemon_state_root: Some(state_root.to_path_buf()),
             daemon_continuity_baseline: None,
         })
@@ -1332,6 +1348,13 @@ impl Probe {
             Action::DirectWireProjection(params) => {
                 Ok((self.direct_wire_projection(&params).await?, false))
             }
+            Action::HoldDirectWireProjection(params) => {
+                Ok((self.hold_direct_wire_projection(&params).await?, false))
+            }
+            Action::ConfirmDirectWireProjection { message_id } => Ok((
+                self.confirm_direct_wire_projection(message_id.as_str())?,
+                false,
+            )),
             Action::AccountStateManifest => {
                 let result = self
                     .required_user_rpc(
@@ -2354,6 +2377,58 @@ impl Probe {
         &self,
         params: &DirectWireProjectionParams,
     ) -> Result<Value, ProbeFailure> {
+        let matching_messages = self
+            .collect_direct_wire_matches(|result, matching| {
+                append_direct_wire_matches(result, params, matching)
+            })
+            .await?;
+        closed_direct_wire_projection(&json!({"messages": matching_messages}), params)
+    }
+
+    async fn hold_direct_wire_projection(
+        &mut self,
+        params: &HoldDirectWireProjectionParams,
+    ) -> Result<Value, ProbeFailure> {
+        if self.held_direct_wire_projection.is_some() {
+            return Err(ProbeFailure::InvalidState);
+        }
+        let local_did = self.local_did.clone();
+        let local_device_id = self.local_device_id.clone();
+        let matching_messages = self
+            .collect_direct_wire_matches(|result, matching| {
+                append_held_direct_wire_matches(
+                    result,
+                    params,
+                    &local_did,
+                    &local_device_id,
+                    matching,
+                )
+            })
+            .await?;
+        let (projection, message_id) =
+            closed_held_direct_wire_projection(&json!({"messages": matching_messages}), params)?;
+        if let Some(message_id) = message_id {
+            self.held_direct_wire_projection = Some(HeldDirectWireProjection { message_id });
+        }
+        Ok(projection)
+    }
+
+    fn confirm_direct_wire_projection(&mut self, message_id: &str) -> Result<Value, ProbeFailure> {
+        let held = self
+            .held_direct_wire_projection
+            .take()
+            .ok_or(ProbeFailure::InvalidState)?;
+        let exact_id_matches = held.message_id.as_bytes() == message_id.as_bytes();
+        Ok(json!({
+            "confirmed": exact_id_matches,
+            "exact_id_matches": exact_id_matches,
+        }))
+    }
+
+    async fn collect_direct_wire_matches(
+        &self,
+        mut append: impl FnMut(&Value, &mut Vec<Value>) -> Result<DirectWirePageProgress, ProbeFailure>,
+    ) -> Result<Vec<Value>, ProbeFailure> {
         let mut matching_messages = Vec::new();
         let mut skip = 0_i64;
 
@@ -2376,12 +2451,9 @@ impl Probe {
                 RpcOutcome::Success(result) => result,
                 RpcOutcome::Rejected(_) => return Err(ProbeFailure::Transport),
             };
-            let progress = append_direct_wire_matches(&result, params, &mut matching_messages)?;
+            let progress = append(&result, &mut matching_messages)?;
             if !progress.has_more {
-                return closed_direct_wire_projection(
-                    &json!({"messages": matching_messages}),
-                    params,
-                );
+                return Ok(matching_messages);
             }
             if progress.message_count == 0 {
                 return Err(ProbeFailure::Runtime);
@@ -3016,6 +3088,18 @@ fn parse_request(raw: &str) -> Result<ProbeRequest, ProbeFailure> {
         "direct_wire_projection" => {
             Action::DirectWireProjection(parse_direct_wire_projection_params(params)?)
         }
+        "hold_direct_wire_projection" => {
+            Action::HoldDirectWireProjection(parse_hold_direct_wire_projection_params(params)?)
+        }
+        "confirm_direct_wire_projection" => {
+            require_exact_keys(params, &["message_id"])?;
+            let message_id = required_string(params, "message_id", 512)?;
+            im_core::ids::MessageId::parse(&message_id)
+                .map_err(|_| ProbeFailure::InvalidRequest)?;
+            Action::ConfirmDirectWireProjection {
+                message_id: Zeroizing::new(message_id),
+            }
+        }
         "account_state_manifest" => {
             require_exact_keys(params, &[])?;
             Action::AccountStateManifest
@@ -3124,6 +3208,39 @@ fn parse_direct_wire_projection_params(
     Ok(DirectWireProjectionParams {
         peer_did,
         message_id,
+        expected_shape,
+        forbidden_plaintext,
+    })
+}
+
+fn parse_hold_direct_wire_projection_params(
+    params: &Map<String, Value>,
+) -> Result<HoldDirectWireProjectionParams, ProbeFailure> {
+    require_exact_keys(
+        params,
+        &[
+            "expected_shape",
+            "forbidden_plaintext",
+            "logical_message_id",
+            "peer_did",
+        ],
+    )?;
+    let peer_did = required_string(params, "peer_did", 2048)?;
+    im_core::ids::Did::parse(&peer_did).map_err(|_| ProbeFailure::InvalidRequest)?;
+    let logical_message_id = required_string(params, "logical_message_id", 512)?;
+    let expected_shape = match required_string(params, "expected_shape", 16)?.as_str() {
+        "init" => DirectWireShape::Init,
+        "cipher" => DirectWireShape::Cipher,
+        _ => return Err(ProbeFailure::InvalidRequest),
+    };
+    let forbidden_plaintext = Zeroizing::new(required_opaque_string(
+        params,
+        "forbidden_plaintext",
+        16 * 1024,
+    )?);
+    Ok(HoldDirectWireProjectionParams {
+        peer_did,
+        logical_message_id,
         expected_shape,
         forbidden_plaintext,
     })
@@ -3785,6 +3902,161 @@ fn append_direct_wire_matches(
     })
 }
 
+fn append_held_direct_wire_matches(
+    result: &Value,
+    params: &HoldDirectWireProjectionParams,
+    local_did: &str,
+    local_device_id: &str,
+    matching: &mut Vec<Value>,
+) -> Result<DirectWirePageProgress, ProbeFailure> {
+    let result = result.as_object().ok_or(ProbeFailure::Runtime)?;
+    let messages = result
+        .get("messages")
+        .and_then(Value::as_array)
+        .filter(|messages| messages.len() <= DIRECT_WIRE_INBOX_PAGE_LIMIT as usize)
+        .ok_or(ProbeFailure::Runtime)?;
+    let has_more = result
+        .get("has_more")
+        .and_then(Value::as_bool)
+        .ok_or(ProbeFailure::Runtime)?;
+
+    for message in messages {
+        let message_object = message.as_object().ok_or(ProbeFailure::Runtime)?;
+        let Some(meta) = message_object.get("meta").and_then(Value::as_object) else {
+            continue;
+        };
+        let sender_device_id = string_field(meta, "sender_device_id").unwrap_or_default();
+        let expected_operation_id = direct_recipient_delivery_operation_id(
+            &params.peer_did,
+            sender_device_id,
+            local_did,
+            local_device_id,
+            &params.logical_message_id,
+        );
+        let operation_matches = string_field(meta, "operation_id")
+            == Some(expected_operation_id.as_str())
+            && string_field(meta, "message_id") == Some(expected_operation_id.as_str())
+            && string_field(message_object, "id") == Some(expected_operation_id.as_str());
+        if string_field(message_object, "sender_did") == Some(params.peer_did.as_str())
+            && string_field(message_object, "content_type")
+                == Some(params.expected_shape.content_type())
+            && operation_matches
+        {
+            matching.push(message.clone());
+        }
+    }
+
+    Ok(DirectWirePageProgress {
+        message_count: messages.len(),
+        has_more,
+    })
+}
+
+fn direct_recipient_delivery_operation_id(
+    sender_did: &str,
+    sender_device_id: &str,
+    recipient_did: &str,
+    recipient_device_id: &str,
+    logical_message_id: &str,
+) -> String {
+    let mut digest = Sha256::new();
+    for value in [
+        "AWIKI-P5-V2-DELIVERY-V1",
+        sender_did,
+        sender_device_id,
+        recipient_did,
+        "recipient",
+        recipient_did,
+        recipient_device_id,
+        logical_message_id,
+    ] {
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    format!(
+        "p5-v2-delivery:{}",
+        URL_SAFE_NO_PAD.encode(&digest.finalize()[..16])
+    )
+}
+
+fn closed_held_direct_wire_projection(
+    result: &Value,
+    params: &HoldDirectWireProjectionParams,
+) -> Result<(Value, Option<Zeroizing<String>>), ProbeFailure> {
+    let messages = result
+        .as_object()
+        .and_then(|result| result.get("messages"))
+        .and_then(Value::as_array)
+        .ok_or(ProbeFailure::Runtime)?;
+    let matching = messages
+        .iter()
+        .map(|message| {
+            let message = message.as_object().ok_or(ProbeFailure::Runtime)?;
+            Ok(
+                (string_field(message, "sender_did") == Some(params.peer_did.as_str()))
+                    .then_some(message),
+            )
+        })
+        .collect::<Result<Vec<_>, ProbeFailure>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let canonical_match_count = bounded_count(matching.len())?;
+    let Some(message) = matching.first().filter(|_| matching.len() == 1) else {
+        let mut projection = failed_direct_wire_projection(canonical_match_count);
+        projection
+            .as_object_mut()
+            .ok_or(ProbeFailure::Runtime)?
+            .insert("captured".to_owned(), Value::Bool(false));
+        return Ok((projection, None));
+    };
+    let message_id = required_response_string(message, "id")?;
+    im_core::ids::MessageId::parse(message_id).map_err(|_| ProbeFailure::Runtime)?;
+    let exact_params = DirectWireProjectionParams {
+        peer_did: params.peer_did.clone(),
+        message_id: message_id.to_owned(),
+        expected_shape: params.expected_shape,
+        forbidden_plaintext: Zeroizing::new(params.forbidden_plaintext.as_str().to_owned()),
+    };
+    let mut projection = closed_direct_wire_projection(result, &exact_params)?;
+    let captured = direct_wire_projection_succeeded(&projection);
+    projection
+        .as_object_mut()
+        .ok_or(ProbeFailure::Runtime)?
+        .insert("captured".to_owned(), Value::Bool(captured));
+    Ok((
+        projection,
+        captured.then(|| Zeroizing::new(message_id.to_owned())),
+    ))
+}
+
+fn direct_wire_projection_succeeded(projection: &Value) -> bool {
+    projection
+        .get("canonical_match_count")
+        .and_then(Value::as_u64)
+        == Some(1)
+        && [
+            "content_type_matches",
+            "wire_kind_matches",
+            "ciphertext_present",
+            "shape_matches",
+            "plaintext_absent",
+        ]
+        .into_iter()
+        .all(|field| projection.get(field).and_then(Value::as_bool) == Some(true))
+}
+
+fn failed_direct_wire_projection(canonical_match_count: u64) -> Value {
+    json!({
+        "canonical_match_count": canonical_match_count,
+        "content_type_matches": false,
+        "wire_kind_matches": false,
+        "ciphertext_present": false,
+        "shape_matches": false,
+        "plaintext_absent": false,
+    })
+}
+
 fn closed_direct_wire_projection(
     result: &Value,
     params: &DirectWireProjectionParams,
@@ -3808,14 +4080,7 @@ fn closed_direct_wire_projection(
 
     let canonical_match_count = bounded_count(matching.len())?;
     let Some((message_value, message)) = matching.first().filter(|_| matching.len() == 1) else {
-        return Ok(json!({
-            "canonical_match_count": canonical_match_count,
-            "content_type_matches": false,
-            "wire_kind_matches": false,
-            "ciphertext_present": false,
-            "shape_matches": false,
-            "plaintext_absent": false,
-        }));
+        return Ok(failed_direct_wire_projection(canonical_match_count));
     };
     let content = message.get("content").and_then(Value::as_object);
     let content_type_matches =
@@ -6241,6 +6506,263 @@ INSERT INTO runtime_final_outbox (
         }
     }
 
+    #[test]
+    fn held_direct_wire_projection_requests_have_exact_keys_and_closed_selectors() {
+        let hold = match parse_request(
+            &json!({
+                "id": "wire-hold",
+                "action": "hold_direct_wire_projection",
+                "params": {
+                    "peer_did": SENDER_DID,
+                    "logical_message_id": "message-page-2",
+                    "expected_shape": "init",
+                    "forbidden_plaintext": WIRE_PLAINTEXT_SECRET,
+                }
+            })
+            .to_string(),
+        ) {
+            Ok(request) => request,
+            Err(_) => panic!("closed held direct-wire request"),
+        };
+        let Action::HoldDirectWireProjection(params) = hold.action else {
+            panic!("held direct-wire action")
+        };
+        assert_eq!(params.peer_did, SENDER_DID);
+        assert_eq!(params.logical_message_id, "message-page-2");
+        assert!(matches!(params.expected_shape, DirectWireShape::Init));
+        assert_eq!(params.forbidden_plaintext.as_str(), WIRE_PLAINTEXT_SECRET);
+
+        let confirm = match parse_request(
+            r#"{"id":"wire-confirm","action":"confirm_direct_wire_projection","params":{"message_id":"message-held"}}"#,
+        ) {
+            Ok(request) => request,
+            Err(_) => panic!("closed confirm direct-wire request"),
+        };
+        let Action::ConfirmDirectWireProjection { message_id } = confirm.action else {
+            panic!("confirm direct-wire action")
+        };
+        assert_eq!(message_id.as_str(), "message-held");
+
+        for invalid in [
+            json!({
+                "id": "wire-invalid-hold",
+                "action": "hold_direct_wire_projection",
+                "params": {
+                    "peer_did": SENDER_DID,
+                    "logical_message_id": "message-page-2",
+                    "expected_shape": "init",
+                    "forbidden_plaintext": WIRE_PLAINTEXT_SECRET,
+                    "message_id": "message-held",
+                }
+            }),
+            json!({
+                "id": "wire-invalid-shape",
+                "action": "hold_direct_wire_projection",
+                "params": {
+                    "peer_did": SENDER_DID,
+                    "logical_message_id": "message-page-2",
+                    "expected_shape": "unknown",
+                    "forbidden_plaintext": WIRE_PLAINTEXT_SECRET,
+                }
+            }),
+            json!({
+                "id": "wire-invalid-confirm",
+                "action": "confirm_direct_wire_projection",
+                "params": {"message_id": "message-held", "peer_did": SENDER_DID}
+            }),
+            json!({
+                "id": "wire-empty-confirm",
+                "action": "confirm_direct_wire_projection",
+                "params": {"message_id": ""}
+            }),
+        ] {
+            let error = match parse_request(&invalid.to_string()) {
+                Err(error) => error,
+                Ok(_) => panic!("invalid held direct-wire request must fail"),
+            };
+            assert_eq!(error.code(), INVALID_REQUEST);
+        }
+    }
+
+    #[test]
+    fn held_direct_wire_projection_fails_closed_for_cardinality_shape_and_plaintext() {
+        let params = hold_direct_wire_params(DirectWireShape::Init);
+        let valid = direct_init_wire_message("message-held", SENDER_DID);
+
+        let mut mismatched_raw_id = valid.clone();
+        mismatched_raw_id["id"] = json!("mismatched-raw-id");
+        let mut selected = Vec::new();
+        let selected_result = append_held_direct_wire_matches(
+            &json!({"messages": [mismatched_raw_id], "has_more": false}),
+            &params,
+            LOCAL_DID,
+            "dev-local-1",
+            &mut selected,
+        );
+        assert!(selected_result.is_ok());
+        assert!(selected.is_empty());
+
+        let (no_match, no_match_id) = closed_held_projection_or_panic(
+            &json!({"messages": [direct_init_wire_message("message-other", TARGET_DID)]}),
+            &params,
+        );
+        assert_eq!(no_match, failed_held_direct_wire_projection(0));
+        assert!(no_match_id.is_none());
+
+        let (duplicate, duplicate_id) = closed_held_projection_or_panic(
+            &json!({
+                "messages": [
+                    valid.clone(),
+                    direct_init_wire_message("message-held-second", SENDER_DID),
+                ]
+            }),
+            &params,
+        );
+        assert_eq!(duplicate, failed_held_direct_wire_projection(2));
+        assert!(duplicate_id.is_none());
+
+        let mut wrong_shape = valid.clone();
+        wrong_shape["content"]
+            .as_object_mut()
+            .expect("wire content")
+            .remove("suite");
+        let (shape, shape_id) =
+            closed_held_projection_or_panic(&json!({"messages": [wrong_shape]}), &params);
+        assert_eq!(shape["canonical_match_count"], 1);
+        assert_eq!(shape["shape_matches"], false);
+        assert_eq!(shape["captured"], false);
+        assert!(shape_id.is_none());
+
+        let mut plaintext = valid;
+        plaintext["content"]["debug"] = json!(WIRE_PLAINTEXT_SECRET);
+        let (plaintext, plaintext_id) =
+            closed_held_projection_or_panic(&json!({"messages": [plaintext]}), &params);
+        assert_eq!(plaintext["canonical_match_count"], 1);
+        assert_eq!(plaintext["plaintext_absent"], false);
+        assert_eq!(plaintext["captured"], false);
+        assert!(plaintext_id.is_none());
+
+        let encoded = serde_json::to_string(&(no_match, duplicate, shape, plaintext))
+            .expect("serialize closed held wire projections");
+        assert!(!encoded.contains(WIRE_CIPHERTEXT_SECRET));
+        assert!(!encoded.contains(WIRE_PLAINTEXT_SECRET));
+        assert!(!encoded.contains(SENDER_DID));
+    }
+
+    #[tokio::test]
+    async fn held_direct_wire_projection_pages_captures_confirms_and_rejects_overwrite() {
+        let observed_skips = Arc::new(Mutex::new(Vec::new()));
+        let (base_url, server) = spawn_direct_wire_pagination_server(observed_skips.clone()).await;
+        let mut probe = test_probe(&base_url);
+        let hold = held_direct_wire_action("wire-held");
+
+        let held = execute_line(&mut probe, &hold).await;
+        server
+            .await
+            .expect("held direct-wire pagination server task");
+        assert_eq!(held["result"], successful_held_direct_wire_projection());
+        assert_eq!(
+            observed_skips
+                .lock()
+                .expect("held direct-wire skip observations")
+                .as_slice(),
+            &[0, DIRECT_WIRE_INBOX_PAGE_LIMIT]
+        );
+
+        let overwrite = execute_line(&mut probe, &hold).await;
+        assert_eq!(
+            overwrite,
+            json!({"id": "wire-held", "ok": false, "error": {"code": INVALID_STATE}})
+        );
+        let raw_message_id = direct_recipient_delivery_operation_id(
+            SENDER_DID,
+            "dev-sender-1",
+            LOCAL_DID,
+            "dev-local-1",
+            "message-page-2",
+        );
+        let confirmed_action = json!({
+            "id": "wire-confirmed",
+            "action": "confirm_direct_wire_projection",
+            "params": {"message_id": raw_message_id},
+        })
+        .to_string();
+        let confirmed = execute_line(&mut probe, &confirmed_action).await;
+        assert_eq!(
+            confirmed["result"],
+            json!({"confirmed": true, "exact_id_matches": true})
+        );
+        let consumed_action = json!({
+            "id": "wire-consumed",
+            "action": "confirm_direct_wire_projection",
+            "params": {"message_id": raw_message_id},
+        })
+        .to_string();
+        let consumed = execute_line(&mut probe, &consumed_action).await;
+        assert_eq!(consumed["error"]["code"], INVALID_STATE);
+
+        let encoded = serde_json::to_string(&(held, overwrite, confirmed, consumed))
+            .expect("serialize held direct-wire responses");
+        for forbidden in [
+            TOKEN_SECRET,
+            WIRE_CIPHERTEXT_SECRET,
+            WIRE_PLAINTEXT_SECRET,
+            "message-page-2",
+            SENDER_DID,
+        ] {
+            assert!(!encoded.contains(forbidden));
+        }
+    }
+
+    #[tokio::test]
+    async fn held_direct_wire_projection_mismatch_consumes_capture() {
+        let observed_skips = Arc::new(Mutex::new(Vec::new()));
+        let (base_url, server) = spawn_direct_wire_pagination_server(observed_skips).await;
+        let mut probe = test_probe(&base_url);
+        let held = execute_line(&mut probe, &held_direct_wire_action("wire-mismatch-hold")).await;
+        server
+            .await
+            .expect("mismatch direct-wire pagination server task");
+        assert_eq!(held["result"], successful_held_direct_wire_projection());
+
+        let mismatch = execute_line(
+            &mut probe,
+            r#"{"id":"wire-mismatch","action":"confirm_direct_wire_projection","params":{"message_id":"message-different"}}"#,
+        )
+        .await;
+        assert_eq!(
+            mismatch["result"],
+            json!({"confirmed": false, "exact_id_matches": false})
+        );
+        let raw_message_id = direct_recipient_delivery_operation_id(
+            SENDER_DID,
+            "dev-sender-1",
+            LOCAL_DID,
+            "dev-local-1",
+            "message-page-2",
+        );
+        let cleared_action = json!({
+            "id": "wire-cleared",
+            "action": "confirm_direct_wire_projection",
+            "params": {"message_id": raw_message_id},
+        })
+        .to_string();
+        let cleared = execute_line(&mut probe, &cleared_action).await;
+        assert_eq!(cleared["error"]["code"], INVALID_STATE);
+
+        let encoded = serde_json::to_string(&(held, mismatch, cleared))
+            .expect("serialize mismatched direct-wire responses");
+        for forbidden in [
+            "message-page-2",
+            "message-different",
+            SENDER_DID,
+            WIRE_CIPHERTEXT_SECRET,
+            WIRE_PLAINTEXT_SECRET,
+        ] {
+            assert!(!encoded.contains(forbidden));
+        }
+    }
+
     fn direct_wire_params(
         message_id: &str,
         expected_shape: DirectWireShape,
@@ -6262,6 +6784,89 @@ INSERT INTO runtime_final_outbox (
             "shape_matches": true,
             "plaintext_absent": true,
         })
+    }
+
+    fn hold_direct_wire_params(expected_shape: DirectWireShape) -> HoldDirectWireProjectionParams {
+        HoldDirectWireProjectionParams {
+            peer_did: SENDER_DID.to_owned(),
+            logical_message_id: "message-held".to_owned(),
+            expected_shape,
+            forbidden_plaintext: Zeroizing::new(WIRE_PLAINTEXT_SECRET.to_owned()),
+        }
+    }
+
+    fn direct_init_wire_message(logical_message_id: &str, sender_did: &str) -> Value {
+        let operation_id = direct_recipient_delivery_operation_id(
+            sender_did,
+            "dev-sender-1",
+            LOCAL_DID,
+            "dev-local-1",
+            logical_message_id,
+        );
+        json!({
+            "id": operation_id,
+            "sender_did": sender_did,
+            "type": "json",
+            "content_type": DIRECT_INIT_CONTENT_TYPE,
+            "meta": {
+                "operation_id": operation_id,
+                "message_id": operation_id,
+                "sender_device_id": "dev-sender-1",
+                "recipient_device_id": "dev-local-1",
+            },
+            "content": {
+                "session_id": "session-held",
+                "suite": "suite-held",
+                "sender_static_key_agreement_id":
+                    "did:wba:example.test:user:sender#key-3",
+                "recipient_bundle_id": "bundle-held",
+                "recipient_signed_prekey_id": "spk-held",
+                "sender_ephemeral_pub_b64u": "ephemeral-held",
+                "ciphertext_b64u": WIRE_CIPHERTEXT_SECRET,
+            }
+        })
+    }
+
+    fn successful_held_direct_wire_projection() -> Value {
+        let mut projection = successful_direct_wire_projection();
+        projection
+            .as_object_mut()
+            .expect("direct-wire projection")
+            .insert("captured".to_owned(), Value::Bool(true));
+        projection
+    }
+
+    fn failed_held_direct_wire_projection(count: u64) -> Value {
+        let mut projection = failed_direct_wire_projection(count);
+        projection
+            .as_object_mut()
+            .expect("direct-wire projection")
+            .insert("captured".to_owned(), Value::Bool(false));
+        projection
+    }
+
+    fn held_direct_wire_action(id: &str) -> String {
+        json!({
+            "id": id,
+            "action": "hold_direct_wire_projection",
+            "params": {
+                "peer_did": SENDER_DID,
+                "logical_message_id": "message-page-2",
+                "expected_shape": "init",
+                "forbidden_plaintext": WIRE_PLAINTEXT_SECRET,
+            }
+        })
+        .to_string()
+    }
+
+    fn closed_held_projection_or_panic(
+        result: &Value,
+        params: &HoldDirectWireProjectionParams,
+    ) -> (Value, Option<Zeroizing<String>>) {
+        match closed_held_direct_wire_projection(result, params) {
+            Ok(projection) => projection,
+            Err(_) => panic!("closed held direct-wire projection"),
+        }
     }
 
     fn closed_projection_or_panic(result: &Value, params: &DirectWireProjectionParams) -> Value {
@@ -6700,6 +7305,7 @@ INSERT INTO runtime_final_outbox (
             service_did: SERVICE_DID.to_owned(),
             ws: None,
             held_ticket: None,
+            held_direct_wire_projection: None,
             daemon_state_root: None,
             daemon_continuity_baseline: None,
         }
@@ -7176,22 +7782,7 @@ INSERT INTO runtime_final_outbox (
                     })
                 } else {
                     json!({
-                        "messages": [{
-                            "id": "message-page-2",
-                            "sender_did": SENDER_DID,
-                            "type": "json",
-                            "content_type": DIRECT_INIT_CONTENT_TYPE,
-                            "content": {
-                                "session_id": "session-page-2",
-                                "suite": "suite-page-2",
-                                "sender_static_key_agreement_id":
-                                    "did:wba:example.test:user:sender#key-3",
-                                "recipient_bundle_id": "bundle-page-2",
-                                "recipient_signed_prekey_id": "spk-page-2",
-                                "sender_ephemeral_pub_b64u": "ephemeral-page-2",
-                                "ciphertext_b64u": WIRE_CIPHERTEXT_SECRET,
-                            }
-                        }],
+                        "messages": [direct_init_wire_message("message-page-2", SENDER_DID)],
                         "total": DIRECT_WIRE_INBOX_PAGE_LIMIT + 1,
                         "has_more": false,
                     })
