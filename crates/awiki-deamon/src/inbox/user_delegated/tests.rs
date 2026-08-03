@@ -607,6 +607,37 @@ fn delegated_inbox_skips_app_recovery_control_payload_without_resyncing() {
 }
 
 #[test]
+fn delegated_inbox_dispatches_plain_marker_from_bound_daemon() {
+    let fixture = fixture();
+    let state = &fixture.state;
+    let binding = &fixture.binding;
+    let client = MockClient {
+        pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+            messages: vec![plain_message(
+                "msg_daemon_marker",
+                &binding.daemon_agent_did,
+                "plain marker",
+            )],
+            next_cursor: None,
+            has_more: false,
+        }])),
+        calls: Arc::new(Mutex::new(Vec::new())),
+    };
+    let dispatcher = RecordingDispatcher::default();
+
+    let outcome =
+        process_user_delegated_inbox_for_binding(state, &client, &dispatcher, binding).unwrap();
+
+    assert_eq!(outcome.dispatched_messages, 1);
+    assert_eq!(outcome.skipped_app_control_messages, 0);
+    assert_eq!(dispatcher.dispatched.lock().unwrap().len(), 1);
+    assert!(state
+        .load_message_event(&event_id(&binding.user_did, "msg_daemon_marker"))
+        .unwrap()
+        .is_some());
+}
+
+#[test]
 fn delegated_inbox_skips_bound_daemon_status_payload_without_resyncing() {
     let fixture = fixture();
     let state = &fixture.state;

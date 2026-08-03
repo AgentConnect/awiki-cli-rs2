@@ -1465,7 +1465,8 @@ fn is_bound_agent_control_message(
     message: &Message,
 ) -> bool {
     let sender = message.sender.as_str();
-    sender == binding.daemon_agent_did || sender == binding.runtime_agent_did
+    (sender == binding.daemon_agent_did || sender == binding.runtime_agent_did)
+        && matches!(message.body, MessageBodyView::Payload { .. })
 }
 
 fn is_app_recovery_control_message(message: &Message) -> bool {
