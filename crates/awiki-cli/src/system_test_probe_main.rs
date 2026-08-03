@@ -18,8 +18,9 @@
 //! 6. The test-only Account State fail-once code is accepted only for Agent Inventory reads and
 //!    is mapped to one secret-free probe code; every other RPC rejection keeps its prior mapping.
 //! 7. Direct-wire checks scan a bounded sequence of exact-device `inbox.get` pages with the
-//!    current Core/Vault session, but return only match/shape booleans and counts, never raw wire
-//!    content or pagination state.
+//!    current Core/Vault session. Baseline/hold/verify actions can isolate one newly pending wire
+//!    ID and correlate it after listener decryption while returning only match/shape booleans and
+//!    counts, never raw wire content, identifiers, or pagination state.
 //! 8. Agent bootstrap checks keep Device Access and Daemon Vault records inside Rust and expose
 //!    only a closed bool-or-null projection; account, DID, device, key, and claim values never
 //!    cross the probe boundary.
@@ -106,6 +107,9 @@ enum Action {
     ProbeDownloadTicket(AttachmentTicketParams),
     ProbePrekey(PrekeyParams),
     DirectWireProjection(DirectWireProjectionParams),
+    PrimeDirectWireObservation(DirectWireBaselineParams),
+    HoldDirectWireProjection(DirectWireHoldParams),
+    VerifyHeldDirectWire(DirectWireVerifyParams),
     AccountStateManifest,
     AccountStateAgent(AgentSnapshotParams),
     AccountStateAgentRename(AgentRenameParams),
@@ -143,7 +147,28 @@ struct DirectWireProjectionParams {
     forbidden_plaintext: Zeroizing<String>,
 }
 
-#[derive(Clone, Copy)]
+struct DirectWireHoldParams {
+    peer_did: String,
+    expected_shape: DirectWireShape,
+    forbidden_plaintext: Zeroizing<String>,
+}
+
+struct DirectWireBaselineParams {
+    peer_did: String,
+    expected_shape: DirectWireShape,
+}
+
+struct DirectWireBaseline {
+    peer_did: String,
+    expected_shape: DirectWireShape,
+    message_ids: BTreeSet<String>,
+}
+
+struct DirectWireVerifyParams {
+    message_id: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum DirectWireShape {
     Init,
     Cipher,
@@ -272,6 +297,8 @@ struct Probe {
     service_did: String,
     ws: Option<WsStream>,
     held_ticket: Option<HeldTicket>,
+    direct_wire_baseline: Option<DirectWireBaseline>,
+    held_direct_wire_message_id: Option<Zeroizing<String>>,
 }
 
 #[derive(Deserialize)]
@@ -530,6 +557,8 @@ impl Probe {
             service_did,
             ws: None,
             held_ticket: None,
+            direct_wire_baseline: None,
+            held_direct_wire_message_id: None,
         })
     }
 
@@ -669,6 +698,8 @@ impl Probe {
             service_did,
             ws: None,
             held_ticket: None,
+            direct_wire_baseline: None,
+            held_direct_wire_message_id: None,
         })
     }
 
@@ -798,6 +829,22 @@ impl Probe {
             },
             Action::DirectWireProjection(params) => {
                 Ok((self.direct_wire_projection(&params).await?, false))
+            }
+            Action::PrimeDirectWireObservation(params) => {
+                Ok((self.prime_direct_wire_observation(&params).await?, false))
+            }
+            Action::HoldDirectWireProjection(params) => {
+                Ok((self.hold_direct_wire_projection(&params).await?, false))
+            }
+            Action::VerifyHeldDirectWire(params) => {
+                let held = self
+                    .held_direct_wire_message_id
+                    .take()
+                    .ok_or(ProbeFailure::InvalidState)?;
+                Ok((
+                    json!({"matches": held.as_str() == params.message_id}),
+                    false,
+                ))
             }
             Action::AccountStateManifest => {
                 let result = self
@@ -1142,6 +1189,138 @@ impl Probe {
         Err(ProbeFailure::Runtime)
     }
 
+    async fn prime_direct_wire_observation(
+        &mut self,
+        params: &DirectWireBaselineParams,
+    ) -> Result<Value, ProbeFailure> {
+        if self.direct_wire_baseline.is_some() || self.held_direct_wire_message_id.is_some() {
+            return Err(ProbeFailure::InvalidState);
+        }
+        let candidates = self
+            .collect_direct_wire_candidates(
+                &params.peer_did,
+                params.expected_shape,
+                &BTreeSet::new(),
+            )
+            .await?;
+        let message_ids = candidates
+            .iter()
+            .map(|message| {
+                message
+                    .as_object()
+                    .and_then(|message| message.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or(ProbeFailure::Runtime)
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        if message_ids.len() != candidates.len() {
+            return Err(ProbeFailure::Runtime);
+        }
+        let captured_count = bounded_count(message_ids.len())?;
+        self.direct_wire_baseline = Some(DirectWireBaseline {
+            peer_did: params.peer_did.clone(),
+            expected_shape: params.expected_shape,
+            message_ids,
+        });
+        Ok(json!({"captured_count": captured_count}))
+    }
+
+    async fn hold_direct_wire_projection(
+        &mut self,
+        params: &DirectWireHoldParams,
+    ) -> Result<Value, ProbeFailure> {
+        if self.held_direct_wire_message_id.is_some() {
+            return Err(ProbeFailure::InvalidState);
+        }
+        let baseline = self
+            .direct_wire_baseline
+            .take()
+            .ok_or(ProbeFailure::InvalidState)?;
+        if baseline.peer_did != params.peer_did || baseline.expected_shape != params.expected_shape
+        {
+            return Err(ProbeFailure::InvalidState);
+        }
+        let matching_messages = self
+            .collect_direct_wire_candidates(
+                &params.peer_did,
+                params.expected_shape,
+                &baseline.message_ids,
+            )
+            .await?;
+        let canonical_match_count = bounded_count(matching_messages.len())?;
+        let Some(message_id) = matching_messages
+            .first()
+            .filter(|_| matching_messages.len() == 1)
+            .and_then(Value::as_object)
+            .and_then(|message| message.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            return Ok(empty_direct_wire_projection(canonical_match_count));
+        };
+        let projection = closed_direct_wire_projection(
+            &json!({"messages": matching_messages}),
+            &DirectWireProjectionParams {
+                peer_did: params.peer_did.clone(),
+                message_id: message_id.clone(),
+                expected_shape: params.expected_shape,
+                forbidden_plaintext: Zeroizing::new(params.forbidden_plaintext.as_str().to_owned()),
+            },
+        )?;
+        self.held_direct_wire_message_id = Some(Zeroizing::new(message_id));
+        Ok(projection)
+    }
+
+    async fn collect_direct_wire_candidates(
+        &self,
+        peer_did: &str,
+        expected_shape: DirectWireShape,
+        excluded_message_ids: &BTreeSet<String>,
+    ) -> Result<Vec<Value>, ProbeFailure> {
+        let mut matching_messages = Vec::new();
+        let mut skip = 0_i64;
+
+        for _ in 0..DIRECT_WIRE_INBOX_MAX_PAGES {
+            let mut rpc_params = im_core::realtime::wire::build_inbox_rpc_params(
+                &im_core::realtime::wire::WireIdentity {
+                    did: self.local_did.clone(),
+                },
+                im_core::realtime::wire::InboxWireRequest {
+                    limit: DIRECT_WIRE_INBOX_PAGE_LIMIT,
+                    auth: None,
+                },
+            );
+            rpc_params
+                .get_mut("body")
+                .and_then(Value::as_object_mut)
+                .ok_or(ProbeFailure::Runtime)?
+                .insert("skip".to_owned(), json!(skip));
+            let result = match self.rpc::<Value>("inbox.get", rpc_params).await? {
+                RpcOutcome::Success(result) => result,
+                RpcOutcome::Rejected(_) => return Err(ProbeFailure::Transport),
+            };
+            let progress = append_direct_wire_candidates(
+                &result,
+                peer_did,
+                expected_shape,
+                excluded_message_ids,
+                &mut matching_messages,
+            )?;
+            if !progress.has_more {
+                return Ok(matching_messages);
+            }
+            if progress.message_count == 0 {
+                return Err(ProbeFailure::Runtime);
+            }
+            let consumed =
+                i64::try_from(progress.message_count).map_err(|_| ProbeFailure::Runtime)?;
+            skip = skip.checked_add(consumed).ok_or(ProbeFailure::Runtime)?;
+        }
+
+        Err(ProbeFailure::Runtime)
+    }
+
     async fn get_object(&self, held: &HeldTicket) -> Result<ObjectOutcome, ProbeFailure> {
         let mut authorization = reqwest_authorization_header(&held.ticket)?;
         authorization.set_sensitive(true);
@@ -1433,6 +1612,19 @@ fn parse_request(raw: &str) -> Result<ProbeRequest, ProbeFailure> {
         "direct_wire_projection" => {
             Action::DirectWireProjection(parse_direct_wire_projection_params(params)?)
         }
+        "prime_direct_wire_observation" => {
+            Action::PrimeDirectWireObservation(parse_direct_wire_baseline_params(params)?)
+        }
+        "hold_direct_wire_projection" => {
+            Action::HoldDirectWireProjection(parse_direct_wire_hold_params(params)?)
+        }
+        "verify_held_direct_wire" => {
+            require_exact_keys(params, &["message_id"])?;
+            let message_id = required_string(params, "message_id", 512)?;
+            im_core::ids::MessageId::parse(&message_id)
+                .map_err(|_| ProbeFailure::InvalidRequest)?;
+            Action::VerifyHeldDirectWire(DirectWireVerifyParams { message_id })
+        }
         "account_state_manifest" => {
             require_exact_keys(params, &[])?;
             Action::AccountStateManifest
@@ -1543,6 +1735,48 @@ fn parse_direct_wire_projection_params(
         message_id,
         expected_shape,
         forbidden_plaintext,
+    })
+}
+
+fn parse_direct_wire_hold_params(
+    params: &Map<String, Value>,
+) -> Result<DirectWireHoldParams, ProbeFailure> {
+    require_exact_keys(
+        params,
+        &["expected_shape", "forbidden_plaintext", "peer_did"],
+    )?;
+    let peer_did = required_string(params, "peer_did", 2048)?;
+    im_core::ids::Did::parse(&peer_did).map_err(|_| ProbeFailure::InvalidRequest)?;
+    let expected_shape = match required_string(params, "expected_shape", 16)?.as_str() {
+        "init" => DirectWireShape::Init,
+        "cipher" => DirectWireShape::Cipher,
+        _ => return Err(ProbeFailure::InvalidRequest),
+    };
+    Ok(DirectWireHoldParams {
+        peer_did,
+        expected_shape,
+        forbidden_plaintext: Zeroizing::new(required_opaque_string(
+            params,
+            "forbidden_plaintext",
+            16 * 1024,
+        )?),
+    })
+}
+
+fn parse_direct_wire_baseline_params(
+    params: &Map<String, Value>,
+) -> Result<DirectWireBaselineParams, ProbeFailure> {
+    require_exact_keys(params, &["expected_shape", "peer_did"])?;
+    let peer_did = required_string(params, "peer_did", 2048)?;
+    im_core::ids::Did::parse(&peer_did).map_err(|_| ProbeFailure::InvalidRequest)?;
+    let expected_shape = match required_string(params, "expected_shape", 16)?.as_str() {
+        "init" => DirectWireShape::Init,
+        "cipher" => DirectWireShape::Cipher,
+        _ => return Err(ProbeFailure::InvalidRequest),
+    };
+    Ok(DirectWireBaselineParams {
+        peer_did,
+        expected_shape,
     })
 }
 
@@ -2188,6 +2422,54 @@ fn append_direct_wire_matches(
     })
 }
 
+fn append_direct_wire_candidates(
+    result: &Value,
+    peer_did: &str,
+    expected_shape: DirectWireShape,
+    excluded_message_ids: &BTreeSet<String>,
+    matching: &mut Vec<Value>,
+) -> Result<DirectWirePageProgress, ProbeFailure> {
+    let result = result.as_object().ok_or(ProbeFailure::Runtime)?;
+    let messages = result
+        .get("messages")
+        .and_then(Value::as_array)
+        .filter(|messages| messages.len() <= DIRECT_WIRE_INBOX_PAGE_LIMIT as usize)
+        .ok_or(ProbeFailure::Runtime)?;
+    let has_more = result
+        .get("has_more")
+        .and_then(Value::as_bool)
+        .ok_or(ProbeFailure::Runtime)?;
+
+    for message in messages {
+        let message_object = message.as_object().ok_or(ProbeFailure::Runtime)?;
+        if string_field(message_object, "content_type") != Some(expected_shape.content_type()) {
+            continue;
+        }
+        let message_id = required_response_string(message_object, "id")?;
+        im_core::ids::MessageId::parse(message_id).map_err(|_| ProbeFailure::Runtime)?;
+        let sender_did = required_response_string(message_object, "sender_did")?;
+        if sender_did == peer_did && !excluded_message_ids.contains(message_id) {
+            matching.push(message.clone());
+        }
+    }
+
+    Ok(DirectWirePageProgress {
+        message_count: messages.len(),
+        has_more,
+    })
+}
+
+fn empty_direct_wire_projection(canonical_match_count: u64) -> Value {
+    json!({
+        "canonical_match_count": canonical_match_count,
+        "content_type_matches": false,
+        "wire_kind_matches": false,
+        "ciphertext_present": false,
+        "shape_matches": false,
+        "plaintext_absent": false,
+    })
+}
+
 fn closed_direct_wire_projection(
     result: &Value,
     params: &DirectWireProjectionParams,
@@ -2211,14 +2493,7 @@ fn closed_direct_wire_projection(
 
     let canonical_match_count = bounded_count(matching.len())?;
     let Some((message_value, message)) = matching.first().filter(|_| matching.len() == 1) else {
-        return Ok(json!({
-            "canonical_match_count": canonical_match_count,
-            "content_type_matches": false,
-            "wire_kind_matches": false,
-            "ciphertext_present": false,
-            "shape_matches": false,
-            "plaintext_absent": false,
-        }));
+        return Ok(empty_direct_wire_projection(canonical_match_count));
     };
     let content = message.get("content").and_then(Value::as_object);
     let content_type_matches =
@@ -3138,6 +3413,64 @@ mod tests {
         assert!(matches!(params.expected_shape, DirectWireShape::Init));
         assert_eq!(params.forbidden_plaintext.as_str(), WIRE_PLAINTEXT_SECRET);
 
+        let baseline = match parse_request(
+            &json!({
+                "id": "wire-baseline",
+                "action": "prime_direct_wire_observation",
+                "params": {
+                    "peer_did": SENDER_DID,
+                    "expected_shape": "cipher",
+                }
+            })
+            .to_string(),
+        ) {
+            Ok(request) => request,
+            Err(_) => panic!("closed direct-wire baseline request"),
+        };
+        let Action::PrimeDirectWireObservation(params) = baseline.action else {
+            panic!("direct-wire baseline action")
+        };
+        assert_eq!(params.peer_did, SENDER_DID);
+        assert!(matches!(params.expected_shape, DirectWireShape::Cipher));
+
+        let held = match parse_request(
+            &json!({
+                "id": "wire-held",
+                "action": "hold_direct_wire_projection",
+                "params": {
+                    "peer_did": SENDER_DID,
+                    "expected_shape": "cipher",
+                    "forbidden_plaintext": WIRE_PLAINTEXT_SECRET,
+                }
+            })
+            .to_string(),
+        ) {
+            Ok(request) => request,
+            Err(_) => panic!("closed held direct-wire request"),
+        };
+        let Action::HoldDirectWireProjection(params) = held.action else {
+            panic!("held direct-wire action")
+        };
+        assert_eq!(params.peer_did, SENDER_DID);
+        assert!(matches!(params.expected_shape, DirectWireShape::Cipher));
+        assert_eq!(params.forbidden_plaintext.as_str(), WIRE_PLAINTEXT_SECRET);
+
+        let verify = match parse_request(
+            &json!({
+                "id": "wire-verify",
+                "action": "verify_held_direct_wire",
+                "params": {"message_id": "message-1"},
+            })
+            .to_string(),
+        ) {
+            Ok(request) => request,
+            Err(_) => panic!("closed held direct-wire verification request"),
+        };
+        let Action::VerifyHeldDirectWire(params) = verify.action else {
+            panic!("held direct-wire verification action")
+        };
+        assert_eq!(params.message_id, "message-1");
+
         for invalid_params in [
             json!({
                 "peer_did": SENDER_DID,
@@ -3300,6 +3633,87 @@ mod tests {
             TOKEN_SECRET,
             WIRE_CIPHERTEXT_SECRET,
             WIRE_PLAINTEXT_SECRET,
+            "message-page-2",
+            SENDER_DID,
+        ] {
+            assert!(!encoded.contains(forbidden));
+        }
+    }
+
+    #[tokio::test]
+    async fn held_direct_wire_projection_correlates_after_inbox_ack_without_disclosing_id() {
+        let observed_skips = Arc::new(Mutex::new(Vec::new()));
+        let (base_url, server) = spawn_direct_wire_observation_server(observed_skips.clone()).await;
+        let mut probe = test_probe(&base_url);
+        let primed = execute_line(
+            &mut probe,
+            &json!({
+                "id": "wire-prime",
+                "action": "prime_direct_wire_observation",
+                "params": {
+                    "peer_did": SENDER_DID,
+                    "expected_shape": "init",
+                }
+            })
+            .to_string(),
+        )
+        .await;
+        assert_eq!(primed["result"], json!({"captured_count": 1}));
+        let hold_request = json!({
+            "id": "wire-hold",
+            "action": "hold_direct_wire_projection",
+            "params": {
+                "peer_did": SENDER_DID,
+                "expected_shape": "init",
+                "forbidden_plaintext": WIRE_PLAINTEXT_SECRET,
+            }
+        })
+        .to_string();
+
+        let held = execute_line(&mut probe, &hold_request).await;
+        server
+            .await
+            .expect("held direct-wire pagination server task");
+        assert_eq!(held["result"], successful_direct_wire_projection());
+        assert_eq!(
+            observed_skips
+                .lock()
+                .expect("held direct-wire skip observations")
+                .as_slice(),
+            &[0, 0]
+        );
+
+        let verified = execute_line(
+            &mut probe,
+            &json!({
+                "id": "wire-verify",
+                "action": "verify_held_direct_wire",
+                "params": {"message_id": "message-page-2"},
+            })
+            .to_string(),
+        )
+        .await;
+        assert_eq!(verified["result"], json!({"matches": true}));
+
+        let replay = execute_line(
+            &mut probe,
+            &json!({
+                "id": "wire-verify-replay",
+                "action": "verify_held_direct_wire",
+                "params": {"message_id": "message-page-2"},
+            })
+            .to_string(),
+        )
+        .await;
+        assert_eq!(replay["error"]["code"], INVALID_STATE);
+
+        let encoded = serde_json::to_string(&(primed, held, verified, replay))
+            .expect("serialize held direct-wire outputs");
+        for forbidden in [
+            TOKEN_SECRET,
+            WIRE_CIPHERTEXT_SECRET,
+            WIRE_PLAINTEXT_SECRET,
+            "message-before",
             "message-page-2",
             SENDER_DID,
         ] {
@@ -3760,6 +4174,8 @@ mod tests {
             service_did: SERVICE_DID.to_owned(),
             ws: None,
             held_ticket: None,
+            direct_wire_baseline: None,
+            held_direct_wire_message_id: None,
         }
     }
 
@@ -4266,6 +4682,80 @@ mod tests {
                     .write_all(response.as_bytes())
                     .await
                     .expect("write inbox response");
+            }
+        });
+        (base_url, server)
+    }
+
+    async fn spawn_direct_wire_observation_server(
+        observed_skips: Arc<Mutex<Vec<i64>>>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind direct-wire observation server");
+        let address = listener
+            .local_addr()
+            .expect("direct-wire observation address");
+        let base_url = format!("http://{address}");
+        let server = tokio::spawn(async move {
+            for observation_index in 0..2 {
+                let (mut socket, _) = listener
+                    .accept()
+                    .await
+                    .expect("accept observed Inbox request");
+                let request = read_http_request(&mut socket).await;
+                let (_, body) = request
+                    .split_once("\r\n\r\n")
+                    .expect("observed Inbox request body");
+                let payload: Value =
+                    serde_json::from_str(body).expect("observed Inbox request JSON");
+                assert_eq!(payload["method"], "inbox.get");
+                let skip = payload["params"]["body"]["skip"]
+                    .as_i64()
+                    .expect("observed Inbox skip cursor");
+                observed_skips
+                    .lock()
+                    .expect("direct-wire observation skips")
+                    .push(skip);
+
+                let wire_message = |message_id: &str| {
+                    json!({
+                        "id": message_id,
+                        "sender_did": SENDER_DID,
+                        "type": "json",
+                        "content_type": DIRECT_INIT_CONTENT_TYPE,
+                        "content": {
+                            "session_id": format!("session-{message_id}"),
+                            "suite": "suite-observed",
+                            "sender_static_key_agreement_id":
+                                "did:wba:example.test:user:sender#key-3",
+                            "recipient_bundle_id": "bundle-observed",
+                            "recipient_signed_prekey_id": "spk-observed",
+                            "sender_ephemeral_pub_b64u": "ephemeral-observed",
+                            "ciphertext_b64u": WIRE_CIPHERTEXT_SECRET,
+                        }
+                    })
+                };
+                let mut messages = vec![wire_message("message-before")];
+                if observation_index == 1 {
+                    messages.push(wire_message("message-page-2"));
+                }
+                let response = json_response(
+                    200,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": "system-test-probe",
+                        "result": {
+                            "total": messages.len(),
+                            "messages": messages,
+                            "has_more": false,
+                        },
+                    }),
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write observed Inbox response");
             }
         });
         (base_url, server)
