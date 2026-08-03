@@ -302,7 +302,10 @@ enum DaemonFixturePrepareFailureStage {
     Token,
     Setup,
     RuntimeMaterial,
-    SyncInitialize,
+    SyncInitializeCallFailed,
+    SyncInitializeRecoveryRequired,
+    SyncInitializeRetryableFailure,
+    SyncInitializeAuthRevoked,
     BootstrapSend,
 }
 
@@ -312,7 +315,10 @@ impl DaemonFixturePrepareFailureStage {
             Self::Token => "token",
             Self::Setup => "setup",
             Self::RuntimeMaterial => "runtime_material",
-            Self::SyncInitialize => "sync_initialize",
+            Self::SyncInitializeCallFailed => "sync_initialize_call_failed",
+            Self::SyncInitializeRecoveryRequired => "sync_initialize_recovery_required",
+            Self::SyncInitializeRetryableFailure => "sync_initialize_retryable_failure",
+            Self::SyncInitializeAuthRevoked => "sync_initialize_auth_revoked",
             Self::BootstrapSend => "bootstrap_send",
         }
     }
@@ -363,15 +369,26 @@ where
     SendFuture: std::future::Future<Output = Result<(), ProbeFailure>>,
 {
     let status = sync().await.map_err(|_| {
-        DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::SyncInitialize)
+        DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::SyncInitializeCallFailed)
     })?;
-    if !matches!(
-        status,
-        im_core::messages::MessageSyncStatus::Idle | im_core::messages::MessageSyncStatus::Changed
-    ) {
-        return Err(DaemonFixturePrepareFailure(
-            DaemonFixturePrepareFailureStage::SyncInitialize,
-        ));
+    match status {
+        im_core::messages::MessageSyncStatus::Idle
+        | im_core::messages::MessageSyncStatus::Changed => {}
+        im_core::messages::MessageSyncStatus::RecoveryRequired => {
+            return Err(DaemonFixturePrepareFailure(
+                DaemonFixturePrepareFailureStage::SyncInitializeRecoveryRequired,
+            ))
+        }
+        im_core::messages::MessageSyncStatus::RetryableFailure => {
+            return Err(DaemonFixturePrepareFailure(
+                DaemonFixturePrepareFailureStage::SyncInitializeRetryableFailure,
+            ))
+        }
+        im_core::messages::MessageSyncStatus::AuthRevoked => {
+            return Err(DaemonFixturePrepareFailure(
+                DaemonFixturePrepareFailureStage::SyncInitializeAuthRevoked,
+            ))
+        }
     }
     send()
         .await
@@ -4593,7 +4610,7 @@ mod tests {
             ("encrypt", DaemonFixturePrepareFailureStage::RuntimeMaterial),
             (
                 "preflight-sync",
-                DaemonFixturePrepareFailureStage::SyncInitialize,
+                DaemonFixturePrepareFailureStage::SyncInitializeCallFailed,
             ),
             ("send", DaemonFixturePrepareFailureStage::BootstrapSend),
         ] {
@@ -4689,17 +4706,24 @@ mod tests {
             assert_eq!(events, ["sync", "send"]);
         }
 
-        for status in [
-            im_core::messages::MessageSyncStatus::RecoveryRequired,
-            im_core::messages::MessageSyncStatus::RetryableFailure,
-            im_core::messages::MessageSyncStatus::AuthRevoked,
+        for (status, expected_stage) in [
+            (
+                im_core::messages::MessageSyncStatus::RecoveryRequired,
+                DaemonFixturePrepareFailureStage::SyncInitializeRecoveryRequired,
+            ),
+            (
+                im_core::messages::MessageSyncStatus::RetryableFailure,
+                DaemonFixturePrepareFailureStage::SyncInitializeRetryableFailure,
+            ),
+            (
+                im_core::messages::MessageSyncStatus::AuthRevoked,
+                DaemonFixturePrepareFailureStage::SyncInitializeAuthRevoked,
+            ),
         ] {
             let (result, events) = exercise(Ok(status)).await;
             assert!(matches!(
                 result,
-                Err(DaemonFixturePrepareFailure(
-                    DaemonFixturePrepareFailureStage::SyncInitialize
-                ))
+                Err(DaemonFixturePrepareFailure(stage)) if stage == expected_stage
             ));
             assert_eq!(events, ["sync"]);
         }
@@ -4708,7 +4732,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(DaemonFixturePrepareFailure(
-                DaemonFixturePrepareFailureStage::SyncInitialize
+                DaemonFixturePrepareFailureStage::SyncInitializeCallFailed
             ))
         ));
         assert_eq!(events, ["sync"]);
