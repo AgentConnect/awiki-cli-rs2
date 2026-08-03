@@ -858,6 +858,7 @@ impl<'a> GroupService<'a> {
                     summary.blocked += 1;
                     continue;
                 }
+                Err(error) if handle_recovery_preflight_allows_rebind(&job, &error) => {}
                 Err(error) => {
                     crate::internal::group_rebind_recovery::update_p4_job(
                         sqlite_path,
@@ -974,7 +975,9 @@ impl<'a> GroupService<'a> {
                         summary.completed += 1;
                         continue;
                     }
-                    let blocked = if rebind_error_requires_authoritative_reread(&error) {
+                    let blocked = if handle_recovery_rebind_guard_rejected(&job, &error) {
+                        true
+                    } else if rebind_error_requires_authoritative_reread(&error) {
                         convergence.is_some()
                     } else {
                         rebind_error_is_terminal(&error)
@@ -2698,6 +2701,30 @@ fn rebind_error_is_terminal(error: &crate::ImError) -> bool {
         | crate::ImError::UnsupportedCapability { .. } => true,
         _ => false,
     }
+}
+
+fn handle_recovery_preflight_allows_rebind(
+    job: &crate::internal::group_rebind_recovery::P4RebindJob,
+    error: &crate::ImError,
+) -> bool {
+    crate::internal::group_rebind_recovery::is_handle_recovery_operation_id(&job.job_id)
+        && matches!(
+            error,
+            crate::ImError::Service { code: Some(code), .. }
+                if code == "group.not_member"
+        )
+}
+
+fn handle_recovery_rebind_guard_rejected(
+    job: &crate::internal::group_rebind_recovery::P4RebindJob,
+    error: &crate::ImError,
+) -> bool {
+    crate::internal::group_rebind_recovery::is_handle_recovery_operation_id(&job.job_id)
+        && matches!(
+            error,
+            crate::ImError::Service { code: Some(code), .. }
+                if code == "group.rebind_not_allowed"
+        )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

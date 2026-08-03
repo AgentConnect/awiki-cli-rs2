@@ -751,6 +751,130 @@ fn recovery_rebind_authority_is_exact_and_fail_closed() {
 }
 
 #[test]
+fn handle_recovery_preflight_not_member_exception_is_contract_exact() {
+    let recovery_job_id = crate::internal::group_rebind_recovery::handle_recovery_operation_id(
+        "alice.awiki.info",
+        "did:wba:awiki.info:users:alice-old",
+        "did:wba:awiki.info:users:alice-new",
+        "8",
+        "did:wba:awiki.info:groups:engineering",
+    )
+    .unwrap();
+    let job = crate::internal::group_rebind_recovery::P4RebindJob {
+        job_id: recovery_job_id.clone(),
+        owner_identity_id: "owner-1".to_owned(),
+        group_did: "did:wba:awiki.info:groups:engineering".to_owned(),
+        member_handle: "alice.awiki.info".to_owned(),
+        previous_member_did: "did:wba:awiki.info:users:alice-old".to_owned(),
+        new_member_did: "did:wba:awiki.info:users:alice-new".to_owned(),
+        binding_generation: "8".to_owned(),
+        phase: "sending".to_owned(),
+        group_state_ref_json: None,
+        attempt_count: 1,
+    };
+    let not_member = crate::ImError::Service {
+        status_code: Some(200),
+        code: Some("group.not_member".to_owned()),
+        message: "localized".to_owned(),
+        data: None,
+    };
+
+    assert!(super::handle_recovery_preflight_allows_rebind(
+        &job,
+        &not_member
+    ));
+
+    for non_recovery in [
+        "legacy-rebind-job".to_owned(),
+        format!("op-rebind-v1-{}", "a".repeat(63)),
+        format!("op-rebind-v1-{}", "g".repeat(64)),
+    ] {
+        let mut non_recovery_job = job.clone();
+        non_recovery_job.job_id = non_recovery;
+        assert!(!super::handle_recovery_preflight_allows_rebind(
+            &non_recovery_job,
+            &not_member
+        ));
+    }
+    for alias in ["group_not_member", "not_member", "not-member"] {
+        let alias_error = crate::ImError::Service {
+            status_code: Some(200),
+            code: Some(alias.to_owned()),
+            message: "group.not_member".to_owned(),
+            data: None,
+        };
+        assert!(!super::handle_recovery_preflight_allows_rebind(
+            &job,
+            &alias_error
+        ));
+    }
+
+    let misleading_transport_error = crate::ImError::TransportUnavailable {
+        detail: "group.not_member".to_owned(),
+    };
+    assert!(!super::handle_recovery_preflight_allows_rebind(
+        &job,
+        &misleading_transport_error
+    ));
+    let other_service_error = crate::ImError::Service {
+        status_code: Some(503),
+        code: Some("temporarily_unavailable".to_owned()),
+        message: "group.not_member".to_owned(),
+        data: None,
+    };
+    assert!(!super::handle_recovery_preflight_allows_rebind(
+        &job,
+        &other_service_error
+    ));
+}
+
+#[test]
+fn handle_recovery_e2ee_guard_rejection_is_terminal_without_p6() {
+    let guard_rejection = crate::ImError::Service {
+        status_code: Some(200),
+        code: Some("group.rebind_not_allowed".to_owned()),
+        message: "localized".to_owned(),
+        data: None,
+    };
+    let recovery_job_id = crate::internal::group_rebind_recovery::handle_recovery_operation_id(
+        "alice.awiki.info",
+        "did:wba:awiki.info:users:alice-old",
+        "did:wba:awiki.info:users:alice-new",
+        "8",
+        "did:wba:awiki.info:groups:engineering",
+    )
+    .unwrap();
+    let recovery_job = crate::internal::group_rebind_recovery::P4RebindJob {
+        job_id: recovery_job_id.clone(),
+        owner_identity_id: "owner-1".to_owned(),
+        group_did: "did:wba:awiki.info:groups:engineering".to_owned(),
+        member_handle: "alice.awiki.info".to_owned(),
+        previous_member_did: "did:wba:awiki.info:users:alice-old".to_owned(),
+        new_member_did: "did:wba:awiki.info:users:alice-new".to_owned(),
+        binding_generation: "8".to_owned(),
+        phase: "sending".to_owned(),
+        group_state_ref_json: None,
+        attempt_count: 1,
+    };
+
+    assert!(!super::rebind_error_requires_authoritative_reread(
+        &guard_rejection
+    ));
+    assert!(!super::rebind_error_is_terminal(&guard_rejection));
+    assert!(super::handle_recovery_rebind_guard_rejected(
+        &recovery_job,
+        &guard_rejection
+    ));
+    let mut legacy_job = recovery_job.clone();
+    legacy_job.job_id = "legacy-rebind-job".to_owned();
+    assert!(!super::handle_recovery_rebind_guard_rejected(
+        &legacy_job,
+        &guard_rejection
+    ));
+    assert!(!super::p4_rebind_requires_p6(&recovery_job_id, true));
+}
+
+#[test]
 fn rebind_repair_requires_operation_gone_and_expected_roster() {
     use anp::group_e2ee::operations::{PendingCommitStatus, StatusOutput};
     let mut status = StatusOutput {
