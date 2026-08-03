@@ -74,6 +74,9 @@ const TRANSPORT_FAILED: &str = "probe.transport_failed";
 const RUNTIME_FAILED: &str = "probe.runtime_failed";
 const DAEMON_FIXTURE_BOOTSTRAP_VALIDATION_OR_PERSIST: &str =
     "probe.daemon_fixture.bootstrap_validation_or_persist";
+const DAEMON_FIXTURE_BOOTSTRAP_STATE_PERSIST: &str = "probe.daemon_fixture.bootstrap_state_persist";
+const DAEMON_FIXTURE_BOOTSTRAP_RECEIVED_AUDIT: &str =
+    "probe.daemon_fixture.bootstrap_received_audit";
 const DAEMON_FIXTURE_RUNTIME_REGISTRATION_PREPARE_OR_EXCHANGE: &str =
     "probe.daemon_fixture.runtime_registration_prepare_or_exchange";
 const DAEMON_FIXTURE_BINDING_PERSIST: &str = "probe.daemon_fixture.binding_persist";
@@ -514,6 +517,8 @@ enum ProbeFailure {
     Transport,
     Runtime,
     DaemonFixtureBootstrapValidationOrPersist,
+    DaemonFixtureBootstrapStatePersist,
+    DaemonFixtureBootstrapReceivedAudit,
     DaemonFixtureRuntimeRegistrationPrepareOrExchange,
     DaemonFixtureBindingPersist,
     DaemonFixtureBindingProjection,
@@ -530,6 +535,8 @@ impl ProbeFailure {
             Self::DaemonFixtureBootstrapValidationOrPersist => {
                 DAEMON_FIXTURE_BOOTSTRAP_VALIDATION_OR_PERSIST
             }
+            Self::DaemonFixtureBootstrapStatePersist => DAEMON_FIXTURE_BOOTSTRAP_STATE_PERSIST,
+            Self::DaemonFixtureBootstrapReceivedAudit => DAEMON_FIXTURE_BOOTSTRAP_RECEIVED_AUDIT,
             Self::DaemonFixtureRuntimeRegistrationPrepareOrExchange => {
                 DAEMON_FIXTURE_RUNTIME_REGISTRATION_PREPARE_OR_EXCHANGE
             }
@@ -1800,7 +1807,24 @@ impl Probe {
                 .audit_event_exists("daemon.bootstrap.received", Some(&self.local_did), None)
                 .map_err(|_| ProbeFailure::Runtime)?
             {
-                return Err(ProbeFailure::DaemonFixtureBootstrapValidationOrPersist);
+                let verification_method = format!("{}#daemon-key-1", self.local_did);
+                return match state.load_user_delegated_identity(&verification_method) {
+                    Ok(None) => Err(ProbeFailure::DaemonFixtureBootstrapStatePersist),
+                    Ok(Some(identity))
+                        if identity.validate().is_ok()
+                            && identity.user_did == self.local_did
+                            && identity.controller_did == self.local_did
+                            && identity.daemon_agent_did == self.local_did
+                            && identity.verification_method == verification_method
+                            && identity.status
+                                == awiki_deamon::app_bridge::bootstrap::DAEMON_BOOTSTRAP_STATUS_PAIRED_KEY_RECEIVED =>
+                    {
+                        Err(ProbeFailure::DaemonFixtureBootstrapReceivedAudit)
+                    }
+                    Ok(Some(_)) | Err(_) => {
+                        Err(ProbeFailure::DaemonFixtureBootstrapValidationOrPersist)
+                    }
+                };
             }
             if !state
                 .audit_event_exists(
@@ -4859,7 +4883,141 @@ INSERT INTO agent_registration_pending (
             }
         };
 
+        assert_closed_failure("probe.daemon_fixture.bootstrap_state_persist");
+
+        let verification_method = format!("{LOCAL_DID}#daemon-key-1");
+        let delegated = awiki_deamon::state::UserDelegatedIdentityRecord {
+            user_did: LOCAL_DID.to_owned(),
+            verification_method: verification_method.clone(),
+            app_instance_id: "app-stage-diagnostic".to_owned(),
+            controller_did: LOCAL_DID.to_owned(),
+            daemon_agent_did: LOCAL_DID.to_owned(),
+            public_key_multibase: "z-stage-diagnostic-public".to_owned(),
+            private_key_material: "stage-diagnostic-private".to_owned(),
+            private_key_ref_json: None,
+            allowed_scopes_json: json!(["message.inbox.read.plain"]),
+            status: "paired_key_received".to_owned(),
+            expires_at: None,
+            bootstrap_id: "boot-stage-diagnostic".to_owned(),
+            idempotency_key: "personal-agent-bootstrap:stage-diagnostic".to_owned(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        let replay = awiki_deamon::state::BootstrapReplayRecord {
+            bootstrap_id: delegated.bootstrap_id.clone(),
+            idempotency_key: delegated.idempotency_key.clone(),
+            payload_hash: "stage-diagnostic-payload".to_owned(),
+            user_did: delegated.user_did.clone(),
+            verification_method: delegated.verification_method.clone(),
+            app_instance_id: delegated.app_instance_id.clone(),
+            daemon_agent_did: delegated.daemon_agent_did.clone(),
+            status: delegated.status.clone(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        state
+            .store_bootstrap_state(&delegated, &replay)
+            .expect("store exact delegated bootstrap state");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_received_audit");
+
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE user_delegated_identity SET user_did = ?1 WHERE verification_method = ?2",
+                rusqlite::params!["did:wba:example.test:user:different", verification_method],
+            )
+            .expect("make delegated identity contract-invalid");
         assert_closed_failure("probe.daemon_fixture.bootstrap_validation_or_persist");
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE user_delegated_identity SET user_did = ?1 WHERE verification_method = ?2",
+                rusqlite::params![LOCAL_DID, verification_method],
+            )
+            .expect("restore delegated identity contract");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_received_audit");
+
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE user_delegated_identity SET daemon_agent_did = ?1 WHERE verification_method = ?2",
+                rusqlite::params!["did:wba:example.test:agent:different", verification_method],
+            )
+            .expect("make delegated Daemon contract-invalid");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_validation_or_persist");
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE user_delegated_identity SET daemon_agent_did = ?1 WHERE verification_method = ?2",
+                rusqlite::params![LOCAL_DID, verification_method],
+            )
+            .expect("restore delegated Daemon contract");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_received_audit");
+
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE user_delegated_identity SET controller_did = ?1 WHERE verification_method = ?2",
+                rusqlite::params!["did:wba:example.test:user:different", verification_method],
+            )
+            .expect("make delegated Controller contract-invalid");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_validation_or_persist");
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE user_delegated_identity SET controller_did = ?1 WHERE verification_method = ?2",
+                rusqlite::params![LOCAL_DID, verification_method],
+            )
+            .expect("restore delegated Controller contract");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_received_audit");
+
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE user_delegated_identity SET status = 'revoked' WHERE verification_method = ?1",
+                [&verification_method],
+            )
+            .expect("make delegated status contract-invalid");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_validation_or_persist");
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE user_delegated_identity SET status = ?1 WHERE verification_method = ?2",
+                rusqlite::params![
+                    awiki_deamon::app_bridge::bootstrap::DAEMON_BOOTSTRAP_STATUS_PAIRED_KEY_RECEIVED,
+                    verification_method,
+                ],
+            )
+            .expect("restore delegated status contract");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_received_audit");
+
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE user_delegated_identity SET allowed_scopes_json = '{}' WHERE verification_method = ?1",
+                [&verification_method],
+            )
+            .expect("make delegated record validation-invalid");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_validation_or_persist");
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE user_delegated_identity SET allowed_scopes_json = '[\"message.inbox.read.plain\"]' WHERE verification_method = ?1",
+                [&verification_method],
+            )
+            .expect("restore delegated record validation contract");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_received_audit");
+
         state
             .insert_audit_event_json(
                 "daemon.bootstrap.received",
@@ -4913,6 +5071,40 @@ INSERT INTO agent_registration_pending (
             )
             .expect("insert binding ready audit event");
         assert_closed_failure("probe.daemon_fixture.binding_projection");
+    }
+
+    #[test]
+    fn daemon_fixture_resources_keeps_delegated_identity_load_error_on_broad_closed_failure() {
+        let root = TestStateRoot::new("daemon-fixture-resource-load-error");
+        let config =
+            awiki_deamon::DaemonConfig::for_state_root(&root.path).expect("daemon probe config");
+        config.ensure_state_layout().expect("daemon state layout");
+        let state = awiki_deamon::DaemonState::open(&config).expect("daemon state");
+        state.initialize().expect("daemon state schema");
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute("DROP TABLE user_delegated_identity", [])
+            .expect("remove delegated identity table");
+        let mut probe = test_probe("http://127.0.0.1:9");
+        probe.daemon_state_root = Some(root.path.clone());
+
+        let failure = match probe.daemon_fixture_resources() {
+            Err(failure) => failure,
+            Ok(_) => panic!("delegated identity load error must fail closed"),
+        };
+        assert_eq!(
+            failure.code(),
+            DAEMON_FIXTURE_BOOTSTRAP_VALIDATION_OR_PERSIST
+        );
+        assert_eq!(
+            failure_response(RequestId(json!("resources")), failure),
+            json!({
+                "id": "resources",
+                "ok": false,
+                "error": {"code": DAEMON_FIXTURE_BOOTSTRAP_VALIDATION_OR_PERSIST},
+            })
+        );
     }
 
     #[test]
