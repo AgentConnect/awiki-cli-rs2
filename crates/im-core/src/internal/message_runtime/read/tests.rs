@@ -1210,6 +1210,57 @@ fn messages_read_runtime_local_history_reads_projection_without_rpc() {
 }
 
 #[test]
+fn messages_read_runtime_local_history_hides_direct_e2ee_wire_messages() {
+    let message_record = |msg_id: &str, content_type: &str, content: &str| {
+        crate::internal::local_state::messages::MessageRecord {
+            msg_id: msg_id.to_owned(),
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:example:alice".to_owned(),
+            conversation_id: "dm:did:example:bob".to_owned(),
+            thread_id: "dm:did:example:bob".to_owned(),
+            direction: 0,
+            sender_did: "did:example:bob".to_owned(),
+            receiver_did: "did:example:alice".to_owned(),
+            content_type: content_type.to_owned(),
+            content: content.to_owned(),
+            is_e2ee: true,
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        }
+    };
+    let page = local_history_records_to_page(
+        crate::internal::local_state::messages::ThreadLocalHistoryRecords {
+            records: vec![
+                message_record("msg-plaintext", "text/plain", "decrypted message"),
+                message_record(
+                    "msg-init-wire",
+                    "application/anp-direct-init+json",
+                    r#"{"ciphertext_b64u":"init-ciphertext"}"#,
+                ),
+                message_record(
+                    "msg-cipher-wire",
+                    "application/anp-direct-cipher+json",
+                    r#"{"ciphertext_b64u":"session-ciphertext"}"#,
+                ),
+            ],
+            next_cursor: None,
+            has_more: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].id.as_str(), "msg-plaintext");
+    assert_eq!(
+        page.items[0].metadata.content_type.as_deref(),
+        Some("text/plain")
+    );
+    assert!(matches!(
+        &page.items[0].body,
+        crate::messages::MessageBodyView::Text { text, .. } if text == "decrypted message"
+    ));
+}
+
+#[test]
 fn messages_read_runtime_local_history_preserves_peer_scope_without_metadata() {
     let fixture = Fixture::new();
     let client = fixture.client();

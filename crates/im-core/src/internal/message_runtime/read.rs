@@ -1949,7 +1949,10 @@ fn local_history_records_to_page(
         .records
         .iter()
         .map(crate::internal::message_runtime::conversations::message_from_record)
-        .collect::<crate::ImResult<Vec<_>>>()?;
+        .collect::<crate::ImResult<Vec<_>>>()?
+        .into_iter()
+        .filter(|message| !is_direct_e2ee_wire_sdk_message(message))
+        .collect();
     Ok(crate::ids::Page {
         items,
         next_cursor,
