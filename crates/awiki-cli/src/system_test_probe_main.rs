@@ -1487,7 +1487,7 @@ impl Probe {
             || delegated.verification_method != binding.inbox_auth_verification_method
             || !delegated.verification_method.ends_with("#daemon-key-1")
             || delegated.private_key_material.trim().is_empty()
-            || delegated.status != "active"
+            || !daemon_continuity_delegated_status_ready(&delegated.status)
         {
             return Err(ProbeFailure::InvalidState);
         }
@@ -2530,6 +2530,10 @@ impl Probe {
         }
         Ok(url)
     }
+}
+
+fn daemon_continuity_delegated_status_ready(status: &str) -> bool {
+    status == awiki_deamon::app_bridge::bootstrap::DAEMON_BOOTSTRAP_STATUS_PAIRED_KEY_RECEIVED
 }
 
 fn daemon_route_state_snapshot(
@@ -4699,6 +4703,15 @@ mod tests {
                 }),
             );
         }
+    }
+
+    #[test]
+    fn daemon_continuity_accepts_only_the_persisted_bootstrap_status() {
+        assert!(daemon_continuity_delegated_status_ready(
+            awiki_deamon::app_bridge::bootstrap::DAEMON_BOOTSTRAP_STATUS_PAIRED_KEY_RECEIVED,
+        ));
+        assert!(!daemon_continuity_delegated_status_ready("active"));
+        assert!(!daemon_continuity_delegated_status_ready("revoked"));
     }
 
     #[tokio::test]
