@@ -47,7 +47,12 @@ fn mail_inbox_live_posts_mail_rpc_through_im_core() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("POST /mail/rpc HTTP/1.1"));
-    assert_contains_text(&requests[0], "Authorization: Bearer jwt-mail\r\n");
+    assert_contains_text(&requests[0], "content-digest:");
+    assert_contains_text(&requests[0], "signature-input:");
+    assert_contains_text(&requests[0], "signature:");
+    assert!(!requests[0]
+        .to_ascii_lowercase()
+        .contains("authorization: bearer "));
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
     assert_eq!(body["jsonrpc"], "2.0");
     assert_eq!(body["method"], "mail.getInbox");
