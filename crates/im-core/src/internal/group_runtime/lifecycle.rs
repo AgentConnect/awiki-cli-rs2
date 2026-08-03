@@ -39,10 +39,29 @@ where
     T: AuthenticatedRpcTransport,
 {
     pub(crate) fn create(
-        mut self,
+        self,
         request: crate::groups::GroupCreateRequest,
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.create_inner(request, None, credentials)
+    }
+
+    pub(crate) fn create_with_operation_id(
+        self,
+        request: crate::groups::GroupCreateRequest,
+        operation_id: &str,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.create_inner(request, Some(operation_id), credentials)
+    }
+
+    fn create_inner(
+        mut self,
+        request: crate::groups::GroupCreateRequest,
+        operation_id: Option<&str>,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        let operation_id = operation_id.map(require_durable_operation_id).transpose()?;
         self.ensure_group_session()?;
         let service_did = self
             .client
@@ -56,11 +75,14 @@ where
                     "group create requires ImCoreConfig.anp_service_did",
                 )
             })?;
-        let payload = crate::internal::wire::group::build_group_create_payload(
+        let mut payload = crate::internal::wire::group::build_group_create_payload(
             self.client.did().as_str(),
             &request,
             service_did,
         )?;
+        if let Some(operation_id) = operation_id {
+            set_operation_id(&mut payload, operation_id);
+        }
         self.signed_group_rpc(payload, credentials)
     }
 
@@ -91,15 +113,37 @@ where
     }
 
     pub(crate) fn add_member(
-        mut self,
+        self,
         request: crate::groups::GroupMemberMutationRequest,
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.add_member_inner(request, None, credentials)
+    }
+
+    pub(crate) fn add_member_with_operation_id(
+        self,
+        request: crate::groups::GroupMemberMutationRequest,
+        operation_id: &str,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.add_member_inner(request, Some(operation_id), credentials)
+    }
+
+    fn add_member_inner(
+        mut self,
+        request: crate::groups::GroupMemberMutationRequest,
+        operation_id: Option<&str>,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        let operation_id = operation_id.map(require_durable_operation_id).transpose()?;
         self.ensure_group_session()?;
-        let payload = crate::internal::wire::group::build_group_add_member_payload(
+        let mut payload = crate::internal::wire::group::build_group_add_member_payload(
             self.client.did().as_str(),
             &request,
         )?;
+        if let Some(operation_id) = operation_id {
+            set_operation_id(&mut payload, operation_id);
+        }
         self.signed_group_rpc(payload, credentials)
     }
 
@@ -203,10 +247,30 @@ where
     T: AsyncAuthenticatedRpcTransport,
 {
     pub(crate) async fn create_async(
-        mut self,
+        self,
         request: crate::groups::GroupCreateRequest,
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.create_async_inner(request, None, credentials).await
+    }
+
+    pub(crate) async fn create_with_operation_id_async(
+        self,
+        request: crate::groups::GroupCreateRequest,
+        operation_id: &str,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.create_async_inner(request, Some(operation_id), credentials)
+            .await
+    }
+
+    async fn create_async_inner(
+        mut self,
+        request: crate::groups::GroupCreateRequest,
+        operation_id: Option<&str>,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        let operation_id = operation_id.map(require_durable_operation_id).transpose()?;
         self.ensure_group_session_async().await?;
         let service_did = self
             .client
@@ -220,11 +284,14 @@ where
                     "group create requires ImCoreConfig.anp_service_did",
                 )
             })?;
-        let payload = crate::internal::wire::group::build_group_create_payload(
+        let mut payload = crate::internal::wire::group::build_group_create_payload(
             self.client.did().as_str(),
             &request,
             service_did,
         )?;
+        if let Some(operation_id) = operation_id {
+            set_operation_id(&mut payload, operation_id);
+        }
         self.signed_group_rpc_async(payload, credentials).await
     }
 
@@ -255,15 +322,39 @@ where
     }
 
     pub(crate) async fn add_member_async(
-        mut self,
+        self,
         request: crate::groups::GroupMemberMutationRequest,
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.add_member_async_inner(request, None, credentials)
+            .await
+    }
+
+    pub(crate) async fn add_member_with_operation_id_async(
+        self,
+        request: crate::groups::GroupMemberMutationRequest,
+        operation_id: &str,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.add_member_async_inner(request, Some(operation_id), credentials)
+            .await
+    }
+
+    async fn add_member_async_inner(
+        mut self,
+        request: crate::groups::GroupMemberMutationRequest,
+        operation_id: Option<&str>,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        let operation_id = operation_id.map(require_durable_operation_id).transpose()?;
         self.ensure_group_session_async().await?;
-        let payload = crate::internal::wire::group::build_group_add_member_payload(
+        let mut payload = crate::internal::wire::group::build_group_add_member_payload(
             self.client.did().as_str(),
             &request,
         )?;
+        if let Some(operation_id) = operation_id {
+            set_operation_id(&mut payload, operation_id);
+        }
         self.signed_group_rpc_async(payload, credentials).await
     }
 
@@ -383,6 +474,24 @@ where
             Vec::new(),
         ))
     }
+}
+
+fn require_durable_operation_id(operation_id: &str) -> crate::ImResult<&str> {
+    let operation_id = operation_id.trim();
+    if operation_id.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("operation_id".to_owned()),
+            "durable group operation ID is required",
+        ));
+    }
+    Ok(operation_id)
+}
+
+fn set_operation_id(
+    payload: &mut crate::internal::wire::direct::DirectPayload,
+    operation_id: &str,
+) {
+    payload.meta["operation_id"] = serde_json::Value::String(operation_id.to_owned());
 }
 
 fn load_credentials(client: &crate::core::ImClient) -> crate::ImResult<GroupLifecycleCredentials> {
@@ -706,6 +815,96 @@ mod tests {
             .as_str()
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn durable_create_reuses_caller_operation_id_for_transport_replay() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        GroupLifecycleRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            TransportFailsOnce {
+                calls: Rc::clone(&calls),
+                failed: false,
+                response: json!({
+                    "group_did":"did:example:group",
+                    "operation_id":"match-introduction-001"
+                }),
+            },
+        )
+        .create_with_operation_id_async(
+            crate::groups::GroupCreateRequest::new("Trade Introduction 001"),
+            "  match-introduction-001  ",
+            Some(fixture.credentials()),
+        )
+        .await
+        .unwrap();
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].params, calls[1].params);
+        assert_eq!(
+            calls[0].params["meta"]["operation_id"],
+            "match-introduction-001"
+        );
+    }
+
+    #[test]
+    fn durable_add_member_uses_caller_operation_id_and_rejects_blank_id() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let request = crate::groups::GroupMemberMutationRequest {
+            group: crate::ids::GroupRef::parse("did:example:group").unwrap(),
+            member: crate::groups::GroupMemberRef::from(
+                crate::ids::Did::parse("did:example:bob").unwrap(),
+            ),
+            role: None,
+            reason_text: None,
+            leave_request_id: None,
+            security: crate::groups::GroupSecurityRequirement::Default,
+        };
+
+        GroupLifecycleRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"accepted":true}),
+            },
+        )
+        .add_member_with_operation_id(
+            request.clone(),
+            "match-introduction-001:add:buyer",
+            Some(fixture.credentials()),
+        )
+        .unwrap();
+
+        let error = GroupLifecycleRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"accepted":true}),
+            },
+        )
+        .add_member_with_operation_id(request, "  ", Some(fixture.credentials()))
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::ImError::InvalidInput { ref field, .. }
+                if field.as_deref() == Some("operation_id")
+        ));
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].params["meta"]["operation_id"],
+            "match-introduction-001:add:buyer"
+        );
     }
 
     #[tokio::test]

@@ -780,10 +780,19 @@ identifier, retarget the message, or retry service/application failures.
 Exhausting that replay leaves the outcome unknown, so CLI/App layers must
 reconcile authoritative history before creating a new send operation.
 
-Group lifecycle mutations use the same bounded submission boundary with their
-service-owned idempotency scope. They require a non-empty `operation_id`, and an
-exact replay preserves the original origin proof and payload digest. Reads and
-mutations have different retry contracts: authoritative Directory Handle lookup RPCs
+Group lifecycle mutations use the same bounded submission boundary. Ordinary
+convenience methods generate an operation ID inside Core. Durable orchestrators
+instead call `create_with_operation_id(_async)` and
+`add_member_with_operation_id(_async)` with an ID they persist before submission.
+The ID must be non-empty. Replaying the same typed request with the same ID after
+an ambiguous result retrieves the Message service's authoritative idempotent
+response; reusing the ID with different semantic content is an idempotency
+conflict. This replay is the reconciliation contract: callers must preserve the
+exact request and must not create a new operation ID after a timeout. The origin
+proof is rebuilt over the same semantic payload on a later process, while the
+Message service binds the operation scope to the canonical payload digest.
+
+Reads and mutations have different retry contracts: authoritative Directory Handle lookup RPCs
 may replay the exact same endpoint, method, and parameters once after
 `TransportUnavailable`, because they have no mutation outcome to duplicate.
 Mutations without a declared replay identity do not inherit either behavior.

@@ -69,6 +69,27 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupCreateRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
+        self.create_inner(request, None)
+    }
+
+    /// Creates a Group using a caller-owned durable operation ID.
+    ///
+    /// Replaying the same request with the same operation ID returns the
+    /// authoritative result stored by the Message service. Reusing the ID
+    /// with different request content is an idempotency conflict.
+    pub fn create_with_operation_id(
+        &self,
+        request: super::GroupCreateRequest,
+        operation_id: &str,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        self.create_inner(request, Some(operation_id))
+    }
+
+    fn create_inner(
+        &self,
+        request: super::GroupCreateRequest,
+        operation_id: Option<&str>,
+    ) -> crate::ImResult<super::GroupReadResult> {
         let secure_required = group_create_uses_e2ee(&request);
         #[cfg(not(feature = "group-e2ee"))]
         if secure_required {
@@ -83,12 +104,15 @@ impl<'a> GroupService<'a> {
         } else {
             None
         };
-        let mut result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        let runtime = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
-        )
-        .create(request, None)?;
+        );
+        let mut result = match operation_id {
+            Some(operation_id) => runtime.create_with_operation_id(request, operation_id, None),
+            None => runtime.create(request, None),
+        }?;
         crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
         self.refresh_group_state(&mut result, true);
         crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
@@ -133,6 +157,26 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupCreateRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
+        self.create_async_inner(request, None).await
+    }
+
+    /// Asynchronously creates a Group using a caller-owned durable operation ID.
+    ///
+    /// Persist the ID and the exact request before calling this method. After
+    /// an uncertain result, replay both unchanged to reconcile the outcome.
+    pub async fn create_with_operation_id_async(
+        &self,
+        request: super::GroupCreateRequest,
+        operation_id: &str,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        self.create_async_inner(request, Some(operation_id)).await
+    }
+
+    async fn create_async_inner(
+        &self,
+        request: super::GroupCreateRequest,
+        operation_id: Option<&str>,
+    ) -> crate::ImResult<super::GroupReadResult> {
         let secure_required = group_create_uses_e2ee(&request);
         #[cfg(not(feature = "group-e2ee"))]
         if secure_required {
@@ -144,13 +188,19 @@ impl<'a> GroupService<'a> {
         if secure_required && !v2_enabled {
             ensure_group_e2ee_service_available_async(self.client, false).await?;
         }
-        let mut result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        let runtime = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
-        )
-        .create_async(request, None)
-        .await?;
+        );
+        let mut result = match operation_id {
+            Some(operation_id) => {
+                runtime
+                    .create_with_operation_id_async(request, operation_id, None)
+                    .await
+            }
+            None => runtime.create_async(request, None).await,
+        }?;
         let _ = crate::internal::group_runtime::projection::project_group_snapshot_async(
             self.client,
             &result,
@@ -432,6 +482,26 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupMemberMutationRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
+        self.add_member_inner(request, None)
+    }
+
+    /// Adds a member using a caller-owned durable operation ID.
+    ///
+    /// The operation ID and exact request can be replayed after a timeout or
+    /// process restart to retrieve the authoritative idempotent result.
+    pub fn add_member_with_operation_id(
+        &self,
+        request: super::GroupMemberMutationRequest,
+        operation_id: &str,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        self.add_member_inner(request, Some(operation_id))
+    }
+
+    fn add_member_inner(
+        &self,
+        request: super::GroupMemberMutationRequest,
+        operation_id: Option<&str>,
+    ) -> crate::ImResult<super::GroupReadResult> {
         #[cfg(feature = "group-e2ee")]
         let secure_required = request.security.required();
         let group = request.group.as_str().to_string();
@@ -495,12 +565,15 @@ impl<'a> GroupService<'a> {
         }
         #[cfg(feature = "group-e2ee")]
         let request = p4_member_mutation_request(request, use_v2_p6);
-        let p4_result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        let runtime = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
-        )
-        .add_member(request, None);
+        );
+        let p4_result = match operation_id {
+            Some(operation_id) => runtime.add_member_with_operation_id(request, operation_id, None),
+            None => runtime.add_member(request, None),
+        };
         #[cfg(feature = "group-e2ee")]
         let mut result = match p4_result {
             Ok(result) => result,
@@ -589,11 +662,30 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupMemberMutationRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
+        self.add_member_async_inner(request, None).await
+    }
+
+    /// Asynchronously adds a member using a caller-owned durable operation ID.
+    pub async fn add_member_with_operation_id_async(
+        &self,
+        request: super::GroupMemberMutationRequest,
+        operation_id: &str,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        self.add_member_async_inner(request, Some(operation_id))
+            .await
+    }
+
+    async fn add_member_async_inner(
+        &self,
+        request: super::GroupMemberMutationRequest,
+        operation_id: Option<&str>,
+    ) -> crate::ImResult<super::GroupReadResult> {
         #[cfg(feature = "group-e2ee")]
         if use_group_e2ee_v2_lifecycle(self.client) {
             let client = self.client.clone();
+            let operation_id = operation_id.map(str::to_owned);
             return crate::internal::runtime::worker::run_blocking(move || {
-                GroupService::new(&client).add_member(request)
+                GroupService::new(&client).add_member_inner(request, operation_id.as_deref())
             })
             .await
             .map_err(|err| crate::ImError::Internal {
@@ -628,13 +720,19 @@ impl<'a> GroupService<'a> {
                 return Err(crate::ImError::unsupported("group-e2ee"));
             }
         }
-        let mut result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        let runtime = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
-        )
-        .add_member_async(request, None)
-        .await?;
+        );
+        let mut result = match operation_id {
+            Some(operation_id) => {
+                runtime
+                    .add_member_with_operation_id_async(request, operation_id, None)
+                    .await
+            }
+            None => runtime.add_member_async(request, None).await,
+        }?;
         result.resolved_member = Some(resolved_member.clone());
         let _ = crate::internal::group_runtime::projection::project_group_snapshot_async(
             self.client,

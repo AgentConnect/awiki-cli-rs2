@@ -1264,6 +1264,31 @@ impl GroupService<'_> {
 
 普通群消息统一走 `client.messages().send(MessageTarget::Group)`。`groups().send_text()` 只是便利封装，不重复实现业务逻辑。
 
+当前 Rust API 为持久编排额外提供显式 operation identity：
+
+```rust
+pub fn create_with_operation_id(
+    &self,
+    request: GroupCreateRequest,
+    operation_id: &str,
+) -> ImResult<GroupReadResult>;
+pub async fn create_with_operation_id_async(
+    &self,
+    request: GroupCreateRequest,
+    operation_id: &str,
+) -> ImResult<GroupReadResult>;
+pub fn add_member_with_operation_id(
+    &self,
+    request: GroupMemberMutationRequest,
+    operation_id: &str,
+) -> ImResult<GroupReadResult>;
+pub async fn add_member_with_operation_id_async(
+    &self,
+    request: GroupMemberMutationRequest,
+    operation_id: &str,
+) -> ImResult<GroupReadResult>;
+```
+
 Step 4 对当前 `GroupReadResult` 做兼容增量，不另建一套结果 hierarchy：
 
 ```rust
@@ -1305,6 +1330,8 @@ version/cursor 的首尾空白不会被规范化接受。stale 最多重启三�
 `group.local_inventory_incomplete`、`group.local_inventory_too_large`。
 
 Rust SDK 调用方创建群组时推荐使用 `GroupCreateRequest::new(name)`，再按需设置 `description`、`avatar_uri`、`discoverability` 等可选字段，避免后续新增可选字段时依赖完整 struct literal。群资料更新继续使用 `GroupProfilePatch::default()` 后按需填写字段；`avatar_uri` 对应 Group Host 权威的 `group_profile.avatar_uri`，`name` 仍只是 `group_profile.display_name` 的兼容输入。
+
+需要跨超时或进程重启恢复的编排方，必须在调用前持久化 operation ID 和完整 typed request，使用 `create_with_operation_id(_async)` / `add_member_with_operation_id(_async)`。结果不确定时，以相同 ID 和完全相同的请求重放；Message service 会返回该幂等 scope 已保存的权威响应。相同 ID 配不同语义 payload 会返回 idempotency conflict。该能力不等于按群名搜索，也不允许超时后换新 ID 重建；默认 `create` / `add_member` 仍只适合不需要由调用方跨进程持有幂等键的交互调用。首版 durable API 只覆盖 P4 Group create/add-member；Group E2EE 的多阶段 operation identity 仍由其专用生命周期管理。
 
 Handle recovery 后，host 通过现有 high-level `resume_rebind_recovery_async(limit)` 恢复 durable P4/P6 任务。该调用会先从完整 Handle 的 provider-domain HTTPS `/.well-known/handle/{local-part}` 读取公开 WNS 文档，再补建历史缺失的 P4 job；普通 `handle.lookup` RPC 不含权威 generation，不能替代该文档。只有以下条件全部满足时才补建：公开状态为 `active`、返回的完整 Handle 精确一致、WNS DID 等于当前签名 DID、`did:wba` domain 与 Handle provider 一致、`binding_generation` 是 canonical positive decimal string 且严格大于本地成员 generation、旧成员 DID 精确属于当前 `IdentityId` 的 previous DID history。缺字段、numeric/非 canonical generation、DID/domain mismatch、跨域同名 local-part 都 fail closed；不得推算 generation。
 
