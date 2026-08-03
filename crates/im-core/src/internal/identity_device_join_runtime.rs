@@ -537,8 +537,78 @@ where
         })?;
         refresh_join_device_access(core, pending)
             .await
-            .map_err(redact_new_device_remote_error)
+            .map_err(redact_device_join_access_error)
     }
+}
+
+const DEVICE_JOIN_ACCESS_PUBLIC_CODE_MAX_LEN: usize = 96;
+const DEVICE_JOIN_ACCESS_PUBLIC_CODE_NAMESPACES: &[&str] = &[
+    "anp",
+    "attachment",
+    "awiki",
+    "client",
+    "device",
+    "did_auth",
+    "direct",
+    "group",
+    "identity",
+    "inbox",
+    "read_state",
+    "sync",
+];
+
+fn redact_device_join_access_error(error: crate::ImError) -> crate::ImError {
+    match error {
+        crate::ImError::Service {
+            status_code, code, ..
+        } => {
+            let public_code = match code {
+                Some(code) => classify_device_join_access_service_code(&code),
+                None => status_code
+                    .filter(|status| (100..=599).contains(status))
+                    .map(|status| format!("device.join.access.http.{status:03}")),
+            };
+            crate::ImError::Service {
+                status_code,
+                code: public_code,
+                message: "device Join access request failed".to_owned(),
+                data: None,
+            }
+        }
+        other => redact_new_device_remote_error(other),
+    }
+}
+
+fn classify_device_join_access_service_code(code: &str) -> Option<String> {
+    if let Ok(numeric_code) = code.parse::<i64>() {
+        if numeric_code != 0 && numeric_code.to_string() == code {
+            let sign = if numeric_code < 0 { 'n' } else { 'p' };
+            return Some(format!(
+                "device.join.access.rpc.{sign}{}",
+                numeric_code.unsigned_abs()
+            ));
+        }
+    }
+    is_device_join_access_public_service_code(code).then(|| code.to_owned())
+}
+
+fn is_device_join_access_public_service_code(code: &str) -> bool {
+    if code.is_empty()
+        || code.len() > DEVICE_JOIN_ACCESS_PUBLIC_CODE_MAX_LEN
+        || !code.is_ascii()
+        || !code.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+        })
+    {
+        return false;
+    }
+
+    let Some((namespace, suffix)) = code.split_once('.') else {
+        return false;
+    };
+    DEVICE_JOIN_ACCESS_PUBLIC_CODE_NAMESPACES.contains(&namespace)
+        && !suffix.is_empty()
+        && code.split('.').all(|segment| !segment.is_empty())
 }
 
 fn redact_new_device_remote_error(error: crate::ImError) -> crate::ImError {

@@ -222,6 +222,177 @@ fn admin_join_state_bytes(root: &Path) -> Vec<u8> {
     std::fs::read(&paths[0]).unwrap()
 }
 
+fn join_access_service_error(
+    status_code: Option<u16>,
+    code: Option<&str>,
+    message: &str,
+    data: Option<serde_json::Value>,
+) -> crate::ImError {
+    crate::ImError::Service {
+        status_code,
+        code: code.map(str::to_owned),
+        message: message.to_owned(),
+        data,
+    }
+}
+
+#[test]
+fn join_access_error_maps_strict_numeric_rpc_codes_to_public_codes() {
+    for (remote_code, expected) in [
+        ("-32000", "device.join.access.rpc.n32000"),
+        ("1401", "device.join.access.rpc.p1401"),
+    ] {
+        let error = redact_device_join_access_error(join_access_service_error(
+            Some(500),
+            Some(remote_code),
+            "remote detail",
+            Some(json!({"retryable": true})),
+        ));
+
+        assert_eq!(
+            error,
+            crate::ImError::Service {
+                status_code: Some(500),
+                code: Some(expected.to_owned()),
+                message: "device Join access request failed".to_owned(),
+                data: None,
+            }
+        );
+    }
+}
+
+#[test]
+fn join_access_error_preserves_stable_public_service_codes() {
+    for stable_code in ["device.join.expired", "did_auth.invalid_signature"] {
+        let error = redact_device_join_access_error(join_access_service_error(
+            None,
+            Some(stable_code),
+            "remote detail",
+            Some(json!({"retryable": false})),
+        ));
+
+        assert!(matches!(
+            error,
+            crate::ImError::Service {
+                status_code: None,
+                code: Some(ref code),
+                ref message,
+                data: None,
+            } if code == stable_code && message == "device Join access request failed"
+        ));
+    }
+}
+
+#[test]
+fn join_access_error_uses_safe_http_status_only_without_a_service_code() {
+    let error = redact_device_join_access_error(join_access_service_error(
+        Some(503),
+        None,
+        "upstream unavailable",
+        None,
+    ));
+
+    assert!(matches!(
+        error,
+        crate::ImError::Service {
+            status_code: Some(503),
+            code: Some(ref code),
+            ref message,
+            data: None,
+        } if code == "device.join.access.http.503"
+            && message == "device Join access request failed"
+    ));
+
+    let invalid_status = redact_device_join_access_error(join_access_service_error(
+        Some(99),
+        None,
+        "not an HTTP status",
+        None,
+    ));
+    assert!(matches!(
+        invalid_status,
+        crate::ImError::Service {
+            status_code: Some(99),
+            code: None,
+            data: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn join_access_error_rejects_noncanonical_or_untrusted_codes() {
+    let overlong = format!("device.{}", "a".repeat(97));
+    for untrusted_code in [
+        "+32000",
+        "032000",
+        "-0",
+        "0",
+        "9223372036854775808",
+        "device.join.INVALID",
+        "device.join.凭据",
+        "untrusted.secret",
+        overlong.as_str(),
+    ] {
+        let error = redact_device_join_access_error(join_access_service_error(
+            None,
+            Some(untrusted_code),
+            "remote detail",
+            None,
+        ));
+
+        assert!(matches!(
+            error,
+            crate::ImError::Service {
+                status_code: None,
+                code: None,
+                ref message,
+                data: None,
+            } if message == "device Join access request failed"
+        ));
+    }
+
+    let no_status_fallback = redact_device_join_access_error(join_access_service_error(
+        Some(503),
+        Some("untrusted.secret"),
+        "remote detail",
+        None,
+    ));
+    assert!(matches!(
+        no_status_fallback,
+        crate::ImError::Service {
+            status_code: Some(503),
+            code: None,
+            data: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn join_access_error_never_exposes_remote_message_or_data() {
+    let secret_did = "did:wba:private.example:users:secret";
+    let secret_token = "bearer-secret-token";
+    let error = redact_device_join_access_error(join_access_service_error(
+        Some(500),
+        Some("-32000"),
+        secret_did,
+        Some(json!({"token": secret_token, "did": secret_did})),
+    ));
+
+    let rendered = format!("{error:?} {error}");
+    assert!(!rendered.contains(secret_did));
+    assert!(!rendered.contains(secret_token));
+    assert!(matches!(
+        error,
+        crate::ImError::Service {
+            message,
+            data: None,
+            ..
+        } if message == "device Join access request failed"
+    ));
+}
+
 #[test]
 fn recovery_join_post_activation_policy_never_publishes_p6() {
     assert_eq!(
