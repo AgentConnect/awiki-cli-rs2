@@ -473,7 +473,7 @@ fn admin_join_projection_rejects_checkpoint_regression() {
 }
 
 #[test]
-fn recovery_join_reopens_after_identity_save_before_marker_switch() {
+fn recovery_join_accepts_missing_historical_generation_and_reopens_after_identity_save() {
     let admin_root = tempfile::tempdir().unwrap();
     let candidate_root = tempfile::tempdir().unwrap();
     let (admin, admin_document, current_did) = open_ready_admin_core(admin_root.path());
@@ -482,12 +482,9 @@ fn recovery_join_reopens_after_identity_save_before_marker_switch() {
     let mut registry: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&candidate_paths.identities.registry_path).unwrap())
             .unwrap();
-    registry["credentials"]["alice"]["binding_generation"] = json!("7");
-    std::fs::write(
-        &candidate_paths.identities.registry_path,
-        serde_json::to_vec_pretty(&registry).unwrap(),
-    )
-    .unwrap();
+    assert!(registry["credentials"]["alice"]
+        .get("binding_generation")
+        .is_none());
     let owner_id = registry["credentials"]["alice"]["unique_id"]
         .as_str()
         .unwrap()
@@ -495,11 +492,15 @@ fn recovery_join_reopens_after_identity_save_before_marker_switch() {
     let db = crate::internal::local_state::open_writable(&candidate_paths.local_state.sqlite_path)
         .unwrap();
     crate::internal::local_state::schema::ensure_schema(&db).unwrap();
-    db.execute(
-        "INSERT INTO identity_account_bindings(owner_identity_id,account_id,handle_scope,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES (?1,'user-1','alice.awiki.test',?2,'previous-device','7','1',1,1)",
-        rusqlite::params![owner_id, previous_did.as_str()],
-    )
-    .unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM identity_account_bindings WHERE owner_identity_id=?1",
+            [&owner_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
     drop(db);
 
     let started = candidate
@@ -613,6 +614,137 @@ fn recovery_join_reopens_after_identity_save_before_marker_switch() {
         },
     )
     .unwrap();
+
+    let session_before_conflicts = JoinStateStore::new(&candidate)
+        .load(&started.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .unwrap();
+    let pending_before_conflicts =
+        load_pending_new_device_activation(&candidate, &started.session.join_session_id)
+            .unwrap()
+            .unwrap();
+    assert!(pending_before_conflicts.access_result.is_some());
+    let marker_before_conflicts = crate::internal::identity_transition_pending::load_joined_device(
+        &candidate_paths.local_state.sqlite_path,
+        &started.session.join_session_id,
+    )
+    .unwrap()
+    .unwrap();
+
+    registry["credentials"]["alice"]["binding_generation"] = json!("6");
+    std::fs::write(
+        &candidate_paths.identities.registry_path,
+        serde_json::to_vec_pretty(&registry).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        finalize_new_device_activation(&candidate, &started.session.join_session_id),
+        Err(crate::ImError::Service {
+            status_code: None,
+            code: Some(code),
+            ..
+        }) if code == "handle_recovery_transition_mismatch"
+    ));
+    assert_eq!(
+        JoinStateStore::new(&candidate)
+            .load(&started.session.join_session_id, DeviceJoinSide::NewDevice,)
+            .unwrap()
+            .unwrap(),
+        session_before_conflicts
+    );
+    assert_eq!(
+        load_pending_new_device_activation(&candidate, &started.session.join_session_id)
+            .unwrap()
+            .unwrap(),
+        pending_before_conflicts
+    );
+    assert_eq!(
+        crate::internal::identity_transition_pending::load_joined_device(
+            &candidate_paths.local_state.sqlite_path,
+            &started.session.join_session_id,
+        )
+        .unwrap()
+        .unwrap(),
+        marker_before_conflicts
+    );
+    let index_after_generation_conflict =
+        crate::internal::identity_store::IdentityStore::new(&candidate_paths.identities)
+            .load_index()
+            .unwrap();
+    let entry_after_generation_conflict = index_after_generation_conflict
+        .credentials
+        .get("alice")
+        .unwrap();
+    assert_eq!(entry_after_generation_conflict.did, previous_did.as_str());
+    assert_eq!(
+        entry_after_generation_conflict
+            .binding_generation
+            .as_deref(),
+        Some("6")
+    );
+
+    registry["credentials"]["alice"]
+        .as_object_mut()
+        .unwrap()
+        .remove("binding_generation");
+    std::fs::write(
+        &candidate_paths.identities.registry_path,
+        serde_json::to_vec_pretty(&registry).unwrap(),
+    )
+    .unwrap();
+    let db = crate::internal::local_state::open_writable(&candidate_paths.local_state.sqlite_path)
+        .unwrap();
+    db.execute(
+        "INSERT INTO identity_account_bindings(owner_identity_id,account_id,handle_scope,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES (?1,'user-1','alice.awiki.test',?2,'previous-device','6','1',1,1)",
+        rusqlite::params![owner_id, previous_did.as_str()],
+    )
+    .unwrap();
+    drop(db);
+    assert!(matches!(
+        finalize_new_device_activation(&candidate, &started.session.join_session_id),
+        Err(crate::ImError::PermissionDenied)
+    ));
+    assert_eq!(
+        JoinStateStore::new(&candidate)
+            .load(&started.session.join_session_id, DeviceJoinSide::NewDevice,)
+            .unwrap()
+            .unwrap(),
+        session_before_conflicts
+    );
+    assert_eq!(
+        load_pending_new_device_activation(&candidate, &started.session.join_session_id)
+            .unwrap()
+            .unwrap(),
+        pending_before_conflicts
+    );
+    assert_eq!(
+        crate::internal::identity_transition_pending::load_joined_device(
+            &candidate_paths.local_state.sqlite_path,
+            &started.session.join_session_id,
+        )
+        .unwrap()
+        .unwrap(),
+        marker_before_conflicts
+    );
+    let db = crate::internal::local_state::open_writable(&candidate_paths.local_state.sqlite_path)
+        .unwrap();
+    let conflicting_binding = db
+        .query_row(
+            "SELECT current_did,identity_generation FROM identity_account_bindings WHERE owner_identity_id=?1",
+            [&owner_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        conflicting_binding,
+        (previous_did.as_str().to_owned(), "6".to_owned())
+    );
+    db.execute(
+        "DELETE FROM identity_account_bindings WHERE owner_identity_id=?1",
+        [&owner_id],
+    )
+    .unwrap();
+    drop(db);
 
     FAIL_AFTER_RECOVERY_JOIN_IDENTITY_SAVE.store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(matches!(

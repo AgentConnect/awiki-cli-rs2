@@ -426,6 +426,40 @@ pub(crate) fn migrate_local_state(
     bootstrap_device_id: &str,
     auth_generation: u64,
 ) -> crate::ImResult<()> {
+    migrate_local_state_inner(
+        sqlite_path,
+        marker,
+        bootstrap_device_id,
+        auth_generation,
+        false,
+    )
+}
+
+pub(crate) fn migrate_joined_device_local_state_without_historical_binding(
+    sqlite_path: &Path,
+    marker: &IdentityTransitionMarker,
+    bootstrap_device_id: &str,
+    auth_generation: u64,
+) -> crate::ImResult<()> {
+    if marker.source_kind != TransitionSourceKind::JoinedDevice {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    migrate_local_state_inner(
+        sqlite_path,
+        marker,
+        bootstrap_device_id,
+        auth_generation,
+        true,
+    )
+}
+
+fn migrate_local_state_inner(
+    sqlite_path: &Path,
+    marker: &IdentityTransitionMarker,
+    bootstrap_device_id: &str,
+    auth_generation: u64,
+    allow_missing_previous_binding: bool,
+) -> crate::ImResult<()> {
     marker.validate()?;
     marker.validate_state_root(sqlite_path)?;
     if marker.phase != TransitionPhase::Pending
@@ -487,13 +521,14 @@ pub(crate) fn migrate_local_state(
         .filter(|value| *value > 0)
         .map(|value| value.to_string())
         .ok_or(crate::ImError::PermissionDenied)?;
-    if binding.as_ref()
-        != Some(&(
-            marker.account_user_id.clone(),
-            Some(marker.handle.clone()),
-            marker.previous_did.clone(),
-            previous_generation,
-        ))
+    let expected_previous_binding = (
+        marker.account_user_id.clone(),
+        Some(marker.handle.clone()),
+        marker.previous_did.clone(),
+        previous_generation,
+    );
+    if binding.as_ref() != Some(&expected_previous_binding)
+        && !(allow_missing_previous_binding && binding.is_none())
     {
         return Err(crate::ImError::PermissionDenied);
     }

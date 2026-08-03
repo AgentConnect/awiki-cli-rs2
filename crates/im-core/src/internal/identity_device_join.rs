@@ -1599,6 +1599,14 @@ fn promote_join_identity(
             && previous_entry.full_handle == marker.handle
             && previous_entry.binding_generation.as_deref()
                 == Some(marker.binding_generation.as_str());
+        let historical_binding_generation_missing =
+            previous_entry.binding_generation.as_deref().is_none();
+        let historical_binding_generation_matches = previous_entry
+            .binding_generation
+            .as_deref()
+            .and_then(|value| value.parse::<u128>().ok())
+            .and_then(|previous| previous.checked_add(1))
+            == marker.binding_generation.parse::<u128>().ok();
         if identity_already_switched {
             ensure_existing_join_identity_is_rootless(
                 &index,
@@ -1609,12 +1617,7 @@ fn promote_join_identity(
         } else if previous_entry.did != marker.previous_did
             || previous_entry.user_id != marker.account_user_id
             || previous_entry.full_handle != marker.handle
-            || previous_entry
-                .binding_generation
-                .as_deref()
-                .and_then(|value| value.parse::<u128>().ok())
-                .and_then(|previous| previous.checked_add(1))
-                != marker.binding_generation.parse::<u128>().ok()
+            || (!historical_binding_generation_missing && !historical_binding_generation_matches)
         {
             return Err(crate::ImError::Service {
                 status_code: None,
@@ -1623,12 +1626,21 @@ fn promote_join_identity(
                 data: None,
             });
         }
-        crate::internal::identity_transition_pending::migrate_local_state(
-            &core.inner().sdk_paths().local_state.sqlite_path,
-            &marker,
-            &pending.authorization.device.device_id,
-            pending.authorization.device.auth_generation,
-        )?;
+        if historical_binding_generation_missing {
+            crate::internal::identity_transition_pending::migrate_joined_device_local_state_without_historical_binding(
+                &core.inner().sdk_paths().local_state.sqlite_path,
+                &marker,
+                &pending.authorization.device.device_id,
+                pending.authorization.device.auth_generation,
+            )?;
+        } else {
+            crate::internal::identity_transition_pending::migrate_local_state(
+                &core.inner().sdk_paths().local_state.sqlite_path,
+                &marker,
+                &pending.authorization.device.device_id,
+                pending.authorization.device.auth_generation,
+            )?;
+        }
         if !identity_already_switched {
             let handle =
                 crate::internal::identity_wire::handle_recovery::canonical_handle(&marker.handle)?;
