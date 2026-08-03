@@ -548,7 +548,6 @@ const DEVICE_JOIN_ACCESS_PUBLIC_CODE_NAMESPACES: &[&str] = &[
     "awiki",
     "client",
     "device",
-    "did_auth",
     "direct",
     "group",
     "identity",
@@ -563,7 +562,7 @@ fn redact_device_join_access_error(error: crate::ImError) -> crate::ImError {
             status_code, code, ..
         } => {
             let public_code = match code {
-                Some(code) => classify_device_join_access_service_code(&code),
+                Some(code) => Some(classify_device_join_access_service_code(&code)),
                 None => status_code
                     .filter(|status| (100..=599).contains(status))
                     .map(|status| format!("device.join.access.http.{status:03}")),
@@ -579,17 +578,23 @@ fn redact_device_join_access_error(error: crate::ImError) -> crate::ImError {
     }
 }
 
-fn classify_device_join_access_service_code(code: &str) -> Option<String> {
+fn classify_device_join_access_service_code(code: &str) -> String {
     if let Ok(numeric_code) = code.parse::<i64>() {
         if numeric_code != 0 && numeric_code.to_string() == code {
             let sign = if numeric_code < 0 { 'n' } else { 'p' };
-            return Some(format!(
+            return format!(
                 "device.join.access.rpc.{sign}{}",
                 numeric_code.unsigned_abs()
-            ));
+            );
         }
     }
-    is_device_join_access_public_service_code(code).then(|| code.to_owned())
+    if code.starts_with("did_auth.") {
+        return "device.join.access.did_auth".to_owned();
+    }
+    if is_device_join_access_public_service_code(code) {
+        return code.to_owned();
+    }
+    "device.join.access.rpc.unclassified".to_owned()
 }
 
 fn is_device_join_access_public_service_code(code: &str) -> bool {

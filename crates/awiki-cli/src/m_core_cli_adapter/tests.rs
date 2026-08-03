@@ -432,6 +432,31 @@ fn service_error_exposes_only_a_valid_stable_public_code() {
 }
 
 #[test]
+fn join_access_fixed_service_codes_survive_the_core_to_cli_boundary() {
+    for service_code in [
+        "device.join.access.did_auth",
+        "device.join.access.rpc.unclassified",
+    ] {
+        let mapped = error::map_im_error(
+            ImError::Service {
+                status_code: Some(503),
+                code: Some(service_code.to_owned()),
+                message: "redacted Core message".to_owned(),
+                data: None,
+            },
+            "device join access",
+        );
+
+        assert_eq!(mapped.detail.code, "service_error");
+        assert_eq!(mapped.exit_code, 5);
+        assert_eq!(
+            mapped.detail.details,
+            serde_json::json!({"service_code": service_code})
+        );
+    }
+}
+
+#[test]
 fn service_error_omits_malformed_overlong_and_secret_like_codes() {
     let private_marker = "remote-private-error-detail";
     let invalid_codes = [

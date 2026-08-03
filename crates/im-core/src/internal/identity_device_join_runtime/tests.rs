@@ -317,7 +317,7 @@ fn join_access_error_maps_strict_numeric_rpc_codes_to_public_codes() {
 
 #[test]
 fn join_access_error_preserves_stable_public_service_codes() {
-    for stable_code in ["device.join.expired", "did_auth.invalid_signature"] {
+    for stable_code in ["device.join.expired", "anp.device_state_changed"] {
         let error = redact_device_join_access_error(join_access_service_error(
             None,
             Some(stable_code),
@@ -334,6 +334,39 @@ fn join_access_error_preserves_stable_public_service_codes() {
                 data: None,
             } if code == stable_code && message == "device Join access request failed"
         ));
+    }
+}
+
+#[test]
+fn join_access_error_collapses_did_auth_codes_to_a_fixed_public_code() {
+    let private_marker = "private-upstream-auth-detail";
+    for did_auth_code in [
+        "did_auth.invalid_signature",
+        "did_auth.凭据",
+        private_marker,
+    ] {
+        let remote_code = if did_auth_code == private_marker {
+            format!("did_auth.{private_marker}")
+        } else {
+            did_auth_code.to_owned()
+        };
+        let error = redact_device_join_access_error(join_access_service_error(
+            Some(503),
+            Some(&remote_code),
+            private_marker,
+            Some(json!({"remote_code": remote_code})),
+        ));
+
+        assert_eq!(
+            error,
+            crate::ImError::Service {
+                status_code: Some(503),
+                code: Some("device.join.access.did_auth".to_owned()),
+                message: "device Join access request failed".to_owned(),
+                data: None,
+            }
+        );
+        assert!(!format!("{error:?} {error}").contains(private_marker));
     }
 }
 
@@ -375,7 +408,7 @@ fn join_access_error_uses_safe_http_status_only_without_a_service_code() {
 }
 
 #[test]
-fn join_access_error_rejects_noncanonical_or_untrusted_codes() {
+fn join_access_error_collapses_noncanonical_or_untrusted_codes() {
     let overlong = format!("device.{}", "a".repeat(97));
     for untrusted_code in [
         "+32000",
@@ -399,10 +432,11 @@ fn join_access_error_rejects_noncanonical_or_untrusted_codes() {
             error,
             crate::ImError::Service {
                 status_code: None,
-                code: None,
+                code: Some(ref code),
                 ref message,
                 data: None,
-            } if message == "device Join access request failed"
+            } if code == "device.join.access.rpc.unclassified"
+                && message == "device Join access request failed"
         ));
     }
 
@@ -416,10 +450,10 @@ fn join_access_error_rejects_noncanonical_or_untrusted_codes() {
         no_status_fallback,
         crate::ImError::Service {
             status_code: Some(503),
-            code: None,
+            code: Some(ref code),
             data: None,
             ..
-        }
+        } if code == "device.join.access.rpc.unclassified"
     ));
 }
 
@@ -598,7 +632,7 @@ async fn advance_redacts_join_access_error_at_remote_trait_boundary() {
         malicious_error,
         crate::ImError::Service {
             status_code: Some(503),
-            code: None,
+            code: Some("device.join.access.rpc.unclassified".to_owned()),
             message: "device Join access request failed".to_owned(),
             data: None,
         }
