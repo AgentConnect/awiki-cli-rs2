@@ -537,7 +537,7 @@ where
         })?;
         refresh_join_device_access(core, pending)
             .await
-            .map_err(redact_device_join_access_error)
+            .map_err(redact_new_device_remote_error)
     }
 }
 
@@ -1057,7 +1057,11 @@ where
         mut pending: crate::internal::identity_join_activation_pending::PendingJoinActivation,
     ) -> crate::ImResult<DeviceJoinAdvanceResult> {
         if pending.access_result.is_none() {
-            let result = self.remote.refresh_device_access(&pending).await?;
+            let result = self
+                .remote
+                .refresh_device_access(&pending)
+                .await
+                .map_err(redact_device_join_access_error)?;
             pending = crate::internal::identity_device_join::record_new_device_access_result(
                 self.core,
                 &pending.join_session_id,

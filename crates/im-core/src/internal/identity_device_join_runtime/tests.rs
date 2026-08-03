@@ -72,6 +72,60 @@ impl crate::internal::transport::AsyncRawJsonTransport for UnusedResolver {
     }
 }
 
+const JOIN_ACCESS_SECRET_DID: &str = "did:wba:private.example:users:secret";
+const JOIN_ACCESS_SECRET_TOKEN: &str = "bearer-secret-token";
+
+struct JoinAccessFailingRemote {
+    status_code: u16,
+    code: &'static str,
+}
+
+impl DeviceJoinNewDeviceRemote for JoinAccessFailingRemote {
+    async fn create(
+        &mut self,
+        _request: DeviceJoinRemoteCreateRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteCreateResult> {
+        Err(crate::ImError::unsupported("join-access-test-create"))
+    }
+
+    async fn status(
+        &mut self,
+        _expected_join_session_id: &str,
+        _join_session_token: &SecretBytes,
+    ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus> {
+        Err(crate::ImError::unsupported("join-access-test-status"))
+    }
+
+    async fn submit_response(
+        &mut self,
+        _request: DeviceJoinRemoteResponseRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+        Err(crate::ImError::unsupported("join-access-test-response"))
+    }
+
+    async fn cancel(
+        &mut self,
+        _request: DeviceJoinRemoteCancelRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+        Err(crate::ImError::unsupported("join-access-test-cancel"))
+    }
+
+    async fn refresh_device_access(
+        &mut self,
+        _pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    ) -> crate::ImResult<DeviceJoinAccessResult> {
+        Err(crate::ImError::Service {
+            status_code: Some(self.status_code),
+            code: Some(self.code.to_owned()),
+            message: JOIN_ACCESS_SECRET_DID.to_owned(),
+            data: Some(json!({
+                "did": JOIN_ACCESS_SECRET_DID,
+                "token": JOIN_ACCESS_SECRET_TOKEN,
+            })),
+        })
+    }
+}
+
 fn test_config() -> crate::ImCoreConfig {
     crate::ImCoreConfig {
         service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
@@ -391,6 +445,182 @@ fn join_access_error_never_exposes_remote_message_or_data() {
             ..
         } if message == "device Join access request failed"
     ));
+}
+
+#[tokio::test]
+async fn advance_redacts_join_access_error_at_remote_trait_boundary() {
+    let admin_directory = tempfile::tempdir().unwrap();
+    let candidate_directory = tempfile::tempdir().unwrap();
+    let (admin, current_document, did) = open_ready_admin_core(admin_directory.path());
+    let candidate = open_empty_vault_core(candidate_directory.path());
+    let current_document_hash =
+        crate::internal::identity_wire::document::document_hash(&current_document).unwrap();
+    let started = candidate
+        .device_join()
+        .start(crate::identity::DeviceJoinStartRequest {
+            operation_id: "join-access-runtime-start".to_owned(),
+            did,
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    let join_session_id = started.session.join_session_id.clone();
+    let join_request = started.join_request;
+    let challenge = admin
+        .device_join()
+        .prepare_admin_challenge(crate::identity::DeviceJoinAdminPrepareRequest {
+            admin_identity: crate::identity::IdentitySelector::Default,
+            operation_id: "join-access-runtime-challenge".to_owned(),
+            join_request: join_request.clone(),
+            challenge_ttl_seconds: 180,
+            document_version: 7,
+            document_hash: current_document_hash.clone(),
+        })
+        .unwrap();
+    let response = candidate
+        .device_join()
+        .respond_as_new_device(crate::identity::DeviceJoinNewDeviceRespondRequest {
+            operation_id: "join-access-runtime-response".to_owned(),
+            challenge: challenge.challenge,
+            admin_did_document: current_document,
+            document_version: 7,
+            document_hash: current_document_hash.clone(),
+        })
+        .unwrap();
+    admin
+        .device_join()
+        .verify_response_as_admin(crate::identity::DeviceJoinAdminVerifyRequest {
+            operation_id: "join-access-runtime-verify".to_owned(),
+            join_session_id: join_session_id.clone(),
+            response: response.response,
+        })
+        .unwrap();
+    let current_checkpoint = IdentityInternalCheckpoint {
+        document_version: 7,
+        document_hash: current_document_hash,
+        registry_version: 3,
+    };
+    let approval = crate::internal::identity_device_join::prepare_admin_approval(
+        &admin,
+        "join-access-runtime-approve",
+        &join_session_id,
+        &current_checkpoint,
+        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        true,
+    )
+    .unwrap();
+    let authorized_document_hash =
+        crate::internal::identity_wire::document::document_hash(&approval.new_document).unwrap();
+    let authorization = DeviceJoinRemoteAuthorization {
+        checkpoint: IdentityInternalCheckpoint {
+            document_version: 8,
+            document_hash: authorized_document_hash,
+            registry_version: 4,
+        },
+        device: DeviceJoinRemoteDeviceSummary {
+            device_id: join_request.device_id,
+            signing_key_id: join_request
+                .signing_public_key
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap()
+                .to_owned(),
+            e2ee_key_id: join_request
+                .e2ee_public_key
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap()
+                .to_owned(),
+            status: DeviceAuthorizationStatus::Active,
+            role: DeviceAuthorizationRole::Member,
+            management_ready: false,
+            auth_generation: 1,
+        },
+    };
+    crate::internal::identity_device_join::prepare_new_device_activation(
+        &candidate,
+        &join_session_id,
+        &authorization,
+        &approval.new_document,
+    )
+    .unwrap();
+
+    let mut runtime = DeviceJoinNewDeviceRuntime::new(
+        &candidate,
+        JoinAccessFailingRemote {
+            status_code: 500,
+            code: "-32000",
+        },
+        DeviceJoinDidResolver::new(UnusedResolver),
+    );
+    let error = runtime.advance(&join_session_id).await.unwrap_err();
+
+    assert_eq!(
+        error,
+        crate::ImError::Service {
+            status_code: Some(500),
+            code: Some("device.join.access.rpc.n32000".to_owned()),
+            message: "device Join access request failed".to_owned(),
+            data: None,
+        }
+    );
+    let rendered = format!("{error:?} {error}");
+    assert!(!rendered.contains(JOIN_ACCESS_SECRET_DID));
+    assert!(!rendered.contains(JOIN_ACCESS_SECRET_TOKEN));
+    let session = candidate
+        .device_join()
+        .session(&join_session_id, crate::identity::DeviceJoinSide::NewDevice)
+        .unwrap();
+    assert_eq!(
+        session.phase,
+        crate::identity::DeviceJoinLocalPhase::ResponsePrepared
+    );
+    let pending = crate::internal::identity_device_join::load_pending_new_device_activation(
+        &candidate,
+        &join_session_id,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(pending.access_result.is_none());
+
+    let mut malicious_runtime = DeviceJoinNewDeviceRuntime::new(
+        &candidate,
+        JoinAccessFailingRemote {
+            status_code: 503,
+            code: "untrusted.secret",
+        },
+        DeviceJoinDidResolver::new(UnusedResolver),
+    );
+    let malicious_error = malicious_runtime
+        .advance(&join_session_id)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        malicious_error,
+        crate::ImError::Service {
+            status_code: Some(503),
+            code: None,
+            message: "device Join access request failed".to_owned(),
+            data: None,
+        }
+    );
+    let rendered = format!("{malicious_error:?} {malicious_error}");
+    assert!(!rendered.contains(JOIN_ACCESS_SECRET_DID));
+    assert!(!rendered.contains(JOIN_ACCESS_SECRET_TOKEN));
+    let session = candidate
+        .device_join()
+        .session(&join_session_id, crate::identity::DeviceJoinSide::NewDevice)
+        .unwrap();
+    assert_eq!(
+        session.phase,
+        crate::identity::DeviceJoinLocalPhase::ResponsePrepared
+    );
+    let pending = crate::internal::identity_device_join::load_pending_new_device_activation(
+        &candidate,
+        &join_session_id,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(pending.access_result.is_none());
 }
 
 #[test]
