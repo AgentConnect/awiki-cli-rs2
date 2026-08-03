@@ -97,6 +97,19 @@ struct PreparedVNextRegistration {
     secret: PendingVNextRegistrationSecret,
 }
 
+#[cfg(any(test, feature = "system-test-probe"))]
+pub struct SystemTestDaemonRegistrationAuthority {
+    pub agent_did: String,
+    registration_id: String,
+    protocol_device_id: String,
+    controller_did: String,
+    handle: String,
+}
+
+#[cfg(any(test, feature = "system-test-probe"))]
+const SYSTEM_TEST_UNISSUED_REGISTRATION_TOKEN: &str =
+    "system-test-probe:daemon-registration-token-unissued";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IncomingAgentPayloadMessage {
     pub message_id: String,
@@ -2570,6 +2583,109 @@ fn sanitize_public_error_chain(chain: Chain<'_>) -> String {
         summary = summary.chars().take(360).collect();
     }
     summary
+}
+
+#[cfg(any(test, feature = "system-test-probe"))]
+pub fn stage_daemon_registration_authority_for_system_test(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    controller_did: &str,
+    handle: &str,
+) -> Result<SystemTestDaemonRegistrationAuthority> {
+    let handle = normalize_handle(handle)?;
+    let prepared = prepare_vnext_agent_registration(
+        config,
+        state,
+        AgentKind::Daemon,
+        controller_did,
+        &handle,
+        &handle,
+        RegistrationToken::new(SYSTEM_TEST_UNISSUED_REGISTRATION_TOKEN)?,
+    )?;
+    Ok(SystemTestDaemonRegistrationAuthority {
+        agent_did: prepared.secret.did,
+        registration_id: prepared.registration_id,
+        protocol_device_id: prepared.secret.protocol_device_id,
+        controller_did: controller_did.to_owned(),
+        handle,
+    })
+}
+
+#[cfg(any(test, feature = "system-test-probe"))]
+pub fn load_daemon_registration_authority_for_system_test(
+    state: &DaemonState,
+    controller_did: &str,
+    handle: &str,
+    expected_agent_did: &str,
+) -> Result<SystemTestDaemonRegistrationAuthority> {
+    let handle = normalize_handle(handle)?;
+    let mut matches = state
+        .list_resumable_agent_registrations()?
+        .into_iter()
+        .filter(|pending| {
+            pending.agent_kind == AgentKind::Daemon
+                && pending.controller_did == controller_did
+                && pending.handle == handle
+                && pending.agent_did == expected_agent_did
+                && pending.status == "pending"
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        bail!("exact staged system-test Daemon registration authority is unavailable");
+    }
+    let pending = matches.pop().context("staged Daemon authority")?;
+    let secret: PendingVNextRegistrationSecret =
+        serde_json::from_value(pending.secret_payload_json)
+            .context("open staged system-test Daemon registration authority")?;
+    if secret.registration_token != SYSTEM_TEST_UNISSUED_REGISTRATION_TOKEN
+        || secret.did != pending.agent_did
+        || secret.protocol_device_id != pending.protocol_device_id
+    {
+        bail!("staged system-test Daemon registration authority secret binding changed");
+    }
+    Ok(SystemTestDaemonRegistrationAuthority {
+        agent_did: pending.agent_did,
+        registration_id: pending.registration_id,
+        protocol_device_id: pending.protocol_device_id,
+        controller_did: pending.controller_did,
+        handle: pending.handle,
+    })
+}
+
+#[cfg(any(test, feature = "system-test-probe"))]
+pub fn bind_daemon_registration_token_for_system_test(
+    state: &DaemonState,
+    authority: &SystemTestDaemonRegistrationAuthority,
+    registration_token: RegistrationToken,
+) -> Result<()> {
+    let pending = state
+        .load_pending_agent_registration(&authority.registration_id)?
+        .context("system-test Daemon registration authority is missing")?;
+    if pending.agent_kind != AgentKind::Daemon
+        || pending.agent_did != authority.agent_did
+        || pending.protocol_device_id != authority.protocol_device_id
+        || pending.controller_did != authority.controller_did
+        || pending.handle != authority.handle
+        || pending.status != "pending"
+    {
+        bail!("system-test Daemon registration authority binding changed");
+    }
+    let mut secret: PendingVNextRegistrationSecret =
+        serde_json::from_value(pending.secret_payload_json)
+            .context("open system-test Daemon registration authority")?;
+    if secret.registration_token != SYSTEM_TEST_UNISSUED_REGISTRATION_TOKEN
+        || secret.did != authority.agent_did
+        || secret.protocol_device_id != authority.protocol_device_id
+    {
+        bail!("system-test Daemon registration authority secret binding changed");
+    }
+    secret.registration_token = registration_token.as_str().to_owned();
+    state.replace_pending_agent_registration_payload_for_system_test(
+        &authority.registration_id,
+        &authority.agent_did,
+        &authority.protocol_device_id,
+        &serde_json::to_value(secret)?,
+    )
 }
 
 fn validate_application_json_payload(message: &IncomingAgentPayloadMessage) -> Result<()> {

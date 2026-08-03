@@ -540,6 +540,90 @@ INSERT INTO agent_registration_pending (
         }
     }
 
+    #[cfg(any(test, feature = "system-test-probe"))]
+    pub fn replace_pending_agent_registration_payload_for_system_test(
+        &self,
+        registration_id: &str,
+        agent_did: &str,
+        protocol_device_id: &str,
+        secret_payload_json: &Value,
+    ) -> Result<()> {
+        if registration_id.trim().is_empty()
+            || agent_did.trim().is_empty()
+            || protocol_device_id.trim().is_empty()
+            || !secret_payload_json.is_object()
+        {
+            bail!("pending Agent registration replacement binding is invalid");
+        }
+        let staged = self.stage_pending_secret(
+            protocol_device_id,
+            agent_did,
+            SecretKind::IdentityRegistrationPending,
+            STAGED_AGENT_REGISTRATION_PENDING_KEY_PREFIX,
+            "system-test-token-bind",
+            serde_json::to_vec(secret_payload_json)?,
+            "system-test pending Agent registration payload",
+        )?;
+        let switch_result = (|| -> Result<SecretRef> {
+            let mut connection = self.connection()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let (stored_agent_did, stored_device_id, status, old_ref_json) = transaction
+                .query_row(
+                    r#"
+SELECT agent_did, protocol_device_id, status, secret_ref_json
+FROM agent_registration_pending
+WHERE registration_id = ?1
+"#,
+                    [registration_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .optional()?
+                .context("pending Agent registration is missing")?;
+            if stored_agent_did != agent_did
+                || stored_device_id != protocol_device_id
+                || status != "pending"
+            {
+                bail!("pending Agent registration replacement cannot change its binding");
+            }
+            let old_ref: SecretRef = serde_json::from_str(&old_ref_json)
+                .context("parse superseded pending Agent registration ref")?;
+            transaction.execute(
+                r#"
+UPDATE agent_registration_pending
+SET secret_ref_json = ?2,
+    updated_at_ms = ?3
+WHERE registration_id = ?1 AND status = 'pending'
+"#,
+                rusqlite::params![
+                    registration_id,
+                    serde_json::to_string(&staged)?,
+                    current_time_millis()?,
+                ],
+            )?;
+            inject_agent_device_store_failure_before_commit()?;
+            transaction.commit()?;
+            Ok(old_ref)
+        })();
+        match switch_result {
+            Ok(old_ref) => {
+                self.delete_staged_secret_best_effort(&old_ref);
+                Ok(())
+            }
+            Err(error) => {
+                self.delete_staged_secret_best_effort(&staged);
+                Err(error)
+            }
+        }
+    }
+
     pub fn load_pending_agent_registration_by_dedupe_key(
         &self,
         dedupe_key: &str,

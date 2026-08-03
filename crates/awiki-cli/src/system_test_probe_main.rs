@@ -29,6 +29,7 @@ use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -43,7 +44,7 @@ use reqwest::header::{
 use rustls::pki_types::{pem::PemObject, CertificateDer};
 use rustls::{ClientConfig, RootCertStore};
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -61,6 +62,7 @@ const MAX_TIMEOUT_MS: u64 = 300_000;
 const RPC_PATH: &str = "/im/rpc";
 const ACCOUNT_STATE_RPC_PATH: &str = "/user-service/account-state/rpc";
 const AGENT_INVENTORY_RPC_PATH: &str = "/user-service/agent-inventory/rpc";
+const AGENT_REGISTRATION_RPC_PATH: &str = "/user-service/agent-registration/rpc";
 const DID_AUTH_RPC_PATH: &str = "/user-service/did-auth/rpc";
 const ME_RPC_PATH: &str = "/user-service/me/rpc";
 const DAEMON_STATE_ROOT_ENV: &str = "AWIKI_SYSTEM_TEST_PROBE_DAEMON_STATE_ROOT";
@@ -84,6 +86,7 @@ const DIRECT_INIT_CONTENT_TYPE: &str = "application/anp-direct-init+json";
 const DIRECT_CIPHER_CONTENT_TYPE: &str = "application/anp-direct-cipher+json";
 const DIRECT_WIRE_INBOX_PAGE_LIMIT: i64 = 100;
 const DIRECT_WIRE_INBOX_MAX_PAGES: usize = 20;
+const DAEMON_SETUP_ATTEMPT_LIMIT: usize = 2;
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -98,6 +101,14 @@ struct ProbeRequest {
 enum Action {
     DeviceReadiness,
     AgentBootstrapIdentity(AgentBootstrapIdentityParams),
+    DaemonContinuityBaseline,
+    DaemonContinuityVerify(DaemonContinuityVerifyParams),
+    StageDaemonContinuityRoot(StageDaemonContinuityRootParams),
+    PrepareDaemonContinuityFixture(PrepareDaemonContinuityFixtureParams),
+    DaemonFixtureResources,
+    SendPlainMarker(SendPlainMarkerParams),
+    DaemonMarkerProcessed { message_id: String },
+    HumanDaemonSubkeyState,
     OpenWs,
     WaitWsClosed { timeout_ms: u64 },
     CloseWs,
@@ -122,6 +133,295 @@ enum Action {
 
 struct AgentBootstrapIdentityParams {
     controller_account_id: String,
+}
+
+struct DaemonContinuityVerifyParams {
+    old_controller_did: String,
+    new_controller_did: String,
+    queued_marker: String,
+    controller_marker: String,
+}
+
+struct PrepareDaemonContinuityFixtureParams {
+    daemon_binary: std::path::PathBuf,
+    state_root: std::path::PathBuf,
+    daemon_agent_did: String,
+    daemon_handle: String,
+    runtime_handle: String,
+    controller_handle: String,
+    app_instance_id: String,
+}
+
+struct StageDaemonContinuityRootParams {
+    state_root: std::path::PathBuf,
+    daemon_handle: String,
+}
+
+struct SendPlainMarkerParams {
+    target_did: String,
+    message_id: String,
+    marker: Zeroizing<String>,
+}
+
+#[derive(Serialize)]
+struct ProbeBootstrapPayload<'a> {
+    schema: &'static str,
+    bootstrap_id: &'a str,
+    idempotency_key: &'a str,
+    app_instance_id: &'a str,
+    controller_did: &'a str,
+    user_subkey_package: ProbeUserSubkeyPackage<'a>,
+    desired_personal_agent: ProbeDesiredPersonalAgent<'a>,
+    capability_policy: ProbeCapabilityPolicy,
+}
+
+#[derive(Serialize)]
+struct ProbeUserSubkeyPackage<'a> {
+    schema: &'a str,
+    user_did: &'a str,
+    verification_method: &'a str,
+    key_type: &'a str,
+    key_algorithm: &'a str,
+    public_key_multibase: &'a str,
+    private_key_encoding: &'a str,
+    private_key_pem: &'a str,
+    allowed_scopes: [&'static str; 1],
+}
+
+#[derive(Serialize)]
+struct ProbeDesiredPersonalAgent<'a> {
+    role: &'static str,
+    runtime: &'static str,
+    runtime_provider: &'static str,
+    runtime_profile: &'static str,
+    display_name: &'static str,
+    ensure_once_key: &'a str,
+    runtime_registration_token: &'a str,
+}
+
+#[derive(Serialize)]
+struct ProbeCapabilityPolicy {
+    schema: &'static str,
+    capabilities: [&'static str; 1],
+    require_confirmation_for_write_actions: bool,
+}
+
+#[derive(Deserialize)]
+struct RegistrationTokenResult {
+    token: String,
+}
+
+struct DaemonContinuityBaseline {
+    agent_identity_hash: [u8; 32],
+    root_key_hash: [u8; 32],
+    device_keys_hash: [u8; 32],
+    delegated_key_hash: [u8; 32],
+    definition_hash: [u8; 32],
+    route_state_hash: [u8; 32],
+    route_record_count: usize,
+    verification_method: String,
+    user_did: String,
+    app_instance_id: String,
+}
+
+#[derive(Clone, Copy)]
+struct DaemonMarkerAbsenceEvidence {
+    event_absent: bool,
+    route_absent: bool,
+    task_absent: bool,
+    run_absent: bool,
+    final_absent: bool,
+}
+
+impl DaemonMarkerAbsenceEvidence {
+    fn all_absent(self) -> bool {
+        self.event_absent
+            && self.route_absent
+            && self.task_absent
+            && self.run_absent
+            && self.final_absent
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DaemonContinuityEvidence {
+    agent_identity_unchanged: bool,
+    root_key_unchanged: bool,
+    device_keys_unchanged: bool,
+    delegated_key_unchanged: bool,
+    old_controller_binding_unchanged: bool,
+    new_controller_lacks_delegated_key: bool,
+    controller_identity_changed: bool,
+    queued_delegated_marker: DaemonMarkerAbsenceEvidence,
+    new_controller_marker: DaemonMarkerAbsenceEvidence,
+}
+
+fn closed_daemon_continuity_result(evidence: DaemonContinuityEvidence) -> Value {
+    let old_controller_denied =
+        evidence.controller_identity_changed && evidence.queued_delegated_marker.all_absent();
+    let new_controller_denied =
+        evidence.controller_identity_changed && evidence.new_controller_marker.all_absent();
+    json!({
+        "agent_identity_unchanged": evidence.agent_identity_unchanged,
+        "root_key_unchanged": evidence.root_key_unchanged,
+        "device_keys_unchanged": evidence.device_keys_unchanged,
+        "delegated_key_unchanged": evidence.delegated_key_unchanged,
+        "old_controller_binding_unchanged": evidence.old_controller_binding_unchanged,
+        "new_controller_lacks_delegated_key": evidence.new_controller_lacks_delegated_key,
+        "old_delegated_pull_denied": evidence.controller_identity_changed
+            && evidence.queued_delegated_marker.event_absent,
+        "old_controller_denied": old_controller_denied,
+        "new_controller_denied": new_controller_denied,
+        "no_route_created": evidence.queued_delegated_marker.route_absent
+            && evidence.new_controller_marker.route_absent,
+        "no_task_created": evidence.queued_delegated_marker.task_absent
+            && evidence.new_controller_marker.task_absent,
+        "no_run_created": evidence.queued_delegated_marker.run_absent
+            && evidence.new_controller_marker.run_absent,
+        "no_final_created": evidence.queued_delegated_marker.final_absent
+            && evidence.new_controller_marker.final_absent,
+    })
+}
+
+fn closed_daemon_fixture_prepare_result(prepared: bool, daemon_agent_did: &str) -> Value {
+    json!({
+        "prepared": prepared,
+        "daemon_agent_did": daemon_agent_did,
+    })
+}
+
+fn daemon_fixture_prepare_result_after_boundary(
+    daemon_agent_did: &str,
+    preparation: Result<(), ProbeFailure>,
+) -> Value {
+    closed_daemon_fixture_prepare_result(preparation.is_ok(), daemon_agent_did)
+}
+
+fn daemon_token_issue_or_root_receipt(
+    daemon_agent_did: &str,
+    issued: Result<Zeroizing<String>, ProbeFailure>,
+) -> Result<Zeroizing<String>, Value> {
+    issued.map_err(|_| closed_daemon_fixture_prepare_result(false, daemon_agent_did))
+}
+
+fn daemon_registration_metadata(daemon_agent_did: &str) -> Value {
+    json!({
+        "suite_case": "handle-recovery-daemon-continuity",
+        "daemon_agent_did": daemon_agent_did,
+    })
+}
+
+fn daemon_setup_agent_did(mut output: std::process::Output) -> Result<String, ProbeFailure> {
+    let stdout = Zeroizing::new(std::mem::take(&mut output.stdout));
+    if !output.status.success() || stdout.len() > MAX_RPC_RESPONSE_BYTES {
+        return Err(ProbeFailure::Runtime);
+    }
+    let setup: Value =
+        serde_json::from_slice(stdout.as_slice()).map_err(|_| ProbeFailure::Runtime)?;
+    let daemon_agent_did = setup
+        .get("agent")
+        .and_then(Value::as_object)
+        .and_then(|agent| agent.get("agent_did"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or(ProbeFailure::Runtime)?;
+    im_core::ids::Did::parse(&daemon_agent_did).map_err(|_| ProbeFailure::Runtime)?;
+    Ok(daemon_agent_did)
+}
+
+fn recover_exact_persisted_daemon_agent_did(
+    state_root: &Path,
+    daemon_handle: &str,
+    controller_did: &str,
+) -> Result<Option<String>, ProbeFailure> {
+    let database_path = state_root.join("daemon.db");
+    if !database_path.exists() {
+        return Ok(None);
+    }
+    let connection = rusqlite::Connection::open_with_flags(
+        database_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| ProbeFailure::Runtime)?;
+    let mut candidates = BTreeSet::new();
+    for (table, query) in [
+        (
+            "agent_definition",
+            r#"
+SELECT agent_did
+FROM agent_definition
+WHERE agent_kind = 'daemon'
+  AND handle = ?1
+  AND controller_did = ?2
+  AND status = 'active'
+"#,
+        ),
+        (
+            "agent_registration_pending",
+            r#"
+SELECT agent_did
+FROM agent_registration_pending
+WHERE agent_kind = 'daemon'
+  AND handle = ?1
+  AND controller_did = ?2
+"#,
+        ),
+    ] {
+        let table_exists = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|_| ProbeFailure::Runtime)?
+            != 0;
+        if !table_exists {
+            continue;
+        }
+        let mut statement = connection
+            .prepare(query)
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let rows = statement
+            .query_map(rusqlite::params![daemon_handle, controller_did], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|_| ProbeFailure::Runtime)?;
+        for row in rows {
+            let candidate = row.map_err(|_| ProbeFailure::Runtime)?;
+            im_core::ids::Did::parse(&candidate).map_err(|_| ProbeFailure::InvalidState)?;
+            candidates.insert(candidate);
+        }
+    }
+    match candidates.len() {
+        0 => Ok(None),
+        1 => Ok(candidates.into_iter().next()),
+        _ => Err(ProbeFailure::InvalidState),
+    }
+}
+
+fn daemon_setup_failure_result(
+    state_root: &Path,
+    daemon_handle: &str,
+    controller_did: &str,
+    original_failure: ProbeFailure,
+) -> Result<Value, ProbeFailure> {
+    match recover_exact_persisted_daemon_agent_did(state_root, daemon_handle, controller_did)? {
+        Some(agent_did) => Ok(closed_daemon_fixture_prepare_result(false, &agent_did)),
+        None => Err(original_failure),
+    }
+}
+
+struct DaemonRouteStateSnapshot {
+    hash: [u8; 32],
+    record_count: usize,
+}
+
+struct DaemonMarkerStateIds {
+    event_id: Option<String>,
+    message_id: String,
+    task_id: String,
+    run_id: String,
 }
 
 struct AttachmentTicketParams {
@@ -245,12 +545,14 @@ struct HeldTicket {
 }
 
 struct Probe {
+    _core: Option<im_core::ImCore>,
     _client: Option<im_core::ImClient>,
     http: reqwest::Client,
     bearer: Zeroizing<String>,
     message_rpc_url: reqwest::Url,
     account_state_rpc_url: reqwest::Url,
     agent_inventory_rpc_url: reqwest::Url,
+    agent_registration_rpc_url: reqwest::Url,
     did_auth_rpc_url: reqwest::Url,
     me_rpc_url: reqwest::Url,
     websocket_url: String,
@@ -265,6 +567,7 @@ struct Probe {
     local_manifest_single_device: bool,
     local_document_hash: Option<String>,
     local_key_roles_separated: bool,
+    local_daemon_subkey_present: bool,
     source_controller_account_id: Option<String>,
     device_role: &'static str,
     device_readiness: &'static str,
@@ -272,6 +575,8 @@ struct Probe {
     service_did: String,
     ws: Option<WsStream>,
     held_ticket: Option<HeldTicket>,
+    daemon_state_root: Option<std::path::PathBuf>,
+    daemon_continuity_baseline: Option<DaemonContinuityBaseline>,
 }
 
 #[derive(Deserialize)]
@@ -481,6 +786,12 @@ impl Probe {
         ))
         .map_err(|_| ProbeFailure::Runtime)?;
         validate_service_url(&agent_inventory_rpc_url)?;
+        let agent_registration_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
+            &resolved.user_service_endpoint,
+            AGENT_REGISTRATION_RPC_PATH,
+        ))
+        .map_err(|_| ProbeFailure::Runtime)?;
+        validate_service_url(&agent_registration_rpc_url)?;
         let did_auth_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
             &resolved.user_service_endpoint,
             DID_AUTH_RPC_PATH,
@@ -503,12 +814,14 @@ impl Probe {
         let http = build_http_client(ca_bundle.as_deref())?;
 
         Ok(Self {
+            _core: Some(core),
             _client: Some(client),
             http,
             bearer,
             message_rpc_url,
             account_state_rpc_url,
             agent_inventory_rpc_url,
+            agent_registration_rpc_url,
             did_auth_rpc_url,
             me_rpc_url,
             websocket_url,
@@ -523,6 +836,7 @@ impl Probe {
             local_manifest_single_device: local_document.manifest_single_device,
             local_document_hash: local_document.document_hash,
             local_key_roles_separated: local_document.key_roles_separated,
+            local_daemon_subkey_present: local_document.daemon_subkey_present,
             source_controller_account_id: None,
             device_role,
             device_readiness,
@@ -530,6 +844,8 @@ impl Probe {
             service_did,
             ws: None,
             held_ticket: None,
+            daemon_state_root: None,
+            daemon_continuity_baseline: None,
         })
     }
 
@@ -617,6 +933,11 @@ impl Probe {
             AGENT_INVENTORY_RPC_PATH,
         ))
         .map_err(|_| ProbeFailure::Runtime)?;
+        let agent_registration_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
+            &config.user_service_base_url,
+            AGENT_REGISTRATION_RPC_PATH,
+        ))
+        .map_err(|_| ProbeFailure::Runtime)?;
         let did_auth_rpc_url = reqwest::Url::parse(&im_core::realtime::join_base_url(
             &config.user_service_base_url,
             DID_AUTH_RPC_PATH,
@@ -630,6 +951,7 @@ impl Probe {
         for url in [
             &account_state_rpc_url,
             &agent_inventory_rpc_url,
+            &agent_registration_rpc_url,
             &did_auth_rpc_url,
             &me_rpc_url,
         ] {
@@ -642,12 +964,14 @@ impl Probe {
                 .websocket_url;
 
         Ok(Self {
+            _core: None,
             _client: Some(client),
             http: build_http_client(None)?,
             bearer,
             message_rpc_url,
             account_state_rpc_url,
             agent_inventory_rpc_url,
+            agent_registration_rpc_url,
             did_auth_rpc_url,
             me_rpc_url,
             websocket_url,
@@ -662,6 +986,7 @@ impl Probe {
             local_manifest_single_device: local_document.manifest_single_device,
             local_document_hash: local_document.document_hash,
             local_key_roles_separated: local_document.key_roles_separated,
+            local_daemon_subkey_present: local_document.daemon_subkey_present,
             source_controller_account_id: Some(definition.controller_user_id.clone()),
             device_role: "admin",
             device_readiness: "admin_ready",
@@ -669,6 +994,8 @@ impl Probe {
             service_did,
             ws: None,
             held_ticket: None,
+            daemon_state_root: Some(state_root.to_path_buf()),
+            daemon_continuity_baseline: None,
         })
     }
 
@@ -731,6 +1058,54 @@ impl Probe {
                             ),
                         "device_access_standard": device_access_standard,
                         "sync_capability_absent": sync_capability_absent,
+                    }),
+                    false,
+                ))
+            }
+            Action::DaemonContinuityBaseline => {
+                let baseline = self.capture_daemon_continuity_baseline()?;
+                self.daemon_continuity_baseline = Some(baseline);
+                Ok((
+                    json!({
+                        "captured": true,
+                        "old_identity_has_daemon_key": true,
+                        "delegated_identity_ready": true,
+                        "controller_binding_ready": true,
+                    }),
+                    false,
+                ))
+            }
+            Action::DaemonContinuityVerify(params) => {
+                let result = self.verify_daemon_continuity(&params)?;
+                Ok((result, false))
+            }
+            Action::StageDaemonContinuityRoot(params) => {
+                let result = self.stage_daemon_continuity_root(&params)?;
+                Ok((result, false))
+            }
+            Action::PrepareDaemonContinuityFixture(params) => {
+                let result = self.prepare_daemon_continuity_fixture(&params).await?;
+                Ok((result, false))
+            }
+            Action::DaemonFixtureResources => Ok((self.daemon_fixture_resources()?, false)),
+            Action::SendPlainMarker(params) => {
+                let result = self.send_plain_marker(&params).await?;
+                Ok((result, false))
+            }
+            Action::DaemonMarkerProcessed { message_id } => {
+                Ok((self.daemon_marker_processed(&message_id)?, false))
+            }
+            Action::HumanDaemonSubkeyState => {
+                let core = self._core.as_ref().ok_or(ProbeFailure::InvalidState)?;
+                let vault_present = core
+                    .identities()
+                    .load_daemon_subkey_package_async(im_core::IdentitySelector::Default)
+                    .await
+                    .is_ok();
+                Ok((
+                    json!({
+                        "document_present": self.local_daemon_subkey_present,
+                        "vault_present": vault_present,
                     }),
                     false,
                 ))
@@ -910,6 +1285,614 @@ impl Probe {
                 self.held_ticket.take();
                 Ok((json!({"shutdown": true}), true))
             }
+        }
+    }
+
+    fn capture_daemon_continuity_baseline(&self) -> Result<DaemonContinuityBaseline, ProbeFailure> {
+        let state_root = self
+            .daemon_state_root
+            .as_deref()
+            .ok_or(ProbeFailure::InvalidState)?;
+        let config = awiki_deamon::DaemonConfig::for_state_root(state_root)
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let state = awiki_deamon::DaemonState::open(&config).map_err(|_| ProbeFailure::Runtime)?;
+        let definition = state
+            .list_agent_definitions()
+            .map_err(|_| ProbeFailure::Runtime)?
+            .into_iter()
+            .find(|item| item.agent_did == self.local_did && item.status == "active")
+            .ok_or(ProbeFailure::InvalidState)?;
+        let identity = state
+            .load_agent_device_identity(&self.local_did)
+            .map_err(|_| ProbeFailure::Runtime)?
+            .ok_or(ProbeFailure::InvalidState)?;
+        let bindings = state
+            .list_active_app_personal_agent_bindings()
+            .map_err(|_| ProbeFailure::Runtime)?;
+        if bindings.len() != 1 {
+            return Err(ProbeFailure::InvalidState);
+        }
+        let binding = &bindings[0];
+        if binding.daemon_agent_did != self.local_did
+            || binding.user_did != definition.controller_did
+            || binding.revoked_at_ms.is_some()
+        {
+            return Err(ProbeFailure::InvalidState);
+        }
+        let delegated = state
+            .load_user_delegated_identity(&binding.inbox_auth_verification_method)
+            .map_err(|_| ProbeFailure::Runtime)?
+            .ok_or(ProbeFailure::InvalidState)?;
+        if delegated.user_did != binding.user_did
+            || delegated.controller_did != definition.controller_did
+            || delegated.daemon_agent_did != self.local_did
+            || delegated.verification_method != binding.inbox_auth_verification_method
+            || !delegated.verification_method.ends_with("#daemon-key-1")
+            || delegated.private_key_material.trim().is_empty()
+            || delegated.status != "active"
+        {
+            return Err(ProbeFailure::InvalidState);
+        }
+        let route_state = daemon_route_state_snapshot(&state)?;
+
+        Ok(DaemonContinuityBaseline {
+            agent_identity_hash: hash_serializable(&identity)?,
+            root_key_hash: hash_parts(&[&identity.root_key_id, &identity.root_private_key_pem]),
+            device_keys_hash: hash_parts(&[
+                &identity.device_signing_key_id,
+                &identity.device_signing_private_key_pem,
+                &identity.device_e2ee_key_id,
+                &identity.device_e2ee_private_key_pem,
+            ]),
+            delegated_key_hash: hash_serializable(&delegated)?,
+            definition_hash: hash_serializable(&definition)?,
+            route_state_hash: route_state.hash,
+            route_record_count: route_state.record_count,
+            verification_method: delegated.verification_method,
+            user_did: binding.user_did.clone(),
+            app_instance_id: binding.app_instance_id.clone(),
+        })
+    }
+
+    fn verify_daemon_continuity(
+        &self,
+        params: &DaemonContinuityVerifyParams,
+    ) -> Result<Value, ProbeFailure> {
+        let baseline = self
+            .daemon_continuity_baseline
+            .as_ref()
+            .ok_or(ProbeFailure::InvalidState)?;
+        let state_root = self
+            .daemon_state_root
+            .as_deref()
+            .ok_or(ProbeFailure::InvalidState)?;
+        let config = awiki_deamon::DaemonConfig::for_state_root(state_root)
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let state = awiki_deamon::DaemonState::open(&config).map_err(|_| ProbeFailure::Runtime)?;
+        let definition = state
+            .list_agent_definitions()
+            .map_err(|_| ProbeFailure::Runtime)?
+            .into_iter()
+            .find(|item| item.agent_did == self.local_did && item.status == "active")
+            .ok_or(ProbeFailure::InvalidState)?;
+        let identity = state
+            .load_agent_device_identity(&self.local_did)
+            .map_err(|_| ProbeFailure::Runtime)?
+            .ok_or(ProbeFailure::InvalidState)?;
+        let bindings = state
+            .list_active_app_personal_agent_bindings()
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let old_binding = bindings.iter().find(|binding| {
+            binding.daemon_agent_did == self.local_did
+                && binding.user_did == params.old_controller_did
+                && binding.app_instance_id == baseline.app_instance_id
+                && binding.revoked_at_ms.is_none()
+        });
+        let delegated = state
+            .load_user_delegated_identity(&baseline.verification_method)
+            .map_err(|_| ProbeFailure::Runtime)?
+            .ok_or(ProbeFailure::InvalidState)?;
+        let controller_identity_changed =
+            awiki_deamon::agent_status::controller_identity_change_observed(
+                &state,
+                &self.local_did,
+            )
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let route_state = daemon_route_state_snapshot(&state)?;
+        let route_state_unchanged = route_state.hash == baseline.route_state_hash
+            && route_state.record_count == baseline.route_record_count;
+        let queued_ids =
+            queued_delegated_marker_ids(&params.old_controller_did, &params.queued_marker)?;
+        let new_controller_ids = new_controller_marker_ids(&params.controller_marker)?;
+        let mut queued_delegated_marker = daemon_marker_absence_evidence(&state, &queued_ids)?;
+        let mut new_controller_marker =
+            daemon_marker_absence_evidence(&state, &new_controller_ids)?;
+        queued_delegated_marker.route_absent &= route_state_unchanged;
+        new_controller_marker.route_absent &= route_state_unchanged;
+
+        let agent_identity_unchanged =
+            hash_serializable(&identity)? == baseline.agent_identity_hash;
+        let root_key_unchanged =
+            hash_parts(&[&identity.root_key_id, &identity.root_private_key_pem])
+                == baseline.root_key_hash;
+        let device_keys_unchanged = hash_parts(&[
+            &identity.device_signing_key_id,
+            &identity.device_signing_private_key_pem,
+            &identity.device_e2ee_key_id,
+            &identity.device_e2ee_private_key_pem,
+        ]) == baseline.device_keys_hash;
+        let delegated_key_unchanged = hash_serializable(&delegated)? == baseline.delegated_key_hash
+            && delegated.user_did == baseline.user_did;
+        let old_controller_binding_unchanged = old_binding.is_some()
+            && definition.controller_did == params.old_controller_did
+            && hash_serializable(&definition)? == baseline.definition_hash;
+        let new_controller_lacks_delegated_key = params.new_controller_did != baseline.user_did
+            && delegated.user_did == baseline.user_did
+            && !bindings
+                .iter()
+                .any(|binding| binding.user_did == params.new_controller_did);
+        Ok(closed_daemon_continuity_result(DaemonContinuityEvidence {
+            agent_identity_unchanged,
+            root_key_unchanged,
+            device_keys_unchanged,
+            delegated_key_unchanged,
+            old_controller_binding_unchanged,
+            new_controller_lacks_delegated_key,
+            controller_identity_changed,
+            queued_delegated_marker,
+            new_controller_marker,
+        }))
+    }
+
+    fn stage_daemon_continuity_root(
+        &self,
+        params: &StageDaemonContinuityRootParams,
+    ) -> Result<Value, ProbeFailure> {
+        if !params.state_root.is_absolute() || params.state_root.exists() {
+            return Err(ProbeFailure::InvalidRequest);
+        }
+        let config = awiki_deamon::DaemonConfig::for_state_root(&params.state_root)
+            .map_err(|_| ProbeFailure::Runtime)?;
+        config
+            .ensure_state_layout()
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let state = awiki_deamon::DaemonState::open(&config).map_err(|_| ProbeFailure::Runtime)?;
+        state.initialize().map_err(|_| ProbeFailure::Runtime)?;
+        let authority =
+            awiki_deamon::commands::stage_daemon_registration_authority_for_system_test(
+                &config,
+                &state,
+                &self.local_did,
+                &params.daemon_handle,
+            )
+            .map_err(|_| ProbeFailure::Runtime)?;
+        im_core::ids::Did::parse(&authority.agent_did).map_err(|_| ProbeFailure::Runtime)?;
+        Ok(json!({"daemon_agent_did": authority.agent_did}))
+    }
+
+    async fn prepare_daemon_continuity_fixture(
+        &self,
+        params: &PrepareDaemonContinuityFixtureParams,
+    ) -> Result<Value, ProbeFailure> {
+        let core = self._core.as_ref().ok_or(ProbeFailure::InvalidState)?;
+        let client = self._client.as_ref().ok_or(ProbeFailure::InvalidState)?;
+        if !params.daemon_binary.is_file()
+            || !params.daemon_binary.is_absolute()
+            || !params.state_root.is_absolute()
+            || !params.state_root.is_dir()
+        {
+            return Err(ProbeFailure::InvalidRequest);
+        }
+
+        let user_service_base = service_base_from_rpc(&self.agent_registration_rpc_url)?;
+        let message_service_base = service_base_from_rpc(&self.message_rpc_url)?;
+        let authority_config = awiki_deamon::DaemonConfig::for_state_root(&params.state_root)
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let authority_state = awiki_deamon::DaemonState::open(&authority_config)
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let authority = awiki_deamon::commands::load_daemon_registration_authority_for_system_test(
+            &authority_state,
+            &self.local_did,
+            &params.daemon_handle,
+            &params.daemon_agent_did,
+        )
+        .map_err(|_| ProbeFailure::InvalidState)?;
+        im_core::ids::Did::parse(&authority.agent_did).map_err(|_| ProbeFailure::Runtime)?;
+        let daemon_token = match daemon_token_issue_or_root_receipt(
+            &authority.agent_did,
+            self.issue_agent_registration_token(
+                "daemon",
+                &params.daemon_handle,
+                Some(&params.controller_handle),
+                daemon_registration_metadata(&authority.agent_did),
+            )
+            .await,
+        ) {
+            Ok(token) => token,
+            Err(receipt) => return Ok(receipt),
+        };
+        let registration_token = match awiki_deamon::registration::RegistrationToken::new(
+            daemon_token.as_str().to_owned(),
+        ) {
+            Ok(token) => token,
+            Err(_) => {
+                return Ok(closed_daemon_fixture_prepare_result(
+                    false,
+                    &authority.agent_did,
+                ));
+            }
+        };
+        if awiki_deamon::commands::bind_daemon_registration_token_for_system_test(
+            &authority_state,
+            &authority,
+            registration_token,
+        )
+        .is_err()
+        {
+            return Ok(closed_daemon_fixture_prepare_result(
+                false,
+                &authority.agent_did,
+            ));
+        }
+        let mut daemon_agent_did = None;
+        for _ in 0..DAEMON_SETUP_ATTEMPT_LIMIT {
+            let daemon_binary = params.daemon_binary.clone();
+            let state_root = params.state_root.clone();
+            let daemon_handle = params.daemon_handle.clone();
+            let controller_did = self.local_did.clone();
+            let registration_token = Zeroizing::new(daemon_token.as_str().to_owned());
+            let user_service_base = user_service_base.clone();
+            let message_service_base = message_service_base.clone();
+            let service_did = self.service_did.clone();
+            let setup_output = tokio::task::spawn_blocking(move || {
+                Command::new(daemon_binary)
+                    .arg("setup-daemon-agent")
+                    .arg("--state-root")
+                    .arg(state_root)
+                    .arg("--handle")
+                    .arg(daemon_handle)
+                    .arg("--controller-did")
+                    .arg(controller_did)
+                    .env(
+                        "AWIKI_DAEMON_REGISTRATION_TOKEN",
+                        registration_token.as_str(),
+                    )
+                    .env("AWIKI_DAEMON_BASE_URL", &user_service_base)
+                    .env("AWIKI_DAEMON_USER_SERVICE_BASE_URL", &user_service_base)
+                    .env(
+                        "AWIKI_DAEMON_MESSAGE_SERVICE_BASE_URL",
+                        &message_service_base,
+                    )
+                    .env("AWIKI_DAEMON_ANP_SERVICE_DID", service_did)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .output()
+            })
+            .await;
+            if let Ok(Ok(setup_output)) = setup_output {
+                if let Ok(agent_did) = daemon_setup_agent_did(setup_output) {
+                    if recover_exact_persisted_daemon_agent_did(
+                        &params.state_root,
+                        &params.daemon_handle,
+                        &self.local_did,
+                    )
+                    .is_ok_and(|persisted| persisted.as_deref() == Some(agent_did.as_str()))
+                    {
+                        daemon_agent_did = Some(agent_did);
+                        break;
+                    }
+                }
+            }
+        }
+        let daemon_agent_did = match daemon_agent_did {
+            Some(agent_did) => agent_did,
+            None => {
+                return daemon_setup_failure_result(
+                    &params.state_root,
+                    &params.daemon_handle,
+                    &self.local_did,
+                    ProbeFailure::Runtime,
+                )
+            }
+        };
+        if daemon_agent_did != authority.agent_did {
+            return Ok(closed_daemon_fixture_prepare_result(
+                false,
+                &authority.agent_did,
+            ));
+        }
+
+        let preparation = async {
+            let config = awiki_deamon::DaemonConfig::for_state_root(&params.state_root)
+                .map_err(|_| ProbeFailure::Runtime)?;
+            let state =
+                awiki_deamon::DaemonState::open(&config).map_err(|_| ProbeFailure::Runtime)?;
+            let daemon_identity = state
+                .load_agent_device_identity(&daemon_agent_did)
+                .map_err(|_| ProbeFailure::Runtime)?
+                .ok_or(ProbeFailure::Runtime)?;
+            let recipient_public =
+                daemon_bootstrap_public_key(&daemon_identity.did_document, &daemon_agent_did)?;
+
+            let runtime_token = self
+                .issue_agent_registration_token(
+                    "runtime",
+                    &params.runtime_handle,
+                    None,
+                    json!({
+                        "suite_case": "handle-recovery-daemon-continuity",
+                        "runtime": "hermes",
+                        "runtime_profile": "personal_agent",
+                        "daemon_agent_did": daemon_agent_did,
+                    }),
+                )
+                .await?;
+            let mut subkey = core
+                .identities()
+                .ensure_daemon_subkey_package_async(im_core::IdentitySelector::Default)
+                .await
+                .map_err(|_| ProbeFailure::Runtime)?;
+            if subkey.user_did.as_str() != self.local_did
+                || !subkey.verification_method.ends_with("#daemon-key-1")
+                || !subkey.is_v2_pem()
+            {
+                return Err(ProbeFailure::InvalidState);
+            }
+            let private_key = Zeroizing::new(std::mem::take(&mut subkey.private_key_pem));
+            let legacy_private_key =
+                Zeroizing::new(std::mem::take(&mut subkey.private_key_multibase));
+            let private_key_material = if private_key.trim().is_empty() {
+                legacy_private_key.as_str()
+            } else {
+                private_key.as_str()
+            };
+            if private_key_material.trim().is_empty() {
+                return Err(ProbeFailure::InvalidState);
+            }
+            let bootstrap_id = format!("boot_{}", random_hex(12)?);
+            let idempotency_key = format!("personal-agent-bootstrap:{}", random_hex(12)?);
+            let ensure_once_key = format!(
+                "app-personal-agent:{}:{}",
+                self.local_did, params.app_instance_id
+            );
+            let payload = ProbeBootstrapPayload {
+                schema: "awiki.daemon.bootstrap.v1",
+                bootstrap_id: &bootstrap_id,
+                idempotency_key: &idempotency_key,
+                app_instance_id: &params.app_instance_id,
+                controller_did: &self.local_did,
+                user_subkey_package: ProbeUserSubkeyPackage {
+                    schema: &subkey.schema,
+                    user_did: subkey.user_did.as_str(),
+                    verification_method: &subkey.verification_method,
+                    key_type: &subkey.key_type,
+                    key_algorithm: subkey.key_algorithm.as_deref().unwrap_or("Ed25519"),
+                    public_key_multibase: &subkey.public_key_multibase,
+                    private_key_encoding: &subkey.private_key_encoding,
+                    private_key_pem: private_key_material,
+                    allowed_scopes: ["message.inbox.read.plain"],
+                },
+                desired_personal_agent: ProbeDesiredPersonalAgent {
+                    role: "app_message_handler",
+                    runtime: "hermes",
+                    runtime_provider: "hermes",
+                    runtime_profile: "personal_agent",
+                    display_name: "Recovery Continuity Agent",
+                    ensure_once_key: &ensure_once_key,
+                    runtime_registration_token: runtime_token.as_str(),
+                },
+                capability_policy: ProbeCapabilityPolicy {
+                    schema: "awiki.app.capabilities.v1",
+                    capabilities: ["message.summarize_plain"],
+                    require_confirmation_for_write_actions: true,
+                },
+            };
+            let plaintext =
+                Zeroizing::new(serde_json::to_vec(&payload).map_err(|_| ProbeFailure::Runtime)?);
+            let now = time::OffsetDateTime::now_utc();
+            let issued_at = now
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|_| ProbeFailure::Runtime)?;
+            let expires_at = (now + time::Duration::minutes(5))
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|_| ProbeFailure::Runtime)?;
+            let mut nonce = [0_u8; 12];
+            rand::thread_rng().fill_bytes(&mut nonce);
+            let mut ephemeral = [0_u8; 32];
+            rand::thread_rng().fill_bytes(&mut ephemeral);
+            let operation_id = idempotency_key.clone();
+            let envelope =
+            awiki_deamon::app_bridge::bootstrap::encrypt_secure_bootstrap_bytes_for_system_test(
+                &daemon_agent_did,
+                recipient_public,
+                &self.local_did,
+                &operation_id,
+                &issued_at,
+                &expires_at,
+                nonce,
+                x25519_dalek::StaticSecret::from(ephemeral),
+                json!({
+                    "human_did": self.local_did,
+                    "daemon_agent_did": daemon_agent_did,
+                    "binding_id": format!(
+                        "app-personal-agent:{}:{}",
+                        self.local_did, params.app_instance_id
+                    ),
+                }),
+                plaintext.as_slice(),
+            )
+            .map_err(|_| ProbeFailure::Runtime)?;
+            let message_id = im_core::ids::MessageId::parse(&format!("msg-{}", random_hex(12)?))
+                .map_err(|_| ProbeFailure::Runtime)?;
+            let send = client
+                .messages()
+                .send_async(im_core::messages::SendMessageRequest {
+                    target: im_core::messages::MessageTarget::Direct(
+                        im_core::ids::PeerRef::parse(&daemon_agent_did, "")
+                            .map_err(|_| ProbeFailure::Runtime)?,
+                    ),
+                    body: im_core::messages::MessageBody::Payload { payload: envelope },
+                    security: im_core::messages::MessageSecurityMode::Plain,
+                    client_message_id: Some(message_id),
+                    delivery: im_core::messages::MessageDeliveryOptions {
+                        idempotency_key: Some(operation_id),
+                        wait_for_final_acceptance: true,
+                    },
+                    delegated_signing: None,
+                })
+                .await
+                .map_err(|_| ProbeFailure::Transport)?;
+            if matches!(
+                send.delivery,
+                im_core::messages::DeliveryState::Failed { .. }
+            ) {
+                return Err(ProbeFailure::Transport);
+            }
+            Ok::<(), ProbeFailure>(())
+        }
+        .await;
+        Ok(daemon_fixture_prepare_result_after_boundary(
+            &daemon_agent_did,
+            preparation,
+        ))
+    }
+
+    fn daemon_fixture_resources(&self) -> Result<Value, ProbeFailure> {
+        let state_root = self
+            .daemon_state_root
+            .as_deref()
+            .ok_or(ProbeFailure::InvalidState)?;
+        let config = awiki_deamon::DaemonConfig::for_state_root(state_root)
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let state = awiki_deamon::DaemonState::open(&config).map_err(|_| ProbeFailure::Runtime)?;
+        let bindings = state
+            .list_active_app_personal_agent_bindings()
+            .map_err(|_| ProbeFailure::Runtime)?;
+        if bindings.len() != 1 || bindings[0].daemon_agent_did != self.local_did {
+            return Err(ProbeFailure::InvalidState);
+        }
+        let binding = &bindings[0];
+        im_core::ids::Did::parse(&binding.runtime_agent_did).map_err(|_| ProbeFailure::Runtime)?;
+        Ok(json!({
+            "daemon_agent_did": self.local_did,
+            "runtime_agent_did": binding.runtime_agent_did,
+        }))
+    }
+
+    async fn send_plain_marker(
+        &self,
+        params: &SendPlainMarkerParams,
+    ) -> Result<Value, ProbeFailure> {
+        let client = self._client.as_ref().ok_or(ProbeFailure::InvalidState)?;
+        let result = client
+            .messages()
+            .send_async(im_core::messages::SendMessageRequest {
+                target: im_core::messages::MessageTarget::Direct(
+                    im_core::ids::PeerRef::parse(&params.target_did, "")
+                        .map_err(|_| ProbeFailure::InvalidRequest)?,
+                ),
+                body: im_core::messages::MessageBody::Text {
+                    text: params.marker.to_string(),
+                    kind: im_core::messages::MessageKind::Text,
+                },
+                security: im_core::messages::MessageSecurityMode::Plain,
+                client_message_id: Some(
+                    im_core::ids::MessageId::parse(&params.message_id)
+                        .map_err(|_| ProbeFailure::InvalidRequest)?,
+                ),
+                delivery: im_core::messages::MessageDeliveryOptions {
+                    idempotency_key: Some(params.message_id.clone()),
+                    wait_for_final_acceptance: true,
+                },
+                delegated_signing: None,
+            })
+            .await
+            .map_err(|_| ProbeFailure::Transport)?;
+        if matches!(
+            result.delivery,
+            im_core::messages::DeliveryState::Failed { .. }
+        ) {
+            return Err(ProbeFailure::Transport);
+        }
+        Ok(json!({"sent": true}))
+    }
+
+    fn daemon_marker_processed(&self, message_id: &str) -> Result<Value, ProbeFailure> {
+        let state_root = self
+            .daemon_state_root
+            .as_deref()
+            .ok_or(ProbeFailure::InvalidState)?;
+        let config = awiki_deamon::DaemonConfig::for_state_root(state_root)
+            .map_err(|_| ProbeFailure::Runtime)?;
+        let state = awiki_deamon::DaemonState::open(&config).map_err(|_| ProbeFailure::Runtime)?;
+        let bindings = state
+            .list_active_app_personal_agent_bindings()
+            .map_err(|_| ProbeFailure::Runtime)?;
+        if bindings.len() != 1 || bindings[0].daemon_agent_did != self.local_did {
+            return Err(ProbeFailure::InvalidState);
+        }
+        let owner_did = &bindings[0].user_did;
+        let suffix = stable_id_suffix(&format!("{owner_did}:{message_id}"));
+        let event_created = state
+            .load_message_event(&format!("evt_{suffix}"))
+            .map_err(|_| ProbeFailure::Runtime)?
+            .is_some();
+        let task_id = format!("task_user_msg_{suffix}");
+        let task_created = state.load_runtime_task(&task_id).is_ok();
+        let run_id = format!("run_{task_id}");
+        let run_finished = state
+            .load_runtime_run(&run_id)
+            .map(|run| run.status == awiki_deamon::runtime::RuntimeRunStatus::Finished)
+            .unwrap_or(false);
+        let final_created = state
+            .load_runtime_final_outbox_by_run(&run_id)
+            .map_err(|_| ProbeFailure::Runtime)?
+            .is_some();
+        Ok(json!({
+            "event_created": event_created,
+            "task_created": task_created,
+            "run_finished": run_finished,
+            "final_created": final_created,
+        }))
+    }
+
+    async fn issue_agent_registration_token(
+        &self,
+        agent_kind: &'static str,
+        handle: &str,
+        controller_handle: Option<&str>,
+        metadata: Value,
+    ) -> Result<Zeroizing<String>, ProbeFailure> {
+        let mut params = json!({
+            "agent_kind": agent_kind,
+            "controller_did": self.local_did,
+            "issued_by_did": self.local_did,
+            "handle": handle,
+            "expires_in_seconds": 600,
+            "metadata": metadata,
+        });
+        if let Some(controller_handle) = controller_handle {
+            params.as_object_mut().ok_or(ProbeFailure::Runtime)?.insert(
+                "controller_handle".to_owned(),
+                Value::String(controller_handle.to_owned()),
+            );
+        }
+        match self
+            .rpc_to::<RegistrationTokenResult>(
+                &self.agent_registration_rpc_url,
+                &self.bearer,
+                "issue_token",
+                params,
+                RpcRejectionPolicy::Standard,
+            )
+            .await?
+        {
+            RpcOutcome::Success(mut result) if !result.token.trim().is_empty() => {
+                Ok(Zeroizing::new(std::mem::take(&mut result.token)))
+            }
+            RpcOutcome::Success(_) => Err(ProbeFailure::Runtime),
+            RpcOutcome::Rejected(_) => Err(ProbeFailure::Transport),
         }
     }
 
@@ -1280,6 +2263,166 @@ impl Probe {
     }
 }
 
+fn daemon_route_state_snapshot(
+    state: &awiki_deamon::DaemonState,
+) -> Result<DaemonRouteStateSnapshot, ProbeFailure> {
+    let connection = state.connection().map_err(|_| ProbeFailure::Runtime)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT kind, record_id, message_id, task_id, run_id, route_key, status, version
+FROM (
+    SELECT
+        'session' AS kind,
+        route_key AS record_id,
+        COALESCE(last_message_id, '') AS message_id,
+        '' AS task_id,
+        COALESCE(lock_run_id, last_run_id, '') AS run_id,
+        route_key,
+        status,
+        CAST(version AS TEXT) AS version
+    FROM cli_route_sessions
+    UNION ALL
+    SELECT
+        'queue' AS kind,
+        queue_id AS record_id,
+        source_message_id AS message_id,
+        COALESCE(task_id, '') AS task_id,
+        COALESCE(run_id, '') AS run_id,
+        route_key,
+        status,
+        CAST(route_sequence AS TEXT) AS version
+    FROM cli_route_message_queue
+    UNION ALL
+    SELECT
+        'driver' AS kind,
+        run_id AS record_id,
+        '' AS message_id,
+        '' AS task_id,
+        run_id,
+        route_key,
+        status,
+        '' AS version
+    FROM cli_driver_run
+)
+ORDER BY kind, record_id
+"#,
+        )
+        .map_err(|_| ProbeFailure::Runtime)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(json!([
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            ]))
+        })
+        .map_err(|_| ProbeFailure::Runtime)?;
+    let mut canonical_rows = Vec::new();
+    for row in rows {
+        canonical_rows.push(row.map_err(|_| ProbeFailure::Runtime)?);
+    }
+    Ok(DaemonRouteStateSnapshot {
+        hash: hash_serializable(&canonical_rows)?,
+        record_count: canonical_rows.len(),
+    })
+}
+
+fn queued_delegated_marker_ids(
+    old_controller_did: &str,
+    message_id: &str,
+) -> Result<DaemonMarkerStateIds, ProbeFailure> {
+    im_core::ids::MessageId::parse(message_id).map_err(|_| ProbeFailure::InvalidRequest)?;
+    let suffix = stable_id_suffix(&format!("{old_controller_did}:{message_id}"));
+    let task_id = format!("task_user_msg_{suffix}");
+    Ok(DaemonMarkerStateIds {
+        event_id: Some(format!("evt_{suffix}")),
+        message_id: message_id.to_owned(),
+        run_id: format!("run_{task_id}"),
+        task_id,
+    })
+}
+
+fn new_controller_marker_ids(task_id: &str) -> Result<DaemonMarkerStateIds, ProbeFailure> {
+    let message_id = task_id
+        .strip_prefix("task_")
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(ProbeFailure::InvalidRequest)?;
+    im_core::ids::MessageId::parse(message_id).map_err(|_| ProbeFailure::InvalidRequest)?;
+    Ok(DaemonMarkerStateIds {
+        event_id: None,
+        message_id: message_id.to_owned(),
+        run_id: format!("run_{task_id}"),
+        task_id: task_id.to_owned(),
+    })
+}
+
+fn daemon_marker_absence_evidence(
+    state: &awiki_deamon::DaemonState,
+    ids: &DaemonMarkerStateIds,
+) -> Result<DaemonMarkerAbsenceEvidence, ProbeFailure> {
+    let connection = state.connection().map_err(|_| ProbeFailure::Runtime)?;
+    let evidence = connection
+        .query_row(
+            r#"
+SELECT
+    EXISTS(
+        SELECT 1
+        FROM message_event
+        WHERE message_id = ?1
+           OR (?2 IS NOT NULL AND event_id = ?2)
+    ),
+    EXISTS(
+        SELECT 1
+        FROM cli_route_sessions
+        WHERE last_message_id = ?1
+           OR last_run_id = ?4
+           OR lock_run_id = ?4
+    ) OR EXISTS(
+        SELECT 1
+        FROM cli_route_message_queue
+        WHERE source_message_id = ?1
+           OR task_id = ?3
+           OR run_id = ?4
+    ) OR EXISTS(
+        SELECT 1
+        FROM cli_driver_run
+        WHERE run_id = ?4
+    ),
+    EXISTS(SELECT 1 FROM runtime_task WHERE task_id = ?3),
+    EXISTS(SELECT 1 FROM runtime_run WHERE task_id = ?3),
+    EXISTS(
+        SELECT 1
+        FROM runtime_final_outbox AS final
+        JOIN runtime_run AS run ON run.run_id = final.run_id
+        WHERE run.task_id = ?3
+    )
+"#,
+            rusqlite::params![
+                ids.message_id,
+                ids.event_id.as_deref(),
+                ids.task_id,
+                ids.run_id,
+            ],
+            |row| {
+                Ok(DaemonMarkerAbsenceEvidence {
+                    event_absent: row.get::<_, i64>(0)? == 0,
+                    route_absent: row.get::<_, i64>(1)? == 0,
+                    task_absent: row.get::<_, i64>(2)? == 0,
+                    run_absent: row.get::<_, i64>(3)? == 0,
+                    final_absent: row.get::<_, i64>(4)? == 0,
+                })
+            },
+        )
+        .map_err(|_| ProbeFailure::Runtime)?;
+    Ok(evidence)
+}
+
 enum ObjectOutcome {
     Success(Zeroizing<Vec<u8>>),
     Rejected {
@@ -1378,6 +2521,78 @@ fn zeroizing_bearer_header(secret: &Zeroizing<String>) -> Zeroizing<String> {
     Zeroizing::new(im_core::realtime::bearer_authorization_header(secret))
 }
 
+fn hash_serializable<T: Serialize>(value: &T) -> Result<[u8; 32], ProbeFailure> {
+    let encoded = serde_json::to_vec(value).map_err(|_| ProbeFailure::Runtime)?;
+    let encoded = Zeroizing::new(encoded);
+    Ok(Sha256::digest(encoded.as_slice()).into())
+}
+
+fn hash_parts(parts: &[&str]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    for part in parts {
+        digest.update(part.len().to_be_bytes());
+        digest.update(part.as_bytes());
+    }
+    digest.finalize().into()
+}
+
+fn stable_id_suffix(input: &str) -> String {
+    Sha256::digest(input.as_bytes())
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn random_hex(byte_count: usize) -> Result<String, ProbeFailure> {
+    if byte_count == 0 || byte_count > 64 {
+        return Err(ProbeFailure::Runtime);
+    }
+    let mut bytes = Zeroizing::new(vec![0_u8; byte_count]);
+    rand::thread_rng().fill_bytes(bytes.as_mut_slice());
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn service_base_from_rpc(url: &reqwest::Url) -> Result<String, ProbeFailure> {
+    let mut base = url.clone();
+    base.set_path("");
+    base.set_query(None);
+    base.set_fragment(None);
+    Ok(base.to_string().trim_end_matches('/').to_owned())
+}
+
+fn daemon_bootstrap_public_key(
+    document: &Value,
+    daemon_agent_did: &str,
+) -> Result<anp::PublicKeyMaterial, ProbeFailure> {
+    let expected_id = format!("{daemon_agent_did}#key-3");
+    let multibase = document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .and_then(|methods| {
+            methods.iter().find(|method| {
+                method.get("id").and_then(Value::as_str) == Some(expected_id.as_str())
+            })
+        })
+        .and_then(|method| method.get("publicKeyMultibase"))
+        .and_then(Value::as_str)
+        .ok_or(ProbeFailure::Runtime)?;
+    let encoded = multibase.strip_prefix('z').ok_or(ProbeFailure::Runtime)?;
+    let mut decoded = Zeroizing::new(
+        bs58::decode(encoded)
+            .into_vec()
+            .map_err(|_| ProbeFailure::Runtime)?,
+    );
+    if decoded.len() == 34 && decoded.starts_with(&[0xec, 0x01]) {
+        decoded.drain(..2);
+    }
+    let bytes: [u8; 32] = decoded
+        .as_slice()
+        .try_into()
+        .map_err(|_| ProbeFailure::Runtime)?;
+    Ok(anp::PublicKeyMaterial::X25519(bytes))
+}
+
 fn parse_request(raw: &str) -> Result<ProbeRequest, ProbeFailure> {
     let value: Value = serde_json::from_str(raw).map_err(|_| ProbeFailure::InvalidRequest)?;
     let object = value.as_object().ok_or(ProbeFailure::InvalidRequest)?;
@@ -1401,6 +2616,82 @@ fn parse_request(raw: &str) -> Result<ProbeRequest, ProbeFailure> {
             Action::AgentBootstrapIdentity(AgentBootstrapIdentityParams {
                 controller_account_id: required_string(params, "controller_account_id", 512)?,
             })
+        }
+        "daemon_continuity_baseline" => {
+            require_exact_keys(params, &[])?;
+            Action::DaemonContinuityBaseline
+        }
+        "daemon_continuity_verify" => {
+            require_exact_keys(
+                params,
+                &[
+                    "controller_marker",
+                    "new_controller_did",
+                    "old_controller_did",
+                    "queued_marker",
+                ],
+            )?;
+            Action::DaemonContinuityVerify(DaemonContinuityVerifyParams {
+                old_controller_did: required_did(params, "old_controller_did")?,
+                new_controller_did: required_did(params, "new_controller_did")?,
+                queued_marker: required_string(params, "queued_marker", 512)?,
+                controller_marker: required_string(params, "controller_marker", 512)?,
+            })
+        }
+        "prepare_daemon_continuity_fixture" => {
+            require_exact_keys(
+                params,
+                &[
+                    "app_instance_id",
+                    "controller_handle",
+                    "daemon_agent_did",
+                    "daemon_binary",
+                    "daemon_handle",
+                    "runtime_handle",
+                    "state_root",
+                ],
+            )?;
+            let daemon_binary =
+                std::path::PathBuf::from(required_string(params, "daemon_binary", 4096)?);
+            let state_root = std::path::PathBuf::from(required_string(params, "state_root", 4096)?);
+            Action::PrepareDaemonContinuityFixture(PrepareDaemonContinuityFixtureParams {
+                daemon_binary,
+                state_root,
+                daemon_agent_did: required_did(params, "daemon_agent_did")?,
+                daemon_handle: required_string(params, "daemon_handle", 255)?,
+                runtime_handle: required_string(params, "runtime_handle", 255)?,
+                controller_handle: required_string(params, "controller_handle", 255)?,
+                app_instance_id: required_string(params, "app_instance_id", 255)?,
+            })
+        }
+        "stage_daemon_continuity_root" => {
+            require_exact_keys(params, &["daemon_handle", "state_root"])?;
+            Action::StageDaemonContinuityRoot(StageDaemonContinuityRootParams {
+                state_root: std::path::PathBuf::from(required_string(params, "state_root", 4096)?),
+                daemon_handle: required_string(params, "daemon_handle", 255)?,
+            })
+        }
+        "daemon_fixture_resources" => {
+            require_exact_keys(params, &[])?;
+            Action::DaemonFixtureResources
+        }
+        "send_plain_marker" => {
+            require_exact_keys(params, &["marker", "message_id", "target_did"])?;
+            Action::SendPlainMarker(SendPlainMarkerParams {
+                target_did: required_did(params, "target_did")?,
+                message_id: required_string(params, "message_id", 512)?,
+                marker: Zeroizing::new(required_opaque_string(params, "marker", 16 * 1024)?),
+            })
+        }
+        "daemon_marker_processed" => {
+            require_exact_keys(params, &["message_id"])?;
+            Action::DaemonMarkerProcessed {
+                message_id: required_string(params, "message_id", 512)?,
+            }
+        }
+        "human_daemon_subkey_state" => {
+            require_exact_keys(params, &[])?;
+            Action::HumanDaemonSubkeyState
         }
         "open_ws" => {
             require_exact_keys(params, &[])?;
@@ -1798,6 +3089,7 @@ struct LocalDocumentProjection {
     manifest_single_device: bool,
     document_hash: Option<String>,
     key_roles_separated: bool,
+    daemon_subkey_present: bool,
 }
 
 fn workspace_manifest_projection(
@@ -1896,7 +3188,20 @@ fn project_local_document(
             local_signing_key_id,
             local_e2ee_key_id,
         ),
+        daemon_subkey_present: document_has_daemon_subkey(document, local_did),
     }
+}
+
+fn document_has_daemon_subkey(document: &Value, local_did: &str) -> bool {
+    let expected = format!("{local_did}#daemon-key-1");
+    document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .is_some_and(|methods| {
+            methods
+                .iter()
+                .any(|method| method.get("id").and_then(Value::as_str) == Some(expected.as_str()))
+        })
 }
 
 fn canonical_document_hash(document: &Value) -> Option<String> {
@@ -2817,6 +4122,38 @@ mod tests {
     const WIRE_CIPHERTEXT_SECRET: &str = "wire-ciphertext-must-not-leak";
     const WIRE_PLAINTEXT_SECRET: &str = "wire plaintext \"quoted\" \\\n+second line";
 
+    struct TestStateRoot {
+        path: std::path::PathBuf,
+    }
+
+    impl TestStateRoot {
+        fn new(name: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Unix time")
+                .as_nanos();
+            Self {
+                path: std::env::temp_dir().join(format!(
+                    "awiki-system-test-probe-{name}-{}-{nanos}",
+                    std::process::id()
+                )),
+            }
+        }
+    }
+
+    impl Drop for TestStateRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn probe_ok<T>(result: Result<T, ProbeFailure>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(_) => panic!("{context}"),
+        }
+    }
+
     #[test]
     fn protocol_rejects_unknown_actions_and_extra_fields() {
         let readiness = match parse_request(r#"{"id":1,"action":"device_readiness","params":{}}"#) {
@@ -2865,6 +4202,600 @@ mod tests {
         ] {
             assert!(parse_request(raw).is_err());
         }
+    }
+
+    fn complete_marker_absence() -> DaemonMarkerAbsenceEvidence {
+        DaemonMarkerAbsenceEvidence {
+            event_absent: true,
+            route_absent: true,
+            task_absent: true,
+            run_absent: true,
+            final_absent: true,
+        }
+    }
+
+    fn complete_daemon_continuity_evidence() -> DaemonContinuityEvidence {
+        DaemonContinuityEvidence {
+            agent_identity_unchanged: true,
+            root_key_unchanged: true,
+            device_keys_unchanged: true,
+            delegated_key_unchanged: true,
+            old_controller_binding_unchanged: true,
+            new_controller_lacks_delegated_key: true,
+            controller_identity_changed: true,
+            queued_delegated_marker: complete_marker_absence(),
+            new_controller_marker: complete_marker_absence(),
+        }
+    }
+
+    #[test]
+    fn daemon_continuity_action_is_exact_and_rejects_extra_secret_fields() {
+        let request = match parse_request(
+            r#"{"id":"continuity-1","action":"daemon_continuity_verify","params":{"old_controller_did":"did:wba:example.test:user:old","new_controller_did":"did:wba:example.test:user:new","queued_marker":"msg-queued","controller_marker":"task_msg-new"}}"#,
+        ) {
+            Ok(request) => request,
+            Err(_) => panic!("closed daemon continuity request"),
+        };
+        let Action::DaemonContinuityVerify(params) = request.action else {
+            panic!("daemon continuity action")
+        };
+        assert_eq!(params.old_controller_did, "did:wba:example.test:user:old");
+        assert_eq!(params.new_controller_did, "did:wba:example.test:user:new");
+        assert_eq!(params.queued_marker, "msg-queued");
+        assert_eq!(params.controller_marker, "task_msg-new");
+
+        let extra = match parse_request(
+            r#"{"id":"continuity-2","action":"daemon_continuity_verify","params":{"old_controller_did":"did:wba:example.test:user:old","new_controller_did":"did:wba:example.test:user:new","queued_marker":"msg-queued","controller_marker":"task_msg-new","access_token":"must-not-be-accepted"}}"#,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("extra continuity fields must fail closed"),
+        };
+        assert_eq!(extra.code(), INVALID_REQUEST);
+    }
+
+    #[test]
+    fn daemon_continuity_result_is_closed_exact_and_secret_free() {
+        let result = closed_daemon_continuity_result(complete_daemon_continuity_evidence());
+        assert_eq!(
+            result,
+            json!({
+                "agent_identity_unchanged": true,
+                "root_key_unchanged": true,
+                "device_keys_unchanged": true,
+                "delegated_key_unchanged": true,
+                "old_controller_binding_unchanged": true,
+                "new_controller_lacks_delegated_key": true,
+                "old_delegated_pull_denied": true,
+                "old_controller_denied": true,
+                "new_controller_denied": true,
+                "no_route_created": true,
+                "no_task_created": true,
+                "no_run_created": true,
+                "no_final_created": true,
+            })
+        );
+        let serialized = serde_json::to_string(&result).expect("serialize continuity result");
+        for forbidden in [
+            "did:wba:example.test:user:old",
+            "did:wba:example.test:user:new",
+            "msg-queued",
+            "task_msg-new",
+            TOKEN_SECRET,
+            SERVER_ERROR_SECRET,
+        ] {
+            assert!(!serialized.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn daemon_prepare_post_boundary_failures_return_exact_secret_free_root_receipts() {
+        let daemon_agent_did = "did:wba:example.test:agent:daemon";
+        for (stage, failure) in [
+            ("runtime-token", ProbeFailure::Transport),
+            ("subkey", ProbeFailure::InvalidState),
+            ("encrypt", ProbeFailure::Runtime),
+            ("send", ProbeFailure::Transport),
+        ] {
+            let result =
+                daemon_fixture_prepare_result_after_boundary(daemon_agent_did, Err(failure));
+            assert_eq!(
+                result,
+                json!({
+                    "prepared": false,
+                    "daemon_agent_did": daemon_agent_did,
+                }),
+                "closed partial receipt for injected {stage} failure",
+            );
+            let encoded = result.to_string();
+            for forbidden in [
+                "runtime_agent_did",
+                "runtime-token",
+                "subkey",
+                "private_key",
+                "ciphertext",
+                "error",
+            ] {
+                assert!(
+                    !encoded.contains(forbidden),
+                    "{stage} receipt leaked {forbidden}",
+                );
+            }
+        }
+        assert_eq!(
+            daemon_fixture_prepare_result_after_boundary(daemon_agent_did, Ok(())),
+            json!({
+                "prepared": true,
+                "daemon_agent_did": daemon_agent_did,
+            }),
+        );
+    }
+
+    #[test]
+    fn daemon_root_stage_and_prepare_actions_are_closed_and_exact() {
+        let stage = match parse_request(
+            r#"{"id":"stage-1","action":"stage_daemon_continuity_root","params":{"state_root":"/tmp/daemon-stage","daemon_handle":"daemon-one"}}"#,
+        ) {
+            Ok(request) => request,
+            Err(_) => panic!("closed Daemon root stage request"),
+        };
+        let Action::StageDaemonContinuityRoot(params) = stage.action else {
+            panic!("Daemon root stage action")
+        };
+        assert_eq!(params.state_root, Path::new("/tmp/daemon-stage"));
+        assert_eq!(params.daemon_handle, "daemon-one");
+        assert!(parse_request(
+            r#"{"id":"stage-2","action":"stage_daemon_continuity_root","params":{"state_root":"/tmp/daemon-stage","daemon_handle":"daemon-one","access_token":"must-not-pass"}}"#,
+        )
+        .is_err());
+
+        let prepare = match parse_request(
+            r#"{"id":"prepare-1","action":"prepare_daemon_continuity_fixture","params":{"daemon_binary":"/tmp/awiki-deamon","state_root":"/tmp/daemon-stage","daemon_agent_did":"did:wba:example.test:agent:daemon","daemon_handle":"daemon-one","runtime_handle":"runtime-one","controller_handle":"controller-one","app_instance_id":"app-one"}}"#,
+        ) {
+            Ok(request) => request,
+            Err(_) => panic!("closed staged Daemon prepare request"),
+        };
+        let Action::PrepareDaemonContinuityFixture(params) = prepare.action else {
+            panic!("staged Daemon prepare action")
+        };
+        assert_eq!(params.daemon_agent_did, "did:wba:example.test:agent:daemon");
+        assert!(parse_request(
+            r#"{"id":"prepare-2","action":"prepare_daemon_continuity_fixture","params":{"daemon_binary":"/tmp/awiki-deamon","state_root":"/tmp/daemon-stage","daemon_handle":"daemon-one","runtime_handle":"runtime-one","controller_handle":"controller-one","app_instance_id":"app-one"}}"#,
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn daemon_root_is_durable_before_token_issue_and_closes_response_loss_without_inventory()
+    {
+        let root = TestStateRoot::new("daemon-preissue-root-authority");
+        let mut probe = test_probe("http://127.0.0.1:9");
+        let staged = probe
+            .execute(Action::StageDaemonContinuityRoot(
+                StageDaemonContinuityRootParams {
+                    state_root: root.path.clone(),
+                    daemon_handle: "daemon-preissue".to_owned(),
+                },
+            ))
+            .await
+            .unwrap_or_else(|_| panic!("execute local-only Daemon root stage"))
+            .0;
+        let staged_did = staged
+            .get("daemon_agent_did")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("exact staged Daemon root receipt"))
+            .to_owned();
+        assert_eq!(staged.as_object().map(Map::len), Some(1));
+        let config = awiki_deamon::DaemonConfig::for_state_root(&root.path)
+            .unwrap_or_else(|_| panic!("daemon config"));
+        let state =
+            awiki_deamon::DaemonState::open(&config).unwrap_or_else(|_| panic!("daemon state"));
+        let authority = awiki_deamon::commands::load_daemon_registration_authority_for_system_test(
+            &state,
+            LOCAL_DID,
+            "daemon-preissue",
+            &staged_did,
+        )
+        .unwrap_or_else(|_| panic!("load pre-issue Daemon root"));
+        im_core::ids::Did::parse(&authority.agent_did)
+            .unwrap_or_else(|_| panic!("authoritative Daemon DID"));
+        assert!(
+            awiki_deamon::commands::load_daemon_registration_authority_for_system_test(
+                &state,
+                LOCAL_DID,
+                "daemon-preissue",
+                "did:wba:example.test:agent:wrong",
+            )
+            .is_err()
+        );
+        assert!(
+            awiki_deamon::commands::load_daemon_registration_authority_for_system_test(
+                &state,
+                LOCAL_DID,
+                "daemon-not-staged",
+                &authority.agent_did,
+            )
+            .is_err()
+        );
+        let loaded = awiki_deamon::commands::load_daemon_registration_authority_for_system_test(
+            &state,
+            LOCAL_DID,
+            "daemon-preissue",
+            &authority.agent_did,
+        )
+        .unwrap_or_else(|_| panic!("load exact staged Daemon root"));
+        assert_eq!(loaded.agent_did, authority.agent_did);
+        assert!(state
+            .list_agent_definitions()
+            .unwrap_or_else(|_| panic!("list local Agent definitions"))
+            .is_empty());
+        assert_eq!(
+            probe_ok(
+                recover_exact_persisted_daemon_agent_did(&root.path, "daemon-preissue", LOCAL_DID,),
+                "recover pre-issue root",
+            )
+            .as_deref(),
+            Some(authority.agent_did.as_str()),
+        );
+        assert_eq!(
+            daemon_registration_metadata(&authority.agent_did),
+            json!({
+                "suite_case": "handle-recovery-daemon-continuity",
+                "daemon_agent_did": authority.agent_did,
+            }),
+        );
+
+        let response_loss =
+            daemon_token_issue_or_root_receipt(&authority.agent_did, Err(ProbeFailure::Transport));
+        let receipt = match response_loss {
+            Err(receipt) => receipt,
+            Ok(_) => panic!("injected issue response loss must return root receipt"),
+        };
+        assert_eq!(
+            receipt,
+            json!({
+                "prepared": false,
+                "daemon_agent_did": authority.agent_did,
+            }),
+        );
+        let encoded = receipt.to_string();
+        for forbidden in [TOKEN_SECRET, "registration_token", "token_id", "error"] {
+            assert!(!encoded.contains(forbidden));
+        }
+
+        awiki_deamon::commands::bind_daemon_registration_token_for_system_test(
+            &state,
+            &authority,
+            awiki_deamon::registration::RegistrationToken::new(TOKEN_SECRET)
+                .unwrap_or_else(|_| panic!("test registration token")),
+        )
+        .unwrap_or_else(|_| panic!("atomically bind issued token to staged root"));
+        assert!(
+            awiki_deamon::commands::load_daemon_registration_authority_for_system_test(
+                &state,
+                LOCAL_DID,
+                "daemon-preissue",
+                &authority.agent_did,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            probe_ok(
+                recover_exact_persisted_daemon_agent_did(&root.path, "daemon-preissue", LOCAL_DID,),
+                "recover token-bound root",
+            )
+            .as_deref(),
+            Some(staged_did.as_str()),
+        );
+    }
+
+    #[test]
+    fn daemon_setup_failure_returns_root_only_for_exact_durable_scope() {
+        let root = TestStateRoot::new("daemon-prepare-setup-recovery");
+        let no_scope = daemon_setup_failure_result(
+            &root.path,
+            "daemon-one",
+            LOCAL_DID,
+            ProbeFailure::Transport,
+        );
+        assert!(matches!(no_scope, Err(ProbeFailure::Transport)));
+
+        let config = awiki_deamon::DaemonConfig::for_state_root(&root.path)
+            .unwrap_or_else(|_| panic!("daemon config"));
+        config
+            .ensure_state_layout()
+            .unwrap_or_else(|_| panic!("daemon state layout"));
+        let state =
+            awiki_deamon::DaemonState::open(&config).unwrap_or_else(|_| panic!("daemon state"));
+        state
+            .initialize()
+            .unwrap_or_else(|_| panic!("daemon state schema"));
+        let pending_did = "did:wba:example.test:agent:pending-daemon";
+        state
+            .connection()
+            .unwrap_or_else(|_| panic!("daemon connection"))
+            .execute(
+                r#"
+INSERT INTO agent_registration_pending (
+    registration_id, dedupe_key, agent_kind, controller_did, handle,
+    display_name, agent_did, protocol_device_id, document_digest,
+    request_digest, secret_ref_json, status, attempt_count,
+    last_error_code, last_error_summary, created_at_ms, updated_at_ms
+) VALUES (
+    'agentreg-test', 'dedupe-test', 'daemon', ?1, ?2,
+    'daemon-one', ?3, 'device-test', 'document-test',
+    'request-test', '{}', 'retryable', 1,
+    'registration_exchange_failed', NULL, 1, 1
+)
+"#,
+                rusqlite::params![LOCAL_DID, "daemon-one", pending_did],
+            )
+            .unwrap_or_else(|error| panic!("insert exact pending daemon scope: {error}"));
+        assert_eq!(
+            probe_ok(
+                daemon_setup_failure_result(
+                    &root.path,
+                    "daemon-one",
+                    LOCAL_DID,
+                    ProbeFailure::Runtime,
+                ),
+                "pending daemon root receipt",
+            ),
+            json!({
+                "prepared": false,
+                "daemon_agent_did": pending_did,
+            }),
+        );
+        state
+            .connection()
+            .unwrap_or_else(|_| panic!("daemon connection"))
+            .execute("DELETE FROM agent_registration_pending", [])
+            .unwrap_or_else(|_| panic!("clear pending daemon scope"));
+        let active_did = "did:wba:example.test:agent:active-daemon";
+        state
+            .upsert_agent_definition(&awiki_deamon::agent::AgentDefinition {
+                agent_did: active_did.to_owned(),
+                handle: "daemon-one".to_owned(),
+                agent_kind: awiki_deamon::agent::AgentKind::Daemon,
+                controller_user_id: "controller-user".to_owned(),
+                controller_full_handle: "controller.example.test".to_owned(),
+                controller_scope_key: "controller-scope".to_owned(),
+                controller_did: LOCAL_DID.to_owned(),
+                runtime_plugin_id: None,
+                runtime_profile_id: None,
+                workspace_id: None,
+                policy_id: "default".to_owned(),
+                local_agent_db_path: "agent.db".to_owned(),
+                message_db_path: "message.db".to_owned(),
+                status: "active".to_owned(),
+            })
+            .unwrap_or_else(|_| panic!("insert exact active daemon scope"));
+        assert_eq!(
+            probe_ok(
+                daemon_setup_failure_result(
+                    &root.path,
+                    "daemon-one",
+                    LOCAL_DID,
+                    ProbeFailure::Runtime,
+                ),
+                "active daemon root receipt",
+            ),
+            json!({
+                "prepared": false,
+                "daemon_agent_did": active_did,
+            }),
+        );
+        assert!(matches!(
+            daemon_setup_failure_result(
+                &root.path,
+                "different-handle",
+                LOCAL_DID,
+                ProbeFailure::Runtime,
+            ),
+            Err(ProbeFailure::Runtime)
+        ));
+        assert!(matches!(
+            daemon_setup_failure_result(
+                &root.path,
+                "daemon-one",
+                "did:wba:example.test:user:different",
+                ProbeFailure::Runtime,
+            ),
+            Err(ProbeFailure::Runtime)
+        ));
+    }
+
+    #[test]
+    fn daemon_continuity_residual_route_run_or_final_fails_the_bound_projection() {
+        for residual in ["route", "run", "final"] {
+            let mut evidence = complete_daemon_continuity_evidence();
+            match residual {
+                "route" => evidence.queued_delegated_marker.route_absent = false,
+                "run" => evidence.queued_delegated_marker.run_absent = false,
+                "final" => evidence.queued_delegated_marker.final_absent = false,
+                _ => unreachable!(),
+            }
+            let result = closed_daemon_continuity_result(evidence);
+            assert_eq!(result["old_controller_denied"], false, "{residual}");
+            let aggregate_key = format!("no_{residual}_created");
+            assert_eq!(result[aggregate_key.as_str()], false);
+
+            let mut evidence = complete_daemon_continuity_evidence();
+            match residual {
+                "route" => evidence.new_controller_marker.route_absent = false,
+                "run" => evidence.new_controller_marker.run_absent = false,
+                "final" => evidence.new_controller_marker.final_absent = false,
+                _ => unreachable!(),
+            }
+            let result = closed_daemon_continuity_result(evidence);
+            assert_eq!(result["new_controller_denied"], false, "{residual}");
+            let aggregate_key = format!("no_{residual}_created");
+            assert_eq!(result[aggregate_key.as_str()], false);
+        }
+    }
+
+    #[test]
+    fn daemon_marker_queries_are_exact_independent_and_cover_every_persisted_stage() {
+        let root = TestStateRoot::new("daemon-continuity-marker-evidence");
+        let config =
+            awiki_deamon::DaemonConfig::for_state_root(&root.path).expect("daemon probe config");
+        config.ensure_state_layout().expect("daemon state layout");
+        let state = awiki_deamon::DaemonState::open(&config).expect("daemon state");
+        state.initialize().expect("daemon state schema");
+        let old_controller_did = "did:wba:example.test:user:old";
+        let queued = probe_ok(
+            queued_delegated_marker_ids(old_controller_did, "msg-queued"),
+            "queued delegated marker ids",
+        );
+        let new_controller = probe_ok(
+            new_controller_marker_ids("task_msg-new"),
+            "new Controller marker ids",
+        );
+        let route_baseline = probe_ok(daemon_route_state_snapshot(&state), "route baseline");
+        assert_eq!(route_baseline.record_count, 0);
+        assert!(probe_ok(
+            daemon_marker_absence_evidence(&state, &queued),
+            "queued marker absence",
+        )
+        .all_absent());
+        assert!(probe_ok(
+            daemon_marker_absence_evidence(&state, &new_controller),
+            "new Controller marker absence",
+        )
+        .all_absent());
+
+        let connection = state.connection().expect("daemon state connection");
+        let retry_run_id = format!("{}_retry_1", new_controller.run_id);
+        connection
+            .execute(
+                r#"
+INSERT INTO message_event (
+    event_id, owner_did, conversation_id, message_id, message_kind, sender_did,
+    received_at, plain_text_ref_or_excerpt, content_hash, schema,
+    processing_status, retention_class, created_at_ms, updated_at_ms
+) VALUES (?1, ?2, NULL, ?3, 'text', ?2, NULL, NULL, 'hash', 'test', 'received', 'test', 1, 1)
+"#,
+                rusqlite::params![
+                    queued.event_id.as_deref(),
+                    old_controller_did,
+                    queued.message_id,
+                ],
+            )
+            .expect("insert queued event residue");
+        assert!(
+            !probe_ok(
+                daemon_marker_absence_evidence(&state, &queued),
+                "queued event residue",
+            )
+            .event_absent
+        );
+        assert!(probe_ok(
+            daemon_marker_absence_evidence(&state, &new_controller),
+            "new marker remains independent",
+        )
+        .all_absent());
+        connection
+            .execute("DELETE FROM message_event", [])
+            .expect("clear event residue");
+
+        connection
+            .execute(
+                r#"
+INSERT INTO runtime_task (
+    task_id, agent_did, controller_did, sender_did, task_text,
+    status, created_at_ms, updated_at_ms
+) VALUES (?1, 'did:agent:test', ?2, ?2, 'residue', 'created', 1, 1)
+"#,
+                rusqlite::params![new_controller.task_id, "did:wba:example.test:user:new"],
+            )
+            .expect("insert new Controller task residue");
+        assert!(
+            !probe_ok(
+                daemon_marker_absence_evidence(&state, &new_controller),
+                "new Controller task residue",
+            )
+            .task_absent
+        );
+        assert!(probe_ok(
+            daemon_marker_absence_evidence(&state, &queued),
+            "queued marker remains independent",
+        )
+        .all_absent());
+        connection
+            .execute("DELETE FROM runtime_task", [])
+            .expect("clear task residue");
+
+        connection
+            .execute(
+                r#"
+INSERT INTO cli_driver_run (
+    run_id, agent_did, runtime_profile_id, driver_id, controller_did,
+    route_key, status, created_at_ms, updated_at_ms
+) VALUES (?1, 'did:agent:test', 'profile-test', 'driver-test', ?2, 'route-test', 'running', 1, 1)
+"#,
+                rusqlite::params![new_controller.run_id, "did:wba:example.test:user:new",],
+            )
+            .expect("insert route residue");
+        assert!(
+            !probe_ok(
+                daemon_marker_absence_evidence(&state, &new_controller),
+                "route residue",
+            )
+            .route_absent
+        );
+        let route_changed = probe_ok(daemon_route_state_snapshot(&state), "changed route state");
+        assert_ne!(route_changed.record_count, route_baseline.record_count);
+        assert_ne!(route_changed.hash, route_baseline.hash);
+        connection
+            .execute("DELETE FROM cli_driver_run", [])
+            .expect("clear route residue");
+
+        connection
+            .execute(
+                r#"
+INSERT INTO runtime_run (
+    run_id, task_id, agent_did, runtime_profile_id, runtime_plugin_id,
+    status, started_at, updated_at, started_at_ms, updated_at_ms
+) VALUES (?1, ?2, 'did:agent:test', 'profile-test', 'plugin-test', 'running', '1', '1', 1, 1)
+"#,
+                rusqlite::params![retry_run_id, new_controller.task_id],
+            )
+            .expect("insert retry run residue");
+        assert!(
+            !probe_ok(
+                daemon_marker_absence_evidence(&state, &new_controller),
+                "retry run residue",
+            )
+            .run_absent
+        );
+        assert!(probe_ok(
+            daemon_marker_absence_evidence(&state, &queued),
+            "queued marker remains independent from retry run residue",
+        )
+        .all_absent());
+
+        connection
+            .execute(
+                r#"
+INSERT INTO runtime_final_outbox (
+    idempotency_key, run_id, agent_did, runtime_profile_id, controller_did,
+    final_text, status, created_at_ms, updated_at_ms
+) VALUES ('final-test', ?1, 'did:agent:test', 'profile-test', ?2, 'residue', 'pending', 1, 1)
+"#,
+                rusqlite::params![retry_run_id, "did:wba:example.test:user:new",],
+            )
+            .expect("insert retry final residue");
+        assert!(
+            !probe_ok(
+                daemon_marker_absence_evidence(&state, &new_controller),
+                "retry final residue",
+            )
+            .final_absent
+        );
+        assert!(probe_ok(
+            daemon_marker_absence_evidence(&state, &queued),
+            "queued marker remains independent from retry final residue",
+        )
+        .all_absent());
     }
 
     #[test]
@@ -3725,6 +5656,7 @@ mod tests {
             Err(_) => panic!("build fake HTTP client"),
         };
         Probe {
+            _core: None,
             _client: None,
             http,
             bearer: Zeroizing::new(TOKEN_SECRET.to_owned()),
@@ -3737,6 +5669,10 @@ mod tests {
                 "{base_url}{AGENT_INVENTORY_RPC_PATH}"
             ))
             .expect("fake Agent Inventory RPC URL"),
+            agent_registration_rpc_url: reqwest::Url::parse(&format!(
+                "{base_url}{AGENT_REGISTRATION_RPC_PATH}"
+            ))
+            .expect("fake Agent Registration RPC URL"),
             did_auth_rpc_url: reqwest::Url::parse(&format!("{base_url}{DID_AUTH_RPC_PATH}"))
                 .expect("fake DID-auth RPC URL"),
             me_rpc_url: reqwest::Url::parse(&format!("{base_url}{ME_RPC_PATH}"))
@@ -3753,6 +5689,7 @@ mod tests {
             local_manifest_single_device: true,
             local_document_hash: Some("document-hash".to_owned()),
             local_key_roles_separated: true,
+            local_daemon_subkey_present: false,
             source_controller_account_id: None,
             device_role: "admin",
             device_readiness: "admin_ready",
@@ -3760,6 +5697,8 @@ mod tests {
             service_did: SERVICE_DID.to_owned(),
             ws: None,
             held_ticket: None,
+            daemon_state_root: None,
+            daemon_continuity_baseline: None,
         }
     }
 

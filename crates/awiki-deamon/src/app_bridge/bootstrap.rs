@@ -11,6 +11,8 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use x25519_dalek::PublicKey as X25519PublicKey;
+#[cfg(any(test, feature = "system-test-probe"))]
+use zeroize::Zeroizing;
 
 use crate::app_bridge::secret_store::{
     public_key_multibase_from_private_material, secret_from_private_key_multibase, SecretString,
@@ -1313,8 +1315,12 @@ fn decode_base64url_fixed<const N: usize>(
         .map_err(|_| anyhow::anyhow!("{field_name} has invalid decoded length"))
 }
 
-#[cfg(test)]
-pub(crate) fn encrypt_secure_bootstrap_payload_for_test(
+/// Encrypt one bootstrap envelope without exposing its plaintext to the host test.
+///
+/// This seam exists only for the feature-gated stdin-only system-test probe. It is
+/// absent from default daemon builds and is not a daemon or CLI product entry point.
+#[cfg(any(test, feature = "system-test-probe"))]
+pub fn encrypt_secure_bootstrap_payload_for_system_test(
     recipient_daemon_did: &str,
     recipient_public: anp::PublicKeyMaterial,
     sender_human_did: &str,
@@ -1341,7 +1347,63 @@ pub(crate) fn encrypt_secure_bootstrap_payload_for_test(
     )
 }
 
+/// Encrypt already serialized, zeroizing plaintext for the system-test probe.
+#[cfg(feature = "system-test-probe")]
+pub fn encrypt_secure_bootstrap_bytes_for_system_test(
+    recipient_daemon_did: &str,
+    recipient_public: anp::PublicKeyMaterial,
+    sender_human_did: &str,
+    operation_id: &str,
+    issued_at: &str,
+    expires_at: &str,
+    nonce_bytes: [u8; 12],
+    sender_ephemeral_private: x25519_dalek::StaticSecret,
+    aad: Value,
+    plaintext: &[u8],
+) -> Result<Value> {
+    encrypt_secure_bootstrap_plaintext_with_hash(
+        recipient_daemon_did,
+        recipient_public,
+        sender_human_did,
+        operation_id,
+        issued_at,
+        expires_at,
+        nonce_bytes,
+        sender_ephemeral_private,
+        aad,
+        plaintext,
+        None,
+    )
+}
+
 #[cfg(test)]
+pub(crate) fn encrypt_secure_bootstrap_payload_for_test(
+    recipient_daemon_did: &str,
+    recipient_public: anp::PublicKeyMaterial,
+    sender_human_did: &str,
+    operation_id: &str,
+    issued_at: &str,
+    expires_at: &str,
+    nonce_bytes: [u8; 12],
+    sender_ephemeral_private: x25519_dalek::StaticSecret,
+    aad: Value,
+    payload: Value,
+) -> Result<Value> {
+    encrypt_secure_bootstrap_payload_for_system_test(
+        recipient_daemon_did,
+        recipient_public,
+        sender_human_did,
+        operation_id,
+        issued_at,
+        expires_at,
+        nonce_bytes,
+        sender_ephemeral_private,
+        aad,
+        payload,
+    )
+}
+
+#[cfg(any(test, feature = "system-test-probe"))]
 pub(crate) fn encrypt_secure_bootstrap_payload_for_test_with_hash(
     recipient_daemon_did: &str,
     recipient_public: anp::PublicKeyMaterial,
@@ -1353,6 +1415,39 @@ pub(crate) fn encrypt_secure_bootstrap_payload_for_test_with_hash(
     sender_ephemeral_private: x25519_dalek::StaticSecret,
     aad: Value,
     payload: Value,
+    payload_sha256_override: Option<String>,
+) -> Result<Value> {
+    let plaintext = Zeroizing::new(
+        serde_json::to_vec(&payload).context("serialize test secure bootstrap payload")?,
+    );
+    encrypt_secure_bootstrap_plaintext_with_hash(
+        recipient_daemon_did,
+        recipient_public,
+        sender_human_did,
+        operation_id,
+        issued_at,
+        expires_at,
+        nonce_bytes,
+        sender_ephemeral_private,
+        aad,
+        plaintext.as_slice(),
+        payload_sha256_override,
+    )
+}
+
+#[cfg(any(test, feature = "system-test-probe"))]
+#[allow(clippy::too_many_arguments)]
+fn encrypt_secure_bootstrap_plaintext_with_hash(
+    recipient_daemon_did: &str,
+    recipient_public: anp::PublicKeyMaterial,
+    sender_human_did: &str,
+    operation_id: &str,
+    issued_at: &str,
+    expires_at: &str,
+    nonce_bytes: [u8; 12],
+    sender_ephemeral_private: x25519_dalek::StaticSecret,
+    aad: Value,
+    plaintext: &[u8],
     payload_sha256_override: Option<String>,
 ) -> Result<Value> {
     let recipient_public = match recipient_public {
@@ -1376,10 +1471,8 @@ pub(crate) fn encrypt_secure_bootstrap_payload_for_test_with_hash(
         payload_sha256: None,
         extra: BTreeMap::new(),
     };
-    let plaintext =
-        serde_json::to_vec(&payload).context("serialize test secure bootstrap payload")?;
     envelope.payload_sha256 =
-        Some(payload_sha256_override.unwrap_or_else(|| hex_lower(&Sha256::digest(&plaintext))));
+        Some(payload_sha256_override.unwrap_or_else(|| hex_lower(&Sha256::digest(plaintext))));
     let shared = sender_ephemeral_private.diffie_hellman(&recipient_public);
     let key = derive_secure_bootstrap_key(shared.as_bytes(), &envelope)?;
     let aad = stable_secure_bootstrap_aad(&envelope)?;
@@ -1388,7 +1481,7 @@ pub(crate) fn encrypt_secure_bootstrap_payload_for_test_with_hash(
         .encrypt(
             Nonce::from_slice(&nonce_bytes),
             Payload {
-                msg: &plaintext,
+                msg: plaintext,
                 aad: &aad,
             },
         )

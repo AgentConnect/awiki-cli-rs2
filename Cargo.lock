@@ -197,6 +197,7 @@ dependencies = [
  "awiki-im-core",
  "awiki-user-dirs",
  "base64",
+ "bs58",
  "futures-util",
  "rand 0.8.6",
  "reqwest",
@@ -212,6 +213,7 @@ dependencies = [
  "webpki-roots 0.26.11",
  "windows-service",
  "windows-sys 0.52.0",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -239,6 +241,7 @@ dependencies = [
  "time",
  "tokio",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]
