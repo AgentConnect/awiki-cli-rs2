@@ -661,6 +661,10 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
         "transport-protected"
     );
     assert_eq!(
+        bodies[0]["params"]["body"]["creator_handle"],
+        "alice.awiki.ai"
+    );
+    assert_eq!(
         bodies[0]["params"]["auth"]["scheme"],
         "anp-rfc9421-origin-proof-v1"
     );

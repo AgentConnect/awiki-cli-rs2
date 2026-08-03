@@ -127,7 +127,7 @@ pub fn create_group_via_im_core(
     }
     let result = client
         .groups()
-        .create(group_create_request(request)?)
+        .create(group_create_request(request, client.handle().cloned())?)
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
     let group_did = group_did_from_result(&result, &raw).unwrap_or_default();
@@ -156,7 +156,7 @@ pub async fn create_group_via_im_core_async(
     }
     let result = client
         .groups()
-        .create_async(group_create_request(request)?)
+        .create_async(group_create_request(request, client.handle().cloned())?)
         .await
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
@@ -1145,13 +1145,14 @@ fn group_e2ee_key_command_result(
 
 fn group_create_request(
     request: GroupCreateRequest,
+    creator_handle: Option<Handle>,
 ) -> Result<SdkGroupCreateRequest, MessageAdapterError> {
     let secure_required = request.secure_required
         || request.e2ee
         || request.message_security_profile.trim() == GROUP_E2EE_SECURITY_PROFILE;
     Ok(SdkGroupCreateRequest {
         name: request.name,
-        creator_handle: None,
+        creator_handle,
         description: optional_string(&request.description),
         avatar_uri: optional_string(&request.avatar_uri),
         discoverability: GroupDiscoverability::parse_optional(&request.discoverability)
@@ -1863,10 +1864,30 @@ mod group_message_projection_tests {
     use serde_json::json;
 
     use super::{
-        im_error_to_message_error, is_attachment_manifest_payload, normalize_group_snapshot,
-        required_group_member_page_binding,
+        group_create_request, im_error_to_message_error, is_attachment_manifest_payload,
+        normalize_group_snapshot, required_group_member_page_binding, GroupCreateRequest,
     };
     use crate::m_core_cli_adapter::message_result::{MessageAdapterError, ServiceError};
+
+    #[test]
+    fn group_create_request_preserves_selected_handle_mode_and_none_compatibility() {
+        let request = GroupCreateRequest {
+            name: "Handle group".to_owned(),
+            ..GroupCreateRequest::default()
+        };
+        let handle = im_core::ids::Handle::parse("alice.example.com", "").unwrap();
+
+        assert_eq!(
+            group_create_request(request.clone(), Some(handle.clone()))
+                .unwrap()
+                .creator_handle,
+            Some(handle)
+        );
+        assert_eq!(
+            group_create_request(request, None).unwrap().creator_handle,
+            None
+        );
+    }
 
     #[test]
     fn group_adapter_preserves_fail_closed_error_categories() {
