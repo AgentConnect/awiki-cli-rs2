@@ -1612,8 +1612,11 @@ impl Probe {
                 .load_agent_device_identity(&daemon_agent_did)
                 .map_err(|_| ProbeFailure::Runtime)?
                 .ok_or(ProbeFailure::Runtime)?;
-            let recipient_public =
-                daemon_bootstrap_public_key(&daemon_identity.did_document, &daemon_agent_did)?;
+            let recipient_public = daemon_bootstrap_public_key(
+                &daemon_identity.did_document,
+                &daemon_agent_did,
+                &daemon_identity.device_e2ee_key_id,
+            )?;
 
             let runtime_token = self
                 .issue_agent_registration_token(
@@ -2564,24 +2567,43 @@ fn service_base_from_rpc(url: &reqwest::Url) -> Result<String, ProbeFailure> {
 fn daemon_bootstrap_public_key(
     document: &Value,
     daemon_agent_did: &str,
+    device_e2ee_key_id: &str,
 ) -> Result<anp::PublicKeyMaterial, ProbeFailure> {
-    let expected_id = format!("{daemon_agent_did}#key-3");
-    let multibase = document
+    if !device_e2ee_key_id.starts_with(&format!("{daemon_agent_did}#")) {
+        return Err(ProbeFailure::InvalidState);
+    }
+    let key_agreement = document
+        .get("keyAgreement")
+        .and_then(Value::as_array)
+        .ok_or(ProbeFailure::InvalidState)?;
+    if key_agreement.len() != 1 || key_agreement[0].as_str() != Some(device_e2ee_key_id) {
+        return Err(ProbeFailure::InvalidState);
+    }
+    let methods = document
         .get("verificationMethod")
         .and_then(Value::as_array)
-        .and_then(|methods| {
-            methods.iter().find(|method| {
-                method.get("id").and_then(Value::as_str) == Some(expected_id.as_str())
-            })
-        })
-        .and_then(|method| method.get("publicKeyMultibase"))
+        .ok_or(ProbeFailure::InvalidState)?;
+    let mut matching_methods = methods
+        .iter()
+        .filter(|method| method.get("id").and_then(Value::as_str) == Some(device_e2ee_key_id));
+    let method = matching_methods.next().ok_or(ProbeFailure::InvalidState)?;
+    if matching_methods.next().is_some()
+        || method.get("controller").and_then(Value::as_str) != Some(daemon_agent_did)
+        || method.get("type").and_then(Value::as_str) != Some("X25519KeyAgreementKey2019")
+    {
+        return Err(ProbeFailure::InvalidState);
+    }
+    let multibase = method
+        .get("publicKeyMultibase")
         .and_then(Value::as_str)
-        .ok_or(ProbeFailure::Runtime)?;
-    let encoded = multibase.strip_prefix('z').ok_or(ProbeFailure::Runtime)?;
+        .ok_or(ProbeFailure::InvalidState)?;
+    let encoded = multibase
+        .strip_prefix('z')
+        .ok_or(ProbeFailure::InvalidState)?;
     let mut decoded = Zeroizing::new(
         bs58::decode(encoded)
             .into_vec()
-            .map_err(|_| ProbeFailure::Runtime)?,
+            .map_err(|_| ProbeFailure::InvalidState)?,
     );
     if decoded.len() == 34 && decoded.starts_with(&[0xec, 0x01]) {
         decoded.drain(..2);
@@ -2589,7 +2611,7 @@ fn daemon_bootstrap_public_key(
     let bytes: [u8; 32] = decoded
         .as_slice()
         .try_into()
-        .map_err(|_| ProbeFailure::Runtime)?;
+        .map_err(|_| ProbeFailure::InvalidState)?;
     Ok(anp::PublicKeyMaterial::X25519(bytes))
 }
 
@@ -4362,6 +4384,102 @@ mod tests {
             r#"{"id":"prepare-2","action":"prepare_daemon_continuity_fixture","params":{"daemon_binary":"/tmp/awiki-deamon","state_root":"/tmp/daemon-stage","daemon_handle":"daemon-one","runtime_handle":"runtime-one","controller_handle":"controller-one","app_instance_id":"app-one"}}"#,
         )
         .is_err());
+    }
+
+    #[test]
+    fn daemon_bootstrap_key_uses_exact_persisted_device_e2ee_binding() {
+        let daemon_did = "did:wba:example.test:agent:daemon";
+        let key_id = format!("{daemon_did}#dev-dynamic-e2ee");
+        let expected_key = [0x5a_u8; 32];
+        let mut multicodec_key = vec![0xec, 0x01];
+        multicodec_key.extend_from_slice(&expected_key);
+        let multibase = format!("z{}", bs58::encode(multicodec_key).into_string());
+        let method = json!({
+            "id": key_id,
+            "type": "X25519KeyAgreementKey2019",
+            "controller": daemon_did,
+            "publicKeyMultibase": multibase,
+        });
+        let document = json!({
+            "id": daemon_did,
+            "verificationMethod": [method.clone()],
+            "keyAgreement": [key_id],
+        });
+        let key = probe_ok(
+            daemon_bootstrap_public_key(&document, daemon_did, &key_id),
+            "dynamic device E2EE bootstrap key",
+        );
+        assert!(matches!(
+            key,
+            anp::PublicKeyMaterial::X25519(bytes) if bytes == expected_key
+        ));
+
+        let invalid_documents = [
+            json!({
+                "id": daemon_did,
+                "verificationMethod": [method.clone()],
+                "keyAgreement": [],
+            }),
+            json!({
+                "id": daemon_did,
+                "verificationMethod": [method.clone()],
+                "keyAgreement": [key_id.clone(), key_id.clone()],
+            }),
+            json!({
+                "id": daemon_did,
+                "verificationMethod": [method.clone()],
+                "keyAgreement": [format!("{daemon_did}#different-e2ee")],
+            }),
+            json!({
+                "id": daemon_did,
+                "verificationMethod": [method.clone(), method.clone()],
+                "keyAgreement": [key_id.clone()],
+            }),
+            json!({
+                "id": daemon_did,
+                "verificationMethod": [{
+                    "id": key_id,
+                    "type": "X25519KeyAgreementKey2019",
+                    "controller": "did:wba:example.test:agent:different",
+                    "publicKeyMultibase": multibase,
+                }],
+                "keyAgreement": [key_id.clone()],
+            }),
+            json!({
+                "id": daemon_did,
+                "verificationMethod": [{
+                    "id": key_id,
+                    "type": "Multikey",
+                    "controller": daemon_did,
+                    "publicKeyMultibase": multibase,
+                }],
+                "keyAgreement": [key_id.clone()],
+            }),
+            json!({
+                "id": daemon_did,
+                "verificationMethod": [{
+                    "id": key_id,
+                    "type": "X25519KeyAgreementKey2019",
+                    "controller": daemon_did,
+                    "publicKeyMultibase": "not-multibase",
+                }],
+                "keyAgreement": [key_id.clone()],
+            }),
+        ];
+        for invalid in invalid_documents {
+            assert!(matches!(
+                daemon_bootstrap_public_key(&invalid, daemon_did, &key_id),
+                Err(ProbeFailure::InvalidState)
+            ));
+        }
+        assert!(matches!(
+            daemon_bootstrap_public_key(
+                &document,
+                daemon_did,
+                "did:wba:example.test:agent:different#dev-e2ee",
+            ),
+            Err(ProbeFailure::InvalidState)
+        ));
     }
 
     #[tokio::test]
