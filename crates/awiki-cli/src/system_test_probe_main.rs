@@ -311,6 +311,27 @@ fn daemon_fixture_prepare_result_after_boundary(
     closed_daemon_fixture_prepare_result(preparation.is_ok(), daemon_agent_did)
 }
 
+async fn daemon_fixture_sync_before_send<Sync, SyncFuture, Send, SendFuture>(
+    sync: Sync,
+    send: Send,
+) -> Result<(), ProbeFailure>
+where
+    Sync: FnOnce() -> SyncFuture,
+    SyncFuture:
+        std::future::Future<Output = Result<im_core::messages::MessageSyncStatus, ProbeFailure>>,
+    Send: FnOnce() -> SendFuture,
+    SendFuture: std::future::Future<Output = Result<(), ProbeFailure>>,
+{
+    let status = sync().await?;
+    if !matches!(
+        status,
+        im_core::messages::MessageSyncStatus::Idle | im_core::messages::MessageSyncStatus::Changed
+    ) {
+        return Err(ProbeFailure::Runtime);
+    }
+    send().await
+}
+
 fn daemon_token_issue_or_root_receipt(
     daemon_agent_did: &str,
     issued: Result<Zeroizing<String>, ProbeFailure>,
@@ -1648,6 +1669,11 @@ impl Probe {
                 .load_agent_device_identity(&daemon_agent_did)
                 .map_err(|_| ProbeFailure::Runtime)?
                 .ok_or(ProbeFailure::Runtime)?;
+            let daemon_adapter =
+                awiki_deamon::ImCoreAdapter::open(&config).map_err(|_| ProbeFailure::Runtime)?;
+            let daemon_client = daemon_adapter
+                .client_for_agent_device_identity(&daemon_identity)
+                .map_err(|_| ProbeFailure::Runtime)?;
             let recipient_public = daemon_bootstrap_public_key(
                 &daemon_identity.did_document,
                 &daemon_agent_did,
@@ -1765,31 +1791,48 @@ impl Probe {
             .map_err(|_| ProbeFailure::Runtime)?;
             let message_id = im_core::ids::MessageId::parse(&format!("msg-{}", random_hex(12)?))
                 .map_err(|_| ProbeFailure::Runtime)?;
-            let send = client
-                .messages()
-                .send_async(im_core::messages::SendMessageRequest {
-                    target: im_core::messages::MessageTarget::Direct(
-                        im_core::ids::PeerRef::parse(&daemon_agent_did, "")
-                            .map_err(|_| ProbeFailure::Runtime)?,
-                    ),
-                    body: im_core::messages::MessageBody::Payload { payload: envelope },
-                    security: im_core::messages::MessageSecurityMode::Plain,
-                    client_message_id: Some(message_id),
-                    delivery: im_core::messages::MessageDeliveryOptions {
-                        idempotency_key: Some(operation_id),
-                        wait_for_final_acceptance: true,
-                    },
-                    delegated_signing: None,
-                })
-                .await
-                .map_err(|_| ProbeFailure::Transport)?;
-            if matches!(
-                send.delivery,
-                im_core::messages::DeliveryState::Failed { .. }
-            ) {
-                return Err(ProbeFailure::Transport);
-            }
-            Ok::<(), ProbeFailure>(())
+            let send_request = im_core::messages::SendMessageRequest {
+                target: im_core::messages::MessageTarget::Direct(
+                    im_core::ids::PeerRef::parse(&daemon_agent_did, "")
+                        .map_err(|_| ProbeFailure::Runtime)?,
+                ),
+                body: im_core::messages::MessageBody::Payload { payload: envelope },
+                security: im_core::messages::MessageSecurityMode::Plain,
+                client_message_id: Some(message_id),
+                delivery: im_core::messages::MessageDeliveryOptions {
+                    idempotency_key: Some(operation_id),
+                    wait_for_final_acceptance: true,
+                },
+                delegated_signing: None,
+            };
+            daemon_fixture_sync_before_send(
+                || async {
+                    let outcome = daemon_client
+                        .messages()
+                        .sync_now_async(im_core::messages::MessageSyncRequest {
+                            reason: "system_test_fixture_initialize".to_owned(),
+                            limit: Some(100),
+                        })
+                        .await
+                        .map_err(|_| ProbeFailure::Runtime)?;
+                    Ok(outcome.status)
+                },
+                move || async move {
+                    let send = client
+                        .messages()
+                        .send_async(send_request)
+                        .await
+                        .map_err(|_| ProbeFailure::Transport)?;
+                    if matches!(
+                        send.delivery,
+                        im_core::messages::DeliveryState::Failed { .. }
+                    ) {
+                        return Err(ProbeFailure::Transport);
+                    }
+                    Ok(())
+                },
+            )
+            .await
         }
         .await;
         Ok(daemon_fixture_prepare_result_after_boundary(
@@ -4486,6 +4529,7 @@ mod tests {
             ("runtime-token", ProbeFailure::Transport),
             ("subkey", ProbeFailure::InvalidState),
             ("encrypt", ProbeFailure::Runtime),
+            ("preflight-sync", ProbeFailure::Runtime),
             ("send", ProbeFailure::Transport),
         ] {
             let result =
@@ -4520,6 +4564,57 @@ mod tests {
                 "daemon_agent_did": daemon_agent_did,
             }),
         );
+    }
+
+    #[tokio::test]
+    async fn daemon_fixture_preflight_sync_is_required_before_bootstrap_send() {
+        async fn exercise(
+            sync_result: Result<im_core::messages::MessageSyncStatus, ProbeFailure>,
+        ) -> (Result<(), ProbeFailure>, Vec<&'static str>) {
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let sync_observed = Arc::clone(&observed);
+            let send_observed = Arc::clone(&observed);
+            let result = daemon_fixture_sync_before_send(
+                move || {
+                    sync_observed.lock().expect("sync observation").push("sync");
+                    std::future::ready(sync_result)
+                },
+                move || {
+                    assert_eq!(
+                        *send_observed.lock().expect("pre-send observation"),
+                        ["sync"]
+                    );
+                    send_observed.lock().expect("send observation").push("send");
+                    std::future::ready(Ok(()))
+                },
+            )
+            .await;
+            let events = observed.lock().expect("final observation").clone();
+            (result, events)
+        }
+
+        for status in [
+            im_core::messages::MessageSyncStatus::Idle,
+            im_core::messages::MessageSyncStatus::Changed,
+        ] {
+            let (result, events) = exercise(Ok(status)).await;
+            assert!(result.is_ok());
+            assert_eq!(events, ["sync", "send"]);
+        }
+
+        for status in [
+            im_core::messages::MessageSyncStatus::RecoveryRequired,
+            im_core::messages::MessageSyncStatus::RetryableFailure,
+            im_core::messages::MessageSyncStatus::AuthRevoked,
+        ] {
+            let (result, events) = exercise(Ok(status)).await;
+            assert!(matches!(result, Err(ProbeFailure::Runtime)));
+            assert_eq!(events, ["sync"]);
+        }
+
+        let (result, events) = exercise(Err(ProbeFailure::Runtime)).await;
+        assert!(matches!(result, Err(ProbeFailure::Runtime)));
+        assert_eq!(events, ["sync"]);
     }
 
     #[test]
