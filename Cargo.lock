@@ -113,6 +113,7 @@ dependencies = [
 [[package]]
 name = "anp"
 version = "0.9.1"
+source = "git+https://github.com/agent-network-protocol/anp.git?rev=e8d8b6a9d50add23a7506c48e641649a7e4b6a49#e8d8b6a9d50add23a7506c48e641649a7e4b6a49"
 dependencies = [
  "base64",
  "bs58",
