@@ -742,6 +742,84 @@ mod conversation_mark_read_request_tests {
         }
     }
 
+    #[tokio::test]
+    async fn sync_v2_mark_read_keeps_authenticated_p5_projection_local_only() {
+        let fixture = Fixture::new("mark-read-p5-local-only");
+        let client = fixture.client();
+        fixture.seed_message(crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-p5-logical".to_owned(),
+            conversation_id: "dm:did:example:bob".to_owned(),
+            thread_id: "dm:did:example:bob".to_owned(),
+            sender_did: "did:example:bob".to_owned(),
+            receiver_did: "did:example:alice".to_owned(),
+            server_seq: Some(77),
+            is_e2ee: true,
+            metadata: p5_projection_metadata(),
+            ..Fixture::message_record_defaults()
+        });
+
+        let result = super::mark_message_ids_read_v2_async(
+            &client,
+            vec![crate::ids::MessageId::parse("msg-p5-logical").unwrap()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.updated_count, 1);
+        assert!(result.warnings.is_empty());
+        assert_eq!(fixture.message_is_read("msg-p5-logical"), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_v2_mark_read_rejects_partial_p5_metadata_without_thread_binding() {
+        let fixture = Fixture::new("mark-read-p5-partial-metadata");
+        let client = fixture.client();
+        let mut metadata =
+            serde_json::from_str::<serde_json::Value>(&p5_projection_metadata()).unwrap();
+        metadata
+            .as_object_mut()
+            .unwrap()
+            .remove("p5_cache_recipient_device_id");
+        fixture.seed_message(crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-p5-untrusted".to_owned(),
+            conversation_id: "dm:did:example:bob".to_owned(),
+            thread_id: "dm:did:example:bob".to_owned(),
+            sender_did: "did:example:bob".to_owned(),
+            receiver_did: "did:example:alice".to_owned(),
+            server_seq: Some(78),
+            is_e2ee: true,
+            metadata: metadata.to_string(),
+            ..Fixture::message_record_defaults()
+        });
+
+        let error = super::mark_message_ids_read_v2_async(
+            &client,
+            vec![crate::ids::MessageId::parse("msg-p5-untrusted").unwrap()],
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::ImError::IdentityBindingConflict { detail }
+                if detail.contains("has no exact Sync V2 thread binding")
+        ));
+        assert_eq!(fixture.message_is_read("msg-p5-untrusted"), 0);
+    }
+
+    fn p5_projection_metadata() -> String {
+        serde_json::json!({
+            "raw_message_id": "wire-p5-exact-device",
+            "p5_cache_profile": anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2,
+            "p5_cache_sender_did": "did:example:bob",
+            "p5_cache_sender_device_id": "device-bob",
+            "p5_cache_recipient_did": "did:example:alice",
+            "p5_cache_recipient_device_id": "device-alice",
+            "p5_cache_binding_digest": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        })
+        .to_string()
+    }
+
     struct Fixture {
         root: PathBuf,
     }
@@ -821,6 +899,20 @@ mod conversation_mark_read_request_tests {
             )
             .unwrap();
             crate::internal::local_state::messages::upsert_message(&connection, &record).unwrap();
+        }
+
+        fn message_is_read(&self, message_id: &str) -> i64 {
+            let connection = crate::internal::local_state::open_writable(
+                &self.root.join("local").join("im.sqlite"),
+            )
+            .unwrap();
+            connection
+                .query_row(
+                    "SELECT is_read FROM messages WHERE owner_identity_id = 'alice-id' AND msg_id = ?1",
+                    [message_id],
+                    |row| row.get(0),
+                )
+                .unwrap()
         }
 
         fn message_record_defaults() -> crate::internal::local_state::messages::MessageRecord {
@@ -4187,10 +4279,26 @@ fn mark_message_ids_read_v2(
         .iter()
         .map(|id| id.as_str().to_owned())
         .collect::<Vec<_>>();
-    let plans = resolve_mark_read_v2_watermarks(client, &requested_ids)?;
-    let mut updated_count = 0_u32;
+    let resolution = resolve_mark_read_v2_watermarks(client, &requested_ids)?;
+    let local_updated = if resolution.local_only_message_ids.is_empty() {
+        0
+    } else {
+        let connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )?;
+        crate::internal::local_state::messages::mark_messages_read_for_owner_identity(
+            &connection,
+            client.current_identity().id.as_str(),
+            client.did().as_str(),
+            &resolution.local_only_message_ids,
+        )?
+    };
+    if local_updated > 0 {
+        client.emit_committed_conversation_projection("local_mark_read");
+    }
+    let mut updated_count = u32::try_from(local_updated).unwrap_or(u32::MAX);
     let mut warnings = Vec::new();
-    for plan in plans {
+    for plan in resolution.watermarks {
         let conversation = super::ConversationReadRef::new(plan.conversation_id)?;
         let remote_thread = resolve_service_conversation_thread(client, &conversation)?.thread;
         let result = crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
@@ -4245,10 +4353,27 @@ async fn mark_message_ids_read_v2_async(
         .iter()
         .map(|id| id.as_str().to_owned())
         .collect::<Vec<_>>();
-    let plans = resolve_mark_read_v2_watermarks(client, &requested_ids)?;
-    let mut updated_count = 0_u32;
+    let resolution = resolve_mark_read_v2_watermarks(client, &requested_ids)?;
+    let local_updated = if resolution.local_only_message_ids.is_empty() {
+        0
+    } else {
+        client
+            .core_inner()
+            .local_state_db()
+            .await?
+            .mark_messages_read(
+                client.current_identity().id.as_str(),
+                client.did().as_str(),
+                resolution.local_only_message_ids.clone(),
+            )
+            .await?
+    };
+    if local_updated > 0 {
+        client.emit_committed_conversation_projection("local_mark_read");
+    }
+    let mut updated_count = u32::try_from(local_updated).unwrap_or(u32::MAX);
     let mut warnings = Vec::new();
-    for plan in plans {
+    for plan in resolution.watermarks {
         let conversation = super::ConversationReadRef::new(plan.conversation_id)?;
         let remote_thread = resolve_service_conversation_thread_async(client, &conversation)
             .await?
@@ -4296,7 +4421,7 @@ async fn mark_message_ids_read_v2_async(
 fn resolve_mark_read_v2_watermarks(
     client: &crate::core::ImClient,
     message_ids: &[String],
-) -> crate::ImResult<Vec<crate::internal::local_state::messages::V2MarkReadWatermark>> {
+) -> crate::ImResult<crate::internal::local_state::messages::V2MarkReadResolution> {
     let connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;

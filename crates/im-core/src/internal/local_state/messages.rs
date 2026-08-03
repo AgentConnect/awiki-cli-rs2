@@ -1828,6 +1828,13 @@ pub(crate) struct V2MarkReadWatermark {
 }
 
 #[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct V2MarkReadResolution {
+    pub(crate) watermarks: Vec<V2MarkReadWatermark>,
+    pub(crate) local_only_message_ids: Vec<String>,
+}
+
+#[cfg(feature = "sqlite")]
 impl MarkReadClassification {
     pub(crate) fn local_ids(&self) -> Vec<String> {
         let mut ids = self.direct_ids.clone();
@@ -2463,7 +2470,7 @@ pub(crate) fn resolve_v2_mark_read_watermarks_for_owner_identity(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
     message_ids: &[String],
-) -> crate::ImResult<Vec<V2MarkReadWatermark>> {
+) -> crate::ImResult<V2MarkReadResolution> {
     let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
     required("owner_identity_id", &owner_identity_id)?;
     let requested_ids = message_ids
@@ -2474,6 +2481,7 @@ pub(crate) fn resolve_v2_mark_read_watermarks_for_owner_identity(
     let identity_rows =
         resolve_message_identity_rows(connection, &owner_identity_id, &requested_ids)?;
     let mut by_conversation = BTreeMap::<String, V2MarkReadWatermark>::new();
+    let mut local_only_message_ids = Vec::new();
 
     for requested_id in requested_ids {
         let identity =
@@ -2489,7 +2497,8 @@ SELECT COALESCE(NULLIF(TRIM(conversation_id), ''), TRIM(thread_id)),
        msg_id,
        server_seq,
        direction,
-       hydration_state
+       hydration_state,
+       metadata
 FROM messages
 WHERE owner_identity_id = ?1 AND msg_id = ?2
 LIMIT 1"#,
@@ -2501,6 +2510,7 @@ LIMIT 1"#,
                         row.get::<_, Option<i64>>(2)?,
                         row.get::<_, i64>(3)?,
                         row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                        row.get::<_, Option<String>>(5)?.unwrap_or_default(),
                     ))
                 },
             )
@@ -2509,11 +2519,15 @@ LIMIT 1"#,
             .ok_or_else(|| crate::ImError::MessageNotFound {
                 message_id: requested_id.to_owned(),
             })?;
-        let (conversation_id, message_id, server_seq, direction, hydration_state) = row;
+        let (conversation_id, message_id, server_seq, direction, hydration_state, metadata) = row;
         if direction != 0 || hydration_state.trim() != "hydrated" {
             return Err(crate::ImError::MessageNotFound {
                 message_id: requested_id.to_owned(),
             });
+        }
+        if authenticated_p5_v2_raw_message_id(&metadata).is_some() {
+            push_unique(&mut local_only_message_ids, message_id);
+            continue;
         }
         let server_seq = server_seq.filter(|value| *value > 0).ok_or_else(|| {
             crate::ImError::IdentityBindingConflict {
@@ -2557,7 +2571,10 @@ LIMIT 1"#,
         }
     }
 
-    Ok(by_conversation.into_values().collect())
+    Ok(V2MarkReadResolution {
+        watermarks: by_conversation.into_values().collect(),
+        local_only_message_ids,
+    })
 }
 
 #[cfg(feature = "sqlite")]
@@ -3749,39 +3766,45 @@ impl MessageClassificationRow {
     }
 
     fn remote_mark_read_id(&self) -> String {
-        let metadata = parse_metadata(&self.metadata);
-        let is_authenticated_p5_v2_projection = metadata
-            .get("p5_cache_profile")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            == Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
-            && [
-                "p5_cache_sender_did",
-                "p5_cache_sender_device_id",
-                "p5_cache_recipient_did",
-                "p5_cache_recipient_device_id",
-                "p5_cache_binding_digest",
-            ]
-            .into_iter()
-            .all(|key| {
-                metadata
-                    .get(key)
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::trim)
-                    .is_some_and(|value| !value.is_empty())
-            });
-        if is_authenticated_p5_v2_projection {
-            if let Some(raw_message_id) = metadata
-                .get("raw_message_id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                return raw_message_id.to_owned();
-            }
+        if let Some(raw_message_id) = authenticated_p5_v2_raw_message_id(&self.metadata) {
+            return raw_message_id;
         }
         self.requested_msg_id.clone()
     }
+}
+
+#[cfg(feature = "sqlite")]
+fn authenticated_p5_v2_raw_message_id(metadata: &str) -> Option<String> {
+    let metadata = parse_metadata(metadata);
+    let authenticated = metadata
+        .get("p5_cache_profile")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        == Some(anp::direct_e2ee::DIRECT_E2EE_PROFILE_V2)
+        && [
+            "p5_cache_sender_did",
+            "p5_cache_sender_device_id",
+            "p5_cache_recipient_did",
+            "p5_cache_recipient_device_id",
+            "p5_cache_binding_digest",
+        ]
+        .into_iter()
+        .all(|key| {
+            metadata
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+        });
+    if !authenticated {
+        return None;
+    }
+    metadata
+        .get("raw_message_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 #[cfg(feature = "sqlite")]
@@ -7603,7 +7626,7 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
         .unwrap();
 
         assert_eq!(
-            result,
+            result.watermarks,
             vec![
                 V2MarkReadWatermark {
                     conversation_id: direct_conversation.to_owned(),
@@ -7617,6 +7640,7 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
                 },
             ]
         );
+        assert!(result.local_only_message_ids.is_empty());
     }
 
     #[test]
