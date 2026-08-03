@@ -702,6 +702,36 @@ fn registration_reconciliation_requires_exact_structured_absence_reason() {
 }
 
 #[test]
+fn successful_json_rpc_with_empty_body_is_transport_unavailable_without_body_detail() {
+    for status_code in [200, 204, 299] {
+        assert_transport_unavailable(
+            decode_rpc_http_response(status_code, b""),
+            "JSON-RPC response body is empty",
+        );
+    }
+}
+
+#[test]
+fn successful_json_rpc_with_nonempty_malformed_body_remains_serialization() {
+    let error = decode_rpc_http_response(200, b"not-json").unwrap_err();
+    assert!(matches!(error, crate::ImError::Serialization { .. }));
+}
+
+#[test]
+fn redirect_json_rpc_bodies_keep_existing_http_service_mapping() {
+    for body in [b"".as_slice(), b"not-json".as_slice()] {
+        let error = decode_rpc_http_response(302, body).unwrap_err();
+        assert!(matches!(
+            error,
+            crate::ImError::Service {
+                status_code: Some(302),
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
 fn skill_onboarding_rpc_error_preserves_reason_on_non_success_http_status() {
     let body = serde_json::to_vec(&json!({
         "jsonrpc": "2.0",

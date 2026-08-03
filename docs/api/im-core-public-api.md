@@ -259,6 +259,9 @@ pub enum ImError {
 ```
 
 CLI 负责把 `ImError` 映射成 exit code、human hint、pretty/json/table 输出。`ImError` 不包含 CLI exit code。
+JSON-RPC 收到 HTTP 2xx 但响应体为零字节时返回固定、无响应内容 detail 的
+`TransportUnavailable`；非空畸形 JSON 仍返回 `Serialization`。HTTP 状态、响应体或其片段
+不得被拼入该空响应诊断。
 
 ## 5. 基础类型
 
@@ -689,6 +692,9 @@ PreKey，并只为 authoritative `required_security_profile=transport-protected`
 创建 P6/MLS 或 `awaiting_p6`。旧 Ratchet、PreKey/OPK、MLS 和 device-scoped checkpoint 被退役，
 业务历史仍保留。`identity_transition_pending` 在本地 epoch reset 前持久化，并按 initiator
 operation ID 或 joined-device Join session ID 绑定来源。
+Recovery Commit 收到 HTTP 2xx 零字节响应时按传输结果不确定处理：activate 返回稳定
+`handle_recovery_outcome_unknown`，pending phase 保持 `remoteCommitPending`；进程重开后的
+resume 使用 Vault 中已持久化的原请求精确重放，不生成新 operation ID、proof 或身份材料。
 
 V1 不增加 CLI command、Daemon task、Agent 恢复入口或 process-global identity。未来这些 host
 可复用同一 typed service 和显式 `IdentitySelector`，不得绕过 Core 状态机。App 迁移旧

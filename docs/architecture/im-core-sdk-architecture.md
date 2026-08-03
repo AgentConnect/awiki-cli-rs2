@@ -98,6 +98,12 @@ Only exact Handle-backed `transport-protected` groups are eligible. Missing, con
 DID-only, E2EE, or malformed profiles fail closed, and Recovery never enters P6/MLS or
 `awaiting_p6`.
 
+The JSON-RPC transport treats an HTTP success with a zero-byte response body as
+`TransportUnavailable` with a fixed, body-free diagnostic. For a Recovery Commit this is an
+ambiguous mutation outcome: Core keeps the durable proof in `remoteCommitPending`, returns
+`handle_recovery_outcome_unknown`, and a later resume replays the exact request. A non-empty
+malformed JSON body remains `Serialization`; neither classification exposes response content.
+
 V1 deliberately has no CLI command, Daemon task, Agent recovery entrypoint, UI route, or
 process-global identity. Those hosts can be added later by calling the typed Core service
 with an explicit `IdentitySelector`; the cryptographic and durable orchestration remains

@@ -973,6 +973,15 @@ mod tests {
         stream.write_all(&body).unwrap();
     }
 
+    fn write_http_empty(stream: &mut TcpStream) {
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        stream.flush().unwrap();
+    }
+
     fn admin_access_token(did: &str, device_id: &str, signing_key_id: &str) -> String {
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
         let claims = json!({
@@ -1296,7 +1305,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_facade_exact_replays_after_response_loss_and_process_reopen() {
+    async fn production_facade_exact_replays_after_empty_success_response_and_process_reopen() {
         let old = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
             "awiki.test", "alice", None, None,
         )
@@ -1328,7 +1337,7 @@ mod tests {
             let durable_operation_id = first["params"]["operation_id"].as_str().unwrap().to_owned();
             activations_for_server.fetch_add(1, Ordering::SeqCst);
             attempts_for_server.lock().unwrap().push(first);
-            drop(first_commit);
+            write_http_empty(&mut first_commit);
 
             let (mut second_commit, _) = listener.accept().unwrap();
             let second = read_http_json(&mut second_commit);

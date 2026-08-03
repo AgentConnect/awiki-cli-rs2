@@ -2166,6 +2166,11 @@ fn registration_is_explicitly_absent(error: &crate::ImError) -> bool {
 }
 
 fn decode_rpc_http_response(status_code: u16, body: &[u8]) -> crate::ImResult<Value> {
+    if (200..300).contains(&status_code) && body.is_empty() {
+        return Err(crate::ImError::TransportUnavailable {
+            detail: "JSON-RPC response body is empty".to_owned(),
+        });
+    }
     match crate::internal::json_rpc::decode_response(body) {
         Err(crate::ImError::Service {
             code,
@@ -2179,6 +2184,9 @@ fn decode_rpc_http_response(status_code: u16, body: &[u8]) -> crate::ImResult<Va
             data,
         }),
         Ok(result) if status_code < 400 => Ok(result),
+        Err(error @ crate::ImError::Serialization { .. }) if (200..300).contains(&status_code) => {
+            Err(error)
+        }
         _ => Err(service_error_from_http(status_code, body)),
     }
 }
