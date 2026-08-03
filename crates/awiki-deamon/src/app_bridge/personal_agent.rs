@@ -421,6 +421,14 @@ fn default_handle(user_did: &str, app_instance_id: &str) -> String {
     }
 }
 
+#[cfg(any(test, feature = "system-test-probe"))]
+pub fn personal_agent_runtime_handle_for_system_test(
+    user_did: &str,
+    app_instance_id: &str,
+) -> String {
+    default_handle(user_did, app_instance_id)
+}
+
 fn safe_handle_component(value: &str) -> String {
     let mut normalized = value
         .trim()
@@ -554,6 +562,10 @@ mod tests {
         assert_eq!(
             default_handle("did:human:me", "app_1"),
             "hermes-personal-app-1-334c10a06052"
+        );
+        assert_eq!(
+            personal_agent_runtime_handle_for_system_test("did:human:me", "app_1"),
+            default_handle("did:human:me", "app_1")
         );
 
         let first = default_handle(

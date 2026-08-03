@@ -358,6 +358,33 @@ fn daemon_fixture_prepare_result_after_boundary(
     }
 }
 
+fn daemon_fixture_runtime_token_handle(
+    controller_did: &str,
+    app_instance_id: &str,
+    _wire_compat_runtime_handle: &str,
+) -> String {
+    // `runtime_handle` remains accepted on the probe wire for compatibility,
+    // but it must not define the registration token scope. Product creation
+    // derives the Handle from the controller DID and App instance instead.
+    awiki_deamon::app_bridge::personal_agent::personal_agent_runtime_handle_for_system_test(
+        controller_did,
+        app_instance_id,
+    )
+}
+
+fn daemon_fixture_runtime_registration_metadata(
+    daemon_agent_did: &str,
+    app_instance_id: &str,
+) -> Value {
+    json!({
+        "suite_case": "handle-recovery-daemon-continuity",
+        "runtime": "hermes",
+        "runtime_profile": "personal_agent",
+        "daemon_agent_did": daemon_agent_did,
+        "app_instance_id": app_instance_id,
+    })
+}
+
 async fn daemon_fixture_sync_before_send<Sync, SyncFuture, Send, SendFuture>(
     sync: Sync,
     send: Send,
@@ -1757,17 +1784,20 @@ impl Probe {
                 &daemon_identity.device_e2ee_key_id,
             )?;
 
+            let runtime_token_handle = daemon_fixture_runtime_token_handle(
+                &self.local_did,
+                &params.app_instance_id,
+                &params.runtime_handle,
+            );
             let runtime_token = self
                 .issue_agent_registration_token(
                     "runtime",
-                    &params.runtime_handle,
+                    &runtime_token_handle,
                     None,
-                    json!({
-                        "suite_case": "handle-recovery-daemon-continuity",
-                        "runtime": "hermes",
-                        "runtime_profile": "personal_agent",
-                        "daemon_agent_did": daemon_agent_did,
-                    }),
+                    daemon_fixture_runtime_registration_metadata(
+                        &daemon_agent_did,
+                        &params.app_instance_id,
+                    ),
                 )
                 .await?;
             let mut subkey = core
@@ -4769,6 +4799,43 @@ mod tests {
             panic!("staged Daemon prepare action")
         };
         assert_eq!(params.daemon_agent_did, "did:wba:example.test:agent:daemon");
+        let expected_runtime_handle =
+            awiki_deamon::app_bridge::personal_agent::personal_agent_runtime_handle_for_system_test(
+                "did:wba:example.test:user:controller",
+                &params.app_instance_id,
+            );
+        assert_eq!(
+            daemon_fixture_runtime_token_handle(
+                "did:wba:example.test:user:controller",
+                &params.app_instance_id,
+                &params.runtime_handle,
+            ),
+            expected_runtime_handle,
+        );
+        assert_ne!(expected_runtime_handle, params.runtime_handle);
+        assert_eq!(
+            daemon_fixture_runtime_token_handle(
+                "did:wba:example.test:user:controller",
+                &params.app_instance_id,
+                "different-wire-compatible-handle",
+            ),
+            expected_runtime_handle,
+        );
+        let metadata = daemon_fixture_runtime_registration_metadata(
+            &params.daemon_agent_did,
+            &params.app_instance_id,
+        );
+        assert_eq!(
+            metadata,
+            json!({
+                "suite_case": "handle-recovery-daemon-continuity",
+                "runtime": "hermes",
+                "runtime_profile": "personal_agent",
+                "daemon_agent_did": params.daemon_agent_did,
+                "app_instance_id": params.app_instance_id,
+            }),
+        );
+        assert!(!metadata.to_string().contains("runtime-one"));
         assert!(parse_request(
             r#"{"id":"prepare-2","action":"prepare_daemon_continuity_fixture","params":{"daemon_binary":"/tmp/awiki-deamon","state_root":"/tmp/daemon-stage","daemon_handle":"daemon-one","runtime_handle":"runtime-one","controller_handle":"controller-one","app_instance_id":"app-one"}}"#,
         )
