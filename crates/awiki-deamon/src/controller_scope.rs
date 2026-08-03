@@ -39,6 +39,7 @@ pub fn verify_daemon_controller_sender<C>(
 where
     C: AgentInventoryClient,
 {
+    crate::agent_status::ensure_controller_identity_active(state, &daemon_agent.agent_did)?;
     let auth = daemon_auth_material(config, state, daemon_agent)?;
     let scope =
         client.verify_controller_sender(&daemon_agent.agent_did, sender_did.trim(), &auth)?;
@@ -109,22 +110,11 @@ fn ensure_scope_matches_daemon(
         bail!("controller_scope_mismatch");
     }
     if daemon_agent.controller_did != verified.controller_did {
-        state.update_controller_did_for_agent_family(
+        return crate::agent_status::record_controller_identity_changed(
+            state,
             &daemon_agent.agent_did,
-            &verified.controller_did,
-        )?;
-        state.insert_audit_event_json(
-            "daemon.controller_did.synced",
-            Some(&daemon_agent.agent_did),
-            None,
-            None,
-            None,
-            json!({
-                "old_controller_did": daemon_agent.controller_did,
-                "new_controller_did": verified.controller_did,
-                "source": "verify_controller_sender",
-            }),
-        )?;
+            "verified_controller_sender",
+        );
     }
     Ok(())
 }

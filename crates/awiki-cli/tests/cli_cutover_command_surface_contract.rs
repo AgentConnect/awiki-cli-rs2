@@ -46,6 +46,68 @@ fn every_command_spec_has_required_policy_metadata() {
 }
 
 #[test]
+fn manifest_handle_recovery_is_absent_and_nearby_invocations_fail_closed() {
+    let forbidden_fragments = [
+        "handle.recovery",
+        "handle-recovery",
+        "handle_recovery",
+        "recover.handle",
+        "recover-handle",
+        "manifest.recovery",
+    ];
+    for spec in command_catalog::specs() {
+        let searchable = std::iter::once(spec.name)
+            .chain(std::iter::once(spec.use_))
+            .chain(spec.aliases.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+        assert!(
+            forbidden_fragments
+                .iter()
+                .all(|fragment| !searchable.contains(fragment)),
+            "Manifest Handle Recovery must not be registered or hidden in the CLI catalog: {}",
+            spec.name
+        );
+    }
+    for name in [
+        "handle.recovery",
+        "id.handle-recovery",
+        "id.recover-handle",
+        "manifest.recovery",
+    ] {
+        assert!(command_catalog::lookup(name).is_none(), "{name}");
+    }
+
+    for args in [
+        &[
+            "handle-recovery",
+            "--phone",
+            "+8613800000000",
+            "--code",
+            "otp-must-not-be-rendered",
+        ][..],
+        &["id", "recover-handle", "--code", "otp-must-not-be-rendered"][..],
+        &[
+            "manifest",
+            "recovery",
+            "--grant",
+            "grant-must-not-be-rendered",
+        ][..],
+    ] {
+        let output = awiki_cmd(args);
+        assert_ne!(output.status.code(), Some(0), "{args:?}");
+        let rendered = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!rendered.contains("otp-must-not-be-rendered"));
+        assert!(!rendered.contains("grant-must-not-be-rendered"));
+    }
+}
+
+#[test]
 fn cutover_classifier_marks_supported_im_core_commands() {
     for command in [
         "id.list",

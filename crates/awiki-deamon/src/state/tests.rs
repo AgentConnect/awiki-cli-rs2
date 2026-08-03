@@ -15,6 +15,15 @@ type StoredIdentitySecretColumns = (
 );
 
 #[test]
+fn controller_did_cutover_primitive_is_test_only_and_crate_private() {
+    let source = include_str!("runtime_profiles.rs");
+    assert!(
+        source.contains("#[cfg(test)]\n    pub(crate) fn update_controller_did_for_agent_family(")
+    );
+    assert!(!source.contains("pub fn update_controller_did_for_agent_family("));
+}
+
+#[test]
 fn initialize_creates_required_tables() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

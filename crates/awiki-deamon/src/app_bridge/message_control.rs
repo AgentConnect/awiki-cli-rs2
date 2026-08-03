@@ -70,6 +70,7 @@ where
     if daemon_agent.agent_kind != AgentKind::Daemon {
         bail!("target agent is not a daemon agent");
     }
+    crate::agent_status::ensure_controller_identity_active(state, &daemon_agent.agent_did)?;
     if message.sender_did != daemon_agent.controller_did {
         bail!("message sender is not the configured controller_did");
     }

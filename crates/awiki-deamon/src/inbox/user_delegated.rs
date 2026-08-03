@@ -898,6 +898,9 @@ where
     D: UserDelegatedMessageDispatcher,
 {
     binding.validate()?;
+    if crate::agent_status::controller_identity_change_observed(state, &binding.daemon_agent_did)? {
+        return Ok(empty_inbox_outcome(binding));
+    }
     if !binding_is_active_for_inbox_processing(binding) {
         state.insert_audit_event_json(
             "user_delegated_inbox.sync.skipped_inactive_binding",

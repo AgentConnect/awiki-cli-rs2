@@ -2433,7 +2433,7 @@ fn runtime_group_inbox_skips_agent_senders_to_prevent_agent_loops() {
 }
 
 #[test]
-fn hermes_foreground_runtime_route_accepts_verified_rotated_controller_did() {
+fn future_explicit_cutover_primitive_can_route_after_state_is_deliberately_rebound() {
     let (root, config, state) = fixture();
     let profile = profile(root.path());
     state.upsert_runtime_agent_profile(&profile).unwrap();
@@ -2487,30 +2487,56 @@ fn hermes_foreground_runtime_route_accepts_verified_rotated_controller_did() {
 }
 
 #[test]
-fn foreground_controller_scope_verification_rejects_unowned_sender_before_gateway() {
+fn foreground_controller_identity_change_blocks_new_and_old_sender_without_rebinding() {
     let (root, config, state) = fixture();
     let created = create_hermes_runtime(root.path(), &config, &state);
     let registration = MockRegistrationClient;
+    let daemon_binding = state
+        .load_runtime_daemon_binding(&created.agent_did)
+        .unwrap()
+        .unwrap();
+    let daemon_before = state
+        .load_agent_definition(&daemon_binding.daemon_agent_did)
+        .unwrap();
+    let runtime_before = state.load_agent_definition(&created.agent_did).unwrap();
+    let binding_before = daemon_binding.clone();
 
-    let verified = verify_runtime_controller_sender(
+    let changed = verify_runtime_controller_sender(
         &config,
         &state,
         &registration,
         &created.agent_did,
         "did:human:alice-new",
     )
-    .unwrap();
-    assert_eq!(verified.controller_did, "did:human:alice-new");
+    .unwrap_err();
+    assert_eq!(changed.to_string(), "controller_identity_changed");
+    assert_eq!(
+        state
+            .load_agent_definition(&daemon_binding.daemon_agent_did)
+            .unwrap(),
+        daemon_before
+    );
+    assert_eq!(
+        state.load_agent_definition(&created.agent_did).unwrap(),
+        runtime_before
+    );
+    assert_eq!(
+        state
+            .load_runtime_daemon_binding(&created.agent_did)
+            .unwrap()
+            .unwrap(),
+        binding_before
+    );
 
-    let error = verify_runtime_controller_sender(
+    let old_principal = verify_runtime_controller_sender(
         &config,
         &state,
         &registration,
         &created.agent_did,
-        "did:human:bob",
+        "did:human:alice",
     )
     .unwrap_err();
-    assert!(error.to_string().contains("controller_scope_mismatch"));
+    assert_eq!(old_principal.to_string(), "controller_identity_changed");
 }
 
 #[test]
@@ -3509,6 +3535,51 @@ fn app_capabilities_and_action_result_are_system_control_payloads() {
     assert!(action_result_audit.contains("act_draft_1"));
     assert!(!action_result_audit.contains("Looks good"));
     assert!(!action_result_audit.contains("draft_text"));
+}
+
+#[test]
+fn app_control_from_old_controller_stops_after_identity_change_observation() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient;
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    crate::agent_status::record_controller_identity_changed(
+        &state,
+        &daemon.agent_did,
+        "test_authoritative_status",
+    )
+    .unwrap_err();
+
+    let error = handle_app_control_payload(
+        &config,
+        &state,
+        &registration,
+        IncomingAppControlPayload {
+            message_id: "msg_after_controller_change".to_string(),
+            conversation_id: Some("direct:did:agent:daemon".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.app.capabilities.v1",
+                "capabilities": ["message.summarize_plain"],
+                "require_confirmation_for_write_actions": true
+            }),
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), "controller_identity_changed");
+    assert!(!state
+        .audit_event_exists("app.capabilities.received", Some(&daemon.agent_did), None,)
+        .unwrap());
 }
 
 #[test]

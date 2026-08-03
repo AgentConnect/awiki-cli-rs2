@@ -237,6 +237,63 @@ fn delegated_inbox_skips_revoked_binding_without_fetch_or_dispatch() {
 }
 
 #[test]
+fn delegated_inbox_stops_after_controller_identity_change_without_transferring_key() {
+    let fixture = fixture();
+    let state = &fixture.state;
+    let identity_before = state
+        .load_user_delegated_identity(&fixture.identity.verification_method)
+        .unwrap()
+        .unwrap();
+    let binding_before = state
+        .load_app_personal_agent_binding(&fixture.binding.binding_id)
+        .unwrap()
+        .unwrap();
+    let blocked = crate::agent_status::record_controller_identity_changed(
+        state,
+        &fixture.binding.daemon_agent_did,
+        "test_authoritative_status",
+    )
+    .unwrap_err();
+    assert_eq!(blocked.to_string(), "controller_identity_changed");
+    let client = MockClient {
+        pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+            messages: vec![plain_message(
+                "msg_after_identity_change",
+                "did:human:bob",
+                "must stay isolated",
+            )],
+            next_cursor: Some("cursor_after_identity_change".to_string()),
+            has_more: false,
+        }])),
+        calls: Arc::new(Mutex::new(Vec::new())),
+    };
+    let dispatcher = RecordingDispatcher::default();
+
+    let outcome =
+        process_user_delegated_inbox_for_binding(state, &client, &dispatcher, &fixture.binding)
+            .unwrap();
+
+    assert_eq!(outcome.fetched_messages, 0);
+    assert_eq!(outcome.dispatched_messages, 0);
+    assert!(client.calls.lock().unwrap().is_empty());
+    assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+    assert_eq!(
+        state
+            .load_user_delegated_identity(&fixture.identity.verification_method)
+            .unwrap()
+            .unwrap(),
+        identity_before
+    );
+    assert_eq!(
+        state
+            .load_app_personal_agent_binding(&binding_before.binding_id)
+            .unwrap()
+            .unwrap(),
+        binding_before
+    );
+}
+
+#[test]
 fn delegated_inbox_skips_disabled_binding_without_fetch_or_dispatch() {
     let fixture = fixture();
     let state = &fixture.state;

@@ -173,7 +173,8 @@ ON CONFLICT(agent_did) DO UPDATE SET
         Ok(())
     }
 
-    pub fn update_controller_did_for_agent_family(
+    #[cfg(test)]
+    pub(crate) fn update_controller_did_for_agent_family(
         &self,
         daemon_agent_did: &str,
         controller_did: &str,
