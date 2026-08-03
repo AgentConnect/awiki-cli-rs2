@@ -72,6 +72,12 @@ const INVALID_REQUEST: &str = "probe.invalid_request";
 const INVALID_STATE: &str = "probe.invalid_state";
 const TRANSPORT_FAILED: &str = "probe.transport_failed";
 const RUNTIME_FAILED: &str = "probe.runtime_failed";
+const DAEMON_FIXTURE_BOOTSTRAP_VALIDATION_OR_PERSIST: &str =
+    "probe.daemon_fixture.bootstrap_validation_or_persist";
+const DAEMON_FIXTURE_RUNTIME_REGISTRATION_PREPARE_OR_EXCHANGE: &str =
+    "probe.daemon_fixture.runtime_registration_prepare_or_exchange";
+const DAEMON_FIXTURE_BINDING_PERSIST: &str = "probe.daemon_fixture.binding_persist";
+const DAEMON_FIXTURE_BINDING_PROJECTION: &str = "probe.daemon_fixture.binding_projection";
 const ACCOUNT_STATE_TEST_FAIL_ONCE: &str = "account_state_test_fail_once";
 const PROBE_ACCOUNT_STATE_TEST_FAIL_ONCE: &str = "probe.account_state_test_fail_once";
 
@@ -507,6 +513,10 @@ enum ProbeFailure {
     InvalidState,
     Transport,
     Runtime,
+    DaemonFixtureBootstrapValidationOrPersist,
+    DaemonFixtureRuntimeRegistrationPrepareOrExchange,
+    DaemonFixtureBindingPersist,
+    DaemonFixtureBindingProjection,
     AccountStateTestFailOnce,
 }
 
@@ -517,6 +527,14 @@ impl ProbeFailure {
             Self::InvalidState => INVALID_STATE,
             Self::Transport => TRANSPORT_FAILED,
             Self::Runtime => RUNTIME_FAILED,
+            Self::DaemonFixtureBootstrapValidationOrPersist => {
+                DAEMON_FIXTURE_BOOTSTRAP_VALIDATION_OR_PERSIST
+            }
+            Self::DaemonFixtureRuntimeRegistrationPrepareOrExchange => {
+                DAEMON_FIXTURE_RUNTIME_REGISTRATION_PREPARE_OR_EXCHANGE
+            }
+            Self::DaemonFixtureBindingPersist => DAEMON_FIXTURE_BINDING_PERSIST,
+            Self::DaemonFixtureBindingProjection => DAEMON_FIXTURE_BINDING_PROJECTION,
             Self::AccountStateTestFailOnce => PROBE_ACCOUNT_STATE_TEST_FAIL_ONCE,
         }
     }
@@ -1774,11 +1792,39 @@ impl Probe {
         let bindings = state
             .list_active_app_personal_agent_bindings()
             .map_err(|_| ProbeFailure::Runtime)?;
-        if bindings.len() != 1 || bindings[0].daemon_agent_did != self.local_did {
-            return Err(ProbeFailure::InvalidState);
+        let binding_contract_valid = bindings.len() == 1
+            && bindings[0].daemon_agent_did == self.local_did
+            && im_core::ids::Did::parse(&bindings[0].runtime_agent_did).is_ok();
+        if !binding_contract_valid {
+            if !state
+                .audit_event_exists("daemon.bootstrap.received", Some(&self.local_did), None)
+                .map_err(|_| ProbeFailure::Runtime)?
+            {
+                return Err(ProbeFailure::DaemonFixtureBootstrapValidationOrPersist);
+            }
+            if !state
+                .audit_event_exists(
+                    "agent.registration.exchange",
+                    None,
+                    Some(r#""agent_kind":"runtime""#),
+                )
+                .map_err(|_| ProbeFailure::Runtime)?
+            {
+                return Err(ProbeFailure::DaemonFixtureRuntimeRegistrationPrepareOrExchange);
+            }
+            if !state
+                .audit_event_exists(
+                    "app_personal_agent.binding.ready",
+                    Some(&self.local_did),
+                    None,
+                )
+                .map_err(|_| ProbeFailure::Runtime)?
+            {
+                return Err(ProbeFailure::DaemonFixtureBindingPersist);
+            }
+            return Err(ProbeFailure::DaemonFixtureBindingProjection);
         }
         let binding = &bindings[0];
-        im_core::ids::Did::parse(&binding.runtime_agent_did).map_err(|_| ProbeFailure::Runtime)?;
         Ok(json!({
             "daemon_agent_did": self.local_did,
             "runtime_agent_did": binding.runtime_agent_did,
@@ -4774,6 +4820,99 @@ INSERT INTO agent_registration_pending (
             ),
             Err(ProbeFailure::Runtime)
         ));
+    }
+
+    #[test]
+    fn daemon_fixture_resources_reports_closed_persisted_stage_without_exposing_audit_detail() {
+        let root = TestStateRoot::new("daemon-fixture-resource-stage");
+        let config =
+            awiki_deamon::DaemonConfig::for_state_root(&root.path).expect("daemon probe config");
+        config.ensure_state_layout().expect("daemon state layout");
+        let state = awiki_deamon::DaemonState::open(&config).expect("daemon state");
+        state.initialize().expect("daemon state schema");
+        let mut probe = test_probe("http://127.0.0.1:9");
+        probe.daemon_state_root = Some(root.path.clone());
+
+        let assert_closed_failure = |expected_code: &str| {
+            let failure = match probe.daemon_fixture_resources() {
+                Err(failure) => failure,
+                Ok(_) => panic!("missing binding must fail closed"),
+            };
+            assert_eq!(failure.code(), expected_code);
+            let response = failure_response(RequestId(json!("resources")), failure);
+            assert_eq!(
+                response,
+                json!({
+                    "id": "resources",
+                    "ok": false,
+                    "error": {"code": expected_code},
+                })
+            );
+            let encoded = response.to_string();
+            for forbidden in [
+                LOCAL_DID,
+                "audit-bootstrap-secret",
+                "audit-registration-secret",
+                "audit-binding-secret",
+            ] {
+                assert!(!encoded.contains(forbidden));
+            }
+        };
+
+        assert_closed_failure("probe.daemon_fixture.bootstrap_validation_or_persist");
+        state
+            .insert_audit_event_json(
+                "daemon.bootstrap.received",
+                Some(LOCAL_DID),
+                None,
+                None,
+                None,
+                json!({"private_detail": "audit-bootstrap-secret"}),
+            )
+            .expect("insert bootstrap audit event");
+        assert_closed_failure("probe.daemon_fixture.runtime_registration_prepare_or_exchange");
+
+        state
+            .insert_audit_event_json(
+                "agent.registration.exchange",
+                Some("did:wba:example.test:agent:unrelated"),
+                None,
+                None,
+                None,
+                json!({
+                    "agent_kind": "daemon",
+                    "private_detail": "audit-registration-secret",
+                }),
+            )
+            .expect("insert unrelated registration audit event");
+        assert_closed_failure("probe.daemon_fixture.runtime_registration_prepare_or_exchange");
+
+        state
+            .insert_audit_event_json(
+                "agent.registration.exchange",
+                Some("did:wba:example.test:agent:runtime"),
+                None,
+                None,
+                None,
+                json!({
+                    "agent_kind": "runtime",
+                    "private_detail": "audit-registration-secret",
+                }),
+            )
+            .expect("insert runtime registration audit event");
+        assert_closed_failure("probe.daemon_fixture.binding_persist");
+
+        state
+            .insert_audit_event_json(
+                "app_personal_agent.binding.ready",
+                Some(LOCAL_DID),
+                None,
+                None,
+                None,
+                json!({"private_detail": "audit-binding-secret"}),
+            )
+            .expect("insert binding ready audit event");
+        assert_closed_failure("probe.daemon_fixture.binding_projection");
     }
 
     #[test]
