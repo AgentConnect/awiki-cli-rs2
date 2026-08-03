@@ -1807,13 +1807,26 @@ impl Probe {
                 .audit_event_exists("daemon.bootstrap.received", Some(&self.local_did), None)
                 .map_err(|_| ProbeFailure::Runtime)?
             {
-                let verification_method = format!("{}#daemon-key-1", self.local_did);
+                let definition = match state.load_agent_definition(&self.local_did) {
+                    Ok(definition)
+                        if definition.validate().is_ok()
+                            && definition.agent_did == self.local_did
+                            && definition.agent_kind == awiki_deamon::agent::AgentKind::Daemon
+                            && definition.status == "active" =>
+                    {
+                        definition
+                    }
+                    Ok(_) | Err(_) => {
+                        return Err(ProbeFailure::DaemonFixtureBootstrapValidationOrPersist)
+                    }
+                };
+                let verification_method = format!("{}#daemon-key-1", definition.controller_did);
                 return match state.load_user_delegated_identity(&verification_method) {
                     Ok(None) => Err(ProbeFailure::DaemonFixtureBootstrapStatePersist),
                     Ok(Some(identity))
                         if identity.validate().is_ok()
-                            && identity.user_did == self.local_did
-                            && identity.controller_did == self.local_did
+                            && identity.user_did == definition.controller_did
+                            && identity.controller_did == definition.controller_did
                             && identity.daemon_agent_did == self.local_did
                             && identity.verification_method == verification_method
                             && identity.status
@@ -4207,6 +4220,8 @@ mod tests {
     use tokio::net::TcpListener;
 
     const LOCAL_DID: &str = "did:wba:example.test:user:local";
+    const HUMAN_DID: &str = "did:wba:example.test:user:fixture-human";
+    const DAEMON_DID: &str = "did:wba:example.test:agent:fixture-daemon";
     const SENDER_DID: &str = "did:wba:example.test:user:sender";
     const TARGET_DID: &str = "did:wba:example.test:user:target";
     const SERVICE_DID: &str = "did:wba:127.0.0.1:service:message";
@@ -4856,6 +4871,33 @@ INSERT INTO agent_registration_pending (
         state.initialize().expect("daemon state schema");
         let mut probe = test_probe("http://127.0.0.1:9");
         probe.daemon_state_root = Some(root.path.clone());
+        probe.local_did = DAEMON_DID.to_owned();
+        let missing_definition = match probe.daemon_fixture_resources() {
+            Err(failure) => failure,
+            Ok(_) => panic!("missing Daemon definition must fail closed"),
+        };
+        assert_eq!(
+            missing_definition.code(),
+            DAEMON_FIXTURE_BOOTSTRAP_VALIDATION_OR_PERSIST
+        );
+        state
+            .upsert_agent_definition(&awiki_deamon::agent::AgentDefinition {
+                agent_did: DAEMON_DID.to_owned(),
+                handle: "fixture-daemon".to_owned(),
+                agent_kind: awiki_deamon::agent::AgentKind::Daemon,
+                controller_user_id: "fixture-human-user".to_owned(),
+                controller_full_handle: "fixture-human.example.test".to_owned(),
+                controller_scope_key: "fixture-human-scope".to_owned(),
+                controller_did: HUMAN_DID.to_owned(),
+                runtime_plugin_id: None,
+                runtime_profile_id: None,
+                workspace_id: None,
+                policy_id: "default".to_owned(),
+                local_agent_db_path: "agent.db".to_owned(),
+                message_db_path: "message.db".to_owned(),
+                status: "active".to_owned(),
+            })
+            .expect("store active Daemon definition");
 
         let assert_closed_failure = |expected_code: &str| {
             let failure = match probe.daemon_fixture_resources() {
@@ -4874,7 +4916,8 @@ INSERT INTO agent_registration_pending (
             );
             let encoded = response.to_string();
             for forbidden in [
-                LOCAL_DID,
+                HUMAN_DID,
+                DAEMON_DID,
                 "audit-bootstrap-secret",
                 "audit-registration-secret",
                 "audit-binding-secret",
@@ -4885,13 +4928,13 @@ INSERT INTO agent_registration_pending (
 
         assert_closed_failure("probe.daemon_fixture.bootstrap_state_persist");
 
-        let verification_method = format!("{LOCAL_DID}#daemon-key-1");
+        let verification_method = format!("{HUMAN_DID}#daemon-key-1");
         let delegated = awiki_deamon::state::UserDelegatedIdentityRecord {
-            user_did: LOCAL_DID.to_owned(),
+            user_did: HUMAN_DID.to_owned(),
             verification_method: verification_method.clone(),
             app_instance_id: "app-stage-diagnostic".to_owned(),
-            controller_did: LOCAL_DID.to_owned(),
-            daemon_agent_did: LOCAL_DID.to_owned(),
+            controller_did: HUMAN_DID.to_owned(),
+            daemon_agent_did: DAEMON_DID.to_owned(),
             public_key_multibase: "z-stage-diagnostic-public".to_owned(),
             private_key_material: "stage-diagnostic-private".to_owned(),
             private_key_ref_json: None,
@@ -4934,7 +4977,7 @@ INSERT INTO agent_registration_pending (
             .expect("daemon state connection")
             .execute(
                 "UPDATE user_delegated_identity SET user_did = ?1 WHERE verification_method = ?2",
-                rusqlite::params![LOCAL_DID, verification_method],
+                rusqlite::params![HUMAN_DID, verification_method],
             )
             .expect("restore delegated identity contract");
         assert_closed_failure("probe.daemon_fixture.bootstrap_received_audit");
@@ -4953,7 +4996,7 @@ INSERT INTO agent_registration_pending (
             .expect("daemon state connection")
             .execute(
                 "UPDATE user_delegated_identity SET daemon_agent_did = ?1 WHERE verification_method = ?2",
-                rusqlite::params![LOCAL_DID, verification_method],
+                rusqlite::params![DAEMON_DID, verification_method],
             )
             .expect("restore delegated Daemon contract");
         assert_closed_failure("probe.daemon_fixture.bootstrap_received_audit");
@@ -4972,7 +5015,7 @@ INSERT INTO agent_registration_pending (
             .expect("daemon state connection")
             .execute(
                 "UPDATE user_delegated_identity SET controller_did = ?1 WHERE verification_method = ?2",
-                rusqlite::params![LOCAL_DID, verification_method],
+                rusqlite::params![HUMAN_DID, verification_method],
             )
             .expect("restore delegated Controller contract");
         assert_closed_failure("probe.daemon_fixture.bootstrap_received_audit");
@@ -5019,9 +5062,47 @@ INSERT INTO agent_registration_pending (
         assert_closed_failure("probe.daemon_fixture.bootstrap_received_audit");
 
         state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE agent_definition SET status = 'inactive' WHERE agent_did = ?1",
+                [DAEMON_DID],
+            )
+            .expect("make Daemon definition inactive");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_validation_or_persist");
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE agent_definition SET status = 'active' WHERE agent_did = ?1",
+                [DAEMON_DID],
+            )
+            .expect("restore active Daemon definition");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_received_audit");
+
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE agent_definition SET agent_kind = 'runtime' WHERE agent_did = ?1",
+                [DAEMON_DID],
+            )
+            .expect("make definition kind non-Daemon");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_validation_or_persist");
+        state
+            .connection()
+            .expect("daemon state connection")
+            .execute(
+                "UPDATE agent_definition SET agent_kind = 'daemon' WHERE agent_did = ?1",
+                [DAEMON_DID],
+            )
+            .expect("restore Daemon definition kind");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_received_audit");
+
+        state
             .insert_audit_event_json(
                 "daemon.bootstrap.received",
-                Some(LOCAL_DID),
+                Some(DAEMON_DID),
                 None,
                 None,
                 None,
@@ -5063,7 +5144,7 @@ INSERT INTO agent_registration_pending (
         state
             .insert_audit_event_json(
                 "app_personal_agent.binding.ready",
-                Some(LOCAL_DID),
+                Some(DAEMON_DID),
                 None,
                 None,
                 None,
@@ -5082,12 +5163,31 @@ INSERT INTO agent_registration_pending (
         let state = awiki_deamon::DaemonState::open(&config).expect("daemon state");
         state.initialize().expect("daemon state schema");
         state
+            .upsert_agent_definition(&awiki_deamon::agent::AgentDefinition {
+                agent_did: DAEMON_DID.to_owned(),
+                handle: "fixture-daemon".to_owned(),
+                agent_kind: awiki_deamon::agent::AgentKind::Daemon,
+                controller_user_id: "fixture-human-user".to_owned(),
+                controller_full_handle: "fixture-human.example.test".to_owned(),
+                controller_scope_key: "fixture-human-scope".to_owned(),
+                controller_did: HUMAN_DID.to_owned(),
+                runtime_plugin_id: None,
+                runtime_profile_id: None,
+                workspace_id: None,
+                policy_id: "default".to_owned(),
+                local_agent_db_path: "agent.db".to_owned(),
+                message_db_path: "message.db".to_owned(),
+                status: "active".to_owned(),
+            })
+            .expect("store active Daemon definition");
+        state
             .connection()
             .expect("daemon state connection")
             .execute("DROP TABLE user_delegated_identity", [])
             .expect("remove delegated identity table");
         let mut probe = test_probe("http://127.0.0.1:9");
         probe.daemon_state_root = Some(root.path.clone());
+        probe.local_did = DAEMON_DID.to_owned();
 
         let failure = match probe.daemon_fixture_resources() {
             Err(failure) => failure,
