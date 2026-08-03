@@ -297,24 +297,64 @@ fn closed_daemon_continuity_result(evidence: DaemonContinuityEvidence) -> Value 
     })
 }
 
-fn closed_daemon_fixture_prepare_result(prepared: bool, daemon_agent_did: &str) -> Value {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DaemonFixturePrepareFailureStage {
+    Token,
+    Setup,
+    RuntimeMaterial,
+    SyncInitialize,
+    BootstrapSend,
+}
+
+impl DaemonFixturePrepareFailureStage {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Token => "token",
+            Self::Setup => "setup",
+            Self::RuntimeMaterial => "runtime_material",
+            Self::SyncInitialize => "sync_initialize",
+            Self::BootstrapSend => "bootstrap_send",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage);
+
+impl From<ProbeFailure> for DaemonFixturePrepareFailure {
+    fn from(_failure: ProbeFailure) -> Self {
+        Self(DaemonFixturePrepareFailureStage::RuntimeMaterial)
+    }
+}
+
+fn closed_daemon_fixture_prepare_result(
+    prepared: bool,
+    daemon_agent_did: &str,
+    failure_stage: Option<DaemonFixturePrepareFailureStage>,
+) -> Value {
     json!({
         "prepared": prepared,
         "daemon_agent_did": daemon_agent_did,
+        "failure_stage": failure_stage.map(DaemonFixturePrepareFailureStage::as_str),
     })
 }
 
 fn daemon_fixture_prepare_result_after_boundary(
     daemon_agent_did: &str,
-    preparation: Result<(), ProbeFailure>,
+    preparation: Result<(), DaemonFixturePrepareFailure>,
 ) -> Value {
-    closed_daemon_fixture_prepare_result(preparation.is_ok(), daemon_agent_did)
+    match preparation {
+        Ok(()) => closed_daemon_fixture_prepare_result(true, daemon_agent_did, None),
+        Err(failure) => {
+            closed_daemon_fixture_prepare_result(false, daemon_agent_did, Some(failure.0))
+        }
+    }
 }
 
 async fn daemon_fixture_sync_before_send<Sync, SyncFuture, Send, SendFuture>(
     sync: Sync,
     send: Send,
-) -> Result<(), ProbeFailure>
+) -> Result<(), DaemonFixturePrepareFailure>
 where
     Sync: FnOnce() -> SyncFuture,
     SyncFuture:
@@ -322,21 +362,33 @@ where
     Send: FnOnce() -> SendFuture,
     SendFuture: std::future::Future<Output = Result<(), ProbeFailure>>,
 {
-    let status = sync().await?;
+    let status = sync().await.map_err(|_| {
+        DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::SyncInitialize)
+    })?;
     if !matches!(
         status,
         im_core::messages::MessageSyncStatus::Idle | im_core::messages::MessageSyncStatus::Changed
     ) {
-        return Err(ProbeFailure::Runtime);
+        return Err(DaemonFixturePrepareFailure(
+            DaemonFixturePrepareFailureStage::SyncInitialize,
+        ));
     }
-    send().await
+    send()
+        .await
+        .map_err(|_| DaemonFixturePrepareFailure(DaemonFixturePrepareFailureStage::BootstrapSend))
 }
 
 fn daemon_token_issue_or_root_receipt(
     daemon_agent_did: &str,
     issued: Result<Zeroizing<String>, ProbeFailure>,
 ) -> Result<Zeroizing<String>, Value> {
-    issued.map_err(|_| closed_daemon_fixture_prepare_result(false, daemon_agent_did))
+    issued.map_err(|_| {
+        closed_daemon_fixture_prepare_result(
+            false,
+            daemon_agent_did,
+            Some(DaemonFixturePrepareFailureStage::Token),
+        )
+    })
 }
 
 fn daemon_registration_metadata(daemon_agent_did: &str) -> Value {
@@ -442,7 +494,11 @@ fn daemon_setup_failure_result(
     original_failure: ProbeFailure,
 ) -> Result<Value, ProbeFailure> {
     match recover_exact_persisted_daemon_agent_did(state_root, daemon_handle, controller_did)? {
-        Some(agent_did) => Ok(closed_daemon_fixture_prepare_result(false, &agent_did)),
+        Some(agent_did) => Ok(closed_daemon_fixture_prepare_result(
+            false,
+            &agent_did,
+            Some(DaemonFixturePrepareFailureStage::Setup),
+        )),
         None => Err(original_failure),
     }
 }
@@ -1576,6 +1632,7 @@ impl Probe {
                 return Ok(closed_daemon_fixture_prepare_result(
                     false,
                     &authority.agent_did,
+                    Some(DaemonFixturePrepareFailureStage::Token),
                 ));
             }
         };
@@ -1589,6 +1646,7 @@ impl Probe {
             return Ok(closed_daemon_fixture_prepare_result(
                 false,
                 &authority.agent_did,
+                Some(DaemonFixturePrepareFailureStage::Token),
             ));
         }
         let mut daemon_agent_did = None;
@@ -1657,6 +1715,7 @@ impl Probe {
             return Ok(closed_daemon_fixture_prepare_result(
                 false,
                 &authority.agent_did,
+                Some(DaemonFixturePrepareFailureStage::Setup),
             ));
         }
 
@@ -1702,7 +1761,7 @@ impl Probe {
                 || !subkey.verification_method.ends_with("#daemon-key-1")
                 || !subkey.is_v2_pem()
             {
-                return Err(ProbeFailure::InvalidState);
+                return Err(ProbeFailure::InvalidState.into());
             }
             let private_key = Zeroizing::new(std::mem::take(&mut subkey.private_key_pem));
             let legacy_private_key =
@@ -1713,7 +1772,7 @@ impl Probe {
                 private_key.as_str()
             };
             if private_key_material.trim().is_empty() {
-                return Err(ProbeFailure::InvalidState);
+                return Err(ProbeFailure::InvalidState.into());
             }
             let bootstrap_id = format!("boot_{}", random_hex(12)?);
             let idempotency_key = format!("personal-agent-bootstrap:{}", random_hex(12)?);
@@ -4525,20 +4584,29 @@ mod tests {
     #[test]
     fn daemon_prepare_post_boundary_failures_return_exact_secret_free_root_receipts() {
         let daemon_agent_did = "did:wba:example.test:agent:daemon";
-        for (stage, failure) in [
-            ("runtime-token", ProbeFailure::Transport),
-            ("subkey", ProbeFailure::InvalidState),
-            ("encrypt", ProbeFailure::Runtime),
-            ("preflight-sync", ProbeFailure::Runtime),
-            ("send", ProbeFailure::Transport),
+        for (stage, failure_stage) in [
+            (
+                "runtime-token",
+                DaemonFixturePrepareFailureStage::RuntimeMaterial,
+            ),
+            ("subkey", DaemonFixturePrepareFailureStage::RuntimeMaterial),
+            ("encrypt", DaemonFixturePrepareFailureStage::RuntimeMaterial),
+            (
+                "preflight-sync",
+                DaemonFixturePrepareFailureStage::SyncInitialize,
+            ),
+            ("send", DaemonFixturePrepareFailureStage::BootstrapSend),
         ] {
-            let result =
-                daemon_fixture_prepare_result_after_boundary(daemon_agent_did, Err(failure));
+            let result = daemon_fixture_prepare_result_after_boundary(
+                daemon_agent_did,
+                Err(DaemonFixturePrepareFailure(failure_stage)),
+            );
             assert_eq!(
                 result,
                 json!({
                     "prepared": false,
                     "daemon_agent_did": daemon_agent_did,
+                    "failure_stage": failure_stage.as_str(),
                 }),
                 "closed partial receipt for injected {stage} failure",
             );
@@ -4562,15 +4630,34 @@ mod tests {
             json!({
                 "prepared": true,
                 "daemon_agent_did": daemon_agent_did,
+                "failure_stage": null,
             }),
         );
+    }
+
+    #[test]
+    fn daemon_prepare_early_failure_stages_are_exact_and_allowlisted() {
+        let daemon_agent_did = "did:wba:example.test:agent:daemon";
+        for stage in [
+            DaemonFixturePrepareFailureStage::Token,
+            DaemonFixturePrepareFailureStage::Setup,
+        ] {
+            assert_eq!(
+                closed_daemon_fixture_prepare_result(false, daemon_agent_did, Some(stage)),
+                json!({
+                    "prepared": false,
+                    "daemon_agent_did": daemon_agent_did,
+                    "failure_stage": stage.as_str(),
+                }),
+            );
+        }
     }
 
     #[tokio::test]
     async fn daemon_fixture_preflight_sync_is_required_before_bootstrap_send() {
         async fn exercise(
             sync_result: Result<im_core::messages::MessageSyncStatus, ProbeFailure>,
-        ) -> (Result<(), ProbeFailure>, Vec<&'static str>) {
+        ) -> (Result<(), DaemonFixturePrepareFailure>, Vec<&'static str>) {
             let observed = Arc::new(Mutex::new(Vec::new()));
             let sync_observed = Arc::clone(&observed);
             let send_observed = Arc::clone(&observed);
@@ -4608,12 +4695,22 @@ mod tests {
             im_core::messages::MessageSyncStatus::AuthRevoked,
         ] {
             let (result, events) = exercise(Ok(status)).await;
-            assert!(matches!(result, Err(ProbeFailure::Runtime)));
+            assert!(matches!(
+                result,
+                Err(DaemonFixturePrepareFailure(
+                    DaemonFixturePrepareFailureStage::SyncInitialize
+                ))
+            ));
             assert_eq!(events, ["sync"]);
         }
 
         let (result, events) = exercise(Err(ProbeFailure::Runtime)).await;
-        assert!(matches!(result, Err(ProbeFailure::Runtime)));
+        assert!(matches!(
+            result,
+            Err(DaemonFixturePrepareFailure(
+                DaemonFixturePrepareFailureStage::SyncInitialize
+            ))
+        ));
         assert_eq!(events, ["sync"]);
     }
 
@@ -4838,6 +4935,7 @@ mod tests {
             json!({
                 "prepared": false,
                 "daemon_agent_did": authority.agent_did,
+                "failure_stage": "token",
             }),
         );
         let encoded = receipt.to_string();
@@ -4926,6 +5024,7 @@ INSERT INTO agent_registration_pending (
             json!({
                 "prepared": false,
                 "daemon_agent_did": pending_did,
+                "failure_stage": "setup",
             }),
         );
         state
@@ -4965,6 +5064,7 @@ INSERT INTO agent_registration_pending (
             json!({
                 "prepared": false,
                 "daemon_agent_did": active_did,
+                "failure_stage": "setup",
             }),
         );
         assert!(matches!(
