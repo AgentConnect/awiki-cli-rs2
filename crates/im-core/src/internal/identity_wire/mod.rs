@@ -4,6 +4,7 @@ pub(crate) mod device_join;
 pub(crate) mod device_revoke;
 pub(crate) mod directory;
 pub(crate) mod document;
+pub(crate) mod handle_recovery;
 pub(crate) mod profile;
 pub(crate) mod registration;
 pub(crate) mod relationships;
@@ -25,6 +26,8 @@ pub(crate) const EMAIL_STATUS_ENDPOINT: &str = "/user-service/auth/email-status"
 pub(crate) const SMS_CODES_ENDPOINT: &str = "/user-service/auth/sms-codes";
 pub(crate) const ACCOUNT_VERIFICATION_EXCHANGE_ENDPOINT: &str =
     "/user-service/auth/account-verification/exchange";
+pub(crate) const HANDLE_RECOVERY_EXCHANGE_ENDPOINT: &str =
+    "/user-service/auth/handle-recovery/exchange";
 pub(crate) const PHONE_BIND_SEND_ENDPOINT: &str = "/user-service/auth/phone-bind-send";
 pub(crate) const PHONE_BIND_VERIFY_ENDPOINT: &str = "/user-service/auth/phone-bind-verify";
 

@@ -830,6 +830,46 @@ impl<'a> GroupService<'a> {
                 summary.blocked += 1;
                 continue;
             }
+            match self.authoritative_recovery_rebind_state(&job).await {
+                Ok(RecoveryRebindAuthority::Eligible) => {}
+                Ok(RecoveryRebindAuthority::Converged) => {
+                    crate::internal::group_rebind_recovery::project_applied_p4_rebind(
+                        sqlite_path,
+                        &job,
+                    )?;
+                    crate::internal::group_rebind_recovery::update_p4_job(
+                        sqlite_path,
+                        &job.job_id,
+                        "complete",
+                        None,
+                        None,
+                    )?;
+                    summary.completed += 1;
+                    continue;
+                }
+                Ok(RecoveryRebindAuthority::Ineligible) => {
+                    crate::internal::group_rebind_recovery::update_p4_job(
+                        sqlite_path,
+                        &job.job_id,
+                        "blocked",
+                        None,
+                        Some("authoritative group policy or roster is not an exact transport-protected Handle rebind"),
+                    )?;
+                    summary.blocked += 1;
+                    continue;
+                }
+                Err(error) => {
+                    crate::internal::group_rebind_recovery::update_p4_job(
+                        sqlite_path,
+                        &job.job_id,
+                        "pending",
+                        None,
+                        Some(&error.to_string()),
+                    )?;
+                    summary.pending += 1;
+                    continue;
+                }
+            }
             let request = super::GroupRebindMemberRequest {
                 group: crate::ids::GroupRef::parse(&job.group_did)?,
                 member_handle: crate::ids::Handle::parse(&job.member_handle, "")?,
@@ -885,11 +925,20 @@ impl<'a> GroupService<'a> {
                             .await;
                     }
                     let state_ref = p4_rebind_state_ref(&job.group_did, &result)?;
-                    let e2ee = crate::internal::group_rebind_recovery::group_uses_e2ee(
-                        sqlite_path,
-                        owner_identity_id,
-                        &job.group_did,
-                    )?;
+                    // Handle Recovery v1 deliberately migrates only groups
+                    // whose exact required profile is transport-protected.
+                    // Its contract-stable operation id is therefore also a
+                    // closed execution boundary: these jobs complete at P4
+                    // and must never be promoted into the legacy P6 rebind
+                    // pipeline, even if cached group metadata changes later.
+                    let e2ee = p4_rebind_requires_p6(
+                        &job.job_id,
+                        crate::internal::group_rebind_recovery::group_uses_e2ee(
+                            sqlite_path,
+                            owner_identity_id,
+                            &job.group_did,
+                        )?,
+                    );
                     crate::internal::group_rebind_recovery::update_p4_job(
                         sqlite_path,
                         &job.job_id,
@@ -905,7 +954,31 @@ impl<'a> GroupService<'a> {
                 }
                 Err(error) => {
                     let detail = error.to_string();
-                    let blocked = rebind_error_is_terminal(&error);
+                    let convergence = if rebind_error_requires_authoritative_reread(&error) {
+                        self.authoritative_recovery_rebind_state(&job).await.ok()
+                    } else {
+                        None
+                    };
+                    if convergence == Some(RecoveryRebindAuthority::Converged) {
+                        crate::internal::group_rebind_recovery::project_applied_p4_rebind(
+                            sqlite_path,
+                            &job,
+                        )?;
+                        crate::internal::group_rebind_recovery::update_p4_job(
+                            sqlite_path,
+                            &job.job_id,
+                            "complete",
+                            None,
+                            None,
+                        )?;
+                        summary.completed += 1;
+                        continue;
+                    }
+                    let blocked = if rebind_error_requires_authoritative_reread(&error) {
+                        convergence.is_some()
+                    } else {
+                        rebind_error_is_terminal(&error)
+                    };
                     crate::internal::group_rebind_recovery::update_p4_job(
                         sqlite_path,
                         &job.job_id,
@@ -1069,6 +1142,52 @@ impl<'a> GroupService<'a> {
         summary.items =
             crate::internal::group_rebind_recovery::recovery_items(sqlite_path, owner_identity_id)?;
         Ok(summary)
+    }
+
+    async fn authoritative_recovery_rebind_state(
+        &self,
+        job: &crate::internal::group_rebind_recovery::P4RebindJob,
+    ) -> crate::ImResult<RecoveryRebindAuthority> {
+        let group = crate::ids::GroupRef::parse(&job.group_did)?;
+        let authoritative = self.get_authoritative_group_async(group.clone()).await?;
+        if authoritative_group_e2ee_classification(&job.group_did, &authoritative)? {
+            return Ok(RecoveryRebindAuthority::Ineligible);
+        }
+        let expected_version = authoritative
+            .raw_response()
+            .and_then(|raw| raw.get("group_state_version"))
+            .and_then(|value| match value {
+                serde_json::Value::String(value) => Some(value.clone()),
+                serde_json::Value::Number(value) => Some(value.to_string()),
+                _ => None,
+            })
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(crate::ImError::InventoryIncomplete)?;
+        let mut cursor = None;
+        let mut members = Vec::new();
+        for _ in 0..10 {
+            let page = self
+                .members_async(super::GroupMembersRequest {
+                    group: group.clone(),
+                    limit: crate::ids::PageLimit::new(100)?,
+                    cursor,
+                })
+                .await?;
+            if page.page_group.as_ref() != Some(&group)
+                || page.group_state_version.as_deref() != Some(expected_version.as_str())
+            {
+                return Err(crate::ImError::CursorStale);
+            }
+            members.extend(page.members);
+            if !page.has_more {
+                return classify_recovery_rebind_authority(job, &members);
+            }
+            cursor = Some(
+                page.next_cursor
+                    .ok_or(crate::ImError::InventoryIncomplete)?,
+            );
+        }
+        Err(crate::ImError::InventoryIncomplete)
     }
 
     pub fn remove_member(
@@ -1916,7 +2035,6 @@ impl<'a> GroupService<'a> {
         Ok(result)
     }
 
-    #[cfg(feature = "group-e2ee")]
     async fn get_authoritative_group_async(
         &self,
         group: crate::ids::GroupRef,
@@ -2582,6 +2700,66 @@ fn rebind_error_is_terminal(error: &crate::ImError) -> bool {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryRebindAuthority {
+    Eligible,
+    Converged,
+    Ineligible,
+}
+
+fn classify_recovery_rebind_authority(
+    job: &crate::internal::group_rebind_recovery::P4RebindJob,
+    members: &[super::GroupMember],
+) -> crate::ImResult<RecoveryRebindAuthority> {
+    let previous_generation = job
+        .binding_generation
+        .parse::<u128>()
+        .ok()
+        .and_then(|value| value.checked_sub(1))
+        .filter(|value| *value > 0)
+        .map(|value| value.to_string())
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let active = members
+        .iter()
+        .filter(|member| member.status.as_deref() == Some("active"))
+        .filter(|member| {
+            member.handle.as_ref().map(crate::ids::Handle::as_str)
+                == Some(job.member_handle.as_str())
+        })
+        .collect::<Vec<_>>();
+    if active.len() != 1 || active[0].subject_type.as_deref() != Some("user") {
+        return Ok(RecoveryRebindAuthority::Ineligible);
+    }
+    let member = active[0];
+    let did = member.did.as_ref().map(crate::ids::Did::as_str);
+    let generation = member.handle_binding_generation.as_deref();
+    if did == Some(job.new_member_did.as_str())
+        && generation == Some(job.binding_generation.as_str())
+    {
+        return Ok(RecoveryRebindAuthority::Converged);
+    }
+    if did == Some(job.previous_member_did.as_str())
+        && generation == Some(previous_generation.as_str())
+    {
+        return Ok(RecoveryRebindAuthority::Eligible);
+    }
+    Ok(RecoveryRebindAuthority::Ineligible)
+}
+
+fn rebind_error_requires_authoritative_reread(error: &crate::ImError) -> bool {
+    matches!(
+        error,
+        crate::ImError::Service { code: Some(code), .. }
+            if matches!(
+                code.trim().to_ascii_lowercase().as_str(),
+                "handle_binding_stale"
+                    | "group_handle_binding_stale"
+                    | "rebind_not_allowed"
+                    | "group_rebind_not_allowed"
+            )
+    )
+}
+
 #[cfg(feature = "group-e2ee")]
 fn p6_phase_after_add(
     outcome: crate::internal::group_e2ee::lifecycle::GroupE2eeFinalizeOutcome,
@@ -2594,6 +2772,11 @@ fn p6_phase_after_add(
             "awaiting_remove"
         }
     }
+}
+
+fn p4_rebind_requires_p6(job_id: &str, group_uses_e2ee: bool) -> bool {
+    group_uses_e2ee
+        && !crate::internal::group_rebind_recovery::is_handle_recovery_operation_id(job_id)
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -2872,7 +3055,6 @@ fn v2_member_mutation_route(
     }
 }
 
-#[cfg(feature = "group-e2ee")]
 pub(crate) fn authoritative_group_e2ee_classification(
     group_did: &str,
     authoritative: &super::GroupReadResult,
@@ -2987,7 +3169,6 @@ pub(crate) fn authoritative_group_e2ee_classification(
     classify_group_security_profiles(&projected_profiles)
 }
 
-#[cfg(feature = "group-e2ee")]
 fn classify_group_security_profiles(profiles: &[String]) -> crate::ImResult<bool> {
     let mut classification = None;
     for profile in profiles {

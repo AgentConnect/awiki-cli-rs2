@@ -258,15 +258,43 @@ raw P3 payload。Flutter Web 保留同形 API，但该 native 流程仍返回 un
 
 ## Multi-device Handle Recovery
 
-V1 does not expose a Manifest Handle Recovery lifecycle, rollout flag,
-old-admin notice API, or native/Web stub. A narrow production-compatibility
-exception exists only for a phone-owned Legacy Handle: `registerHandle` may
-receive a normal registered result for a newly generated canonical vNext DID
-when User Service atomically preserves the existing `user_id` and Handle. This
-one-shot Legacy recovery is not Device Join, does not replace an existing
-Manifest identity, and does not imply the future multi-device Recovery
-capability. The single-original-device Legacy-to-Manifest upgrade remains the
-preferred same-DID path whenever the original root key is available.
+Native hosts opt in with `ImCoreOpenOptions.multiDeviceHandleRecoveryEnabled`; the default is
+`false`. The generated Dart facade exposes `requestHandleRecoveryOtp`,
+`prepareHandleRecovery`, `activateHandleRecovery`, `resumeHandleRecovery`,
+`handleRecoveryStatus`, `activateAuthorizedJoin`, and
+`resumeAuthorizedJoinActivation`. Progress is a closed
+`prepared → remoteCommitPending → remoteCommitted → identityTransitionPending →
+identitySwitched → completed|blocked` projection. Phone, OTP, Recovery Grant, proof,
+private keys, JWT, Vault refs, ciphertext, and filesystem paths are never returned.
+`HandleRecoveryProgress` also carries the secret-free impact counts used by confirmation UI and
+an optional Core-authorized Registry epoch reset tuple. Authorized Join returns
+`AuthorizedJoinActivationProgress`, which pairs ordinary `DeviceJoinProgress` with that same reset
+projection; App code must never infer the account/owner/old DID/generation/source tuple from Join.
+The public methods are wrappers on `AwikiImCore` itself; callers do not import generated APIs or
+access its private native handle. Flutter Web exposes the same signatures and fails closed as
+unsupported.
+
+The host creates one non-secret operation ID before requesting the OTP and must pass that exact ID
+again to `prepareHandleRecovery`. Read-only `handleRecoveryStatus` requires the opaque recovery ID
+returned by prepare; Core does not guess a pending Recovery from an identity scope and does not
+return `null` for an unknown ID.
+
+The host supplies an explicit identity selector and foreground user-presence confirmation;
+native Core owns the keys, proof, exact retry, stable-owner local epoch reset, fresh JWT,
+new P5 PreKey publication, and transport-only group rebind. Recovery never migrates old
+Ratchet/MLS material and never creates P6 or `awaitingP6` state. Only exact Handle-backed
+`transport-protected` groups are eligible; every missing, DID-only, E2EE, malformed, or
+conflicting profile fails closed.
+
+`legacyRegistryEpochAdoptionAuthority(selector)` is the narrow bridge for an App upgrading an
+already active legacy local device-registry epoch. It returns only the exact owner/account/DID/
+generation/device tuple and an opaque provenance ID. It returns `null` if any Handle Recovery
+transition marker exists, including completed markers. Dart must not synthesize this authority.
+
+V1 adds no Flutter route or widget, CLI command, Daemon task, Agent recovery flow, or
+process-global current identity. A later host surface must call these same typed APIs rather
+than own recovery state. The older one-shot phone-owned Legacy `recoverHandle` path remains a
+separate compatibility flow and is not Manifest Handle Recovery.
 
 ## Management-device root-key transfer
 

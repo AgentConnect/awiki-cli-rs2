@@ -117,6 +117,63 @@ impl<'a> IdentityRegistry<'a> {
         self.resolve_from_snapshot(&registry, selector)
     }
 
+    /// Returns a narrowly scoped, secret-free authority for adopting an
+    /// ordinary pre-Recovery Registry epoch. Any Recovery marker or tuple
+    /// ambiguity returns `None` rather than widening adoption.
+    pub fn legacy_registry_epoch_adoption_authority(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<Option<super::LegacyRegistryEpochAdoptionAuthority>> {
+        let registry = self.load_registry()?;
+        let entry = registry.find_entry(selector)?;
+        let Some(binding_generation) = entry.binding_generation.as_deref() else {
+            return Ok(None);
+        };
+        let Some(state) = entry.device_state.as_ref() else {
+            return Ok(None);
+        };
+        let (Some(authorization), Some(checkpoint)) =
+            (state.authorization.as_ref(), state.checkpoint.as_ref())
+        else {
+            return Ok(None);
+        };
+        if state.mode != crate::internal::identity_device_state::IdentityDeviceMode::VNext
+            || authorization.status
+                != crate::internal::identity_device_state::DeviceAuthorizationStatus::Active
+            || entry.user_id.trim().is_empty()
+        {
+            return Ok(None);
+        }
+        crate::internal::identity_transition_pending::legacy_registry_epoch_adoption_authority(
+            &self.core.inner().sdk_paths().local_state.sqlite_path,
+            crate::internal::identity_transition_pending::LegacyAuthorityInput {
+                owner_identity_id: entry.summary.id.as_str(),
+                account_user_id: &entry.user_id,
+                current_did: entry.summary.did.as_str(),
+                binding_generation,
+                protocol_device_id: authorization.protocol_device_id.as_str(),
+                device_auth_generation: authorization.auth_generation,
+                document_version: checkpoint.document_version,
+                document_hash: &checkpoint.document_hash,
+                registry_version: checkpoint.registry_version,
+            },
+        )
+    }
+
+    pub async fn legacy_registry_epoch_adoption_authority_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<Option<super::LegacyRegistryEpochAdoptionAuthority>> {
+        let core = self.core.clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            IdentityRegistry::new(&core).legacy_registry_epoch_adoption_authority(selector)
+        })
+        .await
+        .map_err(|error| crate::ImError::Internal {
+            message: error.to_string(),
+        })?
+    }
+
     pub fn device_summary(
         &self,
         selector: super::IdentitySelector,
@@ -3106,6 +3163,7 @@ mod tests {
                 multi_device_device_revoke_enabled: false,
                 multi_device_direct_e2ee_enabled: false,
                 multi_device_group_e2ee_enabled: false,
+                multi_device_handle_recovery_enabled: false,
             },
         )
         .unwrap();
@@ -3248,6 +3306,7 @@ mod tests {
                 multi_device_device_revoke_enabled: false,
                 multi_device_direct_e2ee_enabled: false,
                 multi_device_group_e2ee_enabled: false,
+                multi_device_handle_recovery_enabled: false,
             },
         ) {
             Ok(_) => panic!("VaultRequired without vault options should fail"),

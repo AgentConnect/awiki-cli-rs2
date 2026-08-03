@@ -48,6 +48,27 @@ class DartActiveSyncAccountBinding {
           deviceAuthGeneration == other.deviceAuthGeneration;
 }
 
+class DartAuthorizedJoinActivationProgress {
+  final DartDeviceJoinProgress join;
+  final DartHandleRecoveryResetReference? resetReference;
+
+  const DartAuthorizedJoinActivationProgress({
+    required this.join,
+    this.resetReference,
+  });
+
+  @override
+  int get hashCode => join.hashCode ^ resetReference.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartAuthorizedJoinActivationProgress &&
+          runtimeType == other.runtimeType &&
+          join == other.join &&
+          resetReference == other.resetReference;
+}
+
 class DartDaemonSubkeyAuthorizationRevokeResult {
   final String userDid;
   final String verificationMethod;
@@ -514,6 +535,191 @@ class DartDeviceRevokeResult {
 
 enum DartDeviceRevokeStatus { revoked }
 
+enum DartHandleRecoveryErrorCode {
+  handleRecoveryNotPrepared,
+  handleRecoveryUserPresenceRequired,
+  handleRecoveryTransitionMismatch,
+  handleRecoveryTransitionChainUnsupported,
+  handleRecoveryRemoteStateChanged,
+  handleRecoveryOutcomeUnknown,
+  handleRecoveryLocalStateUnavailable,
+  handleRecoveryBlocked,
+}
+
+class DartHandleRecoveryImpact {
+  final bool localOrdinaryDataWillMigrate;
+  final bool otherDevicesMustRejoin;
+  final int unsupportedE2EeGroupCount;
+  final int unsupportedDidOnlyGroupCount;
+
+  const DartHandleRecoveryImpact({
+    required this.localOrdinaryDataWillMigrate,
+    required this.otherDevicesMustRejoin,
+    required this.unsupportedE2EeGroupCount,
+    required this.unsupportedDidOnlyGroupCount,
+  });
+
+  @override
+  int get hashCode =>
+      localOrdinaryDataWillMigrate.hashCode ^
+      otherDevicesMustRejoin.hashCode ^
+      unsupportedE2EeGroupCount.hashCode ^
+      unsupportedDidOnlyGroupCount.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartHandleRecoveryImpact &&
+          runtimeType == other.runtimeType &&
+          localOrdinaryDataWillMigrate == other.localOrdinaryDataWillMigrate &&
+          otherDevicesMustRejoin == other.otherDevicesMustRejoin &&
+          unsupportedE2EeGroupCount == other.unsupportedE2EeGroupCount &&
+          unsupportedDidOnlyGroupCount == other.unsupportedDidOnlyGroupCount;
+}
+
+class DartHandleRecoveryOtpResult {
+  final String handle;
+  final String operationId;
+  final bool accepted;
+
+  const DartHandleRecoveryOtpResult({
+    required this.handle,
+    required this.operationId,
+    required this.accepted,
+  });
+
+  @override
+  int get hashCode =>
+      handle.hashCode ^ operationId.hashCode ^ accepted.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartHandleRecoveryOtpResult &&
+          runtimeType == other.runtimeType &&
+          handle == other.handle &&
+          operationId == other.operationId &&
+          accepted == other.accepted;
+}
+
+enum DartHandleRecoveryPhase {
+  prepared,
+  remoteCommitPending,
+  remoteCommitted,
+  identityTransitionPending,
+  identitySwitched,
+  completed,
+  blocked,
+}
+
+class DartHandleRecoveryProgress {
+  final String recoveryId;
+  final String operationId;
+  final String ownerIdentityId;
+  final String handle;
+  final String previousDid;
+  final String currentDid;
+  final String? bindingGeneration;
+  final DartHandleRecoveryPhase phase;
+  final DartHandleRecoveryImpact impact;
+  final DartHandleRecoveryResetReference? resetReference;
+  final DartHandleRecoveryErrorCode? blockedCode;
+
+  const DartHandleRecoveryProgress({
+    required this.recoveryId,
+    required this.operationId,
+    required this.ownerIdentityId,
+    required this.handle,
+    required this.previousDid,
+    required this.currentDid,
+    this.bindingGeneration,
+    required this.phase,
+    required this.impact,
+    this.resetReference,
+    this.blockedCode,
+  });
+
+  @override
+  int get hashCode =>
+      recoveryId.hashCode ^
+      operationId.hashCode ^
+      ownerIdentityId.hashCode ^
+      handle.hashCode ^
+      previousDid.hashCode ^
+      currentDid.hashCode ^
+      bindingGeneration.hashCode ^
+      phase.hashCode ^
+      impact.hashCode ^
+      resetReference.hashCode ^
+      blockedCode.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartHandleRecoveryProgress &&
+          runtimeType == other.runtimeType &&
+          recoveryId == other.recoveryId &&
+          operationId == other.operationId &&
+          ownerIdentityId == other.ownerIdentityId &&
+          handle == other.handle &&
+          previousDid == other.previousDid &&
+          currentDid == other.currentDid &&
+          bindingGeneration == other.bindingGeneration &&
+          phase == other.phase &&
+          impact == other.impact &&
+          resetReference == other.resetReference &&
+          blockedCode == other.blockedCode;
+}
+
+class DartHandleRecoveryResetReference {
+  final String accountUserId;
+  final String ownerIdentityId;
+  final String previousDid;
+  final String currentDid;
+  final String bindingGeneration;
+  final String handle;
+  final DartHandleRecoveryTransitionSourceKind sourceKind;
+  final String sourceId;
+
+  const DartHandleRecoveryResetReference({
+    required this.accountUserId,
+    required this.ownerIdentityId,
+    required this.previousDid,
+    required this.currentDid,
+    required this.bindingGeneration,
+    required this.handle,
+    required this.sourceKind,
+    required this.sourceId,
+  });
+
+  @override
+  int get hashCode =>
+      accountUserId.hashCode ^
+      ownerIdentityId.hashCode ^
+      previousDid.hashCode ^
+      currentDid.hashCode ^
+      bindingGeneration.hashCode ^
+      handle.hashCode ^
+      sourceKind.hashCode ^
+      sourceId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartHandleRecoveryResetReference &&
+          runtimeType == other.runtimeType &&
+          accountUserId == other.accountUserId &&
+          ownerIdentityId == other.ownerIdentityId &&
+          previousDid == other.previousDid &&
+          currentDid == other.currentDid &&
+          bindingGeneration == other.bindingGeneration &&
+          handle == other.handle &&
+          sourceKind == other.sourceKind &&
+          sourceId == other.sourceId;
+}
+
+enum DartHandleRecoveryTransitionSourceKind { initiator, joinedDevice }
+
 class DartHandleRegistrationJoinRequired {
   final String did;
   final String accountVerificationToken;
@@ -858,6 +1064,49 @@ class DartInitialProfile {
           runtimeType == other.runtimeType &&
           displayName == other.displayName &&
           avatarUrl == other.avatarUrl;
+}
+
+class DartLegacyRegistryEpochAdoptionAuthority {
+  final String ownerIdentityId;
+  final String accountUserId;
+  final String currentDid;
+  final String bindingGeneration;
+  final String protocolDeviceId;
+  final String deviceAuthGeneration;
+  final String provenanceId;
+
+  const DartLegacyRegistryEpochAdoptionAuthority({
+    required this.ownerIdentityId,
+    required this.accountUserId,
+    required this.currentDid,
+    required this.bindingGeneration,
+    required this.protocolDeviceId,
+    required this.deviceAuthGeneration,
+    required this.provenanceId,
+  });
+
+  @override
+  int get hashCode =>
+      ownerIdentityId.hashCode ^
+      accountUserId.hashCode ^
+      currentDid.hashCode ^
+      bindingGeneration.hashCode ^
+      protocolDeviceId.hashCode ^
+      deviceAuthGeneration.hashCode ^
+      provenanceId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartLegacyRegistryEpochAdoptionAuthority &&
+          runtimeType == other.runtimeType &&
+          ownerIdentityId == other.ownerIdentityId &&
+          accountUserId == other.accountUserId &&
+          currentDid == other.currentDid &&
+          bindingGeneration == other.bindingGeneration &&
+          protocolDeviceId == other.protocolDeviceId &&
+          deviceAuthGeneration == other.deviceAuthGeneration &&
+          provenanceId == other.provenanceId;
 }
 
 @freezed

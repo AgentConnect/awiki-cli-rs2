@@ -16,18 +16,22 @@ use crate::dto::{
         DartGroupRebindRecoverySummary, DartGroupSnapshot, DartGroupSummary,
     },
     identity::{
-        DartActiveSyncAccountBinding, DartDaemonSubkeyAuthorizationRevokeResult,
-        DartDaemonSubkeyPrivatePackage, DartDefaultIdentityChange, DartDeleteLocalIdentityResult,
-        DartDeviceJoinApprovalPrompt, DartDeviceJoinAuthorizationStatus,
-        DartDeviceJoinAuthorizedDeviceSummary, DartDeviceJoinPhase, DartDeviceJoinProgress,
-        DartDeviceJoinRegistrySnapshot, DartDeviceJoinRemoteState, DartDeviceJoinRequestNotice,
-        DartDeviceJoinRole, DartDeviceJoinSessionSummary, DartDeviceJoinSide,
+        DartActiveSyncAccountBinding, DartAuthorizedJoinActivationProgress,
+        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
+        DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt,
+        DartDeviceJoinAuthorizationStatus, DartDeviceJoinAuthorizedDeviceSummary,
+        DartDeviceJoinPhase, DartDeviceJoinProgress, DartDeviceJoinRegistrySnapshot,
+        DartDeviceJoinRemoteState, DartDeviceJoinRequestNotice, DartDeviceJoinRole,
+        DartDeviceJoinSessionSummary, DartDeviceJoinSide,
         DartDeviceRegistryAuthorizedDeviceSummary, DartDeviceRevokeResult, DartDeviceRevokeStatus,
-        DartHandleRegistrationJoinRequired, DartHandleRegistrationResult, DartIdentityDeviceMode,
-        DartIdentityDeviceReadiness, DartIdentityDeviceRole, DartIdentityDeviceSummary,
-        DartIdentitySecretStorageBackend, DartIdentitySummary, DartIdentityVaultMigrationReport,
-        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartLegacyUpgradeStatus,
-        DartRootKeyTransferError, DartRootKeyTransferPreparation,
+        DartHandleRecoveryErrorCode, DartHandleRecoveryImpact, DartHandleRecoveryOtpResult,
+        DartHandleRecoveryPhase, DartHandleRecoveryProgress, DartHandleRecoveryResetReference,
+        DartHandleRecoveryTransitionSourceKind, DartHandleRegistrationJoinRequired,
+        DartHandleRegistrationResult, DartIdentityDeviceMode, DartIdentityDeviceReadiness,
+        DartIdentityDeviceRole, DartIdentityDeviceSummary, DartIdentitySecretStorageBackend,
+        DartIdentitySummary, DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
+        DartIdentityVaultVerificationReport, DartLegacyRegistryEpochAdoptionAuthority,
+        DartLegacyUpgradeStatus, DartRootKeyTransferError, DartRootKeyTransferPreparation,
         DartRootKeyTransferRecipientSummary, DartRootKeyTransferSendResult,
     },
     message::{
@@ -54,6 +58,129 @@ use crate::dto::{
         DartSecureOutboxStatus, DartSecureProblem, DartSecureProblemCode,
     },
 };
+
+impl From<im_core::identity::LegacyRegistryEpochAdoptionAuthority>
+    for DartLegacyRegistryEpochAdoptionAuthority
+{
+    fn from(value: im_core::identity::LegacyRegistryEpochAdoptionAuthority) -> Self {
+        Self {
+            owner_identity_id: value.owner_identity_id.as_str().to_owned(),
+            account_user_id: value.account_user_id,
+            current_did: value.current_did.as_str().to_owned(),
+            binding_generation: value.binding_generation,
+            protocol_device_id: value.protocol_device_id.as_str().to_owned(),
+            device_auth_generation: value.device_auth_generation,
+            provenance_id: value.provenance_id,
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryOtpResult> for DartHandleRecoveryOtpResult {
+    fn from(value: im_core::identity::HandleRecoveryOtpResult) -> Self {
+        Self {
+            handle: value.handle,
+            operation_id: value.operation_id,
+            accepted: value.accepted,
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryProgress> for DartHandleRecoveryProgress {
+    fn from(value: im_core::identity::HandleRecoveryProgress) -> Self {
+        Self {
+            recovery_id: value.recovery_id,
+            operation_id: value.operation_id,
+            owner_identity_id: value.owner_identity_id.as_str().to_owned(),
+            handle: value.handle,
+            previous_did: value.previous_did.as_str().to_owned(),
+            current_did: value.current_did.as_str().to_owned(),
+            binding_generation: value.binding_generation,
+            phase: match value.phase {
+                im_core::identity::HandleRecoveryPhase::Prepared => {
+                    DartHandleRecoveryPhase::Prepared
+                }
+                im_core::identity::HandleRecoveryPhase::RemoteCommitPending => {
+                    DartHandleRecoveryPhase::RemoteCommitPending
+                }
+                im_core::identity::HandleRecoveryPhase::RemoteCommitted => {
+                    DartHandleRecoveryPhase::RemoteCommitted
+                }
+                im_core::identity::HandleRecoveryPhase::IdentityTransitionPending => {
+                    DartHandleRecoveryPhase::IdentityTransitionPending
+                }
+                im_core::identity::HandleRecoveryPhase::IdentitySwitched => {
+                    DartHandleRecoveryPhase::IdentitySwitched
+                }
+                im_core::identity::HandleRecoveryPhase::Completed => {
+                    DartHandleRecoveryPhase::Completed
+                }
+                im_core::identity::HandleRecoveryPhase::Blocked => DartHandleRecoveryPhase::Blocked,
+            },
+            impact: value.impact.into(),
+            reset_reference: value.reset_reference.map(Into::into),
+            blocked_code: value.blocked_code.map(Into::into),
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryImpact> for DartHandleRecoveryImpact {
+    fn from(value: im_core::identity::HandleRecoveryImpact) -> Self {
+        Self {
+            local_ordinary_data_will_migrate: value.local_ordinary_data_will_migrate,
+            other_devices_must_rejoin: value.other_devices_must_rejoin,
+            unsupported_e2ee_group_count: value.unsupported_e2ee_group_count,
+            unsupported_did_only_group_count: value.unsupported_did_only_group_count,
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryResetReference> for DartHandleRecoveryResetReference {
+    fn from(value: im_core::identity::HandleRecoveryResetReference) -> Self {
+        Self {
+            account_user_id: value.account_user_id,
+            owner_identity_id: value.owner_identity_id,
+            previous_did: value.previous_did.as_str().to_owned(),
+            current_did: value.current_did.as_str().to_owned(),
+            binding_generation: value.binding_generation,
+            handle: value.handle,
+            source_kind: match value.source_kind {
+                im_core::identity::HandleRecoveryTransitionSourceKind::Initiator => {
+                    DartHandleRecoveryTransitionSourceKind::Initiator
+                }
+                im_core::identity::HandleRecoveryTransitionSourceKind::JoinedDevice => {
+                    DartHandleRecoveryTransitionSourceKind::JoinedDevice
+                }
+            },
+            source_id: value.source_id,
+        }
+    }
+}
+
+impl From<im_core::identity::AuthorizedJoinActivationProgress>
+    for DartAuthorizedJoinActivationProgress
+{
+    fn from(value: im_core::identity::AuthorizedJoinActivationProgress) -> Self {
+        Self {
+            join: value.join.into(),
+            reset_reference: value.reset_reference.map(Into::into),
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRecoveryErrorCode> for DartHandleRecoveryErrorCode {
+    fn from(value: im_core::identity::HandleRecoveryErrorCode) -> Self {
+        match value {
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryNotPrepared => Self::HandleRecoveryNotPrepared,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryUserPresenceRequired => Self::HandleRecoveryUserPresenceRequired,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryTransitionMismatch => Self::HandleRecoveryTransitionMismatch,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryTransitionChainUnsupported => Self::HandleRecoveryTransitionChainUnsupported,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryRemoteStateChanged => Self::HandleRecoveryRemoteStateChanged,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryOutcomeUnknown => Self::HandleRecoveryOutcomeUnknown,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryLocalStateUnavailable => Self::HandleRecoveryLocalStateUnavailable,
+            im_core::identity::HandleRecoveryErrorCode::HandleRecoveryBlocked => Self::HandleRecoveryBlocked,
+        }
+    }
+}
 
 impl From<im_core::identity::DeviceRevokeResult> for DartDeviceRevokeResult {
     fn from(value: im_core::identity::DeviceRevokeResult) -> Self {

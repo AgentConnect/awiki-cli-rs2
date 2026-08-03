@@ -1532,6 +1532,198 @@ fn promote_join_identity(
     let identity_store =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
     let index = identity_store.load_index()?;
+    if let Some(marker) = crate::internal::identity_transition_pending::load_joined_device(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+        &stored.join_request.join_session_id,
+    )? {
+        if marker.current_did != did.as_str() || marker.account_user_id != access.user_id {
+            return Err(crate::ImError::Service {
+                status_code: None,
+                code: Some("handle_recovery_transition_mismatch".to_owned()),
+                message: "handle_recovery_transition_mismatch".to_owned(),
+                data: None,
+            });
+        }
+        let matches = index
+            .credentials
+            .iter()
+            .filter(|(_, entry)| entry.unique_id == marker.owner_identity_id)
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let (local_alias, previous_entry) = matches[0];
+        if marker.phase != crate::internal::identity_transition_pending::TransitionPhase::Pending {
+            if previous_entry.did != marker.current_did
+                || previous_entry.user_id != marker.account_user_id
+                || previous_entry.binding_generation.as_deref()
+                    != Some(marker.binding_generation.as_str())
+            {
+                return Err(crate::ImError::Service {
+                    status_code: None,
+                    code: Some("handle_recovery_transition_mismatch".to_owned()),
+                    message: "handle_recovery_transition_mismatch".to_owned(),
+                    data: None,
+                });
+            }
+            if marker.phase
+                == crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched
+            {
+                let (remaining, blocked) =
+                    crate::internal::group_rebind_recovery::handle_recovery_job_counts(
+                        &core.inner().sdk_paths().local_state.sqlite_path,
+                        &marker.owner_identity_id,
+                        &marker.handle,
+                        &marker.previous_did,
+                        &marker.current_did,
+                        &marker.binding_generation,
+                    )?;
+                if remaining == 0 && blocked == 0 {
+                    crate::internal::identity_transition_pending::update_phase(
+                        &core.inner().sdk_paths().local_state.sqlite_path,
+                        &marker.recovery_id,
+                        crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
+                        crate::internal::identity_transition_pending::TransitionPhase::Completed,
+                    )?;
+                }
+            }
+            return ensure_existing_join_identity_is_rootless(
+                &index,
+                local_alias,
+                &did,
+                &pending.authorization,
+            );
+        }
+        let identity_already_switched = previous_entry.did == marker.current_did
+            && previous_entry.user_id == marker.account_user_id
+            && previous_entry.full_handle == marker.handle
+            && previous_entry.binding_generation.as_deref()
+                == Some(marker.binding_generation.as_str());
+        if identity_already_switched {
+            ensure_existing_join_identity_is_rootless(
+                &index,
+                local_alias,
+                &did,
+                &pending.authorization,
+            )?;
+        } else if previous_entry.did != marker.previous_did
+            || previous_entry.user_id != marker.account_user_id
+            || previous_entry.full_handle != marker.handle
+            || previous_entry
+                .binding_generation
+                .as_deref()
+                .and_then(|value| value.parse::<u128>().ok())
+                .and_then(|previous| previous.checked_add(1))
+                != marker.binding_generation.parse::<u128>().ok()
+        {
+            return Err(crate::ImError::Service {
+                status_code: None,
+                code: Some("handle_recovery_transition_mismatch".to_owned()),
+                message: "handle_recovery_transition_mismatch".to_owned(),
+                data: None,
+            });
+        }
+        crate::internal::identity_transition_pending::migrate_local_state(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &marker,
+            &pending.authorization.device.device_id,
+            pending.authorization.device.auth_generation,
+        )?;
+        if !identity_already_switched {
+            let handle =
+                crate::internal::identity_wire::handle_recovery::canonical_handle(&marker.handle)?;
+            let secret_storage =
+                crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
+            identity_store.save_identity_with_secret_storage(
+                crate::internal::identity_store::SaveIdentityInput {
+                    local_alias: (*local_alias).clone(),
+                    did: did.clone(),
+                    unique_id: marker.owner_identity_id.clone(),
+                    user_id: access.user_id.clone(),
+                    display_name: previous_entry.name.clone(),
+                    handle: handle.local_part,
+                    full_handle: handle.full,
+                    binding_generation: Some(marker.binding_generation.clone()),
+                    jwt_token: access.access_token.clone(),
+                    did_document: Some(pending.resolved_document.clone()),
+                    key_mode: crate::internal::identity_store::SaveIdentityKeyMode::VNext {
+                        root_key_id,
+                        device_signing_key_id: pending.authorization.device.signing_key_id.clone(),
+                        device_e2ee_key_id: pending.authorization.device.e2ee_key_id.clone(),
+                    },
+                    device_state: Some(IdentityDeviceState {
+                        schema_version: IDENTITY_DEVICE_STATE_SCHEMA_VERSION,
+                        mode: IdentityDeviceMode::VNext,
+                        authorization: Some(DeviceAuthorizationProjection {
+                            protocol_device_id: crate::ids::ProtocolDeviceId::parse(
+                                &pending.authorization.device.device_id,
+                            )?,
+                            signing_key_id: pending.authorization.device.signing_key_id.clone(),
+                            e2ee_key_id: pending.authorization.device.e2ee_key_id.clone(),
+                            status: pending.authorization.device.status,
+                            role: pending.authorization.device.role,
+                            management_ready: false,
+                            auth_generation: pending.authorization.device.auth_generation,
+                        }),
+                        checkpoint: Some(pending.authorization.checkpoint.clone()),
+                    }),
+                    key1_private_pem: String::new(),
+                    key1_public_pem: root_public.to_pem(),
+                    e2ee_signing_private_pem: signing_private.to_pem(),
+                    e2ee_agreement_private_pem: e2ee_private.to_pem(),
+                    daemon_subkey_package: None,
+                    make_default: previous_entry.is_default,
+                },
+                secret_storage,
+            )?;
+            #[cfg(test)]
+            if FAIL_AFTER_RECOVERY_JOIN_IDENTITY_SAVE
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(crate::ImError::Internal {
+                    message: "injected crash after recovery Join identity save".to_owned(),
+                });
+            }
+        }
+        crate::internal::identity_transition_pending::update_phase(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &marker.recovery_id,
+            crate::internal::identity_transition_pending::TransitionPhase::Pending,
+            crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
+        )?;
+        let _ = crate::internal::group_rebind_recovery::enqueue_recovery_jobs(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &marker.owner_identity_id,
+            &marker.handle,
+            std::slice::from_ref(&marker.previous_did),
+            &marker.current_did,
+            &marker.binding_generation,
+        )?;
+        let (remaining, blocked) =
+            crate::internal::group_rebind_recovery::handle_recovery_job_counts(
+                &core.inner().sdk_paths().local_state.sqlite_path,
+                &marker.owner_identity_id,
+                &marker.handle,
+                &marker.previous_did,
+                &marker.current_did,
+                &marker.binding_generation,
+            )?;
+        if remaining == 0 && blocked == 0 {
+            crate::internal::identity_transition_pending::update_phase(
+                &core.inner().sdk_paths().local_state.sqlite_path,
+                &marker.recovery_id,
+                crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
+                crate::internal::identity_transition_pending::TransitionPhase::Completed,
+            )?;
+        }
+        let committed = identity_store.load_index()?;
+        return ensure_existing_join_identity_is_rootless(
+            &committed,
+            local_alias,
+            &did,
+            &pending.authorization,
+        );
+    }
     let (local_alias, handle, full_handle, make_default) =
         join_local_identity_projection(&did, &stored.join_request.device_id, &index)?;
     ensure_existing_join_identity_is_rootless(&index, &local_alias, &did, &pending.authorization)?;
@@ -1589,6 +1781,10 @@ fn promote_join_identity(
         &pending.authorization,
     )
 }
+
+#[cfg(test)]
+static FAIL_AFTER_RECOVERY_JOIN_IDENTITY_SAVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn join_local_identity_projection(
     did: &crate::ids::Did,

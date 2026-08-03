@@ -1014,7 +1014,8 @@ mod tests {
                 "group_snapshot": {
                     "group_did": "did:example:group",
                     "member_role": "member",
-                    "member_status": "active"
+                    "member_status": "active",
+                    "required_security_profile": "transport-protected"
                 },
                 "members": [{
                     "member_did": "did:wba:example.com:alice:e1_old",

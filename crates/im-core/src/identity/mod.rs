@@ -1,5 +1,6 @@
 mod device_revoke;
 mod dto;
+mod handle_recovery;
 mod join;
 mod profile;
 mod registry;
@@ -18,14 +19,22 @@ pub use self::dto::{
     IdentityDeviceAuthorizationStatus, IdentityDeviceMode, IdentityDeviceReadiness,
     IdentityDeviceRole, IdentityDeviceSummary, IdentityMissingItem, IdentityReadiness,
     IdentitySecretStorageBackend, IdentitySelector, IdentitySummary, IdentityVaultMigrationReport,
-    IdentityVaultStatus, IdentityVaultVerificationReport, InitialProfile, LegacyUpgradeStatus,
-    Profile, ProfileAttribute, ProfilePatch, RegisterHandleRequest, RegistrationMethod,
-    ReplaceDidAffectedLocalState, ReplaceDidBackupManifestPreview, ReplaceDidBackupPlan,
-    ReplaceDidExecutionRequest, ReplaceDidExecutionResult, ReplaceDidGeneratedIdentity,
-    ReplaceDidLocalRebindPlan, ReplaceDidPlan, ReplaceDidPlanRequest, ReplaceDidRemoteCallPreview,
+    IdentityVaultStatus, IdentityVaultVerificationReport, InitialProfile,
+    LegacyRegistryEpochAdoptionAuthority, LegacyUpgradeStatus, Profile, ProfileAttribute,
+    ProfilePatch, RegisterHandleRequest, RegistrationMethod, ReplaceDidAffectedLocalState,
+    ReplaceDidBackupManifestPreview, ReplaceDidBackupPlan, ReplaceDidExecutionRequest,
+    ReplaceDidExecutionResult, ReplaceDidGeneratedIdentity, ReplaceDidLocalRebindPlan,
+    ReplaceDidPlan, ReplaceDidPlanRequest, ReplaceDidRemoteCallPreview,
     VNextAgentBootstrapMaterial, VNextAgentLegacyUpgradeReconciliation,
     VNextAgentLegacyUpgradeSession, VerificationInput, DAEMON_SUBKEY_PACKAGE_SCHEMA_V1,
     DAEMON_SUBKEY_PACKAGE_SCHEMA_V2, DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM,
+};
+pub use self::handle_recovery::{
+    AuthorizedJoinActivationProgress, AuthorizedJoinActivationRequest,
+    HandleRecoveryActivateRequest, HandleRecoveryErrorCode, HandleRecoveryImpact,
+    HandleRecoveryOtpRequest, HandleRecoveryOtpResult, HandleRecoveryPhase,
+    HandleRecoveryPrepareRequest, HandleRecoveryProgress, HandleRecoveryResetReference,
+    HandleRecoveryResumeRequest, HandleRecoveryService, HandleRecoveryTransitionSourceKind,
 };
 pub use self::join::{
     DeviceJoinAccountVerificationGrant, DeviceJoinApprovalPrompt, DeviceJoinAuthorizationStatus,

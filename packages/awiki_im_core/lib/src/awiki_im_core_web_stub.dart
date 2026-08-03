@@ -54,6 +54,67 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<LegacyRegistryEpochAdoptionAuthority?>
+  legacyRegistryEpochAdoptionAuthority(IdentitySelector selector) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryOtpResult> requestHandleRecoveryOtp({
+    required String phone,
+    required String handle,
+    required String operationId,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryProgress> prepareHandleRecovery({
+    required IdentitySelector selector,
+    required String phone,
+    required String code,
+    required String handle,
+    required String operationId,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryProgress> activateHandleRecovery({
+    required String recoveryId,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryProgress> resumeHandleRecovery(
+    String recoveryId,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryProgress> handleRecoveryStatus(
+    String recoveryId,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<AuthorizedJoinActivationProgress> activateAuthorizedJoin({
+    required IdentitySelector selector,
+    required String phone,
+    required String code,
+    required String handle,
+    required String did,
+    required String operationId,
+    int? ttlSeconds,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<AuthorizedJoinActivationProgress> resumeAuthorizedJoinActivation(
+    String joinSessionId,
+  ) async {
+    throw _unsupported();
+  }
+
   Future<DeviceRevokeResult> revokeDevice({
     required IdentitySelector selector,
     required String targetDeviceId,

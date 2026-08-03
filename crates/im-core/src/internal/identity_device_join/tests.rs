@@ -141,6 +141,49 @@ fn open_empty_vault_core(root: &Path) -> crate::ImCore {
     .unwrap()
 }
 
+fn reopen_join_test_core(root: &Path) -> crate::ImCore {
+    crate::ImCore::new_with_options(
+        test_config(),
+        test_paths(root),
+        crate::ImCoreOpenOptions::default().with_identity_secret_vault(
+            crate::IdentitySecretStoragePolicy::VaultRequired,
+            crate::ImCoreSecretVaultOptions::new(
+                crate::vault::DeviceVaultRootKey::from_bytes([47_u8; 32]),
+                root.join("vault"),
+                "join-test-workspace",
+                "join-test-vault-device",
+            ),
+        ),
+    )
+    .unwrap()
+}
+
+fn member_access_token(did: &str, device_id: &str, signing_key_id: &str) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let claims = json!({
+        "iss": "user-service",
+        "aud": ["awiki-user-service", "awiki-message-service"],
+        "sub": did,
+        "type": "access",
+        "purpose": "awiki.device.access.v1",
+        "did": did,
+        "user_id": "user-1",
+        "device_id": device_id,
+        "key_id": signing_key_id,
+        "auth_generation": 1,
+        "scopes": ["device:read", "device:root-import-complete", "message:connect"],
+        "iat": now,
+        "nbf": now,
+        "exp": now + 300,
+        "jti": "joined-crash-window-token"
+    });
+    format!(
+        "e30.{}.signature",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+    )
+}
+
 #[test]
 fn response_signature_input_is_closed_and_canonicalizable() {
     let value = response_params_value(
@@ -427,4 +470,211 @@ fn admin_join_projection_rejects_checkpoint_regression() {
         .unwrap();
     assert_eq!(checkpoint.document_version, 7);
     assert_eq!(checkpoint.registry_version, 3);
+}
+
+#[test]
+fn recovery_join_reopens_after_identity_save_before_marker_switch() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let (admin, admin_document, current_did) = open_ready_admin_core(admin_root.path());
+    let (candidate, _, previous_did) = open_ready_admin_core(candidate_root.path());
+    let candidate_paths = test_paths(candidate_root.path());
+    let mut registry: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&candidate_paths.identities.registry_path).unwrap())
+            .unwrap();
+    registry["credentials"]["alice"]["binding_generation"] = json!("7");
+    std::fs::write(
+        &candidate_paths.identities.registry_path,
+        serde_json::to_vec_pretty(&registry).unwrap(),
+    )
+    .unwrap();
+    let owner_id = registry["credentials"]["alice"]["unique_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let db = crate::internal::local_state::open_writable(&candidate_paths.local_state.sqlite_path)
+        .unwrap();
+    crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+    db.execute(
+        "INSERT INTO identity_account_bindings(owner_identity_id,account_id,handle_scope,current_did,device_id,identity_generation,device_auth_generation,created_at,updated_at) VALUES (?1,'user-1','alice.awiki.test',?2,'previous-device','7','1',1,1)",
+        rusqlite::params![owner_id, previous_did.as_str()],
+    )
+    .unwrap();
+    drop(db);
+
+    let started = candidate
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "joined-crash-start".to_owned(),
+            did: current_did.clone(),
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    let join_request = started.join_request.clone();
+    let marker =
+        crate::internal::identity_transition_pending::IdentityTransitionMarker::joined_device(
+            &candidate_paths.local_state.sqlite_path,
+            &started.session.join_session_id,
+            "user-1",
+            &owner_id,
+            "alice.awiki.test",
+            previous_did.as_str(),
+            current_did.as_str(),
+            "8",
+        )
+        .unwrap();
+    crate::internal::identity_transition_pending::persist(
+        &candidate_paths.local_state.sqlite_path,
+        &marker,
+    )
+    .unwrap();
+    let admin_hash = canonical_hash(&admin_document).unwrap();
+    let challenged = admin
+        .device_join()
+        .prepare_admin_challenge(DeviceJoinAdminPrepareRequest {
+            admin_identity: crate::identity::IdentitySelector::Default,
+            operation_id: "joined-crash-challenge".to_owned(),
+            join_request: started.join_request,
+            challenge_ttl_seconds: 180,
+            document_version: 7,
+            document_hash: admin_hash.clone(),
+        })
+        .unwrap();
+    let responded = candidate
+        .device_join()
+        .respond_as_new_device(DeviceJoinNewDeviceRespondRequest {
+            operation_id: "joined-crash-response".to_owned(),
+            challenge: challenged.challenge,
+            admin_did_document: admin_document,
+            document_version: 7,
+            document_hash: admin_hash.clone(),
+        })
+        .unwrap();
+    admin
+        .device_join()
+        .verify_response_as_admin(DeviceJoinAdminVerifyRequest {
+            operation_id: "joined-crash-verify".to_owned(),
+            join_session_id: started.session.join_session_id.clone(),
+            response: responded.response,
+        })
+        .unwrap();
+    let expected_checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+        document_version: 7,
+        document_hash: admin_hash,
+        registry_version: 3,
+    };
+    let approval = prepare_admin_approval(
+        &admin,
+        "joined-crash-approve",
+        &started.session.join_session_id,
+        &expected_checkpoint,
+        &format_time(OffsetDateTime::now_utc()).unwrap(),
+        true,
+    )
+    .unwrap();
+    let authorization =
+        crate::internal::identity_device_join_runtime::DeviceJoinRemoteAuthorization {
+            checkpoint: crate::internal::identity_device_state::IdentityInternalCheckpoint {
+                document_version: 8,
+                document_hash: canonical_hash(&approval.new_document).unwrap(),
+                registry_version: 4,
+            },
+            device: crate::internal::identity_device_join_runtime::DeviceJoinRemoteDeviceSummary {
+                device_id: join_request.device_id.clone(),
+                signing_key_id: method_id(&join_request.signing_public_key, "signing")
+                    .unwrap()
+                    .to_owned(),
+                e2ee_key_id: method_id(&join_request.e2ee_public_key, "e2ee")
+                    .unwrap()
+                    .to_owned(),
+                status: crate::internal::identity_device_state::DeviceAuthorizationStatus::Active,
+                role: crate::internal::identity_device_state::DeviceAuthorizationRole::Member,
+                management_ready: false,
+                auth_generation: 1,
+            },
+        };
+    prepare_new_device_activation(
+        &candidate,
+        &started.session.join_session_id,
+        &authorization,
+        &approval.new_document,
+    )
+    .unwrap();
+    record_new_device_access_result(
+        &candidate,
+        &started.session.join_session_id,
+        crate::internal::identity_device_join_runtime::DeviceJoinAccessResult {
+            user_id: "user-1".to_owned(),
+            access_token: member_access_token(
+                current_did.as_str(),
+                &authorization.device.device_id,
+                &authorization.device.signing_key_id,
+            ),
+        },
+    )
+    .unwrap();
+
+    FAIL_AFTER_RECOVERY_JOIN_IDENTITY_SAVE.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(matches!(
+        finalize_new_device_activation(&candidate, &started.session.join_session_id),
+        Err(crate::ImError::Internal { message })
+            if message == "injected crash after recovery Join identity save"
+    ));
+    drop(candidate);
+
+    let reopened = reopen_join_test_core(candidate_root.path());
+    finalize_new_device_activation(&reopened, &started.session.join_session_id).unwrap();
+    let marker = crate::internal::identity_transition_pending::load_joined_device(
+        &candidate_paths.local_state.sqlite_path,
+        &started.session.join_session_id,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        marker.phase,
+        crate::internal::identity_transition_pending::TransitionPhase::Completed
+    );
+    let index = crate::internal::identity_store::IdentityStore::new(&candidate_paths.identities)
+        .load_index()
+        .unwrap();
+    let matches = index
+        .credentials
+        .values()
+        .filter(|entry| entry.unique_id == owner_id)
+        .collect::<Vec<_>>();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].did, current_did.as_str());
+    assert_eq!(matches[0].binding_generation.as_deref(), Some("8"));
+    let db = rusqlite::Connection::open_with_flags(
+        &candidate_paths.local_state.sqlite_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let binding = db
+        .query_row(
+            "SELECT account_id,handle_scope,current_did,device_id,identity_generation,device_auth_generation FROM identity_account_bindings WHERE owner_identity_id=?1",
+            [&owner_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        binding,
+        (
+            "user-1".to_owned(),
+            Some("alice.awiki.test".to_owned()),
+            current_did.as_str().to_owned(),
+            authorization.device.device_id,
+            "8".to_owned(),
+            "1".to_owned(),
+        )
+    );
 }

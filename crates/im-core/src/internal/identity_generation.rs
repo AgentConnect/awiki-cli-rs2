@@ -6,6 +6,9 @@ use anp::authentication::{
 use rand::RngCore;
 use serde_json::{json, Value};
 
+#[cfg(test)]
+mod handle_recovery_tests;
+
 const DEFAULT_ANP_SERVICE_PATH: &str = "/anp-im/rpc";
 const AGENT_MESSAGE_SERVICE_PROFILES: &[&str] = &[
     "anp.core.binding.v1",
@@ -70,6 +73,44 @@ pub(crate) struct GeneratedVNextIdentityWithDaemonSubkey {
     pub(crate) daemon_subkey_package: crate::identity::DaemonSubkeyPrivatePackage,
 }
 
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct GeneratedHandleRecoveryIdentity {
+    pub(crate) did: crate::ids::Did,
+    pub(crate) unique_id: String,
+    pub(crate) did_document: Value,
+    pub(crate) protocol_device_id: crate::ids::ProtocolDeviceId,
+    pub(crate) root_key_id: String,
+    pub(crate) root_private_pem: String,
+    pub(crate) root_public_pem: String,
+    pub(crate) device_signing_key_id: String,
+    pub(crate) device_signing_private_pem: String,
+    pub(crate) device_signing_public_pem: String,
+    pub(crate) device_e2ee_key_id: String,
+    pub(crate) device_e2ee_private_pem: String,
+    pub(crate) device_e2ee_public_pem: String,
+}
+
+impl std::fmt::Debug for GeneratedHandleRecoveryIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GeneratedHandleRecoveryIdentity")
+            .field("did", &self.did)
+            .field("unique_id", &self.unique_id)
+            .field("did_document", &self.did_document)
+            .field("protocol_device_id", &self.protocol_device_id)
+            .field("root_key_id", &self.root_key_id)
+            .field("root_private_pem", &"<redacted-private-key>")
+            .field("root_public_pem", &self.root_public_pem)
+            .field("device_signing_key_id", &self.device_signing_key_id)
+            .field("device_signing_private_pem", &"<redacted-private-key>")
+            .field("device_signing_public_pem", &self.device_signing_public_pem)
+            .field("device_e2ee_key_id", &self.device_e2ee_key_id)
+            .field("device_e2ee_private_pem", &"<redacted-private-key>")
+            .field("device_e2ee_public_pem", &self.device_e2ee_public_pem)
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for GeneratedVNextIdentityWithDaemonSubkey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GeneratedVNextIdentityWithDaemonSubkey")
@@ -110,6 +151,68 @@ pub(crate) fn generate_vnext_handle_identity_with_default_daemon_subkey(
     )?;
     add_handle_service_and_resign(&mut generated, hostname, &local_part)?;
     Ok(generated)
+}
+
+/// Generates the exact three-method Manifest document required by Handle
+/// Recovery: root, bootstrap signing and bootstrap E2EE. Delegated Daemon
+/// authority is deliberately removed and its generated private material is
+/// discarded before this value can be persisted.
+pub(crate) fn generate_handle_recovery_identity(
+    hostname: &str,
+    local_part: &str,
+    service_endpoint: Option<&crate::config::ServiceEndpoint>,
+    service_did: Option<&crate::ids::Did>,
+) -> crate::ImResult<GeneratedHandleRecoveryIdentity> {
+    let mut generated = generate_vnext_handle_identity_with_default_daemon_subkey(
+        hostname,
+        local_part,
+        service_endpoint,
+        service_did,
+    )?;
+    let daemon_method =
+        crate::internal::identity_daemon_subkey::expected_verification_method(&generated.did);
+    let object =
+        generated
+            .did_document
+            .as_object_mut()
+            .ok_or_else(|| crate::ImError::Serialization {
+                detail: "generated Handle Recovery DID document must be an object".to_owned(),
+            })?;
+    for field in ["verificationMethod", "authentication"] {
+        let entries = object
+            .get_mut(field)
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| crate::ImError::Serialization {
+                detail: format!("generated Handle Recovery document is missing {field}"),
+            })?;
+        entries.retain(|entry| match entry {
+            Value::String(reference) => reference != &daemon_method,
+            Value::Object(method) => {
+                method.get("id").and_then(Value::as_str) != Some(&daemon_method)
+            }
+            _ => true,
+        });
+    }
+    crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+        &mut generated.did_document,
+        &generated.did,
+        &generated.root_private_pem,
+    )?;
+    Ok(GeneratedHandleRecoveryIdentity {
+        did: generated.did,
+        unique_id: generated.unique_id,
+        did_document: generated.did_document,
+        protocol_device_id: generated.protocol_device_id,
+        root_key_id: generated.root_key_id,
+        root_private_pem: generated.root_private_pem,
+        root_public_pem: generated.root_public_pem,
+        device_signing_key_id: generated.device_signing_key_id,
+        device_signing_private_pem: generated.device_signing_private_pem,
+        device_signing_public_pem: generated.device_signing_public_pem,
+        device_e2ee_key_id: generated.device_e2ee_key_id,
+        device_e2ee_private_pem: generated.device_e2ee_private_pem,
+        device_e2ee_public_pem: generated.device_e2ee_public_pem,
+    })
 }
 
 /// Shared vNext builder for independent Agent accounts.

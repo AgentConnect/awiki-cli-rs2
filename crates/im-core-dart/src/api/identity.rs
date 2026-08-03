@@ -3,17 +3,150 @@ use std::sync::Arc;
 use crate::dto::{
     error::DartImError,
     identity::{
-        DartActiveSyncAccountBinding, DartDaemonSubkeyAuthorizationRevokeResult,
-        DartDaemonSubkeyPrivatePackage, DartDeleteLocalIdentityResult,
-        DartDeviceJoinApprovalPrompt, DartDeviceJoinProgress, DartDeviceJoinRegistrySnapshot,
-        DartDeviceJoinRejectReason, DartDeviceJoinRequestNotice, DartDeviceJoinSessionSummary,
-        DartDeviceRevokeResult, DartHandleRegistrationResult, DartIdentityDeviceSummary,
+        DartActiveSyncAccountBinding, DartAuthorizedJoinActivationProgress,
+        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
+        DartDeleteLocalIdentityResult, DartDeviceJoinApprovalPrompt, DartDeviceJoinProgress,
+        DartDeviceJoinRegistrySnapshot, DartDeviceJoinRejectReason, DartDeviceJoinRequestNotice,
+        DartDeviceJoinSessionSummary, DartDeviceRevokeResult, DartHandleRecoveryOtpResult,
+        DartHandleRecoveryProgress, DartHandleRegistrationResult, DartIdentityDeviceSummary,
         DartIdentitySelector, DartIdentitySummary, DartIdentityVaultMigrationReport,
         DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartInitialProfile,
-        DartLegacyUpgradeStatus, DartRootKeyTransferError, DartRootKeyTransferPreparation,
-        DartRootKeyTransferSendResult,
+        DartLegacyRegistryEpochAdoptionAuthority, DartLegacyUpgradeStatus,
+        DartRootKeyTransferError, DartRootKeyTransferPreparation, DartRootKeyTransferSendResult,
     },
 };
+
+pub async fn legacy_registry_epoch_adoption_authority(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<Option<DartLegacyRegistryEpochAdoptionAuthority>, DartImError> {
+    core.clone_inner()?
+        .identities()
+        .legacy_registry_epoch_adoption_authority_async(selector.try_into()?)
+        .await
+        .map(|authority| authority.map(Into::into))
+        .map_err(DartImError::from)
+}
+
+pub async fn request_handle_recovery_otp(
+    core: &Arc<crate::api::core::DartImCore>,
+    phone: String,
+    handle: String,
+    operation_id: String,
+) -> Result<DartHandleRecoveryOtpResult, DartImError> {
+    core.clone_inner()?
+        .handle_recovery()
+        .request_handle_recovery_otp(im_core::identity::HandleRecoveryOtpRequest {
+            phone,
+            handle,
+            operation_id,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn prepare_handle_recovery(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+    phone: String,
+    code: String,
+    handle: String,
+    operation_id: String,
+) -> Result<DartHandleRecoveryProgress, DartImError> {
+    core.clone_inner()?
+        .handle_recovery()
+        .prepare_handle_recovery(im_core::identity::HandleRecoveryPrepareRequest {
+            identity: selector.try_into()?,
+            phone,
+            code,
+            handle,
+            operation_id,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn activate_handle_recovery(
+    core: &Arc<crate::api::core::DartImCore>,
+    recovery_id: String,
+    user_presence_confirmed: bool,
+) -> Result<DartHandleRecoveryProgress, DartImError> {
+    core.clone_inner()?
+        .handle_recovery()
+        .activate_handle_recovery(im_core::identity::HandleRecoveryActivateRequest {
+            recovery_id,
+            user_presence_confirmed,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn resume_handle_recovery(
+    core: &Arc<crate::api::core::DartImCore>,
+    recovery_id: String,
+) -> Result<DartHandleRecoveryProgress, DartImError> {
+    core.clone_inner()?
+        .handle_recovery()
+        .resume_handle_recovery(im_core::identity::HandleRecoveryResumeRequest { recovery_id })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn handle_recovery_status(
+    core: &Arc<crate::api::core::DartImCore>,
+    recovery_id: String,
+) -> Result<DartHandleRecoveryProgress, DartImError> {
+    core.clone_inner()?
+        .handle_recovery()
+        .handle_recovery_status(&recovery_id)
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn activate_authorized_join(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+    phone: String,
+    code: String,
+    handle: String,
+    did: String,
+    operation_id: String,
+    ttl_seconds: Option<u64>,
+    user_presence_confirmed: bool,
+) -> Result<DartAuthorizedJoinActivationProgress, DartImError> {
+    core.clone_inner()?
+        .handle_recovery()
+        .activate_authorized_join(im_core::identity::AuthorizedJoinActivationRequest {
+            identity: selector.try_into()?,
+            phone,
+            code,
+            handle,
+            did: im_core::ids::Did::parse(did).map_err(DartImError::from)?,
+            operation_id,
+            ttl_seconds,
+            user_presence_confirmed,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn resume_authorized_join_activation(
+    core: &Arc<crate::api::core::DartImCore>,
+    join_session_id: String,
+) -> Result<DartAuthorizedJoinActivationProgress, DartImError> {
+    core.clone_inner()?
+        .handle_recovery()
+        .resume_authorized_join_activation(&join_session_id)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
 
 pub async fn active_sync_account_binding(
     client: &Arc<crate::api::client::DartImClient>,

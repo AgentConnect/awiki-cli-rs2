@@ -14,6 +14,7 @@ class AwikiImCoreException implements Exception {
     this.serviceCode,
     this.serviceDataJson,
     this.deviceRevokeOutcomeCategory,
+    this.handleRecoveryFailureCode,
   });
 
   final String code;
@@ -24,7 +25,19 @@ class AwikiImCoreException implements Exception {
   final String? serviceCode;
   final String? serviceDataJson;
   final DeviceRevokeOutcomeCategory? deviceRevokeOutcomeCategory;
+  final HandleRecoveryFailureCode? handleRecoveryFailureCode;
 
   @override
   String toString() => 'AwikiImCoreException($code): $message';
+}
+
+enum HandleRecoveryFailureCode {
+  notPrepared,
+  userPresenceRequired,
+  transitionMismatch,
+  transitionChainUnsupported,
+  remoteStateChanged,
+  outcomeUnknown,
+  localStateUnavailable,
+  blocked,
 }

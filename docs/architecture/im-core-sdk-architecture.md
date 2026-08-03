@@ -81,6 +81,29 @@ Rules:
 - auth/session, local state, direct secure state, and MLS state must be identity-scoped.
 - Business queries inject owner internally; callers do not hand-write owner filters.
 
+### 4.2 Manifest Handle Recovery boundary
+
+Handle Recovery is an environment-level, host-neutral Core state machine behind the
+default-off `multi_device_handle_recovery_enabled` option. Core owns OTP/grant exchange,
+fresh root/device/E2EE generation, signed commit proof, Vault-only exact retry state,
+source-bound `identity_transition_pending`, stable-owner epoch migration, fresh JWT,
+new P5 PreKey publication, and transport-only P4 group convergence. Dart is a typed
+projection of the same seven operations; it does not implement a second state machine.
+
+The transition marker is persisted before Registry checkpoint replacement. Initiator
+markers bind the authoritative commit operation ID; joined-device markers bind the exact
+ordinary Join session and are written before remote Join creation. Old crypto/device
+state is retired while business history remains under the same `owner_identity_id`.
+Only exact Handle-backed `transport-protected` groups are eligible. Missing, conflicting,
+DID-only, E2EE, or malformed profiles fail closed, and Recovery never enters P6/MLS or
+`awaiting_p6`.
+
+V1 deliberately has no CLI command, Daemon task, Agent recovery entrypoint, UI route, or
+process-global identity. Those hosts can be added later by calling the typed Core service
+with an explicit `IdentitySelector`; the cryptographic and durable orchestration remains
+inside Core. The separate legacy Registry epoch adoption authority is available for App
+migration only when the exact vNext binding is active and no transition marker exists.
+
 ### 4.1 Local multi-device authorization projection
 
 The V1 identity registry persists one AWiki-local `device_state` for every

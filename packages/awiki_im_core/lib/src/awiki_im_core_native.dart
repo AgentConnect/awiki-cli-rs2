@@ -66,9 +66,31 @@ Future<T> _mapNativeErrors<T>(Future<T> Function() action) async {
       serviceDataJson: error.serviceDataJson,
       deviceRevokeOutcomeCategory: error.deviceRevokeOutcomeCategory
           ?._toModel(),
+      handleRecoveryFailureCode: _handleRecoveryFailureCode(
+        error.serviceCode,
+      ),
     );
   }
 }
+
+HandleRecoveryFailureCode? _handleRecoveryFailureCode(String? code) =>
+    switch (code) {
+      'handle_recovery_not_prepared' => HandleRecoveryFailureCode.notPrepared,
+      'handle_recovery_user_presence_required' =>
+        HandleRecoveryFailureCode.userPresenceRequired,
+      'handle_recovery_transition_mismatch' =>
+        HandleRecoveryFailureCode.transitionMismatch,
+      'handle_recovery_transition_chain_unsupported' =>
+        HandleRecoveryFailureCode.transitionChainUnsupported,
+      'handle_recovery_remote_state_changed' =>
+        HandleRecoveryFailureCode.remoteStateChanged,
+      'handle_recovery_outcome_unknown' =>
+        HandleRecoveryFailureCode.outcomeUnknown,
+      'handle_recovery_local_state_unavailable' =>
+        HandleRecoveryFailureCode.localStateUnavailable,
+      'handle_recovery_blocked' => HandleRecoveryFailureCode.blocked,
+      _ => null,
+    };
 
 extension on gen_error.DartDeviceRevokeOutcomeCategory {
   DeviceRevokeOutcomeCategory _toModel() => switch (this) {
@@ -188,6 +210,137 @@ class AwikiImCore {
       ),
     );
     return summary._toModel();
+  }
+
+  Future<LegacyRegistryEpochAdoptionAuthority?>
+  legacyRegistryEpochAdoptionAuthority(IdentitySelector selector) async {
+    _ensureNotDisposed();
+    final authority = await _mapNativeErrors(
+      () => gen_identity_api.legacyRegistryEpochAdoptionAuthority(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return authority?._toModel();
+  }
+
+  Future<HandleRecoveryOtpResult> requestHandleRecoveryOtp({
+    required String phone,
+    required String handle,
+    required String operationId,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.requestHandleRecoveryOtp(
+        core: _inner,
+        phone: phone,
+        handle: handle,
+        operationId: operationId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<HandleRecoveryProgress> prepareHandleRecovery({
+    required IdentitySelector selector,
+    required String phone,
+    required String code,
+    required String handle,
+    required String operationId,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.prepareHandleRecovery(
+        core: _inner,
+        selector: selector._toGen(),
+        phone: phone,
+        code: code,
+        handle: handle,
+        operationId: operationId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<HandleRecoveryProgress> activateHandleRecovery({
+    required String recoveryId,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.activateHandleRecovery(
+        core: _inner,
+        recoveryId: recoveryId,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<HandleRecoveryProgress> resumeHandleRecovery(
+    String recoveryId,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.resumeHandleRecovery(
+        core: _inner,
+        recoveryId: recoveryId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<HandleRecoveryProgress> handleRecoveryStatus(
+    String recoveryId,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.handleRecoveryStatus(
+        core: _inner,
+        recoveryId: recoveryId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<AuthorizedJoinActivationProgress> activateAuthorizedJoin({
+    required IdentitySelector selector,
+    required String phone,
+    required String code,
+    required String handle,
+    required String did,
+    required String operationId,
+    int? ttlSeconds,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.activateAuthorizedJoin(
+        core: _inner,
+        selector: selector._toGen(),
+        phone: phone,
+        code: code,
+        handle: handle,
+        did: did,
+        operationId: operationId,
+        ttlSeconds: ttlSeconds == null ? null : BigInt.from(ttlSeconds),
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<AuthorizedJoinActivationProgress> resumeAuthorizedJoinActivation(
+    String joinSessionId,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.resumeAuthorizedJoinActivation(
+        core: _inner,
+        joinSessionId: joinSessionId,
+      ),
+    );
+    return result._toModel();
   }
 
   Future<DeviceRevokeResult> revokeDevice({
@@ -1879,6 +2032,7 @@ extension on AwikiImCoreOpenOptions {
     multiDeviceDeviceRevokeEnabled: multiDeviceDeviceRevokeEnabled,
     multiDeviceDirectE2EeEnabled: multiDeviceDirectE2eeEnabled,
     multiDeviceGroupE2EeEnabled: multiDeviceGroupE2eeEnabled,
+    multiDeviceHandleRecoveryEnabled: multiDeviceHandleRecoveryEnabled,
   );
 }
 
@@ -2312,6 +2466,118 @@ extension on gen_identity.DartActiveSyncAccountBinding {
     identityGeneration: identityGeneration,
     deviceAuthGeneration: deviceAuthGeneration,
   );
+}
+
+extension on gen_identity.DartLegacyRegistryEpochAdoptionAuthority {
+  LegacyRegistryEpochAdoptionAuthority _toModel() =>
+      LegacyRegistryEpochAdoptionAuthority(
+        ownerIdentityId: ownerIdentityId,
+        accountUserId: accountUserId,
+        currentDid: currentDid,
+        bindingGeneration: bindingGeneration,
+        protocolDeviceId: protocolDeviceId,
+        deviceAuthGeneration: deviceAuthGeneration,
+        provenanceId: provenanceId,
+      );
+}
+
+extension on gen_identity.DartHandleRecoveryOtpResult {
+  HandleRecoveryOtpResult _toModel() => HandleRecoveryOtpResult(
+    handle: handle,
+    operationId: operationId,
+    accepted: accepted,
+  );
+}
+
+extension on gen_identity.DartHandleRecoveryImpact {
+  HandleRecoveryImpact _toModel() => HandleRecoveryImpact(
+    localOrdinaryDataWillMigrate: localOrdinaryDataWillMigrate,
+    otherDevicesMustRejoin: otherDevicesMustRejoin,
+    unsupportedE2eeGroupCount: unsupportedE2EeGroupCount,
+    unsupportedDidOnlyGroupCount: unsupportedDidOnlyGroupCount,
+  );
+}
+
+extension on gen_identity.DartHandleRecoveryResetReference {
+  HandleRecoveryRegistryEpochReset _toModel() =>
+      HandleRecoveryRegistryEpochReset(
+        accountUserId: accountUserId,
+        ownerIdentityId: ownerIdentityId,
+        handle: handle,
+        previousDid: previousDid,
+        currentDid: currentDid,
+        bindingGeneration: bindingGeneration,
+        sourceKind: switch (sourceKind) {
+          gen_identity.DartHandleRecoveryTransitionSourceKind.initiator =>
+            HandleRecoveryTransitionSourceKind.initiator,
+          gen_identity.DartHandleRecoveryTransitionSourceKind.joinedDevice =>
+            HandleRecoveryTransitionSourceKind.joinedDevice,
+        },
+        sourceId: sourceId,
+      );
+}
+
+extension on gen_identity.DartHandleRecoveryProgress {
+  HandleRecoveryProgress _toModel() => HandleRecoveryProgress(
+    recoveryId: recoveryId,
+    operationId: operationId,
+    ownerIdentityId: ownerIdentityId,
+    handle: handle,
+    previousDid: previousDid,
+    currentDid: currentDid,
+    bindingGeneration: bindingGeneration,
+    phase: switch (phase) {
+      gen_identity.DartHandleRecoveryPhase.prepared =>
+        HandleRecoveryPhase.prepared,
+      gen_identity.DartHandleRecoveryPhase.remoteCommitPending =>
+        HandleRecoveryPhase.remoteCommitPending,
+      gen_identity.DartHandleRecoveryPhase.remoteCommitted =>
+        HandleRecoveryPhase.remoteCommitted,
+      gen_identity.DartHandleRecoveryPhase.identityTransitionPending =>
+        HandleRecoveryPhase.identityTransitionPending,
+      gen_identity.DartHandleRecoveryPhase.identitySwitched =>
+        HandleRecoveryPhase.identitySwitched,
+      gen_identity.DartHandleRecoveryPhase.completed =>
+        HandleRecoveryPhase.completed,
+      gen_identity.DartHandleRecoveryPhase.blocked =>
+        HandleRecoveryPhase.blocked,
+    },
+    impact: impact._toModel(),
+    registryEpochReset: resetReference?._toModel(),
+    failureCode: switch (blockedCode) {
+      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryNotPrepared =>
+        HandleRecoveryFailureCode.notPrepared,
+      gen_identity
+            .DartHandleRecoveryErrorCode
+            .handleRecoveryUserPresenceRequired =>
+        HandleRecoveryFailureCode.userPresenceRequired,
+      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryTransitionMismatch =>
+        HandleRecoveryFailureCode.transitionMismatch,
+      gen_identity
+            .DartHandleRecoveryErrorCode
+            .handleRecoveryTransitionChainUnsupported =>
+        HandleRecoveryFailureCode.transitionChainUnsupported,
+      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryRemoteStateChanged =>
+        HandleRecoveryFailureCode.remoteStateChanged,
+      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryOutcomeUnknown =>
+        HandleRecoveryFailureCode.outcomeUnknown,
+      gen_identity
+            .DartHandleRecoveryErrorCode
+            .handleRecoveryLocalStateUnavailable =>
+        HandleRecoveryFailureCode.localStateUnavailable,
+      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryBlocked =>
+        HandleRecoveryFailureCode.blocked,
+      null => null,
+    },
+  );
+}
+
+extension on gen_identity.DartAuthorizedJoinActivationProgress {
+  AuthorizedJoinActivationProgress _toModel() =>
+      AuthorizedJoinActivationProgress(
+        join: join._toModel(),
+        registryEpochReset: resetReference?._toModel(),
+      );
 }
 
 extension on gen_identity.DartHandleRegistrationJoinRequired {

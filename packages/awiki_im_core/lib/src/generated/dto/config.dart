@@ -81,6 +81,7 @@ class DartImCoreOpenOptions {
   final bool multiDeviceDeviceRevokeEnabled;
   final bool multiDeviceDirectE2EeEnabled;
   final bool multiDeviceGroupE2EeEnabled;
+  final bool multiDeviceHandleRecoveryEnabled;
 
   const DartImCoreOpenOptions({
     required this.identitySecretStoragePolicy,
@@ -88,6 +89,7 @@ class DartImCoreOpenOptions {
     required this.multiDeviceDeviceRevokeEnabled,
     required this.multiDeviceDirectE2EeEnabled,
     required this.multiDeviceGroupE2EeEnabled,
+    required this.multiDeviceHandleRecoveryEnabled,
   });
 
   @override
@@ -96,7 +98,8 @@ class DartImCoreOpenOptions {
       identitySecretVault.hashCode ^
       multiDeviceDeviceRevokeEnabled.hashCode ^
       multiDeviceDirectE2EeEnabled.hashCode ^
-      multiDeviceGroupE2EeEnabled.hashCode;
+      multiDeviceGroupE2EeEnabled.hashCode ^
+      multiDeviceHandleRecoveryEnabled.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -108,7 +111,9 @@ class DartImCoreOpenOptions {
           multiDeviceDeviceRevokeEnabled ==
               other.multiDeviceDeviceRevokeEnabled &&
           multiDeviceDirectE2EeEnabled == other.multiDeviceDirectE2EeEnabled &&
-          multiDeviceGroupE2EeEnabled == other.multiDeviceGroupE2EeEnabled;
+          multiDeviceGroupE2EeEnabled == other.multiDeviceGroupE2EeEnabled &&
+          multiDeviceHandleRecoveryEnabled ==
+              other.multiDeviceHandleRecoveryEnabled;
 }
 
 class DartImCorePaths {

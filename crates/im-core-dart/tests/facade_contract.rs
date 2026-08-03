@@ -25,6 +25,75 @@ fn dart_profile_mapping_keeps_account_and_wns_versions_independent() {
 }
 
 #[test]
+fn dart_handle_recovery_mapping_preserves_closed_progress_and_reset_reference() {
+    let mapped = awiki_im_core::dto::identity::DartHandleRecoveryProgress::from(
+        im_core::identity::HandleRecoveryProgress {
+            recovery_id: "recovery-1".to_owned(),
+            operation_id: "operation-1".to_owned(),
+            owner_identity_id: im_core::ids::IdentityId::parse("owner-1").unwrap(),
+            handle: "alice.awiki.info".to_owned(),
+            previous_did: im_core::ids::Did::parse("did:wba:awiki.info:users:alice-old").unwrap(),
+            current_did: im_core::ids::Did::parse("did:wba:awiki.info:users:alice-new").unwrap(),
+            binding_generation: Some("8".to_owned()),
+            phase: im_core::identity::HandleRecoveryPhase::Blocked,
+            impact: im_core::identity::HandleRecoveryImpact {
+                local_ordinary_data_will_migrate: true,
+                other_devices_must_rejoin: true,
+                unsupported_e2ee_group_count: 2,
+                unsupported_did_only_group_count: 3,
+            },
+            reset_reference: Some(im_core::identity::HandleRecoveryResetReference {
+                account_user_id: "user-1".to_owned(),
+                owner_identity_id: "owner-1".to_owned(),
+                previous_did: im_core::ids::Did::parse("did:wba:awiki.info:users:alice-old")
+                    .unwrap(),
+                current_did: im_core::ids::Did::parse("did:wba:awiki.info:users:alice-new")
+                    .unwrap(),
+                binding_generation: "8".to_owned(),
+                handle: "alice.awiki.info".to_owned(),
+                source_kind: im_core::identity::HandleRecoveryTransitionSourceKind::Initiator,
+                source_id: "operation-1".to_owned(),
+            }),
+            blocked_code: Some(im_core::identity::HandleRecoveryErrorCode::HandleRecoveryBlocked),
+        },
+    );
+
+    assert_eq!(
+        mapped.phase,
+        awiki_im_core::dto::identity::DartHandleRecoveryPhase::Blocked
+    );
+    assert_eq!(
+        mapped.blocked_code,
+        Some(awiki_im_core::dto::identity::DartHandleRecoveryErrorCode::HandleRecoveryBlocked)
+    );
+    let reset = mapped.reset_reference.unwrap();
+    assert_eq!(reset.owner_identity_id, "owner-1");
+    assert_eq!(reset.binding_generation, "8");
+    assert_eq!(reset.source_id, "operation-1");
+    assert_eq!(mapped.impact.unsupported_e2ee_group_count, 2);
+}
+
+#[test]
+fn dart_legacy_epoch_adoption_authority_mapping_preserves_opaque_provenance() {
+    let mapped = awiki_im_core::dto::identity::DartLegacyRegistryEpochAdoptionAuthority::from(
+        im_core::identity::LegacyRegistryEpochAdoptionAuthority {
+            owner_identity_id: im_core::ids::IdentityId::parse("owner-1").unwrap(),
+            account_user_id: "user-1".to_owned(),
+            current_did: im_core::ids::Did::parse("did:wba:awiki.info:users:alice").unwrap(),
+            binding_generation: "8".to_owned(),
+            protocol_device_id: im_core::ids::ProtocolDeviceId::parse("device-1").unwrap(),
+            device_auth_generation: "1".to_owned(),
+            provenance_id: "sha256:opaque-local-authority".to_owned(),
+        },
+    );
+
+    assert_eq!(mapped.owner_identity_id, "owner-1");
+    assert_eq!(mapped.protocol_device_id, "device-1");
+    assert_eq!(mapped.device_auth_generation, "1");
+    assert_eq!(mapped.provenance_id, "sha256:opaque-local-authority");
+}
+
+#[test]
 fn dart_message_sync_diagnostics_mapping_is_typed_and_redacted() {
     let mapped = awiki_im_core::dto::message::DartMessageSyncDiagnostics::from(
         im_core::messages::MessageSyncDiagnostics {
@@ -1010,6 +1079,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
         multi_device_device_revoke_enabled: true,
         multi_device_direct_e2ee_enabled: true,
         multi_device_group_e2ee_enabled: true,
+        multi_device_handle_recovery_enabled: true,
     };
 
     let mapped: im_core::ImCoreOpenOptions = options.try_into().expect("open options map");
@@ -1020,6 +1090,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
     assert!(mapped.multi_device_device_revoke_enabled);
     assert!(mapped.multi_device_direct_e2ee_enabled);
     assert!(mapped.multi_device_group_e2ee_enabled);
+    assert!(mapped.multi_device_handle_recovery_enabled);
     let vault = mapped.identity_secret_vault.expect("vault options");
     assert_eq!(
         vault.vault_dir,
@@ -1048,6 +1119,7 @@ fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
         multi_device_device_revoke_enabled: false,
         multi_device_direct_e2ee_enabled: false,
         multi_device_group_e2ee_enabled: false,
+        multi_device_handle_recovery_enabled: false,
     };
 
     let error = im_core::ImCoreOpenOptions::try_from(options).unwrap_err();

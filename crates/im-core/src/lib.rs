@@ -47,8 +47,8 @@ pub use crate::identity::{
     HostBackedDeviceIdentityMaterial, HostedIdentityMaterial, IdentityDeviceAuthorizationStatus,
     IdentityDeviceRole, IdentitySecretStorageBackend, IdentitySelector, IdentitySummary,
     IdentityVaultMigrationReport, IdentityVaultStatus, IdentityVaultVerificationReport,
-    VNextAgentBootstrapMaterial, VNextAgentLegacyUpgradeReconciliation,
-    VNextAgentLegacyUpgradeSession,
+    LegacyRegistryEpochAdoptionAuthority, VNextAgentBootstrapMaterial,
+    VNextAgentLegacyUpgradeReconciliation, VNextAgentLegacyUpgradeSession,
 };
 #[cfg(feature = "sqlite")]
 pub use crate::local_state_upgrade::{

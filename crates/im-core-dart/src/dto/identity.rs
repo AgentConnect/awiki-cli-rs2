@@ -31,6 +31,94 @@ pub struct DartActiveSyncAccountBinding {
     pub device_auth_generation: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartLegacyRegistryEpochAdoptionAuthority {
+    pub owner_identity_id: String,
+    pub account_user_id: String,
+    pub current_did: String,
+    pub binding_generation: String,
+    pub protocol_device_id: String,
+    pub device_auth_generation: String,
+    pub provenance_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartHandleRecoveryPhase {
+    Prepared,
+    RemoteCommitPending,
+    RemoteCommitted,
+    IdentityTransitionPending,
+    IdentitySwitched,
+    Completed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartHandleRecoveryErrorCode {
+    HandleRecoveryNotPrepared,
+    HandleRecoveryUserPresenceRequired,
+    HandleRecoveryTransitionMismatch,
+    HandleRecoveryTransitionChainUnsupported,
+    HandleRecoveryRemoteStateChanged,
+    HandleRecoveryOutcomeUnknown,
+    HandleRecoveryLocalStateUnavailable,
+    HandleRecoveryBlocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartHandleRecoveryTransitionSourceKind {
+    Initiator,
+    JoinedDevice,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartHandleRecoveryImpact {
+    pub local_ordinary_data_will_migrate: bool,
+    pub other_devices_must_rejoin: bool,
+    pub unsupported_e2ee_group_count: u32,
+    pub unsupported_did_only_group_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartHandleRecoveryResetReference {
+    pub account_user_id: String,
+    pub owner_identity_id: String,
+    pub previous_did: String,
+    pub current_did: String,
+    pub binding_generation: String,
+    pub handle: String,
+    pub source_kind: DartHandleRecoveryTransitionSourceKind,
+    pub source_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartHandleRecoveryProgress {
+    pub recovery_id: String,
+    pub operation_id: String,
+    pub owner_identity_id: String,
+    pub handle: String,
+    pub previous_did: String,
+    pub current_did: String,
+    pub binding_generation: Option<String>,
+    pub phase: DartHandleRecoveryPhase,
+    pub impact: DartHandleRecoveryImpact,
+    pub reset_reference: Option<DartHandleRecoveryResetReference>,
+    pub blocked_code: Option<DartHandleRecoveryErrorCode>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DartAuthorizedJoinActivationProgress {
+    pub join: DartDeviceJoinProgress,
+    pub reset_reference: Option<DartHandleRecoveryResetReference>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartHandleRecoveryOtpResult {
+    pub handle: String,
+    pub operation_id: String,
+    pub accepted: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DartIdentityDeviceMode {
     Legacy,

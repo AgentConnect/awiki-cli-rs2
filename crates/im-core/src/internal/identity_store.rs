@@ -260,7 +260,7 @@ impl<'a> IdentityStore<'a> {
         secret_storage: SaveIdentitySecretStorage,
     ) -> crate::ImResult<StoredIdentity> {
         let lock = self.lock_index_mutation()?;
-        self.save_identity_with_secret_storage_locked(input, secret_storage, &lock)
+        self.save_identity_with_secret_storage_locked(input, secret_storage, &lock, false)
     }
 
     fn save_identity_with_secret_storage_locked(
@@ -268,6 +268,7 @@ impl<'a> IdentityStore<'a> {
         mut input: SaveIdentityInput,
         secret_storage: SaveIdentitySecretStorage,
         lock: &IdentityIndexMutationLock,
+        allow_missing_auth: bool,
     ) -> crate::ImResult<StoredIdentity> {
         let local_alias = sanitize_identity_name(&input.local_alias);
         if local_alias.is_empty() {
@@ -336,6 +337,7 @@ impl<'a> IdentityStore<'a> {
                 workspace_id,
                 device_id,
                 vault.as_ref(),
+                allow_missing_auth,
             )?),
         };
 
@@ -499,7 +501,7 @@ impl<'a> IdentityStore<'a> {
             input.make_default = true;
         }
         self.save_index_locked(&lock, prepared)?;
-        match self.save_identity_with_secret_storage_locked(input, secret_storage, &lock) {
+        match self.save_identity_with_secret_storage_locked(input, secret_storage, &lock, true) {
             Ok(stored) => Ok(stored),
             Err(error) => {
                 let _ = self.save_index_locked(&lock, original);
@@ -2517,10 +2519,11 @@ fn seal_identity_input_to_vault(
     workspace_id: &str,
     device_id: &str,
     vault: &dyn crate::internal::secret_vault::SecretVault,
+    allow_missing_auth: bool,
 ) -> crate::ImResult<IdentityVaultMigrationMetadata> {
     let identity_id = input.unique_id.trim();
     let did = input.did.as_str();
-    let auth_state_raw = crate::internal::auth::state::auth_state_json_for_token(&input.jwt_token)?;
+    let auth_state_raw = identity_auth_state_raw(&input.jwt_token, allow_missing_auth)?;
     crate::internal::auth::state::parse_auth_state(&auth_state_raw)?;
 
     let (root_key_id, device_signing_key_id, device_e2ee_key_id, is_vnext) = match &input.key_mode {
@@ -2716,6 +2719,13 @@ fn seal_identity_input_to_vault(
         vnext_refs,
         legacy_history: None,
     })
+}
+
+fn identity_auth_state_raw(token: &str, allow_missing_auth: bool) -> crate::ImResult<Vec<u8>> {
+    if token.trim().is_empty() && allow_missing_auth {
+        return Ok(br#"{"jwt_token":null}"#.to_vec());
+    }
+    crate::internal::auth::state::auth_state_json_for_token(token)
 }
 
 fn ensure_verified_vault_metadata_context(
@@ -4675,6 +4685,22 @@ mod tests {
         assert!(!index.credentials.contains_key("alice-old"));
         assert_eq!(index.default_credential_name, "alice-recovering");
         assert_eq!(index.credentials["alice-recovering"].did, "did:example:new");
+    }
+
+    #[test]
+    fn recovery_pending_auth_is_fail_closed_until_signature_refresh() {
+        assert!(identity_auth_state_raw("", false).is_err());
+        let pending = identity_auth_state_raw("", true).unwrap();
+        let pending = crate::internal::auth::state::parse_auth_state(&pending).unwrap();
+        assert!(!pending.has_token);
+        assert!(!pending.has_valid_token);
+        assert!(pending.bearer_token.is_none());
+
+        let refreshed = identity_auth_state_raw("e30.e30.signature", true).unwrap();
+        let refreshed = crate::internal::auth::state::parse_auth_state(&refreshed).unwrap();
+        assert!(refreshed.has_token);
+        assert!(refreshed.has_valid_token);
+        assert_eq!(refreshed.bearer_token.as_deref(), Some("e30.e30.signature"));
     }
 
     fn collect_text_files_inner(root: &Path, out: &mut String) {

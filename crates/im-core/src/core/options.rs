@@ -75,6 +75,9 @@ pub struct ImCoreOpenOptions {
     /// This rollout gate defaults to `false`, is independent from Join and is
     /// never serialized into ANP, a DID Document, or a cross-domain request.
     pub multi_device_group_e2ee_enabled: bool,
+    /// Enables the hidden same-deployment Manifest Handle Recovery v1 path.
+    /// This gate is local, defaults to false, and does not advertise support.
+    pub multi_device_handle_recovery_enabled: bool,
 }
 
 impl ImCoreOpenOptions {
@@ -104,6 +107,11 @@ impl ImCoreOpenOptions {
 
     pub fn with_multi_device_group_e2ee_enabled(mut self, enabled: bool) -> Self {
         self.multi_device_group_e2ee_enabled = enabled;
+        self
+    }
+
+    pub fn with_multi_device_handle_recovery_enabled(mut self, enabled: bool) -> Self {
+        self.multi_device_handle_recovery_enabled = enabled;
         self
     }
 }
@@ -198,5 +206,16 @@ mod tests {
 
         let enabled = ImCoreOpenOptions::default().with_multi_device_direct_e2ee_enabled(true);
         assert!(enabled.multi_device_direct_e2ee_enabled);
+    }
+
+    #[test]
+    fn handle_recovery_rollout_gate_is_local_and_default_off() {
+        let default_options = ImCoreOpenOptions::default();
+        assert!(!default_options.multi_device_handle_recovery_enabled);
+        assert!(
+            ImCoreOpenOptions::default()
+                .with_multi_device_handle_recovery_enabled(true)
+                .multi_device_handle_recovery_enabled
+        );
     }
 }

@@ -5,8 +5,9 @@
 //! seven frozen Join RPC operations, the authenticated Registry projection and
 //! standard DID resolution. Tokens cross the boundary as zeroizing bytes and
 //! are sealed before a caller can resume the flow. Once authorized, a device
-//! always publishes its P5 PreKey and publishes its current P6 KeyPackage when
-//! Group E2EE v2 is enabled. A publication failure is returned after local
+//! publishes its P5 PreKey. Ordinary Join also publishes its current P6
+//! KeyPackage when Group E2EE v2 is enabled; recovery-authorized Join is
+//! deliberately P5-only. A publication failure is returned after local
 //! authorization so the same Join poll can retry the missing public material.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -798,8 +799,22 @@ where
         request: crate::identity::DeviceJoinStartRequest,
         account_verification_token: &SecretBytes,
     ) -> crate::ImResult<crate::identity::DeviceJoinSessionSummary> {
+        self.begin_with_local_hook(request, account_verification_token, |_| Ok(()))
+            .await
+    }
+
+    pub(crate) async fn begin_with_local_hook<F>(
+        &mut self,
+        request: crate::identity::DeviceJoinStartRequest,
+        account_verification_token: &SecretBytes,
+        local_hook: F,
+    ) -> crate::ImResult<crate::identity::DeviceJoinSessionSummary>
+    where
+        F: FnOnce(&crate::identity::DeviceJoinSessionSummary) -> crate::ImResult<()>,
+    {
         let operation_id = request.operation_id.clone();
         let local = self.core.device_join().start(request)?;
+        local_hook(&local.session)?;
         if local.session.phase == crate::identity::DeviceJoinLocalPhase::Authorized {
             return Ok(local.session);
         }
@@ -851,11 +866,8 @@ where
         {
             return self.complete_new_device_activation(pending).await;
         }
-        match local.phase {
-            crate::identity::DeviceJoinLocalPhase::Cancelled => {
-                return Err(invalid_remote_state("new-device Join is cancelled"));
-            }
-            _ => {}
+        if local.phase == crate::identity::DeviceJoinLocalPhase::Cancelled {
+            return Err(invalid_remote_state("new-device Join is cancelled"));
         }
         let token = crate::internal::identity_device_join::open_new_device_remote_session_token(
             self.core,
@@ -1028,6 +1040,26 @@ async fn publish_v2_messaging_material_after_activation(
     core: &crate::core::ImCore,
     session: &crate::identity::DeviceJoinSessionSummary,
 ) -> crate::ImResult<()> {
+    let recovery_join = crate::internal::identity_transition_pending::load_joined_device(
+        &core.inner().sdk_paths().local_state.sqlite_path,
+        &session.join_session_id,
+    )?
+    .is_some();
+    if post_activation_publish_policy(recovery_join) == PostActivationPublishPolicy::PrekeysOnly {
+        let client = core
+            .client_async(crate::identity::IdentitySelector::Did(session.did.clone()))
+            .await?;
+        crate::internal::transport::CoreHttpTransport::new_signature_only(&client)
+            .refresh_jwt_async()
+            .await?;
+        let mut prekey_publisher = ProductionDeviceJoinPrekeyPublisher;
+        return publish_v2_prekeys_after_activation_with_publisher(
+            core,
+            session,
+            &mut prekey_publisher,
+        )
+        .await;
+    }
     let mut prekey_publisher = ProductionDeviceJoinPrekeyPublisher;
     publish_v2_prekeys_after_activation_with_publisher(core, session, &mut prekey_publisher)
         .await?;
@@ -1038,6 +1070,20 @@ async fn publish_v2_messaging_material_after_activation(
         &mut group_key_package_publisher,
     )
     .await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostActivationPublishPolicy {
+    PrekeysAndGroupKeyPackage,
+    PrekeysOnly,
+}
+
+fn post_activation_publish_policy(recovery_join: bool) -> PostActivationPublishPolicy {
+    if recovery_join {
+        PostActivationPublishPolicy::PrekeysOnly
+    } else {
+        PostActivationPublishPolicy::PrekeysAndGroupKeyPackage
+    }
 }
 
 pub(crate) trait DeviceJoinPrekeyPublisher {

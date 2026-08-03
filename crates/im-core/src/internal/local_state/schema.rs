@@ -1302,6 +1302,9 @@ pub(super) fn create_schema(
         .execute_batch(crate::internal::group_rebind_recovery::GROUP_REBIND_RECOVERY_SQL)
         .map_err(super::local_state_unavailable)?;
     connection
+        .execute_batch(crate::internal::identity_transition_pending::IDENTITY_TRANSITION_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection
         .execute_batch(DIRECT_PEER_ROUTES_SQL)
         .map_err(super::local_state_unavailable)?;
     crate::internal::system_notification::store::create_schema(connection)?;

@@ -3,6 +3,75 @@ use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
 
+struct JoinedMarkerAssertingRemote {
+    sqlite_path: std::path::PathBuf,
+}
+
+impl DeviceJoinNewDeviceRemote for JoinedMarkerAssertingRemote {
+    async fn create(
+        &mut self,
+        request: DeviceJoinRemoteCreateRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteCreateResult> {
+        let marker = crate::internal::identity_transition_pending::load_joined_device(
+            &self.sqlite_path,
+            &request.join_request.join_session_id,
+        )?;
+        if marker.is_none() {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "joined transition marker was not durable before remote create".to_owned(),
+            });
+        }
+        Ok(DeviceJoinRemoteCreateResult {
+            join_session_id: request.join_request.join_session_id.clone(),
+            join_session_token: SecretBytes::from_vec(b"join-token".to_vec()),
+            state: DeviceJoinRemoteState::Pending,
+            session_revision: 1,
+            expires_at: request.join_request.expires_at.clone(),
+        })
+    }
+
+    async fn status(
+        &mut self,
+        _expected_join_session_id: &str,
+        _join_session_token: &SecretBytes,
+    ) -> crate::ImResult<DeviceJoinRemoteNewDeviceStatus> {
+        Err(crate::ImError::unsupported("joined-marker-test-status"))
+    }
+
+    async fn submit_response(
+        &mut self,
+        _request: DeviceJoinRemoteResponseRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+        Err(crate::ImError::unsupported("joined-marker-test-response"))
+    }
+
+    async fn cancel(
+        &mut self,
+        _request: DeviceJoinRemoteCancelRequest<'_>,
+    ) -> crate::ImResult<DeviceJoinRemoteTransitionResult> {
+        Err(crate::ImError::unsupported("joined-marker-test-cancel"))
+    }
+
+    async fn refresh_device_access(
+        &mut self,
+        _pending: &crate::internal::identity_join_activation_pending::PendingJoinActivation,
+    ) -> crate::ImResult<DeviceJoinAccessResult> {
+        Err(crate::ImError::unsupported("joined-marker-test-refresh"))
+    }
+}
+
+struct UnusedResolver;
+
+impl crate::internal::transport::AsyncRawJsonTransport for UnusedResolver {
+    async fn get_json_url(
+        &mut self,
+        _url: &str,
+        _headers: std::collections::BTreeMap<String, String>,
+    ) -> crate::ImResult<serde_json::Value> {
+        Err(crate::ImError::unsupported("joined-marker-test-resolve"))
+    }
+}
+
 fn test_config() -> crate::ImCoreConfig {
     crate::ImCoreConfig {
         service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
@@ -154,6 +223,18 @@ fn admin_join_state_bytes(root: &Path) -> Vec<u8> {
 }
 
 #[test]
+fn recovery_join_post_activation_policy_never_publishes_p6() {
+    assert_eq!(
+        post_activation_publish_policy(true),
+        PostActivationPublishPolicy::PrekeysOnly
+    );
+    assert_eq!(
+        post_activation_publish_policy(false),
+        PostActivationPublishPolicy::PrekeysAndGroupKeyPackage
+    );
+}
+
+#[test]
 fn join_approval_handles_are_single_use() {
     let store = DeviceJoinApprovalHandleStore::default();
     let handle = store
@@ -203,6 +284,53 @@ fn response_notification_only_advances_a_waiting_admin_session() {
     ] {
         assert!(!should_verify_response_from_notification(phase));
     }
+}
+
+#[tokio::test]
+async fn joined_transition_marker_is_durable_before_remote_join_create() {
+    let directory = tempfile::tempdir().unwrap();
+    let core = open_empty_vault_core(directory.path());
+    let sqlite_path = core.inner().sdk_paths().local_state.sqlite_path.clone();
+    let mut runtime = DeviceJoinNewDeviceRuntime::new(
+        &core,
+        JoinedMarkerAssertingRemote {
+            sqlite_path: sqlite_path.clone(),
+        },
+        DeviceJoinDidResolver::new(UnusedResolver),
+    );
+    let session = runtime
+        .begin_with_local_hook(
+            crate::identity::DeviceJoinStartRequest {
+                operation_id: "authorized-join-operation-1".to_owned(),
+                did: crate::ids::Did::parse("did:wba:awiki.info:users:alice-new").unwrap(),
+                ttl_seconds: 300,
+            },
+            &SecretBytes::from_vec(b"account-verification-token".to_vec()),
+            |session| {
+                let marker = crate::internal::identity_transition_pending::IdentityTransitionMarker::joined_device(
+                    &sqlite_path,
+                    &session.join_session_id,
+                    "user-1",
+                    "owner-1",
+                    "alice.awiki.info",
+                    "did:wba:awiki.info:users:alice-old",
+                    "did:wba:awiki.info:users:alice-new",
+                    "8",
+                )?;
+                crate::internal::identity_transition_pending::persist(&sqlite_path, &marker)
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        crate::internal::identity_transition_pending::load_joined_device(
+            &sqlite_path,
+            &session.join_session_id,
+        )
+        .unwrap()
+        .is_some()
+    );
 }
 
 #[tokio::test]

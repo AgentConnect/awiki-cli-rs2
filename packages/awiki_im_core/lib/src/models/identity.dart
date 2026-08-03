@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'config.dart';
+import 'error.dart';
 
 /// Single-use, write-only account-verification grant for device Join.
 class DeviceJoinAccountVerificationGrant {
@@ -111,6 +112,124 @@ class ActiveSyncAccountBinding {
   final String protocolDeviceId;
   final String identityGeneration;
   final String deviceAuthGeneration;
+}
+
+class LegacyRegistryEpochAdoptionAuthority {
+  const LegacyRegistryEpochAdoptionAuthority({
+    required this.ownerIdentityId,
+    required this.accountUserId,
+    required this.currentDid,
+    required this.bindingGeneration,
+    required this.protocolDeviceId,
+    required this.deviceAuthGeneration,
+    required this.provenanceId,
+  });
+
+  final String ownerIdentityId;
+  final String accountUserId;
+  final String currentDid;
+  final String bindingGeneration;
+  final String protocolDeviceId;
+  final String deviceAuthGeneration;
+  final String provenanceId;
+}
+
+enum HandleRecoveryPhase {
+  prepared,
+  remoteCommitPending,
+  remoteCommitted,
+  identityTransitionPending,
+  identitySwitched,
+  completed,
+  blocked,
+}
+
+enum HandleRecoveryTransitionSourceKind { initiator, joinedDevice }
+
+class HandleRecoveryImpact {
+  const HandleRecoveryImpact({
+    required this.localOrdinaryDataWillMigrate,
+    required this.otherDevicesMustRejoin,
+    required this.unsupportedE2eeGroupCount,
+    required this.unsupportedDidOnlyGroupCount,
+  });
+
+  final bool localOrdinaryDataWillMigrate;
+  final bool otherDevicesMustRejoin;
+  final int unsupportedE2eeGroupCount;
+  final int unsupportedDidOnlyGroupCount;
+}
+
+class HandleRecoveryRegistryEpochReset {
+  const HandleRecoveryRegistryEpochReset({
+    required this.accountUserId,
+    required this.ownerIdentityId,
+    required this.handle,
+    required this.previousDid,
+    required this.currentDid,
+    required this.bindingGeneration,
+    required this.sourceKind,
+    required this.sourceId,
+  });
+
+  final String accountUserId;
+  final String ownerIdentityId;
+  final String handle;
+  final String previousDid;
+  final String currentDid;
+  final String bindingGeneration;
+  final HandleRecoveryTransitionSourceKind sourceKind;
+  final String sourceId;
+}
+
+class HandleRecoveryProgress {
+  const HandleRecoveryProgress({
+    required this.recoveryId,
+    required this.operationId,
+    required this.ownerIdentityId,
+    required this.handle,
+    required this.previousDid,
+    required this.currentDid,
+    this.bindingGeneration,
+    required this.phase,
+    required this.impact,
+    this.registryEpochReset,
+    this.failureCode,
+  });
+
+  final String recoveryId;
+  final String operationId;
+  final String ownerIdentityId;
+  final String handle;
+  final String previousDid;
+  final String currentDid;
+  final String? bindingGeneration;
+  final HandleRecoveryPhase phase;
+  final HandleRecoveryImpact impact;
+  final HandleRecoveryRegistryEpochReset? registryEpochReset;
+  final HandleRecoveryFailureCode? failureCode;
+}
+
+class HandleRecoveryOtpResult {
+  const HandleRecoveryOtpResult({
+    required this.handle,
+    required this.operationId,
+    required this.accepted,
+  });
+
+  final String handle;
+  final String operationId;
+  final bool accepted;
+}
+
+class AuthorizedJoinActivationProgress {
+  const AuthorizedJoinActivationProgress({
+    required this.join,
+    this.registryEpochReset,
+  });
+
+  final DeviceJoinProgress join;
+  final HandleRecoveryRegistryEpochReset? registryEpochReset;
 }
 
 enum IdentityDeviceMode { legacy, vNext }

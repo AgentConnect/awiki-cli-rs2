@@ -531,6 +531,20 @@ pub struct ActiveSyncAccountBinding {
     pub device_auth_generation: String,
 }
 
+/// Secret-free authority for adopting one pre-Recovery Registry epoch into a
+/// product-local store. `provenance_id` is an opaque Core digest; hosts must
+/// never reconstruct or broaden this decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyRegistryEpochAdoptionAuthority {
+    pub owner_identity_id: crate::ids::IdentityId,
+    pub account_user_id: String,
+    pub current_did: crate::ids::Did,
+    pub binding_generation: String,
+    pub protocol_device_id: crate::ids::ProtocolDeviceId,
+    pub device_auth_generation: String,
+    pub provenance_id: String,
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleRegistrationJoinRequired {
     pub did: crate::ids::Did,

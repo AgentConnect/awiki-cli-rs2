@@ -672,6 +672,85 @@ fn rebind_p6_phase_uses_structured_finalize_outcome() {
 }
 
 #[test]
+fn handle_recovery_rebind_never_enters_p6() {
+    let recovery_job = crate::internal::group_rebind_recovery::handle_recovery_operation_id(
+        "alice.awiki.info",
+        "did:wba:awiki.info:users:alice-old",
+        "did:wba:awiki.info:users:alice-new",
+        "8",
+        "did:wba:awiki.info:groups:engineering",
+    )
+    .unwrap();
+    assert!(!super::p4_rebind_requires_p6(&recovery_job, true));
+    assert!(!super::p4_rebind_requires_p6(&recovery_job, false));
+    assert!(super::p4_rebind_requires_p6("legacy-rebind-job", true));
+}
+
+#[test]
+fn recovery_rebind_authority_is_exact_and_fail_closed() {
+    let job = crate::internal::group_rebind_recovery::P4RebindJob {
+        job_id: "op-rebind-v1-test".to_owned(),
+        owner_identity_id: "owner-1".to_owned(),
+        group_did: "did:wba:awiki.info:groups:engineering".to_owned(),
+        member_handle: "alice.awiki.info".to_owned(),
+        previous_member_did: "did:wba:awiki.info:users:alice-old".to_owned(),
+        new_member_did: "did:wba:awiki.info:users:alice-new".to_owned(),
+        binding_generation: "8".to_owned(),
+        phase: "sending".to_owned(),
+        group_state_ref_json: None,
+        attempt_count: 1,
+    };
+    let member = |did: &str, generation: &str| crate::groups::GroupMember {
+        membership_id: Some("membership-1".to_owned()),
+        peer_persona_id: None,
+        did: Some(crate::ids::Did::parse(did).unwrap()),
+        credential_did: None,
+        handle: Some(crate::ids::Handle::parse("alice.awiki.info", "").unwrap()),
+        handle_binding_generation: Some(generation.to_owned()),
+        role: Some("member".to_owned()),
+        status: Some("active".to_owned()),
+        joined_at: None,
+        subject_type: Some("user".to_owned()),
+    };
+    assert_eq!(
+        super::classify_recovery_rebind_authority(&job, &[member(&job.previous_member_did, "7")],)
+            .unwrap(),
+        super::RecoveryRebindAuthority::Eligible
+    );
+    assert_eq!(
+        super::classify_recovery_rebind_authority(&job, &[member(&job.new_member_did, "8")],)
+            .unwrap(),
+        super::RecoveryRebindAuthority::Converged
+    );
+    assert_eq!(
+        super::classify_recovery_rebind_authority(&job, &[member(&job.previous_member_did, "8")],)
+            .unwrap(),
+        super::RecoveryRebindAuthority::Ineligible
+    );
+    assert_eq!(
+        super::classify_recovery_rebind_authority(
+            &job,
+            &[
+                member(&job.previous_member_did, "7"),
+                member(&job.new_member_did, "8"),
+            ],
+        )
+        .unwrap(),
+        super::RecoveryRebindAuthority::Ineligible
+    );
+    for code in ["group_handle_binding_stale", "group_rebind_not_allowed"] {
+        assert!(super::rebind_error_requires_authoritative_reread(
+            &crate::ImError::Service {
+                status_code: Some(409),
+                code: Some(code.to_owned()),
+                message: code.to_owned(),
+                data: None,
+            }
+        ));
+    }
+}
+
+#[test]
 fn rebind_repair_requires_operation_gone_and_expected_roster() {
     use anp::group_e2ee::operations::{PendingCommitStatus, StatusOutput};
     let mut status = StatusOutput {

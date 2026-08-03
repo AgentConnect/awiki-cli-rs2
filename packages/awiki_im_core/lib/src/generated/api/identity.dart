@@ -13,6 +13,99 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
 
+Future<DartLegacyRegistryEpochAdoptionAuthority?>
+legacyRegistryEpochAdoptionAuthority({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityLegacyRegistryEpochAdoptionAuthority(
+  core: core,
+  selector: selector,
+);
+
+Future<DartHandleRecoveryOtpResult> requestHandleRecoveryOtp({
+  required ArcDartImCore core,
+  required String phone,
+  required String handle,
+  required String operationId,
+}) => RustLib.instance.api.crateApiIdentityRequestHandleRecoveryOtp(
+  core: core,
+  phone: phone,
+  handle: handle,
+  operationId: operationId,
+);
+
+Future<DartHandleRecoveryProgress> prepareHandleRecovery({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String phone,
+  required String code,
+  required String handle,
+  required String operationId,
+}) => RustLib.instance.api.crateApiIdentityPrepareHandleRecovery(
+  core: core,
+  selector: selector,
+  phone: phone,
+  code: code,
+  handle: handle,
+  operationId: operationId,
+);
+
+Future<DartHandleRecoveryProgress> activateHandleRecovery({
+  required ArcDartImCore core,
+  required String recoveryId,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityActivateHandleRecovery(
+  core: core,
+  recoveryId: recoveryId,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
+Future<DartHandleRecoveryProgress> resumeHandleRecovery({
+  required ArcDartImCore core,
+  required String recoveryId,
+}) => RustLib.instance.api.crateApiIdentityResumeHandleRecovery(
+  core: core,
+  recoveryId: recoveryId,
+);
+
+Future<DartHandleRecoveryProgress> handleRecoveryStatus({
+  required ArcDartImCore core,
+  required String recoveryId,
+}) => RustLib.instance.api.crateApiIdentityHandleRecoveryStatus(
+  core: core,
+  recoveryId: recoveryId,
+);
+
+Future<DartAuthorizedJoinActivationProgress> activateAuthorizedJoin({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+  required String phone,
+  required String code,
+  required String handle,
+  required String did,
+  required String operationId,
+  BigInt? ttlSeconds,
+  required bool userPresenceConfirmed,
+}) => RustLib.instance.api.crateApiIdentityActivateAuthorizedJoin(
+  core: core,
+  selector: selector,
+  phone: phone,
+  code: code,
+  handle: handle,
+  did: did,
+  operationId: operationId,
+  ttlSeconds: ttlSeconds,
+  userPresenceConfirmed: userPresenceConfirmed,
+);
+
+Future<DartAuthorizedJoinActivationProgress> resumeAuthorizedJoinActivation({
+  required ArcDartImCore core,
+  required String joinSessionId,
+}) => RustLib.instance.api.crateApiIdentityResumeAuthorizedJoinActivation(
+  core: core,
+  joinSessionId: joinSessionId,
+);
+
 Future<DartActiveSyncAccountBinding> activeSyncAccountBinding({
   required ArcDartImClient client,
 }) => RustLib.instance.api.crateApiIdentityActiveSyncAccountBinding(

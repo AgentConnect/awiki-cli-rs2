@@ -532,6 +532,44 @@ impl<'a> DeviceJoinService<'a> {
         })
     }
 
+    pub(crate) async fn begin_new_device_join_with_local_hook<F>(
+        &self,
+        request: DeviceJoinBeginRequest,
+        local_hook: F,
+    ) -> crate::ImResult<DeviceJoinProgress>
+    where
+        F: FnOnce(&DeviceJoinSessionSummary) -> crate::ImResult<()>,
+    {
+        let DeviceJoinBeginRequest {
+            operation_id,
+            did,
+            ttl_seconds,
+            account_verification_grant,
+        } = request;
+        let token = account_verification_grant.into_secret();
+        let mut runtime =
+            crate::internal::identity_device_join_runtime::DeviceJoinNewDeviceRuntime::production(
+                self.core,
+            );
+        let session = runtime
+            .begin_with_local_hook(
+                DeviceJoinStartRequest {
+                    operation_id,
+                    did,
+                    ttl_seconds,
+                },
+                &token,
+                local_hook,
+            )
+            .await?;
+        Ok(DeviceJoinProgress {
+            session: session.into(),
+            remote_state: DeviceJoinRemoteState::Pending,
+            sas: None,
+            authorized_device: None,
+        })
+    }
+
     pub async fn poll_new_device_join(
         &self,
         join_session_id: &str,
