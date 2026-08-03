@@ -1397,6 +1397,44 @@ fn secure_bootstrap_replay_roundtrips_and_rejects_conflicts() {
 }
 
 #[test]
+fn secure_bootstrap_replay_exists_for_scope_is_exact_and_rejects_empty_scope() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let replay = secure_bootstrap_replay_fixture();
+
+    assert!(!state
+        .secure_bootstrap_replay_exists_for_scope(
+            &replay.sender_human_did,
+            &replay.recipient_daemon_did,
+        )
+        .unwrap());
+    state.store_secure_bootstrap_replay(&replay).unwrap();
+    assert!(state
+        .secure_bootstrap_replay_exists_for_scope(
+            &replay.sender_human_did,
+            &replay.recipient_daemon_did,
+        )
+        .unwrap());
+    assert!(!state
+        .secure_bootstrap_replay_exists_for_scope(
+            "did:human:different",
+            &replay.recipient_daemon_did,
+        )
+        .unwrap());
+    assert!(!state
+        .secure_bootstrap_replay_exists_for_scope(&replay.sender_human_did, "did:agent:different",)
+        .unwrap());
+    assert!(state
+        .secure_bootstrap_replay_exists_for_scope("", &replay.recipient_daemon_did)
+        .is_err());
+    assert!(state
+        .secure_bootstrap_replay_exists_for_scope(&replay.sender_human_did, " ")
+        .is_err());
+}
+
+#[test]
 fn user_delegated_identity_roundtrips_and_replays_idempotently() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

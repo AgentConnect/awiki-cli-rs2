@@ -74,6 +74,10 @@ const TRANSPORT_FAILED: &str = "probe.transport_failed";
 const RUNTIME_FAILED: &str = "probe.runtime_failed";
 const DAEMON_FIXTURE_BOOTSTRAP_VALIDATION_OR_PERSIST: &str =
     "probe.daemon_fixture.bootstrap_validation_or_persist";
+const DAEMON_FIXTURE_BOOTSTRAP_MESSAGE_NOT_ROUTED: &str =
+    "probe.daemon_fixture.bootstrap_message_not_routed";
+const DAEMON_FIXTURE_BOOTSTRAP_SECURE_ENVELOPE: &str =
+    "probe.daemon_fixture.bootstrap_secure_envelope";
 const DAEMON_FIXTURE_BOOTSTRAP_STATE_PERSIST: &str = "probe.daemon_fixture.bootstrap_state_persist";
 const DAEMON_FIXTURE_BOOTSTRAP_RECEIVED_AUDIT: &str =
     "probe.daemon_fixture.bootstrap_received_audit";
@@ -517,6 +521,8 @@ enum ProbeFailure {
     Transport,
     Runtime,
     DaemonFixtureBootstrapValidationOrPersist,
+    DaemonFixtureBootstrapMessageNotRouted,
+    DaemonFixtureBootstrapSecureEnvelope,
     DaemonFixtureBootstrapStatePersist,
     DaemonFixtureBootstrapReceivedAudit,
     DaemonFixtureRuntimeRegistrationPrepareOrExchange,
@@ -535,6 +541,10 @@ impl ProbeFailure {
             Self::DaemonFixtureBootstrapValidationOrPersist => {
                 DAEMON_FIXTURE_BOOTSTRAP_VALIDATION_OR_PERSIST
             }
+            Self::DaemonFixtureBootstrapMessageNotRouted => {
+                DAEMON_FIXTURE_BOOTSTRAP_MESSAGE_NOT_ROUTED
+            }
+            Self::DaemonFixtureBootstrapSecureEnvelope => DAEMON_FIXTURE_BOOTSTRAP_SECURE_ENVELOPE,
             Self::DaemonFixtureBootstrapStatePersist => DAEMON_FIXTURE_BOOTSTRAP_STATE_PERSIST,
             Self::DaemonFixtureBootstrapReceivedAudit => DAEMON_FIXTURE_BOOTSTRAP_RECEIVED_AUDIT,
             Self::DaemonFixtureRuntimeRegistrationPrepareOrExchange => {
@@ -1822,7 +1832,6 @@ impl Probe {
                 };
                 let verification_method = format!("{}#daemon-key-1", definition.controller_did);
                 return match state.load_user_delegated_identity(&verification_method) {
-                    Ok(None) => Err(ProbeFailure::DaemonFixtureBootstrapStatePersist),
                     Ok(Some(identity))
                         if identity.validate().is_ok()
                             && identity.user_did == definition.controller_did
@@ -1836,6 +1845,28 @@ impl Probe {
                     }
                     Ok(Some(_)) | Err(_) => {
                         Err(ProbeFailure::DaemonFixtureBootstrapValidationOrPersist)
+                    }
+                    Ok(None) => {
+                        if state
+                            .secure_bootstrap_replay_exists_for_scope(
+                                &definition.controller_did,
+                                &self.local_did,
+                            )
+                            .map_err(|_| ProbeFailure::Runtime)?
+                        {
+                            Err(ProbeFailure::DaemonFixtureBootstrapStatePersist)
+                        } else if state
+                            .audit_event_exists(
+                                "daemon.inbox.message.route.failed",
+                                Some(&self.local_did),
+                                None,
+                            )
+                            .map_err(|_| ProbeFailure::Runtime)?
+                        {
+                            Err(ProbeFailure::DaemonFixtureBootstrapSecureEnvelope)
+                        } else {
+                            Err(ProbeFailure::DaemonFixtureBootstrapMessageNotRouted)
+                        }
                     }
                 };
             }
@@ -4926,6 +4957,73 @@ INSERT INTO agent_registration_pending (
             }
         };
 
+        assert_closed_failure("probe.daemon_fixture.bootstrap_message_not_routed");
+
+        state
+            .insert_audit_event_json(
+                "daemon.inbox.message.route.failed",
+                Some("did:wba:example.test:agent:different"),
+                None,
+                None,
+                None,
+                json!({}),
+            )
+            .expect("insert unrelated route failure");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_message_not_routed");
+
+        state
+            .insert_audit_event_json(
+                "daemon.inbox.message.route.failed",
+                Some(DAEMON_DID),
+                None,
+                None,
+                None,
+                json!({}),
+            )
+            .expect("insert exact route failure");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_secure_envelope");
+
+        let secure_replay = |operation_suffix: &str,
+                             nonce: &str,
+                             sender_human_did: &str,
+                             recipient_daemon_did: &str| {
+            awiki_deamon::state::SecureBootstrapReplayRecord {
+                operation_id: format!("personal-agent-bootstrap:{operation_suffix}"),
+                nonce: nonce.to_owned(),
+                envelope_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_owned(),
+                recipient_daemon_did: recipient_daemon_did.to_owned(),
+                recipient_key_id: format!("{recipient_daemon_did}#daemon-key-1"),
+                sender_human_did: sender_human_did.to_owned(),
+                bootstrap_id: format!("boot-{operation_suffix}"),
+                idempotency_key: format!("personal-agent-bootstrap:{operation_suffix}"),
+                payload_sha256: None,
+                expires_at: "2026-09-09T00:00:00Z".to_owned(),
+                status:
+                    awiki_deamon::app_bridge::bootstrap::DAEMON_BOOTSTRAP_STATUS_PAIRED_KEY_RECEIVED
+                        .to_owned(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+            }
+        };
+        state
+            .store_secure_bootstrap_replay(&secure_replay(
+                "unrelated",
+                "AQEBAQEBAQEBAQEB",
+                "did:wba:example.test:user:different",
+                "did:wba:example.test:agent:different",
+            ))
+            .expect("store unrelated secure replay");
+        assert_closed_failure("probe.daemon_fixture.bootstrap_secure_envelope");
+
+        state
+            .store_secure_bootstrap_replay(&secure_replay(
+                "exact",
+                "AgICAgICAgICAgIC",
+                HUMAN_DID,
+                DAEMON_DID,
+            ))
+            .expect("store exact secure replay");
         assert_closed_failure("probe.daemon_fixture.bootstrap_state_persist");
 
         let verification_method = format!("{HUMAN_DID}#daemon-key-1");

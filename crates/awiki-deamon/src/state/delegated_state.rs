@@ -419,6 +419,32 @@ WHERE operation_id = ?1
             .context("load secure bootstrap replay")
     }
 
+    pub fn secure_bootstrap_replay_exists_for_scope(
+        &self,
+        sender_human_did: &str,
+        recipient_daemon_did: &str,
+    ) -> Result<bool> {
+        if sender_human_did.trim().is_empty() {
+            bail!("sender_human_did must not be empty");
+        }
+        if recipient_daemon_did.trim().is_empty() {
+            bail!("recipient_daemon_did must not be empty");
+        }
+        let connection = self.connection()?;
+        let exists: bool = connection.query_row(
+            r#"
+SELECT EXISTS(
+    SELECT 1
+    FROM secure_bootstrap_replay
+    WHERE sender_human_did = ?1 AND recipient_daemon_did = ?2
+)
+"#,
+            rusqlite::params![sender_human_did, recipient_daemon_did],
+            |row| row.get(0),
+        )?;
+        Ok(exists)
+    }
+
     pub fn upsert_app_personal_agent_binding(
         &self,
         record: &AppPersonalAgentBindingRecord,
