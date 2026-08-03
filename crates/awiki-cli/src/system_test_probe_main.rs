@@ -67,6 +67,7 @@ const DID_AUTH_RPC_PATH: &str = "/user-service/did-auth/rpc";
 const ME_RPC_PATH: &str = "/user-service/me/rpc";
 const DAEMON_STATE_ROOT_ENV: &str = "AWIKI_SYSTEM_TEST_PROBE_DAEMON_STATE_ROOT";
 const DAEMON_AGENT_KIND_ENV: &str = "AWIKI_SYSTEM_TEST_PROBE_DAEMON_AGENT_KIND";
+const DAEMON_FIXTURE_INITIAL_SYNC_REASON: &str = "foreground_reconcile";
 
 const INVALID_REQUEST: &str = "probe.invalid_request";
 const INVALID_STATE: &str = "probe.invalid_state";
@@ -1886,7 +1887,7 @@ impl Probe {
                     let outcome = daemon_client
                         .messages()
                         .sync_now_async(im_core::messages::MessageSyncRequest {
-                            reason: "system_test_fixture_initialize".to_owned(),
+                            reason: DAEMON_FIXTURE_INITIAL_SYNC_REASON.to_owned(),
                             limit: Some(100),
                         })
                         .await
@@ -4672,6 +4673,8 @@ mod tests {
 
     #[tokio::test]
     async fn daemon_fixture_preflight_sync_is_required_before_bootstrap_send() {
+        assert_eq!(DAEMON_FIXTURE_INITIAL_SYNC_REASON, "foreground_reconcile");
+
         async fn exercise(
             sync_result: Result<im_core::messages::MessageSyncStatus, ProbeFailure>,
         ) -> (Result<(), DaemonFixturePrepareFailure>, Vec<&'static str>) {
