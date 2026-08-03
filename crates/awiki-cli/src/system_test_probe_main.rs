@@ -195,6 +195,7 @@ struct ProbeDesiredPersonalAgent<'a> {
     runtime_provider: &'static str,
     runtime_profile: &'static str,
     display_name: &'static str,
+    preferred_language: &'static str,
     ensure_once_key: &'a str,
     runtime_registration_token: &'a str,
 }
@@ -1682,6 +1683,7 @@ impl Probe {
                     runtime_provider: "hermes",
                     runtime_profile: "personal_agent",
                     display_name: "Recovery Continuity Agent",
+                    preferred_language: "zh-Hans",
                     ensure_once_key: &ensure_once_key,
                     runtime_registration_token: runtime_token.as_str(),
                 },
@@ -4224,6 +4226,58 @@ mod tests {
         ] {
             assert!(parse_request(raw).is_err());
         }
+    }
+
+    #[test]
+    fn probe_bootstrap_desired_personal_agent_includes_exact_preferred_language() {
+        let payload = ProbeBootstrapPayload {
+            schema: "awiki.daemon.bootstrap.v1",
+            bootstrap_id: "boot-test",
+            idempotency_key: "personal-agent-bootstrap:test",
+            app_instance_id: "app-test",
+            controller_did: LOCAL_DID,
+            user_subkey_package: ProbeUserSubkeyPackage {
+                schema: "awiki.user-subkey-package.v2",
+                user_did: LOCAL_DID,
+                verification_method: "did:wba:example.test:user:local#daemon-key-1",
+                key_type: "JsonWebKey2020",
+                key_algorithm: "Ed25519",
+                public_key_multibase: "zPublic",
+                private_key_encoding: "pkcs8-pem",
+                private_key_pem: "private-test-material",
+                allowed_scopes: ["message.inbox.read.plain"],
+            },
+            desired_personal_agent: ProbeDesiredPersonalAgent {
+                role: "app_message_handler",
+                runtime: "hermes",
+                runtime_provider: "hermes",
+                runtime_profile: "personal_agent",
+                display_name: "Recovery Continuity Agent",
+                preferred_language: "zh-Hans",
+                ensure_once_key: "app-personal-agent:test",
+                runtime_registration_token: "registration-test-token",
+            },
+            capability_policy: ProbeCapabilityPolicy {
+                schema: "awiki.app.capabilities.v1",
+                capabilities: ["message.summarize_plain"],
+                require_confirmation_for_write_actions: true,
+            },
+        };
+
+        let serialized = serde_json::to_value(payload).expect("serialize Probe bootstrap payload");
+        assert_eq!(
+            serialized["desired_personal_agent"],
+            json!({
+                "role": "app_message_handler",
+                "runtime": "hermes",
+                "runtime_provider": "hermes",
+                "runtime_profile": "personal_agent",
+                "display_name": "Recovery Continuity Agent",
+                "preferred_language": "zh-Hans",
+                "ensure_once_key": "app-personal-agent:test",
+                "runtime_registration_token": "registration-test-token",
+            })
+        );
     }
 
     fn complete_marker_absence() -> DaemonMarkerAbsenceEvidence {
