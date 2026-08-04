@@ -1166,7 +1166,7 @@ fn attachment_discovery_uses_explicit_v1_when_other_profiles_are_v2() {
             "type": "ANPMessageService",
             "serviceEndpoint": "https://example.com/anp-im/rpc",
             "serviceDid": "did:wba:example.com",
-            "profiles": ["anp.core.binding.v2", "anp.attachment.v1"],
+            "profiles": ["anp.core.binding.v1", "anp.attachment.v1"],
             "securityProfiles": ["transport-protected"]
         }]
     });

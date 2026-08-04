@@ -154,13 +154,13 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
     assert_eq!(create_body["method"], "attachment.create_slot");
     assert_eq!(
         create_body["params"]["meta"]["profile"],
-        "anp.attachment.v2"
+        "anp.attachment.v1"
     );
-    assert_eq!(create_body["params"]["meta"]["anp_version"], "2.0");
+    assert!(create_body["params"]["meta"].get("anp_version").is_none());
     let requested_attachment_id = create_body["params"]["body"]["attachment_id"]
         .as_str()
         .filter(|value| value.starts_with("att-") && value.len() > 4)
-        .expect("v2 create_slot must carry a caller-generated attachment_id")
+        .expect("create_slot must carry a caller-generated attachment_id")
         .to_owned();
     assert_eq!(response_attachment_id, requested_attachment_id);
     assert_eq!(
@@ -231,9 +231,9 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
     assert_eq!(commit_body["method"], "attachment.commit_object");
     assert_eq!(
         commit_body["params"]["meta"]["profile"],
-        "anp.attachment.v2"
+        "anp.attachment.v1"
     );
-    assert_eq!(commit_body["params"]["meta"]["anp_version"], "2.0");
+    assert!(commit_body["params"]["meta"].get("anp_version").is_none());
     assert_eq!(
         commit_body["params"]["body"]["attachment_id"],
         requested_attachment_id
@@ -487,9 +487,9 @@ fn msg_group_attachment_download_live_uses_sender_attachment_service_and_writes_
     assert_eq!(ticket_body["method"], "attachment.get_download_ticket");
     assert_eq!(
         ticket_body["params"]["meta"]["profile"],
-        "anp.attachment.v2"
+        "anp.attachment.v1"
     );
-    assert_eq!(ticket_body["params"]["meta"]["anp_version"], "2.0");
+    assert!(ticket_body["params"]["meta"].get("anp_version").is_none());
     assert_eq!(
         ticket_body["params"]["meta"]["target"],
         json!({"kind": "service", "did": "did:wba:bob-attachment.test"})
@@ -773,9 +773,9 @@ fn register_ready_identity(
         "serviceEndpoint": format!("{service_base_url}{attachment_service_path}"),
         "serviceDid": attachment_service_did,
         "profiles": [
-            "anp.core.binding.v2",
+            "anp.core.binding.v1",
             "anp.direct.base.v1",
-            "anp.attachment.v2"
+            "anp.attachment.v1"
         ],
         "securityProfiles": ["transport-protected"],
         "priority": 1

@@ -95,7 +95,7 @@ const SESSION_UNAUTHORIZED: &str = "client.session_unauthorized";
 const DOWNLOAD_TICKET_INVALID: &str = "anp.attachment.download_ticket_invalid";
 
 const DIRECT_E2EE: &str = "direct-e2ee";
-const ATTACHMENT_V2: &str = "anp.attachment.v2";
+const ATTACHMENT_V1: &str = "anp.attachment.v1";
 const DIRECT_INIT_CONTENT_TYPE: &str = "application/anp-direct-init+json";
 const DIRECT_CIPHER_CONTENT_TYPE: &str = "application/anp-direct-cipher+json";
 const DIRECT_WIRE_INBOX_PAGE_LIMIT: i64 = 100;
@@ -2276,7 +2276,7 @@ impl Probe {
                 message_security_profile: DIRECT_E2EE.to_owned(),
                 ..Default::default()
             };
-            let mut rpc_params =
+            let rpc_params =
                 im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
                     &self.local_did,
                     &self.service_did,
@@ -2286,8 +2286,6 @@ impl Probe {
                     &selection,
                 )
                 .map_err(|_| ProbeFailure::Runtime)?;
-            rpc_params["meta"]["profile"] = Value::String(ATTACHMENT_V2.to_owned());
-            rpc_params["meta"]["anp_version"] = Value::String("2.0".to_owned());
             return Ok(rpc_params);
         }
 
@@ -4512,8 +4510,8 @@ fn validated_ticket_request_body(
         .get("target")
         .and_then(Value::as_object)
         .and_then(|target| string_field(target, "kind"));
-    if string_field(meta, "profile") != Some(ATTACHMENT_V2)
-        || string_field(meta, "anp_version") != Some("2.0")
+    if string_field(meta, "profile") != Some(ATTACHMENT_V1)
+        || meta.contains_key("anp_version")
         || string_field(meta, "security_profile") != Some("transport-protected")
         || string_field(meta, "sender_did") != Some(local_did)
         || target_kind != Some("service")
@@ -7629,8 +7627,8 @@ INSERT INTO runtime_final_outbox (
                         )
                     }
                 } else if request.contains("attachment.get_download_ticket") {
-                    assert!(request.contains("\"profile\":\"anp.attachment.v2\""));
-                    assert!(request.contains("\"anp_version\":\"2.0\""));
+                    assert!(request.contains("\"profile\":\"anp.attachment.v1\""));
+                    assert!(!request.contains("\"anp_version\""));
                     assert!(request.contains("\"security_profile\":\"transport-protected\""));
                     assert!(request.contains("\"message_security_profile\":\"direct-e2ee\""));
                     assert!(request

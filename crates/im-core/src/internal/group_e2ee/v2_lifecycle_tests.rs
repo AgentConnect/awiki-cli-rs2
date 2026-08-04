@@ -352,9 +352,9 @@ fn p4_member_transition_must_match_group_member_status_and_version() {
 
 fn manifest_device(device_id: &str, group_e2ee: bool) -> anp::authentication::DeviceManifestEntry {
     let mut profiles = vec![
-        "anp.core.binding.v2".to_owned(),
-        "anp.identity.discovery.v2".to_owned(),
-        "anp.group.base.v2".to_owned(),
+        "anp.core.binding.v1".to_owned(),
+        "anp.identity.discovery.v1".to_owned(),
+        "anp.group.base.v1".to_owned(),
     ];
     if group_e2ee {
         profiles.push(PROFILE_GROUP_E2EE_V2.to_owned());

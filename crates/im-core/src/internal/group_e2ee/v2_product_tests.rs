@@ -1556,9 +1556,9 @@ fn documents(fixture: &DidFixture) -> Vec<V2DidDocument> {
 
 fn p6_profiles() -> Value {
     json!([
-        "anp.core.binding.v2",
-        "anp.identity.discovery.v2",
-        "anp.group.base.v2",
+        "anp.core.binding.v1",
+        "anp.identity.discovery.v1",
+        "anp.group.base.v1",
         "anp.group.e2ee.v2"
     ])
 }
