@@ -2,8 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const ANP_MESSAGE_SERVICE_TYPE: &str = "ANPMessageService";
-pub(crate) const VNEXT_ATTACHMENT_PROFILE: &str = "anp.attachment.v2";
-pub(crate) const LEGACY_ATTACHMENT_PROFILE: &str = "anp.attachment.v1";
+pub(crate) const ATTACHMENT_PROFILE: &str = "anp.attachment.v1";
 const TRANSPORT_PROTECTED_SECURITY_PROFILE: &str = "transport-protected";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -11,12 +10,6 @@ pub struct DiscoveredAttachmentService {
     pub sender_did: String,
     pub service_did: String,
     pub rpc_endpoint: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProfiledAttachmentService {
-    pub service: DiscoveredAttachmentService,
-    pub profile: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -33,31 +26,13 @@ pub(crate) fn select_attachment_rpc_service_from_document(
     sender_did: &str,
     document: &Value,
 ) -> crate::ImResult<DiscoveredAttachmentService> {
-    select_attachment_rpc_service_for_profile_from_document(
-        sender_did,
-        document,
-        LEGACY_ATTACHMENT_PROFILE,
-    )
-    .map(|selected| selected.service)
+    select_attachment_rpc_service(sender_did, document)
 }
 
-pub(crate) fn select_profiled_attachment_rpc_service_from_document(
+fn select_attachment_rpc_service(
     sender_did: &str,
     document: &Value,
-) -> crate::ImResult<ProfiledAttachmentService> {
-    let profile = if document_declares_profile(document, VNEXT_ATTACHMENT_PROFILE) {
-        VNEXT_ATTACHMENT_PROFILE
-    } else {
-        LEGACY_ATTACHMENT_PROFILE
-    };
-    select_attachment_rpc_service_for_profile_from_document(sender_did, document, profile)
-}
-
-fn select_attachment_rpc_service_for_profile_from_document(
-    sender_did: &str,
-    document: &Value,
-    profile: &str,
-) -> crate::ImResult<ProfiledAttachmentService> {
+) -> crate::ImResult<DiscoveredAttachmentService> {
     let sender_did = sender_did.trim();
     if sender_did.is_empty() {
         return Err(crate::ImError::invalid_input(
@@ -70,7 +45,12 @@ fn select_attachment_rpc_service_for_profile_from_document(
     let mut candidates = services
         .into_iter()
         .filter(|service| !service.service_did.is_empty() && !service.service_endpoint.is_empty())
-        .filter(|service| service.profiles.iter().any(|value| value == profile))
+        .filter(|service| {
+            service
+                .profiles
+                .iter()
+                .any(|value| value == ATTACHMENT_PROFILE)
+        })
         .filter(|service| {
             service
                 .security_profiles
@@ -96,24 +76,15 @@ fn select_attachment_rpc_service_for_profile_from_document(
     );
     let selected = candidates.remove(0);
     validate_request_uri(&selected.service_endpoint)?;
-    Ok(ProfiledAttachmentService {
-        service: DiscoveredAttachmentService {
-            sender_did: sender_did.to_string(),
-            service_did: selected.service_did,
-            rpc_endpoint: selected.service_endpoint,
-        },
-        profile: profile.to_owned(),
+    Ok(DiscoveredAttachmentService {
+        sender_did: sender_did.to_string(),
+        service_did: selected.service_did,
+        rpc_endpoint: selected.service_endpoint,
     })
 }
 
-pub(crate) fn declared_attachment_profile_from_document(document: &Value) -> Option<&'static str> {
-    if document_declares_profile(document, VNEXT_ATTACHMENT_PROFILE) {
-        Some(VNEXT_ATTACHMENT_PROFILE)
-    } else if document_declares_profile(document, LEGACY_ATTACHMENT_PROFILE) {
-        Some(LEGACY_ATTACHMENT_PROFILE)
-    } else {
-        None
-    }
+pub(crate) fn document_declares_attachment_profile(document: &Value) -> bool {
+    document_declares_profile(document, ATTACHMENT_PROFILE)
 }
 
 fn document_declares_profile(document: &Value, profile: &str) -> bool {

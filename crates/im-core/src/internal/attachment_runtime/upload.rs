@@ -76,7 +76,6 @@ struct ManifestSendResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AttachmentControlContext {
     service_did: String,
-    profile: String,
     requested_attachment_id: String,
 }
 
@@ -254,13 +253,12 @@ where
         prepared: &crate::attachments::manifest::PreparedAttachment,
     ) -> crate::ImResult<CreatedAttachmentSlot> {
         let params =
-            crate::internal::wire::attachment::build_attachment_create_slot_rpc_params_for_profile(
+            crate::internal::wire::attachment::build_attachment_create_slot_rpc_params_with_id(
                 self.client.did().as_str(),
                 &control.service_did,
                 target.kind(),
                 target.did(),
                 message_security_profile,
-                &control.profile,
                 &control.requested_attachment_id,
                 prepared,
             )?;
@@ -286,14 +284,12 @@ where
         prepared: &crate::attachments::manifest::PreparedAttachment,
         slot: &CreatedAttachmentSlot,
     ) -> crate::ImResult<()> {
-        let params =
-            crate::internal::wire::attachment::build_attachment_commit_object_rpc_params_with_profile(
-                self.client.did().as_str(),
-                &slot.context.service_did,
-                &slot.context.profile,
-                prepared,
-                &slot.result,
-            )?;
+        let params = crate::internal::wire::attachment::build_attachment_commit_object_rpc_params(
+            self.client.did().as_str(),
+            &slot.context.service_did,
+            prepared,
+            &slot.result,
+        )?;
         let response: crate::internal::wire::attachment::AttachmentCommitObjectResult =
             serde_json::from_value(self.transport.authenticated_rpc(
                 MESSAGE_RPC_ENDPOINT,
@@ -514,13 +510,12 @@ where
         prepared: &crate::attachments::manifest::PreparedAttachment,
     ) -> crate::ImResult<CreatedAttachmentSlot> {
         let params =
-            crate::internal::wire::attachment::build_attachment_create_slot_rpc_params_for_profile(
+            crate::internal::wire::attachment::build_attachment_create_slot_rpc_params_with_id(
                 self.client.did().as_str(),
                 &control.service_did,
                 target.kind(),
                 target.did(),
                 message_security_profile,
-                &control.profile,
                 &control.requested_attachment_id,
                 prepared,
             )?;
@@ -545,14 +540,12 @@ where
         prepared: &crate::attachments::manifest::PreparedAttachment,
         slot: &CreatedAttachmentSlot,
     ) -> crate::ImResult<()> {
-        let params =
-            crate::internal::wire::attachment::build_attachment_commit_object_rpc_params_with_profile(
-                self.client.did().as_str(),
-                &slot.context.service_did,
-                &slot.context.profile,
-                prepared,
-                &slot.result,
-            )?;
+        let params = crate::internal::wire::attachment::build_attachment_commit_object_rpc_params(
+            self.client.did().as_str(),
+            &slot.context.service_did,
+            prepared,
+            &slot.result,
+        )?;
         let response: crate::internal::wire::attachment::AttachmentCommitObjectResult =
             serde_json::from_value(
                 self.transport
@@ -999,47 +992,39 @@ fn local_attachment_control_context(
     let configured_service_did = message_service_did(client)?;
     let key_provider = &client.runtime().key_provider;
     let Some(document) = key_provider.optional_did_document()? else {
-        return Ok(attachment_control_context(
-            configured_service_did,
-            crate::internal::discovery::attachment::LEGACY_ATTACHMENT_PROFILE,
-        ));
+        return Ok(attachment_control_context(configured_service_did));
     };
-    match crate::internal::discovery::attachment::select_profiled_attachment_rpc_service_from_document(
+    match crate::internal::discovery::attachment::select_attachment_rpc_service_from_document(
         client.did().as_str(),
         &document,
     ) {
         Ok(selected) => {
-            if selected.service.service_did != configured_service_did {
+            if selected.service_did != configured_service_did {
                 return Err(crate::ImError::invalid_input(
                     Some("service_did".to_owned()),
                     "local DID attachment serviceDid does not match the configured Home service DID",
                 ));
             }
-            Ok(attachment_control_context(
-                configured_service_did,
-                &selected.profile,
-            ))
+            Ok(attachment_control_context(configured_service_did))
         }
         Err(_)
-            if crate::internal::discovery::attachment::declared_attachment_profile_from_document(
+            if !crate::internal::discovery::attachment::document_declares_attachment_profile(
                 &document,
-            )
-            .is_none() => Ok(attachment_control_context(
-                    configured_service_did,
-                    crate::internal::discovery::attachment::LEGACY_ATTACHMENT_PROFILE,
-                )),
+            ) =>
+        {
+            Ok(attachment_control_context(configured_service_did))
+        }
         Err(error) => Err(error),
     }
 }
 
-fn attachment_control_context(service_did: String, profile: &str) -> AttachmentControlContext {
+fn attachment_control_context(service_did: String) -> AttachmentControlContext {
     let requested_attachment_id = format!(
         "att-{}",
         crate::internal::wire::common::generate_operation_id()
     );
     AttachmentControlContext {
         service_did,
-        profile: profile.to_owned(),
         requested_attachment_id,
     }
 }

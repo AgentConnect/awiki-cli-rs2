@@ -71,7 +71,6 @@ pub(crate) fn prekey_bundle_publish_request(
         "method": "direct.e2ee.publish_prekey_bundle",
         "params": {
             "meta": {
-                "anp_version": "1.0",
                 "profile": "anp.direct.e2ee.v1",
                 "security_profile": "transport-protected",
                 "sender_did": local_did,
@@ -179,6 +178,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(request["method"], "direct.e2ee.publish_prekey_bundle");
+        assert!(request["params"]["meta"].get("anp_version").is_none());
         assert_eq!(
             request["params"]["meta"]["operation_id"],
             publish_operation_id(&bundle, &first).unwrap()

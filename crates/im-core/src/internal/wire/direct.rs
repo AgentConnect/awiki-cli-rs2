@@ -35,7 +35,6 @@ pub(crate) fn build_direct_text_payload(
     Ok(DirectPayload {
         method: "direct.send".to_string(),
         meta: json!({
-            "anp_version": "1.0",
             "profile": "anp.direct.base.v1",
             "security_profile": "transport-protected",
             "sender_did": sender_did,
@@ -72,7 +71,6 @@ pub(crate) fn build_direct_json_payload(
     Ok(DirectPayload {
         method: "direct.send".to_string(),
         meta: json!({
-            "anp_version": "1.0",
             "profile": "anp.direct.base.v1",
             "security_profile": "transport-protected",
             "sender_did": sender_did,

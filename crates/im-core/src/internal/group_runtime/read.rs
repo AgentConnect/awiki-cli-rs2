@@ -635,7 +635,8 @@ mod tests {
         assert!(calls[0].params["body"].get("include_policy").is_none());
         assert_eq!(calls[1].method, "group.get_info");
         assert_eq!(calls[1].endpoint, MESSAGE_RPC_ENDPOINT);
-        assert_eq!(calls[1].params["meta"]["profile"], "anp.group.base.v2");
+        assert_eq!(calls[1].params["meta"]["profile"], "anp.group.base.v1");
+        assert!(calls[1].params["meta"].get("anp_version").is_none());
         assert_eq!(
             calls[1].params["meta"]["target"],
             json!({"kind":"group","did":"did:example:group"})
@@ -692,6 +693,8 @@ mod tests {
         assert_eq!(calls[0].method, "group.get");
         assert!(calls[0].params["body"].get("include_policy").is_none());
         assert_eq!(calls[1].method, "group.get_info");
+        assert_eq!(calls[1].params["meta"]["profile"], "anp.group.base.v1");
+        assert!(calls[1].params["meta"].get("anp_version").is_none());
         assert_eq!(calls[1].params["body"]["include_policy"], true);
         assert_eq!(calls[1].params["body"]["include_member_list"], false);
     }

@@ -75,8 +75,8 @@ fn attachments_download_runtime_memory_fetches_ticket_and_bytes() {
     );
     let ticket = calls[2].rpc("attachment.get_download_ticket");
     assert_eq!(ticket.endpoint, MESSAGE_RPC_ENDPOINT);
-    assert_eq!(ticket.params["meta"]["profile"], "anp.attachment.v2");
-    assert_eq!(ticket.params["meta"]["anp_version"], "2.0");
+    assert_eq!(ticket.params["meta"]["profile"], "anp.attachment.v1");
+    assert!(ticket.params["meta"].get("anp_version").is_none());
     assert_eq!(
         ticket.params["meta"]["target"],
         json!({"kind": "service", "did": "did:web:attachment.example"})
@@ -355,7 +355,7 @@ fn attachments_download_runtime_falls_back_to_local_identity_document_for_sender
     let ticket = calls[2].rpc("attachment.get_download_ticket");
     assert_eq!(ticket.endpoint, MESSAGE_RPC_ENDPOINT);
     assert_eq!(ticket.params["meta"]["profile"], "anp.attachment.v1");
-    assert_eq!(ticket.params["meta"]["anp_version"], "1.0");
+    assert!(ticket.params["meta"].get("anp_version").is_none());
     assert_eq!(
         ticket.params["meta"]["target"],
         json!({"kind": "service", "did": "did:example:local-message-service"})
@@ -479,7 +479,7 @@ fn attachments_download_runtime_own_sync_ticket_keeps_original_direct_target() {
                 "type": "ANPMessageService",
                 "serviceEndpoint": "https://attachment.example/rpc",
                 "serviceDid": "did:web:attachment.example",
-                "profiles": ["anp.attachment.v2"],
+                "profiles": ["anp.attachment.v1"],
                 "securityProfiles": ["transport-protected"]
             }]
         }))
@@ -854,7 +854,7 @@ fn attachments_download_runtime_group_object_e2ee_uses_internal_manifest_cache()
     assert_eq!(calls.len(), 3);
     calls[0].get_json("https://example.com/bob/did.json");
     let ticket = calls[1].rpc("attachment.get_download_ticket");
-    assert_eq!(ticket.params["meta"]["profile"], "anp.attachment.v2");
+    assert_eq!(ticket.params["meta"]["profile"], "anp.attachment.v1");
     assert_eq!(
         ticket.params["body"]["message_security_profile"],
         "group-e2ee"
@@ -950,7 +950,7 @@ fn attachments_download_runtime_direct_object_e2ee_uses_internal_manifest_cache(
     assert_eq!(calls.len(), 3, "cached manifest must avoid history replay");
     calls[0].get_json("https://example.com/bob/did.json");
     let ticket = calls[1].rpc("attachment.get_download_ticket");
-    assert_eq!(ticket.params["meta"]["profile"], "anp.attachment.v2");
+    assert_eq!(ticket.params["meta"]["profile"], "anp.attachment.v1");
     assert_eq!(
         ticket.params["body"]["message_security_profile"],
         "direct-e2ee"
@@ -964,7 +964,7 @@ fn attachments_download_runtime_direct_object_e2ee_uses_internal_manifest_cache(
 
 #[cfg(feature = "internal-test-helpers")]
 #[tokio::test]
-async fn system_test_ticket_planner_reuses_v2_profile_and_wire_message_id() {
+async fn system_test_ticket_planner_uses_p7_v1_and_wire_message_id() {
     let fixture = Fixture::new();
     let client = fixture.client();
     let object = object_e2ee_case(b"ticket planner plaintext".to_vec());
@@ -1019,8 +1019,8 @@ async fn system_test_ticket_planner_reuses_v2_profile_and_wire_message_id() {
     .await
     .unwrap();
 
-    assert_eq!(params["meta"]["profile"], "anp.attachment.v2");
-    assert_eq!(params["meta"]["anp_version"], "2.0");
+    assert_eq!(params["meta"]["profile"], "anp.attachment.v1");
+    assert!(params["meta"].get("anp_version").is_none());
     assert_eq!(params["body"]["message_id"], "wire-ticket-planner");
     assert_eq!(params["body"]["message_target_did"], "did:example:alice");
     assert_eq!(params["body"]["message_security_profile"], "direct-e2ee");
@@ -1355,7 +1355,7 @@ impl RawJsonTransport for RecordingTransport {
                 "type": "ANPMessageService",
                 "serviceEndpoint": "https://attachment.example/rpc",
                 "serviceDid": "did:web:attachment.example",
-                "profiles": ["anp.attachment.v2"],
+                "profiles": ["anp.attachment.v1"],
                 "securityProfiles": ["transport-protected"],
                 "priority": 1
             }]
@@ -1633,7 +1633,7 @@ impl crate::internal::transport::AsyncRawJsonTransport for RuntimeP5AttachmentTr
                 "type": "ANPMessageService",
                 "serviceEndpoint": "https://attachment.example/rpc",
                 "serviceDid": "did:web:attachment.example",
-                "profiles": ["anp.attachment.v2"],
+                "profiles": ["anp.attachment.v1"],
                 "securityProfiles": ["transport-protected"],
                 "priority": 1
             }]
@@ -1730,7 +1730,7 @@ impl RawJsonTransport for E2eeTransport {
                 "type": "ANPMessageService",
                 "serviceEndpoint": "https://attachment.example/rpc",
                 "serviceDid": "did:web:attachment.example",
-                "profiles": ["anp.attachment.v2"],
+                "profiles": ["anp.attachment.v1"],
                 "securityProfiles": ["transport-protected"],
                 "priority": 1
             }]

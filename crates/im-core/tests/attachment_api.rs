@@ -1265,7 +1265,7 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
     )
     .expect("create-slot params");
     assert_eq!(create_slot["meta"]["profile"], "anp.attachment.v1");
-    assert_eq!(create_slot["meta"]["anp_version"], "1.0");
+    assert!(create_slot["meta"].get("anp_version").is_none());
     assert_eq!(
         create_slot["meta"]["target"],
         json!({ "kind": "service", "did": "did:wba:awiki.ai:services:message:e1" })
@@ -1322,7 +1322,7 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
     )
     .expect("ticket params");
     assert_eq!(ticket["meta"]["profile"], "anp.attachment.v1");
-    assert_eq!(ticket["meta"]["anp_version"], "1.0");
+    assert!(ticket["meta"].get("anp_version").is_none());
     assert_eq!(ticket["body"].get("sender_did"), None);
     assert_eq!(
         ticket["body"]["requester_did"],

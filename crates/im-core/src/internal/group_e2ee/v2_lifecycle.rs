@@ -1334,7 +1334,7 @@ fn service_meta(
     created_at: &str,
 ) -> V2ServiceMetadata {
     V2ServiceMetadata {
-        anp_version: Some("2.0".to_owned()),
+        anp_version: None,
         profile: GROUP_E2EE_PROFILE_V2.to_owned(),
         security_profile: security_profile.to_owned(),
         sender_did: client.did().as_str().to_owned(),
@@ -1355,7 +1355,7 @@ fn control_meta(
     operation_id: &str,
 ) -> V2GroupControlMetadata {
     V2GroupControlMetadata {
-        anp_version: Some("2.0".to_owned()),
+        anp_version: None,
         profile: GROUP_E2EE_PROFILE_V2.to_owned(),
         security_profile: GROUP_E2EE_SECURITY_PROFILE_V2.to_owned(),
         sender_did: client.did().as_str().to_owned(),

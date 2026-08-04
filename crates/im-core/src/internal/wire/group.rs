@@ -341,8 +341,7 @@ pub(crate) fn build_group_get_info_rpc_params(
     }
     Ok(json!({
         "meta": {
-            "anp_version": "2.0",
-            "profile": "anp.group.base.v2",
+            "profile": "anp.group.base.v1",
             "security_profile": "transport-protected",
             "sender_did": sender_did,
             "target": { "kind": "group", "did": group_did },
@@ -623,7 +622,6 @@ fn insert_optional_trimmed_string(patch: &mut Map<String, Value>, key: &str, val
 
 fn group_base_meta(sender_did: &str, target: Option<(&str, &str)>) -> Value {
     let mut meta = Map::new();
-    meta.insert("anp_version".to_string(), Value::String("1.0".to_string()));
     meta.insert(
         "profile".to_string(),
         Value::String("anp.group.base.v1".to_string()),
@@ -650,7 +648,6 @@ fn group_base_meta(sender_did: &str, target: Option<(&str, &str)>) -> Value {
 
 fn group_local_meta(sender_did: &str, group_did: Option<&str>) -> Value {
     let mut meta = Map::new();
-    meta.insert("anp_version".to_string(), Value::String("1.0".to_string()));
     meta.insert(
         "profile".to_string(),
         Value::String("anp.group.local.v1".to_string()),
@@ -691,8 +688,8 @@ mod handle_identity_tests {
             true,
         )
         .unwrap();
-        assert_eq!(p4["meta"]["anp_version"], "2.0");
-        assert_eq!(p4["meta"]["profile"], "anp.group.base.v2");
+        assert!(p4["meta"].get("anp_version").is_none());
+        assert_eq!(p4["meta"]["profile"], "anp.group.base.v1");
         assert_eq!(
             p4["meta"]["target"],
             json!({"kind": "group", "did": "did:example:group"})

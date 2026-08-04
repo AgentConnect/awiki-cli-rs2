@@ -65,7 +65,6 @@ pub(crate) fn content_type_for_message_kind(
 
 pub(crate) fn local_meta(sender_did: &str, profile: &str) -> serde_json::Value {
     serde_json::json!({
-        "anp_version": "1.0",
         "profile": profile,
         "security_profile": "transport-protected",
         "sender_did": sender_did,
@@ -80,7 +79,6 @@ pub(crate) fn delegated_local_meta(
     profile: &str,
 ) -> serde_json::Value {
     serde_json::json!({
-        "anp_version": "1.0",
         "profile": profile,
         "security_profile": "transport-protected",
         "sender_did": sender_did,
@@ -99,7 +97,6 @@ pub(crate) fn message_meta(
     profile: &str,
 ) -> serde_json::Value {
     serde_json::json!({
-        "anp_version": "1.0",
         "profile": profile,
         "security_profile": "transport-protected",
         "sender_did": sender_did,
@@ -120,7 +117,6 @@ pub(crate) fn signed_message_meta(
     content_type: &str,
 ) -> serde_json::Value {
     serde_json::json!({
-        "anp_version": "1.0",
         "profile": profile,
         "security_profile": "transport-protected",
         "sender_did": sender_did,

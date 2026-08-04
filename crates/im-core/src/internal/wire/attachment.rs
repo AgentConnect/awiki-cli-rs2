@@ -3,8 +3,7 @@ use serde_json::{json, Map, Value};
 
 use super::direct::DirectPayload;
 
-const LEGACY_ATTACHMENT_PROFILE: &str = "anp.attachment.v1";
-const VNEXT_ATTACHMENT_PROFILE: &str = "anp.attachment.v2";
+const ATTACHMENT_PROFILE: &str = "anp.attachment.v1";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachmentCreateSlotResult {
@@ -72,25 +71,23 @@ pub(crate) fn build_attachment_create_slot_rpc_params_with_security_profile(
     prepared: &crate::attachments::manifest::PreparedAttachment,
 ) -> crate::ImResult<Value> {
     let attachment_id = format!("att-{}", super::common::generate_operation_id());
-    build_attachment_create_slot_rpc_params_for_profile(
+    build_attachment_create_slot_rpc_params_with_id(
         sender_did,
         service_did,
         target_kind,
         target_did,
         message_security_profile,
-        LEGACY_ATTACHMENT_PROFILE,
         &attachment_id,
         prepared,
     )
 }
 
-pub(crate) fn build_attachment_create_slot_rpc_params_for_profile(
+pub(crate) fn build_attachment_create_slot_rpc_params_with_id(
     sender_did: &str,
     service_did: &str,
     target_kind: &str,
     target_did: &str,
     message_security_profile: &str,
-    attachment_profile: &str,
     requested_attachment_id: &str,
     prepared: &crate::attachments::manifest::PreparedAttachment,
 ) -> crate::ImResult<Value> {
@@ -125,7 +122,6 @@ pub(crate) fn build_attachment_create_slot_rpc_params_for_profile(
             "object-e2ee attachments require direct-e2ee or group-e2ee message security profile",
         ));
     }
-    let attachment_profile = validated_attachment_profile(attachment_profile)?;
     let mut body = json!({
         "expected_size": prepared.size_string,
         "expected_digest": {
@@ -150,7 +146,7 @@ pub(crate) fn build_attachment_create_slot_rpc_params_for_profile(
     }
     body["attachment_id"] = Value::String(attachment_id.to_owned());
     Ok(json!({
-        "meta": attachment_meta(sender_did, service_did, attachment_profile),
+        "meta": attachment_meta(sender_did, service_did),
         "body": body,
     }))
 }
@@ -158,22 +154,6 @@ pub(crate) fn build_attachment_create_slot_rpc_params_for_profile(
 pub(crate) fn build_attachment_commit_object_rpc_params(
     sender_did: &str,
     service_did: &str,
-    prepared: &crate::attachments::manifest::PreparedAttachment,
-    slot: &AttachmentCreateSlotResult,
-) -> crate::ImResult<Value> {
-    build_attachment_commit_object_rpc_params_with_profile(
-        sender_did,
-        service_did,
-        LEGACY_ATTACHMENT_PROFILE,
-        prepared,
-        slot,
-    )
-}
-
-pub(crate) fn build_attachment_commit_object_rpc_params_with_profile(
-    sender_did: &str,
-    service_did: &str,
-    attachment_profile: &str,
     prepared: &crate::attachments::manifest::PreparedAttachment,
     slot: &AttachmentCreateSlotResult,
 ) -> crate::ImResult<Value> {
@@ -214,9 +194,8 @@ pub(crate) fn build_attachment_commit_object_rpc_params_with_profile(
             Value::String(plaintext_size.clone()),
         );
     }
-    let attachment_profile = validated_attachment_profile(attachment_profile)?;
     Ok(json!({
-        "meta": attachment_meta(sender_did, service_did, attachment_profile),
+        "meta": attachment_meta(sender_did, service_did),
         "body": Value::Object(body),
     }))
 }
@@ -229,46 +208,42 @@ pub(crate) fn build_attachment_download_ticket_rpc_params(
     group_did: &str,
     selection: &crate::attachments::selection::AttachmentSelection,
 ) -> crate::ImResult<Value> {
-    build_attachment_download_ticket_rpc_params_with_profile(
+    build_attachment_download_ticket_rpc_params_with_target(
         requester_did,
         service_did,
         sender_did,
         message_id,
         group_did,
-        LEGACY_ATTACHMENT_PROFILE,
         selection,
     )
 }
 
-pub(crate) fn build_attachment_download_ticket_rpc_params_with_profile(
+pub(crate) fn build_attachment_download_ticket_rpc_params_with_target(
     requester_did: &str,
     service_did: &str,
     sender_did: &str,
     message_id: &str,
     group_did: &str,
-    attachment_profile: &str,
     selection: &crate::attachments::selection::AttachmentSelection,
 ) -> crate::ImResult<Value> {
-    build_attachment_download_ticket_rpc_params_with_profile_and_target(
+    build_attachment_download_ticket_rpc_params_with_explicit_target(
         requester_did,
         service_did,
         sender_did,
         message_id,
         requester_did,
         group_did,
-        attachment_profile,
         selection,
     )
 }
 
-pub(crate) fn build_attachment_download_ticket_rpc_params_with_profile_and_target(
+pub(crate) fn build_attachment_download_ticket_rpc_params_with_explicit_target(
     requester_did: &str,
     service_did: &str,
     sender_did: &str,
     message_id: &str,
     message_target_did: &str,
     group_did: &str,
-    attachment_profile: &str,
     selection: &crate::attachments::selection::AttachmentSelection,
 ) -> crate::ImResult<Value> {
     if selection.attachment_id.trim().is_empty() {
@@ -289,7 +264,6 @@ pub(crate) fn build_attachment_download_ticket_rpc_params_with_profile_and_targe
             "attachment message sender_did is required",
         ));
     }
-    let attachment_profile = validated_attachment_profile(attachment_profile)?;
     let mut body = Map::new();
     body.insert(
         "attachment_id".to_string(),
@@ -333,29 +307,13 @@ pub(crate) fn build_attachment_download_ticket_rpc_params_with_profile_and_targe
         );
     }
     Ok(json!({
-        "meta": attachment_meta(requester_did, service_did, attachment_profile),
+        "meta": attachment_meta(requester_did, service_did),
         "body": body,
     }))
 }
 
-fn validated_attachment_profile(profile: &str) -> crate::ImResult<&str> {
-    let profile = profile.trim();
-    if profile == VNEXT_ATTACHMENT_PROFILE || profile == LEGACY_ATTACHMENT_PROFILE {
-        Ok(profile)
-    } else {
-        Err(crate::ImError::invalid_input(
-            Some("attachment_profile".to_string()),
-            "attachment profile must be anp.attachment.v2 or anp.attachment.v1",
-        ))
-    }
-}
-
-fn attachment_meta(sender_did: &str, service_did: &str, profile: &str) -> Value {
-    let mut meta = super::common::message_meta(sender_did, service_did, profile);
-    if profile == VNEXT_ATTACHMENT_PROFILE {
-        meta["anp_version"] = Value::String("2.0".to_owned());
-    }
-    meta
+fn attachment_meta(sender_did: &str, service_did: &str) -> Value {
+    super::common::message_meta(sender_did, service_did, ATTACHMENT_PROFILE)
 }
 
 fn selection_message_security_profile(

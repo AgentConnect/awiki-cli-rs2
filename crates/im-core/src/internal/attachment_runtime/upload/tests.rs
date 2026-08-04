@@ -70,7 +70,7 @@ fn attachments_upload_runtime_bytes_direct_runs_create_put_commit_and_send() {
     let create = calls[0].rpc("attachment.create_slot");
     assert_eq!(create.endpoint, MESSAGE_RPC_ENDPOINT);
     assert_eq!(create.params["meta"]["profile"], "anp.attachment.v1");
-    assert_eq!(create.params["meta"]["anp_version"], "1.0");
+    assert!(create.params["meta"].get("anp_version").is_none());
     let requested_attachment_id = create.params["body"]["attachment_id"]
         .as_str()
         .expect("caller attachment id");
@@ -97,7 +97,7 @@ fn attachments_upload_runtime_bytes_direct_runs_create_put_commit_and_send() {
 
     let commit = calls[2].rpc("attachment.commit_object");
     assert_eq!(commit.params["meta"]["profile"], "anp.attachment.v1");
-    assert_eq!(commit.params["meta"]["anp_version"], "1.0");
+    assert!(commit.params["meta"].get("anp_version").is_none());
     assert_eq!(
         commit.params["body"]["attachment_id"],
         requested_attachment_id
@@ -129,9 +129,9 @@ fn attachments_upload_runtime_bytes_direct_runs_create_put_commit_and_send() {
 }
 
 #[test]
-fn attachments_upload_runtime_vnext_reuses_one_profiled_control_context() {
+fn attachments_upload_runtime_reuses_one_p7_v1_control_context() {
     let fixture = Fixture::new(Some("did:example:message-service"));
-    fixture.write_vnext_attachment_service_document("did:example:message-service");
+    fixture.write_attachment_service_document("did:example:message-service");
     let client = fixture.client();
     let calls = Rc::new(RefCell::new(Vec::new()));
 
@@ -149,9 +149,9 @@ fn attachments_upload_runtime_vnext_reuses_one_profiled_control_context() {
             crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
         ),
         request: bytes_request(
-            Some("vnext.txt"),
+            Some("attachment.txt"),
             Some("text/plain"),
-            b"vnext".to_vec(),
+            b"attachment".to_vec(),
             None,
             None,
             None,
@@ -160,20 +160,20 @@ fn attachments_upload_runtime_vnext_reuses_one_profiled_control_context() {
         client_message_id: None,
         credentials: Some(fixture.credentials()),
     })
-    .expect("vNext attachment upload");
+    .expect("P7 v1 attachment upload");
 
     let calls = calls.borrow();
     let create = calls[0].rpc("attachment.create_slot");
     let requested_attachment_id = create.params["body"]["attachment_id"]
         .as_str()
-        .expect("v2 caller attachment id");
+        .expect("P7 v1 caller attachment id");
     assert!(requested_attachment_id.starts_with("att-"));
-    assert_eq!(create.params["meta"]["profile"], "anp.attachment.v2");
-    assert_eq!(create.params["meta"]["anp_version"], "2.0");
+    assert_eq!(create.params["meta"]["profile"], "anp.attachment.v1");
+    assert!(create.params["meta"].get("anp_version").is_none());
     assert_eq!(create.endpoint, MESSAGE_RPC_ENDPOINT);
 
     let commit = calls[2].rpc("attachment.commit_object");
-    assert_eq!(commit.params["meta"]["profile"], "anp.attachment.v2");
+    assert_eq!(commit.params["meta"]["profile"], "anp.attachment.v1");
     assert_eq!(
         commit.params["meta"]["target"],
         create.params["meta"]["target"]
@@ -187,7 +187,7 @@ fn attachments_upload_runtime_vnext_reuses_one_profiled_control_context() {
 #[test]
 fn attachments_upload_runtime_rejects_local_service_did_mismatch_before_transport() {
     let fixture = Fixture::new(Some("did:example:configured-home"));
-    fixture.write_vnext_attachment_service_document("did:example:different-home");
+    fixture.write_attachment_service_document("did:example:different-home");
     let client = fixture.client();
     let calls = Rc::new(RefCell::new(Vec::new()));
 
@@ -585,9 +585,9 @@ fn attachments_upload_runtime_direct_handle_requires_resolved_did() {
 }
 
 #[test]
-fn attachments_upload_runtime_rejects_mismatched_vnext_create_id() {
+fn attachments_upload_runtime_rejects_mismatched_p7_create_id() {
     let fixture = Fixture::new(Some("did:example:message-service"));
-    fixture.write_vnext_attachment_service_document("did:example:message-service");
+    fixture.write_attachment_service_document("did:example:message-service");
     let client = fixture.client();
 
     let error = AttachmentUploadRuntime::new(
@@ -606,9 +606,9 @@ fn attachments_upload_runtime_rejects_mismatched_vnext_create_id() {
 }
 
 #[tokio::test]
-async fn attachments_upload_runtime_async_rejects_mismatched_vnext_create_id() {
+async fn attachments_upload_runtime_async_rejects_mismatched_p7_create_id() {
     let fixture = Fixture::new(Some("did:example:message-service"));
-    fixture.write_vnext_attachment_service_document("did:example:message-service");
+    fixture.write_attachment_service_document("did:example:message-service");
     let client = fixture.client();
 
     let error = AttachmentUploadRuntime::new(
@@ -637,7 +637,7 @@ fn attachments_upload_runtime_rejects_uncommitted_and_mismatched_commit_ids() {
         ),
     ] {
         let fixture = Fixture::new(Some("did:example:message-service"));
-        fixture.write_vnext_attachment_service_document("did:example:message-service");
+        fixture.write_attachment_service_document("did:example:message-service");
         let client = fixture.client();
         let error = AttachmentUploadRuntime::new(
             &client,
@@ -655,7 +655,7 @@ fn attachments_upload_runtime_rejects_uncommitted_and_mismatched_commit_ids() {
 #[tokio::test]
 async fn attachments_upload_runtime_async_rejects_mismatched_commit_object_uri() {
     let fixture = Fixture::new(Some("did:example:message-service"));
-    fixture.write_vnext_attachment_service_document("did:example:message-service");
+    fixture.write_attachment_service_document("did:example:message-service");
     let client = fixture.client();
 
     let error = AttachmentUploadRuntime::new(
@@ -1176,7 +1176,7 @@ impl Fixture {
         .unwrap()
     }
 
-    fn write_vnext_attachment_service_document(&self, service_did: &str) {
+    fn write_attachment_service_document(&self, service_did: &str) {
         fs::write(
             self.root.join("identities/alice/did.json"),
             serde_json::to_vec_pretty(&json!({
@@ -1186,7 +1186,7 @@ impl Fixture {
                     "type": "ANPMessageService",
                     "serviceEndpoint": "https://public.example/anp-im/rpc",
                     "serviceDid": service_did,
-                    "profiles": ["anp.core.binding.v2", "anp.attachment.v2"],
+                    "profiles": ["anp.core.binding.v1", "anp.attachment.v1"],
                     "securityProfiles": ["transport-protected"]
                 }]
             }))

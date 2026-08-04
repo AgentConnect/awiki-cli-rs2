@@ -420,7 +420,7 @@ pub(super) fn send_group(
     let mut product =
         crate::internal::group_e2ee::v2_product::GroupE2eeV2Product::new(runtime, host);
     let meta = anp::group_e2ee::V2GroupSendMetadata {
-        anp_version: Some("2.0".to_owned()),
+        anp_version: None,
         profile: anp::group_e2ee::GROUP_E2EE_PROFILE_V2.to_owned(),
         security_profile: anp::group_e2ee::GROUP_E2EE_SECURITY_PROFILE_V2.to_owned(),
         sender_did: client.did().as_str().to_owned(),
@@ -962,7 +962,8 @@ mod tests {
         .unwrap();
         let encoded = serde_json::to_string(&params).unwrap();
 
-        assert_eq!(params["meta"]["profile"], "anp.group.base.v2");
+        assert_eq!(params["meta"]["profile"], "anp.group.base.v1");
+        assert!(params["meta"].get("anp_version").is_none());
         assert_eq!(params["meta"]["target"]["did"], "did:example:group");
         assert_eq!(params["body"]["include_policy"], false);
         assert_eq!(params["body"]["include_member_list"], false);

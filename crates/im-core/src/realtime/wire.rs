@@ -620,7 +620,6 @@ fn require_group_did(group_did: &str) -> crate::ImResult<&str> {
 
 fn group_base_meta(sender_did: &str, target: Option<(&str, &str)>) -> Value {
     let mut meta = Map::new();
-    meta.insert("anp_version".to_string(), Value::String("1.0".to_string()));
     meta.insert(
         "profile".to_string(),
         Value::String("anp.group.base.v1".to_string()),
