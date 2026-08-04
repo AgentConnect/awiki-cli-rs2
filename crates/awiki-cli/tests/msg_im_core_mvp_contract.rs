@@ -300,8 +300,6 @@ fn msg_inbox_reconciles_secure_exact_device_rows_without_ordinary_inbox_fallback
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::registration(),
-        TestResponse::sync_bootstrap(),
-        TestResponse::sync_delta_empty(),
         TestResponse::ok(&json_rpc_result(json!({
             "messages": [{
                 "id": "msg-ordinary-injected-by-secure-inbox",
@@ -314,6 +312,8 @@ fn msg_inbox_reconciles_secure_exact_device_rows_without_ordinary_inbox_fallback
             "has_more": false,
             "warnings": []
         }))),
+        TestResponse::sync_bootstrap(),
+        TestResponse::sync_delta_empty(),
     ]);
     write_msg_config(workspace.path(), &server.base_url());
     success_json(&awiki_cmd(
@@ -361,9 +361,9 @@ fn msg_inbox_reconciles_secure_exact_device_rows_without_ordinary_inbox_fallback
         [
             "register",
             "direct.e2ee.publish_prekey_bundle",
+            "inbox.get",
             "sync.bootstrap",
-            "sync.delta",
-            "inbox.get"
+            "sync.delta"
         ]
     );
     let secure = rpc_bodies
