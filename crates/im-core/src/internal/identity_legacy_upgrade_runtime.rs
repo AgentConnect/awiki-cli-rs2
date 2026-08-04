@@ -55,6 +55,45 @@ async fn upgrade_inner(
             store.save_did_document(&entry.dir_name, &pending.generated.target_document)?;
             pending_store.delete(&pending_ref)?;
         }
+        let client = core.client(selector)?;
+        let mut resolver_transport = crate::internal::transport::CoreHttpTransport::new(&client);
+        let remote_document = crate::internal::discovery::did_document::resolve_did_document_async(
+            &mut resolver_transport,
+            entry.did.as_str(),
+        )
+        .await?;
+        if !crate::internal::identity_legacy_upgrade::vnext_profile_discovery_requires_convergence(
+            &remote_document,
+        )? {
+            store.save_did_document(&entry.dir_name, &remote_document)?;
+            return Ok(crate::identity::LegacyUpgradeStatus::Completed);
+        }
+        let root_private_pem = zeroize::Zeroizing::new(
+            client
+                .runtime()
+                .key_provider
+                .did_document_root_private_pem()?,
+        );
+        let target_document =
+            crate::internal::identity_legacy_upgrade::converge_vnext_profile_discovery(
+                &remote_document,
+                &root_private_pem,
+            )?
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let call = crate::internal::identity_wire::update_document::build_update_document_rpc_call(
+            crate::internal::identity_wire::UpdateDocumentRpcParams {
+                did_document: target_document.clone(),
+                is_public: None,
+                is_agent: None,
+                role: None,
+                endpoint_url: None,
+            },
+        );
+        let mut transport = crate::internal::transport::CoreHttpTransport::new(&client);
+        transport
+            .authenticated_rpc(call.endpoint, call.method, call.params)
+            .await?;
+        store.save_did_document(&entry.dir_name, &target_document)?;
         return Ok(crate::identity::LegacyUpgradeStatus::Completed);
     }
     let client = core.client(selector)?;

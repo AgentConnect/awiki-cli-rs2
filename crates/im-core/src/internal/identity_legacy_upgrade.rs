@@ -15,6 +15,20 @@ const VNEXT_DEVICE_PROFILES: &[&str] = &[
     anp::authentication::PROFILE_GROUP_E2EE_V2,
 ];
 
+const VNEXT_SERVICE_PROFILES: &[&str] = &[
+    anp::authentication::PROFILE_CORE_BINDING_V1,
+    anp::authentication::PROFILE_IDENTITY_DISCOVERY_V1,
+    anp::authentication::PROFILE_DIRECT_BASE_V1,
+    anp::authentication::PROFILE_DIRECT_E2EE_V2,
+    anp::authentication::PROFILE_GROUP_BASE_V1,
+    anp::authentication::PROFILE_GROUP_E2EE_V2,
+    "anp.attachment.v1",
+    "anp.federation.relay.v1",
+];
+
+const VNEXT_SERVICE_SECURITY_PROFILES: &[&str] =
+    &["transport-protected", "direct-e2ee", "group-e2ee"];
+
 const MANAGED_DOCUMENT_FIELDS: &[&str] = &[
     "verificationMethod",
     "authentication",
@@ -84,6 +98,120 @@ pub(crate) fn build_legacy_upgrade(
     };
     rebuild_legacy_upgrade_target(&mut generated, legacy_document, root_private_pem)?;
     Ok(generated)
+}
+
+/// Returns a freshly signed canonical vNext document when only the Messaging
+/// discovery contract needs convergence. An already canonical document
+/// produces `None`, so callers can avoid both root access and remote writes.
+pub(crate) fn converge_vnext_profile_discovery(
+    current_document: &Value,
+    root_private_pem: &str,
+) -> crate::ImResult<Option<Value>> {
+    let mut target_document = current_document.clone();
+    let (did, changed) = canonicalize_vnext_profile_discovery(&mut target_document)?;
+    if !changed {
+        return Ok(None);
+    }
+
+    let root_key_id = format!("{}#key-1", did.as_str());
+    let root_method = unique_verification_method(current_document, &root_key_id)?;
+    let root_private = anp::PrivateKeyMaterial::from_pem(root_private_pem)
+        .map_err(|_| crate::ImError::PermissionDenied)?;
+    let document_root_public =
+        crate::internal::identity_wire::document::extract_identity_public_key(root_method)?;
+    if root_private.public_key().to_pem() != document_root_public.to_pem() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    crate::internal::identity_daemon_subkey::resign_did_document_with_fresh_key1_proof(
+        &mut target_document,
+        &did,
+        root_private_pem,
+    )?;
+    if !anp::authentication::validate_did_document_binding(&target_document, true) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    anp::authentication::validate_device_manifest(&target_document)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+    Ok(Some(target_document))
+}
+
+pub(crate) fn vnext_profile_discovery_requires_convergence(
+    current_document: &Value,
+) -> crate::ImResult<bool> {
+    let mut inspected = current_document.clone();
+    canonicalize_vnext_profile_discovery(&mut inspected).map(|(_, changed)| changed)
+}
+
+fn canonicalize_vnext_profile_discovery(
+    document: &mut Value,
+) -> crate::ImResult<(crate::ids::Did, bool)> {
+    let did = crate::ids::Did::parse(
+        document
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(crate::ImError::PermissionDenied)?,
+    )?;
+    if !anp::authentication::validate_did_document_binding(document, true) {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    anp::authentication::validate_device_manifest(document)
+        .map_err(|_| crate::ImError::PermissionDenied)?
+        .ok_or(crate::ImError::PermissionDenied)?;
+
+    let services = document
+        .get_mut("service")
+        .and_then(Value::as_array_mut)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let matching_services = services
+        .iter()
+        .enumerate()
+        .filter(|(_, service)| {
+            service.get("type").and_then(Value::as_str) == Some("ANPMessageService")
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let [service_index] = matching_services.as_slice() else {
+        return Err(crate::ImError::PermissionDenied);
+    };
+    let service = services[*service_index]
+        .as_object_mut()
+        .ok_or(crate::ImError::PermissionDenied)?;
+    let mut changed = set_string_array(service, "profiles", VNEXT_SERVICE_PROFILES);
+    changed |= set_string_array(service, "securityProfiles", VNEXT_SERVICE_SECURITY_PROFILES);
+
+    let devices = document
+        .pointer_mut("/deviceManifest/devices")
+        .and_then(Value::as_array_mut)
+        .ok_or(crate::ImError::PermissionDenied)?;
+    if devices.is_empty() {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    for device in devices {
+        let device = device
+            .as_object_mut()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        changed |= set_string_array(device, "profiles", VNEXT_DEVICE_PROFILES);
+    }
+    Ok((did, changed))
+}
+
+fn set_string_array(
+    object: &mut serde_json::Map<String, Value>,
+    field: &str,
+    expected: &[&str],
+) -> bool {
+    let value = Value::Array(
+        expected
+            .iter()
+            .map(|item| Value::String((*item).to_owned()))
+            .collect(),
+    );
+    if object.get(field) == Some(&value) {
+        return false;
+    }
+    object.insert(field.to_owned(), value);
+    true
 }
 
 /// Rebuild the canonical target from a proven-current Legacy document while

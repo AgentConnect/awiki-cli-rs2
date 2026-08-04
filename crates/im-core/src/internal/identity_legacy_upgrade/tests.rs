@@ -233,3 +233,161 @@ fn proven_legacy_retry_rebuilds_only_the_document_and_reuses_device_keys() {
         json!({"revision": 2})
     );
 }
+
+#[test]
+fn vnext_profile_convergence_preserves_authority_and_device_identity_and_is_idempotent() {
+    let generated =
+        crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "example.test",
+            "converge-user",
+            None,
+            None,
+        )
+        .unwrap();
+    let mut legacy_draft = generated.did_document.clone();
+    let original_methods = legacy_draft["verificationMethod"].clone();
+    let original_authentication = legacy_draft["authentication"].clone();
+    let original_assertion = legacy_draft["assertionMethod"].clone();
+    let original_agreement = legacy_draft["keyAgreement"].clone();
+    let original_devices = legacy_draft["deviceManifest"]["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|device| {
+            (
+                device["device_id"].clone(),
+                device["signing_key_id"].clone(),
+                device["e2ee_key_id"].clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let service = legacy_draft["service"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|service| service["type"] == "ANPMessageService")
+        .unwrap();
+    service["profiles"] = json!([
+        "anp.core.binding.v2",
+        "anp.identity.discovery.v2",
+        "anp.direct.base.v2",
+        "anp.direct.e2ee.v2",
+        "anp.group.base.v2",
+        "anp.group.e2ee.v2",
+        "anp.attachment.v2",
+        "anp.federation.relay.v2"
+    ]);
+    for device in legacy_draft["deviceManifest"]["devices"]
+        .as_array_mut()
+        .unwrap()
+    {
+        device["profiles"] = json!([
+            "anp.core.binding.v2",
+            "anp.identity.discovery.v2",
+            "anp.direct.base.v2",
+            "anp.direct.e2ee.v2",
+            "anp.group.base.v2",
+            "anp.group.e2ee.v2"
+        ]);
+    }
+    crate::internal::identity_daemon_subkey::resign_did_document_with_fresh_key1_proof(
+        &mut legacy_draft,
+        &generated.did,
+        &generated.root_private_pem,
+    )
+    .unwrap();
+
+    assert!(vnext_profile_discovery_requires_convergence(&legacy_draft).unwrap());
+    let converged = converge_vnext_profile_discovery(&legacy_draft, &generated.root_private_pem)
+        .unwrap()
+        .unwrap();
+    assert_eq!(converged["id"], legacy_draft["id"]);
+    assert_eq!(converged["verificationMethod"], original_methods);
+    assert_eq!(converged["authentication"], original_authentication);
+    assert_eq!(converged["assertionMethod"], original_assertion);
+    assert_eq!(converged["keyAgreement"], original_agreement);
+    let devices = converged["deviceManifest"]["devices"].as_array().unwrap();
+    assert_eq!(devices.len(), original_devices.len());
+    for (device, expected) in devices.iter().zip(original_devices) {
+        assert_eq!(
+            (
+                device["device_id"].clone(),
+                device["signing_key_id"].clone(),
+                device["e2ee_key_id"].clone(),
+            ),
+            expected
+        );
+        assert_eq!(
+            device["profiles"],
+            json!([
+                "anp.core.binding.v1",
+                "anp.identity.discovery.v1",
+                "anp.direct.base.v1",
+                "anp.direct.e2ee.v2",
+                "anp.group.base.v1",
+                "anp.group.e2ee.v2"
+            ])
+        );
+    }
+    let service = converged["service"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|service| service["type"] == "ANPMessageService")
+        .unwrap();
+    assert_eq!(
+        service["profiles"],
+        json!([
+            "anp.core.binding.v1",
+            "anp.identity.discovery.v1",
+            "anp.direct.base.v1",
+            "anp.direct.e2ee.v2",
+            "anp.group.base.v1",
+            "anp.group.e2ee.v2",
+            "anp.attachment.v1",
+            "anp.federation.relay.v1"
+        ])
+    );
+    let root_public = anp::PrivateKeyMaterial::from_pem(&generated.root_private_pem)
+        .unwrap()
+        .public_key();
+    let proof = &converged["proof"];
+    assert!(verify_w3c_proof(
+        &converged,
+        &root_public,
+        ProofVerificationOptions {
+            expected_purpose: Some("assertionMethod".to_owned()),
+            expected_domain: Some("example.test".to_owned()),
+            expected_challenge: proof["challenge"].as_str().map(ToOwned::to_owned),
+        },
+    ));
+    assert!(!vnext_profile_discovery_requires_convergence(&converged).unwrap());
+    assert_eq!(
+        converge_vnext_profile_discovery(&converged, "root access is not needed").unwrap(),
+        None
+    );
+}
+
+#[test]
+fn vnext_profile_convergence_rejects_missing_root_authority() {
+    let generated =
+        crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "example.test",
+            "rootless-user",
+            None,
+            None,
+        )
+        .unwrap();
+    let mut legacy_draft = generated.did_document;
+    let service = legacy_draft["service"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|service| service["type"] == "ANPMessageService")
+        .unwrap();
+    service["profiles"] = json!(["anp.direct.base.v2"]);
+    assert!(matches!(
+        converge_vnext_profile_discovery(&legacy_draft, ""),
+        Err(crate::ImError::PermissionDenied)
+    ));
+}
