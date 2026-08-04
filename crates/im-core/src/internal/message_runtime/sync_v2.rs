@@ -4487,9 +4487,8 @@ mod tests {
         let client = fixture.client();
         let binding = client.active_sync_account_binding().await.unwrap();
         let event = system_notification_contract_fixture(&binding);
-        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/system-notification-v1.json",
-        );
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_device_v1/system-notification-v1.json");
         let source: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
         let mut request = source["p3_vector"]["request"].clone();
         request["method"] = json!("direct.incoming");
@@ -4579,13 +4578,11 @@ mod tests {
 
     #[tokio::test]
     async fn exact_system_notification_wrapper_reaches_full_verification_before_apply() {
-        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/system-notification-v1.json",
-        );
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_device_v1/system-notification-v1.json");
         let source: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
-        let target_document_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/device-join-rpc-v1.json",
-        );
+        let target_document_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_device_v1/device-join-rpc-v1.json");
         let target_source: Value =
             serde_json::from_slice(&std::fs::read(target_document_path).unwrap()).unwrap();
         let target_did = source["p3_vector"]["request"]["params"]["meta"]["target"]["did"]

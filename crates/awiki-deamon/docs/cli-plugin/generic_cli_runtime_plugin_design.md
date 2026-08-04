@@ -6,7 +6,7 @@
 定位：记录当前 `generic-cli` 实现、消息 session 流转、目录关系、发布边界和首版未实现项。
 
 > 本文是实现者、App 接入者和运维排查者的短入口，不是完整计划清单。更细的执行证据在
-> `plan/20260619-daemon-codex-claude/plan.md` 和各 Step 文档中维护。
+> `awiki-plan/20260619-daemon-codex-claude/plan.md` 和各 Step 文档中维护。
 
 ---
 

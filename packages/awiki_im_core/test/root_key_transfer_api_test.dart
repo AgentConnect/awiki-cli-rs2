@@ -116,9 +116,9 @@ class _FixtureAuthorizationHandle
 
 Map<String, Object?> _rootTransferManifest() {
   const relative =
-      'plan/20260718-awiki-multi-device-implementation/refactor/fixtures/'
+      'crates/im-core/tests/fixtures/multi_device_v1/'
       'root-key-admin-upgrade-v1.json';
-  final candidates = <File>[File('../../../$relative'), File('../$relative')];
+  final candidates = <File>[File('../../$relative'), File(relative)];
   final file = candidates.firstWhere(
     (candidate) => candidate.existsSync(),
     orElse: () => throw StateError('root-key fixture not found'),

@@ -469,9 +469,8 @@ mod tests {
 
     #[test]
     fn canonical_group_members_fixture_is_consumed_by_the_strict_collector() {
-        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/group-members-page-1.json",
-        );
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_device_v1/group-members-page-1.json");
         let fixture: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
         let raw = fixture.pointer("/response/result").cloned().unwrap();
         let group =

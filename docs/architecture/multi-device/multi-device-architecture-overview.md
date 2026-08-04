@@ -4,7 +4,7 @@
 
 > 本文用于快速理解 V1。完整状态、事务和安全边界以
 > [多设备架构设计](./multi-device-architecter.md)为准；精确 JSON/RPC 契约以
-> [新设备加入消息与 RPC 契约](../../../../plan/20260718-awiki-multi-device-implementation/refactor/device-join-message-contract.md)
+> [新设备加入消息与 RPC 契约](../../../../awiki-plan/20260718-awiki-multi-device-implementation/refactor/device-join-message-contract.md)
 > 为准。
 
 ---

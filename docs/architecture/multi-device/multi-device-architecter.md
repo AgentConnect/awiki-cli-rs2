@@ -6,13 +6,13 @@
 
 > 本文固定 AWiki 多设备的总体架构、权威状态、核心流程和安全边界。精确 JSON/RPC
 > 字段不在本文重复定义；注册与认证以
-> [注册、迁移与认证统一方案](../../../../plan/20260718-awiki-multi-device-implementation/refactor/registration-auth-unification-plan.md)
+> [注册、迁移与认证统一方案](../../../../awiki-plan/20260718-awiki-multi-device-implementation/refactor/registration-auth-unification-plan.md)
 > 为准，Join 与根密钥流程以
-> [消息驱动流程](../../../../plan/20260718-awiki-multi-device-implementation/refactor/device-join-message-driven-flow.md)
+> [消息驱动流程](../../../../awiki-plan/20260718-awiki-multi-device-implementation/refactor/device-join-message-driven-flow.md)
 > 和
-> [消息与 RPC 契约](../../../../plan/20260718-awiki-multi-device-implementation/refactor/device-join-message-contract.md)
+> [消息与 RPC 契约](../../../../awiki-plan/20260718-awiki-multi-device-implementation/refactor/device-join-message-contract.md)
 > 为准，实施顺序以
-> [V1 总体执行计划](../../../../plan/20260718-awiki-multi-device-implementation/refactor/v1-overall-execution-plan.md)
+> [V1 总体执行计划](../../../../awiki-plan/20260718-awiki-multi-device-implementation/refactor/v1-overall-execution-plan.md)
 > 为准。跨域设备与 E2EE 语义仍以 ANP 的
 > [Device Manifest](../../../../anp/anp/docs/did/device-manifest-vnext-sdk.md)、
 > [P5 Direct E2EE](../../../../anp/anp/docs/e2e/direct-e2ee-p5-sdk.md)和

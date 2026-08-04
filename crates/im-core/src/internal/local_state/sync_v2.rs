@@ -3306,9 +3306,8 @@ mod tests {
         )
         .unwrap();
 
-        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/system-notification-v1.json",
-        );
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_device_v1/system-notification-v1.json");
         let fixture: serde_json::Value =
             serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
         let mut request = fixture["p3_vector"]["request"].clone();
@@ -5430,9 +5429,8 @@ mod tests {
             },
         )
         .unwrap();
-        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/system-notification-v1.json",
-        );
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_device_v1/system-notification-v1.json");
         let fixture: serde_json::Value =
             serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
         let mut request = fixture["p3_vector"]["request"].clone();

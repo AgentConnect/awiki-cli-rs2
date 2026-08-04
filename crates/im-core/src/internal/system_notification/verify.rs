@@ -625,9 +625,8 @@ mod tests {
 
     #[test]
     fn canonical_payload_accepts_independent_agent_origin_anchored_to_home_service() {
-        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/system-notification-v1.json",
-        );
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_device_v1/system-notification-v1.json");
         let fixture: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
         assert_eq!(
             fixture["file_digest"]["sha256_b64u"],
@@ -677,9 +676,8 @@ mod tests {
 
     #[test]
     fn unknown_or_secret_join_payload_fields_fail_closed() {
-        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/system-notification-v1.json",
-        );
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_device_v1/system-notification-v1.json");
         let fixture: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
         let mut incoming = fixture["p3_vector"]["request"].clone();
         incoming["method"] = Value::String("direct.incoming".to_owned());
@@ -690,9 +688,8 @@ mod tests {
 
     #[test]
     fn device_targeting_extension_in_p3_meta_fails_closed() {
-        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../plan/20260718-awiki-multi-device-implementation/refactor/fixtures/system-notification-v1.json",
-        );
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_device_v1/system-notification-v1.json");
         let fixture: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
         let mut incoming = fixture["p3_vector"]["request"].clone();
         incoming["method"] = Value::String("direct.incoming".to_owned());
