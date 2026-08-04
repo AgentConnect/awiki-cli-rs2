@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-pub(crate) const DIRECT_PROFILE: &str = "anp.direct.base.v2";
+pub(crate) const DIRECT_PROFILE: &str = "anp.direct.base.v1";
+pub(crate) const LEGACY_DIRECT_PROFILE: &str = "anp.direct.base.v2";
 pub(crate) const TRANSPORT_SECURITY: &str = "transport-protected";
 pub(crate) const JSON_CONTENT_TYPE: &str = "application/json";
 pub(crate) const SYSTEM_EVENT_TYPE: &str = "system.notification";
@@ -20,7 +21,8 @@ pub(crate) struct SystemNotificationEnvelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DirectMeta {
-    pub(crate) anp_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) anp_version: Option<String>,
     pub(crate) profile: String,
     pub(crate) security_profile: String,
     pub(crate) sender_did: String,

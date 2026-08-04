@@ -838,7 +838,7 @@ async fn response_verified_notification_replay_is_idempotent_and_side_effect_fre
     )
     .unwrap();
     let meta = crate::internal::system_notification::wire::DirectMeta {
-        anp_version: "2.0".to_owned(),
+        anp_version: Some("2.0".to_owned()),
         profile: crate::internal::system_notification::wire::DIRECT_PROFILE.to_owned(),
         security_profile: crate::internal::system_notification::wire::TRANSPORT_SECURITY.to_owned(),
         sender_did: "did:wba:example.test:service".to_owned(),

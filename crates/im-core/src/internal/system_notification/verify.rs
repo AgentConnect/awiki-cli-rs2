@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use super::wire::{
     JoinNotification, JoinPayload, SystemNotificationEnvelope, DIRECT_PROFILE, JSON_CONTENT_TYPE,
-    TRANSPORT_SECURITY,
+    LEGACY_DIRECT_PROFILE, TRANSPORT_SECURITY,
 };
 
 const ORIGIN_PROOF_SCHEME: &str = "anp-rfc9421-origin-proof-v1";
@@ -18,6 +18,14 @@ const MAX_ACTIVE_TTL_SECONDS: i64 = 600;
 const MAX_TERMINAL_TTL_SECONDS: i64 = 86_400;
 const CLOCK_SKEW_SECONDS: i64 = 30;
 const EXPECTED_PROFILES: [&str; 6] = [
+    "anp.core.binding.v1",
+    "anp.identity.discovery.v1",
+    "anp.direct.base.v1",
+    "anp.direct.e2ee.v2",
+    "anp.group.base.v1",
+    "anp.group.e2ee.v2",
+];
+const LEGACY_DRAFT_PROFILES: [&str; 6] = [
     "anp.core.binding.v2",
     "anp.identity.discovery.v2",
     "anp.direct.base.v2",
@@ -115,9 +123,10 @@ fn validate_shape_and_payload(
     envelope: &SystemNotificationEnvelope,
     received_at: DateTime<Utc>,
 ) -> crate::ImResult<()> {
-    if envelope.meta.anp_version != "2.0"
-        || envelope.meta.profile != DIRECT_PROFILE
-        || envelope.meta.security_profile != TRANSPORT_SECURITY
+    if !matches!(
+        envelope.meta.profile.as_str(),
+        DIRECT_PROFILE | LEGACY_DIRECT_PROFILE
+    ) || envelope.meta.security_profile != TRANSPORT_SECURITY
         || envelope.meta.content_type != JSON_CONTENT_TYPE
         || envelope.meta.target.kind != "agent"
         || envelope.auth.scheme != ORIGIN_PROOF_SCHEME
@@ -275,11 +284,7 @@ fn verify_join_request(
         || request.did != expected_did
         || request.join_session_id != expected_session
         || request.requested_role != "member"
-        || request.profiles
-            != EXPECTED_PROFILES
-                .iter()
-                .map(|value| (*value).to_owned())
-                .collect::<Vec<_>>()
+        || !matches_join_profiles(&request.profiles)
     {
         return Err(invalid_join_request());
     }
@@ -351,6 +356,10 @@ fn verify_join_request(
         .map_err(|_| invalid_join_request())?
         .verify(&canonical, &Signature::from_bytes(&signature))
         .map_err(|_| invalid_join_request())
+}
+
+fn matches_join_profiles(profiles: &[String]) -> bool {
+    profiles == EXPECTED_PROFILES || profiles == LEGACY_DRAFT_PROFILES
 }
 
 fn validate_key(
@@ -491,7 +500,10 @@ fn select_unique_service_did(document: &Value) -> crate::ImResult<String> {
         .flatten()
         .filter_map(Value::as_object)
         .filter(|service| service.get("type").and_then(Value::as_str) == Some("ANPMessageService"))
-        .filter(|service| string_array_contains(service.get("profiles"), DIRECT_PROFILE))
+        .filter(|service| {
+            string_array_contains(service.get("profiles"), DIRECT_PROFILE)
+                || string_array_contains(service.get("profiles"), LEGACY_DIRECT_PROFILE)
+        })
         .filter(|service| {
             string_array_contains(
                 service
@@ -622,6 +634,41 @@ fn system_error(code: &str, message: &str) -> crate::ImError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer as _, SigningKey};
+
+    fn fixture_incoming() -> Value {
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_device_v1/system-notification-v1.json");
+        let fixture: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
+        let mut incoming = fixture["p3_vector"]["request"].clone();
+        incoming["method"] = Value::String("direct.incoming".to_owned());
+        incoming.as_object_mut().unwrap().remove("id");
+        incoming
+    }
+
+    fn resign_join_request(request: &mut Value) {
+        let mut unsigned_request = request.clone();
+        let proof = unsigned_request
+            .as_object_mut()
+            .unwrap()
+            .remove("join_request_proof")
+            .unwrap();
+        let mut proof_options = proof;
+        proof_options
+            .as_object_mut()
+            .unwrap()
+            .remove("proof_value_b64u");
+        let signing_input = json!({
+            "type": JOIN_REQUEST_PROOF_INPUT_TYPE,
+            "join_request": unsigned_request,
+            "proof_options": proof_options,
+        });
+        let canonical = serde_json_canonicalizer::to_vec(&signing_input).unwrap();
+        let seed = std::array::from_fn(|index| (index + 1) as u8);
+        let signature = SigningKey::from_bytes(&seed).sign(&canonical);
+        request["join_request_proof"]["proof_value_b64u"] =
+            Value::String(URL_SAFE_NO_PAD.encode(signature.to_bytes()));
+    }
 
     #[test]
     fn canonical_payload_accepts_independent_agent_origin_anchored_to_home_service() {
@@ -675,6 +722,41 @@ mod tests {
     }
 
     #[test]
+    fn canonical_base_v1_without_anp_version_and_legacy_notification_both_validate() {
+        let received_at = DateTime::parse_from_rfc3339("2026-07-23T02:00:01Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut canonical = fixture_incoming();
+        canonical["params"]["meta"]["profile"] = Value::String(DIRECT_PROFILE.to_owned());
+        canonical["params"]["meta"]
+            .as_object_mut()
+            .unwrap()
+            .remove("anp_version");
+        let request = &mut canonical["params"]["body"]["payload"]["payload"]["join_request"];
+        request["profiles"] = json!(EXPECTED_PROFILES);
+        resign_join_request(request);
+
+        let canonical_envelope = super::super::wire::parse_envelope(&canonical).unwrap();
+        assert!(canonical_envelope.meta.anp_version.is_none());
+        validate_shape_and_payload(
+            "did:wba:example.com:agents:alice:e1_alice",
+            &canonical_envelope,
+            received_at,
+        )
+        .unwrap();
+
+        let mut legacy = fixture_incoming();
+        legacy["params"]["meta"]["anp_version"] = Value::String("diagnostic-only".to_owned());
+        let legacy_envelope = super::super::wire::parse_envelope(&legacy).unwrap();
+        validate_shape_and_payload(
+            "did:wba:example.com:agents:alice:e1_alice",
+            &legacy_envelope,
+            received_at,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn unknown_or_secret_join_payload_fields_fail_closed() {
         let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/multi_device_v1/system-notification-v1.json");
@@ -718,6 +800,23 @@ mod tests {
         });
 
         assert!(select_unique_service_did(&document).is_err());
+    }
+
+    #[test]
+    fn service_selector_accepts_legacy_base_v2_during_migration() {
+        let document = json!({
+            "service": [{
+                "type": "ANPMessageService",
+                "profiles": [LEGACY_DIRECT_PROFILE],
+                "securityProfiles": [TRANSPORT_SECURITY],
+                "serviceDid": "did:wba:example.com"
+            }]
+        });
+
+        assert_eq!(
+            select_unique_service_did(&document).unwrap(),
+            "did:wba:example.com"
+        );
     }
 
     #[test]
