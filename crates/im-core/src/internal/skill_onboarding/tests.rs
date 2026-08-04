@@ -443,6 +443,21 @@ fn prekey_failure_classification_only_retries_transient_failures() {
         "skill_onboarding_prekey_local_state_unavailable",
         false,
     );
+
+    let identity = super::map_prekey_error(crate::ImError::IdentityNotReady {
+        identity: "redacted".to_owned(),
+        missing: vec!["redacted".to_owned()],
+    });
+    assert_skill_error(
+        &identity,
+        "skill_onboarding_prekey_identity_not_ready",
+        false,
+    );
+
+    let request = super::map_prekey_error(crate::ImError::Serialization {
+        detail: "redacted".to_owned(),
+    });
+    assert_skill_error(&request, "skill_onboarding_prekey_request_invalid", false);
 }
 
 #[tokio::test]

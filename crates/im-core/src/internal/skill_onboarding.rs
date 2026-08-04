@@ -2116,9 +2116,29 @@ fn map_prekey_error(error: crate::ImError) -> crate::ImError {
         crate::ImError::LocalStateUnavailable { .. }
         | crate::ImError::LocalStateUpgradeRequired { .. }
         | crate::ImError::LocalStateUpgradeInProgress
-        | crate::ImError::LocalStateUpgradeFailed { .. } => {
+        | crate::ImError::LocalStateUpgradeFailed { .. }
+        | crate::ImError::LocalProjectionUnavailable { .. } => {
             ("skill_onboarding_prekey_local_state_unavailable", false)
         }
+        crate::ImError::IdentityNotFound { .. }
+        | crate::ImError::DefaultIdentityMissing
+        | crate::ImError::IdentityNotReady { .. }
+        | crate::ImError::IdentityUnresolved { .. }
+        | crate::ImError::IdentityBindingConflict { .. } => {
+            ("skill_onboarding_prekey_identity_not_ready", false)
+        }
+        crate::ImError::PathUnavailable { .. }
+        | crate::ImError::CredentialFileUnreadable { .. } => {
+            ("skill_onboarding_prekey_credentials_unavailable", false)
+        }
+        crate::ImError::InvalidInput { .. } | crate::ImError::Serialization { .. } => {
+            ("skill_onboarding_prekey_request_invalid", false)
+        }
+        crate::ImError::UnsupportedCapability { .. } => {
+            ("skill_onboarding_prekey_unsupported", false)
+        }
+        crate::ImError::Service { .. } => ("skill_onboarding_prekey_service_rejected", false),
+        crate::ImError::Internal { .. } => ("skill_onboarding_prekey_internal_failed", false),
         _ => ("skill_onboarding_prekey_failed", false),
     };
     onboarding_error(code, "device_prekey", retryable)
