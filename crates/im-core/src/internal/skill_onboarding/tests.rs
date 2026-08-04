@@ -421,6 +421,30 @@ async fn prekey_failure_resumes_without_reexchange_and_keeps_same_device() {
     assert_eq!(remote.exchanged_device_ids.len(), 1);
 }
 
+#[test]
+fn prekey_failure_classification_only_retries_transient_failures() {
+    let transient = super::map_prekey_error(crate::ImError::TransportUnavailable {
+        detail: "redacted".to_owned(),
+    });
+    assert_skill_error(&transient, "skill_onboarding_prekey_pending", true);
+
+    let authorization = super::map_prekey_error(crate::ImError::PermissionDenied);
+    assert_skill_error(
+        &authorization,
+        "skill_onboarding_prekey_not_authorized",
+        false,
+    );
+
+    let local_state = super::map_prekey_error(crate::ImError::LocalStateUnavailable {
+        detail: "redacted".to_owned(),
+    });
+    assert_skill_error(
+        &local_state,
+        "skill_onboarding_prekey_local_state_unavailable",
+        false,
+    );
+}
+
 #[tokio::test]
 async fn greeting_failure_returns_pending_then_reuses_same_message_id() {
     let fixture = Fixture::file_compat();

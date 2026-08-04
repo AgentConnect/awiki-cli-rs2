@@ -504,19 +504,12 @@ async fn complete_vnext_onboarding<R: SkillOnboardingRemote>(
 ) -> crate::ImResult<crate::onboarding::SkillClaimResult> {
     let journal_path = journal_path(core);
     if journal.phase == JournalPhase::DevicePrekeyPending {
-        if remote
-            .publish_device_prekey(&journal.agent_did)
-            .await
-            .is_err()
-        {
-            journal.last_error_code = Some("skill_onboarding_prekey_pending".to_owned());
+        if let Err(error) = remote.publish_device_prekey(&journal.agent_did).await {
+            let error = map_prekey_error(error);
+            journal.last_error_code = Some(stable_error_code(&error).to_owned());
             journal.updated_at = now_rfc3339()?;
             write_journal(&journal_path, &journal)?;
-            return Err(onboarding_error(
-                "skill_onboarding_prekey_pending",
-                "device_prekey",
-                true,
-            ));
+            return Err(error);
         }
         journal.phase = JournalPhase::ControllerGreetingPending;
         journal.last_error_code = None;
@@ -2103,6 +2096,32 @@ fn map_remote_error(error: crate::ImError, phase: &str) -> crate::ImError {
         phase,
         retryable,
     )
+}
+
+fn map_prekey_error(error: crate::ImError) -> crate::ImError {
+    let (code, retryable) = match error {
+        crate::ImError::TransportUnavailable { .. }
+        | crate::ImError::Io { .. }
+        | crate::ImError::Service {
+            status_code: Some(500..=599),
+            ..
+        } => ("skill_onboarding_prekey_pending", true),
+        crate::ImError::IdentityRequired
+        | crate::ImError::AuthRequired
+        | crate::ImError::SessionExpired
+        | crate::ImError::PermissionDenied => ("skill_onboarding_prekey_not_authorized", false),
+        crate::ImError::IdentityVault { .. } => {
+            ("skill_onboarding_prekey_vault_unavailable", false)
+        }
+        crate::ImError::LocalStateUnavailable { .. }
+        | crate::ImError::LocalStateUpgradeRequired { .. }
+        | crate::ImError::LocalStateUpgradeInProgress
+        | crate::ImError::LocalStateUpgradeFailed { .. } => {
+            ("skill_onboarding_prekey_local_state_unavailable", false)
+        }
+        _ => ("skill_onboarding_prekey_failed", false),
+    };
+    onboarding_error(code, "device_prekey", retryable)
 }
 
 fn stable_error_code(error: &crate::ImError) -> &str {
