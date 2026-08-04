@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-deamon"
-version = "0.1.79"
+version = "0.1.80"
 dependencies = [
  "anp",
  "anyhow",

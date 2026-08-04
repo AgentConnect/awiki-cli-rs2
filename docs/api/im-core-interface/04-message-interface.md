@@ -624,13 +624,16 @@ pub struct LocalHistoryQuery {
 4. direct、group 和 raw thread ref 使用与 conversation mark-read 一致的 owner-scoped conversation-id 归一化。
 5. App 首屏应先显示 `local_conversation_timeline`，再后台调用 `sync_conversation_after` 或 repair/load core projection；远端 history/backfill 返回的 messages 只有持久化后才能成为 UI 事实。
 
-普通 CLI 前台 `msg inbox` 先用 `sync_now_async(reason = "foreground_reconcile")`
-完成普通消息 v2 bootstrap/delta/hydration。独立 P5 gate 开启且 scope 包含 Direct 时，随后调用
-`hydrate_exact_device_secure_inbox_async(limit)`：该 Rust-only 边界要求 exact active vNext
+独立 P5 gate 开启且 scope 包含 Direct 时，普通 CLI 前台 `msg inbox` 先调用
+`hydrate_exact_device_secure_inbox_async(limit)`，让 Root 等 exact-device 控制消息能在设备权限
+代际变化后先完成本地凭据晋升；CLI 随后按同一个 DID 重新打开 `ImClient`，再用
+`sync_now_async(reason = "foreground_reconcile")` 完成普通消息 v2 bootstrap/delta/hydration，
+避免同一条命令继续携带晋升前的 device authorization generation。该 Rust-only secure hydration 边界要求 exact active vNext
 account/device binding，只发送带闭合 `body.security_profile=direct-e2ee` 的本域
 `inbox.get`，并在客户端再次丢弃所有非 P5 v2 row，只把成功认证解密的业务消息写入本地
 projection。每页本地提交后，Core 只 ACK 已成功消费的 P5 raw message ID，通过
-`inbox.mark_read` 移除该设备 unread 行，再按 `has_more` 拉取下一页；循环最多 100 页。
+`inbox.mark_read` 移除该设备 unread 行；ACK 前会重新加载 bearer，避免 Root 晋升后继续使用
+旧 device authorization generation，再按 `has_more` 拉取下一页；循环最多 100 页。
 ACK 失败、部分 ACK、页面无进展或达到硬上限时保留已提交数据但前台调用失败，不能反复读取
 第一页后伪装收敛。最后调用 `local_inbox_projection_with_metadata_async(query)` 读取 exact-owner
 committed projection。本地读取 API 自身仍不发 `inbox.get`，不接受 remote cursor 或

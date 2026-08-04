@@ -531,7 +531,12 @@ where
     T: RpcTransport,
 {
     let call = crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(did)?;
-    transport.rpc(call.endpoint, call.method, call.params)
+    crate::internal::idempotent_submission::submit_read_rpc(
+        transport,
+        call.endpoint,
+        call.method,
+        call.params,
+    )
 }
 
 async fn resolve_profile_by_did_async<T>(transport: &mut T, did: &str) -> crate::ImResult<Value>
@@ -539,7 +544,13 @@ where
     T: AsyncRpcTransport,
 {
     let call = crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(did)?;
-    transport.rpc(call.endpoint, call.method, call.params).await
+    crate::internal::idempotent_submission::submit_read_rpc_async(
+        transport,
+        call.endpoint,
+        call.method,
+        call.params,
+    )
+    .await
 }
 
 fn public_profile_by_did<T>(transport: &mut T, did: &str) -> crate::ImResult<Value>
@@ -547,7 +558,12 @@ where
     T: RpcTransport,
 {
     let call = crate::internal::identity_wire::profile::build_public_profile_rpc_call(did)?;
-    transport.rpc(call.endpoint, call.method, call.params)
+    crate::internal::idempotent_submission::submit_read_rpc(
+        transport,
+        call.endpoint,
+        call.method,
+        call.params,
+    )
 }
 
 async fn public_profile_by_did_async<T>(transport: &mut T, did: &str) -> crate::ImResult<Value>
@@ -555,7 +571,13 @@ where
     T: AsyncRpcTransport,
 {
     let call = crate::internal::identity_wire::profile::build_public_profile_rpc_call(did)?;
-    transport.rpc(call.endpoint, call.method, call.params).await
+    crate::internal::idempotent_submission::submit_read_rpc_async(
+        transport,
+        call.endpoint,
+        call.method,
+        call.params,
+    )
+    .await
 }
 
 pub(crate) fn handle_lookup_from_value_with_client(
@@ -768,6 +790,46 @@ mod tests {
                 json!({"handle": "alice.awiki.info"}),
             )
         );
+    }
+
+    #[tokio::test]
+    async fn profile_resolve_async_replays_a_transport_failure_once() {
+        let mut transport = RecordingTransport {
+            calls: Vec::new(),
+            results: vec![
+                transport_unavailable(),
+                Ok(json!({"did": "did:example:alice"})),
+            ],
+        };
+
+        let result = resolve_profile_by_did_async(&mut transport, "did:example:alice")
+            .await
+            .unwrap();
+
+        assert_eq!(result, json!({"did": "did:example:alice"}));
+        assert_eq!(transport.calls.len(), 2);
+        assert_eq!(transport.calls[0], transport.calls[1]);
+        assert_eq!(transport.calls[0].0, "/user-service/did/profile/rpc");
+        assert_eq!(transport.calls[0].1, "resolve");
+    }
+
+    #[test]
+    fn public_profile_replays_a_transport_failure_once() {
+        let mut transport = RecordingTransport {
+            calls: Vec::new(),
+            results: vec![
+                transport_unavailable(),
+                Ok(json!({"did": "did:example:alice"})),
+            ],
+        };
+
+        let result = public_profile_by_did(&mut transport, "did:example:alice").unwrap();
+
+        assert_eq!(result, json!({"did": "did:example:alice"}));
+        assert_eq!(transport.calls.len(), 2);
+        assert_eq!(transport.calls[0], transport.calls[1]);
+        assert_eq!(transport.calls[0].0, "/user-service/did/profile/rpc");
+        assert_eq!(transport.calls[0].1, "get_public_profile");
     }
 
     #[test]

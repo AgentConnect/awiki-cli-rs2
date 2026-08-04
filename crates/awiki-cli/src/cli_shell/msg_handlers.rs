@@ -521,13 +521,36 @@ impl App {
         let resolved = self.resolve_config_for_workspace()?;
         let query = crate::m_core_cli_adapter::messages::inbox_query(command)?;
         if !self.globals.dry_run {
-            let client = crate::m_core_cli_adapter::build_im_client_async(
+            let mut client = crate::m_core_cli_adapter::build_im_client_async(
                 &resolved,
                 crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
             )
             .await?;
+            let refresh_after_hydration = matches!(
+                &query.scope,
+                im_core::messages::InboxScope::DirectOnly | im_core::messages::InboxScope::All
+            );
+            let secure_warnings =
+                crate::m_core_cli_adapter::messages::hydrate_secure_inbox_via_im_core_async(
+                    &client, &query,
+                )
+                .await
+                .map_err(|err| {
+                    message_exit(
+                        err,
+                        "Ensure the active identity is ready and the message service is reachable.",
+                    )
+                })?;
+            if refresh_after_hydration {
+                let selector = im_core::IdentitySelector::Did(client.did().clone());
+                client =
+                    crate::m_core_cli_adapter::build_im_client_async(&resolved, selector).await?;
+            }
             let result = crate::m_core_cli_adapter::messages::read_inbox_via_im_core_async(
-                &resolved, &client, query,
+                &resolved,
+                &client,
+                query,
+                secure_warnings,
             )
             .await
             .map_err(|err| {
@@ -1188,6 +1211,29 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
         MessageAdapterError::AttachmentNotSupported | MessageAdapterError::GroupNotSupported => {
             ExitError::new("not_implemented", 1, err.to_string(), hint)
         }
+        MessageAdapterError::PublicServiceCode(service_code)
+            if service_code == "anp.unauthorized" =>
+        {
+            ExitError::new(
+                "auth_required",
+                3,
+                "message operation: authentication is required.",
+                "Use an identity with a valid exact-device access token.",
+            )
+        }
+        MessageAdapterError::PublicServiceCode(service_code)
+            if matches!(
+                service_code.as_str(),
+                "anp.forbidden" | "anp.device_binding_required" | "anp.device_not_eligible"
+            ) =>
+        {
+            ExitError::new(
+                "permission_denied",
+                4,
+                "message operation: permission denied.",
+                "Refresh the authoritative device Registry and use an eligible exact-device identity.",
+            )
+        }
         MessageAdapterError::PublicServiceCode(service_code) => {
             let mut mapped = ExitError::new(
                 "service_error",
@@ -1371,6 +1417,25 @@ mod tests {
             exit.detail.message,
             "message operation: remote service request failed."
         );
+    }
+
+    #[test]
+    fn message_exit_classifies_public_device_authorization_codes() {
+        for (service_code, expected_code, expected_exit_code) in [
+            ("anp.unauthorized", "auth_required", 3),
+            ("anp.forbidden", "permission_denied", 4),
+            ("anp.device_binding_required", "permission_denied", 4),
+            ("anp.device_not_eligible", "permission_denied", 4),
+        ] {
+            let exit = message_exit(
+                MessageAdapterError::PublicServiceCode(service_code.to_owned()),
+                "fallback hint",
+            );
+
+            assert_eq!(exit.exit_code, expected_exit_code);
+            assert_eq!(exit.detail.code, expected_code);
+            assert_eq!(exit.detail.details, serde_json::Value::Null);
+        }
     }
 
     #[test]

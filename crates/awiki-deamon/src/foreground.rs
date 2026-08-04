@@ -18,6 +18,7 @@ use im_core::messages::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Digest;
+use tokio::task::JoinSet;
 
 use crate::agent_status::{HeartbeatScheduler, LATEST_STATUS_CHECK_MS};
 use crate::app_bridge::message_control::{
@@ -105,6 +106,85 @@ const RUNTIME_INBOX_RECOVERY_PAGE_LIMIT: u32 = 100;
 const RUNTIME_INBOX_RECOVERY_ROUND_HARD_CAP: usize = 500;
 const FOREGROUND_CONTROL_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const AGENT_INVOCATION_DENIED_FEEDBACK: &str = "我现在不能响应这条请求：你没有权限控制这个智能体。";
+
+struct RuntimeRouteCompletion {
+    message_key: String,
+    release_for_retry: bool,
+}
+
+struct RuntimeRouteDispatcher {
+    processed: HashSet<String>,
+    tasks: JoinSet<RuntimeRouteCompletion>,
+    queue_notifier: QueueSchedulerNotifier,
+}
+
+impl RuntimeRouteDispatcher {
+    fn new(queue_notifier: QueueSchedulerNotifier) -> Self {
+        Self {
+            processed: HashSet::new(),
+            tasks: JoinSet::new(),
+            queue_notifier,
+        }
+    }
+
+    fn reserve(&mut self, message_key: String) -> bool {
+        self.reap_completed();
+        self.processed.insert(message_key)
+    }
+
+    fn release(&mut self, message_key: &str) {
+        self.processed.remove(message_key);
+    }
+
+    fn dispatch_blocking<F>(&mut self, message_key: String, task: F)
+    where
+        F: FnOnce() -> bool + Send + 'static,
+    {
+        let queue_notifier = self.queue_notifier.clone();
+        self.tasks.spawn_blocking(move || {
+            let release_for_retry = task();
+            queue_notifier.notify_all();
+            RuntimeRouteCompletion {
+                message_key,
+                release_for_retry,
+            }
+        });
+    }
+
+    fn reap_completed(&mut self) {
+        while let Some(result) = self.tasks.try_join_next() {
+            match result {
+                Ok(completion) if completion.release_for_retry => {
+                    self.processed.remove(&completion.message_key);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!(
+                        "warning: daemon runtime route worker failed: {}",
+                        sanitize_error_message(&error.to_string())
+                    );
+                }
+            }
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        while let Some(result) = self.tasks.join_next().await {
+            match result {
+                Ok(completion) if completion.release_for_retry => {
+                    self.processed.remove(&completion.message_key);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!(
+                        "warning: daemon runtime route worker failed during shutdown: {}",
+                        sanitize_error_message(&error.to_string())
+                    );
+                }
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForegroundOptions {
@@ -313,7 +393,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         tokio::time::interval(Duration::from_millis(LATEST_STATUS_CHECK_MS as u64));
     heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-    let mut processed = HashSet::new();
+    let mut runtime_routes = RuntimeRouteDispatcher::new(queue_notifier.clone());
     let mut recovery_page_tokens = HashMap::new();
     let mut processed_messages = 0usize;
     let mut heartbeat = HeartbeatScheduler::new();
@@ -359,7 +439,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                         &state,
                         &im_core,
                         &hermes_gateway,
-                        &mut processed,
+                        &mut runtime_routes,
                         &mut recovery_page_tokens,
                     ).await?;
                 let delegated_processed =
@@ -378,7 +458,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                     &registration,
                     &mut realtime_supervisor,
                     &mut realtime_sync,
-                    &mut processed,
+                    &mut runtime_routes,
                     &mut recovery_page_tokens,
                 )
                 .await?;
@@ -405,6 +485,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         }
     };
     realtime_supervisor.stop().await;
+    runtime_routes.shutdown().await;
     rpc_worker.stop();
     queue_scheduler.stop().await;
     let _ = std::fs::remove_file(&config.local_socket_path);
@@ -650,7 +731,7 @@ async fn process_due_realtime_sync_work(
     registration: &UserServiceAgentRegistrationClient,
     realtime_supervisor: &mut RuntimeRealtimeSupervisor,
     realtime_sync: &mut RuntimeRealtimeSyncCoordinator,
-    processed: &mut HashSet<String>,
+    runtime_routes: &mut RuntimeRouteDispatcher,
     recovery_page_tokens: &mut HashMap<String, im_core::messages::IncomingMessageRecoveryPageToken>,
 ) -> Result<usize> {
     let mut processed_count = 0usize;
@@ -664,7 +745,7 @@ async fn process_due_realtime_sync_work(
             registration,
             realtime_supervisor,
             realtime_sync,
-            processed,
+            runtime_routes,
             recovery_page_tokens,
             work,
         )
@@ -681,7 +762,7 @@ async fn process_realtime_sync_work(
     registration: &UserServiceAgentRegistrationClient,
     realtime_supervisor: &mut RuntimeRealtimeSupervisor,
     realtime_sync: &mut RuntimeRealtimeSyncCoordinator,
-    processed: &mut HashSet<String>,
+    runtime_routes: &mut RuntimeRouteDispatcher,
     recovery_page_tokens: &mut HashMap<String, im_core::messages::IncomingMessageRecoveryPageToken>,
     work: RuntimeRealtimeSyncWork,
 ) -> Result<usize> {
@@ -802,7 +883,7 @@ async fn process_realtime_sync_work(
                 &client,
                 &work.agent_did,
                 &result.committed_incoming_messages,
-                processed,
+                runtime_routes,
             )
             .await?;
             processed_count += process_hydrated_runtime_recovery(
@@ -813,7 +894,7 @@ async fn process_realtime_sync_work(
                 registration,
                 &client,
                 &work.agent_did,
-                processed,
+                runtime_routes,
                 recovery_page_tokens,
             )
             .await?;
@@ -859,7 +940,7 @@ async fn process_committed_sync_messages(
     client: &im_core::ImClient,
     agent_did: &str,
     committed: &[im_core::messages::CommittedIncomingMessage],
-    processed: &mut HashSet<String>,
+    runtime_routes: &mut RuntimeRouteDispatcher,
 ) -> Result<usize> {
     let mut processed_count = 0usize;
     for incoming in committed {
@@ -874,7 +955,7 @@ async fn process_committed_sync_messages(
             client,
             agent_did,
             &incoming.message,
-            processed,
+            runtime_routes,
             group_history,
         )
         .await?
@@ -922,7 +1003,7 @@ async fn process_realtime_message_for_test(
     registration: &UserServiceAgentRegistrationClient,
     client: &im_core::ImClient,
     agent_did: &str,
-    processed: &mut HashSet<String>,
+    runtime_routes: &mut RuntimeRouteDispatcher,
     message: Message,
 ) -> Result<usize> {
     let group_history = if is_group_message(&message) {
@@ -939,7 +1020,7 @@ async fn process_realtime_message_for_test(
         client,
         agent_did,
         &message,
-        processed,
+        runtime_routes,
         group_history.as_deref(),
     )
     .await?
@@ -952,7 +1033,7 @@ async fn process_inbox_once(
     state: &DaemonState,
     im_core: &ImCoreAdapter,
     hermes_gateway: &StdioHermesGateway,
-    processed: &mut HashSet<String>,
+    runtime_routes: &mut RuntimeRouteDispatcher,
     recovery_page_tokens: &mut HashMap<String, im_core::messages::IncomingMessageRecoveryPageToken>,
 ) -> Result<usize> {
     let agents = state.list_agent_definitions()?;
@@ -979,7 +1060,7 @@ async fn process_inbox_once(
             &registration,
             &client,
             &agent.agent_did,
-            processed,
+            runtime_routes,
             recovery_page_tokens,
         )
         .await
@@ -1006,7 +1087,7 @@ async fn process_hydrated_runtime_recovery(
     registration: &UserServiceAgentRegistrationClient,
     client: &im_core::ImClient,
     agent_did: &str,
-    processed: &mut HashSet<String>,
+    runtime_routes: &mut RuntimeRouteDispatcher,
     recovery_page_tokens: &mut HashMap<String, im_core::messages::IncomingMessageRecoveryPageToken>,
 ) -> Result<usize> {
     let mut next_page_token = recovery_page_tokens.remove(agent_did);
@@ -1046,7 +1127,7 @@ async fn process_hydrated_runtime_recovery(
                 client,
                 agent_did,
                 &item.message,
-                processed,
+                runtime_routes,
                 group_history,
             )
             .await?
@@ -1084,7 +1165,7 @@ async fn process_runtime_inbox_message(
     client: &im_core::ImClient,
     agent_did: &str,
     message: &Message,
-    processed: &mut HashSet<String>,
+    runtime_routes: &mut RuntimeRouteDispatcher,
     group_history: Option<&[Message]>,
 ) -> Result<Option<bool>> {
     if should_skip_runtime_inbox_message(agent_did, message) {
@@ -1095,8 +1176,68 @@ async fn process_runtime_inbox_message(
         return Ok(None);
     }
     let message_key = format!("{agent_did}:{processed_message_id}");
-    if !processed.insert(message_key.clone()) {
+    if !runtime_routes.reserve(message_key.clone()) {
         return Ok(None);
+    }
+    if should_dispatch_runtime_execution(state, agent_did, message)? {
+        let runtime_handle = tokio::runtime::Handle::current();
+        let config = config.clone();
+        let state = state.clone();
+        let im_core = im_core.clone();
+        let hermes_gateway = hermes_gateway.clone();
+        let registration = registration.clone();
+        let client = client.clone();
+        let agent_did = agent_did.to_string();
+        let message = message.clone();
+        let processed_message_id = processed_message_id.clone();
+        let group_history = group_history.map(<[Message]>::to_vec);
+        runtime_routes.dispatch_blocking(message_key, move || {
+            let result = runtime_handle.block_on(route_message(
+                &config,
+                &state,
+                &im_core,
+                &hermes_gateway,
+                &registration,
+                &client,
+                &agent_did,
+                &message,
+                group_history.as_deref(),
+            ));
+            match result {
+                Ok(routed) => {
+                    let status = runtime_processed_message_status(&message, routed);
+                    match record_runtime_processed_message(
+                        &state,
+                        &agent_did,
+                        &processed_message_id,
+                        status,
+                    ) {
+                        Ok(()) => is_retryable_runtime_processed_message_status(status),
+                        Err(error) => {
+                            eprintln!(
+                                "warning: daemon runtime route completion failed: {}",
+                                sanitize_error_message(&error.to_string())
+                            );
+                            true
+                        }
+                    }
+                }
+                Err(error) => {
+                    let sanitized = sanitize_error_message(&error.to_string());
+                    eprintln!("warning: daemon inbox message route failed: {sanitized}");
+                    if let Err(audit_error) =
+                        record_inbox_route_error(&state, &agent_did, &message, &error)
+                    {
+                        eprintln!(
+                            "warning: daemon inbox route error audit failed: {}",
+                            sanitize_error_message(&audit_error.to_string())
+                        );
+                    }
+                    true
+                }
+            }
+        });
+        return Ok(Some(true));
     }
     match route_message(
         config,
@@ -1115,12 +1256,12 @@ async fn process_runtime_inbox_message(
             let status = runtime_processed_message_status(message, routed);
             record_runtime_processed_message(state, agent_did, &processed_message_id, status)?;
             if is_retryable_runtime_processed_message_status(status) {
-                processed.remove(&message_key);
+                runtime_routes.release(&message_key);
             }
             Ok(Some(routed))
         }
         Err(error) => {
-            processed.remove(&message_key);
+            runtime_routes.release(&message_key);
             let sanitized = sanitize_error_message(&error.to_string());
             eprintln!("warning: daemon inbox message route failed: {sanitized}");
             if let Err(audit_error) = record_inbox_route_error(state, agent_did, message, &error) {
@@ -1131,6 +1272,46 @@ async fn process_runtime_inbox_message(
             }
             Ok(None)
         }
+    }
+}
+
+fn should_dispatch_runtime_execution(
+    state: &DaemonState,
+    agent_did: &str,
+    message: &Message,
+) -> Result<bool> {
+    let agent = state.load_agent_definition(agent_did)?;
+    if agent.agent_kind != crate::agent::AgentKind::Runtime {
+        return Ok(false);
+    }
+    if is_group_message(message) {
+        let MessageBodyView::Payload { payload } = &message.body else {
+            return Ok(false);
+        };
+        let Ok(mention_payload) = parse_message_mention_payload(payload) else {
+            return Ok(false);
+        };
+        return Ok(group_agent_mention_context(agent_did, &mention_payload).is_some());
+    }
+    match &message.body {
+        MessageBodyView::Text { .. } => Ok(true),
+        MessageBodyView::Payload { payload } => {
+            if is_app_control_payload(payload) {
+                return Ok(false);
+            }
+            let content_type = message
+                .metadata
+                .content_type
+                .clone()
+                .unwrap_or_else(|| "application/json".to_string());
+            Ok(
+                is_attachment_manifest_message(message, &content_type, payload)
+                    || (is_awiki_agent_command_payload(payload)
+                        && payload.get("command").and_then(Value::as_str)
+                            == Some("runtime.task.submit")),
+            )
+        }
+        MessageBodyView::Unsupported { .. } => Ok(false),
     }
 }
 

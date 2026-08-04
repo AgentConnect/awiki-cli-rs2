@@ -1252,7 +1252,7 @@ fn hydrated_v1_event(
         .as_object()
         .cloned()
         .ok_or_else(|| sync_error("SYNC_INVALID_PAGE", "hydrated message must be an object"))?;
-    normalize_hydrated_message(&mut message);
+    normalize_hydrated_message(&mut message, &payload);
     payload.insert("message".to_owned(), Value::Object(message.clone()));
     if !payload.contains_key("thread") {
         payload.insert(
@@ -1263,10 +1263,17 @@ fn hydrated_v1_event(
     Ok(v1_event(event, Value::Object(payload)))
 }
 
-fn normalize_hydrated_message(message: &mut Map<String, Value>) {
+fn normalize_hydrated_message(
+    message: &mut Map<String, Value>,
+    event_payload: &Map<String, Value>,
+) {
     if !message.contains_key("accepted_at") {
-        if let Some(created_at) = message.get("created_at").cloned() {
-            message.insert("accepted_at".to_owned(), created_at);
+        if let Some(accepted_at) = event_payload
+            .get("accepted_at")
+            .cloned()
+            .or_else(|| message.get("created_at").cloned())
+        {
+            message.insert("accepted_at".to_owned(), accepted_at);
         }
     }
     if !message.contains_key("operation_id") {
@@ -4681,7 +4688,8 @@ mod tests {
                 "direction": "incoming",
                 "sender_did_snapshot": "did:example:bob",
                 "recipient_did_snapshot": "did:example:alice",
-                "client_message_id": "client-message-discovered"
+                "client_message_id": "client-message-discovered",
+                "accepted_at": "2026-07-28T10:00:00.123456Z"
             }),
             source: None,
         };
@@ -4692,7 +4700,7 @@ mod tests {
             "receiver_did": "did:example:alice",
             "content_type": "text/plain",
             "server_seq": "17",
-            "created_at": "2026-07-28T10:00:00Z"
+            "created_at": "2026-07-28T09:59:59Z"
         });
         let mut public_messages = BTreeMap::new();
 
@@ -4710,6 +4718,7 @@ mod tests {
             apply.messages[0].hydration_state,
             crate::internal::local_state::messages::MessageHydrationState::Discovered
         );
+        assert_eq!(apply.messages[0].sent_at, "2026-07-28T10:00:00.123456Z");
         assert_eq!(apply.thread_bindings.len(), 1);
         assert_eq!(
             apply.thread_bindings[0].remote_thread_key,
@@ -4717,6 +4726,10 @@ mod tests {
         );
         assert_eq!(apply.thread_bindings[0].thread_kind, "direct");
         let message = public_messages.get("event-discovered").unwrap();
+        assert_eq!(
+            message.sent_at.as_deref(),
+            Some("2026-07-28T10:00:00.123456Z")
+        );
         assert_eq!(
             message.direction,
             crate::messages::MessageDirection::Incoming

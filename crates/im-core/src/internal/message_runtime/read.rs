@@ -1679,6 +1679,10 @@ where
             }
             return Ok(warnings);
         }
+        // Root-import controls can advance the current device generation while
+        // projecting this page. ACK must load the newly persisted bearer rather
+        // than reuse the pre-promotion session held by the Inbox transport.
+        transport.reload_authentication_state()?;
         let ack_params = crate::internal::wire::inbox::build_mark_read_rpc_params(
             &identity,
             crate::internal::wire::inbox::MarkReadWireRequest {

@@ -159,6 +159,57 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
 }
 
 #[test]
+fn msg_inbox_hydrates_exact_device_controls_before_reopened_foreground_sync() {
+    let workspace = TempDir::new("msg-ws-inbox-secure-before-sync").expect("workspace");
+    let missing_socket = tenant_workspace(workspace.path())
+        .join("runtime")
+        .join("missing.sock");
+    let server = TestServer::new(vec![
+        TestResponse::registration(),
+        TestResponse::prekey_publication(),
+        TestResponse::empty_secure_inbox(),
+        TestResponse::sync_bootstrap(),
+        TestResponse::empty_sync_delta(),
+    ]);
+    write_msg_ws_config(
+        workspace.path(),
+        &server.base_url(),
+        missing_socket.to_str().expect("socket path"),
+    );
+    let _bob = register_exact_msg_identity(workspace.path());
+    let request_start = server.requests().len();
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    command
+        .args([
+            "--identity",
+            "bob",
+            "msg",
+            "inbox",
+            "--scope",
+            "direct",
+            "--limit",
+            "7",
+        ])
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace.path())
+        .env("HOME", workspace.path().join("home"))
+        .env("USERPROFILE", workspace.path().join("home"))
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env("AWIKI_MULTI_DEVICE_DIRECT_E2EE_ENABLED", "1");
+    let output = command.output().expect("run secure awiki-cli inbox");
+
+    assert_success(&output);
+    let methods = server.requests()[request_start..]
+        .iter()
+        .map(|request| {
+            serde_json::from_str::<Value>(request_body(request)).expect("request body JSON")
+        })
+        .filter_map(|body| body["method"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    assert_eq!(methods, vec!["inbox.get", "sync.bootstrap", "sync.delta"]);
+}
+
+#[test]
 fn msg_inbox_websocket_mode_reports_http_transport_failure_without_cache_fallback() {
     let workspace = TempDir::new("msg-ws-inbox-http-failure").expect("workspace");
     let missing_socket = tenant_workspace(workspace.path())
@@ -506,6 +557,14 @@ impl TestResponse {
         Self::ok("__DYNAMIC_SYNC_DELTA_GROUP_RESPONSE__")
     }
 
+    fn empty_secure_inbox() -> Self {
+        Self::ok("__DYNAMIC_EMPTY_SECURE_INBOX_RESPONSE__")
+    }
+
+    fn empty_sync_delta() -> Self {
+        Self::ok("__DYNAMIC_EMPTY_SYNC_DELTA_RESPONSE__")
+    }
+
     fn message_batch() -> Self {
         Self::ok("__DYNAMIC_MESSAGE_BATCH_RESPONSE__")
     }
@@ -658,6 +717,22 @@ fn dynamic_response_body(request: &str, marker: &str) -> String {
                 }),
             )
         }
+        "__DYNAMIC_EMPTY_SECURE_INBOX_RESPONSE__" => rpc_result_for_request(
+            request,
+            json!({"messages": [], "has_more": false, "warnings": []}),
+        ),
+        "__DYNAMIC_EMPTY_SYNC_DELTA_RESPONSE__" => rpc_result_for_request(
+            request,
+            json!({
+                "mode": "delta",
+                "server_time": "2026-08-02T00:00:01Z",
+                "events": [],
+                "next_cursor": {"stream_epoch": "1", "scan_seq": "0"},
+                "has_more": false,
+                "recovery": null,
+                "warnings": []
+            }),
+        ),
         "__DYNAMIC_MESSAGE_BATCH_RESPONSE__" => {
             let binding = device_binding_from_request(request);
             rpc_result_for_request(

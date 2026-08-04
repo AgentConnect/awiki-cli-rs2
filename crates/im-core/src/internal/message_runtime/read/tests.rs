@@ -3439,8 +3439,10 @@ async fn exact_device_secure_hydration_selects_p5_only_and_never_persists_ordina
         .await
         .unwrap();
     let calls = Rc::new(RefCell::new(Vec::new()));
+    let authentication_reloads = Rc::new(RefCell::new(0_usize));
     let mut transport = ScriptedAuthenticatedTransport {
         calls: Rc::clone(&calls),
+        authentication_reloads: Rc::clone(&authentication_reloads),
         responses: VecDeque::from([
             json!({
                 "messages": [
@@ -3476,6 +3478,7 @@ async fn exact_device_secure_hydration_selects_p5_only_and_never_persists_ordina
     .unwrap();
 
     assert!(warnings.is_empty());
+    assert_eq!(*authentication_reloads.borrow(), 2);
     let calls = calls.borrow();
     assert_eq!(
         calls
@@ -3575,8 +3578,10 @@ async fn exact_device_secure_hydration_keeps_committed_projection_when_ack_is_in
         .await
         .unwrap();
     let calls = Rc::new(RefCell::new(Vec::new()));
+    let authentication_reloads = Rc::new(RefCell::new(0_usize));
     let mut transport = ScriptedAuthenticatedTransport {
         calls: Rc::clone(&calls),
+        authentication_reloads: Rc::clone(&authentication_reloads),
         responses: VecDeque::from([
             json!({"messages": [wire], "has_more": false, "warnings": []}),
             json!({"updated_count": 0, "warnings": []}),
@@ -3597,6 +3602,7 @@ async fn exact_device_secure_hydration_keeps_committed_projection_when_ack_is_in
         crate::ImError::Service { code: Some(code), .. }
             if code == "secure_inbox_ack_incomplete"
     ));
+    assert_eq!(*authentication_reloads.borrow(), 1);
     assert_eq!(
         calls
             .borrow()
@@ -6135,6 +6141,7 @@ struct RecordingTransport {
 
 struct ScriptedAuthenticatedTransport {
     calls: Rc<RefCell<Vec<RecordedCall>>>,
+    authentication_reloads: Rc<RefCell<usize>>,
     responses: VecDeque<Value>,
 }
 
@@ -6221,6 +6228,11 @@ impl AsyncAuthenticatedRpcTransport for ScriptedAuthenticatedTransport {
             .ok_or_else(|| crate::ImError::Internal {
                 message: "scripted authenticated response exhausted".to_owned(),
             })
+    }
+
+    fn reload_authentication_state(&mut self) -> crate::ImResult<()> {
+        *self.authentication_reloads.borrow_mut() += 1;
+        Ok(())
     }
 }
 
