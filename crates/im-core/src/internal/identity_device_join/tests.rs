@@ -210,6 +210,50 @@ fn response_signature_input_is_closed_and_canonicalizable() {
 }
 
 #[test]
+fn join_start_emits_mixed_profiles() {
+    let candidate_root = tempfile::tempdir().unwrap();
+    let candidate = open_empty_vault_core(candidate_root.path());
+    let started = candidate
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "start-mixed-profiles".to_owned(),
+            did: crate::ids::Did::parse("did:wba:example.com:user:alice").unwrap(),
+            ttl_seconds: 300,
+        })
+        .unwrap();
+
+    assert_eq!(
+        started.join_request.profiles,
+        [
+            "anp.core.binding.v1",
+            "anp.identity.discovery.v1",
+            "anp.direct.base.v1",
+            "anp.direct.e2ee.v2",
+            "anp.group.base.v1",
+            "anp.group.e2ee.v2",
+        ]
+    );
+}
+
+#[test]
+fn join_profile_reader_accepts_only_canonical_or_legacy_complete_sets() {
+    let canonical = DEVICE_JOIN_VNEXT_PROFILES
+        .iter()
+        .map(|profile| (*profile).to_owned())
+        .collect::<Vec<_>>();
+    let legacy = DEVICE_JOIN_LEGACY_DRAFT_PROFILES
+        .iter()
+        .map(|profile| (*profile).to_owned())
+        .collect::<Vec<_>>();
+    let mut hybrid = canonical.clone();
+    hybrid[0] = anp::authentication::PROFILE_CORE_BINDING_V2.to_owned();
+
+    assert!(join_profiles_are_supported(&canonical));
+    assert!(join_profiles_are_supported(&legacy));
+    assert!(!join_profiles_are_supported(&hybrid));
+}
+
+#[test]
 fn request_role_is_member_only() {
     let request = json!({
         "type": DEVICE_JOIN_REQUEST_TYPE,

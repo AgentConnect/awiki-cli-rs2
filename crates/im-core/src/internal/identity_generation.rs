@@ -18,22 +18,22 @@ const AGENT_MESSAGE_SERVICE_PROFILES: &[&str] = &[
 ];
 const AGENT_MESSAGE_SERVICE_SECURITY_PROFILES: &[&str] = &["transport-protected"];
 const VNEXT_DEVICE_PROFILES: &[&str] = &[
-    anp::authentication::PROFILE_CORE_BINDING_V2,
-    anp::authentication::PROFILE_IDENTITY_DISCOVERY_V2,
-    anp::authentication::PROFILE_DIRECT_BASE_V2,
+    anp::authentication::PROFILE_CORE_BINDING_V1,
+    anp::authentication::PROFILE_IDENTITY_DISCOVERY_V1,
+    anp::authentication::PROFILE_DIRECT_BASE_V1,
     anp::authentication::PROFILE_DIRECT_E2EE_V2,
-    anp::authentication::PROFILE_GROUP_BASE_V2,
+    anp::authentication::PROFILE_GROUP_BASE_V1,
     anp::authentication::PROFILE_GROUP_E2EE_V2,
 ];
 const VNEXT_SERVICE_PROFILES: &[&str] = &[
-    anp::authentication::PROFILE_CORE_BINDING_V2,
-    anp::authentication::PROFILE_IDENTITY_DISCOVERY_V2,
-    anp::authentication::PROFILE_DIRECT_BASE_V2,
+    anp::authentication::PROFILE_CORE_BINDING_V1,
+    anp::authentication::PROFILE_IDENTITY_DISCOVERY_V1,
+    anp::authentication::PROFILE_DIRECT_BASE_V1,
     anp::authentication::PROFILE_DIRECT_E2EE_V2,
-    anp::authentication::PROFILE_GROUP_BASE_V2,
+    anp::authentication::PROFILE_GROUP_BASE_V1,
     anp::authentication::PROFILE_GROUP_E2EE_V2,
-    "anp.attachment.v2",
-    "anp.federation.relay.v2",
+    "anp.attachment.v1",
+    "anp.federation.relay.v1",
 ];
 const VNEXT_SERVICE_SECURITY_PROFILES: &[&str] =
     &["transport-protected", "direct-e2ee", "group-e2ee"];

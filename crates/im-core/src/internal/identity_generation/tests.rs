@@ -52,6 +52,17 @@ fn vnext_genesis_has_one_device_and_separate_root_and_device_keys() {
         manifest.devices[0].e2ee_key_id,
         generated.device_e2ee_key_id
     );
+    assert_eq!(
+        manifest.devices[0].profiles,
+        [
+            "anp.core.binding.v1",
+            "anp.identity.discovery.v1",
+            "anp.direct.base.v1",
+            "anp.direct.e2ee.v2",
+            "anp.group.base.v1",
+            "anp.group.e2ee.v2",
+        ]
+    );
     assert_ne!(generated.root_key_id, generated.device_signing_key_id);
     assert_ne!(
         generated.root_private_pem,
@@ -105,11 +116,19 @@ fn vnext_genesis_has_one_device_and_separate_root_and_device_keys() {
         .as_array()
         .and_then(|services| services.first())
         .expect("message service should exist");
-    assert!(service["profiles"]
-        .as_array()
-        .expect("profiles should be an array")
-        .iter()
-        .any(|profile| profile == anp::authentication::PROFILE_DIRECT_E2EE_V2));
+    assert_eq!(
+        service["profiles"],
+        serde_json::json!([
+            "anp.core.binding.v1",
+            "anp.identity.discovery.v1",
+            "anp.direct.base.v1",
+            "anp.direct.e2ee.v2",
+            "anp.group.base.v1",
+            "anp.group.e2ee.v2",
+            "anp.attachment.v1",
+            "anp.federation.relay.v1",
+        ])
+    );
     assert_eq!(generated.daemon_subkey_package.user_did, generated.did);
 }
 

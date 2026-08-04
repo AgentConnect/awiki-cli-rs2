@@ -31,9 +31,9 @@ use crate::identity::{
     DeviceJoinLocalPhase, DeviceJoinNewDeviceRespondRequest, DeviceJoinNewDeviceRespondResult,
     DeviceJoinObjectProof, DeviceJoinRequest, DeviceJoinRequestProof, DeviceJoinSessionSummary,
     DeviceJoinSide, DeviceJoinStartRequest, DeviceJoinStartResult, EncryptedJoinChallenge,
-    DEVICE_JOIN_CHALLENGE_ALGORITHM, DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS,
-    DEVICE_JOIN_MAX_TTL_SECONDS, DEVICE_JOIN_REQUEST_PROOF_INPUT_TYPE,
-    DEVICE_JOIN_REQUEST_PROOF_TYPE, DEVICE_JOIN_REQUEST_TYPE,
+    DEVICE_JOIN_CHALLENGE_ALGORITHM, DEVICE_JOIN_LEGACY_DRAFT_PROFILES,
+    DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS, DEVICE_JOIN_MAX_TTL_SECONDS,
+    DEVICE_JOIN_REQUEST_PROOF_INPUT_TYPE, DEVICE_JOIN_REQUEST_PROOF_TYPE, DEVICE_JOIN_REQUEST_TYPE,
     DEVICE_JOIN_RESPONSE_SIGNATURE_INPUT_TYPE, DEVICE_JOIN_VNEXT_PROFILES,
 };
 use crate::internal::platform_secret::SecretBytes;
@@ -948,7 +948,10 @@ pub(crate) fn prepare_admin_approval(
             "join_request.e2ee_public_key",
         )?
         .to_owned(),
-        profiles: stored.join_request.profiles.clone(),
+        profiles: DEVICE_JOIN_VNEXT_PROFILES
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
     };
     let mut new_document = anp::authentication::add_device_to_did_document(
         &current_document,
@@ -2193,7 +2196,11 @@ fn validate_authorized_document(
         .ok_or(crate::ImError::PermissionDenied)?;
     if entry.signing_key_id != signing_key_id
         || entry.e2ee_key_id != e2ee_key_id
-        || entry.profiles != join_request.profiles
+        || entry.profiles
+            != DEVICE_JOIN_VNEXT_PROFILES
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>()
         || did_document
             .get("verificationMethod")
             .and_then(Value::as_array)
@@ -2422,11 +2429,7 @@ fn validate_join_request(request: &DeviceJoinRequest, now: OffsetDateTime) -> cr
             "new devices must request member role",
         ));
     }
-    let expected_profiles = DEVICE_JOIN_VNEXT_PROFILES
-        .iter()
-        .map(|value| (*value).to_owned())
-        .collect::<Vec<_>>();
-    if request.profiles != expected_profiles {
+    if !join_profiles_are_supported(&request.profiles) {
         return Err(crate::ImError::invalid_input(
             Some("join_request.profiles".to_owned()),
             "Join Request must use the complete AWiki vNext device Profile closure",
@@ -2491,6 +2494,10 @@ fn validate_join_request(request: &DeviceJoinRequest, now: OffsetDateTime) -> cr
             &request.join_request_proof.proof_value_b64u,
         )
         .map_err(|_| crate::ImError::PermissionDenied)
+}
+
+fn join_profiles_are_supported(profiles: &[String]) -> bool {
+    profiles == DEVICE_JOIN_VNEXT_PROFILES || profiles == DEVICE_JOIN_LEGACY_DRAFT_PROFILES
 }
 
 fn validate_method_binding(

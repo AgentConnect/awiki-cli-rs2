@@ -93,6 +93,17 @@ fn published_e1_upgrade_builds_exact_canonical_vnext_document() {
         manifest.devices[0].device_id,
         upgrade.protocol_device_id.as_str()
     );
+    assert_eq!(
+        manifest.devices[0].profiles,
+        [
+            "anp.core.binding.v1",
+            "anp.identity.discovery.v1",
+            "anp.direct.base.v1",
+            "anp.direct.e2ee.v2",
+            "anp.group.base.v1",
+            "anp.group.e2ee.v2",
+        ]
+    );
 
     let proof = &upgrade.target_document["proof"];
     assert_eq!(proof["proofPurpose"], "assertionMethod");

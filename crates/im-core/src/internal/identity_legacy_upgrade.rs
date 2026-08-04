@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const VNEXT_DEVICE_PROFILES: &[&str] = &[
-    anp::authentication::PROFILE_CORE_BINDING_V2,
-    anp::authentication::PROFILE_IDENTITY_DISCOVERY_V2,
-    anp::authentication::PROFILE_DIRECT_BASE_V2,
+    anp::authentication::PROFILE_CORE_BINDING_V1,
+    anp::authentication::PROFILE_IDENTITY_DISCOVERY_V1,
+    anp::authentication::PROFILE_DIRECT_BASE_V1,
     anp::authentication::PROFILE_DIRECT_E2EE_V2,
-    anp::authentication::PROFILE_GROUP_BASE_V2,
+    anp::authentication::PROFILE_GROUP_BASE_V1,
     anp::authentication::PROFILE_GROUP_E2EE_V2,
 ];
 

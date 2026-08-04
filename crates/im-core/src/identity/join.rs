@@ -23,6 +23,15 @@ pub const DEVICE_JOIN_MAX_TTL_SECONDS: u64 = 600;
 pub const DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS: u64 = 300;
 
 pub const DEVICE_JOIN_VNEXT_PROFILES: &[&str] = &[
+    anp::authentication::PROFILE_CORE_BINDING_V1,
+    anp::authentication::PROFILE_IDENTITY_DISCOVERY_V1,
+    anp::authentication::PROFILE_DIRECT_BASE_V1,
+    anp::authentication::PROFILE_DIRECT_E2EE_V2,
+    anp::authentication::PROFILE_GROUP_BASE_V1,
+    anp::authentication::PROFILE_GROUP_E2EE_V2,
+];
+
+pub(crate) const DEVICE_JOIN_LEGACY_DRAFT_PROFILES: &[&str] = &[
     anp::authentication::PROFILE_CORE_BINDING_V2,
     anp::authentication::PROFILE_IDENTITY_DISCOVERY_V2,
     anp::authentication::PROFILE_DIRECT_BASE_V2,
