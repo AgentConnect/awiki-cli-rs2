@@ -689,7 +689,10 @@ fn parse_register_outcome(
     )?;
     let did = required_string(&raw, "did")?;
     let user_id = required_string(&raw, "user_id")?;
-    let message = required_string(&raw, "message")?;
+    // `message` is a required diagnostic field, not registration authority.
+    // Identity and device binding are proven by the fields and access token
+    // validated below.
+    required_string(&raw, "message")?;
     let access_token = required_string(&raw, "access_token")?;
     let handle = required_string(&raw, "handle")?;
     let domain = required_string(&raw, "domain")?;
@@ -702,7 +705,6 @@ fn parse_register_outcome(
         || handle != pending.target_handle
         || domain != pending.target_domain
         || full_handle != format!("{}.{}", pending.target_handle, pending.target_domain)
-        || message != "Registration successful"
     {
         return Err(crate::ImError::PermissionDenied);
     }
@@ -1344,31 +1346,61 @@ mod tests {
     }
 
     #[test]
-    fn registered_response_accepts_the_existing_closed_user_service_shape() {
+    fn registered_response_treats_message_as_non_authoritative_diagnostics() {
+        let pending = pending();
+        for message in [
+            "Registration successful",
+            "Legacy Handle recovered successfully",
+        ] {
+            let token = access_token(&pending, &pending.generated.device_signing_key_id);
+            let outcome = parse_register_outcome(
+                &pending,
+                serde_json::json!({
+                    "state": "registered",
+                    "did": pending.generated.did.as_str(),
+                    "user_id": "user-1",
+                    "message": message,
+                    "handle": "alice",
+                    "domain": "example.test",
+                    "full_handle": "alice.example.test",
+                    "binding_generation": "1",
+                    "access_token": token,
+                }),
+            )
+            .unwrap();
+
+            let RegistrationRemoteOutcome::Registered(result) = outcome else {
+                panic!("registered response must not be projected as Join-required");
+            };
+            assert_eq!(result.did, pending.generated.did.as_str());
+            assert_eq!(result.handle, "alice");
+            assert_eq!(result.full_handle, "alice.example.test");
+        }
+    }
+
+    #[test]
+    fn registered_response_still_rejects_authoritative_binding_mismatch() {
         let pending = pending();
         let token = access_token(&pending, &pending.generated.device_signing_key_id);
-        let outcome = parse_register_outcome(
+        let error = match parse_register_outcome(
             &pending,
             serde_json::json!({
                 "state": "registered",
                 "did": pending.generated.did.as_str(),
                 "user_id": "user-1",
-                "message": "Registration successful",
-                "handle": "alice",
+                "message": "Legacy Handle recovered successfully",
+                "handle": "mallory",
                 "domain": "example.test",
-                "full_handle": "alice.example.test",
+                "full_handle": "mallory.example.test",
                 "binding_generation": "1",
                 "access_token": token,
             }),
-        )
-        .unwrap();
-
-        let RegistrationRemoteOutcome::Registered(result) = outcome else {
-            panic!("new registration must not be projected as Join-required");
+        ) {
+            Ok(_) => panic!("authoritative binding mismatch must fail closed"),
+            Err(error) => error,
         };
-        assert_eq!(result.did, pending.generated.did.as_str());
-        assert_eq!(result.handle, "alice");
-        assert_eq!(result.full_handle, "alice.example.test");
+
+        assert_eq!(error, crate::ImError::PermissionDenied);
     }
 
     #[test]

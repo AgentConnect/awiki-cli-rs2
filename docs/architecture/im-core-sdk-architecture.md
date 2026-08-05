@@ -183,6 +183,12 @@ published Legacy identity has lost its original root, the separate phone-owned
 Legacy compatibility path may preserve the account/Handle while replacing the
 DID with a new canonical vNext identity.
 
+The remote `registered.message` remains a required diagnostic field but is not
+registration authority. Core confirms a remote commit from the closed response
+shape, exact DID/Handle/domain/binding generation, and the validated
+exact-device access token. Neither a host nor Core may infer first registration,
+Legacy recovery, success, or permission from human-readable response wording.
+
 The production compatibility source for this in-place path is AWiki Me
 `0.1.5+14` (`c19a01a5e434ac41ead73915ef7fcbc2a27e3a5a`) with im-core
 `d7c853a986a29e0c0457284a6b2c3d81ec637e10`. Core does not clone that Legacy

@@ -180,6 +180,53 @@ async fn register_handle_returns_identity_and_default_change() {
     assert_prekey_publication_request(&requests[1]);
 }
 
+#[tokio::test]
+async fn legacy_recovery_registered_response_commits_the_exact_local_identity() {
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::registration_result_with_message("Legacy Handle recovered successfully"),
+        ExpectedHttp::prekey_publication_result(),
+    ]);
+    let fixture = Fixture::new();
+    let base_url = server.base_url().to_owned();
+    let core = fixture
+        .core_async_with_base_url_vault_required(&base_url, [41_u8; 32])
+        .await;
+
+    let result = core
+        .identities()
+        .register_handle_async(RegisterHandleRequest {
+            local_alias: Some("legacy-carol".to_string()),
+            requested_handle: Handle::parse("legacy-carol.awiki.test", "").unwrap(),
+            verification: VerificationInput::AlreadyVerified,
+            invite_code: None,
+            profile: InitialProfile {
+                display_name: Some("Legacy Carol".to_string()),
+                avatar_url: None,
+            },
+            make_default: true,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, HandleRegistrationState::Registered);
+    assert_eq!(result.handle.as_str(), "legacy-carol.awiki.test");
+    let identity = result
+        .identity
+        .expect("recovered identity must commit locally");
+    assert_eq!(identity.local_alias.as_deref(), Some("legacy-carol"));
+    assert_eq!(
+        identity.handle.as_ref().map(Handle::as_str),
+        Some("legacy-carol.awiki.test")
+    );
+    assert!(identity.readiness.ready_for_auth);
+    assert!(result.default_identity_change.is_some());
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].json_body()["method"], "register");
+    assert_prekey_publication_request(&requests[1]);
+}
+
 #[cfg(feature = "mcp-trusted-registration")]
 #[tokio::test]
 async fn register_handle_with_service_bearer_adds_authorization_header() {
@@ -1309,10 +1356,14 @@ impl ExpectedHttp {
     }
 
     fn registration_result() -> Self {
+        Self::registration_result_with_message("Registration successful")
+    }
+
+    fn registration_result_with_message(message: &'static str) -> Self {
         Self {
             status_code: 200,
             body: Value::Null,
-            responder: Some(Box::new(|request| {
+            responder: Some(Box::new(move |request| {
                 let rpc = request.json_body();
                 let params = &rpc["params"];
                 let document = &params["did_document"];
@@ -1364,7 +1415,7 @@ impl ExpectedHttp {
                         "state": "registered",
                         "did": did,
                         "user_id": user_id,
-                        "message": "Registration successful",
+                        "message": message,
                         "access_token": access_token,
                         "handle": handle,
                         "domain": domain,
