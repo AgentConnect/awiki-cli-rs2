@@ -93,7 +93,8 @@ test('publisher remains compatible with the production gh run-list surface', () 
     'utf8',
   );
   assert.doesNotMatch(publisher, /gh run list[^\n]*--event/);
-  assert.match(publisher, /displayTitle ==/);
+  assert.doesNotMatch(publisher, /displayTitle/);
+  assert.match(publisher, /\.name ==/);
   assert.match(publisher, /headSha ==/);
   assert.match(publisher, /createdAt >=/);
 });
