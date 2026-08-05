@@ -831,6 +831,13 @@ Section 4.2 remain default-off and do not control ordinary synchronization.
   enforces a 16 MiB hard response budget, Core uses ordered chunks of 8 to leave
   headroom for compact-JSON framing and escaping; any unavailable item in any
   chunk aborts the full delta page.
+- Required `group.member_changed` and `group.profile_updated` events atomically
+  commit both the owner-scoped Group projection and one read Group system
+  timeline message. The message uses canonical
+  `<group_did>:<group_event_seq>` identity, so local mutation, realtime, v1
+  delta, and v2 delta converge idempotently instead of creating duplicate rows.
+  These lifecycle records remain durable timeline facts but do not enter the
+  ordinary committed-incoming notification list.
 - When the independent P5 gate is enabled, Foreground CLI Inbox compensation
   first performs one bounded exact-device secure hydration through the local-only
   `inbox.get` contract. This lets Root control messages finish local credential

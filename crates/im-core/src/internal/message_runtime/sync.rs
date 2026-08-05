@@ -31,6 +31,12 @@ pub(super) struct SyncDeltaMessageProjection {
     pub(super) hydration_state: crate::internal::local_state::messages::MessageHydrationState,
 }
 
+#[cfg(feature = "sqlite")]
+pub(super) struct SyncDeltaGroupProjection {
+    pub(super) group: crate::internal::local_state::groups::GroupRecord,
+    pub(super) system_message: Option<crate::internal::local_state::messages::MessageRecord>,
+}
+
 impl<'a, P, T, R> MessageSyncRuntime<'a, P, T, R> {
     pub(crate) fn new(
         client: &'a crate::core::ImClient,
@@ -1834,16 +1840,10 @@ fn sync_delta_apply_event(
             record.hydration_state = projection.hydration_state;
             apply.messages.push(record);
         }
-        "group.member_changed" => {
-            let group_record = sync_delta_group_record(client, event)?;
-            apply.groups.push(group_record);
-            if let Some(record) = sync_delta_group_system_message_record(client, event)? {
-                apply.messages.push(record);
-            }
-        }
-        "group.profile_updated" => {
-            apply.groups.push(sync_delta_group_record(client, event)?);
-            if let Some(record) = sync_delta_group_profile_system_message_record(client, event)? {
+        "group.member_changed" | "group.profile_updated" => {
+            let projection = sync_delta_group_projection(client, event)?;
+            apply.groups.push(projection.group);
+            if let Some(record) = projection.system_message {
                 apply.messages.push(record);
             }
         }
@@ -2184,6 +2184,26 @@ pub(super) fn sync_delta_group_record(
         client.did().as_str(),
         event,
     )
+}
+
+#[cfg(feature = "sqlite")]
+pub(super) fn sync_delta_group_projection(
+    client: &crate::core::ImClient,
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> crate::ImResult<SyncDeltaGroupProjection> {
+    let system_message = match event.event_type.as_str() {
+        "group.member_changed" => sync_delta_group_system_message_record(client, event)?,
+        "group.profile_updated" => sync_delta_group_profile_system_message_record(client, event)?,
+        unsupported => {
+            return Err(sync_invalid_page(format!(
+                "unsupported Group state event_type {unsupported:?}"
+            )));
+        }
+    };
+    Ok(SyncDeltaGroupProjection {
+        group: sync_delta_group_record(client, event)?,
+        system_message,
+    })
 }
 
 #[cfg(feature = "sqlite")]

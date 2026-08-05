@@ -761,6 +761,11 @@ final diagnostics = await client.messages.syncDiagnostics();
   framing/escaping headroom under the service's 16 MiB hard response budget,
   then atomically commits receipts, canonical local projections, and the next
   cursor only after all chunks are complete.
+- Required `group.member_changed` and `group.profile_updated` events atomically
+  commit both Group state and one read `awiki.group.system_event.v1` timeline
+  message. Its canonical `<group_did>:<group_event_seq>` ID makes local,
+  realtime, v1, and v2 arrival order idempotent. Flutter reads the result from
+  the normal local timeline; it does not synthesize or merge a second event.
 - Required hydration, schema, owner mismatch, or non-resolution route failure
   leaves both receipt and cursor unchanged. A peer that is only
   `identity_unresolved` is different: Core atomically stores the message and
@@ -789,7 +794,8 @@ final diagnostics = await client.messages.syncDiagnostics();
   48-hour/500-message policy.
 - `committedIncomingMessages` contains only incoming messages whose projection
   transaction committed, with `CommittedMessageSource.liveDelta`; realtime
-  hints and snapshot hydration never appear in this list.
+  hints, snapshot hydration, and Group system timeline records never appear in
+  this list.
 - Local read advancement and durable outbox enqueue are one SQLite transaction.
   Unsent entries coalesce to their maximum watermark; an in-flight payload is
   immutable and a higher watermark creates a successor. Startup changes stale

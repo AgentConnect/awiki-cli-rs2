@@ -1205,9 +1205,11 @@ fn reduce_event(
         "group.member_changed" | "group.profile_updated" => {
             validate_group_state_version(event)?;
             let synthetic = v1_event(event, event.payload.clone());
-            apply
-                .groups
-                .push(super::sync::sync_delta_group_record(client, &synthetic)?);
+            let projection = super::sync::sync_delta_group_projection(client, &synthetic)?;
+            apply.groups.push(projection.group);
+            if let Some(record) = projection.system_message {
+                apply.messages.push(record);
+            }
         }
         "system.notification" => {
             apply.system_notification = Some(verified_system_notification.ok_or_else(|| {
@@ -2425,6 +2427,105 @@ mod tests {
         })
     }
 
+    fn sync_group_member_changed_event(
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        event_id: &str,
+        event_seq: &str,
+        group_did: &str,
+        group_state_version: &str,
+        group_event_seq: &str,
+        actor_did: &str,
+        subject_did: &str,
+        membership_status: &str,
+    ) -> Value {
+        json!({
+            "event_id": event_id,
+            "stream_epoch": "1",
+            "event_seq": event_seq,
+            "event_type": "group.member_changed",
+            "schema_version": 1,
+            "ignore_safe": false,
+            "account_id": binding.account_id,
+            "recipient_device_id": null,
+            "origin_did": actor_did,
+            "origin_device_id": "device-actor",
+            "aggregate_kind": "group",
+            "aggregate_id": group_did,
+            "state_version": group_state_version,
+            "thread_key": group_did,
+            "occurred_at": "2026-07-28T12:00:01Z",
+            "payload": {
+                "thread_kind": "group",
+                "thread": {
+                    "kind": "group",
+                    "group_did": group_did
+                },
+                "group": {
+                    "group_did": group_did,
+                    "group_state_version": group_state_version,
+                    "group_event_seq": group_event_seq
+                },
+                "membership": {
+                    "actor_did": actor_did,
+                    "subject_did": subject_did,
+                    "status": membership_status
+                }
+            },
+            "source": {
+                "method": "group.add",
+                "operation_id": event_id
+            }
+        })
+    }
+
+    fn sync_group_profile_updated_event(
+        binding: &crate::identity::ActiveSyncAccountBinding,
+        event_id: &str,
+        event_seq: &str,
+        group_did: &str,
+        group_state_version: &str,
+        group_event_seq: &str,
+        actor_did: &str,
+    ) -> Value {
+        json!({
+            "event_id": event_id,
+            "stream_epoch": "1",
+            "event_seq": event_seq,
+            "event_type": "group.profile_updated",
+            "schema_version": 1,
+            "ignore_safe": false,
+            "account_id": binding.account_id,
+            "recipient_device_id": null,
+            "origin_did": actor_did,
+            "origin_device_id": "device-actor",
+            "aggregate_kind": "group",
+            "aggregate_id": group_did,
+            "state_version": group_state_version,
+            "thread_key": group_did,
+            "occurred_at": "2026-07-28T12:00:02Z",
+            "payload": {
+                "thread_kind": "group",
+                "thread": {
+                    "kind": "group",
+                    "group_did": group_did
+                },
+                "group": {
+                    "group_did": group_did,
+                    "group_state_version": group_state_version,
+                    "group_event_seq": group_event_seq,
+                    "profile": {
+                        "display_name": "Renamed Group"
+                    }
+                },
+                "actor_did": actor_did
+            },
+            "source": {
+                "method": "group.update_profile",
+                "operation_id": event_id
+            }
+        })
+    }
+
     fn sync_read_ack(
         binding: &crate::identity::ActiveSyncAccountBinding,
         thread_key: &str,
@@ -2797,6 +2898,208 @@ mod tests {
             panic!("expected ready message sync state");
         };
         state
+    }
+
+    #[tokio::test]
+    async fn sync_v2_group_state_events_commit_system_timeline_messages() {
+        let fixture = SyncSnapshotFixture::new("group-system-events");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "0").await;
+        let group_did = "did:wba:awiki.test:groups:sync-system-events";
+        let actor_did = "did:wba:awiki.test:user:bob:e1_actor";
+        let subject_did = "did:wba:awiki.test:user:carol:e1_subject";
+        let member_event_id = "event-group-member-added";
+        let profile_event_id = "event-group-profile-updated";
+        let transport = SyncSnapshotTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![Ok(sync_snapshot_delta(
+                "1",
+                "2",
+                vec![
+                    sync_group_member_changed_event(
+                        &binding,
+                        member_event_id,
+                        "1",
+                        group_did,
+                        "7",
+                        "11",
+                        actor_did,
+                        subject_did,
+                        "active",
+                    ),
+                    sync_group_profile_updated_event(
+                        &binding,
+                        profile_event_id,
+                        "2",
+                        group_did,
+                        "8",
+                        "12",
+                        actor_did,
+                    ),
+                ],
+            ))],
+        );
+
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            transport,
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.events_applied, 2);
+        assert!(outcome.committed_incoming_messages.is_empty());
+        assert_eq!(
+            outcome.changed_conversation_ids,
+            vec![crate::internal::local_state::owner_scope::group_conversation_id(group_did)]
+        );
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        let mut statement = connection
+            .prepare(
+                "SELECT msg_id, content_type, content, server_seq, is_read, metadata
+                 FROM messages
+                 WHERE owner_identity_id = ?1 AND group_did = ?2
+                 ORDER BY server_seq ASC",
+            )
+            .unwrap();
+        let records = statement
+            .query_map([binding.owner_identity_id.as_str(), group_did], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, bool>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(records.len(), 2);
+
+        let member_payload = serde_json::from_str::<Value>(&records[0].2).unwrap();
+        assert_eq!(records[0].0, format!("{group_did}:11"));
+        assert_eq!(records[0].1, "application/json");
+        assert_eq!(records[0].3, 11);
+        assert!(records[0].4);
+        assert_eq!(member_payload["schema"], "awiki.group.system_event.v1");
+        assert_eq!(member_payload["type"], "member_added");
+        assert_eq!(member_payload["actor_did"], actor_did);
+        assert_eq!(member_payload["subject_did"], subject_did);
+        assert_eq!(member_payload["sync_event_id"], member_event_id);
+        assert_eq!(member_payload["sync_event_type"], "group.member_changed");
+        assert_eq!(
+            serde_json::from_str::<Value>(&records[0].5).unwrap()["message_role"],
+            "group_system_event"
+        );
+
+        let profile_payload = serde_json::from_str::<Value>(&records[1].2).unwrap();
+        assert_eq!(records[1].0, format!("{group_did}:12"));
+        assert_eq!(records[1].3, 12);
+        assert!(records[1].4);
+        assert_eq!(profile_payload["schema"], "awiki.group.system_event.v1");
+        assert_eq!(profile_payload["type"], "group_profile_updated");
+        assert_eq!(profile_payload["actor_did"], actor_did);
+        assert_eq!(profile_payload["sync_event_id"], profile_event_id);
+        assert_eq!(profile_payload["sync_event_type"], "group.profile_updated");
+    }
+
+    #[tokio::test]
+    async fn sync_v2_group_state_event_converges_with_realtime_projection_exactly_once() {
+        let fixture = SyncSnapshotFixture::new("group-system-event-realtime-race");
+        let client = fixture.client();
+        let binding = client.active_sync_account_binding().await.unwrap();
+        seed_sync_snapshot_ready_state(&client, &binding, "1", "0").await;
+        let group_did = "did:wba:awiki.test:groups:realtime-race";
+        let actor_did = "did:wba:awiki.test:user:bob:e1_actor";
+        let subject_did = "did:wba:awiki.test:user:carol:e1_subject";
+        let event_id = "event-group-member-realtime-race";
+        let realtime_record = crate::internal::group_system_events::record_from_input(
+            &client,
+            crate::internal::group_system_events::GroupSystemEventInput {
+                event_type: "member_added".to_owned(),
+                group_did: group_did.to_owned(),
+                group_event_seq: 21,
+                group_state_version: Some("9".to_owned()),
+                actor_did: Some(actor_did.to_owned()),
+                subject_did: Some(subject_did.to_owned()),
+                subject_handle: None,
+                previous_subject_did: None,
+                handle_binding_generation: None,
+                membership_status: Some("active".to_owned()),
+                changed_at: Some("2026-07-28T12:00:01Z".to_owned()),
+                sync_event_id: Some(event_id.to_owned()),
+                sync_event_seq: Some("1".to_owned()),
+                sync_event_type: Some("group.member_changed".to_owned()),
+                source: "im-core.realtime".to_owned(),
+            },
+        )
+        .unwrap();
+        client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .store_messages(vec![realtime_record])
+            .await
+            .unwrap();
+        let transport = SyncSnapshotTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![Ok(sync_snapshot_delta(
+                "1",
+                "1",
+                vec![sync_group_member_changed_event(
+                    &binding,
+                    event_id,
+                    "1",
+                    group_did,
+                    "9",
+                    "21",
+                    actor_did,
+                    subject_did,
+                    "active",
+                )],
+            ))],
+        );
+
+        let outcome = MessageSyncRuntimeV2::new(
+            &client,
+            ReadySyncSnapshotSessionProvider,
+            transport,
+            NoopAsyncDirectoryTransport,
+        )
+        .sync_now(sync_snapshot_request())
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.events_applied, 1);
+        assert!(outcome.committed_incoming_messages.is_empty());
+        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        let (count, message_id, server_seq, is_read) = connection
+            .query_row(
+                "SELECT COUNT(*), MIN(msg_id), MIN(server_seq), MIN(is_read)
+                 FROM messages
+                 WHERE owner_identity_id = ?1 AND group_did = ?2",
+                [binding.owner_identity_id.as_str(), group_did],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, bool>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(message_id, format!("{group_did}:21"));
+        assert_eq!(server_seq, 21);
+        assert!(is_read);
     }
 
     #[tokio::test]

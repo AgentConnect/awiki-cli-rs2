@@ -2939,24 +2939,92 @@ fn message_event_thread_binding(
     if event.messages.is_empty() {
         return Ok(None);
     }
-    if event.event_type != "message.created"
-        || event.messages.len() != 1
-        || event.thread_bindings.len() != 1
-    {
-        return Err(sync_error(
+    match event.event_type.as_str() {
+        "message.created" => {
+            if event.messages.len() != 1 || event.thread_bindings.len() != 1 {
+                return Err(sync_error(
+                    "SYNC_INVALID_PAGE",
+                    "hydrated message.created requires exactly one message and one thread binding",
+                ));
+            }
+            let binding = &event.thread_bindings[0];
+            let message = &event.messages[0];
+            if binding.thread_kind != message.wire_thread_kind {
+                return Err(sync_error(
+                    "SYNC_INVALID_PAGE",
+                    "hydrated message thread binding kind conflicts with its wire identity",
+                ));
+            }
+            Ok(Some(binding.clone()))
+        }
+        "group.member_changed" | "group.profile_updated" => {
+            if event.messages.len() != 1 || !event.thread_bindings.is_empty() {
+                return Err(sync_error(
+                    "SYNC_INVALID_PAGE",
+                    "Group state event requires exactly one local system message and no thread binding",
+                ));
+            }
+            validate_group_system_message_projection(event, &event.messages[0])?;
+            Ok(None)
+        }
+        _ => Err(sync_error(
             "SYNC_INVALID_PAGE",
-            "hydrated message.created requires exactly one message and one thread binding",
-        ));
+            "sync event type is not allowed to carry a message projection",
+        )),
     }
-    let binding = &event.thread_bindings[0];
-    let message = &event.messages[0];
-    if binding.thread_kind != message.wire_thread_kind {
-        return Err(sync_error(
-            "SYNC_INVALID_PAGE",
-            "hydrated message thread binding kind conflicts with its wire identity",
-        ));
+}
+
+fn validate_group_system_message_projection(
+    event: &DeltaApplyEventV2,
+    message: &super::messages::MessageRecord,
+) -> crate::ImResult<()> {
+    let payload = serde_json::from_str::<serde_json::Value>(&message.content)
+        .ok()
+        .and_then(|value| value.as_object().cloned());
+    let metadata = serde_json::from_str::<serde_json::Value>(&message.metadata)
+        .ok()
+        .and_then(|value| value.as_object().cloned());
+    let group_did = payload
+        .as_ref()
+        .and_then(|value| value.get("group_did"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let group_event_seq = payload
+        .as_ref()
+        .and_then(|value| value.get("group_event_seq"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| value.parse::<i64>().ok());
+    let sync_event_type = payload
+        .as_ref()
+        .and_then(|value| value.get("sync_event_type"))
+        .and_then(serde_json::Value::as_str);
+    let valid = message.content_type == "application/json"
+        && message.is_read
+        && payload
+            .as_ref()
+            .and_then(|value| value.get("schema"))
+            .and_then(serde_json::Value::as_str)
+            == Some(crate::internal::group_system_events::GROUP_SYSTEM_EVENT_SCHEMA)
+        && !group_did.is_empty()
+        && (message.group_did.trim() == group_did || message.group_id.trim() == group_did)
+        && group_event_seq.is_some_and(|sequence| {
+            message.server_seq == Some(sequence)
+                && message.msg_id == format!("{group_did}:{sequence}")
+        })
+        && sync_event_type == Some(event.event_type.as_str())
+        && metadata
+            .as_ref()
+            .and_then(|value| value.get("message_role"))
+            .and_then(serde_json::Value::as_str)
+            == Some("group_system_event");
+    if valid {
+        return Ok(());
     }
-    Ok(Some(binding.clone()))
+    Err(sync_error(
+        "SYNC_INVALID_PAGE",
+        "Group state event contains an invalid local system message projection",
+    ))
 }
 
 fn canonicalize_message_event_thread_bindings(
@@ -3241,6 +3309,86 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn group_state_message_projection_is_closed_to_one_unbound_system_record() {
+        let system_message = super::super::messages::MessageRecord {
+            msg_id: "did:example:group:7".to_owned(),
+            owner_identity_id: "owner-1".to_owned(),
+            group_id: "did:example:group".to_owned(),
+            group_did: "did:example:group".to_owned(),
+            content_type: "application/json".to_owned(),
+            content: serde_json::json!({
+                "schema": "awiki.group.system_event.v1",
+                "type": "member_added",
+                "group_did": "did:example:group",
+                "group_event_seq": "7",
+                "sync_event_type": "group.member_changed"
+            })
+            .to_string(),
+            server_seq: Some(7),
+            is_read: true,
+            metadata: serde_json::json!({"message_role": "group_system_event"}).to_string(),
+            wire_thread_kind: "group".to_owned(),
+            wire_thread_ref: "did:example:group".to_owned(),
+            ..Default::default()
+        };
+        for event_type in ["group.member_changed", "group.profile_updated"] {
+            let mut system_message = system_message.clone();
+            let mut payload =
+                serde_json::from_str::<serde_json::Value>(&system_message.content).unwrap();
+            payload["sync_event_type"] = serde_json::Value::String(event_type.to_owned());
+            system_message.content = payload.to_string();
+            let event = DeltaApplyEventV2 {
+                event_type: event_type.to_owned(),
+                messages: vec![system_message],
+                ..Default::default()
+            };
+            assert_eq!(
+                message_event_thread_binding(&event, "owner-1").unwrap(),
+                None
+            );
+
+            let mut unread = event.clone();
+            unread.messages[0].is_read = false;
+            assert!(matches!(
+                message_event_thread_binding(&unread, "owner-1"),
+                Err(crate::ImError::Service {
+                    code: Some(code),
+                    ..
+                }) if code == "SYNC_INVALID_PAGE"
+            ));
+
+            let mut with_binding = event.clone();
+            with_binding.thread_bindings.push(SyncThreadBinding {
+                owner_identity_id: "owner-1".to_owned(),
+                remote_thread_key: "did:example:group".to_owned(),
+                thread_kind: "group".to_owned(),
+                conversation_id: "group:did:example:group".to_owned(),
+                updated_at: 1,
+            });
+            assert!(matches!(
+                message_event_thread_binding(&with_binding, "owner-1"),
+                Err(crate::ImError::Service {
+                    code: Some(code),
+                    ..
+                }) if code == "SYNC_INVALID_PAGE"
+            ));
+        }
+
+        let unrelated = DeltaApplyEventV2 {
+            event_type: "message.read_state_updated".to_owned(),
+            messages: vec![system_message],
+            ..Default::default()
+        };
+        assert!(matches!(
+            message_event_thread_binding(&unrelated, "owner-1"),
+            Err(crate::ImError::Service {
+                code: Some(code),
+                ..
+            }) if code == "SYNC_INVALID_PAGE"
+        ));
     }
 
     #[test]

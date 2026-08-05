@@ -942,6 +942,10 @@ Reliable sync 补充：
   bootstrap 的 `client_instance_id` 是 Core 为每个本地 owner 在同步 SQLite 首次生成并先持久化
   的随机不透明值：请求丢失/失败重试和重启复用，清库/新 DB 自动变化，不能由 owner/account/
   device 稳定标识派生。
+  `group.member_changed` / `group.profile_updated` 在同一事务中同时提交 Group 状态和一条已读的
+  群系统时间线记录；记录 ID 固定为 `<group_did>:<group_event_seq>`，因此本地 mutation、
+  realtime、v1 delta 和 v2 delta 乱序或重复到达都收敛为同一条记录。群系统记录不进入
+  ordinary `committed_incoming_messages`。
 - `sync_diagnostics()` 是只读、类型化且产品安全的诊断入口。结果只包含
   `last_success_at`、`mode`、`pending_mutation_count`、`dirty_domains`、
   `retry_state` 和可选 `next_retry_at`；不包含 raw cursor/epoch、完整 account/device ID、
