@@ -670,6 +670,37 @@ mod tests {
             Value::String(URL_SAFE_NO_PAD.encode(signature.to_bytes()));
     }
 
+    fn resign_origin_proof(request: &mut Value, fixture: &Value) {
+        let seed: [u8; 32] = URL_SAFE_NO_PAD
+            .decode(
+                fixture["p3_vector"]["origin_signing_private_seed_b64u"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let private = anp::PrivateKeyMaterial::Ed25519(SigningKey::from_bytes(&seed));
+        let key_id = fixture["p3_vector"]["origin_did_document"]["verificationMethod"][0]["id"]
+            .as_str()
+            .unwrap();
+        let proof = anp::proof::generate_rfc9421_origin_proof(
+            "direct.send",
+            &request["params"]["meta"],
+            &request["params"]["body"],
+            &private,
+            key_id,
+            anp::proof::Rfc9421OriginProofGenerationOptions {
+                created: Some(1_784_772_000),
+                expires: Some(1_784_772_600),
+                nonce: Some("notify-evt-4OHi4-Tl5ufo6err7O3u7w".to_owned()),
+                label: None,
+            },
+        )
+        .unwrap();
+        request["params"]["auth"]["origin_proof"] = serde_json::to_value(proof).unwrap();
+    }
+
     #[test]
     fn canonical_payload_accepts_independent_agent_origin_anchored_to_home_service() {
         let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -723,6 +754,9 @@ mod tests {
 
     #[test]
     fn canonical_base_v1_without_anp_version_and_legacy_notification_both_validate() {
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/multi_device_v1/system-notification-v1.json");
+        let fixture: Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
         let received_at = DateTime::parse_from_rfc3339("2026-07-23T02:00:01Z")
             .unwrap()
             .with_timezone(&Utc);
@@ -735,6 +769,7 @@ mod tests {
         let request = &mut canonical["params"]["body"]["payload"]["payload"]["join_request"];
         request["profiles"] = json!(EXPECTED_PROFILES);
         resign_join_request(request);
+        resign_origin_proof(&mut canonical, &fixture);
 
         let canonical_envelope = super::super::wire::parse_envelope(&canonical).unwrap();
         assert!(canonical_envelope.meta.anp_version.is_none());
@@ -742,6 +777,13 @@ mod tests {
             "did:wba:example.com:agents:alice:e1_alice",
             &canonical_envelope,
             received_at,
+        )
+        .unwrap();
+        let origin_did = canonical_envelope.meta.sender_did.clone();
+        verify_origin_proof(
+            &canonical_envelope,
+            &origin_did,
+            fixture["p3_vector"]["origin_did_document"].clone(),
         )
         .unwrap();
 
