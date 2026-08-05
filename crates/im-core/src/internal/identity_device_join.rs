@@ -901,6 +901,12 @@ pub(crate) fn prepare_admin_approval(
     {
         return Err(crate::ImError::PermissionDenied);
     }
+    if stored.join_request.profiles == DEVICE_JOIN_LEGACY_DRAFT_PROFILES {
+        return Err(crate::ImError::invalid_input(
+            Some("join_request.profiles".to_owned()),
+            "legacy draft Device Join requires both devices to upgrade before approval",
+        ));
+    }
     let input_hash = canonical_hash(&json!({
         "operation_id": operation_id,
         "join_session_id": join_session_id,

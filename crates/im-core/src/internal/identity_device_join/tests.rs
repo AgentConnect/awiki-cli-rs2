@@ -382,6 +382,93 @@ fn local_admin_verification_progress_is_phase_gated_and_read_only() {
 }
 
 #[test]
+fn admin_rejects_legacy_join_before_preparing_document_mutation() {
+    let admin_root = tempfile::tempdir().unwrap();
+    let candidate_root = tempfile::tempdir().unwrap();
+    let (admin, document, did) = open_ready_admin_core(admin_root.path());
+    let candidate = open_empty_vault_core(candidate_root.path());
+    let document_hash = canonical_hash(&document).unwrap();
+    let started = candidate
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "start-legacy-approval".to_owned(),
+            did,
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    let challenged = admin
+        .device_join()
+        .prepare_admin_challenge(DeviceJoinAdminPrepareRequest {
+            admin_identity: crate::identity::IdentitySelector::Default,
+            operation_id: "challenge-legacy-approval".to_owned(),
+            join_request: started.join_request,
+            challenge_ttl_seconds: 180,
+            document_version: 7,
+            document_hash: document_hash.clone(),
+        })
+        .unwrap();
+    let responded = candidate
+        .device_join()
+        .respond_as_new_device(DeviceJoinNewDeviceRespondRequest {
+            operation_id: "respond-legacy-approval".to_owned(),
+            challenge: challenged.challenge,
+            admin_did_document: document,
+            document_version: 7,
+            document_hash: document_hash.clone(),
+        })
+        .unwrap();
+    admin
+        .device_join()
+        .verify_response_as_admin(DeviceJoinAdminVerifyRequest {
+            operation_id: "verify-legacy-approval".to_owned(),
+            join_session_id: started.session.join_session_id.clone(),
+            response: responded.response,
+        })
+        .unwrap();
+
+    let store = JoinStateStore::new(&admin);
+    let mut stored = store
+        .load(&started.session.join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap();
+    stored.join_request.profiles = DEVICE_JOIN_LEGACY_DRAFT_PROFILES
+        .iter()
+        .map(|profile| (*profile).to_owned())
+        .collect();
+    stored.join_request_hash =
+        canonical_hash(&serde_json::to_value(&stored.join_request).unwrap()).unwrap();
+    store.save(&stored).unwrap();
+    let checkpoint = crate::internal::identity_device_state::IdentityInternalCheckpoint {
+        document_version: 7,
+        document_hash,
+        registry_version: 3,
+    };
+
+    let error = prepare_admin_approval(
+        &admin,
+        "approve-legacy-approval",
+        &started.session.join_session_id,
+        &checkpoint,
+        &format_time(OffsetDateTime::now_utc()).unwrap(),
+        true,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::ImError::InvalidInput {
+            field: Some(field),
+            ..
+        } if field == "join_request.profiles"
+    ));
+    let unchanged = store
+        .load(&started.session.join_session_id, DeviceJoinSide::Admin)
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.phase, DeviceJoinLocalPhase::ResponseVerified);
+    assert!(unchanged.approval.is_none());
+}
+
+#[test]
 fn local_new_device_sas_is_restart_safe_and_read_only() {
     let admin_root = tempfile::tempdir().unwrap();
     let candidate_root = tempfile::tempdir().unwrap();
