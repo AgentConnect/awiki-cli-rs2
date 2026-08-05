@@ -95,6 +95,12 @@ which is the canonical User Service account ID persisted by Core. A
 `join_required` result leaves `accountId` null; Flutter/App code must not decode
 JWT claims or substitute a DID to manufacture it.
 
+The remote `registered.message` field is diagnostic text and is not exposed as
+registration authority. Core validates the exact DID, Handle, domain, binding
+generation, and device access token before returning `registered`; Flutter hosts
+must branch only on the typed registration state and must not parse response
+wording to distinguish first registration from phone-owned Legacy recovery.
+
 After the remote and local identity commits, P5 PreKey publication is a
 recoverable completion step. Failure returns the registered identity with the
 stable `registration_prekey_publish_pending` warning; registration pending

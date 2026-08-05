@@ -510,7 +510,10 @@ keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest
 host 使用其中的一次性 account verification grant 进入 Device Join。若服务端确认该 Handle
 仍是 Legacy 且本次 phone factor 与原绑定完全一致，`register` 可以作为窄范围兼容路径把它
 原子恢复为新的 canonical vNext DID，同时保留原 `user_id`、Handle 和递增后的 binding
-generation；这不是 Manifest Recovery，也不能替换已有 Manifest 身份。新注册本地提交后立即尝试
+generation；这不是 Manifest Recovery，也不能替换已有 Manifest 身份。`registered` wire
+响应中的 `message` 是必填但非权威的诊断文本，Core 不解析其文案来区分首次注册与 Legacy
+恢复；远端提交只由 exact DID/Handle/domain/binding generation 和 exact-device access token
+共同确认。新注册本地提交后立即尝试
 发布 exact-device P5 PreKey Bundle。远端和本地身份提交完成后，PreKey 发布失败不再反向改写为
 注册失败，而是在 `registered` 结果中返回稳定的 `registration_prekey_publish_pending` warning；
 独立的 durable PreKey publication 会在后续安全操作中复用同一 bundle 重试。注册 pending 在
