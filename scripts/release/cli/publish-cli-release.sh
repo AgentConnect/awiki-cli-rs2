@@ -49,7 +49,7 @@ GH_TOKEN="${GH_TOKEN_VALUE}" gh workflow run "${WORKFLOW}" --repo "${GITHUB_REPO
   -f source_ref="${TAG}" -f channel="${CHANNEL}" -f expected_version="${VERSION}"
 run_id=""
 for _ in $(seq 1 60); do
-  run_id="$(GH_TOKEN="${GH_TOKEN_VALUE}" gh run list --repo "${GITHUB_REPO}" --workflow "${WORKFLOW}" --event workflow_dispatch --limit 30 \
+  run_id="$(GH_TOKEN="${GH_TOKEN_VALUE}" gh run list --repo "${GITHUB_REPO}" --workflow "${WORKFLOW}" --limit 30 \
     --json databaseId,displayTitle,createdAt,headSha --jq ".[] | select(.displayTitle == \"CLI ${CHANNEL} ${TAG}\" and .headSha == \"${tag_commit}\" and .createdAt >= \"${started_at}\") | .databaseId" | head -n1)"
   [[ -n "${run_id}" ]] && break
   sleep 2

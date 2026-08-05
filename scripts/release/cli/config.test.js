@@ -63,8 +63,8 @@ test('server and release configuration schemas are strict', () => {
     const release = path.resolve(__dirname, 'release-config.json');
     const parsed = readReleaseConfig(release);
     assert.equal(parsed.channels.beta.version, '1.0.20-beta.1');
-    assert.equal(parsed.channels.stable.version, '1.0.39');
-    assert.equal(parsed.channels.stable.min_supported_version, '1.0.39');
+    assert.equal(parsed.channels.stable.version, '1.0.40');
+    assert.equal(parsed.channels.stable.min_supported_version, '1.0.40');
     assert.equal(parsed.anp_commit, '97f321376ff97fdfb2837eb0db7ad90d11040406');
     assert.deepEqual(parsed.targets, [
       'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64',
@@ -85,6 +85,17 @@ test('server and release configuration schemas are strict', () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('publisher remains compatible with the production gh run-list surface', () => {
+  const publisher = fs.readFileSync(
+    path.resolve(__dirname, 'publish-cli-release.sh'),
+    'utf8',
+  );
+  assert.doesNotMatch(publisher, /gh run list[^\n]*--event/);
+  assert.match(publisher, /displayTitle ==/);
+  assert.match(publisher, /headSha ==/);
+  assert.match(publisher, /createdAt >=/);
 });
 
 test('daemon release checks out the configured immutable ANP revision', () => {

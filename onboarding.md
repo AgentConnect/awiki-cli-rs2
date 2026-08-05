@@ -149,10 +149,22 @@ an environment variable, a temporary file, logs, debug output, or another messag
 the command with the Token substituted. The CLI does not support a `--token` flag.
 
 The command returns success only after the new Skill Agent identity is registered and its fixed,
-idempotent Controller greeting is accepted by Message Service. If it returns
-`skill_onboarding_greeting_pending`, retry the same command with the same block and stdin Token.
-For any permanent error, mismatch, expiry, non-empty workspace, or uncertainty, stop and ask the
-user for a new authorized block; never modify scope fields.
+idempotent Controller greeting is accepted by Message Service. If the identity has already
+committed but Device PreKey publication or the Controller greeting remains pending, do not submit
+the one-time Token again. Preserve the workspace and run:
+
+```bash
+awiki-cli onboarding resume \
+  --service-base-url <service_base_url> \
+  --expected-controller-handle <controller_handle> \
+  --expected-agent-handle <agent_handle> \
+  --format json
+```
+
+`onboarding resume` accepts no Token and reuses the committed identity, exact device, PreKey
+material, and deterministic greeting message ID. For any permanent error, mismatch, expiry,
+non-empty workspace, pre-identity/legacy state, or uncertainty, preserve the journal and stop; do
+not create another DID, send a manual greeting, or modify scope fields.
 
 After a successful claim, skip Step 4 and Step 5. Continue directly to the read-only commands in
 Step 6. Do not run phone/email registration or recovery.

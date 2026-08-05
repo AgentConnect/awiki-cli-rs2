@@ -1020,12 +1020,25 @@ pub(crate) async fn publish_v2_prekeys_after_registration_async(
     let client = core
         .client_async(crate::identity::IdentitySelector::Did(did.clone()))
         .await?;
+    let has_device_authorization = client.runtime().owner.sync_account.is_some();
+    let has_valid_bearer = client.runtime().key_provider.valid_auth_token()?.is_some();
+    if registration_prekey_access_requires_refresh(has_device_authorization, has_valid_bearer) {
+        let mut auth = crate::internal::transport::CoreHttpTransport::new_signature_only(&client);
+        auth.refresh_jwt_async().await?;
+    }
     crate::internal::secure_direct::v2_prekey_runtime::ensure_local_prekey_published_from_authorized_document(
         core,
         &client,
     )
     .await?;
     Ok(())
+}
+
+fn registration_prekey_access_requires_refresh(
+    has_device_authorization: bool,
+    has_valid_bearer: bool,
+) -> bool {
+    has_device_authorization && !has_valid_bearer
 }
 
 fn finish_registration<D>(publish_result: crate::ImResult<()>, delete_pending: D) -> Vec<String>
@@ -1499,6 +1512,13 @@ mod tests {
         assert_eq!(transport.probe_calls, 0);
 
         assert_eq!(publish_attempts, vec![p5_state_id]);
+    }
+
+    #[test]
+    fn committed_device_refreshes_expired_bearer_before_prekey_publish() {
+        assert!(registration_prekey_access_requires_refresh(true, false));
+        assert!(!registration_prekey_access_requires_refresh(true, true));
+        assert!(!registration_prekey_access_requires_refresh(false, false));
     }
 
     #[test]
