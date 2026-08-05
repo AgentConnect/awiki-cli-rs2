@@ -171,7 +171,7 @@ async fn register_handle_returns_identity_and_default_change() {
     let requests = server.join();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/did-auth/rpc");
     let body = requests[0].json_body();
     assert_eq!(body["method"], "register");
     assert_eq!(body["params"]["handle"], "carol");
@@ -262,7 +262,7 @@ async fn register_handle_with_service_bearer_adds_authorization_header() {
     assert_eq!(result.state, HandleRegistrationState::Registered);
     let requests = server.join();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/did-auth/rpc");
     assert_eq!(
         requests[0].headers.get("authorization").map(String::as_str),
         Some("Bearer internal-token")
@@ -312,7 +312,7 @@ async fn register_handle_async_returns_identity_and_default_change() {
     let requests = server.join();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/did-auth/rpc");
     let body = requests[0].json_body();
     assert_eq!(body["method"], "register");
     assert_eq!(body["params"]["handle"], "dana");
@@ -499,7 +499,7 @@ async fn ensure_daemon_subkey_package_updates_signed_did_document_for_legacy_ide
     );
     let requests = server.join();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/did-auth/rpc");
     let body = requests[0].json_body();
     assert_eq!(body["method"], "update_document");
     assert_eq!(body["params"].get("is_public"), None);
@@ -581,7 +581,7 @@ async fn revoke_daemon_subkey_authorization_updates_signed_did_document() {
     );
     let requests = server.join();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/did-auth/rpc");
     let body = requests[0].json_body();
     assert_eq!(body["method"], "update_document");
     let did_document = &body["params"]["did_document"];
@@ -700,7 +700,7 @@ async fn register_phone_without_otp_returns_pending_otp_state() {
     let requests = server.join();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/user-service/handle/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/handle/rpc");
     let body = requests[0].json_body();
     assert_eq!(body["method"], "send_otp");
     assert_eq!(
@@ -755,10 +755,10 @@ async fn register_email_without_wait_returns_email_sent_state() {
     assert_eq!(requests[0].method, "GET");
     assert_eq!(
         requests[0].path,
-        "/user-service/auth/email-status?email=carol%40example.test&handle=carol.awiki.test"
+        "/user-service/v1/auth/email-status?email=carol%40example.test&handle=carol.awiki.test"
     );
     assert_eq!(requests[1].method, "POST");
-    assert_eq!(requests[1].path, "/user-service/auth/email-send");
+    assert_eq!(requests[1].path, "/user-service/v1/auth/email-send");
     assert_eq!(
         requests[1].json_body(),
         json!({ "email": "carol@example.test", "handle": "carol.awiki.test" })
@@ -899,6 +899,7 @@ impl Fixture {
             ImCoreConfig {
                 service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
                 did_domain: "awiki.test".to_string(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,
@@ -1003,6 +1004,7 @@ impl Fixture {
         ImCoreConfig {
             service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
             did_domain: "awiki.test".to_string(),
+            client_version_info: None,
             user_service_endpoint: None,
             message_service_endpoint: None,
             mail_service_endpoint: None,

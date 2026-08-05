@@ -8,6 +8,7 @@ class AwikiImCoreConfig {
   const AwikiImCoreConfig({
     required this.serviceBaseUrl,
     required this.didDomain,
+    this.clientVersionInfo,
     this.userServiceEndpoint,
     this.messageServiceEndpoint,
     this.mailServiceEndpoint,
@@ -18,12 +19,27 @@ class AwikiImCoreConfig {
 
   final String serviceBaseUrl;
   final String didDomain;
+  final AwikiClientVersionInfo? clientVersionInfo;
   final String? userServiceEndpoint;
   final String? messageServiceEndpoint;
   final String? mailServiceEndpoint;
   final String? anpServiceEndpoint;
   final String? anpServiceDid;
   final MessageTransportPolicy transportPolicy;
+}
+
+class AwikiClientVersionInfo {
+  const AwikiClientVersionInfo({
+    required this.product,
+    required this.release,
+    required this.version,
+    this.build,
+  });
+
+  final String product;
+  final String release;
+  final String version;
+  final int? build;
 }
 
 class AwikiImCoreOpenOptions {

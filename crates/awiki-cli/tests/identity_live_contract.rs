@@ -64,7 +64,7 @@ fn identity_register_phone_otp_live_posts_register_and_persists_identity_like_go
 
     let requests = server.requests();
     assert_eq!(requests.len(), 2);
-    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(requests[0].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
     assert_eq!(body["jsonrpc"], "2.0");
     assert_eq!(body["id"], "req-1");
@@ -142,7 +142,7 @@ fn identity_refresh_token_live_posts_signed_get_me_and_persists_jwt_like_go() {
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
     assert_prekey_publication(&requests[1]);
-    assert!(requests[2].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
     assert_header_absent(&requests[2], "Authorization");
     assert_contains_text(&requests[2], "Signature-Input:");
     assert_contains_text(&requests[2], "Signature:");
@@ -195,7 +195,7 @@ fn identity_bind_phone_without_otp_live_posts_authenticated_phone_bind_send_like
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
     assert_prekey_publication(&requests[1]);
-    assert!(requests[2].starts_with("POST /user-service/auth/phone-bind-send HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/v1/auth/phone-bind-send HTTP/1.1"));
     assert_has_bearer(&requests[2]);
     let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(body, json!({ "phone": "+8613800138000" }));
@@ -238,7 +238,7 @@ fn identity_bind_phone_with_otp_live_posts_authenticated_phone_bind_verify_like_
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
     assert_prekey_publication(&requests[1]);
-    assert!(requests[2].starts_with("POST /user-service/auth/phone-bind-verify HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/v1/auth/phone-bind-verify HTTP/1.1"));
     assert_has_bearer(&requests[2]);
     let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(body, json!({ "phone": "+8613800138000", "code": "123456" }));
@@ -284,14 +284,14 @@ fn identity_bind_email_without_wait_live_checks_status_then_sends_authenticated_
     assert_eq!(requests.len(), 4);
     assert_prekey_publication(&requests[1]);
     assert!(requests[2]
-        .starts_with("GET /user-service/auth/email-status?email=alice%40example.com HTTP/1.1"));
+        .starts_with("GET /user-service/v1/auth/email-status?email=alice%40example.com HTTP/1.1"));
     assert_has_bearer(&requests[2]);
     assert!(
         !requests[2].contains("handle="),
         "bind email status request must not send a handle:\n{}",
         requests[2]
     );
-    assert!(requests[3].starts_with("POST /user-service/auth/email-send HTTP/1.1"));
+    assert!(requests[3].starts_with("POST /user-service/v1/auth/email-send HTTP/1.1"));
     assert_has_bearer(&requests[3]);
     let body: Value = serde_json::from_str(request_body(&requests[3])).expect("request body");
     assert_eq!(body, json!({ "email": "alice@example.com" }));
@@ -335,12 +335,12 @@ fn identity_bind_email_wait_already_verified_live_completes_without_sending_like
     assert_eq!(requests.len(), 3);
     assert_prekey_publication(&requests[1]);
     assert!(requests[2]
-        .starts_with("GET /user-service/auth/email-status?email=alice%40example.com HTTP/1.1"));
+        .starts_with("GET /user-service/v1/auth/email-status?email=alice%40example.com HTTP/1.1"));
     assert_has_bearer(&requests[2]);
     assert!(
         requests
             .iter()
-            .all(|request| !request.starts_with("POST /user-service/auth/email-send HTTP/1.1")),
+            .all(|request| !request.starts_with("POST /user-service/v1/auth/email-send HTTP/1.1")),
         "already verified bind email --wait must not send an activation email:\n{requests:#?}"
     );
 }
@@ -379,7 +379,7 @@ fn identity_register_phone_without_otp_live_posts_send_otp_and_does_not_create_i
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
+    assert!(requests[0].starts_with("POST /user-service/v1/handle/rpc HTTP/1.1"));
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
     assert_eq!(
         body,
@@ -454,7 +454,7 @@ fn identity_profile_set_live_posts_authenticated_update_me_and_persists_display_
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
     assert_prekey_publication(&requests[1]);
-    assert!(requests[2].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/v1/did/profile/rpc HTTP/1.1"));
     assert_has_bearer(&requests[2]);
     let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(
@@ -513,7 +513,7 @@ fn identity_profile_set_live_markdown_file_preserves_raw_nonblank_profile_md_lik
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
     assert_prekey_publication(&requests[1]);
-    assert!(requests[2].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/v1/did/profile/rpc HTTP/1.1"));
     assert_has_bearer(&requests[2]);
     let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(body["method"], "update_me");
@@ -587,7 +587,7 @@ fn identity_profile_get_self_live_posts_authenticated_get_me_like_go() {
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
     assert_prekey_publication(&requests[1]);
-    assert!(requests[2].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/v1/did/profile/rpc HTTP/1.1"));
     assert_has_bearer(&requests[2]);
     let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(
@@ -633,7 +633,7 @@ fn identity_profile_get_handle_live_resolves_handle_then_reads_public_profile_li
     let requests = server.requests();
     assert_eq!(requests.len(), 4);
     assert_prekey_publication(&requests[1]);
-    assert!(requests[2].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/v1/handle/rpc HTTP/1.1"));
     let lookup_body: Value =
         serde_json::from_str(request_body(&requests[2])).expect("lookup request body");
     assert_eq!(
@@ -645,7 +645,7 @@ fn identity_profile_get_handle_live_resolves_handle_then_reads_public_profile_li
             "params": { "handle": "alice.awiki.ai" },
         })
     );
-    assert!(requests[3].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    assert!(requests[3].starts_with("POST /user-service/v1/did/profile/rpc HTTP/1.1"));
     let profile_body: Value =
         serde_json::from_str(request_body(&requests[3])).expect("profile request body");
     assert_eq!(

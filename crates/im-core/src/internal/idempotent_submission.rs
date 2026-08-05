@@ -216,7 +216,7 @@ mod tests {
                     Ok(json!({"did": "did:example:alice"})),
                 ],
             },
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             params.clone(),
         )
@@ -238,7 +238,7 @@ mod tests {
                     Ok(json!({"did": "did:example:alice"})),
                 ],
             },
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             params.clone(),
         )
@@ -262,7 +262,7 @@ mod tests {
                     data: None,
                 })],
             },
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             json!({"handle": "alice.awiki.info"}),
         )

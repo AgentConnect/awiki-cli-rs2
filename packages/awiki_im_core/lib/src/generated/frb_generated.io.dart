@@ -184,6 +184,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartClientVersionInfo dco_decode_box_autoadd_dart_client_version_info(
+    dynamic raw,
+  );
+
+  @protected
   DartConversationIdentity dco_decode_box_autoadd_dart_conversation_identity(
     dynamic raw,
   );
@@ -424,6 +429,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartAuthorizedJoinActivationProgress
   dco_decode_dart_authorized_join_activation_progress(dynamic raw);
+
+  @protected
+  DartClientVersionInfo dco_decode_dart_client_version_info(dynamic raw);
 
   @protected
   DartCommittedIncomingMessage dco_decode_dart_committed_incoming_message(
@@ -1177,6 +1185,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
 
   @protected
+  DartClientVersionInfo? dco_decode_opt_box_autoadd_dart_client_version_info(
+    dynamic raw,
+  );
+
+  @protected
   DartConversationIdentity?
   dco_decode_opt_box_autoadd_dart_conversation_identity(dynamic raw);
 
@@ -1436,6 +1449,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartAttachmentSendRequest sse_decode_box_autoadd_dart_attachment_send_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartClientVersionInfo sse_decode_box_autoadd_dart_client_version_info(
     SseDeserializer deserializer,
   );
 
@@ -1746,6 +1764,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartAuthorizedJoinActivationProgress
   sse_decode_dart_authorized_join_activation_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartClientVersionInfo sse_decode_dart_client_version_info(
     SseDeserializer deserializer,
   );
 
@@ -2703,6 +2726,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
 
   @protected
+  DartClientVersionInfo? sse_decode_opt_box_autoadd_dart_client_version_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartConversationIdentity?
   sse_decode_opt_box_autoadd_dart_conversation_identity(
     SseDeserializer deserializer,
@@ -3009,6 +3037,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_attachment_send_request(
     DartAttachmentSendRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_client_version_info(
+    DartClientVersionInfo self,
     SseSerializer serializer,
   );
 
@@ -3363,6 +3397,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_authorized_join_activation_progress(
     DartAuthorizedJoinActivationProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_client_version_info(
+    DartClientVersionInfo self,
     SseSerializer serializer,
   );
 
@@ -4535,6 +4575,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_client_version_info(
+    DartClientVersionInfo? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_dart_conversation_identity(

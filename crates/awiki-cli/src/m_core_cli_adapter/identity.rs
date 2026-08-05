@@ -1694,7 +1694,7 @@ fn register_plan_action_and_calls(
             ..
         } => (
             "send_registration_email",
-            vec!["POST /user-service/auth/email-send"],
+            vec!["POST /user-service/v1/auth/email-send"],
         ),
         VerificationInput::Email {
             wait_for_verification: true,
@@ -1702,8 +1702,8 @@ fn register_plan_action_and_calls(
         } => (
             "register_handle",
             vec![
-                "GET /user-service/auth/email-status",
-                "POST /user-service/auth/email-send",
+                "GET /user-service/v1/auth/email-status",
+                "POST /user-service/v1/auth/email-send",
                 "did-auth.register",
             ],
         ),
@@ -1720,28 +1720,28 @@ fn bind_contact_plan_command_result(request: &ContactBindingRequest) -> CommandR
                 "send_bind_phone_otp",
                 phone.as_str(),
                 "",
-                vec!["POST /user-service/auth/phone-bind-send"],
+                vec!["POST /user-service/v1/auth/phone-bind-send"],
             )
         }
         ContactBindingMethod::Phone { phone, .. } => (
             "bind_phone",
             phone.as_str(),
             "",
-            vec!["POST /user-service/auth/phone-bind-verify"],
+            vec!["POST /user-service/v1/auth/phone-bind-verify"],
         ),
         ContactBindingMethod::Email { email } if !request.wait_for_email_verification => (
             "send_bind_email",
             "",
             email.as_str(),
-            vec!["POST /user-service/auth/email-send"],
+            vec!["POST /user-service/v1/auth/email-send"],
         ),
         ContactBindingMethod::Email { email } => (
             "bind_email",
             "",
             email.as_str(),
             vec![
-                "GET /user-service/auth/email-status",
-                "POST /user-service/auth/email-send",
+                "GET /user-service/v1/auth/email-status",
+                "POST /user-service/v1/auth/email-send",
             ],
         ),
     };

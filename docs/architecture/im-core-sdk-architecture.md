@@ -221,6 +221,14 @@ key, generation, scope, audience, purpose, and expiry before atomically
 replacing the one persisted access token. V1 has no device-token issue or
 refresh RPC and stores no device refresh token.
 
+Product version metadata is typed host input but Core-owned wire behavior. Core
+adds exactly one `X-AWiki-Client-Version` after authentication headers have been
+constructed for configured-origin AWiki product HTTP requests, and also adds it
+to Message WebSocket handshakes. Raw DID/ANP and attachment-object traffic does
+not inherit it. User Service product traffic uses only canonical
+`/user-service/v1/...` paths; the server's unversioned aliases are not a client
+fallback mechanism.
+
 Device Join keeps unauthenticated new-device and authenticated ready-admin
 transports separate. The new device may create, poll, respond, cancel, and
 observe its own HTTP Join session. Existing ready admins discover work only

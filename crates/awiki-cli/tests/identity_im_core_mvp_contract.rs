@@ -167,7 +167,7 @@ fn identity_default_cutover_profile_get_self_routes_get_me_through_public_api() 
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
     assert_prekey_publication(&requests[1]);
-    assert!(requests[2].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/v1/did/profile/rpc HTTP/1.1"));
     assert_has_bearer(&requests[2]);
     let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(
@@ -310,7 +310,7 @@ fn identity_default_cutover_profile_set_routes_update_me_through_public_api() {
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
     assert_prekey_publication(&requests[1]);
-    assert!(requests[2].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/v1/did/profile/rpc HTTP/1.1"));
     assert_has_bearer(&requests[2]);
     let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(
@@ -374,7 +374,7 @@ fn identity_default_cutover_bind_phone_routes_authenticated_rest_through_bridge(
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
     assert_prekey_publication(&requests[1]);
-    assert!(requests[2].starts_with("POST /user-service/auth/phone-bind-send HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/v1/auth/phone-bind-send HTTP/1.1"));
     assert_has_bearer(&requests[2]);
     let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(body, json!({ "phone": "+8613800138001" }));
@@ -427,8 +427,8 @@ fn identity_default_cutover_bind_email_maps_sent_and_wait_completed_states() {
     assert_eq!(requests.len(), 4);
     assert_prekey_publication(&requests[1]);
     assert!(requests[2]
-        .starts_with("GET /user-service/auth/email-status?email=alice%40example.com HTTP/1.1"));
-    assert!(requests[3].starts_with("POST /user-service/auth/email-send HTTP/1.1"));
+        .starts_with("GET /user-service/v1/auth/email-status?email=alice%40example.com HTTP/1.1"));
+    assert!(requests[3].starts_with("POST /user-service/v1/auth/email-send HTTP/1.1"));
     let send_body: Value = serde_json::from_str(request_body(&requests[3])).expect("send body");
     assert_eq!(send_body, json!({ "email": "alice@example.com" }));
     assert_has_bearer(&requests[2]);

@@ -10,6 +10,7 @@ pub mod agent_status;
 )]
 pub mod app_bridge;
 pub mod archive;
+pub mod build_info;
 pub mod cli_runtime_env;
 pub mod cli_wrapper;
 #[allow(

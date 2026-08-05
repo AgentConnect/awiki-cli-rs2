@@ -1,5 +1,87 @@
 use serde::{Deserialize, Serialize};
 
+pub const CLIENT_VERSION_HEADER: &str = "X-AWiki-Client-Version";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientVersionInfo {
+    product: String,
+    release: String,
+    version: String,
+    build: Option<u64>,
+}
+
+impl ClientVersionInfo {
+    pub fn new(
+        product: impl Into<String>,
+        release: impl Into<String>,
+        version: impl Into<String>,
+        build: Option<u64>,
+    ) -> crate::ImResult<Self> {
+        let value = Self {
+            product: product.into(),
+            release: release.into(),
+            version: version.into(),
+            build,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    pub fn product(&self) -> &str {
+        &self.product
+    }
+
+    pub fn release(&self) -> &str {
+        &self.release
+    }
+
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    pub fn build(&self) -> Option<u64> {
+        self.build
+    }
+
+    pub fn header_value(&self) -> String {
+        let value = format!("{}/{}/{}", self.product, self.release, self.version);
+        match self.build {
+            Some(build) => format!("{value}+{build}"),
+            None => value,
+        }
+    }
+
+    fn validate(&self) -> crate::ImResult<()> {
+        if !matches!(
+            self.product.as_str(),
+            "awiki-me" | "awiki-cli" | "awiki-daemon"
+        ) {
+            return Err(crate::ImError::invalid_input(
+                Some("client_version_info.product".to_owned()),
+                "client product must be awiki-me, awiki-cli, or awiki-daemon",
+            ));
+        }
+        if self.release.len() != 4 || !self.release.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(crate::ImError::invalid_input(
+                Some("client_version_info.release".to_owned()),
+                "client release must contain exactly four ASCII digits",
+            ));
+        }
+        if self.version.is_empty()
+            || !self
+                .version
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        {
+            return Err(crate::ImError::invalid_input(
+                Some("client_version_info.version".to_owned()),
+                "client version must use non-empty header-safe ASCII version characters",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceEndpoint(String);
 
@@ -31,6 +113,8 @@ impl ServiceEndpoint {
 pub struct ImCoreConfig {
     pub service_base_url: ServiceEndpoint,
     pub did_domain: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_version_info: Option<ClientVersionInfo>,
     pub user_service_endpoint: Option<ServiceEndpoint>,
     pub message_service_endpoint: Option<ServiceEndpoint>,
     pub mail_service_endpoint: Option<ServiceEndpoint>,
@@ -55,6 +139,7 @@ impl ImCoreConfig {
         Ok(Self {
             service_base_url,
             did_domain,
+            client_version_info: None,
             user_service_endpoint: None,
             message_service_endpoint: None,
             mail_service_endpoint: None,
@@ -70,6 +155,38 @@ impl ImCoreConfig {
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClientVersionInfo;
+
+    #[test]
+    fn client_version_info_encodes_the_only_wire_format() {
+        assert_eq!(
+            ClientVersionInfo::new("awiki-me", "0714", "1.0.31", Some(214))
+                .unwrap()
+                .header_value(),
+            "awiki-me/0714/1.0.31+214"
+        );
+        assert_eq!(
+            ClientVersionInfo::new("awiki-cli", "0714", "1.0.29", None)
+                .unwrap()
+                .header_value(),
+            "awiki-cli/0714/1.0.29"
+        );
+    }
+
+    #[test]
+    fn client_version_info_rejects_unknown_products_and_ambiguous_segments() {
+        for result in [
+            ClientVersionInfo::new("custom", "0714", "1.0.0", None),
+            ClientVersionInfo::new("awiki-cli", "714", "1.0.0", None),
+            ClientVersionInfo::new("awiki-cli", "0714", "1.0.0+other", None),
+        ] {
+            assert!(result.is_err());
+        }
     }
 }
 

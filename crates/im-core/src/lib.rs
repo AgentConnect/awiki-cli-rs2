@@ -31,7 +31,9 @@ pub mod compat;
 
 mod internal;
 
-pub use self::config::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};
+pub use self::config::{
+    ClientVersionInfo, ImCoreConfig, MessageTransportPolicy, ServiceEndpoint, CLIENT_VERSION_HEADER,
+};
 pub use crate::attachments::AttachmentService;
 pub use crate::content::ContentService;
 pub use crate::core::{

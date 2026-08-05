@@ -8627,6 +8627,22 @@ impl SseDecode for crate::dto::identity::DartAuthorizedJoinActivationProgress {
     }
 }
 
+impl SseDecode for crate::dto::config::DartClientVersionInfo {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_product = <String>::sse_decode(deserializer);
+        let mut var_release = <String>::sse_decode(deserializer);
+        let mut var_version = <String>::sse_decode(deserializer);
+        let mut var_build = <Option<u64>>::sse_decode(deserializer);
+        return crate::dto::config::DartClientVersionInfo {
+            product: var_product,
+            release: var_release,
+            version: var_version,
+            build: var_build,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::message::DartCommittedIncomingMessage {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -10564,6 +10580,8 @@ impl SseDecode for crate::dto::config::DartImCoreConfig {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_serviceBaseUrl = <String>::sse_decode(deserializer);
         let mut var_didDomain = <String>::sse_decode(deserializer);
+        let mut var_clientVersionInfo =
+            <Option<crate::dto::config::DartClientVersionInfo>>::sse_decode(deserializer);
         let mut var_userServiceEndpoint = <Option<String>>::sse_decode(deserializer);
         let mut var_messageServiceEndpoint = <Option<String>>::sse_decode(deserializer);
         let mut var_mailServiceEndpoint = <Option<String>>::sse_decode(deserializer);
@@ -10574,6 +10592,7 @@ impl SseDecode for crate::dto::config::DartImCoreConfig {
         return crate::dto::config::DartImCoreConfig {
             service_base_url: var_serviceBaseUrl,
             did_domain: var_didDomain,
+            client_version_info: var_clientVersionInfo,
             user_service_endpoint: var_userServiceEndpoint,
             message_service_endpoint: var_messageServiceEndpoint,
             mail_service_endpoint: var_mailServiceEndpoint,
@@ -12492,6 +12511,19 @@ impl SseDecode for Option<bool> {
     }
 }
 
+impl SseDecode for Option<crate::dto::config::DartClientVersionInfo> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::dto::config::DartClientVersionInfo>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::dto::message::DartConversationIdentity> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -13693,6 +13725,29 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartAuthorizedJoinA
     for crate::dto::identity::DartAuthorizedJoinActivationProgress
 {
     fn into_into_dart(self) -> crate::dto::identity::DartAuthorizedJoinActivationProgress {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::config::DartClientVersionInfo {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.product.into_into_dart().into_dart(),
+            self.release.into_into_dart().into_dart(),
+            self.version.into_into_dart().into_dart(),
+            self.build.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::config::DartClientVersionInfo
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::config::DartClientVersionInfo>
+    for crate::dto::config::DartClientVersionInfo
+{
+    fn into_into_dart(self) -> crate::dto::config::DartClientVersionInfo {
         self
     }
 }
@@ -16098,6 +16153,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::config::DartImCoreConfig {
         [
             self.service_base_url.into_into_dart().into_dart(),
             self.did_domain.into_into_dart().into_dart(),
+            self.client_version_info.into_into_dart().into_dart(),
             self.user_service_endpoint.into_into_dart().into_dart(),
             self.message_service_endpoint.into_into_dart().into_dart(),
             self.mail_service_endpoint.into_into_dart().into_dart(),
@@ -18396,6 +18452,16 @@ impl SseEncode for crate::dto::identity::DartAuthorizedJoinActivationProgress {
     }
 }
 
+impl SseEncode for crate::dto::config::DartClientVersionInfo {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.product, serializer);
+        <String>::sse_encode(self.release, serializer);
+        <String>::sse_encode(self.version, serializer);
+        <Option<u64>>::sse_encode(self.build, serializer);
+    }
+}
+
 impl SseEncode for crate::dto::message::DartCommittedIncomingMessage {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -19863,6 +19929,10 @@ impl SseEncode for crate::dto::config::DartImCoreConfig {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.service_base_url, serializer);
         <String>::sse_encode(self.did_domain, serializer);
+        <Option<crate::dto::config::DartClientVersionInfo>>::sse_encode(
+            self.client_version_info,
+            serializer,
+        );
         <Option<String>>::sse_encode(self.user_service_endpoint, serializer);
         <Option<String>>::sse_encode(self.message_service_endpoint, serializer);
         <Option<String>>::sse_encode(self.mail_service_endpoint, serializer);
@@ -21291,6 +21361,16 @@ impl SseEncode for Option<bool> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <bool>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::dto::config::DartClientVersionInfo> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::config::DartClientVersionInfo>::sse_encode(value, serializer);
         }
     }
 }

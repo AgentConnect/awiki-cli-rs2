@@ -2,7 +2,7 @@ use serde_json::{json, Map, Value};
 
 use super::{ContentPageQuery, PageDeleteResult, PageDocument, PageDraft, PageRef, PageSlug};
 
-pub(crate) const CONTENT_RPC_ENDPOINT: &str = "/content/rpc";
+pub(crate) const CONTENT_RPC_ENDPOINT: &str = "/user-service/v1/content/rpc";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransportProfile {

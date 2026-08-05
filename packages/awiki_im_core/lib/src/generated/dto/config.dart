@@ -6,6 +6,34 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+class DartClientVersionInfo {
+  final String product;
+  final String release;
+  final String version;
+  final BigInt? build;
+
+  const DartClientVersionInfo({
+    required this.product,
+    required this.release,
+    required this.version,
+    this.build,
+  });
+
+  @override
+  int get hashCode =>
+      product.hashCode ^ release.hashCode ^ version.hashCode ^ build.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartClientVersionInfo &&
+          runtimeType == other.runtimeType &&
+          product == other.product &&
+          release == other.release &&
+          version == other.version &&
+          build == other.build;
+}
+
 class DartDeviceVaultRootKey {
   final Uint8List bytes;
 
@@ -31,6 +59,7 @@ enum DartIdentitySecretStoragePolicy {
 class DartImCoreConfig {
   final String serviceBaseUrl;
   final String didDomain;
+  final DartClientVersionInfo? clientVersionInfo;
   final String? userServiceEndpoint;
   final String? messageServiceEndpoint;
   final String? mailServiceEndpoint;
@@ -41,6 +70,7 @@ class DartImCoreConfig {
   const DartImCoreConfig({
     required this.serviceBaseUrl,
     required this.didDomain,
+    this.clientVersionInfo,
     this.userServiceEndpoint,
     this.messageServiceEndpoint,
     this.mailServiceEndpoint,
@@ -53,6 +83,7 @@ class DartImCoreConfig {
   int get hashCode =>
       serviceBaseUrl.hashCode ^
       didDomain.hashCode ^
+      clientVersionInfo.hashCode ^
       userServiceEndpoint.hashCode ^
       messageServiceEndpoint.hashCode ^
       mailServiceEndpoint.hashCode ^
@@ -67,6 +98,7 @@ class DartImCoreConfig {
           runtimeType == other.runtimeType &&
           serviceBaseUrl == other.serviceBaseUrl &&
           didDomain == other.didDomain &&
+          clientVersionInfo == other.clientVersionInfo &&
           userServiceEndpoint == other.userServiceEndpoint &&
           messageServiceEndpoint == other.messageServiceEndpoint &&
           mailServiceEndpoint == other.mailServiceEndpoint &&

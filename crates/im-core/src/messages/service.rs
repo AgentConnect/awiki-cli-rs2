@@ -413,6 +413,7 @@ mod incoming_recovery_tests {
                 crate::ImCoreConfig {
                     service_base_url: crate::ServiceEndpoint::parse("https://awiki.info").unwrap(),
                     did_domain: "awiki.info".to_owned(),
+                    client_version_info: None,
                     user_service_endpoint: None,
                     message_service_endpoint: None,
                     mail_service_endpoint: None,
@@ -863,6 +864,7 @@ mod conversation_mark_read_request_tests {
                     service_base_url: crate::ServiceEndpoint::parse("https://example.test")
                         .unwrap(),
                     did_domain: "awiki.test".to_owned(),
+                    client_version_info: None,
                     user_service_endpoint: None,
                     message_service_endpoint: None,
                     mail_service_endpoint: None,
@@ -1590,6 +1592,7 @@ VALUES ('alice-id', ?1, 'user-mallory', 'mallory.awiki.test', 'did:example:mallo
                     service_base_url: crate::ServiceEndpoint::parse("https://example.test")
                         .unwrap(),
                     did_domain: "awiki.test".to_owned(),
+                    client_version_info: None,
                     user_service_endpoint: None,
                     message_service_endpoint: None,
                     mail_service_endpoint: None,
@@ -2080,6 +2083,7 @@ WHERE owner_identity_id = 'alice-id' AND outbox_id = 'outbox-actor'"#,
                     service_base_url: crate::ServiceEndpoint::parse("https://example.test")
                         .unwrap(),
                     did_domain: "awiki.test".to_owned(),
+                    client_version_info: None,
                     user_service_endpoint: None,
                     message_service_endpoint: None,
                     mail_service_endpoint: None,
@@ -5899,6 +5903,7 @@ mod group_e2ee_public_send_tests {
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse(base_url).unwrap(),
                 did_domain: "awiki.test".to_owned(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,

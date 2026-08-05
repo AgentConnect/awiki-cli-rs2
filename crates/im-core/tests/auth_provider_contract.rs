@@ -87,7 +87,7 @@ async fn file_session_provider_refreshes_jwt_with_signed_get_me_and_persists_tok
     assert_eq!(auth["token_type"], "Bearer");
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(requests[0].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
     assert!(
         !requests[0].contains("Authorization: Bearer stale-token\r\n"),
         "refresh must force a fresh DID auth signature:\n{}",
@@ -157,7 +157,7 @@ async fn async_file_session_provider_refreshes_jwt_with_async_transport() {
     assert_eq!(auth["token_type"], "Bearer");
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(requests[0].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
     let body: Value = serde_json::from_str(request_body(&requests[0])).unwrap();
     assert_eq!(body["method"], "get_me");
     assert_eq!(body["params"], serde_json::json!({}));
@@ -245,7 +245,7 @@ async fn async_file_session_provider_refreshes_expired_token_during_ensure_sessi
     assert_eq!(auth["jwt_token"], fresh_token);
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(requests[0].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
 }
 
 #[tokio::test]
@@ -551,6 +551,7 @@ impl AuthFixture {
         ImCoreConfig {
             service_base_url: ServiceEndpoint::parse(&self.service_base_url).unwrap(),
             did_domain: "awiki.test".to_string(),
+            client_version_info: None,
             user_service_endpoint: None,
             message_service_endpoint: None,
             mail_service_endpoint: None,

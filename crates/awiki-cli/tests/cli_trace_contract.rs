@@ -61,7 +61,7 @@ fn trace_phase_detail_sanitizing_and_humanizing_match_go_contract() {
     let _guard = ENV_LOCK.lock().expect("env lock");
     std::env::set_var("AWIKI_CLI_TRACE_TIMING", "1");
     let run = Run::new("awiki-cli test");
-    let mut done = run.rpc_phase("POST /user-service/auth/email-send");
+    let mut done = run.rpc_phase("POST /user-service/v1/auth/email-send");
     done.finish();
 
     let output = run.emit_to_string().expect("emit trace");
@@ -70,7 +70,7 @@ fn trace_phase_detail_sanitizing_and_humanizing_match_go_contract() {
         "pretty output did not humanize phase name:\n{output}"
     );
     assert_eq!(
-        cli_trace::phase_name("business_rpc", "POST /user-service/auth/email-send"),
+        cli_trace::phase_name("business_rpc", "POST /user-service/v1/auth/email-send"),
         "business_rpc:POST_user-service.auth.email-send"
     );
     assert_eq!(

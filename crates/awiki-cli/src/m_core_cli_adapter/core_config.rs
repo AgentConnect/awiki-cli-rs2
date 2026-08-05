@@ -1,5 +1,5 @@
 use im_core::ids::Did;
-use im_core::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};
+use im_core::{ClientVersionInfo, ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};
 
 use crate::cli_output::ExitError;
 
@@ -43,6 +43,22 @@ pub(crate) fn build_im_core_config_from_parts(
     Ok(ImCoreConfig {
         service_base_url,
         did_domain: did_domain.to_string(),
+        client_version_info: Some(
+            ClientVersionInfo::new(
+                crate::build_info::PRODUCT,
+                crate::build_info::RELEASE,
+                crate::build_info::VERSION,
+                None,
+            )
+            .map_err(|err| {
+                ExitError::new(
+                    "invalid_build_info",
+                    2,
+                    format!("invalid awiki-cli client version metadata: {err}"),
+                    "Build awiki-cli with a valid release and version.",
+                )
+            })?,
+        ),
         user_service_endpoint: optional_endpoint("user_service_endpoint", user_service_endpoint)?,
         message_service_endpoint: optional_endpoint(
             "message_service_endpoint",

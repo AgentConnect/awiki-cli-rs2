@@ -243,7 +243,12 @@ async fn connect_async_websocket_session_with_token(
     current_jwt: &str,
 ) -> crate::ImResult<super::async_ws_transport::AsyncWsTransport> {
     let current_jwt = current_jwt.trim();
-    let ca_bundle = client.core_inner().sdk_config().ca_bundle_path();
+    let config = client.core_inner().sdk_config();
+    let ca_bundle = config.ca_bundle_path();
+    let client_version = config
+        .client_version_info
+        .as_ref()
+        .map(crate::ClientVersionInfo::header_value);
     let require_sync_changed_v2 = client.realtime_requires_sync_changed_v2()?;
     if !current_jwt.is_empty() {
         match super::async_ws_transport::AsyncWsTransport::connect(
@@ -251,6 +256,7 @@ async fn connect_async_websocket_session_with_token(
             current_jwt,
             ca_bundle,
             require_sync_changed_v2,
+            client_version.as_deref(),
         )
         .await
         {
@@ -290,6 +296,7 @@ async fn connect_async_websocket_session_with_token(
         refreshed_token.trim(),
         ca_bundle,
         require_sync_changed_v2,
+        client_version.as_deref(),
     )
     .await
     .map_err(|err| crate::ImError::TransportUnavailable {
@@ -318,7 +325,12 @@ fn connect_native_websocket_session_with_token(
     current_jwt: &str,
 ) -> crate::ImResult<super::ws_transport::WsTransport> {
     let current_jwt = current_jwt.trim();
-    let ca_bundle = client.core_inner().sdk_config().ca_bundle_path();
+    let config = client.core_inner().sdk_config();
+    let ca_bundle = config.ca_bundle_path();
+    let client_version = config
+        .client_version_info
+        .as_ref()
+        .map(crate::ClientVersionInfo::header_value);
     let require_sync_changed_v2 = client.realtime_requires_sync_changed_v2()?;
     if !current_jwt.is_empty() {
         match super::ws_transport::WsTransport::connect_with_ca_bundle(
@@ -326,6 +338,7 @@ fn connect_native_websocket_session_with_token(
             current_jwt,
             ca_bundle,
             require_sync_changed_v2,
+            client_version.as_deref(),
         ) {
             Ok(transport) => return Ok(transport),
             Err(err) if err.status_code == Some(401) => {}
@@ -360,6 +373,7 @@ fn connect_native_websocket_session_with_token(
         &refreshed_token,
         ca_bundle,
         require_sync_changed_v2,
+        client_version.as_deref(),
     )
     .map_err(|err| crate::ImError::TransportUnavailable {
         detail: err.message,

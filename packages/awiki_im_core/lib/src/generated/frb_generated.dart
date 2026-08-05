@@ -6539,6 +6539,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartClientVersionInfo dco_decode_box_autoadd_dart_client_version_info(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_client_version_info(raw);
+  }
+
+  @protected
   DartConversationIdentity dco_decode_box_autoadd_dart_conversation_identity(
     dynamic raw,
   ) {
@@ -7040,6 +7048,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           dco_decode_opt_box_autoadd_dart_handle_recovery_reset_reference(
             arr[1],
           ),
+    );
+  }
+
+  @protected
+  DartClientVersionInfo dco_decode_dart_client_version_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return DartClientVersionInfo(
+      product: dco_decode_String(arr[0]),
+      release: dco_decode_String(arr[1]),
+      version: dco_decode_String(arr[2]),
+      build: dco_decode_opt_box_autoadd_u_64(arr[3]),
     );
   }
 
@@ -8461,17 +8483,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartImCoreConfig dco_decode_dart_im_core_config(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return DartImCoreConfig(
       serviceBaseUrl: dco_decode_String(arr[0]),
       didDomain: dco_decode_String(arr[1]),
-      userServiceEndpoint: dco_decode_opt_String(arr[2]),
-      messageServiceEndpoint: dco_decode_opt_String(arr[3]),
-      mailServiceEndpoint: dco_decode_opt_String(arr[4]),
-      anpServiceEndpoint: dco_decode_opt_String(arr[5]),
-      anpServiceDid: dco_decode_opt_String(arr[6]),
-      transportPolicy: dco_decode_dart_message_transport_policy(arr[7]),
+      clientVersionInfo: dco_decode_opt_box_autoadd_dart_client_version_info(
+        arr[2],
+      ),
+      userServiceEndpoint: dco_decode_opt_String(arr[3]),
+      messageServiceEndpoint: dco_decode_opt_String(arr[4]),
+      mailServiceEndpoint: dco_decode_opt_String(arr[5]),
+      anpServiceEndpoint: dco_decode_opt_String(arr[6]),
+      anpServiceDid: dco_decode_opt_String(arr[7]),
+      transportPolicy: dco_decode_dart_message_transport_policy(arr[8]),
     );
   }
 
@@ -9871,6 +9896,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartClientVersionInfo? dco_decode_opt_box_autoadd_dart_client_version_info(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_dart_client_version_info(raw);
+  }
+
+  @protected
   DartConversationIdentity?
   dco_decode_opt_box_autoadd_dart_conversation_identity(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -10392,6 +10427,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_dart_attachment_send_request(deserializer));
+  }
+
+  @protected
+  DartClientVersionInfo sse_decode_box_autoadd_dart_client_version_info(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_client_version_info(deserializer));
   }
 
   @protected
@@ -10980,6 +11023,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return DartAuthorizedJoinActivationProgress(
       join: var_join,
       resetReference: var_resetReference,
+    );
+  }
+
+  @protected
+  DartClientVersionInfo sse_decode_dart_client_version_info(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_product = sse_decode_String(deserializer);
+    var var_release = sse_decode_String(deserializer);
+    var var_version = sse_decode_String(deserializer);
+    var var_build = sse_decode_opt_box_autoadd_u_64(deserializer);
+    return DartClientVersionInfo(
+      product: var_product,
+      release: var_release,
+      version: var_version,
+      build: var_build,
     );
   }
 
@@ -12830,6 +12890,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_serviceBaseUrl = sse_decode_String(deserializer);
     var var_didDomain = sse_decode_String(deserializer);
+    var var_clientVersionInfo =
+        sse_decode_opt_box_autoadd_dart_client_version_info(deserializer);
     var var_userServiceEndpoint = sse_decode_opt_String(deserializer);
     var var_messageServiceEndpoint = sse_decode_opt_String(deserializer);
     var var_mailServiceEndpoint = sse_decode_opt_String(deserializer);
@@ -12841,6 +12903,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return DartImCoreConfig(
       serviceBaseUrl: var_serviceBaseUrl,
       didDomain: var_didDomain,
+      clientVersionInfo: var_clientVersionInfo,
       userServiceEndpoint: var_userServiceEndpoint,
       messageServiceEndpoint: var_messageServiceEndpoint,
       mailServiceEndpoint: var_mailServiceEndpoint,
@@ -14730,6 +14793,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartClientVersionInfo? sse_decode_opt_box_autoadd_dart_client_version_info(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_client_version_info(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   DartConversationIdentity?
   sse_decode_opt_box_autoadd_dart_conversation_identity(
     SseDeserializer deserializer,
@@ -15461,6 +15537,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_dart_client_version_info(
+    DartClientVersionInfo self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_client_version_info(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_dart_conversation_identity(
     DartConversationIdentity self,
     SseSerializer serializer,
@@ -16042,6 +16127,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       self.resetReference,
       serializer,
     );
+  }
+
+  @protected
+  void sse_encode_dart_client_version_info(
+    DartClientVersionInfo self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.product, serializer);
+    sse_encode_String(self.release, serializer);
+    sse_encode_String(self.version, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.build, serializer);
   }
 
   @protected
@@ -17402,6 +17499,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.serviceBaseUrl, serializer);
     sse_encode_String(self.didDomain, serializer);
+    sse_encode_opt_box_autoadd_dart_client_version_info(
+      self.clientVersionInfo,
+      serializer,
+    );
     sse_encode_opt_String(self.userServiceEndpoint, serializer);
     sse_encode_opt_String(self.messageServiceEndpoint, serializer);
     sse_encode_opt_String(self.mailServiceEndpoint, serializer);
@@ -18863,6 +18964,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_bool(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_client_version_info(
+    DartClientVersionInfo? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_client_version_info(self, serializer);
     }
   }
 

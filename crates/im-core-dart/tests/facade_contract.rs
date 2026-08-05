@@ -1040,6 +1040,7 @@ fn config_maps_mail_service_endpoint_into_im_core() {
     let config = awiki_im_core::dto::config::DartImCoreConfig {
         service_base_url: "https://awiki.ai".to_string(),
         did_domain: "awiki.ai".to_string(),
+        client_version_info: None,
         user_service_endpoint: None,
         message_service_endpoint: None,
         mail_service_endpoint: Some("https://mail.awiki.ai".to_string()),

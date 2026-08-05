@@ -2005,12 +2005,22 @@ extension on AwikiImCoreConfig {
   gen_config.DartImCoreConfig _toGen() => gen_config.DartImCoreConfig(
     serviceBaseUrl: serviceBaseUrl,
     didDomain: didDomain,
+    clientVersionInfo: clientVersionInfo?._toGen(),
     userServiceEndpoint: userServiceEndpoint,
     messageServiceEndpoint: messageServiceEndpoint,
     mailServiceEndpoint: mailServiceEndpoint,
     anpServiceEndpoint: anpServiceEndpoint,
     anpServiceDid: anpServiceDid,
     transportPolicy: transportPolicy._toGen(),
+  );
+}
+
+extension on AwikiClientVersionInfo {
+  gen_config.DartClientVersionInfo _toGen() => gen_config.DartClientVersionInfo(
+    product: product,
+    release: release,
+    version: version,
+    build: build == null ? null : BigInt.from(build!),
   );
 }
 

@@ -44,6 +44,7 @@ pub struct ImClient {
 pub struct ImCoreConfig {
     pub service_base_url: Url,
     pub did_domain: String,
+    pub client_version_info: Option<ClientVersionInfo>,
     pub user_service_endpoint: Option<Url>,
     pub message_service_endpoint: Option<Url>,
     pub mail_service_endpoint: Option<Url>, // Email
@@ -87,7 +88,16 @@ pub struct ImCoreSecretVaultOptions {
     workspace_id: String,
     device_id: String,
 }
+
+pub struct ClientVersionInfo { /* validated product/release/version/build */ }
 ```
+
+`ClientVersionInfo` 只接受 `awiki-me|awiki-cli|awiki-daemon`、四位 release、
+header-safe version 和可选十进制 build。Core 对配置中同源的 AWiki User/Message/Mail
+产品 HTTP 请求及 Message WebSocket 注入唯一
+`X-AWiki-Client-Version: <product>/<release>/<version>[+<build>]`；公共 ANP、任意 DID
+解析和对象存储请求不携带该头。User Service 产品端点统一使用 canonical
+`/user-service/v1/...`，客户端不回退无版本 alias。
 
 `ImCoreSecretVaultOptions.device_id` is the existing compatibility spelling for
 the **local vault context device id**. Internally it is parsed as

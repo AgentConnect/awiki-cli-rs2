@@ -5,6 +5,13 @@ pub const VERSION: &str = match option_env!("AWIKI_CLI_VERSION") {
     None => "dev",
 };
 
+pub const RELEASE: &str = match option_env!("AWIKI_CLI_RELEASE") {
+    Some(release) => release,
+    None => "0714",
+};
+
+pub const PRODUCT: &str = "awiki-cli";
+
 pub const COMMIT: &str = match option_env!("AWIKI_CLI_COMMIT") {
     Some(commit) => commit,
     None => "unknown",
@@ -140,6 +147,12 @@ mod tests {
         assert!(!info.go_version.is_empty());
         assert!(!info.goos.is_empty());
         assert!(!info.goarch.is_empty());
+    }
+
+    #[test]
+    fn client_version_metadata_has_fixed_cli_product_and_release() {
+        assert_eq!(PRODUCT, "awiki-cli");
+        assert_eq!(RELEASE, option_env!("AWIKI_CLI_RELEASE").unwrap_or("0714"));
     }
 
     #[test]

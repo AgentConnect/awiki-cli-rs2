@@ -339,6 +339,48 @@ pub(crate) struct CorePlainTransport<'a> {
     register_authorization: Option<String>,
 }
 
+fn append_client_version_header(
+    headers: &mut BTreeMap<String, String>,
+    config: &crate::ImCoreConfig,
+    request_url: &str,
+) {
+    let Ok(request) = reqwest::Url::parse(request_url) else {
+        return;
+    };
+    let path = request.path();
+    if !matches!(
+        path,
+        value if value.starts_with("/user-service/")
+            || value.starts_with("/im/")
+            || value.starts_with("/mail/")
+    ) {
+        return;
+    }
+    let is_local_origin = [
+        Some(&config.service_base_url),
+        config.user_service_endpoint.as_ref(),
+        config.message_service_endpoint.as_ref(),
+        config.mail_service_endpoint.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|endpoint| reqwest::Url::parse(endpoint.as_str()).ok())
+    .any(|endpoint| {
+        endpoint.scheme() == request.scheme()
+            && endpoint.host_str() == request.host_str()
+            && endpoint.port_or_known_default() == request.port_or_known_default()
+    });
+    if is_local_origin {
+        let Some(version) = config.client_version_info.as_ref() else {
+            return;
+        };
+        headers.insert(
+            crate::config::CLIENT_VERSION_HEADER.to_owned(),
+            version.header_value(),
+        );
+    }
+}
+
 impl<'a> CoreHttpTransport<'a> {
     pub(crate) fn new(client: &'a crate::core::ImClient) -> Self {
         let runtime = client.runtime();
@@ -634,13 +676,15 @@ impl<'a> CoreHttpTransport<'a> {
         url: &str,
         body: Vec<u8>,
     ) -> crate::ImResult<crate::internal::http::HttpResponse> {
+        let mut headers = BTreeMap::from([(
+            "Content-Type".to_string(),
+            crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
+        )]);
+        append_client_version_header(&mut headers, self.client.core_inner().sdk_config(), url);
         let request = crate::internal::http::HttpRequest {
             method: method.to_string(),
             url: url.to_string(),
-            headers: BTreeMap::from([(
-                "Content-Type".to_string(),
-                crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
-            )]),
+            headers,
             body,
         };
         self.http.execute(request)
@@ -652,13 +696,15 @@ impl<'a> CoreHttpTransport<'a> {
         url: &str,
         body: Vec<u8>,
     ) -> crate::ImResult<crate::internal::http::HttpResponse> {
+        let mut headers = BTreeMap::from([(
+            "Content-Type".to_string(),
+            crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
+        )]);
+        append_client_version_header(&mut headers, self.client.core_inner().sdk_config(), url);
         let request = crate::internal::http::HttpRequest {
             method: method.to_string(),
             url: url.to_string(),
-            headers: BTreeMap::from([(
-                "Content-Type".to_string(),
-                crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
-            )]),
+            headers,
             body,
         };
         self.http.execute_async(request).await
@@ -686,6 +732,7 @@ impl<'a> CoreHttpTransport<'a> {
                 detail: err.to_string(),
             })?;
         headers.extend(auth_headers);
+        append_client_version_header(&mut headers, self.client.core_inner().sdk_config(), url);
         let request = crate::internal::http::HttpRequest {
             method: method.to_string(),
             url: url.to_string(),
@@ -702,6 +749,8 @@ impl<'a> CoreHttpTransport<'a> {
                 self.jwt_token = None;
                 self.auth_headers(url, method, body.as_slice(), true)?
             };
+            let mut headers = headers;
+            append_client_version_header(&mut headers, self.client.core_inner().sdk_config(), url);
             let request = crate::internal::http::HttpRequest {
                 method: method.to_string(),
                 url: url.to_string(),
@@ -735,6 +784,7 @@ impl<'a> CoreHttpTransport<'a> {
                 detail: err.to_string(),
             })?;
         headers.extend(auth_headers);
+        append_client_version_header(&mut headers, self.client.core_inner().sdk_config(), url);
         let request = crate::internal::http::HttpRequest {
             method: method.to_string(),
             url: url.to_string(),
@@ -751,6 +801,8 @@ impl<'a> CoreHttpTransport<'a> {
                 self.jwt_token = None;
                 self.auth_headers(url, method, body.as_slice(), true)?
             };
+            let mut headers = headers;
+            append_client_version_header(&mut headers, self.client.core_inner().sdk_config(), url);
             let request = crate::internal::http::HttpRequest {
                 method: method.to_string(),
                 url: url.to_string(),
@@ -1208,6 +1260,8 @@ impl<'a> CorePlainTransport<'a> {
                 headers.insert("Authorization".to_string(), authorization.clone());
             }
         }
+        let request_url = self.rpc_url(endpoint);
+        append_client_version_header(&mut headers, self.core.inner().sdk_config(), &request_url);
         headers
     }
 }

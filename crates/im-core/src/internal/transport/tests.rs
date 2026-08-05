@@ -7,6 +7,54 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HOST_ACCOUNT_ID: &str = "agent-account-refresh";
 
+#[test]
+fn client_version_header_is_single_and_uses_configured_build_facts() {
+    let mut config = crate::ImCoreConfig::new(
+        crate::ServiceEndpoint::parse("https://awiki.info").unwrap(),
+        "awiki.info",
+    )
+    .unwrap();
+    config.client_version_info =
+        Some(crate::ClientVersionInfo::new("awiki-cli", "0714", "1.0.16", Some(42)).unwrap());
+    let mut headers = BTreeMap::from([(
+        "Content-Type".to_owned(),
+        crate::internal::json_rpc::CONTENT_TYPE_JSON.to_owned(),
+    )]);
+
+    append_client_version_header(
+        &mut headers,
+        &config,
+        "https://awiki.info/user-service/v1/content/rpc",
+    );
+    append_client_version_header(
+        &mut headers,
+        &config,
+        "https://awiki.info/user-service/v1/content/rpc",
+    );
+
+    assert_eq!(
+        headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case(crate::CLIENT_VERSION_HEADER))
+            .count(),
+        1
+    );
+    assert_eq!(
+        headers
+            .get(crate::CLIENT_VERSION_HEADER)
+            .map(String::as_str),
+        Some("awiki-cli/0714/1.0.16+42")
+    );
+
+    let mut peer_headers = BTreeMap::new();
+    append_client_version_header(
+        &mut peer_headers,
+        &config,
+        "https://peer.example/anp-im/rpc",
+    );
+    assert!(!peer_headers.contains_key(crate::CLIENT_VERSION_HEADER));
+}
+
 struct FakeBearerProvider {
     missing: bool,
 }
@@ -183,6 +231,7 @@ fn host_backed_core(root: &std::path::Path, endpoint: &str) -> crate::core::ImCo
         crate::config::ImCoreConfig {
             service_base_url: crate::config::ServiceEndpoint::parse(endpoint).unwrap(),
             did_domain: "awiki.test".to_owned(),
+            client_version_info: None,
             user_service_endpoint: None,
             message_service_endpoint: None,
             mail_service_endpoint: None,
@@ -319,52 +368,52 @@ async fn async_unavailable_transport_errors_match_sync_shape() {
     assert_transport_unavailable(
         AsyncRpcTransport::rpc(
             &mut transport,
-            "/user-service/handle/rpc",
+            "/user-service/v1/handle/rpc",
             "lookup",
             json!({}),
         )
         .await,
-        "lookup transport is not configured for /user-service/handle/rpc",
+        "lookup transport is not configured for /user-service/v1/handle/rpc",
     );
     assert_transport_unavailable(
         AsyncRestTransport::rest_post(
             &mut transport,
-            "/user-service/auth/email-send",
+            "/user-service/v1/auth/email-send",
             "POST",
             json!({}),
         )
         .await,
-        "POST transport is not configured for /user-service/auth/email-send",
+        "POST transport is not configured for /user-service/v1/auth/email-send",
     );
     assert_transport_unavailable(
         AsyncRestTransport::rest_get(
             &mut transport,
-            "/user-service/auth/email-status",
+            "/user-service/v1/auth/email-status",
             "GET",
             &BTreeMap::new(),
         )
         .await,
-        "GET transport is not configured for /user-service/auth/email-status",
+        "GET transport is not configured for /user-service/v1/auth/email-status",
     );
     assert_transport_unavailable(
         AsyncAuthenticatedRestTransport::authenticated_rest_post(
             &mut transport,
-            "/user-service/did/profile",
+            "/user-service/v1/did/profile",
             "PATCH",
             json!({}),
         )
         .await,
-        "PATCH transport is not configured for /user-service/did/profile",
+        "PATCH transport is not configured for /user-service/v1/did/profile",
     );
     assert_transport_unavailable(
         AsyncAuthenticatedRestTransport::authenticated_rest_get(
             &mut transport,
-            "/user-service/did/profile",
+            "/user-service/v1/did/profile",
             "GET",
             &BTreeMap::new(),
         )
         .await,
-        "GET transport is not configured for /user-service/did/profile",
+        "GET transport is not configured for /user-service/v1/did/profile",
     );
     assert_transport_unavailable(
         AsyncRawJsonTransport::get_json_url(
@@ -404,6 +453,7 @@ fn hosted_legacy_identity_accepts_refreshed_did_access_token() {
         crate::config::ImCoreConfig {
             service_base_url: endpoint,
             did_domain: "awiki.test".to_owned(),
+            client_version_info: None,
             user_service_endpoint: None,
             message_service_endpoint: None,
             mail_service_endpoint: None,
@@ -520,6 +570,7 @@ async fn ephemeral_bearer_401_does_not_retry_or_persist_response_token() {
         crate::config::ImCoreConfig {
             service_base_url: endpoint,
             did_domain: "awiki.test".to_owned(),
+            client_version_info: None,
             user_service_endpoint: None,
             message_service_endpoint: None,
             mail_service_endpoint: None,
@@ -553,7 +604,7 @@ async fn ephemeral_bearer_401_does_not_retry_or_persist_response_token() {
         CoreHttpTransport::new_with_ephemeral_bearer(&client, "probe-old-token").unwrap();
     let result = AsyncAuthenticatedRpcTransport::authenticated_rpc(
         &mut transport,
-        "/user-service/did/device/rpc",
+        "/user-service/v1/did/device/rpc",
         "device_registry_get",
         json!({"did":"did:example:alice"}),
     )
@@ -627,7 +678,7 @@ async fn host_backed_401_refresh_accepts_and_persists_exact_device_access() {
 
     let result = AsyncAuthenticatedRpcTransport::authenticated_rpc(
         &mut transport,
-        "/user-service/did/rpc",
+        "/user-service/v1/did/rpc",
         "get_me",
         json!({}),
     )
@@ -720,7 +771,7 @@ fn host_backed_response_token_rejects_wrong_exact_claims_without_secret_leak_or_
             format!("access_token={token}"),
         )]);
         let error = transport
-            .capture_token("https://awiki.test/user-service/did/rpc", &headers)
+            .capture_token("https://awiki.test/user-service/v1/did/rpc", &headers)
             .unwrap_err();
         assert_eq!(error, crate::ImError::PermissionDenied);
         let rendered = format!("{error:?} {error}");

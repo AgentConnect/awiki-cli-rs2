@@ -224,6 +224,7 @@ mod tests {
             ImCoreConfig {
                 service_base_url: ServiceEndpoint::parse("http://127.0.0.1:9").unwrap(),
                 did_domain: "awiki.test".to_owned(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,

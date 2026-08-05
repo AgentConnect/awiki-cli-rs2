@@ -10,7 +10,7 @@ use serde_json::json;
 
 #[test]
 fn content_rpc_calls_match_go_methods_profiles_and_params() {
-    assert_eq!(CONTENT_RPC_ENDPOINT, "/content/rpc");
+    assert_eq!(CONTENT_RPC_ENDPOINT, "/user-service/v1/content/rpc");
 
     let create = build_create_page_rpc_call(
         PageDraft::new(

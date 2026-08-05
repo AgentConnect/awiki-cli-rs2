@@ -6,7 +6,9 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::error::{ProtocolError, SubProtocolError};
-use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL};
+use tokio_tungstenite::tungstenite::http::header::{
+    HeaderName, AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL,
+};
 use tokio_tungstenite::tungstenite::http::{HeaderMap, Request};
 use tokio_tungstenite::tungstenite::Error as TungsteniteError;
 use tokio_tungstenite::tungstenite::Message;
@@ -40,9 +42,10 @@ impl AsyncWsTransport {
         bearer_token: &str,
         ca_bundle: Option<&str>,
         require_sync_changed_v2: bool,
+        client_version: Option<&str>,
     ) -> Result<Self, AsyncWsConnectError> {
         let connector = async_ws_rustls_connector(ca_bundle).await?;
-        let request = build_async_ws_request(websocket_url, bearer_token, true)?;
+        let request = build_async_ws_request(websocket_url, bearer_token, true, client_version)?;
         let connected = if let Some(connector) = connector.clone() {
             connect_async_tls_with_config(request, None, false, Some(connector)).await
         } else {
@@ -51,7 +54,8 @@ impl AsyncWsTransport {
         let (stream, response) = match connected {
             Ok(connected) => connected,
             Err(error) if is_missing_async_ws_subprotocol(&error) && !require_sync_changed_v2 => {
-                let request = build_async_ws_request(websocket_url, bearer_token, false)?;
+                let request =
+                    build_async_ws_request(websocket_url, bearer_token, false, client_version)?;
                 if let Some(connector) = connector {
                     connect_async_tls_with_config(request, None, false, Some(connector)).await
                 } else {
@@ -121,6 +125,7 @@ fn build_async_ws_request(
     websocket_url: &str,
     bearer_token: &str,
     request_sync_changed_v2: bool,
+    client_version: Option<&str>,
 ) -> Result<Request<()>, AsyncWsConnectError> {
     let mut request = websocket_url
         .into_client_request()
@@ -131,6 +136,14 @@ fn build_async_ws_request(
         async_ws_connect_message(format!("build websocket authorization header: {err}"))
     })?;
     request.headers_mut().insert(AUTHORIZATION, authorization);
+    if let Some(client_version) = client_version {
+        let value = client_version.parse().map_err(|err| {
+            async_ws_connect_message(format!("build websocket client version header: {err}"))
+        })?;
+        request
+            .headers_mut()
+            .insert(HeaderName::from_static("x-awiki-client-version"), value);
+    }
     if request_sync_changed_v2 {
         request.headers_mut().insert(
             SEC_WEBSOCKET_PROTOCOL,
@@ -285,7 +298,13 @@ mod tests {
 
     #[test]
     fn async_ws_requests_sync_changed_v2_subprotocol() {
-        let request = build_async_ws_request("wss://example.test/im/ws", "token", true).unwrap();
+        let request = build_async_ws_request(
+            "wss://example.test/im/ws",
+            "token",
+            true,
+            Some("awiki-me/0714/1.0.31+214"),
+        )
+        .unwrap();
         assert_eq!(
             request
                 .headers()
@@ -294,6 +313,15 @@ mod tests {
                 .to_str()
                 .unwrap(),
             crate::internal::realtime::SYNC_CHANGED_V2_SUBPROTOCOL
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("x-awiki-client-version")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "awiki-me/0714/1.0.31+214"
         );
     }
 
@@ -313,6 +341,7 @@ mod tests {
             "legacy-token",
             None,
             false,
+            None,
         )
         .await
         .unwrap();
@@ -338,9 +367,14 @@ mod tests {
             }
         });
 
-        let result =
-            AsyncWsTransport::connect(&format!("ws://{address}/im/ws"), "device-token", None, true)
-                .await;
+        let result = AsyncWsTransport::connect(
+            &format!("ws://{address}/im/ws"),
+            "device-token",
+            None,
+            true,
+            None,
+        )
+        .await;
 
         assert!(result.is_err());
         assert!(!server.await.unwrap());

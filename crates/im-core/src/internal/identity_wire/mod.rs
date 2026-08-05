@@ -17,19 +17,19 @@ use std::collections::BTreeMap;
 pub(crate) const JSON_RPC_VERSION: &str = "2.0";
 pub(crate) const JSON_RPC_ID: &str = "req-1";
 
-pub(crate) const DID_AUTH_RPC_ENDPOINT: &str = "/user-service/did-auth/rpc";
-pub(crate) const HANDLE_RPC_ENDPOINT: &str = "/user-service/handle/rpc";
-pub(crate) const DID_PROFILE_RPC_ENDPOINT: &str = "/user-service/did/profile/rpc";
-pub(crate) const DID_RELATIONSHIPS_RPC_ENDPOINT: &str = "/user-service/did/relationships/rpc";
-pub(crate) const EMAIL_SEND_ENDPOINT: &str = "/user-service/auth/email-send";
-pub(crate) const EMAIL_STATUS_ENDPOINT: &str = "/user-service/auth/email-status";
-pub(crate) const SMS_CODES_ENDPOINT: &str = "/user-service/auth/sms-codes";
+pub(crate) const DID_AUTH_RPC_ENDPOINT: &str = "/user-service/v1/did-auth/rpc";
+pub(crate) const HANDLE_RPC_ENDPOINT: &str = "/user-service/v1/handle/rpc";
+pub(crate) const DID_PROFILE_RPC_ENDPOINT: &str = "/user-service/v1/did/profile/rpc";
+pub(crate) const DID_RELATIONSHIPS_RPC_ENDPOINT: &str = "/user-service/v1/did/relationships/rpc";
+pub(crate) const EMAIL_SEND_ENDPOINT: &str = "/user-service/v1/auth/email-send";
+pub(crate) const EMAIL_STATUS_ENDPOINT: &str = "/user-service/v1/auth/email-status";
+pub(crate) const SMS_CODES_ENDPOINT: &str = "/user-service/v1/auth/sms-codes";
 pub(crate) const ACCOUNT_VERIFICATION_EXCHANGE_ENDPOINT: &str =
-    "/user-service/auth/account-verification/exchange";
+    "/user-service/v1/auth/account-verification/exchange";
 pub(crate) const HANDLE_RECOVERY_EXCHANGE_ENDPOINT: &str =
-    "/user-service/auth/handle-recovery/exchange";
-pub(crate) const PHONE_BIND_SEND_ENDPOINT: &str = "/user-service/auth/phone-bind-send";
-pub(crate) const PHONE_BIND_VERIFY_ENDPOINT: &str = "/user-service/auth/phone-bind-verify";
+    "/user-service/v1/auth/handle-recovery/exchange";
+pub(crate) const PHONE_BIND_SEND_ENDPOINT: &str = "/user-service/v1/auth/phone-bind-send";
+pub(crate) const PHONE_BIND_VERIFY_ENDPOINT: &str = "/user-service/v1/auth/phone-bind-verify";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TransportProfile {

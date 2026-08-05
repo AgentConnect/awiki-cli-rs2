@@ -101,6 +101,14 @@ generation, and device access token before returning `registered`; Flutter hosts
 must branch only on the typed registration state and must not parse response
 wording to distinguish first registration from phone-owned Legacy recovery.
 
+`AwikiImCoreConfig.clientVersionInfo` is the typed product/release/version/build
+input used by native Core. AWiki Me supplies `awiki-me/0714/<version>+<build>`
+from its package metadata; Dart does not construct the native wire header. Core
+injects the header into configured AWiki product HTTP/WS requests, while AWiki
+Me's few direct User Service HTTP adapters reuse the same package facts. All new
+User Service requests target `/user-service/v1/...` without an unversioned
+fallback.
+
 After the remote and local identity commits, P5 PreKey publication is a
 recoverable completion step. Failure returns the registered identity with the
 stable `registration_prekey_publish_pending` warning; registration pending

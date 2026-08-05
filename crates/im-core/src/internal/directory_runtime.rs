@@ -785,7 +785,7 @@ mod tests {
         assert_eq!(
             transport.calls[0],
             (
-                "/user-service/handle/rpc".to_owned(),
+                "/user-service/v1/handle/rpc".to_owned(),
                 "lookup".to_owned(),
                 json!({"handle": "alice.awiki.info"}),
             )
@@ -809,7 +809,7 @@ mod tests {
         assert_eq!(result, json!({"did": "did:example:alice"}));
         assert_eq!(transport.calls.len(), 2);
         assert_eq!(transport.calls[0], transport.calls[1]);
-        assert_eq!(transport.calls[0].0, "/user-service/did/profile/rpc");
+        assert_eq!(transport.calls[0].0, "/user-service/v1/did/profile/rpc");
         assert_eq!(transport.calls[0].1, "resolve");
     }
 
@@ -828,7 +828,7 @@ mod tests {
         assert_eq!(result, json!({"did": "did:example:alice"}));
         assert_eq!(transport.calls.len(), 2);
         assert_eq!(transport.calls[0], transport.calls[1]);
-        assert_eq!(transport.calls[0].0, "/user-service/did/profile/rpc");
+        assert_eq!(transport.calls[0].0, "/user-service/v1/did/profile/rpc");
         assert_eq!(transport.calls[0].1, "get_public_profile");
     }
 

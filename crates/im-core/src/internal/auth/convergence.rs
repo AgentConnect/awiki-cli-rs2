@@ -99,6 +99,7 @@ mod tests {
             crate::ImCoreConfig {
                 service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
                 did_domain: "example.test".to_owned(),
+                client_version_info: None,
                 user_service_endpoint: None,
                 message_service_endpoint: None,
                 mail_service_endpoint: None,
@@ -148,7 +149,7 @@ mod tests {
 
         stage(
             &first_client,
-            "https://example.test/user-service/did-auth/rpc",
+            "https://example.test/user-service/v1/did-auth/rpc",
             "fresh-access-token",
         )
         .unwrap();
@@ -160,7 +161,7 @@ mod tests {
         assert_eq!(
             committed,
             vec![(
-                "https://example.test/user-service/did-auth/rpc".to_owned(),
+                "https://example.test/user-service/v1/did-auth/rpc".to_owned(),
                 "fresh-access-token".to_owned()
             )]
         );

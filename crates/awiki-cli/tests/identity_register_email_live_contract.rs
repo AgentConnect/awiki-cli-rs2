@@ -51,14 +51,14 @@ fn identity_register_email_without_wait_checks_status_then_sends_activation_like
     let requests = server.requests();
     assert_eq!(requests.len(), 2);
     assert!(requests[0].starts_with(
-        "GET /user-service/auth/email-status?email=alice%40example.com&handle=alice.awiki.ai HTTP/1.1"
+        "GET /user-service/v1/auth/email-status?email=alice%40example.com&handle=alice.awiki.ai HTTP/1.1"
     ));
     assert!(
         !requests[0].contains("Authorization: Bearer "),
         "registration email status must be unauthenticated:\n{}",
         requests[0]
     );
-    assert!(requests[1].starts_with("POST /user-service/auth/email-send HTTP/1.1"));
+    assert!(requests[1].starts_with("POST /user-service/v1/auth/email-send HTTP/1.1"));
     assert!(
         !requests[1].contains("Authorization: Bearer "),
         "registration email send must be unauthenticated:\n{}",
@@ -134,15 +134,15 @@ fn identity_register_email_wait_already_verified_registers_and_persists_identity
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
     assert!(requests[0].starts_with(
-        "GET /user-service/auth/email-status?email=alice%40example.com&handle=alice.awiki.ai HTTP/1.1"
+        "GET /user-service/v1/auth/email-status?email=alice%40example.com&handle=alice.awiki.ai HTTP/1.1"
     ));
     assert!(
         requests
             .iter()
-            .all(|request| !request.starts_with("POST /user-service/auth/email-send HTTP/1.1")),
+            .all(|request| !request.starts_with("POST /user-service/v1/auth/email-send HTTP/1.1")),
         "already verified registration must not send activation email:\n{requests:#?}"
     );
-    assert!(requests[1].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(requests[1].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
     let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
     assert_eq!(body["jsonrpc"], "2.0");
     assert_eq!(body["id"], "req-1");
@@ -208,13 +208,13 @@ fn identity_register_email_wait_sends_then_polls_before_register_like_go() {
     let requests = server.requests();
     assert_eq!(requests.len(), 5);
     assert!(requests[0].starts_with(
-        "GET /user-service/auth/email-status?email=alice%40example.com&handle=alice.awiki.ai HTTP/1.1"
+        "GET /user-service/v1/auth/email-status?email=alice%40example.com&handle=alice.awiki.ai HTTP/1.1"
     ));
-    assert!(requests[1].starts_with("POST /user-service/auth/email-send HTTP/1.1"));
+    assert!(requests[1].starts_with("POST /user-service/v1/auth/email-send HTTP/1.1"));
     assert!(requests[2].starts_with(
-        "GET /user-service/auth/email-status?email=alice%40example.com&handle=alice.awiki.ai HTTP/1.1"
+        "GET /user-service/v1/auth/email-status?email=alice%40example.com&handle=alice.awiki.ai HTTP/1.1"
     ));
-    assert!(requests[3].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(requests[3].starts_with("POST /user-service/v1/did-auth/rpc HTTP/1.1"));
     assert_prekey_publication(&requests[4]);
 }
 

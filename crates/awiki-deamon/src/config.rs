@@ -378,6 +378,7 @@ impl DaemonConfig {
             ServiceEndpoint::parse(&self.service_base_url)?,
             self.did_domain.clone(),
         )?;
+        config.client_version_info = Some(crate::build_info::client_version_info()?);
         config.user_service_endpoint = Some(ServiceEndpoint::parse(&self.user_service_base_url)?);
         config.message_service_endpoint =
             Some(ServiceEndpoint::parse(&self.message_service_base_url)?);

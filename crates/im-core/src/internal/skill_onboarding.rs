@@ -237,7 +237,7 @@ impl SkillOnboardingRemote for ProductionSkillOnboardingRemote<'_> {
         let result = self
             .transport
             .rpc(
-                "/user-service/agent-registration/rpc",
+                "/user-service/v1/agent-registration/rpc",
                 "verify_token",
                 json!({"token": token.expose(), "agent_kind": "skill"}),
             )
@@ -254,7 +254,7 @@ impl SkillOnboardingRemote for ProductionSkillOnboardingRemote<'_> {
         let result = self
             .transport
             .rpc(
-                "/user-service/agent-registration/rpc",
+                "/user-service/v1/agent-registration/rpc",
                 "exchange_token",
                 json!({
                     "token": token.expose(),
@@ -285,7 +285,7 @@ impl SkillOnboardingRemote for ProductionSkillOnboardingRemote<'_> {
         let result = self
             .transport
             .rpc(
-                "/user-service/agent-registration/rpc",
+                "/user-service/v1/agent-registration/rpc",
                 "exchange_token",
                 json!({
                     "token": token.expose(),

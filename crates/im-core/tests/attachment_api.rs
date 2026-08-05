@@ -606,7 +606,7 @@ async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
     let requests = server.join();
     assert_eq!(requests.len(), 5);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/user-service/handle/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/handle/rpc");
     assert_eq!(requests[0].rpc_method().as_deref(), Some("lookup"));
     assert_eq!(requests[0].params(), json!({ "handle": "bob.awiki.info" }));
 
@@ -714,7 +714,7 @@ async fn attachments_service_download_resolves_direct_handle_before_history_look
     let requests = server.join();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/user-service/handle/rpc");
+    assert_eq!(requests[0].path, "/user-service/v1/handle/rpc");
     assert_eq!(requests[0].rpc_method().as_deref(), Some("lookup"));
     assert_eq!(requests[0].params(), json!({ "handle": "bob.awiki.info" }));
     assert_eq!(requests[1].method, "POST");
@@ -1711,6 +1711,7 @@ fn test_config_with_base_url(base_url: &str) -> ImCoreConfig {
     ImCoreConfig {
         service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
         did_domain: "awiki.info".to_string(),
+        client_version_info: None,
         user_service_endpoint: None,
         message_service_endpoint: None,
         mail_service_endpoint: None,

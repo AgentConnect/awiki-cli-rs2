@@ -33,6 +33,18 @@ impl TryFrom<DartImCoreConfig> for im_core::ImCoreConfig {
             value.did_domain,
         )
         .map_err(DartImError::from)?;
+        config.client_version_info = value
+            .client_version_info
+            .map(|info| {
+                im_core::ClientVersionInfo::new(
+                    info.product,
+                    info.release,
+                    info.version,
+                    info.build,
+                )
+            })
+            .transpose()
+            .map_err(DartImError::from)?;
         config.user_service_endpoint = parse_endpoint(value.user_service_endpoint)?;
         config.message_service_endpoint = parse_endpoint(value.message_service_endpoint)?;
         config.mail_service_endpoint = parse_endpoint(value.mail_service_endpoint)?;

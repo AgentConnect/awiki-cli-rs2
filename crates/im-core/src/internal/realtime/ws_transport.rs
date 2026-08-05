@@ -96,11 +96,12 @@ impl WsTransport {
         bearer_token: &str,
         ca_bundle: Option<&str>,
         require_sync_changed_v2: bool,
+        client_version: Option<&str>,
     ) -> WsResult<Self> {
         let parsed = ParsedWsUrl::parse(websocket_url)?;
         let mut stream = connect_stream(&parsed, ca_bundle)?;
         let key = websocket_key();
-        write_handshake_request(&mut stream, &parsed, bearer_token, &key)?;
+        write_handshake_request(&mut stream, &parsed, bearer_token, &key, client_version)?;
         let headers = read_http_headers(&mut stream)?;
         let sync_changed_v2 = validate_handshake_response(&headers, &key, require_sync_changed_v2)?;
         Ok(Self {
@@ -592,6 +593,7 @@ fn write_handshake_request(
     parsed: &ParsedWsUrl,
     bearer_token: &str,
     key: &str,
+    client_version: Option<&str>,
 ) -> WsResult<()> {
     stream
         .write_all(handshake_request_head(parsed, key).as_bytes())
@@ -599,6 +601,9 @@ fn write_handshake_request(
     let bearer_token = bearer_token.trim();
     if !bearer_token.is_empty() {
         write!(stream, "Authorization: Bearer {bearer_token}\r\n").map_err(ws_error)?;
+    }
+    if let Some(client_version) = client_version {
+        write!(stream, "X-AWiki-Client-Version: {client_version}\r\n").map_err(ws_error)?;
     }
     stream.write_all(b"\r\n").map_err(ws_error)?;
     stream.flush().map_err(ws_error)

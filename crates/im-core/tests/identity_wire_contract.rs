@@ -6,32 +6,35 @@ use serde_json::{json, Value};
 fn identity_wire_endpoint_constants_match_go_client() {
     assert_eq!(
         identity::DID_AUTH_RPC_ENDPOINT,
-        "/user-service/did-auth/rpc"
+        "/user-service/v1/did-auth/rpc"
     );
-    assert_eq!(directory::HANDLE_RPC_ENDPOINT, "/user-service/handle/rpc");
+    assert_eq!(
+        directory::HANDLE_RPC_ENDPOINT,
+        "/user-service/v1/handle/rpc"
+    );
     assert_eq!(
         directory::DID_RELATIONSHIPS_RPC_ENDPOINT,
-        "/user-service/did/relationships/rpc"
+        "/user-service/v1/did/relationships/rpc"
     );
     assert_eq!(
         identity::DID_PROFILE_RPC_ENDPOINT,
-        "/user-service/did/profile/rpc"
+        "/user-service/v1/did/profile/rpc"
     );
     assert_eq!(
         identity::EMAIL_SEND_ENDPOINT,
-        "/user-service/auth/email-send"
+        "/user-service/v1/auth/email-send"
     );
     assert_eq!(
         identity::EMAIL_STATUS_ENDPOINT,
-        "/user-service/auth/email-status"
+        "/user-service/v1/auth/email-status"
     );
     assert_eq!(
         identity::PHONE_BIND_SEND_ENDPOINT,
-        "/user-service/auth/phone-bind-send"
+        "/user-service/v1/auth/phone-bind-send"
     );
     assert_eq!(
         identity::PHONE_BIND_VERIFY_ENDPOINT,
-        "/user-service/auth/phone-bind-verify"
+        "/user-service/v1/auth/phone-bind-verify"
     );
 }
 

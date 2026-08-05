@@ -295,27 +295,27 @@ impl UserServiceAgentRegistrationClient {
         if trimmed.is_empty() {
             bail!("service_base_url must not be empty");
         }
-        let rpc_url = if trimmed.ends_with("/user-service/agent-registration/rpc") {
+        let rpc_url = if trimmed.ends_with("/user-service/v1/agent-registration/rpc") {
             trimmed.to_string()
         } else {
-            format!("{trimmed}/user-service/agent-registration/rpc")
+            format!("{trimmed}/user-service/v1/agent-registration/rpc")
         };
-        let inventory_rpc_url = if trimmed.ends_with("/user-service/agent-inventory/rpc") {
+        let inventory_rpc_url = if trimmed.ends_with("/user-service/v1/agent-inventory/rpc") {
             trimmed.to_string()
-        } else if trimmed.ends_with("/user-service/agent-registration/rpc") {
+        } else if trimmed.ends_with("/user-service/v1/agent-registration/rpc") {
             trimmed.replace(
-                "/user-service/agent-registration/rpc",
-                "/user-service/agent-inventory/rpc",
+                "/user-service/v1/agent-registration/rpc",
+                "/user-service/v1/agent-inventory/rpc",
             )
         } else {
-            format!("{trimmed}/user-service/agent-inventory/rpc")
+            format!("{trimmed}/user-service/v1/agent-inventory/rpc")
         };
-        let did_auth_rpc_url = if trimmed.ends_with("/user-service/did-auth/rpc") {
+        let did_auth_rpc_url = if trimmed.ends_with("/user-service/v1/did-auth/rpc") {
             trimmed.to_string()
-        } else if let Some((prefix, _)) = trimmed.split_once("/user-service/") {
-            format!("{prefix}/user-service/did-auth/rpc")
+        } else if let Some((prefix, _)) = trimmed.split_once("/user-service/v1/") {
+            format!("{prefix}/user-service/v1/did-auth/rpc")
         } else {
-            format!("{trimmed}/user-service/did-auth/rpc")
+            format!("{trimmed}/user-service/v1/did-auth/rpc")
         };
         Ok(Self {
             rpc_url,

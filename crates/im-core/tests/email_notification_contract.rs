@@ -76,6 +76,7 @@ async fn email_notifications_async_are_actor_backed_and_owner_scoped() {
         ImCoreConfig {
             service_base_url: ServiceEndpoint::parse("https://example.test").unwrap(),
             did_domain: "awiki.test".to_string(),
+            client_version_info: None,
             user_service_endpoint: None,
             message_service_endpoint: None,
             mail_service_endpoint: None,
