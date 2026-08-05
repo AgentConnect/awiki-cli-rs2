@@ -151,12 +151,21 @@ pub struct SkillClaimRequest {
     pub expected_agent_handle: String,
 }
 
+pub struct SkillResumeRequest {
+    pub service_base_url: String,
+    pub expected_controller_handle: String,
+    pub expected_agent_handle: String,
+}
+
 impl SkillOnboardingService<'_> {
     pub async fn claim_async(&self, request: SkillClaimRequest)
         -> ImResult<SkillClaimResult>;
     pub async fn recover_legacy_claim_async(&self, request: SkillClaimRequest)
         -> ImResult<SkillClaimResult>;
+    pub async fn resume_async(&self, request: SkillResumeRequest)
+        -> ImResult<SkillClaimResult>;
     pub fn claim(&self, request: SkillClaimRequest) -> ImResult<SkillClaimResult>;
+    pub fn resume(&self, request: SkillResumeRequest) -> ImResult<SkillClaimResult>;
     pub fn recover_legacy_claim(&self, request: SkillClaimRequest)
         -> ImResult<SkillClaimResult>;
 }
@@ -167,7 +176,18 @@ workspace。相同 journal 可恢复同一 DID；其他非空或无法识别状�
 `skill_onboarding_workspace_conflict`。成功结果只包含 Agent DID/Handle、Controller
 Handle、确定性 greeting message ID、phase/status 和稳定错误码，不含 Token、JWT 或
 私钥。问候尚未被 Message Service 接受时返回 `greeting_pending + retryable=true`，
-重试继续使用同一 DID 和 message ID，不重新注册。
+后续通过无 Token 的 `resume` 继续使用同一 DID 和 message ID，不重新注册。
+
+`resume` 只接受严格匹配 service origin、Controller Handle、Agent Handle 的 schema-v2
+journal，并且只继续 `device_prekey_pending` 或 `controller_greeting_pending`。它先验证本地
+唯一 identity、DID document digest、device manifest 与 Handle service，再复用已提交的
+exact device、稳定 PreKey material 和 greeting idempotency key；不会调用 `verify_token`
+或 `exchange_token`。`completed` journal 幂等返回，`identity_pending`、缺失、损坏、版本或
+scope 不匹配、identity 冲突均 fail closed。
+
+PreKey 的 Service 错误只向公开结果与 journal 保留经 JSON-RPC 权威 sanitizer 验证的
+有界公共 code；数值 JSON-RPC code 使用固定的 `skill_onboarding_prekey.rpc.*` 编码，
+未知 code 折叠。远端 message、data 与未分类 detail 不持久化也不向调用方暴露。
 
 新 claim 使用 v2 Agent/device identity、Device Access 和 PreKey 发布阶段。workspace 中
 存在 v1 journal/pending material 时，普通 claim 返回

@@ -95,7 +95,7 @@ fn parse_public_service_code_field(value: Option<&Value>) -> PublicCodeField<'_>
     }
 }
 
-fn is_public_service_code(code: &str) -> bool {
+pub(crate) fn is_public_service_code(code: &str) -> bool {
     if code.is_empty() || code.len() > PUBLIC_SERVICE_CODE_MAX_LEN || !code.is_ascii() {
         return false;
     }

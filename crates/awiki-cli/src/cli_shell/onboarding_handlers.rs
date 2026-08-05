@@ -7,6 +7,7 @@ use zeroize::Zeroize;
 
 const MAX_TOKEN_STDIN_BYTES: u64 = 4098;
 const CLAIM_USAGE: &str = "awiki-cli onboarding claim --service-base-url <https-url> --expected-controller-handle <full-handle> --expected-agent-handle <full-handle> --token-stdin";
+const RESUME_USAGE: &str = "awiki-cli onboarding resume --service-base-url <https-url> --expected-controller-handle <full-handle> --expected-agent-handle <full-handle>";
 const RECOVER_LEGACY_CLAIM_USAGE: &str = "awiki-cli onboarding recover-legacy-claim --service-base-url <https-url> --expected-controller-handle <full-handle> --expected-agent-handle <full-handle> --token-stdin";
 
 impl App {
@@ -20,7 +21,7 @@ impl App {
             result,
             "awiki-cli onboarding claim",
             "Skill Agent registered and Controller greeting accepted",
-            "awiki-cli onboarding claim",
+            "awiki-cli onboarding resume",
         )
     }
 
@@ -41,7 +42,45 @@ impl App {
             result,
             "awiki-cli onboarding claim",
             "Skill Agent registered and Controller greeting accepted",
-            "awiki-cli onboarding claim",
+            "awiki-cli onboarding resume",
+        )
+    }
+
+    pub fn run_onboarding_resume(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let request = resume_request(command)?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let core = crate::m_core_cli_adapter::build_im_core(&resolved)?;
+        let result = core
+            .onboarding()
+            .resume(request)
+            .map_err(map_resume_error)?;
+        self.render_skill_claim_result(
+            &resolved,
+            result,
+            "awiki-cli onboarding resume",
+            "Skill Agent onboarding resumed",
+            "awiki-cli onboarding resume",
+        )
+    }
+
+    pub async fn run_onboarding_resume_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        let request = resume_request(command)?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let core = crate::m_core_cli_adapter::build_im_core_async(&resolved).await?;
+        let result = core
+            .onboarding()
+            .resume_async(request)
+            .await
+            .map_err(map_resume_error)?;
+        self.render_skill_claim_result(
+            &resolved,
+            result,
+            "awiki-cli onboarding resume",
+            "Skill Agent onboarding resumed",
+            "awiki-cli onboarding resume",
         )
     }
 
@@ -133,6 +172,31 @@ fn claim_request_from_stdin(
     command: &ParsedCommand,
 ) -> Result<im_core::SkillClaimRequest, ExitError> {
     onboarding_request_from_stdin(command, "onboarding claim", CLAIM_USAGE)
+}
+
+fn resume_request(command: &ParsedCommand) -> Result<im_core::SkillResumeRequest, ExitError> {
+    let operation = "onboarding resume";
+    if !command.args.is_empty() {
+        return Err(invalid_onboarding_argument(
+            format!("{operation} does not accept positional arguments."),
+            RESUME_USAGE,
+        ));
+    }
+    Ok(im_core::SkillResumeRequest {
+        service_base_url: required_flag(command, operation, RESUME_USAGE, "service-base-url")?,
+        expected_controller_handle: required_flag(
+            command,
+            operation,
+            RESUME_USAGE,
+            "expected-controller-handle",
+        )?,
+        expected_agent_handle: required_flag(
+            command,
+            operation,
+            RESUME_USAGE,
+            "expected-agent-handle",
+        )?,
+    })
 }
 
 fn onboarding_request_from_stdin(
@@ -245,7 +309,7 @@ fn greeting_pending_error(result: &im_core::SkillClaimResult, retry_command: &st
             .unwrap_or("skill_onboarding_greeting_pending"),
         5,
         "Skill Agent registered, but the Controller greeting is still pending.",
-        format!("Retry `{retry_command}` with the same authorized Token block."),
+        format!("Retry `{retry_command}` with the same workspace and exact scope fields; no Token is accepted."),
     );
     error.detail.retryable = true;
     error.detail.details = public_claim_value(result);
@@ -280,7 +344,41 @@ fn map_claim_error(error: im_core::ImError) -> ExitError {
             "Run `awiki-cli onboarding recover-legacy-claim` with the original authorized Token block and scope fields; do not delete the journal or start a new claim.",
         );
     }
+    if let im_core::ImError::SkillOnboarding {
+        code,
+        phase,
+        retryable,
+    } = &error
+    {
+        if phase == "device_prekey" || phase == "controller_greeting" {
+            return onboarding_resume_error(code, phase, *retryable);
+        }
+    }
     crate::m_core_cli_adapter::map_im_error(error, "onboarding claim")
+}
+
+fn map_resume_error(error: im_core::ImError) -> ExitError {
+    if let im_core::ImError::SkillOnboarding {
+        code,
+        phase,
+        retryable,
+    } = error
+    {
+        return onboarding_resume_error(&code, &phase, retryable);
+    }
+    crate::m_core_cli_adapter::map_im_error(error, "onboarding resume")
+}
+
+fn onboarding_resume_error(code: &str, phase: &str, retryable: bool) -> ExitError {
+    let mut mapped = ExitError::new(
+        code,
+        if retryable { 5 } else { 3 },
+        "Skill Agent onboarding stopped before the local VNext journal completed.",
+        "Retry `awiki-cli onboarding resume` with the same workspace and exact scope fields; no Token is accepted.",
+    );
+    mapped.detail.retryable = retryable;
+    mapped.detail.details = json!({"phase": phase});
+    mapped
 }
 
 fn map_legacy_claim_recovery_error(error: im_core::ImError) -> ExitError {

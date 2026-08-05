@@ -46,6 +46,17 @@ pub struct SkillClaimRequest {
     pub expected_agent_handle: String,
 }
 
+/// Scope required to resume a locally committed VNext Skill onboarding.
+///
+/// Resume never accepts or reuses the one-time onboarding Token. The exact
+/// scope is checked against the schema-v2 journal before any remote operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillResumeRequest {
+    pub service_base_url: String,
+    pub expected_controller_handle: String,
+    pub expected_agent_handle: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillClaimPhase {

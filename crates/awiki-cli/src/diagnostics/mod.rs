@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 pub(crate) mod legacy_identity;
 pub(crate) mod legacy_sqlite;
 
-use self::legacy_identity::{IdentityError, Manager};
+use self::legacy_identity::Manager;
 use self::legacy_sqlite as store;
 
 const ANP_MLS_BINARY_ENV: &str = "AWIKI_ANP_MLS_BINARY";
@@ -223,7 +223,6 @@ fn runtime_check(resolved: &Resolved) -> Check {
 }
 
 fn identity_store_check(resolved: &Resolved) -> Check {
-    let manager = Manager::new(resolved.paths.clone());
     let index_path = Path::new(&resolved.paths.identity_dir).join("index.json");
     let identity_dir_exists = Path::new(&resolved.paths.identity_dir).exists();
     let index_exists = index_path.exists();
@@ -234,41 +233,33 @@ fn identity_store_check(resolved: &Resolved) -> Check {
         summary = "Identity store path resolved";
     }
 
-    let (index, index_error) = match manager.load_index() {
-        Ok(index) => (index, String::new()),
-        Err(err) => {
-            status = "error";
-            summary = "Identity index exists but failed to parse";
-            (Default::default(), err.to_string())
-        }
-    };
-
-    let current_result = manager.current();
-    let (current, current_unexpected_error) = match current_result {
-        Ok(current) => (Some(current), false),
-        Err(IdentityError::NoDefaultIdentity(_)) => (None, false),
-        Err(_) => (None, true),
-    };
-    let (identities, list_error) = match manager.list() {
-        Ok(identities) => (identities, String::new()),
-        Err(err) => (Vec::new(), err.to_string()),
-    };
+    let (identities, index_error) =
+        match crate::m_core_cli_adapter::identity::inspect_identity_store_via_im_core(
+            resolved,
+            "doctor identity store",
+        ) {
+            Ok(identities) => (identities, String::new()),
+            Err(err) => {
+                status = "error";
+                summary = "Identity index exists but failed to parse";
+                (Vec::new(), err.detail.message)
+            }
+        };
+    let current = identities.iter().find(|identity| identity.is_default);
+    let current_unexpected_error = !identities.is_empty() && current.is_none();
     let legacy_k1_dids = identities
         .iter()
-        .filter(|item| is_k1_did(&item.did))
-        .map(|item| item.did.clone())
+        .filter(|item| is_k1_did(item.did.as_str()))
+        .map(|item| item.did.as_str().to_owned())
         .collect::<Vec<_>>();
 
-    if current_unexpected_error && !index.credentials.is_empty() {
+    if current_unexpected_error {
         status = "error";
         summary = "Identity index is missing a valid default identity";
     } else if !legacy_k1_dids.is_empty() {
         status = "warn";
         summary = "Identity store still contains legacy k1 DID material";
-    } else if current
-        .as_ref()
-        .is_some_and(|identity| !identity.user_state.ready_for_messaging)
-    {
+    } else if current.is_some_and(|identity| !identity.readiness.ready_for_messaging) {
         status = "warn";
         summary = "Default identity is local-only and cannot be used for messaging yet";
     }
@@ -282,11 +273,11 @@ fn identity_store_check(resolved: &Resolved) -> Check {
             "dir_exists": identity_dir_exists,
             "index_path": index_path.to_string_lossy(),
             "index_exists": index_exists,
-            "index_entries": index.credentials.len(),
+            "index_entries": identities.len(),
             "default_identity": current,
-            "user_state": current.as_ref().map(|identity| identity.user_state.clone()),
-            "index_error": index_error,
-            "list_error": list_error,
+            "user_state": current.map(|identity| &identity.readiness),
+            "index_error": &index_error,
+            "list_error": &index_error,
             "legacy_k1_dids": legacy_k1_dids,
         })),
     )
@@ -1124,4 +1115,139 @@ fn find_on_path(binary: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod schema_five_tests {
+    use super::*;
+
+    struct Fixture {
+        root: PathBuf,
+        resolved: Resolved,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "awiki-cli-schema-five-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let identities = root.join("identities");
+            for path in [
+                identities.clone(),
+                root.join("data"),
+                root.join("cache"),
+                root.join("runtime"),
+            ] {
+                fs::create_dir_all(path).unwrap();
+            }
+            fs::write(
+                root.join("config.yaml"),
+                "schema_version: 3\nsecret_storage:\n  mode: file_compat\n",
+            )
+            .unwrap();
+            fs::write(identities.join("default"), "alice\n").unwrap();
+            fs::write(
+                identities.join("index.json"),
+                serde_json::to_vec_pretty(&json!({
+                    "schema_version": 5,
+                    "default_credential_name": "alice",
+                    "credentials": {
+                        "alice": {
+                            "credential_name": "alice",
+                            "dir_name": "alice-id",
+                            "did": "did:wba:awiki.ai:user:alice:e1_test",
+                            "unique_id": "alice-id",
+                            "user_id": "user-alice",
+                            "name": "Alice",
+                            "handle": "alice",
+                            "full_handle": "alice.awiki.ai",
+                            "binding_generation": "1",
+                            "is_default": true
+                        }
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let paths = crate::workspace_config::Paths {
+                workspace_home_dir: path_string(&root),
+                root_dir: path_string(&root),
+                config_dir: path_string(&root),
+                data_dir: path_string(&root.join("data")),
+                state_dir: path_string(&root.join("runtime")),
+                cache_dir: path_string(&root.join("cache")),
+                logs_dir: path_string(&root.join("logs")),
+                config_file: path_string(&root.join("config.yaml")),
+                identity_dir: path_string(&identities),
+                database_file: path_string(&root.join("data/awiki-cli.db")),
+                legacy_credentials_dir: path_string(&root.join("legacy-credentials")),
+                legacy_data_dir: path_string(&root.join("legacy-data")),
+            };
+            let resolved = Resolved {
+                paths,
+                config_schema_version: 3,
+                active_identity: "alice".to_owned(),
+                runtime_mode: "http".to_owned(),
+                runtime_socket_path: String::new(),
+                runtime_listener_enabled: false,
+                runtime_listener_auto_install: false,
+                runtime_listener_auto_start: false,
+                host_notify_enabled: false,
+                host_notify_sink: "log".to_owned(),
+                host_notify_file_path: String::new(),
+                host_notify_openclaw_hook_url: String::new(),
+                host_notify_openclaw_agent_id: String::new(),
+                host_notify_openclaw_hook_name: String::new(),
+                host_notify_hermes_notify_url: String::new(),
+                host_notify_hermes_deliver: String::new(),
+                output_format: "json".to_owned(),
+                no_color: true,
+                service_base_url: "https://awiki.ai".to_owned(),
+                user_service_endpoint: "https://awiki.ai".to_owned(),
+                message_service_endpoint: "https://awiki.ai".to_owned(),
+                did_domain: "awiki.ai".to_owned(),
+                anp_service_endpoint: "https://awiki.ai/anp-im/rpc".to_owned(),
+                anp_service_did: "did:wba:awiki.ai".to_owned(),
+                mail_service_url: "https://awiki.ai".to_owned(),
+                ca_bundle: String::new(),
+                update_disable_strict_version: false,
+                update_metadata_cache_ttl_seconds: 86400,
+                config_exists: true,
+                config_error: String::new(),
+                env_hits: Vec::new(),
+                sources: Default::default(),
+            };
+            Self { root, resolved }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn doctor_and_config_show_reuse_canonical_schema_five_identity_parser() {
+        let fixture = Fixture::new();
+
+        let doctor = identity_store_check(&fixture.resolved);
+        assert_ne!(doctor.status, "error", "{doctor:?}");
+        assert_eq!(doctor.details["index_entries"], json!(1));
+        assert_eq!(doctor.details["index_error"], json!(""));
+        assert_eq!(
+            doctor.details["default_identity"]["local_alias"],
+            json!("alice")
+        );
+
+        let config = crate::cli_shell::identity_store_snapshot(&fixture.resolved);
+        assert_eq!(config["index_entries"], json!(1));
+        assert!(config["index_error"].is_null());
+        assert_eq!(config["default_identity"]["local_alias"], json!("alice"));
+    }
 }

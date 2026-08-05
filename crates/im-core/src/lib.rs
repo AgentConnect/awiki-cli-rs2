@@ -62,7 +62,7 @@ pub use crate::messages::{
 };
 pub use crate::onboarding::{
     SkillClaimPhase, SkillClaimRequest, SkillClaimResult, SkillClaimStatus, SkillOnboardingService,
-    SkillOnboardingToken,
+    SkillOnboardingToken, SkillResumeRequest,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::RealtimeService;

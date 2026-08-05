@@ -18,6 +18,7 @@ const SKILL_PURPOSE: &str = "skill_onboarding_v1";
 const GREETING_TEXT: &str = "AWiki Skill Agent 已完成注册，可以开始对话。";
 const PENDING_SECRET_KEY_PREFIX: &str = "skill-onboarding-pending-v2-";
 const LEGACY_PENDING_SECRET_KEY_PREFIX: &str = "skill-onboarding-pending-v1-";
+const PUBLIC_ONBOARDING_REASON_MAX_LEN: usize = 96;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SkillTokenMetadata {
@@ -495,6 +496,57 @@ pub(crate) async fn claim_with_remote<R: SkillOnboardingRemote>(
     }
 
     complete_vnext_onboarding(core, journal, remote).await
+}
+
+pub(crate) async fn resume_with_remote<R: SkillOnboardingRemote>(
+    core: &crate::core::ImCore,
+    request: crate::onboarding::SkillResumeRequest,
+    remote: &mut R,
+) -> crate::ImResult<crate::onboarding::SkillClaimResult> {
+    let origin = validated_service_origin(core, &request.service_base_url)?;
+    let expected_controller = validated_full_handle(
+        &request.expected_controller_handle,
+        core.inner().sdk_config().did_domain.as_str(),
+        "expected_controller_handle",
+    )?;
+    let expected_agent = validated_full_handle(
+        &request.expected_agent_handle,
+        core.inner().sdk_config().did_domain.as_str(),
+        "expected_agent_handle",
+    )?;
+    ensure_workspace_initialized(core)?;
+    ensure_no_legacy_artifacts(core)?;
+
+    let journal = read_journal(&journal_path(core))?.ok_or_else(workspace_conflict)?;
+    validate_journal_request(&journal, &origin, &expected_controller, &expected_agent)?;
+    let identities = core
+        .identities()
+        .list_async()
+        .await
+        .map_err(|_| workspace_conflict())?;
+    if !matches!(
+        matching_ready_identity(&identities, &journal),
+        ReadyIdentityState::Matching
+    ) {
+        return Err(workspace_conflict());
+    }
+    validate_matching_vnext_identity(core, &journal).await?;
+
+    match journal.phase {
+        JournalPhase::DevicePrekeyPending | JournalPhase::ControllerGreetingPending => {
+            complete_vnext_onboarding(core, journal, remote).await
+        }
+        JournalPhase::Completed => claim_result(
+            &journal,
+            crate::onboarding::SkillClaimStatus::Completed,
+            false,
+        ),
+        JournalPhase::IdentityPending => Err(onboarding_error(
+            "skill_onboarding_resume_not_ready",
+            "identity_pending",
+            false,
+        )),
+    }
 }
 
 async fn complete_vnext_onboarding<R: SkillOnboardingRemote>(
@@ -2074,6 +2126,7 @@ fn map_remote_error(error: crate::ImError, phase: &str) -> crate::ImError {
             .as_ref()
             .and_then(|data| data.get("reason"))
             .and_then(Value::as_str)
+            .filter(|reason| is_public_onboarding_reason(reason))
         {
             return onboarding_error(reason, phase, false);
         }
@@ -2099,13 +2152,29 @@ fn map_remote_error(error: crate::ImError, phase: &str) -> crate::ImError {
 }
 
 fn map_prekey_error(error: crate::ImError) -> crate::ImError {
+    if let crate::ImError::Service {
+        status_code, code, ..
+    } = &error
+    {
+        let code = code
+            .as_deref()
+            .map(classify_prekey_service_code)
+            .or_else(|| {
+                status_code
+                    .filter(|status| (100..=599).contains(status))
+                    .map(|status| format!("skill_onboarding_prekey.http.{status:03}"))
+            })
+            .unwrap_or_else(|| "skill_onboarding_prekey_service_rejected".to_owned());
+        return onboarding_error(
+            &code,
+            "device_prekey",
+            matches!(status_code, Some(500..=599)),
+        );
+    }
     let (code, retryable) = match error {
-        crate::ImError::TransportUnavailable { .. }
-        | crate::ImError::Io { .. }
-        | crate::ImError::Service {
-            status_code: Some(500..=599),
-            ..
-        } => ("skill_onboarding_prekey_pending", true),
+        crate::ImError::TransportUnavailable { .. } | crate::ImError::Io { .. } => {
+            ("skill_onboarding_prekey_pending", true)
+        }
         crate::ImError::IdentityRequired
         | crate::ImError::AuthRequired
         | crate::ImError::SessionExpired
@@ -2137,11 +2206,38 @@ fn map_prekey_error(error: crate::ImError) -> crate::ImError {
         crate::ImError::UnsupportedCapability { .. } => {
             ("skill_onboarding_prekey_unsupported", false)
         }
-        crate::ImError::Service { .. } => ("skill_onboarding_prekey_service_rejected", false),
         crate::ImError::Internal { .. } => ("skill_onboarding_prekey_internal_failed", false),
         _ => ("skill_onboarding_prekey_failed", false),
     };
     onboarding_error(code, "device_prekey", retryable)
+}
+
+fn classify_prekey_service_code(code: &str) -> String {
+    if let Ok(numeric_code) = code.parse::<i64>() {
+        if numeric_code != 0 && numeric_code.to_string() == code {
+            let sign = if numeric_code < 0 { 'n' } else { 'p' };
+            return format!(
+                "skill_onboarding_prekey.rpc.{sign}{}",
+                numeric_code.unsigned_abs()
+            );
+        }
+    }
+    if code.starts_with("did_auth.") {
+        return "skill_onboarding_prekey.did_auth".to_owned();
+    }
+    if crate::internal::json_rpc::is_public_service_code(code) {
+        return code.to_owned();
+    }
+    "skill_onboarding_prekey.rpc.unclassified".to_owned()
+}
+
+fn is_public_onboarding_reason(reason: &str) -> bool {
+    reason.starts_with("skill_onboarding_")
+        && reason.len() <= PUBLIC_ONBOARDING_REASON_MAX_LEN
+        && reason.is_ascii()
+        && reason.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+        })
 }
 
 fn stable_error_code(error: &crate::ImError) -> &str {

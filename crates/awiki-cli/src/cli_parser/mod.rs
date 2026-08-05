@@ -141,6 +141,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
             "Use the async CLI entrypoint.",
         )),
         "onboarding.claim" => app.run_onboarding_claim(command),
+        "onboarding.resume" => app.run_onboarding_resume(command),
         "onboarding.recover-legacy-claim" => Err(async_only_error(&command.name)),
         "onboarding.migrate-legacy" => Err(async_only_error(&command.name)),
         "completion.bash" => app.run_completion("bash"),
@@ -296,6 +297,7 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
     match command.name.as_str() {
         "init" => app.run_init_async().await,
         "onboarding.claim" => app.run_onboarding_claim_async(command).await,
+        "onboarding.resume" => app.run_onboarding_resume_async(command).await,
         "onboarding.recover-legacy-claim" => {
             app.run_onboarding_recover_legacy_claim_async(command).await
         }

@@ -304,6 +304,9 @@ pub(crate) struct CoreHttpTransport<'a> {
     http: crate::internal::http::HttpClient,
     auth: crate::internal::key_provider::ProviderBackedDidAuth,
     jwt_token: Option<String>,
+    /// Exact-device product traffic must never silently downgrade to HTTP
+    /// Signatures when the persisted bearer state could not be read.
+    deferred_auth_state_error: Option<DeferredAuthStateError>,
     /// A business response has already succeeded; only this local auth commit
     /// may be retried. It must never cause the business RPC to be replayed.
     pending_auth_commit: Option<(String, String)>,
@@ -324,6 +327,12 @@ pub(crate) struct ExpectedDeviceAccessOwned {
     pub(crate) management_ready: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeferredAuthStateError {
+    Missing,
+    Unreadable,
+}
+
 pub(crate) struct CorePlainTransport<'a> {
     core: &'a crate::core::ImCore,
     http: crate::internal::http::HttpClient,
@@ -333,7 +342,9 @@ pub(crate) struct CorePlainTransport<'a> {
 impl<'a> CoreHttpTransport<'a> {
     pub(crate) fn new(client: &'a crate::core::ImClient) -> Self {
         let runtime = client.runtime();
-        let jwt_token = runtime.key_provider.valid_auth_token().ok().flatten();
+        let requires_exact_device_bearer = runtime.owner.sync_account.is_some();
+        let (jwt_token, deferred_auth_state_error) =
+            persisted_bearer_selection(runtime.key_provider.as_ref(), requires_exact_device_bearer);
         let expected_device_access = expected_device_access_for_client(client);
         let mut auth = crate::internal::key_provider::ProviderBackedDidAuth::new(
             runtime.key_provider.clone(),
@@ -355,6 +366,7 @@ impl<'a> CoreHttpTransport<'a> {
             http: crate::internal::http::HttpClient::from_config(client.core_inner().sdk_config()),
             auth,
             jwt_token,
+            deferred_auth_state_error,
             pending_auth_commit: None,
             expected_device_access,
             alternate_expected_device_access: None,
@@ -378,6 +390,7 @@ impl<'a> CoreHttpTransport<'a> {
                 anp::authentication::AuthMode::HttpSignatures,
             ),
             jwt_token: None,
+            deferred_auth_state_error: None,
             pending_auth_commit: None,
             expected_device_access,
             alternate_expected_device_access: None,
@@ -399,6 +412,7 @@ impl<'a> CoreHttpTransport<'a> {
                 anp::authentication::AuthMode::HttpSignatures,
             ),
             jwt_token: None,
+            deferred_auth_state_error: None,
             pending_auth_commit: None,
             expected_device_access: Some(expected),
             alternate_expected_device_access: None,
@@ -657,6 +671,9 @@ impl<'a> CoreHttpTransport<'a> {
         body: Vec<u8>,
         force_new_auth: bool,
     ) -> crate::ImResult<crate::internal::http::HttpResponse> {
+        if !force_new_auth {
+            self.ensure_auth_state_ready()?;
+        }
         let mut headers = BTreeMap::from([(
             "Content-Type".to_string(),
             crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
@@ -703,6 +720,9 @@ impl<'a> CoreHttpTransport<'a> {
         body: Vec<u8>,
         force_new_auth: bool,
     ) -> crate::ImResult<crate::internal::http::HttpResponse> {
+        if !force_new_auth {
+            self.ensure_auth_state_ready()?;
+        }
         let mut headers = BTreeMap::from([(
             "Content-Type".to_string(),
             crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
@@ -822,6 +842,7 @@ impl<'a> CoreHttpTransport<'a> {
                 .runtime()
                 .key_provider
                 .persist_auth_token(&token)?;
+            self.deferred_auth_state_error = None;
         }
         self.jwt_token = Some(token.clone());
         self.auth.update_token(
@@ -871,6 +892,7 @@ impl<'a> CoreHttpTransport<'a> {
                 .runtime()
                 .key_provider
                 .persist_auth_token(&token)?;
+            self.deferred_auth_state_error = None;
         }
         self.jwt_token = Some(token.clone());
         self.auth.update_token(
@@ -896,10 +918,19 @@ impl<'a> CoreHttpTransport<'a> {
                         .runtime()
                         .key_provider
                         .persist_auth_token(&token)
-                        .is_err()
+                        .is_ok()
                     {
+                        self.deferred_auth_state_error = None;
+                    } else {
                         self.pending_auth_commit = Some((url.to_owned(), token.clone()));
                         let _ = crate::internal::auth::convergence::stage(self.client, url, &token);
+                        if self.deferred_auth_state_error.is_some() {
+                            return Err(crate::ImError::CredentialFileUnreadable {
+                                path_kind: "identity_auth_state".to_owned(),
+                                detail: "refreshed exact-device bearer could not be persisted"
+                                    .to_owned(),
+                            });
+                        }
                     }
                 }
                 self.auth.store_token(url, &token);
@@ -990,11 +1021,45 @@ impl<'a> CoreHttpTransport<'a> {
 
     fn drain_durable_auth_commits(&mut self) {
         if let Ok(committed) = crate::internal::auth::convergence::drain(self.client) {
+            let recovered = !committed.is_empty();
             for (origin, token) in committed {
                 self.auth.store_token(&origin, &token);
                 self.jwt_token = Some(token);
             }
+            if recovered {
+                self.deferred_auth_state_error = None;
+            }
         }
+    }
+
+    fn ensure_auth_state_ready(&self) -> crate::ImResult<()> {
+        if let Some(error) = self.deferred_auth_state_error {
+            return Err(crate::ImError::CredentialFileUnreadable {
+                path_kind: "identity_auth_state".to_owned(),
+                detail: match error {
+                    DeferredAuthStateError::Missing => {
+                        "persisted exact-device bearer is missing".to_owned()
+                    }
+                    DeferredAuthStateError::Unreadable => {
+                        "persisted exact-device bearer state could not be read".to_owned()
+                    }
+                },
+            });
+        }
+        Ok(())
+    }
+}
+
+fn persisted_bearer_selection(
+    provider: &dyn crate::internal::key_provider::KeyMaterialProvider,
+    requires_exact_device_bearer: bool,
+) -> (Option<String>, Option<DeferredAuthStateError>) {
+    match provider.valid_auth_token() {
+        Ok(Some(token)) => (Some(token), None),
+        Ok(None) if requires_exact_device_bearer => (None, Some(DeferredAuthStateError::Missing)),
+        Ok(None) => (None, None),
+        Err(_) if requires_exact_device_bearer => (None, Some(DeferredAuthStateError::Unreadable)),
+        Err(_) => (None, None),
     }
 }
 

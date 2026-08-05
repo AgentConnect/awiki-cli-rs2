@@ -114,6 +114,7 @@ struct FakeRemote {
 enum FailurePoint {
     Exchange,
     Prekey,
+    PrekeyService,
     Greeting,
 }
 
@@ -195,6 +196,14 @@ impl SkillOnboardingRemote for FakeRemote {
         if self.should_fail(FailurePoint::Prekey) {
             return Err(crate::ImError::TransportUnavailable {
                 detail: "PreKey publish unavailable".to_owned(),
+            });
+        }
+        if self.should_fail(FailurePoint::PrekeyService) {
+            return Err(crate::ImError::Service {
+                status_code: Some(409),
+                code: Some("anp.prekey.conflict".to_owned()),
+                message: "secret-service-message".to_owned(),
+                data: Some(json!({"secret": "secret-service-payload"})),
             });
         }
         Ok(())
@@ -421,6 +430,120 @@ async fn prekey_failure_resumes_without_reexchange_and_keeps_same_device() {
     assert_eq!(remote.exchanged_device_ids.len(), 1);
 }
 
+#[tokio::test]
+async fn tokenless_resume_retries_prekey_without_verify_or_exchange() {
+    let fixture = Fixture::file_compat();
+    let mut claim_remote = FakeRemote::with_failure(FailurePoint::Prekey);
+    claim_with_remote(&fixture.core, valid_request(), &mut claim_remote)
+        .await
+        .unwrap_err();
+    let expected_device_id = claim_remote.exchanged_device_ids[0].clone();
+
+    let mut resume_remote = FakeRemote::default();
+    let completed = resume_with_remote(&fixture.core, valid_resume_request(), &mut resume_remote)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        completed.status,
+        crate::onboarding::SkillClaimStatus::Completed
+    );
+    assert_eq!(resume_remote.verify_calls, 0);
+    assert_eq!(resume_remote.exchange_calls, 0);
+    assert_eq!(resume_remote.prekey_calls, 1);
+    assert_eq!(resume_remote.greeting_calls, 1);
+    let device = fixture
+        .core
+        .identities()
+        .device_summary_async(crate::identity::IdentitySelector::Default)
+        .await
+        .unwrap();
+    assert_eq!(
+        device.protocol_device_id.as_ref(),
+        Some(&expected_device_id)
+    );
+}
+
+#[tokio::test]
+async fn tokenless_resume_reuses_greeting_id_and_completed_is_remote_noop() {
+    let fixture = Fixture::file_compat();
+    let mut claim_remote = FakeRemote::with_failure(FailurePoint::Greeting);
+    let pending = claim_with_remote(&fixture.core, valid_request(), &mut claim_remote)
+        .await
+        .unwrap();
+
+    let mut resume_remote = FakeRemote::default();
+    let completed = resume_with_remote(&fixture.core, valid_resume_request(), &mut resume_remote)
+        .await
+        .unwrap();
+    assert_eq!(completed.greeting_message_id, pending.greeting_message_id);
+    assert_eq!(resume_remote.verify_calls, 0);
+    assert_eq!(resume_remote.exchange_calls, 0);
+    assert_eq!(resume_remote.prekey_calls, 0);
+    assert_eq!(resume_remote.greeting_calls, 1);
+    assert_eq!(
+        resume_remote.greeting_ids,
+        vec![pending.greeting_message_id]
+    );
+
+    let mut completed_remote = FakeRemote::default();
+    let repeated = resume_with_remote(&fixture.core, valid_resume_request(), &mut completed_remote)
+        .await
+        .unwrap();
+    assert_eq!(repeated, completed);
+    assert_eq!(completed_remote.verify_calls, 0);
+    assert_eq!(completed_remote.exchange_calls, 0);
+    assert_eq!(completed_remote.prekey_calls, 0);
+    assert_eq!(completed_remote.greeting_calls, 0);
+}
+
+#[tokio::test]
+async fn tokenless_resume_accepts_only_valid_v2_post_identity_phases() {
+    let fixture = Fixture::file_compat();
+    let mut claim_remote = FakeRemote::default();
+    claim_with_remote(&fixture.core, valid_request(), &mut claim_remote)
+        .await
+        .unwrap();
+    let path = journal_path(&fixture.core);
+    let mut journal = read_journal(&path).unwrap().unwrap();
+    journal.phase = JournalPhase::IdentityPending;
+    write_journal(&path, &journal).unwrap();
+
+    let mut remote = FakeRemote::default();
+    let phase_error = resume_with_remote(&fixture.core, valid_resume_request(), &mut remote)
+        .await
+        .unwrap_err();
+    assert_skill_error(&phase_error, "skill_onboarding_resume_not_ready", false);
+    assert_eq!(remote.verify_calls, 0);
+    assert_eq!(remote.exchange_calls, 0);
+
+    let mut raw: Value = serde_json::from_str(&fixture.journal_text()).unwrap();
+    raw["schema_version"] = json!(3);
+    fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+    let schema_error = resume_with_remote(&fixture.core, valid_resume_request(), &mut remote)
+        .await
+        .unwrap_err();
+    assert_skill_error(&schema_error, "skill_onboarding_workspace_conflict", false);
+}
+
+#[tokio::test]
+async fn prekey_service_error_preserves_only_bounded_public_code_in_error_and_journal() {
+    let fixture = Fixture::file_compat();
+    let mut remote = FakeRemote::with_failure(FailurePoint::PrekeyService);
+
+    let error = claim_with_remote(&fixture.core, valid_request(), &mut remote)
+        .await
+        .unwrap_err();
+    assert_skill_error(&error, "anp.prekey.conflict", false);
+    let rendered = format!("{error:?} {error}");
+    let journal = fixture.journal_text();
+    for secret in ["secret-service-message", "secret-service-payload"] {
+        assert!(!rendered.contains(secret));
+        assert!(!journal.contains(secret));
+    }
+    assert!(journal.contains("anp.prekey.conflict"));
+}
+
 #[test]
 fn prekey_failure_classification_only_retries_transient_failures() {
     let transient = super::map_prekey_error(crate::ImError::TransportUnavailable {
@@ -458,6 +581,27 @@ fn prekey_failure_classification_only_retries_transient_failures() {
         detail: "redacted".to_owned(),
     });
     assert_skill_error(&request, "skill_onboarding_prekey_request_invalid", false);
+
+    let numeric = super::map_prekey_error(crate::ImError::Service {
+        status_code: Some(500),
+        code: Some("-32000".to_owned()),
+        message: "secret".to_owned(),
+        data: Some(json!({"secret": "payload"})),
+    });
+    assert_skill_error(&numeric, "skill_onboarding_prekey.rpc.n32000", true);
+    assert!(!format!("{numeric:?} {numeric}").contains("secret"));
+
+    let unclassified = super::map_prekey_error(crate::ImError::Service {
+        status_code: Some(400),
+        code: Some("SECRET/invalid payload".to_owned()),
+        message: "secret".to_owned(),
+        data: None,
+    });
+    assert_skill_error(
+        &unclassified,
+        "skill_onboarding_prekey.rpc.unclassified",
+        false,
+    );
 }
 
 #[tokio::test]
@@ -824,6 +968,14 @@ fn legacy_journal(
 fn valid_request() -> crate::onboarding::SkillClaimRequest {
     crate::onboarding::SkillClaimRequest {
         token: crate::onboarding::SkillOnboardingToken::new("awsk1_test-secret-value").unwrap(),
+        service_base_url: "https://awiki.info".to_owned(),
+        expected_controller_handle: "alice.awiki.info".to_owned(),
+        expected_agent_handle: "skill-test.awiki.info".to_owned(),
+    }
+}
+
+fn valid_resume_request() -> crate::onboarding::SkillResumeRequest {
+    crate::onboarding::SkillResumeRequest {
         service_base_url: "https://awiki.info".to_owned(),
         expected_controller_handle: "alice.awiki.info".to_owned(),
         expected_agent_handle: "skill-test.awiki.info".to_owned(),

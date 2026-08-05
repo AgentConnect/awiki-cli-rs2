@@ -1288,11 +1288,22 @@ fn identity_status(resolved: &Resolved) -> Value {
     })
 }
 
-fn identity_store_snapshot(resolved: &Resolved) -> Value {
+pub(crate) fn identity_store_snapshot(resolved: &Resolved) -> Value {
+    let inspection = crate::m_core_cli_adapter::identity::inspect_identity_store_via_im_core(
+        resolved,
+        "config show identity store",
+    );
+    let (identities, index_error) = match inspection {
+        Ok(identities) => (identities, Value::Null),
+        Err(error) => (Vec::new(), json!(error.detail.message)),
+    };
+    let default_identity = identities.iter().find(|identity| identity.is_default);
     json!({
         "identity_dir": resolved.paths.identity_dir,
         "index_file": Path::new(&resolved.paths.identity_dir).join("index.json").to_string_lossy(),
-        "default_identity": Value::Null,
+        "index_entries": identities.len(),
+        "default_identity": default_identity,
+        "index_error": index_error,
         "legacy_scan": {
             "credentials_dir": resolved.paths.legacy_credentials_dir,
             "data_dir": resolved.paths.legacy_data_dir,

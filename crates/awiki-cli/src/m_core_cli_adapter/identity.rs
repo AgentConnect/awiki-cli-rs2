@@ -309,11 +309,29 @@ fn register_handle_command_result(
 pub fn list_identities_via_im_core(
     resolved: &crate::workspace_config::Resolved,
 ) -> Result<CommandResult, ExitError> {
-    let core = super::build_im_core(resolved)?;
-    let identities = core
-        .identities()
+    let identities = inspect_identity_store_via_im_core(resolved, "id list")?;
+    identity_list_command_result(&identities)
+}
+
+pub(crate) fn inspect_identity_store_via_im_core(
+    resolved: &crate::workspace_config::Resolved,
+    operation: &'static str,
+) -> Result<Vec<im_core::identity::IdentitySummary>, ExitError> {
+    // Read-only inspection must not unlock/create vault state. IdentityRegistry
+    // owns schema parsing and list projection; no key provider is loaded here.
+    let config = super::core_config::build_im_core_config(resolved)?;
+    let paths = super::paths::build_im_core_paths(resolved)?;
+    let core =
+        im_core::ImCore::new_with_options(config, paths, im_core::ImCoreOpenOptions::file_compat())
+            .map_err(|err| super::map_im_error(err, operation))?;
+    core.identities()
         .list()
-        .map_err(|err| super::map_im_error(err, "id list"))?;
+        .map_err(|err| super::map_im_error(err, operation))
+}
+
+fn identity_list_command_result(
+    identities: &[im_core::identity::IdentitySummary],
+) -> Result<CommandResult, ExitError> {
     let summaries = cli_identity_summaries_from_sdk(&identities);
     let identity_count = summaries.len();
     let current = identities

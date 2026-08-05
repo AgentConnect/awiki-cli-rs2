@@ -7,6 +7,177 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HOST_ACCOUNT_ID: &str = "agent-account-refresh";
 
+struct FakeBearerProvider {
+    missing: bool,
+}
+
+impl crate::internal::key_provider::KeyMaterialProvider for FakeBearerProvider {
+    fn did_document(&self) -> crate::ImResult<serde_json::Value> {
+        unreachable!()
+    }
+
+    fn optional_did_document(&self) -> crate::ImResult<Option<serde_json::Value>> {
+        unreachable!()
+    }
+
+    fn device_request_signing_private_pem(&self) -> crate::ImResult<String> {
+        unreachable!()
+    }
+
+    fn device_request_signing_material(
+        &self,
+    ) -> crate::ImResult<crate::internal::key_provider::DeviceRequestSigningMaterial> {
+        unreachable!()
+    }
+
+    fn did_document_root_private_pem(&self) -> crate::ImResult<String> {
+        unreachable!()
+    }
+
+    fn e2ee_agreement_private_pem(&self) -> crate::ImResult<String> {
+        unreachable!()
+    }
+
+    fn auth_state(&self) -> crate::ImResult<crate::internal::auth::state::AuthStateSnapshot> {
+        unreachable!()
+    }
+
+    fn valid_auth_token(&self) -> crate::ImResult<Option<String>> {
+        if self.missing {
+            return Ok(None);
+        }
+        Err(crate::ImError::CredentialFileUnreadable {
+            path_kind: "test-secret-path-kind".to_owned(),
+            detail: "test-secret-auth-state-detail".to_owned(),
+        })
+    }
+
+    fn persist_auth_token(&self, _token: &str) -> crate::ImResult<()> {
+        unreachable!()
+    }
+}
+
+#[test]
+fn persisted_bearer_read_failure_is_fail_closed_only_for_exact_device_product_auth() {
+    let unreadable = FakeBearerProvider { missing: false };
+    let (token, exact_device_error) = persisted_bearer_selection(&unreadable, true);
+    assert_eq!(token, None);
+    assert_eq!(exact_device_error, Some(DeferredAuthStateError::Unreadable));
+
+    let (token, legacy_error) = persisted_bearer_selection(&unreadable, false);
+    assert_eq!(token, None);
+    assert_eq!(
+        legacy_error, None,
+        "Legacy compatibility keeps signature auth"
+    );
+
+    let missing = FakeBearerProvider { missing: true };
+    let (token, exact_device_error) = persisted_bearer_selection(&missing, true);
+    assert_eq!(token, None);
+    assert_eq!(exact_device_error, Some(DeferredAuthStateError::Missing));
+
+    let (token, legacy_error) = persisted_bearer_selection(&missing, false);
+    assert_eq!(token, None);
+    assert_eq!(
+        legacy_error, None,
+        "Legacy compatibility keeps signature auth"
+    );
+}
+
+#[test]
+fn exact_device_deferred_bearer_error_stops_request_with_redacted_local_error() {
+    let root = tempfile::tempdir().unwrap();
+    let core = host_backed_core(root.path(), "https://awiki.test");
+    let (client, _, _) = host_backed_client(&core);
+    let mut transport = CoreHttpTransport::new(&client);
+    transport.deferred_auth_state_error = Some(DeferredAuthStateError::Unreadable);
+
+    let error = AuthenticatedRpcTransport::authenticated_rpc(
+        &mut transport,
+        "/im/rpc",
+        "prekey.publish",
+        json!({}),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        crate::ImError::CredentialFileUnreadable {
+            path_kind: "identity_auth_state".to_owned(),
+            detail: "persisted exact-device bearer state could not be read".to_owned(),
+        }
+    );
+    let rendered = format!("{error:?} {error}");
+    assert!(!rendered.contains("test-secret"));
+}
+
+#[tokio::test]
+async fn explicit_refresh_recovers_missing_and_unreadable_exact_device_bearer_state() {
+    for deferred in [
+        DeferredAuthStateError::Missing,
+        DeferredAuthStateError::Unreadable,
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let core = host_backed_core(root.path(), &format!("http://{address}"));
+        let (client, bootstrap, _) = host_backed_client(&core);
+        let refreshed_token = host_device_access_token(
+            &bootstrap,
+            HOST_ACCOUNT_ID,
+            bootstrap.protocol_device_id.as_str(),
+            &bootstrap.device_signing_key_id,
+            1,
+            &["device:manage", "device:read", "message:connect"],
+            match deferred {
+                DeferredAuthStateError::Missing => "refresh-after-missing",
+                DeferredAuthStateError::Unreadable => "refresh-after-unreadable",
+            },
+        );
+        let server_token = refreshed_token.clone();
+        let server = std::thread::spawn(move || {
+            let (mut refresh_stream, _) = listener.accept().unwrap();
+            let refresh_request = read_request_headers(&mut refresh_stream);
+            match deferred {
+                DeferredAuthStateError::Missing => {
+                    write_rpc_success_with_token(&mut refresh_stream, &server_token)
+                }
+                DeferredAuthStateError::Unreadable => {
+                    write_rpc_success_with_body_token(&mut refresh_stream, &server_token)
+                }
+            }
+
+            let (mut business_stream, _) = listener.accept().unwrap();
+            let business_request = read_request_headers(&mut business_stream);
+            write_rpc_success(&mut business_stream);
+            (refresh_request, business_request)
+        });
+
+        let mut transport = CoreHttpTransport::new(&client);
+        transport.deferred_auth_state_error = Some(deferred);
+        assert_eq!(
+            transport.refresh_jwt_async().await.unwrap(),
+            refreshed_token
+        );
+        assert_eq!(transport.deferred_auth_state_error, None);
+        AsyncAuthenticatedRpcTransport::authenticated_rpc(
+            &mut transport,
+            "/im/rpc",
+            "prekey.publish",
+            json!({}),
+        )
+        .await
+        .unwrap();
+
+        let (refresh_request, business_request) = server.join().unwrap();
+        assert!(!refresh_request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer"));
+        assert!(business_request
+            .to_ascii_lowercase()
+            .contains(&format!("authorization: bearer {refreshed_token}").to_ascii_lowercase()));
+    }
+}
+
 fn host_backed_core(root: &std::path::Path, endpoint: &str) -> crate::core::ImCore {
     crate::core::ImCore::new(
         crate::config::ImCoreConfig {
@@ -609,6 +780,35 @@ fn write_rpc_success_with_token(stream: &mut std::net::TcpStream, token: &str) {
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAuthentication-Info: access_token={}\r\nConnection: close\r\n\r\n",
         body.len(),
         token
+    )
+    .unwrap();
+    stream.write_all(body).unwrap();
+    stream.flush().unwrap();
+}
+
+fn write_rpc_success_with_body_token(stream: &mut std::net::TcpStream, token: &str) {
+    let body = serde_json::to_vec(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"ok": true, "access_token": token},
+    }))
+    .unwrap();
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len(),
+    )
+    .unwrap();
+    stream.write_all(&body).unwrap();
+    stream.flush().unwrap();
+}
+
+fn write_rpc_success(stream: &mut std::net::TcpStream) {
+    let body = br#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#;
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len(),
     )
     .unwrap();
     stream.write_all(body).unwrap();
