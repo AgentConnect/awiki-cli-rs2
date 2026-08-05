@@ -510,9 +510,12 @@ keys，并通过同一个 `register` RPC 原子创建远端状态；无 Manifest
 host 使用其中的一次性 account verification grant 进入 Device Join。若服务端确认该 Handle
 仍是 Legacy 且本次 phone factor 与原绑定完全一致，`register` 可以作为窄范围兼容路径把它
 原子恢复为新的 canonical vNext DID，同时保留原 `user_id`、Handle 和递增后的 binding
-generation；这不是 Manifest Recovery，也不能替换已有 Manifest 身份。新注册本地提交后必须发布 exact-device P5
-PreKey Bundle；失败保留同一 PendingRegistration 精确重试。公共 DTO 不暴露私钥、pending、
-内部 checkpoint 或 refresh token。`HandleRegistrationResult.account_id` 仅在
+generation；这不是 Manifest Recovery，也不能替换已有 Manifest 身份。新注册本地提交后立即尝试
+发布 exact-device P5 PreKey Bundle。远端和本地身份提交完成后，PreKey 发布失败不再反向改写为
+注册失败，而是在 `registered` 结果中返回稳定的 `registration_prekey_publish_pending` warning；
+独立的 durable PreKey publication 会在后续安全操作中复用同一 bundle 重试。注册 pending 在
+身份提交边界结束，清理失败使用 `registration_pending_cleanup_required` warning。公共 DTO 不暴露
+私钥、pending、内部 checkpoint 或 refresh token。`HandleRegistrationResult.account_id` 仅在
 `registered` 结果中返回服务端 canonical `user_id`；`join_required` 不伪造账号 ID。
 注册写入发生传输不确定性时，Core 先用同一 pending DID 对账；所有 JSON-RPC HTTP 状态都
 保留服务端 `code/data`。只有 User Service 返回精确

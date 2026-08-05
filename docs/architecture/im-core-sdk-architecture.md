@@ -163,6 +163,15 @@ material and the exact operation across an ambiguous network result. It is only
 a crash-recovery mechanism: it must not introduce a second remote registration
 protocol or generate a second identity on retry.
 
+Once both the remote registration and local identity commit have completed, the
+registration transaction is successful. P5 PreKey publication uses its own
+durable, idempotent local publication state: a publication failure is returned
+as the stable `registration_prekey_publish_pending` warning and must not turn
+the committed identity into a registration failure. The registration pending
+record is cleaned up at that boundary; cleanup failure is separately reported
+as `registration_pending_cleanup_required`. A later secure operation reuses
+the same local PreKey publication instead of registering the identity again.
+
 Legacy identities keep `device_state` absent until an explicit one-time upgrade.
 Only the original device that still has the usable Legacy `key-1` is supported:
 Core treats that key as the existing DID root, creates new independent device

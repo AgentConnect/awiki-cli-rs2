@@ -95,6 +95,14 @@ which is the canonical User Service account ID persisted by Core. A
 `join_required` result leaves `accountId` null; Flutter/App code must not decode
 JWT claims or substitute a DID to manufacture it.
 
+After the remote and local identity commits, P5 PreKey publication is a
+recoverable completion step. Failure returns the registered identity with the
+stable `registration_prekey_publish_pending` warning; registration pending
+cleanup failure uses `registration_pending_cleanup_required`. Flutter hosts
+must preserve these warnings, must activate the committed identity, and must
+not request another OTP or start a second registration. Later secure work
+reuses Core's durable local PreKey publication.
+
 `recoverHandle` always requests the same canonical local-finalize behavior as the CLI. A
 successful recovery of an existing full Handle rotates its DID without changing the stable local
 identity ID, records old/current DID history, refreshes owner-DID snapshots, and enqueues any

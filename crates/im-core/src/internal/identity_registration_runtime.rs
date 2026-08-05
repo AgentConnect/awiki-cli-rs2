@@ -2,8 +2,9 @@
 //!
 //! Every completed registration is a vNext identity with one bootstrap
 //! Manifest device. `PendingRegistration` keeps the exact generated material
-//! restart-safe until both the local identity commit and the mandatory P5
-//! PreKey publication have succeeded.
+//! restart-safe until the remote and local identity commits have succeeded.
+//! P5 PreKey publication has its own durable, idempotent local state and is
+//! reported as a non-fatal completion warning after that commit boundary.
 
 use serde_json::Value;
 use std::time::{Duration, Instant};
@@ -14,6 +15,8 @@ use crate::internal::transport::{
 
 const DEFAULT_EMAIL_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(300);
 const DEFAULT_EMAIL_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const REGISTRATION_PREKEY_PUBLISH_PENDING_WARNING: &str = "registration_prekey_publish_pending";
+const REGISTRATION_PENDING_CLEANUP_REQUIRED_WARNING: &str = "registration_pending_cleanup_required";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct IdentityRegistrationRuntimeResult {
@@ -176,7 +179,7 @@ where
             store.delete(&pending_ref)?;
             return join_required_result(&request, target.full_handle, join_required);
         }
-        let result = commit_pending_registration(
+        let mut result = commit_pending_registration(
             self.core,
             &pending,
             registration_method(&request.verification),
@@ -184,10 +187,10 @@ where
         pending.phase =
             crate::internal::identity_registration_pending::PendingRegistrationPhase::LocalCommitted;
         store.save(&pending)?;
-        finish_registration_after_prekey_publish(
+        result.sdk_result.warnings.extend(finish_registration(
             publish_v2_prekeys_after_registration(self.core, &pending.generated.did),
             || store.delete(&pending_ref),
-        )?;
+        ));
         Ok(result)
     }
 
@@ -381,7 +384,7 @@ where
             }
             store.save(&pending)?;
         }
-        let result = commit_pending_registration_async(
+        let mut result = commit_pending_registration_async(
             self.core,
             &pending,
             registration_method(&request.verification),
@@ -392,7 +395,12 @@ where
         store.save(&pending)?;
         let publish_result =
             publish_v2_prekeys_after_registration_async(self.core, &pending.generated.did).await;
-        finish_registration_after_prekey_publish(publish_result, || store.delete(&pending_ref))?;
+        result
+            .sdk_result
+            .warnings
+            .extend(finish_registration(publish_result, || {
+                store.delete(&pending_ref)
+            }));
         Ok(result)
     }
 
@@ -1018,15 +1026,18 @@ pub(crate) async fn publish_v2_prekeys_after_registration_async(
     Ok(())
 }
 
-fn finish_registration_after_prekey_publish<D>(
-    publish_result: crate::ImResult<()>,
-    delete_pending: D,
-) -> crate::ImResult<()>
+fn finish_registration<D>(publish_result: crate::ImResult<()>, delete_pending: D) -> Vec<String>
 where
     D: FnOnce() -> crate::ImResult<()>,
 {
-    publish_result?;
-    delete_pending()
+    let mut warnings = Vec::new();
+    if publish_result.is_err() {
+        warnings.push(REGISTRATION_PREKEY_PUBLISH_PENDING_WARNING.to_owned());
+    }
+    if delete_pending().is_err() {
+        warnings.push(REGISTRATION_PENDING_CLEANUP_REQUIRED_WARNING.to_owned());
+    }
+    warnings
 }
 
 pub(crate) fn registration_method(
@@ -1400,7 +1411,7 @@ mod tests {
     }
 
     #[test]
-    fn local_commit_prekey_failure_keeps_pending_and_retry_skips_register() {
+    fn local_commit_prekey_failure_returns_success_warning_and_finishes_pending() {
         let request = request();
         let mut pending = pending();
         pending.remote_attempted = true;
@@ -1426,7 +1437,7 @@ mod tests {
         let mut deleted = 0;
 
         publish_attempts.push(p5_state_id.clone());
-        assert!(finish_registration_after_prekey_publish(
+        let warnings = finish_registration(
             Err(crate::ImError::TransportUnavailable {
                 detail: "message service unavailable".to_owned(),
             }),
@@ -1434,9 +1445,12 @@ mod tests {
                 deleted += 1;
                 Ok(())
             },
-        )
-        .is_err());
-        assert_eq!(deleted, 0);
+        );
+        assert_eq!(
+            warnings,
+            vec![REGISTRATION_PREKEY_PUBLISH_PENDING_WARNING.to_owned()]
+        );
+        assert_eq!(deleted, 1);
         assert_eq!(
             pending.phase,
             crate::internal::identity_registration_pending::PendingRegistrationPhase::LocalCommitted
@@ -1452,15 +1466,43 @@ mod tests {
         assert_eq!(transport.rpc_calls, 0);
         assert_eq!(transport.probe_calls, 0);
 
-        publish_attempts.push(p5_state_id);
-        finish_registration_after_prekey_publish(Ok(()), || {
-            deleted += 1;
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(deleted, 1);
-        assert_eq!(publish_attempts.len(), 2);
-        assert_eq!(publish_attempts[0], publish_attempts[1]);
+        assert_eq!(publish_attempts, vec![p5_state_id]);
+    }
+
+    #[test]
+    fn committed_registration_reports_cleanup_failure_without_hiding_success() {
+        let warnings = finish_registration(Ok(()), || {
+            Err(crate::ImError::LocalStateUnavailable {
+                detail: "vault cleanup unavailable".to_owned(),
+            })
+        });
+
+        assert_eq!(
+            warnings,
+            vec![REGISTRATION_PENDING_CLEANUP_REQUIRED_WARNING.to_owned()]
+        );
+    }
+
+    #[test]
+    fn committed_registration_can_report_both_recoverable_warnings() {
+        let warnings = finish_registration(
+            Err(crate::ImError::TransportUnavailable {
+                detail: "message service unavailable".to_owned(),
+            }),
+            || {
+                Err(crate::ImError::LocalStateUnavailable {
+                    detail: "vault cleanup unavailable".to_owned(),
+                })
+            },
+        );
+
+        assert_eq!(
+            warnings,
+            vec![
+                REGISTRATION_PREKEY_PUBLISH_PENDING_WARNING.to_owned(),
+                REGISTRATION_PENDING_CLEANUP_REQUIRED_WARNING.to_owned(),
+            ]
+        );
     }
 
     fn request() -> crate::identity::RegisterHandleRequest {
