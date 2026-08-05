@@ -461,6 +461,7 @@ fn cli_dispatch_names() -> BTreeSet<&'static str> {
         "help",
         "init",
         "onboarding.claim",
+        "onboarding.resume",
         "onboarding.recover-legacy-claim",
         "onboarding.migrate-legacy",
         "completion.bash",
