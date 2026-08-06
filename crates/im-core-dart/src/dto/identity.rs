@@ -117,6 +117,8 @@ pub struct DartHandleRecoveryOtpResult {
     pub handle: String,
     pub operation_id: String,
     pub accepted: bool,
+    pub retry_after_seconds: u32,
+    pub retry_at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

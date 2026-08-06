@@ -581,16 +581,24 @@ class DartHandleRecoveryOtpResult {
   final String handle;
   final String operationId;
   final bool accepted;
+  final int retryAfterSeconds;
+  final String retryAt;
 
   const DartHandleRecoveryOtpResult({
     required this.handle,
     required this.operationId,
     required this.accepted,
+    required this.retryAfterSeconds,
+    required this.retryAt,
   });
 
   @override
   int get hashCode =>
-      handle.hashCode ^ operationId.hashCode ^ accepted.hashCode;
+      handle.hashCode ^
+      operationId.hashCode ^
+      accepted.hashCode ^
+      retryAfterSeconds.hashCode ^
+      retryAt.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -599,7 +607,9 @@ class DartHandleRecoveryOtpResult {
           runtimeType == other.runtimeType &&
           handle == other.handle &&
           operationId == other.operationId &&
-          accepted == other.accepted;
+          accepted == other.accepted &&
+          retryAfterSeconds == other.retryAfterSeconds &&
+          retryAt == other.retryAt;
 }
 
 enum DartHandleRecoveryPhase {

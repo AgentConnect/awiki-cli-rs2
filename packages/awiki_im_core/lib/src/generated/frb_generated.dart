@@ -8208,12 +8208,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return DartHandleRecoveryOtpResult(
       handle: dco_decode_String(arr[0]),
       operationId: dco_decode_String(arr[1]),
       accepted: dco_decode_bool(arr[2]),
+      retryAfterSeconds: dco_decode_u_32(arr[3]),
+      retryAt: dco_decode_String(arr[4]),
     );
   }
 
@@ -12520,10 +12522,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_handle = sse_decode_String(deserializer);
     var var_operationId = sse_decode_String(deserializer);
     var var_accepted = sse_decode_bool(deserializer);
+    var var_retryAfterSeconds = sse_decode_u_32(deserializer);
+    var var_retryAt = sse_decode_String(deserializer);
     return DartHandleRecoveryOtpResult(
       handle: var_handle,
       operationId: var_operationId,
       accepted: var_accepted,
+      retryAfterSeconds: var_retryAfterSeconds,
+      retryAt: var_retryAt,
     );
   }
 
@@ -17222,6 +17228,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.handle, serializer);
     sse_encode_String(self.operationId, serializer);
     sse_encode_bool(self.accepted, serializer);
+    sse_encode_u_32(self.retryAfterSeconds, serializer);
+    sse_encode_String(self.retryAt, serializer);
   }
 
   @protected

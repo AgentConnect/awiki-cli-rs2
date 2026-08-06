@@ -28,14 +28,52 @@ pub(crate) async fn request_otp(
         &request.operation_id,
     )?;
     let mut transport = crate::internal::transport::CorePlainTransport::new(core);
-    let _ = transport
+    let raw = transport
         .rpc(call.endpoint, call.method, call.params)
         .await?;
+    let (accepted, retry_after_seconds, retry_at) = parse_otp_send_boundary(&raw)?;
     Ok(HandleRecoveryOtpResult {
         handle: request.handle,
         operation_id: request.operation_id,
-        accepted: true,
+        accepted,
+        retry_after_seconds,
+        retry_at,
     })
+}
+
+fn parse_otp_send_boundary(raw: &Value) -> crate::ImResult<(bool, u32, String)> {
+    let accepted =
+        raw.get("ok")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| crate::ImError::Serialization {
+                detail: "handle recovery OTP response is missing ok".to_owned(),
+            })?;
+    if !accepted {
+        return Err(crate::ImError::Serialization {
+            detail: "handle recovery OTP response was not accepted".to_owned(),
+        });
+    }
+    let seconds = raw
+        .get("retry_after_seconds")
+        .and_then(Value::as_u64)
+        .filter(|seconds| (1..=3600).contains(seconds))
+        .and_then(|seconds| u32::try_from(seconds).ok())
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "handle recovery OTP retry_after_seconds is invalid".to_owned(),
+        })?;
+    let retry_at = raw
+        .get("retry_at")
+        .and_then(Value::as_str)
+        .filter(|value| value.ends_with('Z'))
+        .filter(|value| {
+            time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+                .is_ok()
+        })
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "handle recovery OTP retry_at is invalid".to_owned(),
+        })?
+        .to_owned();
+    Ok((accepted, seconds, retry_at))
 }
 
 pub(crate) async fn prepare(
@@ -1600,5 +1638,23 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn otp_send_boundary_requires_structured_server_retry_metadata() {
+        let parsed = parse_otp_send_boundary(&json!({
+            "ok": true,
+            "retry_after_seconds": 60,
+            "retry_at": "2026-08-06T12:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(parsed, (true, 60, "2026-08-06T12:00:00Z".to_owned()));
+        for invalid in [
+            json!({"ok": true, "retry_after_seconds": 0, "retry_at": "2026-08-06T12:00:00Z"}),
+            json!({"ok": true, "retry_after_seconds": 60, "retry_at": "2026-08-06T12:00:00+00:00"}),
+            json!({"ok": false, "retry_after_seconds": 60, "retry_at": "2026-08-06T12:00:00Z"}),
+        ] {
+            assert!(parse_otp_send_boundary(&invalid).is_err());
+        }
     }
 }

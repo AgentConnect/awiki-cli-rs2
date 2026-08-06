@@ -81,6 +81,8 @@ impl From<im_core::identity::HandleRecoveryOtpResult> for DartHandleRecoveryOtpR
             handle: value.handle,
             operation_id: value.operation_id,
             accepted: value.accepted,
+            retry_after_seconds: value.retry_after_seconds,
+            retry_at: value.retry_at,
         }
     }
 }

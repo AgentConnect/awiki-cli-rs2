@@ -215,11 +215,15 @@ class HandleRecoveryOtpResult {
     required this.handle,
     required this.operationId,
     required this.accepted,
+    required this.retryAfterSeconds,
+    required this.retryAt,
   });
 
   final String handle;
   final String operationId;
   final bool accepted;
+  final int retryAfterSeconds;
+  final DateTime retryAt;
 }
 
 class AuthorizedJoinActivationProgress {

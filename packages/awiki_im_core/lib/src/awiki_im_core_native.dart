@@ -2496,6 +2496,8 @@ extension on gen_identity.DartHandleRecoveryOtpResult {
     handle: handle,
     operationId: operationId,
     accepted: accepted,
+    retryAfterSeconds: retryAfterSeconds,
+    retryAt: DateTime.parse(retryAt),
   );
 }
 

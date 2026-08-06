@@ -10178,10 +10178,14 @@ impl SseDecode for crate::dto::identity::DartHandleRecoveryOtpResult {
         let mut var_handle = <String>::sse_decode(deserializer);
         let mut var_operationId = <String>::sse_decode(deserializer);
         let mut var_accepted = <bool>::sse_decode(deserializer);
+        let mut var_retryAfterSeconds = <u32>::sse_decode(deserializer);
+        let mut var_retryAt = <String>::sse_decode(deserializer);
         return crate::dto::identity::DartHandleRecoveryOtpResult {
             handle: var_handle,
             operation_id: var_operationId,
             accepted: var_accepted,
+            retry_after_seconds: var_retryAfterSeconds,
+            retry_at: var_retryAt,
         };
     }
 }
@@ -15671,6 +15675,8 @@ impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartHandleRecoveryO
             self.handle.into_into_dart().into_dart(),
             self.operation_id.into_into_dart().into_dart(),
             self.accepted.into_into_dart().into_dart(),
+            self.retry_after_seconds.into_into_dart().into_dart(),
+            self.retry_at.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -19604,6 +19610,8 @@ impl SseEncode for crate::dto::identity::DartHandleRecoveryOtpResult {
         <String>::sse_encode(self.handle, serializer);
         <String>::sse_encode(self.operation_id, serializer);
         <bool>::sse_encode(self.accepted, serializer);
+        <u32>::sse_encode(self.retry_after_seconds, serializer);
+        <String>::sse_encode(self.retry_at, serializer);
     }
 }
 

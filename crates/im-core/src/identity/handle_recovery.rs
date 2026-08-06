@@ -23,6 +23,8 @@ pub struct HandleRecoveryOtpResult {
     pub handle: String,
     pub operation_id: String,
     pub accepted: bool,
+    pub retry_after_seconds: u32,
+    pub retry_at: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
