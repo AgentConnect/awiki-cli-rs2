@@ -185,6 +185,31 @@ fn member_access_token(did: &str, device_id: &str, signing_key_id: &str) -> Stri
     )
 }
 
+fn mark_new_device_join_authorized(
+    core: &crate::ImCore,
+    join_session_id: &str,
+    did: &crate::ids::Did,
+    protocol_device_id: &crate::ids::ProtocolDeviceId,
+) -> StoredJoinSession {
+    let store = JoinStateStore::new(core);
+    let mut stored = store
+        .load(join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .unwrap();
+    cleanup_cancelled_join_secrets(core, &stored).unwrap();
+    stored.join_request.did = did.as_str().to_owned();
+    stored.join_request.device_id = protocol_device_id.as_str().to_owned();
+    stored.join_request_hash =
+        canonical_hash(&serde_json::to_value(&stored.join_request).unwrap()).unwrap();
+    stored.phase = DeviceJoinLocalPhase::Authorized;
+    stored.activation_pending = false;
+    stored.join_session_token_ref = None;
+    stored.signing_private_ref = None;
+    stored.e2ee_private_ref = None;
+    store.save(&stored).unwrap();
+    stored
+}
+
 #[test]
 fn response_signature_input_is_closed_and_canonicalizable() {
     let value = response_params_value(
@@ -252,6 +277,146 @@ fn join_profile_reader_accepts_only_canonical_or_legacy_complete_sets() {
     assert!(join_profiles_are_supported(&canonical));
     assert!(join_profiles_are_supported(&legacy));
     assert!(!join_profiles_are_supported(&hybrid));
+}
+
+#[test]
+fn retiring_authorized_new_device_join_is_exact_and_idempotent() {
+    let root = tempfile::tempdir().unwrap();
+    let core = open_empty_vault_core(root.path());
+    let did = crate::ids::Did::parse("did:wba:awiki.test:user:alice").unwrap();
+    let other_did = crate::ids::Did::parse("did:wba:awiki.test:user:bob").unwrap();
+    let authorized = core
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "retire-authorized".to_owned(),
+            did: did.clone(),
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    let pending = core
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "preserve-pending".to_owned(),
+            did: did.clone(),
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    let other = core
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "preserve-other".to_owned(),
+            did: other_did.clone(),
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    let authorized_device_id = authorized.session.protocol_device_id.clone();
+    let authorized_state = mark_new_device_join_authorized(
+        &core,
+        &authorized.session.join_session_id,
+        &did,
+        &authorized_device_id,
+    );
+    mark_new_device_join_authorized(
+        &core,
+        &other.session.join_session_id,
+        &other_did,
+        &other.session.protocol_device_id,
+    );
+
+    retire_authorized_new_device_sessions(&core, did.as_str(), authorized_device_id.as_str())
+        .unwrap();
+    retire_authorized_new_device_sessions(&core, did.as_str(), authorized_device_id.as_str())
+        .unwrap();
+
+    let store = JoinStateStore::new(&core);
+    assert!(store
+        .load(
+            &authorized.session.join_session_id,
+            DeviceJoinSide::NewDevice,
+        )
+        .unwrap()
+        .is_none());
+    assert!(store
+        .load(&pending.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .is_some());
+    assert!(store
+        .load(&other.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .is_some());
+    assert!(required_vault(&core)
+        .unwrap()
+        .open(&authorized_state.pairing_private_ref)
+        .is_err());
+}
+
+#[test]
+fn identity_retirement_replays_exact_join_cleanup_after_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let (core, _, did) = open_ready_admin_core(root.path());
+    let protocol_device_id = core
+        .identities()
+        .device_summary(crate::identity::IdentitySelector::Default)
+        .unwrap()
+        .protocol_device_id
+        .unwrap();
+    let authorized = core
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "identity-retire-authorized".to_owned(),
+            did: did.clone(),
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    let pending = core
+        .device_join()
+        .start(DeviceJoinStartRequest {
+            operation_id: "identity-retire-preserve-pending".to_owned(),
+            did: did.clone(),
+            ttl_seconds: 300,
+        })
+        .unwrap();
+    let late_authorized = mark_new_device_join_authorized(
+        &core,
+        &authorized.session.join_session_id,
+        &did,
+        &protocol_device_id,
+    );
+
+    core.identities()
+        .delete_local_identity(crate::identity::IdentitySelector::Default)
+        .unwrap();
+    let store = JoinStateStore::new(&core);
+    assert!(store
+        .load(
+            &authorized.session.join_session_id,
+            DeviceJoinSide::NewDevice,
+        )
+        .unwrap()
+        .is_none());
+    assert!(store
+        .load(&pending.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .is_some());
+
+    // A late operation admitted before retirement may recreate the terminal
+    // record. The durable retirement marker must remove it on the next open.
+    store.save(&late_authorized).unwrap();
+    drop(core);
+
+    let reopened = reopen_join_test_core(root.path());
+    let reopened_store = JoinStateStore::new(&reopened);
+    assert!(reopened_store
+        .load(
+            &authorized.session.join_session_id,
+            DeviceJoinSide::NewDevice,
+        )
+        .unwrap()
+        .is_none());
+    assert!(reopened_store
+        .load(&pending.session.join_session_id, DeviceJoinSide::NewDevice)
+        .unwrap()
+        .is_some());
 }
 
 #[test]

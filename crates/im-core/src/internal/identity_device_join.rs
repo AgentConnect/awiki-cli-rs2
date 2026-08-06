@@ -2002,6 +2002,44 @@ pub(crate) fn list_sessions(
     Ok(sessions)
 }
 
+pub(crate) fn retire_authorized_new_device_sessions(
+    core: &crate::core::ImCore,
+    did: &str,
+    protocol_device_id: &str,
+) -> crate::ImResult<()> {
+    let _guard = lock_join_state(core)?;
+    let did = crate::ids::Did::parse(did)?;
+    let protocol_device_id = crate::ids::ProtocolDeviceId::parse(protocol_device_id)?;
+    let state_store = JoinStateStore::new(core);
+    let matching = state_store
+        .list()?
+        .into_iter()
+        .filter(|stored| {
+            stored.side == DeviceJoinSide::NewDevice
+                && stored.phase == DeviceJoinLocalPhase::Authorized
+                && stored.join_request.did == did.as_str()
+                && stored.join_request.device_id == protocol_device_id.as_str()
+        })
+        .collect::<Vec<_>>();
+
+    for stored in matching {
+        cleanup_cancelled_join_secrets(core, &stored)?;
+        if stored.activation_pending {
+            let pending_store = crate::internal::identity_join_activation_pending::PendingJoinActivationStore::from_core(core)?;
+            if let Some((secret_ref, _)) =
+                pending_store.load(&stored.join_request.join_session_id, &did)?
+            {
+                pending_store.delete(&secret_ref)?;
+            }
+        }
+        state_store.delete(
+            &stored.join_request.join_session_id,
+            DeviceJoinSide::NewDevice,
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) fn admin_approval_context(
     core: &crate::core::ImCore,
     join_session_id: &str,
@@ -3308,6 +3346,17 @@ impl<'a> JoinStateStore<'a> {
             &self.path(&stored.join_request.join_session_id, stored.side),
             &raw,
         )
+    }
+
+    fn delete(&self, join_session_id: &str, side: DeviceJoinSide) -> crate::ImResult<()> {
+        let path = self.path(join_session_id, side);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(crate::ImError::Io {
+                detail: format!("delete device Join state {}: {error}", path.display()),
+            }),
+        }
     }
 
     fn validate_loaded(

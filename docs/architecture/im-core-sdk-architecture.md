@@ -289,6 +289,16 @@ deletion returns. Directory deletion additionally verifies the persisted
 identity ID and DID, preventing an old retirement record from deleting a path
 that has since been reused by another identity.
 
+An authorized New Device Join record is a crash-recovery journal for the local
+identity/device activation, not a permanent active session. When identity
+retirement has an exact `protocol_device_id`, the same resumable transaction
+also removes only records whose side is New Device, phase is `authorized`, DID
+matches the retired identity, and protocol device ID matches that authorization.
+It also removes their Join and pending-activation secrets. Pending sessions,
+admin-side state, other identities, and sibling device IDs are preserved.
+Completed retirement tombstones repeat this exact cleanup after restart so a
+late operation admitted before host teardown cannot restore a terminal journal.
+
 The host must detach its active-session pointer before invoking deletion and
 may stop realtime/dispose runtime only as best-effort cleanup. Network shutdown
 latency is therefore never part of the local deletion result, and a generic UI

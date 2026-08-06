@@ -50,6 +50,11 @@ impl<'a> IdentityRegistry<'a> {
         let deleted_index = registry.find_index(selector)?;
         let deleted_entry = registry.entries.remove(deleted_index);
         let deleted = deleted_entry.summary.clone();
+        let protocol_device_id = deleted_entry
+            .device_state
+            .as_ref()
+            .and_then(|state| state.authorization.as_ref())
+            .map(|authorization| authorization.protocol_device_id.as_str().to_owned());
         let was_default = deleted.is_default
             || registry.default_alias.as_deref() == deleted_entry.local_alias.as_deref();
 
@@ -76,6 +81,7 @@ impl<'a> IdentityRegistry<'a> {
                 local_alias,
                 identity_dir_name: deleted_entry.identity_dir_name(),
                 next_default_alias: registry.default_alias.clone(),
+                protocol_device_id,
             },
         )?;
 

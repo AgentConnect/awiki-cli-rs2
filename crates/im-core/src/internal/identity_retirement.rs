@@ -20,6 +20,7 @@ pub(crate) struct IdentityRetirementInput {
     pub(crate) local_alias: String,
     pub(crate) identity_dir_name: Option<String>,
     pub(crate) next_default_alias: Option<String>,
+    pub(crate) protocol_device_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -47,6 +48,8 @@ struct IdentityRetirementRecord {
     identity_dir_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     next_default_alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    protocol_device_id: Option<String>,
     phase: IdentityRetirementPhase,
 }
 
@@ -61,6 +64,7 @@ pub(crate) fn retire(
         local_alias: input.local_alias,
         identity_dir_name: input.identity_dir_name,
         next_default_alias: input.next_default_alias,
+        protocol_device_id: input.protocol_device_id,
         phase: IdentityRetirementPhase::Prepared,
     };
     validate_record(core, &record)?;
@@ -179,6 +183,13 @@ fn advance(
     // before the host detached the client may finish late; the durable
     // identity-id tombstone guarantees those records are removed on next open.
     cleanup_identity_vault(core, &record.identity_id)?;
+    if let Some(protocol_device_id) = record.protocol_device_id.as_deref() {
+        crate::internal::identity_device_join::retire_authorized_new_device_sessions(
+            core,
+            &record.did,
+            protocol_device_id,
+        )?;
+    }
     if record.phase != IdentityRetirementPhase::Completed {
         record.phase = IdentityRetirementPhase::Completed;
         write_record(path, record)?;
@@ -270,6 +281,10 @@ fn validate_record(
         || record.local_alias.trim().is_empty()
     {
         return Err(crate::ImError::PermissionDenied);
+    }
+    crate::ids::Did::parse(&record.did)?;
+    if let Some(protocol_device_id) = record.protocol_device_id.as_deref() {
+        crate::ids::ProtocolDeviceId::parse(protocol_device_id)?;
     }
     if let Some(dir_name) = record.identity_dir_name.as_deref() {
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
