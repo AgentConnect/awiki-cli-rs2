@@ -23,7 +23,7 @@ Use this reference for local CLI tenant profiles. A tenant is one atomic `backen
 ## Command Boundaries
 
 - `tenant create` creates a profile but does not activate it
-- `tenant setup` is the idempotent onboarding path: it creates and activates a missing profile, or activates an existing profile only when both endpoints match exactly; it never rewrites existing endpoints
+- `tenant setup` is the idempotent onboarding path: it creates and activates a missing profile, or activates whichever existing profile already owns the exact endpoint pair, even when the requested name differs; it never duplicates or rewrites existing endpoints
 - `tenant use` activates an existing profile by name
 - `tenant reconfigure` only changes a tenant that has no identities or local database data; create a new tenant when data already exists
 - `awiki-cli init` initializes the currently selected tenant workspace after tenant selection

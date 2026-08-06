@@ -77,6 +77,36 @@ fn identity_create_list_current_use_and_status_match_local_contract() {
 }
 
 #[test]
+fn top_level_status_uses_im_core_default_when_config_active_identity_is_blank() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    write_file_compat_config(&workspace_home);
+    write_ready_identity(
+        &workspace_home,
+        TestIdentityOptions {
+            identity_name: "skill-agent",
+            handle: "skill-agent",
+            display_name: "Skill Agent",
+            jwt_token: "jwt-skill-agent",
+            make_default: true,
+        },
+    );
+
+    let identity_status = success_json(&awiki_cmd(&["id", "status"], workspace.path()));
+    assert_eq!(
+        identity_status["data"]["active_identity"]["identity_name"],
+        "skill-agent"
+    );
+
+    let status = success_json(&awiki_cmd(&["status"], workspace.path()));
+    assert_eq!(
+        status["data"]["state"]["active_identity"]["identity_name"],
+        "skill-agent"
+    );
+    assert_eq!(status["data"]["state"]["identity_count"], 1);
+}
+
+#[test]
 fn identity_create_refuses_legacy_plaintext_storage_by_default() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
