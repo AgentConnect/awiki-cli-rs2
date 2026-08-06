@@ -144,7 +144,9 @@ awiki-cli onboarding claim \
 ```
 
 Provide the exact `token` value as a single line on this process's stdin using the Agent tool's
-stdin channel. Do not place it in the command, a shell pipeline, `echo`, `printf`, a here-document,
+stdin channel, then close that stdin channel by sending EOF. The CLI validates the complete closed
+stream before consuming the Token, so leaving stdin open leaves the command waiting. Do not place
+the Token in the command, a shell pipeline, `echo`, `printf`, a here-document,
 an environment variable, a temporary file, logs, debug output, or another message. Do not print
 the command with the Token substituted. The CLI does not support a `--token` flag.
 
