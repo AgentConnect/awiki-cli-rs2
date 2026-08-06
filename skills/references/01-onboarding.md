@@ -58,6 +58,14 @@ user's current instruction. The block is explicit authorization for CLI/Skill in
 or empty workspace initialization, one Skill Agent claim, the CLI's fixed Controller greeting,
 and read-only first-use checks. It does not authorize any other identity or message write.
 
+Choose the exact workspace before tenant setup or initialization and keep it unchanged throughout
+this branch. When using a non-default workspace, pass the same
+`AWIKI_CLI_WORKSPACE_HOME_DIR=<exact-workspace>` to tenant setup, `init`, `onboarding claim`,
+`onboarding resume`, and every first-use check. After a successful claim or resume, retain this
+non-secret mapping in the current task context: Agent full Handle -> exact workspace -> local
+identity alias. Later AWiki workflows for that Agent must reuse the mapping instead of silently
+falling back to the default CLI workspace. Do not store the Token with this mapping.
+
 After installation and `awiki-cli init`, run:
 
 ```bash

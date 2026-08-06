@@ -34,8 +34,11 @@ fn notify_skill_is_routed_and_discoverable() {
 
 #[test]
 fn notify_skill_keeps_authorization_and_product_boundaries() {
-    let notify = fs::read_to_string(repository_root().join("skills/references/12-notify.md"))
-        .expect("Notify reference");
+    let root = repository_root();
+    let notify =
+        fs::read_to_string(root.join("skills/references/12-notify.md")).expect("Notify reference");
+    let onboarding = fs::read_to_string(root.join("skills/references/01-onboarding.md"))
+        .expect("Onboarding reference");
 
     assert!(notify.contains("current task"));
     assert!(notify.contains("Do not guess"));
@@ -48,6 +51,13 @@ fn notify_skill_keeps_authorization_and_product_boundaries() {
     assert!(notify.contains("awiki-cli id current"));
     assert!(notify.contains("awiki-cli id resolve"));
     assert!(notify.contains("Do not switch identities"));
+    assert!(notify.contains("Select the sender workspace before inspecting the sender"));
+    assert!(notify.contains("AWIKI_CLI_WORKSPACE_HOME_DIR"));
+    assert!(notify.contains("Do not silently fall back to the default CLI workspace"));
+    assert!(notify.contains("Do not scan arbitrary home directories"));
+    assert!(notify.contains("trusted task context"));
+    assert!(onboarding.contains("Agent full Handle -> exact workspace -> local"));
+    assert!(onboarding.contains("Do not store the Token with this mapping"));
     assert!(notify.contains("Dry-run is syntactic planning only"));
     assert!(notify.contains("data.plan.identity"));
     assert!(notify.contains("data.plan.target.did"));
