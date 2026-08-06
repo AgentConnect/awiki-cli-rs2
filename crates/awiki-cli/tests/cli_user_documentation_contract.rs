@@ -78,6 +78,18 @@ fn user_command_examples_include_required_diagnostic_and_migration_gates() {
 }
 
 #[test]
+fn skill_token_onboarding_docs_require_closing_stdin_after_the_token_line() {
+    let root = repo_root();
+    for relative in ["onboarding.md", "skills/references/01-onboarding.md"] {
+        let text = fs::read_to_string(root.join(relative)).expect("read onboarding guide");
+        assert!(
+            text.contains("EOF") && text.contains("close"),
+            "{relative} must tell Agent tools to close stdin with EOF after the Token line"
+        );
+    }
+}
+
+#[test]
 fn skill_router_references_exist() {
     let root = repo_root();
     let skill = fs::read_to_string(root.join("skills/SKILL.md")).expect("read Skill entrypoint");

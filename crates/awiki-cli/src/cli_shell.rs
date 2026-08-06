@@ -188,13 +188,26 @@ impl App {
 
     pub fn run_status(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
+        let identity_state =
+            crate::m_core_cli_adapter::identity::identity_status_via_im_core(&resolved)?;
+        let mut identity_state_data = identity_state.data;
+        if let Some(state) = identity_state_data.as_object_mut() {
+            state.insert(
+                "legacy_scan".to_string(),
+                json!({
+                    "credentials_dir": resolved.paths.legacy_credentials_dir,
+                    "data_dir": resolved.paths.legacy_data_dir,
+                    "identities": [],
+                }),
+            );
+        }
         let data = json!({
             "cli": {
                 "phase": "phase1-shell",
                 "version": BuildInfo::current(),
             },
             "paths": resolved.paths,
-            "state": identity_status(&resolved),
+            "state": identity_state_data,
             "config": {
                 "config_exists": resolved.config_exists,
                 "config_error": resolved.config_error,
@@ -207,7 +220,7 @@ impl App {
             &resolved,
             data,
             "Identity status loaded",
-            Vec::new(),
+            identity_state.warnings,
         )
     }
 
@@ -1276,18 +1289,6 @@ fn string_flag(command: &ParsedCommand, name: &str) -> String {
     command.flags.get(name).cloned().unwrap_or_default()
 }
 
-fn identity_status(resolved: &Resolved) -> Value {
-    json!({
-        "active_identity": if resolved.active_identity.is_empty() { Value::Null } else { json!(resolved.active_identity) },
-        "identity_count": count_identity_dirs(&resolved.paths.identity_dir),
-        "legacy_scan": {
-            "credentials_dir": resolved.paths.legacy_credentials_dir,
-            "data_dir": resolved.paths.legacy_data_dir,
-            "identities": [],
-        },
-    })
-}
-
 pub(crate) fn identity_store_snapshot(resolved: &Resolved) -> Value {
     let inspection = crate::m_core_cli_adapter::identity::inspect_identity_store_via_im_core(
         resolved,
@@ -1418,17 +1419,6 @@ fn identity_meta_from_resolved(resolved: &Resolved) -> Option<IdentityMeta> {
         name: resolved.active_identity.clone(),
         did: String::new(),
     })
-}
-
-fn count_identity_dirs(path: &str) -> usize {
-    fs::read_dir(path)
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .filter(|entry| entry.path().is_dir())
-                .count()
-        })
-        .unwrap_or(0)
 }
 
 fn sanitize_public_value(value: Value) -> Value {

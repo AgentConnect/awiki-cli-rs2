@@ -59,6 +59,10 @@ fn onboarding_claim_schema_accepts_only_stdin_secret_input() {
     assert!(!flags.contains(&"token"));
     assert_eq!(schema_flag(command, "token-stdin")["type"], "bool");
     assert_eq!(schema_flag(command, "token-stdin")["required"], true);
+    assert!(schema_flag(command, "token-stdin")["usage"]
+        .as_str()
+        .unwrap()
+        .contains("EOF"));
     assert!(!serde_json::to_string(command).unwrap().contains("awsk1_"));
 }
 

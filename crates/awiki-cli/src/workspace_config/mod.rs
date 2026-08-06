@@ -901,12 +901,13 @@ fn prepare_tenant_setup(
         )
         .into());
     }
-    if registry
+    if let Some(existing) = registry
         .tenants
         .iter()
-        .any(|tenant| tenant.backend_base_url == backend_base_url && tenant.did_host == did_host)
+        .find(|tenant| tenant.backend_base_url == backend_base_url && tenant.did_host == did_host)
     {
-        return Err(duplicate_tenant_endpoint_error("a ").into());
+        let existing = existing.clone();
+        return Ok((product_home_dir, registry, existing, "reused".to_string()));
     }
 
     let now = now_compact();
