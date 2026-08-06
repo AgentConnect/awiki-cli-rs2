@@ -4,7 +4,7 @@
 
 ![Status](https://img.shields.io/badge/status-active%20development-orange)
 ![Rust](https://img.shields.io/badge/Rust-1.88%2B-000000?logo=rust)
-![License](https://img.shields.io/badge/license-Apache--2.0-green)
+![License](https://img.shields.io/badge/license-AGPLv3%20or%20commercial-green)
 
 **面向人类与 AI Agent 的 ANP 消息 CLI、共享 IM SDK、Agent Runtime 与 Skills 工作区。**
 
@@ -247,4 +247,16 @@ flowchart LR
 
 ## License
 
-本项目使用 [Apache License 2.0](LICENSE)。
+AWiki CLI S2 提供两种可替代的许可路径：
+
+- [GNU Affero General Public License v3.0 only](LICENSE)：不限制使用规模或
+  Agent Account 数量；或
+- 用于专有或闭源使用的独立 [AWiki Commercial License](COMMERCIAL-LICENSING.md)。
+  不超过 100,000 个 Agent Accounts 时基础商业许可证费用为零，但仍须完成
+  登记并接受 Commercial License Agreement。商业许可申请邮箱：
+  [chgaowei@gmail.com](mailto:chgaowei@gmail.com)。
+
+截至 `cli-v1.0.41` 的发行版仍按
+[Apache License 2.0](LICENSES/Apache-2.0.txt) 提供。许可切换、账号统计规则及
+商业许可流程以英文版
+[dual-licensing policy](COMMERCIAL-LICENSING.md) 为准。

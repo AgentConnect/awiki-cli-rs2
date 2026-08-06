@@ -181,7 +181,7 @@ else
   cargo_cmd=("${cargo_bin}")
 fi
 
-node - "${ROOT_DIR}/scripts/release/cli/release-config.json" "${VERSION}" <<'NODE'
+anp_commit="$(node - "${ROOT_DIR}/scripts/release/cli/release-config.json" "${VERSION}" <<'NODE'
 const fs = require('fs');
 const [configPath, version] = process.argv.slice(2);
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -189,11 +189,17 @@ const versions = Object.values(config.channels || {}).map(entry => entry.version
 if (!versions.includes(version)) {
   throw new Error(`version ${version} is not declared in ${configPath}`);
 }
+if (!/^[a-f0-9]{40}$/i.test(config.anp_commit || '')) {
+  throw new Error(`anp_commit in ${configPath} must be a full commit SHA`);
+}
+process.stdout.write(config.anp_commit);
 NODE
+)"
 
 # Keep the exact source identity in the binary. System-test and incident
 # evidence compare this value with the immutable release tag commit.
 commit="${AWIKI_CLI_COMMIT:-$(git rev-parse HEAD 2>/dev/null || printf '%s' unknown)}"
+[[ "${commit}" =~ ^[a-fA-F0-9]{40}$ ]] || die "source commit must be a full commit SHA"
 build_date="${AWIKI_CLI_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 bin_name="awiki-cli"
 if [[ "${OS_NAME}" == "windows" ]]; then
@@ -213,6 +219,7 @@ if [[ "${DRY_RUN}" == "1" ]]; then
 Would run: AWIKI_CLI_VERSION=${VERSION} AWIKI_CLI_COMMIT=${commit} AWIKI_CLI_BUILD_DATE=${build_date} AWIKI_CLI_CGO_ENABLED=0 ${cargo_cmd[*]} build -p awiki-cli --bin awiki-cli --release --locked --target ${TARGET_TRIPLE}
 Would verify: ${cargo_cmd[*]} tree -p awiki-cli -e features --locked includes im-core/group-e2ee and anp/mls on Linux/macOS
 Would archive: ${build_bin} -> ${archive_path}
+Would include: ${bin_name} LICENSE LICENSE-APACHE COMMERCIAL-LICENSING.md SOURCE.md
 EOF
   exit 0
 fi
@@ -246,6 +253,33 @@ cp "${build_bin}" "${stage_dir}/${bin_name}"
 if [[ "${OS_NAME}" != "windows" ]]; then
   chmod 0755 "${stage_dir}/${bin_name}"
 fi
+cp LICENSE "${stage_dir}/LICENSE"
+cp LICENSES/Apache-2.0.txt "${stage_dir}/LICENSE-APACHE"
+cp COMMERCIAL-LICENSING.md "${stage_dir}/COMMERCIAL-LICENSING.md"
+cat >"${stage_dir}/SOURCE.md" <<EOF
+# AWiki CLI S2 Corresponding Source
+
+Version: ${VERSION}
+Commit: ${commit}
+Source: https://github.com/AgentConnect/awiki-cli-rs2/tree/${commit}
+Source archive: https://github.com/AgentConnect/awiki-cli-rs2/archive/${commit}.tar.gz
+Build instructions: https://github.com/AgentConnect/awiki-cli-rs2/blob/${commit}/docs/development.md
+
+ANP dependency commit: ${anp_commit}
+ANP source: https://github.com/agent-network-protocol/anp/tree/${anp_commit}
+
+The source location above identifies the exact revision used to build this
+release. The Corresponding Source is provided under GNU AGPLv3 as described in
+the accompanying LICENSE file.
+EOF
+
+archive_entries=(
+  "${bin_name}"
+  LICENSE
+  LICENSE-APACHE
+  COMMERCIAL-LICENSING.md
+  SOURCE.md
+)
 
 rm -f "${archive_path}"
 if [[ "${OS_NAME}" == "windows" ]]; then
@@ -265,7 +299,8 @@ stage_dir = pathlib.Path(sys.argv[1])
 bin_name = sys.argv[2]
 archive_path = pathlib.Path(sys.argv[3])
 with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-    archive.write(stage_dir / bin_name, arcname=bin_name)
+    for source in sorted(stage_dir.iterdir()):
+        archive.write(source, arcname=source.name)
 PY
   elif command -v pwsh >/dev/null 2>&1 || command -v powershell.exe >/dev/null 2>&1; then
     powershell_cmd="pwsh"
@@ -273,14 +308,14 @@ PY
       powershell_cmd="powershell.exe"
     fi
     "${powershell_cmd}" -NoProfile -Command \
-      "Compress-Archive -LiteralPath '${stage_dir}/${bin_name}' -DestinationPath '${archive_abs}' -Force"
+      "Compress-Archive -Path '${stage_dir}/*' -DestinationPath '${archive_abs}' -Force"
   elif command -v zip >/dev/null 2>&1; then
-    (cd "${stage_dir}" && zip -q -9 "${archive_abs}" "${bin_name}")
+    (cd "${stage_dir}" && zip -q -9 "${archive_abs}" "${archive_entries[@]}")
   else
     die "zip archive creation requires python, PowerShell, or zip"
   fi
 else
-  COPYFILE_DISABLE=1 tar -C "${stage_dir}" -czf "${archive_path}" "${bin_name}"
+  COPYFILE_DISABLE=1 tar -C "${stage_dir}" -czf "${archive_path}" "${archive_entries[@]}"
 fi
 
 echo "release archive created: ${archive_path}"
