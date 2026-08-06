@@ -218,19 +218,21 @@ impl<'a> IdentityRegistry<'a> {
             .local_alias
             .as_deref()
             .ok_or(crate::ImError::PermissionDenied)?;
-        let index = crate::internal::identity_store::IdentityStore::new(
+        let store = crate::internal::identity_store::IdentityStore::new(
             &self.core.inner().sdk_paths().identities,
-        )
-        .load_index()?;
-        if index
-            .credentials
-            .get(alias)
-            .and_then(|entry| entry.device_state.as_ref())
-            .is_some_and(|state| {
+        );
+        let index = store.load_index()?;
+        if let Some(entry) = index.credentials.get(alias).filter(|entry| {
+            entry.device_state.as_ref().is_some_and(|state| {
                 state.mode == crate::internal::identity_device_state::IdentityDeviceMode::VNext
             })
-        {
-            return Ok(super::LegacyUpgradeStatus::Completed);
+        }) {
+            let document = store.load_did_document(&entry.dir_name)?;
+            if !crate::internal::identity_legacy_upgrade::vnext_profile_discovery_requires_convergence(
+                &document,
+            )? {
+                return Ok(super::LegacyUpgradeStatus::Completed);
+            }
         }
         let pending =
             crate::internal::identity_legacy_upgrade_pending::PendingLegacyUpgradeStore::from_core(
