@@ -14,6 +14,12 @@ const HOST_ARTIFACT_CANDIDATES = Object.freeze({
   'windows-amd64': ['windows-amd64'],
   'windows-arm64': ['windows-arm64', 'windows-amd64'],
 });
+const LICENSE_BUNDLE_FILES = Object.freeze([
+  'LICENSE',
+  'LICENSE-APACHE',
+  'COMMERCIAL-LICENSING.md',
+  'SOURCE.md',
+]);
 
 function normalizeArchitecture(machine) {
   const normalizedMachine = String(machine).trim().toLowerCase();
@@ -160,6 +166,16 @@ function installLocalBinary(source, destination, osName) {
   if (osName !== 'windows') fs.chmodSync(destination, 0o755);
 }
 
+function validateLicenseBundle(directory) {
+  const missing = LICENSE_BUNDLE_FILES.filter(name => {
+    const stat = fs.statSync(path.join(directory, name), { throwIfNoEntry: false });
+    return !stat?.isFile();
+  });
+  if (missing.length) {
+    throw new Error(`Archive is missing required licensing files: ${missing.join(', ')}`);
+  }
+}
+
 function binaryProbeEnvironment(metadata, tempDir) {
   const probeHome = path.join(tempDir, 'probe-home');
   const probeWorkspace = path.join(probeHome, '.awiki-cli');
@@ -213,6 +229,7 @@ async function main() {
     }
     await extract(archivePath, binDir, osName);
     if (!fs.existsSync(binaryPath)) throw new Error(`Archive did not contain ${path.basename(binaryPath)}`);
+    validateLicenseBundle(binDir);
     if (osName !== 'windows') fs.chmodSync(binaryPath, 0o755);
     // `version` resolves workspace configuration. Probe inside the installer
     // temp directory so postinstall cannot initialize or alter the user's
@@ -252,5 +269,6 @@ module.exports = {
     selectArtifactForHost,
     sha256File,
     binaryProbeEnvironment,
+    validateLicenseBundle,
   },
 };

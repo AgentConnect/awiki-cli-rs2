@@ -8,6 +8,13 @@ Native support in v0.1 targets Android, iOS, macOS, Linux, and Windows x64.
 Flutter Web receives a stub that throws `UnsupportedError` at runtime. Windows
 ARM64 and 32-bit x86 are not supported.
 
+## License
+
+This package is available under [GNU AGPLv3](LICENSE) or a separate
+[AWiki Commercial License](COMMERCIAL-LICENSING.md). The prior Apache License
+text is retained in [LICENSE-APACHE](LICENSE-APACHE), and source location
+information is in [SOURCE.md](SOURCE.md).
+
 Build Linux native artifacts on a Linux host before running a Flutter Linux app:
 
 ```bash

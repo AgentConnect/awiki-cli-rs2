@@ -17,6 +17,30 @@ function expectSuccess(result) {
   assert.equal(result.status, 0, result.stderr || result.stdout);
 }
 
+test("Flutter package carries the canonical license bundle", () => {
+  const packageRoot = path.join(root, "packages/awiki_im_core");
+  for (const [canonical, packaged] of [
+    ["LICENSE", "LICENSE"],
+    ["LICENSES/Apache-2.0.txt", "LICENSE-APACHE"],
+    ["COMMERCIAL-LICENSING.md", "COMMERCIAL-LICENSING.md"],
+  ]) {
+    assert.deepEqual(
+      fs.readFileSync(path.join(packageRoot, packaged)),
+      fs.readFileSync(path.join(root, canonical)),
+      `${packaged} must match the canonical repository file`,
+    );
+  }
+  for (const platform of ["ios", "macos"]) {
+    const podspec = fs.readFileSync(
+      path.join(packageRoot, platform, "awiki_im_core.podspec"),
+      "utf8",
+    );
+    assert.match(podspec, /:type => 'AGPL-3\.0-only'/);
+    assert.match(podspec, /:file => '\.\.\/LICENSE'/);
+    assert.doesNotMatch(podspec, /:type => 'MIT'/);
+  }
+});
+
 test(
   "Apple dry-run limits a macOS XCFramework to the requested architecture",
   { skip: process.platform === "win32" },

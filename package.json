@@ -2,7 +2,7 @@
   "name": "@awiki/cli",
   "version": "1.0.16",
   "description": "Awiki command-line interface (awiki-cli)",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "engines": {
     "node": ">=18"
   },
@@ -13,6 +13,9 @@
     "awiki-cli": "scripts/run.js"
   },
   "files": [
+    "COMMERCIAL-LICENSING.md",
+    "LICENSES/Apache-2.0.txt",
+    "SOURCE.md",
     "scripts/install.js",
     "scripts/run.js",
     "awiki-release.json"
@@ -20,6 +23,6 @@
   "scripts": {
     "install-binary": "node scripts/install.js",
     "postinstall": "node scripts/install.js",
-    "test:installer": "node --test scripts/install.test.js scripts/run.test.js scripts/flutter/build-native-contract.test.js scripts/release/cli/config.test.js scripts/release/cli/deploy-nginx-config.test.js scripts/release/cli/render-nginx-download-zones.test.js scripts/release/cli/render-nginx-snippet.test.js scripts/release/cli/stage-release.test.js"
+    "test:installer": "node --test scripts/install.test.js scripts/run.test.js scripts/license-distribution.test.js scripts/flutter/build-native-contract.test.js scripts/release/cli/config.test.js scripts/release/cli/deploy-nginx-config.test.js scripts/release/cli/render-nginx-download-zones.test.js scripts/release/cli/render-nginx-snippet.test.js scripts/release/cli/stage-release.test.js"
   }
 }

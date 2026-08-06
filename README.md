@@ -4,7 +4,7 @@
 
 ![Status](https://img.shields.io/badge/status-active%20development-orange)
 ![Rust](https://img.shields.io/badge/Rust-1.88%2B-000000?logo=rust)
-![License](https://img.shields.io/badge/license-Apache--2.0-green)
+![License](https://img.shields.io/badge/license-AGPLv3%20or%20commercial-green)
 
 **An ANP messaging CLI, shared IM SDK, Agent Runtime, and Skills workspace for people and AI agents.**
 
@@ -245,4 +245,17 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md). Run at least the Rust workspace gates b
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE).
+AWiki CLI S2 is available under two alternative licensing paths:
+
+- [GNU Affero General Public License v3.0 only](LICENSE), with no usage or
+  Agent Account limit; or
+- a separate [AWiki Commercial License](COMMERCIAL-LICENSING.md) for
+  proprietary or closed-source use. The base commercial license fee is zero
+  for deployments of up to 100,000 Agent Accounts, but registration and
+  acceptance of the Commercial License Agreement are still required. Apply at
+  [chgaowei@gmail.com](mailto:chgaowei@gmail.com).
+
+Releases through `cli-v1.0.41` remain available under
+[Apache License 2.0](LICENSES/Apache-2.0.txt). See the
+[dual-licensing policy](COMMERCIAL-LICENSING.md) for transition details,
+account-counting rules, and the commercial licensing process.

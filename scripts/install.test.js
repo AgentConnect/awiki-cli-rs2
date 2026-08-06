@@ -181,6 +181,23 @@ test('builds strict platform-specific curl arguments', () => {
   }
 });
 
+test('requires the complete licensing bundle in an extracted artifact', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awiki-license-bundle-'));
+  try {
+    for (const name of ['LICENSE', 'LICENSE-APACHE', 'COMMERCIAL-LICENSING.md', 'SOURCE.md']) {
+      fs.writeFileSync(path.join(root, name), `${name}\n`);
+    }
+    assert.doesNotThrow(() => _internal.validateLicenseBundle(root));
+    fs.rmSync(path.join(root, 'SOURCE.md'));
+    assert.throws(
+      () => _internal.validateLicenseBundle(root),
+      /Archive is missing required licensing files: SOURCE\.md/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('allows HTTPS and local HTTP downloads while rejecting remote HTTP', () => {
   assert.doesNotThrow(() => _internal.buildCurlArgs(
     'https://downloads.example/awiki-cli.zip',
@@ -225,8 +242,17 @@ printf '%s\n%s\n%s\n%s\n%s\n' \
 printf 'installer smoke\n'
 `);
   fs.chmodSync(binary, 0o755);
+  for (const [name, contents] of [
+    ['LICENSE', 'AGPL test license\n'],
+    ['LICENSE-APACHE', 'Apache test license\n'],
+    ['COMMERCIAL-LICENSING.md', 'Commercial licensing test policy\n'],
+    ['SOURCE.md', 'Commit: test-commit\n'],
+  ]) fs.writeFileSync(path.join(archiveStage, name), contents);
   const archive = path.join(root, 'awiki-cli.tar.gz');
-  const tar = await execFileAsync('tar', ['-C', archiveStage, '-czf', archive, 'awiki-cli']);
+  const tar = await execFileAsync('tar', [
+    '-C', archiveStage, '-czf', archive,
+    'awiki-cli', 'LICENSE', 'LICENSE-APACHE', 'COMMERCIAL-LICENSING.md', 'SOURCE.md',
+  ]);
   assert.equal(tar.stderr, '');
   const digest = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
   const target = _internal.mapHost().hostTarget;
@@ -279,6 +305,9 @@ printf 'installer smoke\n'
     });
     assert.match(success.stdout, /binary is installed/);
     assert.ok(fs.statSync(path.join(packageRoot, 'bin', 'awiki-cli')).isFile());
+    for (const required of ['LICENSE', 'LICENSE-APACHE', 'COMMERCIAL-LICENSING.md', 'SOURCE.md']) {
+      assert.ok(fs.statSync(path.join(packageRoot, 'bin', required)).isFile());
+    }
     const [probeHome, probeWorkspace, updateBaseUrl, backendBaseUrl, didHost] =
       fs.readFileSync(probeOutput, 'utf8').trim().split('\n');
     assert.notEqual(probeHome, realHome);

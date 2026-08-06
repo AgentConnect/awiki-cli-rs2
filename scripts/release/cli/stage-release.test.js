@@ -83,6 +83,8 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
     for (const required of [
       'package/package.json', 'package/awiki-release.json',
       'package/scripts/install.js', 'package/scripts/run.js',
+      'package/LICENSE', 'package/LICENSES/Apache-2.0.txt',
+      'package/COMMERCIAL-LICENSING.md', 'package/SOURCE.md',
     ]) assert.match(packageListing.stdout, new RegExp(`^${required}$`, 'm'));
     assert.doesNotMatch(packageListing.stdout, /publish-server|scripts\/release/);
 
@@ -91,6 +93,13 @@ test('stages a complete self-hosted package, manifest, Skill, and onboarding sna
     const metadata = JSON.parse(releaseMetadata.stdout);
     assert.equal(metadata.default_tenant.backend_base_url, 'https://awiki.info');
     assert.equal(metadata.default_tenant.did_host, 'awiki.info');
+
+    const sourceDocument = run('tar', ['-xOzf', path.join(output, 'awiki-cli.tgz'), 'package/SOURCE.md']);
+    assert.equal(sourceDocument.status, 0, sourceDocument.stderr);
+    assert.match(sourceDocument.stdout, /Version: 1\.0\.20-beta\.1/);
+    assert.match(sourceDocument.stdout, new RegExp(`Commit: ${'a'.repeat(40)}`));
+    assert.match(sourceDocument.stdout, new RegExp(`tree/${'a'.repeat(40)}`));
+    assert.match(sourceDocument.stdout, new RegExp(`ANP dependency commit: ${'97f321376ff97fdfb2837eb0db7ad90d11040406'}`));
 
     const onboarding = fs.readFileSync(path.join(output, 'onboarding.md'), 'utf8');
     assert.match(onboarding, /https:\/\/awiki\.info\/cli\/beta\/awiki-cli\.tgz/);
