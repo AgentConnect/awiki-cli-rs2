@@ -227,11 +227,19 @@ async fn explicit_refresh_recovers_missing_and_unreadable_exact_device_bearer_st
 }
 
 fn host_backed_core(root: &std::path::Path, endpoint: &str) -> crate::core::ImCore {
+    host_backed_core_with_client_version(root, endpoint, None)
+}
+
+fn host_backed_core_with_client_version(
+    root: &std::path::Path,
+    endpoint: &str,
+    client_version_info: Option<crate::ClientVersionInfo>,
+) -> crate::core::ImCore {
     crate::core::ImCore::new(
         crate::config::ImCoreConfig {
             service_base_url: crate::config::ServiceEndpoint::parse(endpoint).unwrap(),
             did_domain: "awiki.test".to_owned(),
-            client_version_info: None,
+            client_version_info,
             user_service_endpoint: None,
             message_service_endpoint: None,
             mail_service_endpoint: None,
@@ -256,6 +264,49 @@ fn host_backed_core(root: &std::path::Path, endpoint: &str) -> crate::core::ImCo
         },
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn captured_user_service_request_has_exactly_one_client_version_header() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let request = read_request_headers(&mut stream);
+        write_rpc_success(&mut stream);
+        request
+    });
+
+    let root = tempfile::tempdir().unwrap();
+    let version = crate::ClientVersionInfo::new("awiki-cli", "0714", "1.0.16", Some(42)).unwrap();
+    let core = host_backed_core_with_client_version(
+        root.path(),
+        &format!("http://{address}"),
+        Some(version),
+    );
+    let (client, _, _) = host_backed_client(&core);
+    let mut transport = CoreHttpTransport::new(&client);
+    AsyncAuthenticatedRpcTransport::authenticated_rpc(
+        &mut transport,
+        "/user-service/v1/did/rpc",
+        "get_me",
+        json!({}),
+    )
+    .await
+    .unwrap();
+
+    let request = server.join().unwrap();
+    let version_headers = request
+        .lines()
+        .filter(|line| {
+            line.split_once(':')
+                .is_some_and(|(name, _)| name.eq_ignore_ascii_case(crate::CLIENT_VERSION_HEADER))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        version_headers,
+        vec!["x-awiki-client-version: awiki-cli/0714/1.0.16+42"]
+    );
 }
 
 fn host_device_access_token(

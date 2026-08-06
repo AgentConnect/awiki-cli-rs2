@@ -239,6 +239,7 @@ pub struct UserServiceAgentRegistrationClient {
     rpc_url: String,
     inventory_rpc_url: String,
     did_auth_rpc_url: String,
+    client_version_header: String,
     http: reqwest::Client,
 }
 
@@ -321,6 +322,7 @@ impl UserServiceAgentRegistrationClient {
             rpc_url,
             inventory_rpc_url,
             did_auth_rpc_url,
+            client_version_header: crate::build_info::client_version_info()?.header_value(),
             // Registration and DID-auth requests carry bearer credentials or
             // signatures bound to the original URL. Never replay them through
             // an HTTP redirect, even when the redirect remains same-origin.
@@ -329,6 +331,13 @@ impl UserServiceAgentRegistrationClient {
                 .build()
                 .context("build user-service HTTP client")?,
         })
+    }
+
+    fn product_request(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        request.header(
+            im_core::CLIENT_VERSION_HEADER,
+            self.client_version_header.as_str(),
+        )
     }
 
     pub fn rpc_url(&self) -> &str {
@@ -345,8 +354,7 @@ impl UserServiceAgentRegistrationClient {
     ) -> Result<AgentRegistrationExchangeResult> {
         let body = exchange_token_body(request);
         let response = self
-            .http
-            .post(&self.rpc_url)
+            .product_request(self.http.post(&self.rpc_url))
             .header("content-type", "application/json")
             .body(body.to_string())
             .send()
@@ -373,7 +381,8 @@ impl UserServiceAgentRegistrationClient {
         );
         let body_bytes = call.payload().to_string().into_bytes();
         let headers = did_auth_headers(&self.did_auth_rpc_url, &body_bytes, &request.legacy_auth)?;
-        let mut http_request = self.http.post(&self.did_auth_rpc_url).body(body_bytes);
+        let mut http_request =
+            self.product_request(self.http.post(&self.did_auth_rpc_url).body(body_bytes));
         for (key, value) in headers {
             http_request = http_request.header(key, value);
         }
@@ -429,8 +438,7 @@ impl UserServiceAgentRegistrationClient {
             "id": 1
         });
         let response = self
-            .http
-            .post(&self.rpc_url)
+            .product_request(self.http.post(&self.rpc_url))
             .header("content-type", "application/json")
             .body(body.to_string())
             .send()
@@ -459,7 +467,8 @@ impl UserServiceAgentRegistrationClient {
         });
         let body_bytes = body.to_string().into_bytes();
         let headers = did_auth_headers(&self.inventory_rpc_url, &body_bytes, auth)?;
-        let mut request = self.http.post(&self.inventory_rpc_url).body(body_bytes);
+        let mut request =
+            self.product_request(self.http.post(&self.inventory_rpc_url).body(body_bytes));
         for (key, value) in headers {
             request = request.header(key, value);
         }
@@ -496,7 +505,8 @@ impl UserServiceAgentRegistrationClient {
         });
         let body_bytes = body.to_string().into_bytes();
         let headers = did_auth_headers(&self.inventory_rpc_url, &body_bytes, auth)?;
-        let mut request = self.http.post(&self.inventory_rpc_url).body(body_bytes);
+        let mut request =
+            self.product_request(self.http.post(&self.inventory_rpc_url).body(body_bytes));
         for (key, value) in headers {
             request = request.header(key, value);
         }
@@ -535,7 +545,8 @@ impl UserServiceAgentRegistrationClient {
         });
         let body_bytes = body.to_string().into_bytes();
         let headers = did_auth_headers(&self.inventory_rpc_url, &body_bytes, auth)?;
-        let mut request = self.http.post(&self.inventory_rpc_url).body(body_bytes);
+        let mut request =
+            self.product_request(self.http.post(&self.inventory_rpc_url).body(body_bytes));
         for (key, value) in headers {
             request = request.header(key, value);
         }
@@ -580,7 +591,8 @@ impl UserServiceAgentRegistrationClient {
         });
         let body_bytes = body.to_string().into_bytes();
         let headers = did_auth_headers(&self.inventory_rpc_url, &body_bytes, auth)?;
-        let mut request = self.http.post(&self.inventory_rpc_url).body(body_bytes);
+        let mut request =
+            self.product_request(self.http.post(&self.inventory_rpc_url).body(body_bytes));
         for (key, value) in headers {
             request = request.header(key, value);
         }
@@ -619,7 +631,8 @@ impl UserServiceAgentRegistrationClient {
         });
         let body_bytes = body.to_string().into_bytes();
         let headers = did_auth_headers(&self.inventory_rpc_url, &body_bytes, auth)?;
-        let mut request = self.http.post(&self.inventory_rpc_url).body(body_bytes);
+        let mut request =
+            self.product_request(self.http.post(&self.inventory_rpc_url).body(body_bytes));
         for (key, value) in headers {
             request = request.header(key, value);
         }
@@ -1536,6 +1549,58 @@ mod tests {
             }
         });
         (format!("http://{address}"), requests, join)
+    }
+
+    #[tokio::test]
+    async fn registration_product_request_captures_one_daemon_client_version_header() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let join = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 2048];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "request closed before headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /not-replayed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            String::from_utf8_lossy(&request).into_owned()
+        });
+        let client = UserServiceAgentRegistrationClient::new(format!("http://{address}")).unwrap();
+
+        let error = client
+            .exchange_token_async(redirect_exchange_request("capture-version-header"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("HTTP redirect rejected"));
+
+        let request = join.join().unwrap();
+        let version_headers = request
+            .lines()
+            .filter(|line| {
+                line.split_once(':').is_some_and(|(name, _)| {
+                    name.eq_ignore_ascii_case(im_core::CLIENT_VERSION_HEADER)
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(version_headers.len(), 1);
+        let expected = crate::build_info::client_version_info()
+            .unwrap()
+            .header_value();
+        assert_eq!(
+            version_headers[0]
+                .split_once(':')
+                .map(|(_, value)| value.trim()),
+            Some(expected.as_str())
+        );
     }
 
     #[tokio::test]
