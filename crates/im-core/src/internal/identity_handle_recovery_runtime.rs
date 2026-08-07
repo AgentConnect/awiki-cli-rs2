@@ -81,46 +81,66 @@ pub(crate) async fn prepare(
     request: HandleRecoveryPrepareRequest,
 ) -> crate::ImResult<HandleRecoveryProgress> {
     require_enabled(core)?;
-    require_explicit_identity(&request.identity)?;
     let canonical =
         crate::internal::identity_wire::handle_recovery::canonical_handle(&request.handle)?;
     let operation_id = crate::internal::identity_wire::handle_recovery::validate_operation_id(
         &request.operation_id,
     )?;
-    let identity = core.identities().resolve_async(request.identity).await?;
-    let lock = core.inner().handle_recovery_lock(identity.id.as_str());
-    let _guard = lock.lock().await;
-    if identity.handle.as_ref().map(|handle| handle.as_str()) != Some(canonical.full.as_str()) {
-        return Err(recovery_error(
-            HandleRecoveryErrorCode::HandleRecoveryTransitionMismatch,
-        ));
-    }
     let store = PendingHandleRecoveryStore::from_core(core).map_err(|_| {
         recovery_error(HandleRecoveryErrorCode::HandleRecoveryLocalStateUnavailable)
     })?;
     let index =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
             .load_index()?;
-    let entry = index
-        .credentials
-        .values()
-        .find(|entry| entry.unique_id == identity.id.as_str())
-        .ok_or_else(|| {
-            recovery_error(HandleRecoveryErrorCode::HandleRecoveryLocalStateUnavailable)
-        })?;
-    let expected_generation = entry
-        .binding_generation
-        .clone()
-        .filter(|value| canonical_generation(value))
-        .ok_or_else(|| {
-            recovery_error(HandleRecoveryErrorCode::HandleRecoveryLocalStateUnavailable)
-        })?;
-    let local_alias = (!entry.credential_name.trim().is_empty())
-        .then(|| entry.credential_name.clone())
-        .or_else(|| identity.local_alias.clone())
-        .ok_or_else(|| {
-            recovery_error(HandleRecoveryErrorCode::HandleRecoveryLocalStateUnavailable)
-        })?;
+    let local_entry = if let Some(selector) = request.identity {
+        require_explicit_identity(&selector)?;
+        let identity = core.identities().resolve_async(selector).await?;
+        if identity.handle.as_ref().map(|handle| handle.as_str()) != Some(canonical.full.as_str()) {
+            return Err(recovery_error(
+                HandleRecoveryErrorCode::HandleRecoveryTransitionMismatch,
+            ));
+        }
+        Some(
+            index
+                .credentials
+                .values()
+                .find(|entry| entry.unique_id == identity.id.as_str())
+                .cloned()
+                .ok_or_else(|| {
+                    recovery_error(HandleRecoveryErrorCode::HandleRecoveryLocalStateUnavailable)
+                })?,
+        )
+    } else {
+        let matches = index
+            .credentials
+            .values()
+            .filter(|entry| entry.full_handle == canonical.full)
+            .cloned()
+            .collect::<Vec<_>>();
+        if matches.len() > 1 {
+            return Err(recovery_error(
+                HandleRecoveryErrorCode::HandleRecoveryTransitionMismatch,
+            ));
+        }
+        matches.into_iter().next()
+    };
+    let lock_key = local_entry
+        .as_ref()
+        .map(|entry| entry.unique_id.as_str())
+        .unwrap_or(canonical.full.as_str());
+    let lock = core.inner().handle_recovery_lock(lock_key);
+    let _guard = lock.lock().await;
+    let public_binding = if local_entry.is_none() {
+        Some(
+            crate::internal::handle_discovery::resolve_authoritative_handle_binding_for_core_async(
+                core,
+                &canonical.full,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let exchange = crate::internal::identity_wire::handle_recovery::build_grant_exchange_call(
         &request.phone,
         &request.code,
@@ -139,22 +159,71 @@ pub(crate) async fn prepare(
         core.inner().sdk_config().anp_service_endpoint.as_ref(),
         core.inner().sdk_config().anp_service_did.as_ref(),
     )?;
+    let (
+        owner_identity_id,
+        expected_account_user_id,
+        local_alias,
+        display_name,
+        make_default,
+        previous_did,
+        expected_generation,
+        local_ordinary_data_will_migrate,
+    ) = if let Some(entry) = local_entry {
+        let expected_generation = entry
+            .binding_generation
+            .clone()
+            .filter(|value| canonical_generation(value))
+            .ok_or_else(|| {
+                recovery_error(HandleRecoveryErrorCode::HandleRecoveryLocalStateUnavailable)
+            })?;
+        let local_alias = (!entry.credential_name.trim().is_empty())
+            .then(|| entry.credential_name.clone())
+            .ok_or_else(|| {
+                recovery_error(HandleRecoveryErrorCode::HandleRecoveryLocalStateUnavailable)
+            })?;
+        (
+            entry.unique_id,
+            Some(entry.user_id),
+            local_alias,
+            (!entry.name.trim().is_empty())
+                .then_some(entry.name)
+                .unwrap_or_else(|| canonical.local_part.clone()),
+            entry.is_default,
+            entry.did,
+            expected_generation,
+            true,
+        )
+    } else {
+        let binding = public_binding.ok_or(crate::ImError::PermissionDenied)?;
+        let expected_generation = binding
+            .binding_generation
+            .filter(|value| canonical_generation(value))
+            .ok_or(crate::ImError::PermissionDenied)?;
+        (
+            generated.unique_id.clone(),
+            None,
+            recovery_local_alias(&index, &canonical, &generated.unique_id),
+            canonical.local_part.clone(),
+            index.credentials.is_empty(),
+            binding.did.as_str().to_owned(),
+            expected_generation,
+            false,
+        )
+    };
     let recovery_id = random_reference("recovery")?;
     let recovery_grant = String::from_utf8(grant.recovery_grant.expose_secret().to_vec())
         .map_err(|_| crate::ImError::PermissionDenied)?;
     let pending = PendingHandleRecovery::new(
         recovery_id,
         operation_id,
-        identity.id.as_str().to_owned(),
-        entry.user_id.clone(),
+        owner_identity_id,
+        expected_account_user_id,
+        local_ordinary_data_will_migrate,
         local_alias,
-        identity
-            .display_name
-            .clone()
-            .unwrap_or_else(|| canonical.local_part.clone()),
-        identity.is_default,
+        display_name,
+        make_default,
         canonical.full,
-        identity.did.as_str().to_owned(),
+        previous_did,
         expected_generation,
         recovery_grant,
         grant.expires_at,
@@ -332,12 +401,21 @@ async fn advance(
             pending.phase = PendingRecoveryPhase::IdentitySwitched;
             store.save(&pending)?;
         } else {
-            crate::internal::identity_transition_pending::migrate_local_state(
-                &core.inner().sdk_paths().local_state.sqlite_path,
-                &marker,
-                &result.bootstrap_device_id,
-                result.auth_generation,
-            )?;
+            if pending.local_ordinary_data_will_migrate {
+                crate::internal::identity_transition_pending::migrate_local_state(
+                    &core.inner().sdk_paths().local_state.sqlite_path,
+                    &marker,
+                    &result.bootstrap_device_id,
+                    result.auth_generation,
+                )?;
+            } else {
+                crate::internal::identity_transition_pending::migrate_initiator_without_local_identity(
+                    &core.inner().sdk_paths().local_state.sqlite_path,
+                    &marker,
+                    &result.bootstrap_device_id,
+                    result.auth_generation,
+                )?;
+            }
             let generated = &pending.generated;
             let device_state = crate::internal::identity_device_state::IdentityDeviceState {
             schema_version:
@@ -723,7 +801,11 @@ fn parse_remote_result(
     }
     let raw: Raw = serde_json::from_value(value).map_err(|_| crate::ImError::PermissionDenied)?;
     if raw.state != "recovered"
-        || raw.account_user_id != pending.expected_account_user_id
+        || raw.account_user_id.trim().is_empty()
+        || pending
+            .expected_account_user_id
+            .as_deref()
+            .is_some_and(|expected| raw.account_user_id != expected)
         || raw.handle != pending.handle
         || raw.previous_did != pending.previous_did
         || raw.did != pending.generated.did.as_str()
@@ -809,7 +891,7 @@ fn progress(
             PendingRecoveryPhase::Blocked => HandleRecoveryPhase::Blocked,
         },
         impact: HandleRecoveryImpact {
-            local_ordinary_data_will_migrate: true,
+            local_ordinary_data_will_migrate: pending.local_ordinary_data_will_migrate,
             other_devices_must_rejoin: true,
             unsupported_e2ee_group_count,
             unsupported_did_only_group_count,
@@ -939,6 +1021,18 @@ fn canonical_generation(value: &str) -> bool {
         && value.as_bytes()[0] != b'0'
 }
 
+fn recovery_local_alias(
+    index: &crate::internal::identity_store::IndexPayload,
+    canonical: &crate::internal::identity_wire::handle_recovery::CanonicalHandle,
+    generated_identity_id: &str,
+) -> String {
+    if !index.credentials.contains_key(&canonical.local_part) {
+        canonical.local_part.clone()
+    } else {
+        generated_identity_id.to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -959,7 +1053,8 @@ mod tests {
             "recovery-1".to_owned(),
             "recover-001".to_owned(),
             "owner-1".to_owned(),
-            "user-1".to_owned(),
+            Some("user-1".to_owned()),
+            true,
             "alice".to_owned(),
             "Alice".to_owned(),
             true,
@@ -996,6 +1091,19 @@ mod tests {
             if bytes.len() >= body_start + content_length {
                 return serde_json::from_slice(&bytes[body_start..body_start + content_length])
                     .unwrap();
+            }
+        }
+    }
+
+    fn read_http_headers(stream: &mut TcpStream) -> String {
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let read = stream.read(&mut buffer).unwrap();
+            assert!(read > 0);
+            bytes.extend_from_slice(&buffer[..read]);
+            if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                return String::from_utf8(bytes[..header_end].to_vec()).unwrap();
             }
         }
     }
@@ -1129,7 +1237,8 @@ mod tests {
             recovery_id.to_owned(),
             operation_id.to_owned(),
             owner_identity_id.to_owned(),
-            account_user_id.to_owned(),
+            Some(account_user_id.to_owned()),
+            true,
             local_part.to_owned(),
             local_part.to_owned(),
             false,
@@ -1145,7 +1254,7 @@ mod tests {
 
     fn scoped_remote_result(pending: &PendingHandleRecovery) -> RecoveryRemoteResult {
         RecoveryRemoteResult {
-            account_user_id: pending.expected_account_user_id.clone(),
+            account_user_id: pending.expected_account_user_id.clone().unwrap(),
             handle: pending.handle.clone(),
             previous_did: pending.previous_did.clone(),
             did: pending.generated.did.as_str().to_owned(),
@@ -1344,6 +1453,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prepare_without_selector_bootstraps_a_phone_owned_handle() {
+        let old = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+            "awiki.test", "alice", None, None,
+        )
+        .unwrap();
+        let old_did = old.did.as_str().to_owned();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let old_did_for_server = old_did.clone();
+        let server = std::thread::spawn(move || {
+            let (mut discovery, _) = listener.accept().unwrap();
+            let headers = read_http_headers(&mut discovery);
+            assert!(headers.starts_with("GET /.well-known/handle/alice "));
+            write_http_json(
+                &mut discovery,
+                json!({
+                    "handle": "alice.awiki.test",
+                    "did": old_did_for_server,
+                    "status": "active",
+                    "binding_generation": "7"
+                }),
+            );
+
+            let (mut exchange, _) = listener.accept().unwrap();
+            let exchange_body = read_http_json(&mut exchange);
+            assert_eq!(exchange_body["handle"], "alice.awiki.test");
+            write_http_json(
+                &mut exchange,
+                json!({
+                    "recovery_grant": "grant-fresh-1",
+                    "purpose": crate::internal::identity_wire::handle_recovery::HANDLE_RECOVERY_PURPOSE,
+                    "expires_at": format_timestamp(
+                        time::OffsetDateTime::now_utc() + time::Duration::minutes(5)
+                    )
+                    .unwrap()
+                }),
+            );
+        });
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("local")).unwrap();
+        let core = recovery_test_core(root.path(), &endpoint, [91_u8; 32]);
+        crate::internal::local_state::open_writable(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        let prepared = core
+            .handle_recovery()
+            .prepare_handle_recovery(HandleRecoveryPrepareRequest {
+                identity: None,
+                phone: "+8613800000000".to_owned(),
+                code: "123456".to_owned(),
+                handle: "alice.awiki.test".to_owned(),
+                operation_id: "recover-fresh-001".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        server.join().unwrap();
+        assert_eq!(prepared.phase, HandleRecoveryPhase::Prepared);
+        assert_eq!(prepared.previous_did.as_str(), old_did);
+        assert!(!prepared.impact.local_ordinary_data_will_migrate);
+        assert!(prepared
+            .current_did
+            .as_str()
+            .ends_with(prepared.owner_identity_id.as_str()));
+        let index = crate::internal::identity_store::IdentityStore::new(
+            &core.inner().sdk_paths().identities,
+        )
+        .load_index()
+        .unwrap();
+        assert!(index.credentials.is_empty());
+        let (_, pending) = PendingHandleRecoveryStore::from_core(&core)
+            .unwrap()
+            .load(&prepared.recovery_id)
+            .unwrap()
+            .unwrap();
+        assert!(pending.expected_account_user_id.is_none());
+        assert!(!pending.local_ordinary_data_will_migrate);
+    }
+
+    #[tokio::test]
     async fn production_facade_exact_replays_after_empty_success_response_and_process_reopen() {
         let old = crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
             "awiki.test", "alice", None, None,
@@ -1522,7 +1713,7 @@ mod tests {
         let prepared = core
             .handle_recovery()
             .prepare_handle_recovery(HandleRecoveryPrepareRequest {
-                identity: crate::identity::IdentitySelector::Did(old_did.clone()),
+                identity: Some(crate::identity::IdentitySelector::Did(old_did.clone())),
                 phone: "+8613800000000".to_owned(),
                 code: "123456".to_owned(),
                 handle: "alice.awiki.test".to_owned(),

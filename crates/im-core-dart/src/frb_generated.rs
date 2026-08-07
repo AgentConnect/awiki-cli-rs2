@@ -4377,7 +4377,7 @@ fn wire__crate__api__identity__prepare_handle_recovery_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImCore>>,
             >>::sse_decode(&mut deserializer);
             let api_selector =
-                <crate::dto::identity::DartIdentitySelector>::sse_decode(&mut deserializer);
+                <Option<crate::dto::identity::DartIdentitySelector>>::sse_decode(&mut deserializer);
             let api_phone = <String>::sse_decode(&mut deserializer);
             let api_code = <String>::sse_decode(&mut deserializer);
             let api_handle = <String>::sse_decode(&mut deserializer);
@@ -12680,6 +12680,19 @@ impl SseDecode for Option<crate::dto::identity::DartIdentityDeviceRole> {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(<crate::dto::identity::DartIdentityDeviceRole>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::dto::identity::DartIdentitySelector> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::dto::identity::DartIdentitySelector>::sse_decode(
                 deserializer,
             ));
         } else {
@@ -21503,6 +21516,16 @@ impl SseEncode for Option<crate::dto::identity::DartIdentityDeviceRole> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::dto::identity::DartIdentityDeviceRole>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::dto::identity::DartIdentitySelector> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::identity::DartIdentitySelector>::sse_encode(value, serializer);
         }
     }
 }

@@ -36,7 +36,7 @@ Future<DartHandleRecoveryOtpResult> requestHandleRecoveryOtp({
 
 Future<DartHandleRecoveryProgress> prepareHandleRecovery({
   required ArcDartImCore core,
-  required DartIdentitySelector selector,
+  DartIdentitySelector? selector,
   required String phone,
   required String code,
   required String handle,

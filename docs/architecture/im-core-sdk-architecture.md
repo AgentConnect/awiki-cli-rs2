@@ -90,6 +90,14 @@ source-bound `identity_transition_pending`, stable-owner epoch migration, fresh 
 new P5 PreKey publication, and transport-only P4 group convergence. Dart is a typed
 projection of the same seven operations; it does not implement a second state machine.
 
+`prepare_handle_recovery` accepts an optional local identity selector. With a selector,
+Core closes it against the requested Handle. Without one, Core first matches that Handle
+against the complete local identity index; if absent, it resolves the active public WNS
+binding and bootstraps a new local owner after phone verification. It never substitutes the
+process default/current identity. Existing-target recovery migrates only that owner's ordinary
+state; a newly bootstrapped target reports no local ordinary-data migration and leaves every
+other local identity unchanged.
+
 The transition marker is persisted before Registry checkpoint replacement. Initiator
 markers bind the authoritative commit operation ID; joined-device markers bind the exact
 ordinary Join session and are written before remote Join creation. Old crypto/device

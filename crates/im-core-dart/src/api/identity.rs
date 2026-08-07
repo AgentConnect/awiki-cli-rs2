@@ -48,7 +48,7 @@ pub async fn request_handle_recovery_otp(
 
 pub async fn prepare_handle_recovery(
     core: &Arc<crate::api::core::DartImCore>,
-    selector: DartIdentitySelector,
+    selector: Option<DartIdentitySelector>,
     phone: String,
     code: String,
     handle: String,
@@ -57,7 +57,7 @@ pub async fn prepare_handle_recovery(
     core.clone_inner()?
         .handle_recovery()
         .prepare_handle_recovery(im_core::identity::HandleRecoveryPrepareRequest {
-            identity: selector.try_into()?,
+            identity: selector.map(TryInto::try_into).transpose()?,
             phone,
             code,
             handle,

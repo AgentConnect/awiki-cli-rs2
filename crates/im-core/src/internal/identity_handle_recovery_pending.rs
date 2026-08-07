@@ -51,7 +51,9 @@ pub(crate) struct PendingHandleRecovery {
     pub(crate) recovery_id: String,
     pub(crate) operation_id: String,
     pub(crate) owner_identity_id: String,
-    pub(crate) expected_account_user_id: String,
+    pub(crate) expected_account_user_id: Option<String>,
+    #[serde(default = "default_local_ordinary_data_will_migrate")]
+    pub(crate) local_ordinary_data_will_migrate: bool,
     pub(crate) local_alias: String,
     pub(crate) display_name: String,
     pub(crate) make_default: bool,
@@ -101,7 +103,8 @@ impl PendingHandleRecovery {
         recovery_id: String,
         operation_id: String,
         owner_identity_id: String,
-        expected_account_user_id: String,
+        expected_account_user_id: Option<String>,
+        local_ordinary_data_will_migrate: bool,
         local_alias: String,
         display_name: String,
         make_default: bool,
@@ -120,6 +123,7 @@ impl PendingHandleRecovery {
             operation_id,
             owner_identity_id,
             expected_account_user_id,
+            local_ordinary_data_will_migrate,
             local_alias,
             display_name,
             make_default,
@@ -151,7 +155,10 @@ impl PendingHandleRecovery {
             || self.contract_hash != CONTRACT_HASH
             || self.recovery_id.trim().is_empty()
             || self.owner_identity_id.trim().is_empty()
-            || self.expected_account_user_id.trim().is_empty()
+            || self
+                .expected_account_user_id
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
             || self.local_alias.trim().is_empty()
             || self.display_name.trim().is_empty()
             || self.recovery_grant.trim().is_empty()
@@ -188,6 +195,10 @@ impl PendingHandleRecovery {
         }
         Ok(())
     }
+}
+
+fn default_local_ordinary_data_will_migrate() -> bool {
+    true
 }
 
 pub(crate) struct PendingHandleRecoveryStore {

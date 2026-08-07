@@ -453,6 +453,24 @@ pub(crate) fn migrate_joined_device_local_state_without_historical_binding(
     )
 }
 
+pub(crate) fn migrate_initiator_without_local_identity(
+    sqlite_path: &Path,
+    marker: &IdentityTransitionMarker,
+    bootstrap_device_id: &str,
+    auth_generation: u64,
+) -> crate::ImResult<()> {
+    if marker.source_kind != TransitionSourceKind::Initiator {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    migrate_local_state_inner(
+        sqlite_path,
+        marker,
+        bootstrap_device_id,
+        auth_generation,
+        true,
+    )
+}
+
 fn migrate_local_state_inner(
     sqlite_path: &Path,
     marker: &IdentityTransitionMarker,
@@ -920,6 +938,33 @@ mod tests {
                 .unwrap()
                 .phase,
             TransitionPhase::IdentitySwitched
+        );
+    }
+
+    #[test]
+    fn fresh_initiator_migration_accepts_only_a_missing_owner_binding() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fresh.sqlite");
+        let marker = test_marker(&path);
+        persist(&path, &marker).unwrap();
+
+        migrate_initiator_without_local_identity(&path, &marker, "device-new", 1).unwrap();
+
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        let binding: (String, String, String) = connection
+            .query_row(
+                "SELECT account_id,current_did,identity_generation FROM identity_account_bindings WHERE owner_identity_id='owner-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            binding,
+            (
+                "user-1".to_owned(),
+                "did:wba:example.invalid:users:alice-new".to_owned(),
+                "8".to_owned(),
+            )
         );
     }
 

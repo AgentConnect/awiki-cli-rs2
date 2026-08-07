@@ -99,6 +99,37 @@ pub(crate) async fn resolve_authoritative_handle_binding_async(
     authoritative_lookup_from_public_document(&normalized.full_handle, &raw)
 }
 
+pub(crate) async fn resolve_authoritative_handle_binding_for_core_async(
+    core: &crate::core::ImCore,
+    raw_handle: &str,
+) -> crate::ImResult<crate::directory::HandleLookupResult> {
+    let config = core.inner().sdk_config();
+    let normalized = normalize_handle_with_default_domain(raw_handle, config.did_domain.as_str())?;
+    let configured_base = config
+        .user_service_endpoint
+        .as_ref()
+        .unwrap_or(&config.service_base_url)
+        .as_str()
+        .trim_end_matches('/');
+    let local_domain = normalize_domain(config.did_domain.as_str());
+    let url = if normalized.domain == local_domain && is_loopback_http_base(configured_base) {
+        format!(
+            "{configured_base}/.well-known/handle/{}",
+            percent_encode_path_segment(&normalized.local_part)
+        )
+    } else {
+        discovery_url(&normalized.domain, &normalized.local_part)
+    };
+    let mut transport = crate::internal::transport::CorePlainTransport::new(core);
+    let raw = crate::internal::transport::AsyncRawJsonTransport::get_json_url(
+        &mut transport,
+        &url,
+        BTreeMap::new(),
+    )
+    .await?;
+    authoritative_lookup_from_public_document(&normalized.full_handle, &raw)
+}
+
 pub(crate) fn resolve_authoritative_handle_binding(
     client: &crate::core::ImClient,
     raw_handle: &str,

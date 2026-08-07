@@ -11,7 +11,7 @@ fn recovery_secret_inputs_are_write_only_in_debug_output() {
         operation_id: "recover-001".to_owned(),
     };
     let prepare = HandleRecoveryPrepareRequest {
-        identity: awiki_im_core::identity::IdentitySelector::Default,
+        identity: Some(awiki_im_core::identity::IdentitySelector::Default),
         phone: "+8613800000000".to_owned(),
         code: "123456".to_owned(),
         handle: "alice.example.invalid".to_owned(),

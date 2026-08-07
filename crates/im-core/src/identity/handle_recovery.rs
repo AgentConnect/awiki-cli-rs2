@@ -29,7 +29,10 @@ pub struct HandleRecoveryOtpResult {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HandleRecoveryPrepareRequest {
-    pub identity: super::IdentitySelector,
+    /// Optional exact local identity. When absent, Core resolves an existing
+    /// local identity by Handle or bootstraps a new local identity after the
+    /// phone-owned Handle is verified.
+    pub identity: Option<super::IdentitySelector>,
     pub phone: String,
     pub code: String,
     pub handle: String,

@@ -242,7 +242,7 @@ class AwikiImCore {
   }
 
   Future<HandleRecoveryProgress> prepareHandleRecovery({
-    required IdentitySelector selector,
+    IdentitySelector? selector,
     required String phone,
     required String code,
     required String handle,
@@ -252,7 +252,7 @@ class AwikiImCore {
     final result = await _mapNativeErrors(
       () => gen_identity_api.prepareHandleRecovery(
         core: _inner,
-        selector: selector._toGen(),
+        selector: selector?._toGen(),
         phone: phone,
         code: code,
         handle: handle,

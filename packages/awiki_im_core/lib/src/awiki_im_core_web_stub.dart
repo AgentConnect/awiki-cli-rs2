@@ -68,7 +68,7 @@ class AwikiImCore {
   }
 
   Future<HandleRecoveryProgress> prepareHandleRecovery({
-    required IdentitySelector selector,
+    IdentitySelector? selector,
     required String phone,
     required String code,
     required String handle,

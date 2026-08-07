@@ -301,8 +301,11 @@ again to `prepareHandleRecovery`. Read-only `handleRecoveryStatus` requires the 
 returned by prepare; Core does not guess a pending Recovery from an identity scope and does not
 return `null` for an unknown ID.
 
-The host supplies an explicit identity selector and foreground user-presence confirmation;
-native Core owns the keys, proof, exact retry, stable-owner local epoch reset, fresh JWT,
+The host may supply an exact identity selector and always supplies foreground user-presence
+confirmation. A global flow passes `null`; Core resolves an exact local Handle match or, when
+no local match exists, bootstraps a new local identity from the phone-verified Handle's public
+WNS binding. `null` never selects the current/default identity implicitly. Native Core owns the
+keys, proof, exact retry, stable-owner local epoch reset, fresh JWT,
 new P5 PreKey publication, and transport-only group rebind. Recovery never migrates old
 Ratchet/MLS material and never creates P6 or `awaitingP6` state. Only exact Handle-backed
 `transport-protected` groups are eligible; every missing, DID-only, E2EE, malformed, or

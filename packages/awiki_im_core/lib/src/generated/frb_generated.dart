@@ -497,7 +497,7 @@ abstract class RustLibApi extends BaseApi {
 
   Future<DartHandleRecoveryProgress> crateApiIdentityPrepareHandleRecovery({
     required ArcDartImCore core,
-    required DartIdentitySelector selector,
+    DartIdentitySelector? selector,
     required String phone,
     required String code,
     required String handle,
@@ -3703,7 +3703,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @override
   Future<DartHandleRecoveryProgress> crateApiIdentityPrepareHandleRecovery({
     required ArcDartImCore core,
-    required DartIdentitySelector selector,
+    DartIdentitySelector? selector,
     required String phone,
     required String code,
     required String handle,
@@ -3717,7 +3717,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             core,
             serializer,
           );
-          sse_encode_box_autoadd_dart_identity_selector(selector, serializer);
+          sse_encode_opt_box_autoadd_dart_identity_selector(
+            selector,
+            serializer,
+          );
           sse_encode_String(phone, serializer);
           sse_encode_String(code, serializer);
           sse_encode_String(handle, serializer);
@@ -10022,6 +10025,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartIdentitySelector? dco_decode_opt_box_autoadd_dart_identity_selector(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_dart_identity_selector(raw);
+  }
+
+  @protected
   DartIdentitySummary? dco_decode_opt_box_autoadd_dart_identity_summary(
     dynamic raw,
   ) {
@@ -14996,6 +15009,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartIdentitySelector? sse_decode_opt_box_autoadd_dart_identity_selector(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_identity_selector(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   DartIdentitySummary? sse_decode_opt_box_autoadd_dart_identity_summary(
     SseDeserializer deserializer,
   ) {
@@ -19156,6 +19182,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_dart_identity_device_role(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_identity_selector(
+    DartIdentitySelector? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_identity_selector(self, serializer);
     }
   }
 

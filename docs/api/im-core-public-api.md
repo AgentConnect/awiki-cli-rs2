@@ -732,6 +732,11 @@ Recovery Commit 收到 HTTP 2xx 零字节响应时按传输结果不确定处理
 `handle_recovery_outcome_unknown`，pending phase 保持 `remoteCommitPending`；进程重开后的
 resume 使用 Vault 中已持久化的原请求精确重放，不生成新 operation ID、proof 或身份材料。
 
+`HandleRecoveryPrepareRequest.identity` 是可选的本地 identity hint。提供时必须与输入 Handle
+精确一致；省略时 Core 在完整本地 identity index 中按 Handle 精确匹配，找不到时通过公开
+WNS binding 创建新的本地恢复身份。省略 selector 绝不表示使用 default/current identity。
+已有本地目标只迁移该 owner 的普通状态；新目标不迁移本地普通数据，也不修改其他身份。
+
 V1 不增加 CLI command、Daemon task、Agent 恢复入口或 process-global identity。未来这些 host
 可复用同一 typed service 和显式 `IdentitySelector`，不得绕过 Core 状态机。App 迁移旧
 device-registry epoch 时只能采用 `IdentityRegistry::legacy_registry_epoch_adoption_authority`
