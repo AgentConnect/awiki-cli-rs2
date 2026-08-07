@@ -202,6 +202,11 @@ vNext DID；该窄兼容路径保留原 `user_id`/Handle，不允许替换已有
 PendingRegistration 供精确重试，不重放 `register`。V1 只保存 access token，不保存设备
 refresh token，也没有 Genesis 或独立设备 Token RPC。
 
+若 `register` 明确返回 `error.data.awiki_code=device.document_proof_expired`，Core 保留同一
+DID、root/device/daemon keys 与 device ID，只刷新顶层 root proof、更新 pending document hash，
+并在本次调用内重试一次。超时、连接失败、5xx、通用 `device.document_invalid` 或第二次过期均不
+触发继续重签；模糊结果仍按原 pending 做远端 reconciliation。
+
 Vault DTO boundary:
 
 - `IdentityVaultStatus` reports the selected backend (`file_compat` or `vault`),

@@ -1,8 +1,10 @@
 //! Vault-only crash-convergence record for the normal `register` flow.
 //!
 //! The record preserves the exact generated vNext identity across ambiguous
-//! remote results and local activation retries. It never stores OTP plaintext,
-//! a Genesis grant/proof, or a refresh token.
+//! remote results and local activation retries. Only an explicit server
+//! expired-proof reason may replace its root proof while retaining all identity
+//! and device keys. It never stores OTP plaintext, a Genesis grant/proof, or a
+//! refresh token.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -156,6 +158,24 @@ impl PendingRegistration {
         }
         Ok(())
     }
+
+    pub(crate) fn refresh_expired_root_proof(&mut self) -> crate::ImResult<()> {
+        if self.phase != PendingRegistrationPhase::Prepared
+            || self.remote_result.is_some()
+            || !self.remote_attempted
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        crate::internal::identity_daemon_subkey::resign_did_document_with_fresh_key1_proof(
+            &mut self.generated.did_document,
+            &self.generated.did,
+            &self.generated.root_private_pem,
+        )?;
+        self.document_hash =
+            crate::internal::identity_wire::document::document_hash(&self.generated.did_document)?;
+        self.remote_attempted = false;
+        self.validate()
+    }
 }
 
 pub(crate) struct PendingRegistrationStore {
@@ -294,5 +314,52 @@ mod tests {
         assert!(!encoded.contains("grant"));
         assert!(!encoded.contains("refresh_token"));
         assert!(!format!("{pending:?}").contains("PRIVATE KEY"));
+    }
+
+    #[test]
+    fn expired_root_proof_refresh_keeps_identity_and_device_material() {
+        let generated =
+            crate::internal::identity_generation::generate_vnext_handle_identity_with_default_daemon_subkey(
+                "example.test",
+                "alice",
+                None,
+                None,
+            )
+            .unwrap();
+        let mut pending = PendingRegistration::new(
+            "alice".to_owned(),
+            "example.test".to_owned(),
+            "alice".to_owned(),
+            "Alice".to_owned(),
+            true,
+            "already_verified".to_owned(),
+            None,
+            None,
+            generated,
+        )
+        .unwrap();
+        pending.remote_attempted = true;
+        let original = pending.generated.clone();
+        let original_hash = pending.document_hash.clone();
+
+        pending.refresh_expired_root_proof().unwrap();
+
+        assert_eq!(pending.generated.did, original.did);
+        assert_eq!(
+            pending.generated.root_private_pem,
+            original.root_private_pem
+        );
+        assert_eq!(
+            pending.generated.device_signing_private_pem,
+            original.device_signing_private_pem
+        );
+        assert_eq!(
+            pending.generated.device_e2ee_private_pem,
+            original.device_e2ee_private_pem
+        );
+        assert_ne!(pending.generated.did_document, original.did_document);
+        assert_ne!(pending.document_hash, original_hash);
+        assert!(!pending.remote_attempted);
+        pending.validate().unwrap();
     }
 }

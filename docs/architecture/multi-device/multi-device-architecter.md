@@ -328,6 +328,11 @@ Genesis 入口一起删除。
 客户端可以保留加密 pending record 处理“服务端已成功、本地尚未提交”，但重试必须复用同一身份
 和密钥，不能把 pending record 发展为远端 Genesis 协议。
 
+正常注册 pending 只有在 User Service 明确返回稳定
+`device.document_proof_expired` 时，才允许保留同一 DID、root/device/daemon keys 与 device ID，
+刷新顶层 root proof 和 document hash 并有界重试一次。网络失败、5xx、通用文档错误和错误文案
+均不能触发重签；模糊结果继续优先 reconciliation，避免把已提交注册误判为可重放请求。
+
 ### 6.3 单原设备 Legacy 升级
 
 V1 支持一个严格的一次性升级：
