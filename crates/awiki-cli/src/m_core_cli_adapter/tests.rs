@@ -633,6 +633,12 @@ fn build_im_core_config_from_parts_maps_fields() {
     assert_eq!(cfg.service_base_url.as_str(), "https://example.test");
     assert_eq!(cfg.did_domain, "awiki.test");
     assert_eq!(
+        cfg.client_version_info
+            .as_ref()
+            .map(im_core::ClientVersionInfo::header_value),
+        option_env!("AWIKI_CLI_VERSION").map(|version| format!("awiki-cli/0714/{version}"))
+    );
+    assert_eq!(
         cfg.user_service_endpoint.unwrap().as_str(),
         "https://users.example.test"
     );

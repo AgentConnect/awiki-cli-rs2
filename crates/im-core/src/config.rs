@@ -67,18 +67,36 @@ impl ClientVersionInfo {
                 "client release must contain exactly four ASCII digits",
             ));
         }
-        if self.version.is_empty()
-            || !self
-                .version
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-        {
+        if !is_numeric_dotted_version(&self.version) {
             return Err(crate::ImError::invalid_input(
                 Some("client_version_info.version".to_owned()),
-                "client version must use non-empty header-safe ASCII version characters",
+                "client version must contain one to four canonical decimal components",
             ));
         }
         Ok(())
+    }
+}
+
+fn is_numeric_dotted_version(version: &str) -> bool {
+    let mut count = 0;
+    for component in version.split('.') {
+        count += 1;
+        if count > 4 || !is_canonical_decimal(component) {
+            return false;
+        }
+    }
+    count != 0
+}
+
+fn is_canonical_decimal(value: &str) -> bool {
+    match value.as_bytes() {
+        [b'0'] => true,
+        [first, rest @ ..] => {
+            first.is_ascii_digit()
+                && *first != b'0'
+                && rest.iter().all(|byte| byte.is_ascii_digit())
+        }
+        [] => false,
     }
 }
 
@@ -184,6 +202,10 @@ mod tests {
             ClientVersionInfo::new("custom", "0714", "1.0.0", None),
             ClientVersionInfo::new("awiki-cli", "714", "1.0.0", None),
             ClientVersionInfo::new("awiki-cli", "0714", "1.0.0+other", None),
+            ClientVersionInfo::new("awiki-cli", "0714", "dev", None),
+            ClientVersionInfo::new("awiki-cli", "0714", "01.0.0", None),
+            ClientVersionInfo::new("awiki-cli", "0714", "1.0.0.0.1", None),
+            ClientVersionInfo::new("awiki-cli", "0714", "1.0.", None),
         ] {
             assert!(result.is_err());
         }

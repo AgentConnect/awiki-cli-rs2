@@ -27,6 +27,13 @@ pub const CGO_ENABLED: &str = match option_env!("AWIKI_CLI_CGO_ENABLED") {
     None => "unknown",
 };
 
+pub fn client_version_info() -> im_core::ImResult<Option<im_core::ClientVersionInfo>> {
+    match option_env!("AWIKI_CLI_VERSION") {
+        Some(_) => im_core::ClientVersionInfo::new(PRODUCT, RELEASE, VERSION, None).map(Some),
+        None => Ok(None),
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BuildInfo {
     pub version: String,
@@ -153,6 +160,18 @@ mod tests {
     fn client_version_metadata_has_fixed_cli_product_and_release() {
         assert_eq!(PRODUCT, "awiki-cli");
         assert_eq!(RELEASE, option_env!("AWIKI_CLI_RELEASE").unwrap_or("0714"));
+    }
+
+    #[test]
+    fn client_version_header_is_only_emitted_for_versioned_builds() {
+        let actual = client_version_info().unwrap();
+        match option_env!("AWIKI_CLI_VERSION") {
+            Some(version) => assert_eq!(
+                actual.unwrap().header_value(),
+                format!("awiki-cli/{RELEASE}/{version}")
+            ),
+            None => assert!(actual.is_none()),
+        }
     }
 
     #[test]
