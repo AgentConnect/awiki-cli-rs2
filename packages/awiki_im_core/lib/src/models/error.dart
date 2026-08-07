@@ -32,12 +32,28 @@ class AwikiImCoreException implements Exception {
 }
 
 enum HandleRecoveryFailureCode {
+  factorRetryRequired,
+  resultAbsent,
+  outcomeUnknown,
+  localKeyUnavailable,
+  localTransitionPending,
+  localMigrationUnsupported,
+  unknownEpoch,
   notPrepared,
   userPresenceRequired,
   transitionMismatch,
   transitionChainUnsupported,
   remoteStateChanged,
-  outcomeUnknown,
   localStateUnavailable,
   blocked,
+}
+
+extension HandleRecoveryFailureCodeRetryability on HandleRecoveryFailureCode {
+  bool get retryable => switch (this) {
+    HandleRecoveryFailureCode.factorRetryRequired ||
+    HandleRecoveryFailureCode.resultAbsent ||
+    HandleRecoveryFailureCode.outcomeUnknown ||
+    HandleRecoveryFailureCode.localTransitionPending => true,
+    _ => false,
+  };
 }

@@ -6,16 +6,13 @@ use awiki_im_core::identity::{
 #[test]
 fn recovery_secret_inputs_are_write_only_in_debug_output() {
     let otp = HandleRecoveryOtpRequest {
-        phone: "+8613800000000".to_owned(),
-        handle: "alice.example.invalid".to_owned(),
-        operation_id: "recover-001".to_owned(),
-    };
-    let prepare = HandleRecoveryPrepareRequest {
         identity: awiki_im_core::identity::IdentitySelector::Default,
         phone: "+8613800000000".to_owned(),
-        code: "123456".to_owned(),
-        handle: "alice.example.invalid".to_owned(),
+    };
+    let prepare = HandleRecoveryPrepareRequest {
         operation_id: "recover-001".to_owned(),
+        phone: "+8613800000000".to_owned(),
+        code: "123456".to_owned(),
     };
     assert!(!format!("{otp:?}").contains("13800000000"));
     assert!(!format!("{prepare:?}").contains("123456"));
@@ -39,9 +36,25 @@ fn recovery_facade_uses_the_frozen_phase_and_error_vocabulary() {
 }
 
 #[test]
+fn recovery_v4_error_retryability_is_a_closed_table() {
+    let cases = [
+        (HandleRecoveryErrorCode::FactorRetryRequired, true),
+        (HandleRecoveryErrorCode::ResultAbsent, true),
+        (HandleRecoveryErrorCode::OutcomeUnknown, true),
+        (HandleRecoveryErrorCode::LocalKeyUnavailable, false),
+        (HandleRecoveryErrorCode::LocalTransitionPending, true),
+        (HandleRecoveryErrorCode::LocalMigrationUnsupported, false),
+        (HandleRecoveryErrorCode::UnknownEpoch, false),
+    ];
+    for (code, retryable) in cases {
+        assert_eq!(code.retryable(), retryable, "{}", code.as_str());
+    }
+}
+
+#[test]
 fn activation_requires_an_explicit_user_presence_field() {
     let request = HandleRecoveryActivateRequest {
-        recovery_id: "recovery-public-ref".to_owned(),
+        operation_id: "recovery-public-ref".to_owned(),
         user_presence_confirmed: false,
     };
     assert!(!request.user_presence_confirmed);
@@ -76,15 +89,14 @@ async fn recovery_execution_gate_defaults_off() {
     let error = core
         .handle_recovery()
         .request_handle_recovery_otp(HandleRecoveryOtpRequest {
+            identity: awiki_im_core::identity::IdentitySelector::Default,
             phone: "+8613800000000".to_owned(),
-            handle: "alice.example.invalid".to_owned(),
-            operation_id: "recover-001".to_owned(),
         })
         .await
         .unwrap_err();
     assert!(matches!(
         error,
         awiki_im_core::ImError::UnsupportedCapability { capability }
-            if capability == "handle-recovery-v1"
+            if capability == "handle-recovery-v4"
     ));
 }

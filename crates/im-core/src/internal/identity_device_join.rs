@@ -1578,23 +1578,19 @@ fn promote_join_identity(
             if marker.phase
                 == crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched
             {
-                let (remaining, blocked) =
-                    crate::internal::group_rebind_recovery::handle_recovery_job_counts(
-                        &core.inner().sdk_paths().local_state.sqlite_path,
-                        &marker.owner_identity_id,
-                        &marker.handle,
-                        &marker.previous_did,
-                        &marker.current_did,
-                        &marker.binding_generation,
-                    )?;
-                if remaining == 0 && blocked == 0 {
-                    crate::internal::identity_transition_pending::update_phase(
-                        &core.inner().sdk_paths().local_state.sqlite_path,
-                        &marker.recovery_id,
-                        crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
-                        crate::internal::identity_transition_pending::TransitionPhase::Completed,
-                    )?;
-                }
+                crate::internal::identity_transition_pending::mark_applied(
+                    &core.inner().sdk_paths().local_state.sqlite_path,
+                    &marker.recovery_id,
+                    crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
+                    pending.authorization.device.device_id.as_str(),
+                    &pending.authorization.device.auth_generation.to_string(),
+                    &pending
+                        .authorization
+                        .checkpoint
+                        .registry_version
+                        .to_string(),
+                    "{}",
+                )?;
             }
             return ensure_existing_join_identity_is_rootless(
                 &index,
@@ -1712,6 +1708,21 @@ fn promote_join_identity(
             crate::internal::identity_transition_pending::TransitionPhase::Pending,
             crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
         )?;
+        crate::internal::identity_transition_pending::mark_applied(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &marker.recovery_id,
+            crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
+            pending.authorization.device.device_id.as_str(),
+            &pending.authorization.device.auth_generation.to_string(),
+            &pending
+                .authorization
+                .checkpoint
+                .registry_version
+                .to_string(),
+            "{}",
+        )?;
+        // Group repair has its own durable journal and retry lifecycle. A
+        // queueing failure must not roll back an already-applied identity.
         let _ = crate::internal::group_rebind_recovery::enqueue_recovery_jobs(
             &core.inner().sdk_paths().local_state.sqlite_path,
             &marker.owner_identity_id,
@@ -1719,24 +1730,7 @@ fn promote_join_identity(
             std::slice::from_ref(&marker.previous_did),
             &marker.current_did,
             &marker.binding_generation,
-        )?;
-        let (remaining, blocked) =
-            crate::internal::group_rebind_recovery::handle_recovery_job_counts(
-                &core.inner().sdk_paths().local_state.sqlite_path,
-                &marker.owner_identity_id,
-                &marker.handle,
-                &marker.previous_did,
-                &marker.current_did,
-                &marker.binding_generation,
-            )?;
-        if remaining == 0 && blocked == 0 {
-            crate::internal::identity_transition_pending::update_phase(
-                &core.inner().sdk_paths().local_state.sqlite_path,
-                &marker.recovery_id,
-                crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
-                crate::internal::identity_transition_pending::TransitionPhase::Completed,
-            )?;
-        }
+        );
         let committed = identity_store.load_index()?;
         return ensure_existing_join_identity_is_rootless(
             &committed,

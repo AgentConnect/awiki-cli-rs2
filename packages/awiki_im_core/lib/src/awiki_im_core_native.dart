@@ -66,15 +66,22 @@ Future<T> _mapNativeErrors<T>(Future<T> Function() action) async {
       serviceDataJson: error.serviceDataJson,
       deviceRevokeOutcomeCategory: error.deviceRevokeOutcomeCategory
           ?._toModel(),
-      handleRecoveryFailureCode: _handleRecoveryFailureCode(
-        error.serviceCode,
-      ),
+      handleRecoveryFailureCode: _handleRecoveryFailureCode(error.serviceCode),
     );
   }
 }
 
 HandleRecoveryFailureCode? _handleRecoveryFailureCode(String? code) =>
     switch (code) {
+      'factor_retry_required' => HandleRecoveryFailureCode.factorRetryRequired,
+      'result_absent' => HandleRecoveryFailureCode.resultAbsent,
+      'outcome_unknown' => HandleRecoveryFailureCode.outcomeUnknown,
+      'local_key_unavailable' => HandleRecoveryFailureCode.localKeyUnavailable,
+      'local_transition_pending' =>
+        HandleRecoveryFailureCode.localTransitionPending,
+      'local_migration_unsupported' =>
+        HandleRecoveryFailureCode.localMigrationUnsupported,
+      'unknown_epoch' => HandleRecoveryFailureCode.unknownEpoch,
       'handle_recovery_not_prepared' => HandleRecoveryFailureCode.notPrepared,
       'handle_recovery_user_presence_required' =>
         HandleRecoveryFailureCode.userPresenceRequired,
@@ -225,52 +232,46 @@ class AwikiImCore {
   }
 
   Future<HandleRecoveryOtpResult> requestHandleRecoveryOtp({
+    required IdentitySelector selector,
     required String phone,
-    required String handle,
-    required String operationId,
   }) async {
     _ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_identity_api.requestHandleRecoveryOtp(
         core: _inner,
+        selector: selector._toGen(),
         phone: phone,
-        handle: handle,
-        operationId: operationId,
       ),
     );
     return result._toModel();
   }
 
   Future<HandleRecoveryProgress> prepareHandleRecovery({
-    required IdentitySelector selector,
+    required String operationId,
     required String phone,
     required String code,
-    required String handle,
-    required String operationId,
   }) async {
     _ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_identity_api.prepareHandleRecovery(
         core: _inner,
-        selector: selector._toGen(),
+        operationId: operationId,
         phone: phone,
         code: code,
-        handle: handle,
-        operationId: operationId,
       ),
     );
     return result._toModel();
   }
 
   Future<HandleRecoveryProgress> activateHandleRecovery({
-    required String recoveryId,
+    required String operationId,
     required bool userPresenceConfirmed,
   }) async {
     _ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_identity_api.activateHandleRecovery(
         core: _inner,
-        recoveryId: recoveryId,
+        operationId: operationId,
         userPresenceConfirmed: userPresenceConfirmed,
       ),
     );
@@ -278,29 +279,84 @@ class AwikiImCore {
   }
 
   Future<HandleRecoveryProgress> resumeHandleRecovery(
-    String recoveryId,
+    String operationId,
   ) async {
     _ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_identity_api.resumeHandleRecovery(
         core: _inner,
-        recoveryId: recoveryId,
+        operationId: operationId,
       ),
     );
     return result._toModel();
   }
 
   Future<HandleRecoveryProgress> handleRecoveryStatus(
-    String recoveryId,
+    String operationId,
   ) async {
     _ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_identity_api.handleRecoveryStatus(
         core: _inner,
-        recoveryId: recoveryId,
+        operationId: operationId,
       ),
     );
     return result._toModel();
+  }
+
+  Future<List<HandleRecoveryOperationSummary>> listHandleRecoveryOperations(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.listHandleRecoveryOperations(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return result.map((operation) => operation._toModel()).toList();
+  }
+
+  Future<HandleRecoveryOperationSummary> discardHandleRecoveryPreAttempt(
+    String operationId,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.discardHandleRecoveryPreAttempt(
+        core: _inner,
+        operationId: operationId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<HandleRecoveryOperationSummary>
+  quarantineHandleRecoveryKeyUnavailable({
+    required String operationId,
+    required bool userPresenceConfirmed,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.quarantineHandleRecoveryKeyUnavailable(
+        core: _inner,
+        operationId: operationId,
+        userPresenceConfirmed: userPresenceConfirmed,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<HandleRecoveryAccountEpochReceipt?> authorizedHandleRecoveryReceipt(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.authorizedHandleRecoveryReceipt(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return result?._toModel();
   }
 
   Future<AuthorizedJoinActivationProgress> activateAuthorizedJoin({
@@ -2043,6 +2099,7 @@ extension on AwikiImCoreOpenOptions {
     multiDeviceDirectE2EeEnabled: multiDeviceDirectE2eeEnabled,
     multiDeviceGroupE2EeEnabled: multiDeviceGroupE2eeEnabled,
     multiDeviceHandleRecoveryEnabled: multiDeviceHandleRecoveryEnabled,
+    multiDeviceAudience: multiDeviceAudience,
   );
 }
 
@@ -2493,7 +2550,7 @@ extension on gen_identity.DartLegacyRegistryEpochAdoptionAuthority {
 
 extension on gen_identity.DartHandleRecoveryOtpResult {
   HandleRecoveryOtpResult _toModel() => HandleRecoveryOtpResult(
-    handle: handle,
+    fullHandle: fullHandle,
     operationId: operationId,
     accepted: accepted,
     retryAfterSeconds: retryAfterSeconds,
@@ -2531,14 +2588,21 @@ extension on gen_identity.DartHandleRecoveryResetReference {
 
 extension on gen_identity.DartHandleRecoveryProgress {
   HandleRecoveryProgress _toModel() => HandleRecoveryProgress(
-    recoveryId: recoveryId,
     operationId: operationId,
     ownerIdentityId: ownerIdentityId,
-    handle: handle,
-    previousDid: previousDid,
+    accountUserId: accountUserId,
+    fullHandle: fullHandle,
+    localPreviousDid: localPreviousDid,
     currentDid: currentDid,
     bindingGeneration: bindingGeneration,
+    stateRootFingerprint: stateRootFingerprint,
     phase: switch (phase) {
+      gen_identity.DartHandleRecoveryPhase.awaitingFactor =>
+        HandleRecoveryPhase.awaitingFactor,
+      gen_identity.DartHandleRecoveryPhase.readyToCommit =>
+        HandleRecoveryPhase.readyToCommit,
+      gen_identity.DartHandleRecoveryPhase.remoteOutcomeUnknown =>
+        HandleRecoveryPhase.remoteOutcomeUnknown,
       gen_identity.DartHandleRecoveryPhase.prepared =>
         HandleRecoveryPhase.prepared,
       gen_identity.DartHandleRecoveryPhase.remoteCommitPending =>
@@ -2551,37 +2615,137 @@ extension on gen_identity.DartHandleRecoveryProgress {
         HandleRecoveryPhase.identitySwitched,
       gen_identity.DartHandleRecoveryPhase.completed =>
         HandleRecoveryPhase.completed,
+      gen_identity.DartHandleRecoveryPhase.applied =>
+        HandleRecoveryPhase.applied,
+      gen_identity.DartHandleRecoveryPhase.quarantinedKeyUnavailable =>
+        HandleRecoveryPhase.quarantinedKeyUnavailable,
       gen_identity.DartHandleRecoveryPhase.blocked =>
         HandleRecoveryPhase.blocked,
     },
     impact: impact._toModel(),
     registryEpochReset: resetReference?._toModel(),
     failureCode: switch (blockedCode) {
+      gen_identity.DartHandleRecoveryErrorCode.factorRetryRequired =>
+        HandleRecoveryFailureCode.factorRetryRequired,
+      gen_identity.DartHandleRecoveryErrorCode.resultAbsent =>
+        HandleRecoveryFailureCode.resultAbsent,
+      gen_identity.DartHandleRecoveryErrorCode.outcomeUnknown =>
+        HandleRecoveryFailureCode.outcomeUnknown,
+      gen_identity.DartHandleRecoveryErrorCode.localKeyUnavailable =>
+        HandleRecoveryFailureCode.localKeyUnavailable,
+      gen_identity.DartHandleRecoveryErrorCode.localTransitionPending =>
+        HandleRecoveryFailureCode.localTransitionPending,
+      gen_identity.DartHandleRecoveryErrorCode.localMigrationUnsupported =>
+        HandleRecoveryFailureCode.localMigrationUnsupported,
+      gen_identity.DartHandleRecoveryErrorCode.unknownEpoch =>
+        HandleRecoveryFailureCode.unknownEpoch,
       gen_identity.DartHandleRecoveryErrorCode.handleRecoveryNotPrepared =>
         HandleRecoveryFailureCode.notPrepared,
       gen_identity
-            .DartHandleRecoveryErrorCode
-            .handleRecoveryUserPresenceRequired =>
+          .DartHandleRecoveryErrorCode
+          .handleRecoveryUserPresenceRequired =>
         HandleRecoveryFailureCode.userPresenceRequired,
-      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryTransitionMismatch =>
+      gen_identity
+          .DartHandleRecoveryErrorCode
+          .handleRecoveryTransitionMismatch =>
         HandleRecoveryFailureCode.transitionMismatch,
       gen_identity
-            .DartHandleRecoveryErrorCode
-            .handleRecoveryTransitionChainUnsupported =>
+          .DartHandleRecoveryErrorCode
+          .handleRecoveryTransitionChainUnsupported =>
         HandleRecoveryFailureCode.transitionChainUnsupported,
-      gen_identity.DartHandleRecoveryErrorCode.handleRecoveryRemoteStateChanged =>
+      gen_identity
+          .DartHandleRecoveryErrorCode
+          .handleRecoveryRemoteStateChanged =>
         HandleRecoveryFailureCode.remoteStateChanged,
       gen_identity.DartHandleRecoveryErrorCode.handleRecoveryOutcomeUnknown =>
         HandleRecoveryFailureCode.outcomeUnknown,
       gen_identity
-            .DartHandleRecoveryErrorCode
-            .handleRecoveryLocalStateUnavailable =>
+          .DartHandleRecoveryErrorCode
+          .handleRecoveryLocalStateUnavailable =>
         HandleRecoveryFailureCode.localStateUnavailable,
       gen_identity.DartHandleRecoveryErrorCode.handleRecoveryBlocked =>
         HandleRecoveryFailureCode.blocked,
       null => null,
     },
   );
+}
+
+extension on gen_identity.DartHandleRecoveryOperationSummary {
+  HandleRecoveryOperationSummary _toModel() => HandleRecoveryOperationSummary(
+    operationId: operationId,
+    ownerIdentityId: ownerIdentityId,
+    accountUserId: accountUserId,
+    fullHandle: fullHandle,
+    lifecycleClass: switch (lifecycleClass) {
+      gen_identity.DartHandleRecoveryOperationLifecycle.preCommit =>
+        HandleRecoveryOperationLifecycle.preCommit,
+      gen_identity.DartHandleRecoveryOperationLifecycle.remoteUnresolved =>
+        HandleRecoveryOperationLifecycle.remoteUnresolved,
+      gen_identity.DartHandleRecoveryOperationLifecycle.remoteCommitted =>
+        HandleRecoveryOperationLifecycle.remoteCommitted,
+      gen_identity
+          .DartHandleRecoveryOperationLifecycle
+          .localTransitionPending =>
+        HandleRecoveryOperationLifecycle.localTransitionPending,
+      gen_identity.DartHandleRecoveryOperationLifecycle.applied =>
+        HandleRecoveryOperationLifecycle.applied,
+      gen_identity.DartHandleRecoveryOperationLifecycle.discardedPreAttempt =>
+        HandleRecoveryOperationLifecycle.discardedPreAttempt,
+      gen_identity
+          .DartHandleRecoveryOperationLifecycle
+          .quarantinedKeyUnavailable =>
+        HandleRecoveryOperationLifecycle.quarantinedKeyUnavailable,
+      gen_identity
+          .DartHandleRecoveryOperationLifecycle
+          .supersededByStateChange =>
+        HandleRecoveryOperationLifecycle.supersededByStateChange,
+      gen_identity.DartHandleRecoveryOperationLifecycle.failedTerminal =>
+        HandleRecoveryOperationLifecycle.failedTerminal,
+    },
+    commitAttempted: commitAttempted,
+    keyState: switch (keyState) {
+      gen_identity.DartHandleRecoveryKeyState.available =>
+        HandleRecoveryKeyState.available,
+      gen_identity.DartHandleRecoveryKeyState.temporarilyLocked =>
+        HandleRecoveryKeyState.temporarilyLocked,
+      gen_identity.DartHandleRecoveryKeyState.permanentlyUnavailable =>
+        HandleRecoveryKeyState.permanentlyUnavailable,
+      gen_identity.DartHandleRecoveryKeyState.destroyedPreAttempt =>
+        HandleRecoveryKeyState.destroyedPreAttempt,
+    },
+    intentHash: intentHash,
+    stateRootFingerprint: stateRootFingerprint,
+    supersededByOperationId: supersededByOperationId,
+    lastErrorCode: lastErrorCode,
+    createdAt: DateTime.parse(createdAt),
+    updatedAt: DateTime.parse(updatedAt),
+  );
+}
+
+extension on gen_identity.DartHandleRecoveryAccountEpochReceipt {
+  HandleRecoveryAccountEpochReceipt _toModel() =>
+      HandleRecoveryAccountEpochReceipt(
+        receiptSchemaVersion: receiptSchemaVersion,
+        sourceKind: switch (sourceKind) {
+          gen_identity.DartHandleRecoveryTransitionSourceKind.initiator =>
+            HandleRecoveryTransitionSourceKind.initiator,
+          gen_identity.DartHandleRecoveryTransitionSourceKind.joinedDevice =>
+            HandleRecoveryTransitionSourceKind.joinedDevice,
+        },
+        sourceId: sourceId,
+        accountUserId: accountUserId,
+        ownerIdentityId: ownerIdentityId,
+        fullHandle: fullHandle,
+        localPreviousDid: localPreviousDid,
+        currentDid: currentDid,
+        bindingGeneration: bindingGeneration,
+        currentDeviceId: currentDeviceId,
+        deviceAuthGeneration: deviceAuthGeneration.toInt(),
+        registryVersion: registryVersion.toInt(),
+        stateRootFingerprint: stateRootFingerprint,
+        appliedAt: DateTime.parse(appliedAt),
+        metadataJson: metadataJson,
+      );
 }
 
 extension on gen_identity.DartAuthorizedJoinActivationProgress {

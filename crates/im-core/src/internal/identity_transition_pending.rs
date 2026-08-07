@@ -17,12 +17,26 @@ CREATE TABLE IF NOT EXISTS identity_transition_pending (
     previous_did TEXT NOT NULL,
     current_did TEXT NOT NULL,
     binding_generation TEXT NOT NULL,
+    current_device_id TEXT,
+    device_auth_generation TEXT,
+    registry_version TEXT,
+    applied_at TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
     phase TEXT NOT NULL CHECK(phase IN ('pending','identity_switched','completed')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_transition_source
 ON identity_transition_pending(source_kind, source_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_transition_active_owner
+ON identity_transition_pending(owner_identity_id)
+WHERE phase IN ('pending','identity_switched');
+CREATE INDEX IF NOT EXISTS idx_identity_transition_owner_phase
+ON identity_transition_pending(owner_identity_id, phase, updated_at);
+CREATE INDEX IF NOT EXISTS idx_identity_transition_account_generation
+ON identity_transition_pending(account_user_id, binding_generation);
+CREATE INDEX IF NOT EXISTS idx_identity_transition_handle_epoch
+ON identity_transition_pending(handle, current_did, binding_generation);
 "#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,12 +89,69 @@ pub(crate) struct IdentityTransitionMarker {
     pub(crate) previous_did: String,
     pub(crate) current_did: String,
     pub(crate) binding_generation: String,
+    pub(crate) current_device_id: Option<String>,
+    pub(crate) device_auth_generation: Option<String>,
+    pub(crate) registry_version: Option<String>,
+    pub(crate) applied_at: Option<String>,
+    pub(crate) metadata_json: String,
     pub(crate) phase: TransitionPhase,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
 }
 
 impl IdentityTransitionMarker {
+    pub(crate) fn initiator_v4(
+        sqlite_path: &Path,
+        pending: &crate::internal::identity_handle_recovery_pending::PendingHandleRecoveryV4,
+        result: &crate::internal::identity_handle_recovery_pending::RecoveryRemoteResultV4,
+    ) -> crate::ImResult<Self> {
+        let intent = pending
+            .intent
+            .as_ref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        let binding = pending
+            .authoritative_binding
+            .as_ref()
+            .ok_or(crate::ImError::PermissionDenied)?;
+        if result.operation_id != pending.operation_id
+            || result.intent_hash != pending.intent_hash.as_deref().unwrap_or("")
+            || result.account_user_id != binding.account_user_id
+            || result.full_handle != pending.full_handle
+            || result.previous_did != binding.current_did
+            || result.current_did != intent.new_did
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        let now = now()?;
+        let marker = Self {
+            schema_version: 1,
+            contract_version:
+                crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION.to_owned(),
+            contract_hash: crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH
+                .to_owned(),
+            recovery_id: pending.operation_id.clone(),
+            source_kind: TransitionSourceKind::Initiator,
+            source_id: pending.operation_id.clone(),
+            state_root_fingerprint: state_root_fingerprint(sqlite_path),
+            account_user_id: result.account_user_id.clone(),
+            owner_identity_id: pending.owner_identity_id.clone(),
+            handle: result.full_handle.clone(),
+            previous_did: pending.local_previous_did.clone(),
+            current_did: result.current_did.clone(),
+            binding_generation: result.binding_generation.clone(),
+            current_device_id: Some(result.bootstrap_device.device_id.clone()),
+            device_auth_generation: Some(result.bootstrap_device.auth_generation.to_string()),
+            registry_version: Some(result.checkpoint.registry_version.to_string()),
+            applied_at: None,
+            metadata_json: "{}".to_owned(),
+            phase: TransitionPhase::Pending,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        marker.validate()?;
+        Ok(marker)
+    }
+
     pub(crate) fn initiator(
         sqlite_path: &Path,
         pending: &crate::internal::identity_handle_recovery_pending::PendingHandleRecovery,
@@ -103,6 +174,11 @@ impl IdentityTransitionMarker {
             previous_did: result.previous_did.clone(),
             current_did: result.did.clone(),
             binding_generation: result.binding_generation.clone(),
+            current_device_id: Some(result.bootstrap_device_id.clone()),
+            device_auth_generation: Some(result.auth_generation.to_string()),
+            registry_version: Some(result.registry_version.to_string()),
+            applied_at: None,
+            metadata_json: "{}".to_owned(),
             phase: TransitionPhase::Pending,
             created_at: now.clone(),
             updated_at: now,
@@ -128,9 +204,9 @@ impl IdentityTransitionMarker {
         digest.update(join_session_id.as_bytes());
         let marker = Self {
             schema_version: 1,
-            contract_version: crate::internal::identity_handle_recovery_pending::CONTRACT_VERSION
-                .to_owned(),
-            contract_hash: crate::internal::identity_handle_recovery_pending::CONTRACT_HASH
+            contract_version:
+                crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION.to_owned(),
+            contract_hash: crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH
                 .to_owned(),
             recovery_id: format!("joined_{:x}", digest.finalize()),
             source_kind: TransitionSourceKind::JoinedDevice,
@@ -142,6 +218,11 @@ impl IdentityTransitionMarker {
             previous_did: previous_did.to_owned(),
             current_did: current_did.to_owned(),
             binding_generation: binding_generation.to_owned(),
+            current_device_id: None,
+            device_auth_generation: None,
+            registry_version: None,
+            applied_at: None,
+            metadata_json: "{}".to_owned(),
             phase: TransitionPhase::Pending,
             created_at: now.clone(),
             updated_at: now,
@@ -151,20 +232,52 @@ impl IdentityTransitionMarker {
     }
 
     pub(crate) fn validate(&self) -> crate::ImResult<()> {
+        let contract_is_v3 = self.contract_version
+            == crate::internal::identity_handle_recovery_pending::CONTRACT_VERSION
+            && self.contract_hash
+                == crate::internal::identity_handle_recovery_pending::CONTRACT_HASH;
+        let contract_is_v4 = self.contract_version
+            == crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION
+            && self.contract_hash
+                == crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH;
         if self.schema_version != 1
-            || self.contract_version
-                != crate::internal::identity_handle_recovery_pending::CONTRACT_VERSION
-            || self.contract_hash
-                != crate::internal::identity_handle_recovery_pending::CONTRACT_HASH
+            || !(contract_is_v3 || contract_is_v4)
             || self.recovery_id.trim().is_empty()
             || self.source_id.trim().is_empty()
             || self.account_user_id.trim().is_empty()
             || self.owner_identity_id.trim().is_empty()
             || self.previous_did == self.current_did
-            || self.state_root_fingerprint.len() != 71
-            || !self.state_root_fingerprint.starts_with("sha256:")
+            || !valid_state_root_fingerprint(&self.state_root_fingerprint)
             || crate::internal::identity_wire::handle_recovery::canonical_handle(&self.handle)
                 .is_err()
+            || serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+                &self.metadata_json,
+            )
+            .is_err()
+            || (self.contract_version
+                == crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION
+                && self.metadata_json != "{}")
+        {
+            return Err(crate::ImError::PermissionDenied);
+        }
+        for value in [
+            self.device_auth_generation.as_deref(),
+            self.registry_version.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !canonical_generation(value) {
+                return Err(crate::ImError::PermissionDenied);
+            }
+        }
+        if self.phase == TransitionPhase::Completed
+            && self.contract_version
+                == crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION
+            && (self.current_device_id.as_deref().unwrap_or("").is_empty()
+                || self.device_auth_generation.is_none()
+                || self.registry_version.is_none()
+                || self.applied_at.is_none())
         {
             return Err(crate::ImError::PermissionDenied);
         }
@@ -191,7 +304,7 @@ pub(crate) fn load_joined_device(
     crate::internal::local_state::schema::ensure_schema(&connection)?;
     connection
         .query_row(
-            "SELECT schema_version,contract_version,contract_hash,recovery_id,state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,binding_generation,phase,created_at,updated_at FROM identity_transition_pending WHERE source_kind='joined_device' AND source_id=?1",
+            "SELECT schema_version,contract_version,contract_hash,recovery_id,state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,binding_generation,phase,created_at,updated_at,current_device_id,device_auth_generation,registry_version,applied_at,metadata_json FROM identity_transition_pending WHERE source_kind='joined_device' AND source_id=?1",
             [join_session_id],
             |row| {
                 let phase = match row.get::<_, String>(11)?.as_str() {
@@ -214,6 +327,11 @@ pub(crate) fn load_joined_device(
                     previous_did: row.get(8)?,
                     current_did: row.get(9)?,
                     binding_generation: row.get(10)?,
+                    current_device_id: row.get(14)?,
+                    device_auth_generation: row.get(15)?,
+                    registry_version: row.get(16)?,
+                    applied_at: row.get(17)?,
+                    metadata_json: row.get(18)?,
                     phase,
                     created_at: row.get(12)?,
                     updated_at: row.get(13)?,
@@ -238,7 +356,7 @@ pub(crate) fn load(
     crate::internal::local_state::schema::ensure_schema(&connection)?;
     connection
         .query_row(
-            "SELECT schema_version,contract_version,contract_hash,source_kind,source_id,state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,binding_generation,phase,created_at,updated_at FROM identity_transition_pending WHERE recovery_id=?1",
+            "SELECT schema_version,contract_version,contract_hash,source_kind,source_id,state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,binding_generation,phase,created_at,updated_at,current_device_id,device_auth_generation,registry_version,applied_at,metadata_json FROM identity_transition_pending WHERE recovery_id=?1",
             [recovery_id],
             |row| {
                 let source_kind = match row.get::<_, String>(3)?.as_str() {
@@ -266,6 +384,11 @@ pub(crate) fn load(
                     previous_did: row.get(9)?,
                     current_did: row.get(10)?,
                     binding_generation: row.get(11)?,
+                    current_device_id: row.get(15)?,
+                    device_auth_generation: row.get(16)?,
+                    registry_version: row.get(17)?,
+                    applied_at: row.get(18)?,
+                    metadata_json: row.get(19)?,
                     phase,
                     created_at: row.get(13)?,
                     updated_at: row.get(14)?,
@@ -280,6 +403,26 @@ pub(crate) fn load(
             Ok(marker)
         })
         .transpose()
+}
+
+pub(crate) fn load_latest_applied_for_owner(
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+) -> crate::ImResult<Option<IdentityTransitionMarker>> {
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    crate::internal::local_state::schema::ensure_schema(&connection)?;
+    let recovery_id = connection
+        .query_row(
+            "SELECT recovery_id FROM identity_transition_pending WHERE owner_identity_id=?1 AND phase='completed' ORDER BY applied_at DESC,updated_at DESC,recovery_id DESC LIMIT 1",
+            [owner_identity_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    recovery_id
+        .map(|recovery_id| load(sqlite_path, &recovery_id))
+        .transpose()
+        .map(Option::flatten)
 }
 
 pub(crate) fn has_transition_for_owner(
@@ -306,14 +449,14 @@ pub(crate) fn persist(
     marker.validate_state_root(sqlite_path)?;
     let connection = crate::internal::local_state::open_writable(sqlite_path)?;
     crate::internal::local_state::schema::ensure_schema(&connection)?;
-    let other_transition: i64 = connection
+    let other_active_transition: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM identity_transition_pending WHERE owner_identity_id=?1 AND recovery_id<>?2",
+            "SELECT COUNT(*) FROM identity_transition_pending WHERE owner_identity_id=?1 AND recovery_id<>?2 AND phase IN ('pending','identity_switched')",
             rusqlite::params![marker.owner_identity_id, marker.recovery_id],
             |row| row.get(0),
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
-    if other_transition != 0 {
+    if other_active_transition != 0 {
         return Err(crate::ImError::Service {
             status_code: None,
             code: Some("handle_recovery_transition_chain_unsupported".to_owned()),
@@ -327,8 +470,9 @@ pub(crate) fn persist(
 INSERT INTO identity_transition_pending
     (recovery_id,schema_version,contract_version,contract_hash,source_kind,source_id,
      state_root_fingerprint,account_user_id,owner_identity_id,handle,previous_did,current_did,
-     binding_generation,phase,created_at,updated_at)
-VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+     binding_generation,current_device_id,device_auth_generation,registry_version,applied_at,
+     metadata_json,phase,created_at,updated_at)
+VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
 ON CONFLICT(recovery_id) DO UPDATE SET updated_at=excluded.updated_at
 WHERE identity_transition_pending.schema_version=excluded.schema_version
   AND identity_transition_pending.contract_version=excluded.contract_version
@@ -341,7 +485,12 @@ WHERE identity_transition_pending.schema_version=excluded.schema_version
   AND identity_transition_pending.handle=excluded.handle
   AND identity_transition_pending.previous_did=excluded.previous_did
   AND identity_transition_pending.current_did=excluded.current_did
-  AND identity_transition_pending.binding_generation=excluded.binding_generation"#,
+  AND identity_transition_pending.binding_generation=excluded.binding_generation
+  AND identity_transition_pending.current_device_id IS excluded.current_device_id
+  AND identity_transition_pending.device_auth_generation IS excluded.device_auth_generation
+  AND identity_transition_pending.registry_version IS excluded.registry_version
+  AND identity_transition_pending.applied_at IS excluded.applied_at
+  AND identity_transition_pending.metadata_json=excluded.metadata_json"#,
             rusqlite::params![
                 marker.recovery_id,
                 marker.schema_version,
@@ -356,6 +505,11 @@ WHERE identity_transition_pending.schema_version=excluded.schema_version
                 marker.previous_did,
                 marker.current_did,
                 marker.binding_generation,
+                marker.current_device_id,
+                marker.device_auth_generation,
+                marker.registry_version,
+                marker.applied_at,
+                marker.metadata_json,
                 marker.phase.as_str(),
                 marker.created_at,
                 marker.updated_at,
@@ -411,6 +565,50 @@ pub(crate) fn update_phase(
             .map(|value| (value.0.as_str(), value.1.as_str()))
             != Some((next.as_str(), state_root_fingerprint(sqlite_path).as_str()))
         {
+            return Err(crate::ImError::PermissionDenied);
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn mark_applied(
+    sqlite_path: &Path,
+    recovery_id: &str,
+    expected: TransitionPhase,
+    current_device_id: &str,
+    device_auth_generation: &str,
+    registry_version: &str,
+    metadata_json: &str,
+) -> crate::ImResult<()> {
+    if current_device_id.trim().is_empty()
+        || !canonical_generation(device_auth_generation)
+        || !canonical_generation(registry_version)
+        || serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(metadata_json)
+            .is_err()
+    {
+        return Err(crate::ImError::PermissionDenied);
+    }
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let applied_at = now()?;
+    let changed = connection
+        .execute(
+            "UPDATE identity_transition_pending SET phase='completed',current_device_id=?1,device_auth_generation=?2,registry_version=?3,applied_at=?4,metadata_json=?5,updated_at=?4 WHERE recovery_id=?6 AND phase=?7 AND state_root_fingerprint=?8",
+            rusqlite::params![
+                current_device_id,
+                device_auth_generation,
+                registry_version,
+                applied_at,
+                metadata_json,
+                recovery_id,
+                expected.as_str(),
+                state_root_fingerprint(sqlite_path),
+            ],
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    if changed != 1 {
+        let current = load(sqlite_path, recovery_id)?;
+        if current.as_ref().map(|marker| marker.phase) != Some(TransitionPhase::Completed) {
             return Err(crate::ImError::PermissionDenied);
         }
     }
@@ -795,6 +993,21 @@ fn now() -> crate::ImResult<String> {
         })
 }
 
+fn canonical_generation(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value.as_bytes()[0] != b'0'
+}
+
+fn valid_state_root_fingerprint(value: &str) -> bool {
+    value.len() == 71
+        && value.strip_prefix("sha256:").is_some_and(|digest| {
+            digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+}
+
 use rusqlite::OptionalExtension as _;
 
 #[cfg(test)]
@@ -818,6 +1031,11 @@ mod tests {
             previous_did: "did:wba:example.invalid:users:alice-old".to_owned(),
             current_did: "did:wba:example.invalid:users:alice-new".to_owned(),
             binding_generation: "8".to_owned(),
+            current_device_id: Some("device-new".to_owned()),
+            device_auth_generation: Some("1".to_owned()),
+            registry_version: Some("1".to_owned()),
+            applied_at: None,
+            metadata_json: "{}".to_owned(),
             phase: TransitionPhase::Pending,
             created_at: "2026-08-03T00:01:00Z".to_owned(),
             updated_at: "2026-08-03T00:01:00Z".to_owned(),
@@ -839,6 +1057,60 @@ mod tests {
         assert!(!IDENTITY_TRANSITION_SQL.contains("secret_ref"));
         assert!(IDENTITY_TRANSITION_SQL.contains("source_kind"));
         assert!(IDENTITY_TRANSITION_SQL.contains("source_id"));
+        for field in [
+            "current_device_id",
+            "device_auth_generation",
+            "registry_version",
+            "applied_at",
+            "metadata_json",
+        ] {
+            assert!(IDENTITY_TRANSITION_SQL.contains(field), "missing {field}");
+        }
+    }
+
+    #[test]
+    fn state_root_fingerprint_is_exact_lowercase_hex() {
+        assert!(valid_state_root_fingerprint(&format!(
+            "sha256:{}",
+            "a".repeat(64)
+        )));
+        assert!(!valid_state_root_fingerprint(&format!(
+            "sha256:{}",
+            "A".repeat(64)
+        )));
+        assert!(!valid_state_root_fingerprint(
+            "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ));
+        assert!(!valid_state_root_fingerprint(&format!(
+            "sha256:{}",
+            "a".repeat(63)
+        )));
+    }
+
+    #[test]
+    fn marker_accepts_only_exact_v3_or_v4_contract_pair() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("contract-pair.sqlite");
+        let mut marker = test_marker(&path);
+        assert!(marker.validate().is_ok());
+
+        marker.contract_version =
+            crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION.to_owned();
+        assert_eq!(
+            marker.validate().unwrap_err(),
+            crate::ImError::PermissionDenied
+        );
+
+        marker.contract_hash =
+            crate::internal::identity_handle_recovery_pending::V4_CONTRACT_HASH.to_owned();
+        assert!(marker.validate().is_ok());
+
+        marker.contract_version =
+            crate::internal::identity_handle_recovery_pending::CONTRACT_VERSION.to_owned();
+        assert_eq!(
+            marker.validate().unwrap_err(),
+            crate::ImError::PermissionDenied
+        );
     }
 
     #[test]
@@ -863,6 +1135,50 @@ mod tests {
             Some(marker)
         );
         assert_eq!(load_joined_device(&path, "join-session-2").unwrap(), None);
+    }
+
+    #[test]
+    fn completed_receipts_are_history_while_only_one_transition_is_active() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("receipt-history.sqlite");
+        let first = test_marker(&path);
+        persist(&path, &first).unwrap();
+
+        let mut second = first.clone();
+        second.recovery_id = "recovery-2".to_owned();
+        second.source_id = "recover-002".to_owned();
+        second.previous_did = first.current_did.clone();
+        second.current_did = "did:wba:example.invalid:users:alice-newer".to_owned();
+        second.binding_generation = "9".to_owned();
+        assert!(persist(&path, &second).is_err());
+
+        mark_applied(
+            &path,
+            &first.recovery_id,
+            TransitionPhase::Pending,
+            "device-new",
+            "1",
+            "1",
+            "{}",
+        )
+        .unwrap();
+        persist(&path, &second).unwrap();
+
+        let connection = crate::internal::local_state::open_writable(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM identity_transition_pending WHERE owner_identity_id='owner-1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        let applied = load(&path, &first.recovery_id).unwrap().unwrap();
+        assert_eq!(applied.phase, TransitionPhase::Completed);
+        assert_eq!(applied.current_device_id.as_deref(), Some("device-new"));
+        assert!(applied.applied_at.is_some());
     }
 
     #[test]
@@ -959,6 +1275,11 @@ mod tests {
             previous_did: "did:wba:example.invalid:users:alice-old".to_owned(),
             current_did: "did:wba:example.invalid:users:alice-new".to_owned(),
             binding_generation: "8".to_owned(),
+            current_device_id: Some("device-new".to_owned()),
+            device_auth_generation: Some("1".to_owned()),
+            registry_version: Some("1".to_owned()),
+            applied_at: None,
+            metadata_json: "{}".to_owned(),
             phase: TransitionPhase::Pending,
             created_at: "2026-08-03T00:01:00Z".to_owned(),
             updated_at: "2026-08-03T00:01:00Z".to_owned(),

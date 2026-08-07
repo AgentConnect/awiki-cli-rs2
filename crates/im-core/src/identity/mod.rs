@@ -31,9 +31,11 @@ pub use self::dto::{
 };
 pub use self::handle_recovery::{
     AuthorizedJoinActivationProgress, AuthorizedJoinActivationRequest,
-    HandleRecoveryActivateRequest, HandleRecoveryErrorCode, HandleRecoveryImpact,
-    HandleRecoveryOtpRequest, HandleRecoveryOtpResult, HandleRecoveryPhase,
-    HandleRecoveryPrepareRequest, HandleRecoveryProgress, HandleRecoveryResetReference,
+    HandleRecoveryAccountEpochReceipt, HandleRecoveryActivateRequest, HandleRecoveryDiscardRequest,
+    HandleRecoveryErrorCode, HandleRecoveryImpact, HandleRecoveryKeyState,
+    HandleRecoveryOperationLifecycle, HandleRecoveryOperationSummary, HandleRecoveryOtpRequest,
+    HandleRecoveryOtpResult, HandleRecoveryPhase, HandleRecoveryPrepareRequest,
+    HandleRecoveryProgress, HandleRecoveryQuarantineRequest, HandleRecoveryResetReference,
     HandleRecoveryResumeRequest, HandleRecoveryService, HandleRecoveryTransitionSourceKind,
 };
 pub use self::join::{

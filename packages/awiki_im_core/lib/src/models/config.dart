@@ -50,6 +50,7 @@ class AwikiImCoreOpenOptions {
     this.multiDeviceDirectE2eeEnabled = false,
     this.multiDeviceGroupE2eeEnabled = false,
     this.multiDeviceHandleRecoveryEnabled = false,
+    this.multiDeviceAudience,
   });
 
   const AwikiImCoreOpenOptions.fileCompat()
@@ -58,7 +59,8 @@ class AwikiImCoreOpenOptions {
       multiDeviceDeviceRevokeEnabled = false,
       multiDeviceDirectE2eeEnabled = false,
       multiDeviceGroupE2eeEnabled = false,
-      multiDeviceHandleRecoveryEnabled = false;
+      multiDeviceHandleRecoveryEnabled = false,
+      multiDeviceAudience = null;
 
   const AwikiImCoreOpenOptions.vaultPreferred({
     required ImCoreSecretVaultOptions this.identitySecretVault,
@@ -66,6 +68,7 @@ class AwikiImCoreOpenOptions {
     this.multiDeviceDirectE2eeEnabled = false,
     this.multiDeviceGroupE2eeEnabled = false,
     this.multiDeviceHandleRecoveryEnabled = false,
+    this.multiDeviceAudience,
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultPreferred;
 
   const AwikiImCoreOpenOptions.vaultRequired({
@@ -74,6 +77,7 @@ class AwikiImCoreOpenOptions {
     this.multiDeviceDirectE2eeEnabled = false,
     this.multiDeviceGroupE2eeEnabled = false,
     this.multiDeviceHandleRecoveryEnabled = false,
+    this.multiDeviceAudience,
   }) : identitySecretStoragePolicy = IdentitySecretStoragePolicy.vaultRequired;
 
   final IdentitySecretStoragePolicy identitySecretStoragePolicy;
@@ -82,6 +86,7 @@ class AwikiImCoreOpenOptions {
   final bool multiDeviceDirectE2eeEnabled;
   final bool multiDeviceGroupE2eeEnabled;
   final bool multiDeviceHandleRecoveryEnabled;
+  final String? multiDeviceAudience;
 }
 
 class ImCoreSecretVaultOptions {

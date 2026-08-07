@@ -24,14 +24,15 @@ void main() {
       sourceId: 'operation-1',
     );
     const progress = HandleRecoveryProgress(
-      recoveryId: 'recovery-1',
       operationId: 'operation-1',
       ownerIdentityId: 'owner-1',
-      handle: 'alice.awiki.info',
-      previousDid: 'did:wba:awiki.info:users:alice-old',
+      accountUserId: 'user-1',
+      fullHandle: 'alice.awiki.info',
+      localPreviousDid: 'did:wba:awiki.info:users:alice-old',
       currentDid: 'did:wba:awiki.info:users:alice-new',
       bindingGeneration: '8',
-      phase: HandleRecoveryPhase.identitySwitched,
+      stateRootFingerprint: 'sha256:test',
+      phase: HandleRecoveryPhase.applied,
       impact: HandleRecoveryImpact(
         localOrdinaryDataWillMigrate: true,
         otherDevicesMustRejoin: true,

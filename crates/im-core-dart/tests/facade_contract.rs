@@ -28,13 +28,16 @@ fn dart_profile_mapping_keeps_account_and_wns_versions_independent() {
 fn dart_handle_recovery_mapping_preserves_closed_progress_and_reset_reference() {
     let mapped = awiki_im_core::dto::identity::DartHandleRecoveryProgress::from(
         im_core::identity::HandleRecoveryProgress {
-            recovery_id: "recovery-1".to_owned(),
             operation_id: "operation-1".to_owned(),
             owner_identity_id: im_core::ids::IdentityId::parse("owner-1").unwrap(),
-            handle: "alice.awiki.info".to_owned(),
-            previous_did: im_core::ids::Did::parse("did:wba:awiki.info:users:alice-old").unwrap(),
+            account_user_id: Some("user-1".to_owned()),
+            full_handle: "alice.awiki.info".to_owned(),
+            local_previous_did: Some(
+                im_core::ids::Did::parse("did:wba:awiki.info:users:alice-old").unwrap(),
+            ),
             current_did: im_core::ids::Did::parse("did:wba:awiki.info:users:alice-new").unwrap(),
             binding_generation: Some("8".to_owned()),
+            state_root_fingerprint: Some("sha256:test".to_owned()),
             phase: im_core::identity::HandleRecoveryPhase::Blocked,
             impact: im_core::identity::HandleRecoveryImpact {
                 local_ordinary_data_will_migrate: true,
@@ -1081,6 +1084,7 @@ fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
         multi_device_direct_e2ee_enabled: true,
         multi_device_group_e2ee_enabled: true,
         multi_device_handle_recovery_enabled: true,
+        multi_device_audience: Some("awiki-user-service".to_owned()),
     };
 
     let mapped: im_core::ImCoreOpenOptions = options.try_into().expect("open options map");
@@ -1121,6 +1125,7 @@ fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
         multi_device_direct_e2ee_enabled: false,
         multi_device_group_e2ee_enabled: false,
         multi_device_handle_recovery_enabled: false,
+        multi_device_audience: None,
     };
 
     let error = im_core::ImCoreOpenOptions::try_from(options).unwrap_err();

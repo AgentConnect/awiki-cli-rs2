@@ -244,6 +244,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartGroupSnapshot dco_decode_box_autoadd_dart_group_snapshot(dynamic raw);
 
   @protected
+  DartHandleRecoveryAccountEpochReceipt
+  dco_decode_box_autoadd_dart_handle_recovery_account_epoch_receipt(
+    dynamic raw,
+  );
+
+  @protected
   DartHandleRecoveryErrorCode
   dco_decode_box_autoadd_dart_handle_recovery_error_code(dynamic raw);
 
@@ -726,12 +732,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartGroupSummary dco_decode_dart_group_summary(dynamic raw);
 
   @protected
+  DartHandleRecoveryAccountEpochReceipt
+  dco_decode_dart_handle_recovery_account_epoch_receipt(dynamic raw);
+
+  @protected
   DartHandleRecoveryErrorCode dco_decode_dart_handle_recovery_error_code(
     dynamic raw,
   );
 
   @protected
   DartHandleRecoveryImpact dco_decode_dart_handle_recovery_impact(dynamic raw);
+
+  @protected
+  DartHandleRecoveryKeyState dco_decode_dart_handle_recovery_key_state(
+    dynamic raw,
+  );
+
+  @protected
+  DartHandleRecoveryOperationLifecycle
+  dco_decode_dart_handle_recovery_operation_lifecycle(dynamic raw);
+
+  @protected
+  DartHandleRecoveryOperationSummary
+  dco_decode_dart_handle_recovery_operation_summary(dynamic raw);
 
   @protected
   DartHandleRecoveryOtpResult dco_decode_dart_handle_recovery_otp_result(
@@ -1144,6 +1167,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<DartGroupSummary> dco_decode_list_dart_group_summary(dynamic raw);
 
   @protected
+  List<DartHandleRecoveryOperationSummary>
+  dco_decode_list_dart_handle_recovery_operation_summary(dynamic raw);
+
+  @protected
   List<DartIdentitySummary> dco_decode_list_dart_identity_summary(dynamic raw);
 
   @protected
@@ -1223,6 +1250,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  DartHandleRecoveryAccountEpochReceipt?
+  dco_decode_opt_box_autoadd_dart_handle_recovery_account_epoch_receipt(
     dynamic raw,
   );
 
@@ -1523,6 +1556,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartGroupSnapshot sse_decode_box_autoadd_dart_group_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryAccountEpochReceipt
+  sse_decode_box_autoadd_dart_handle_recovery_account_epoch_receipt(
     SseDeserializer deserializer,
   );
 
@@ -2129,12 +2168,35 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartGroupSummary sse_decode_dart_group_summary(SseDeserializer deserializer);
 
   @protected
+  DartHandleRecoveryAccountEpochReceipt
+  sse_decode_dart_handle_recovery_account_epoch_receipt(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartHandleRecoveryErrorCode sse_decode_dart_handle_recovery_error_code(
     SseDeserializer deserializer,
   );
 
   @protected
   DartHandleRecoveryImpact sse_decode_dart_handle_recovery_impact(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryKeyState sse_decode_dart_handle_recovery_key_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryOperationLifecycle
+  sse_decode_dart_handle_recovery_operation_lifecycle(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryOperationSummary
+  sse_decode_dart_handle_recovery_operation_summary(
     SseDeserializer deserializer,
   );
 
@@ -2679,6 +2741,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<DartHandleRecoveryOperationSummary>
+  sse_decode_list_dart_handle_recovery_operation_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<DartIdentitySummary> sse_decode_list_dart_identity_summary(
     SseDeserializer deserializer,
   );
@@ -2776,6 +2844,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartHandleRecoveryAccountEpochReceipt?
+  sse_decode_opt_box_autoadd_dart_handle_recovery_account_epoch_receipt(
     SseDeserializer deserializer,
   );
 
@@ -3117,6 +3191,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_group_snapshot(
     DartGroupSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_handle_recovery_account_epoch_receipt(
+    DartHandleRecoveryAccountEpochReceipt self,
     SseSerializer serializer,
   );
 
@@ -3841,6 +3921,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_handle_recovery_account_epoch_receipt(
+    DartHandleRecoveryAccountEpochReceipt self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_handle_recovery_error_code(
     DartHandleRecoveryErrorCode self,
     SseSerializer serializer,
@@ -3849,6 +3935,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_handle_recovery_impact(
     DartHandleRecoveryImpact self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_key_state(
+    DartHandleRecoveryKeyState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_operation_lifecycle(
+    DartHandleRecoveryOperationLifecycle self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_recovery_operation_summary(
+    DartHandleRecoveryOperationSummary self,
     SseSerializer serializer,
   );
 
@@ -4516,6 +4620,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_dart_handle_recovery_operation_summary(
+    List<DartHandleRecoveryOperationSummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_dart_identity_summary(
     List<DartIdentitySummary> self,
     SseSerializer serializer,
@@ -4629,6 +4739,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_group_snapshot(
     DartGroupSnapshot? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_handle_recovery_account_epoch_receipt(
+    DartHandleRecoveryAccountEpochReceipt? self,
     SseSerializer serializer,
   );
 
