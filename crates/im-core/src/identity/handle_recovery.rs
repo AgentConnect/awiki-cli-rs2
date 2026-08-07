@@ -1,26 +1,25 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HandleRecoveryOtpRequest {
+    pub identity: super::IdentitySelector,
     pub phone: String,
-    pub handle: String,
-    pub operation_id: String,
 }
 
 impl std::fmt::Debug for HandleRecoveryOtpRequest {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("HandleRecoveryOtpRequest")
+            .field("identity", &self.identity)
             .field("phone", &"<redacted>")
-            .field("handle", &self.handle)
-            .field("operation_id", &self.operation_id)
             .finish()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleRecoveryOtpResult {
-    pub handle: String,
+    pub full_handle: String,
     pub operation_id: String,
     pub accepted: bool,
     pub retry_after_seconds: u32,
@@ -29,38 +28,42 @@ pub struct HandleRecoveryOtpResult {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HandleRecoveryPrepareRequest {
-    /// Optional exact local identity. When absent, Core resolves an existing
-    /// local identity by Handle or bootstraps a new local identity after the
-    /// phone-owned Handle is verified.
-    pub identity: Option<super::IdentitySelector>,
+    pub operation_id: String,
     pub phone: String,
     pub code: String,
-    pub handle: String,
-    pub operation_id: String,
 }
 
 impl std::fmt::Debug for HandleRecoveryPrepareRequest {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("HandleRecoveryPrepareRequest")
-            .field("identity", &self.identity)
+            .field("operation_id", &self.operation_id)
             .field("phone", &"<redacted>")
             .field("code", &"<redacted>")
-            .field("handle", &self.handle)
-            .field("operation_id", &self.operation_id)
             .finish()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleRecoveryActivateRequest {
-    pub recovery_id: String,
+    pub operation_id: String,
     pub user_presence_confirmed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleRecoveryResumeRequest {
-    pub recovery_id: String,
+    pub operation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandleRecoveryDiscardRequest {
+    pub operation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandleRecoveryQuarantineRequest {
+    pub operation_id: String,
+    pub user_presence_confirmed: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -94,26 +97,25 @@ impl std::fmt::Debug for AuthorizedJoinActivationRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandleRecoveryPhase {
-    Prepared,
-    RemoteCommitPending,
+    AwaitingFactor,
+    ReadyToCommit,
+    RemoteOutcomeUnknown,
     RemoteCommitted,
     IdentityTransitionPending,
-    IdentitySwitched,
-    Completed,
-    Blocked,
+    Applied,
+    QuarantinedKeyUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandleRecoveryErrorCode {
-    HandleRecoveryNotPrepared,
-    HandleRecoveryUserPresenceRequired,
-    HandleRecoveryTransitionMismatch,
-    HandleRecoveryTransitionChainUnsupported,
-    HandleRecoveryRemoteStateChanged,
-    HandleRecoveryOutcomeUnknown,
-    HandleRecoveryLocalStateUnavailable,
-    HandleRecoveryBlocked,
+    FactorRetryRequired,
+    ResultAbsent,
+    OutcomeUnknown,
+    LocalKeyUnavailable,
+    LocalTransitionPending,
+    LocalMigrationUnsupported,
+    UnknownEpoch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,17 +136,25 @@ pub struct HandleRecoveryImpact {
 impl HandleRecoveryErrorCode {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::HandleRecoveryNotPrepared => "handle_recovery_not_prepared",
-            Self::HandleRecoveryUserPresenceRequired => "handle_recovery_user_presence_required",
-            Self::HandleRecoveryTransitionMismatch => "handle_recovery_transition_mismatch",
-            Self::HandleRecoveryTransitionChainUnsupported => {
-                "handle_recovery_transition_chain_unsupported"
-            }
-            Self::HandleRecoveryRemoteStateChanged => "handle_recovery_remote_state_changed",
-            Self::HandleRecoveryOutcomeUnknown => "handle_recovery_outcome_unknown",
-            Self::HandleRecoveryLocalStateUnavailable => "handle_recovery_local_state_unavailable",
-            Self::HandleRecoveryBlocked => "handle_recovery_blocked",
+            Self::FactorRetryRequired => "factor_retry_required",
+            Self::ResultAbsent => "result_absent",
+            Self::OutcomeUnknown => "outcome_unknown",
+            Self::LocalKeyUnavailable => "local_key_unavailable",
+            Self::LocalTransitionPending => "local_transition_pending",
+            Self::LocalMigrationUnsupported => "local_migration_unsupported",
+            Self::UnknownEpoch => "unknown_epoch",
         }
+    }
+
+    /// Closed V4.0 retryability projection consumed by every public facade.
+    pub const fn retryable(self) -> bool {
+        matches!(
+            self,
+            Self::FactorRetryRequired
+                | Self::ResultAbsent
+                | Self::OutcomeUnknown
+                | Self::LocalTransitionPending
+        )
     }
 }
 
@@ -162,17 +172,87 @@ pub struct HandleRecoveryResetReference {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleRecoveryProgress {
-    pub recovery_id: String,
     pub operation_id: String,
     pub owner_identity_id: crate::ids::IdentityId,
-    pub handle: String,
-    pub previous_did: crate::ids::Did,
+    pub account_user_id: Option<String>,
+    pub full_handle: String,
+    pub local_previous_did: Option<crate::ids::Did>,
     pub current_did: crate::ids::Did,
     pub binding_generation: Option<String>,
+    pub state_root_fingerprint: Option<String>,
     pub phase: HandleRecoveryPhase,
     pub impact: HandleRecoveryImpact,
     pub reset_reference: Option<HandleRecoveryResetReference>,
-    pub blocked_code: Option<HandleRecoveryErrorCode>,
+    pub failure_code: Option<HandleRecoveryErrorCode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleRecoveryOperationLifecycle {
+    PreCommit,
+    RemoteUnresolved,
+    RemoteCommitted,
+    LocalTransitionPending,
+    Applied,
+    DiscardedPreAttempt,
+    QuarantinedKeyUnavailable,
+    SupersededByStateChange,
+    FailedTerminal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleRecoveryKeyState {
+    Available,
+    TemporarilyLocked,
+    PermanentlyUnavailable,
+    DestroyedPreAttempt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandleRecoveryOperationSummary {
+    pub operation_id: String,
+    pub owner_identity_id: crate::ids::IdentityId,
+    pub account_user_id: Option<String>,
+    pub full_handle: String,
+    pub lifecycle_class: HandleRecoveryOperationLifecycle,
+    pub commit_attempted: bool,
+    pub key_state: HandleRecoveryKeyState,
+    pub intent_hash: Option<String>,
+    pub state_root_fingerprint: Option<String>,
+    pub superseded_by_operation_id: Option<String>,
+    pub last_error_code: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandleRecoveryAccountEpochReceipt {
+    pub receipt_schema_version: String,
+    pub source_kind: HandleRecoveryTransitionSourceKind,
+    pub source_id: String,
+    pub account_user_id: String,
+    pub owner_identity_id: crate::ids::IdentityId,
+    pub full_handle: String,
+    pub local_previous_did: crate::ids::Did,
+    pub current_did: crate::ids::Did,
+    pub binding_generation: String,
+    pub current_device_id: crate::ids::ProtocolDeviceId,
+    pub device_auth_generation: u64,
+    pub registry_version: u64,
+    pub state_root_fingerprint: String,
+    pub applied_at: String,
+    pub metadata_json: String,
+}
+
+/// Process-local, secret-free V4.0 metrics ready for an embedding telemetry adapter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandleRecoveryMetricsSnapshot {
+    pub recovery_remote_unresolved_age_seconds: u64,
+    pub recovery_key_unavailable_total: u64,
+    pub recovery_break_glass_total: BTreeMap<String, u64>,
+    pub recovery_local_transition_pending_age_seconds: u64,
+    pub group_repair_total: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,9 +300,45 @@ impl<'a> HandleRecoveryService<'a> {
 
     pub fn handle_recovery_status(
         &self,
-        recovery_id: &str,
+        operation_id: &str,
     ) -> crate::ImResult<HandleRecoveryProgress> {
-        crate::internal::identity_handle_recovery_runtime::status(self.core, recovery_id)
+        crate::internal::identity_handle_recovery_runtime::status(self.core, operation_id)
+    }
+
+    pub async fn list_handle_recovery_operations(
+        &self,
+        identity: super::IdentitySelector,
+    ) -> crate::ImResult<Vec<HandleRecoveryOperationSummary>> {
+        crate::internal::identity_handle_recovery_runtime::list_operations(self.core, identity)
+            .await
+    }
+
+    pub fn discard_handle_recovery_pre_attempt(
+        &self,
+        request: HandleRecoveryDiscardRequest,
+    ) -> crate::ImResult<HandleRecoveryOperationSummary> {
+        crate::internal::identity_handle_recovery_runtime::discard_pre_attempt(self.core, request)
+    }
+
+    pub fn quarantine_handle_recovery_key_unavailable(
+        &self,
+        request: HandleRecoveryQuarantineRequest,
+    ) -> crate::ImResult<HandleRecoveryOperationSummary> {
+        crate::internal::identity_handle_recovery_runtime::quarantine_key_unavailable(
+            self.core, request,
+        )
+    }
+
+    pub async fn authorized_handle_recovery_receipt(
+        &self,
+        identity: super::IdentitySelector,
+    ) -> crate::ImResult<Option<HandleRecoveryAccountEpochReceipt>> {
+        crate::internal::identity_handle_recovery_runtime::authorized_receipt(self.core, identity)
+            .await
+    }
+
+    pub fn handle_recovery_metrics(&self) -> HandleRecoveryMetricsSnapshot {
+        crate::internal::identity_handle_recovery_metrics::public_snapshot()
     }
 
     pub async fn activate_authorized_join(

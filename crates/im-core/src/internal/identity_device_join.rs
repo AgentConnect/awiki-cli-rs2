@@ -31,7 +31,7 @@ use crate::identity::{
     DeviceJoinLocalPhase, DeviceJoinNewDeviceRespondRequest, DeviceJoinNewDeviceRespondResult,
     DeviceJoinObjectProof, DeviceJoinRequest, DeviceJoinRequestProof, DeviceJoinSessionSummary,
     DeviceJoinSide, DeviceJoinStartRequest, DeviceJoinStartResult, EncryptedJoinChallenge,
-    DEVICE_JOIN_CHALLENGE_ALGORITHM, DEVICE_JOIN_LEGACY_DRAFT_PROFILES,
+    HandleRecoveryErrorCode, DEVICE_JOIN_CHALLENGE_ALGORITHM, DEVICE_JOIN_LEGACY_DRAFT_PROFILES,
     DEVICE_JOIN_MAX_CHALLENGE_TTL_SECONDS, DEVICE_JOIN_MAX_TTL_SECONDS,
     DEVICE_JOIN_REQUEST_PROOF_INPUT_TYPE, DEVICE_JOIN_REQUEST_PROOF_TYPE, DEVICE_JOIN_REQUEST_TYPE,
     DEVICE_JOIN_RESPONSE_SIGNATURE_INPUT_TYPE, DEVICE_JOIN_VNEXT_PROFILES,
@@ -1546,10 +1546,11 @@ fn promote_join_identity(
         &stored.join_request.join_session_id,
     )? {
         if marker.current_did != did.as_str() || marker.account_user_id != access.user_id {
+            let code = HandleRecoveryErrorCode::UnknownEpoch.as_str();
             return Err(crate::ImError::Service {
                 status_code: None,
-                code: Some("handle_recovery_transition_mismatch".to_owned()),
-                message: "handle_recovery_transition_mismatch".to_owned(),
+                code: Some(code.to_owned()),
+                message: code.to_owned(),
                 data: None,
             });
         }
@@ -1568,33 +1569,30 @@ fn promote_join_identity(
                 || previous_entry.binding_generation.as_deref()
                     != Some(marker.binding_generation.as_str())
             {
+                let code = HandleRecoveryErrorCode::UnknownEpoch.as_str();
                 return Err(crate::ImError::Service {
                     status_code: None,
-                    code: Some("handle_recovery_transition_mismatch".to_owned()),
-                    message: "handle_recovery_transition_mismatch".to_owned(),
+                    code: Some(code.to_owned()),
+                    message: code.to_owned(),
                     data: None,
                 });
             }
             if marker.phase
                 == crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched
             {
-                let (remaining, blocked) =
-                    crate::internal::group_rebind_recovery::handle_recovery_job_counts(
-                        &core.inner().sdk_paths().local_state.sqlite_path,
-                        &marker.owner_identity_id,
-                        &marker.handle,
-                        &marker.previous_did,
-                        &marker.current_did,
-                        &marker.binding_generation,
-                    )?;
-                if remaining == 0 && blocked == 0 {
-                    crate::internal::identity_transition_pending::update_phase(
-                        &core.inner().sdk_paths().local_state.sqlite_path,
-                        &marker.recovery_id,
-                        crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
-                        crate::internal::identity_transition_pending::TransitionPhase::Completed,
-                    )?;
-                }
+                crate::internal::identity_transition_pending::mark_applied(
+                    &core.inner().sdk_paths().local_state.sqlite_path,
+                    &marker.recovery_id,
+                    crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
+                    pending.authorization.device.device_id.as_str(),
+                    &pending.authorization.device.auth_generation.to_string(),
+                    &pending
+                        .authorization
+                        .checkpoint
+                        .registry_version
+                        .to_string(),
+                    "{}",
+                )?;
             }
             return ensure_existing_join_identity_is_rootless(
                 &index,
@@ -1613,9 +1611,11 @@ fn promote_join_identity(
         let historical_binding_generation_matches = previous_entry
             .binding_generation
             .as_deref()
-            .and_then(|value| value.parse::<u128>().ok())
-            .and_then(|previous| previous.checked_add(1))
-            == marker.binding_generation.parse::<u128>().ok();
+            .and_then(
+                crate::internal::identity_handle_recovery_pending::increment_canonical_generation,
+            )
+            .as_deref()
+            == Some(marker.binding_generation.as_str());
         if identity_already_switched {
             ensure_existing_join_identity_is_rootless(
                 &index,
@@ -1628,10 +1628,11 @@ fn promote_join_identity(
             || previous_entry.full_handle != marker.handle
             || (!historical_binding_generation_missing && !historical_binding_generation_matches)
         {
+            let code = HandleRecoveryErrorCode::UnknownEpoch.as_str();
             return Err(crate::ImError::Service {
                 status_code: None,
-                code: Some("handle_recovery_transition_mismatch".to_owned()),
-                message: "handle_recovery_transition_mismatch".to_owned(),
+                code: Some(code.to_owned()),
+                message: code.to_owned(),
                 data: None,
             });
         }
@@ -1712,6 +1713,21 @@ fn promote_join_identity(
             crate::internal::identity_transition_pending::TransitionPhase::Pending,
             crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
         )?;
+        crate::internal::identity_transition_pending::mark_applied(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &marker.recovery_id,
+            crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
+            pending.authorization.device.device_id.as_str(),
+            &pending.authorization.device.auth_generation.to_string(),
+            &pending
+                .authorization
+                .checkpoint
+                .registry_version
+                .to_string(),
+            "{}",
+        )?;
+        // Group repair has its own durable journal and retry lifecycle. A
+        // queueing failure must not roll back an already-applied identity.
         let _ = crate::internal::group_rebind_recovery::enqueue_recovery_jobs(
             &core.inner().sdk_paths().local_state.sqlite_path,
             &marker.owner_identity_id,
@@ -1719,24 +1735,7 @@ fn promote_join_identity(
             std::slice::from_ref(&marker.previous_did),
             &marker.current_did,
             &marker.binding_generation,
-        )?;
-        let (remaining, blocked) =
-            crate::internal::group_rebind_recovery::handle_recovery_job_counts(
-                &core.inner().sdk_paths().local_state.sqlite_path,
-                &marker.owner_identity_id,
-                &marker.handle,
-                &marker.previous_did,
-                &marker.current_did,
-                &marker.binding_generation,
-            )?;
-        if remaining == 0 && blocked == 0 {
-            crate::internal::identity_transition_pending::update_phase(
-                &core.inner().sdk_paths().local_state.sqlite_path,
-                &marker.recovery_id,
-                crate::internal::identity_transition_pending::TransitionPhase::IdentitySwitched,
-                crate::internal::identity_transition_pending::TransitionPhase::Completed,
-            )?;
-        }
+        );
         let committed = identity_store.load_index()?;
         return ensure_existing_join_identity_is_rootless(
             &committed,

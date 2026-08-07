@@ -159,6 +159,26 @@ fn reopen_join_test_core(root: &Path) -> crate::ImCore {
     .unwrap()
 }
 
+fn reopen_join_test_recovery_core(root: &Path) -> crate::ImCore {
+    crate::ImCore::new_with_options(
+        test_config(),
+        test_paths(root),
+        crate::ImCoreOpenOptions::default()
+            .with_multi_device_handle_recovery_enabled(true)
+            .with_multi_device_audience("awiki-user-service")
+            .with_identity_secret_vault(
+                crate::IdentitySecretStoragePolicy::VaultRequired,
+                crate::ImCoreSecretVaultOptions::new(
+                    crate::vault::DeviceVaultRootKey::from_bytes([47_u8; 32]),
+                    root.join("vault"),
+                    "join-test-workspace",
+                    "join-test-vault-device",
+                ),
+            ),
+    )
+    .unwrap()
+}
+
 fn member_access_token(did: &str, device_id: &str, signing_key_id: &str) -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
@@ -769,8 +789,8 @@ fn admin_join_projection_rejects_checkpoint_regression() {
     assert_eq!(checkpoint.registry_version, 3);
 }
 
-#[test]
-fn recovery_join_accepts_missing_historical_generation_and_reopens_after_identity_save() {
+#[tokio::test]
+async fn recovery_join_accepts_missing_historical_generation_and_reopens_after_identity_save() {
     let admin_root = tempfile::tempdir().unwrap();
     let candidate_root = tempfile::tempdir().unwrap();
     let (admin, admin_document, current_did) = open_ready_admin_core(admin_root.path());
@@ -940,7 +960,7 @@ fn recovery_join_accepts_missing_historical_generation_and_reopens_after_identit
             status_code: None,
             code: Some(code),
             ..
-        }) if code == "handle_recovery_transition_mismatch"
+        }) if code == "unknown_epoch"
     ));
     assert_eq!(
         JoinStateStore::new(&candidate)
@@ -1051,6 +1071,36 @@ fn recovery_join_accepts_missing_historical_generation_and_reopens_after_identit
     ));
     drop(candidate);
 
+    // A Group repair blocked for this exact identity epoch must remain in the
+    // Group journal without holding the joined-device identity transition
+    // open after restart.
+    let group_did = "did:wba:awiki.test:groups:engineering";
+    let group_job_id = crate::internal::group_rebind_recovery::handle_recovery_operation_id(
+        "alice.awiki.test",
+        previous_did.as_str(),
+        current_did.as_str(),
+        "8",
+        group_did,
+    )
+    .unwrap();
+    let db = crate::internal::local_state::open_writable(&candidate_paths.local_state.sqlite_path)
+        .unwrap();
+    db.execute(
+        r#"INSERT INTO group_rebind_outbox
+(job_id, owner_identity_id, group_did, member_handle, previous_member_did,
+ new_member_did, binding_generation, phase, created_at, updated_at)
+VALUES (?1,?2,?3,'alice.awiki.test',?4,?5,'8','blocked','now','now')"#,
+        rusqlite::params![
+            group_job_id,
+            owner_id,
+            group_did,
+            previous_did.as_str(),
+            current_did.as_str(),
+        ],
+    )
+    .unwrap();
+    drop(db);
+
     let reopened = reopen_join_test_core(candidate_root.path());
     finalize_new_device_activation(&reopened, &started.session.join_session_id).unwrap();
     let marker = crate::internal::identity_transition_pending::load_joined_device(
@@ -1063,6 +1113,10 @@ fn recovery_join_accepts_missing_historical_generation_and_reopens_after_identit
         marker.phase,
         crate::internal::identity_transition_pending::TransitionPhase::Completed
     );
+    assert_eq!(
+        marker.contract_version,
+        crate::internal::identity_handle_recovery_pending::V4_CONTRACT_VERSION
+    );
     let index = crate::internal::identity_store::IdentityStore::new(&candidate_paths.identities)
         .load_index()
         .unwrap();
@@ -1074,6 +1128,61 @@ fn recovery_join_accepts_missing_historical_generation_and_reopens_after_identit
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].did, current_did.as_str());
     assert_eq!(matches[0].binding_generation.as_deref(), Some("8"));
+    drop(reopened);
+    let recovery_core = reopen_join_test_recovery_core(candidate_root.path());
+    let receipt = super::super::identity_handle_recovery_runtime::authorized_receipt(
+        &recovery_core,
+        crate::identity::IdentitySelector::Did(current_did.clone()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        receipt.source_kind,
+        crate::identity::HandleRecoveryTransitionSourceKind::JoinedDevice
+    );
+    assert_eq!(receipt.source_id, started.session.join_session_id);
+    assert_eq!(receipt.current_did, current_did);
+    assert_eq!(
+        receipt.current_device_id.as_str(),
+        authorization.device.device_id
+    );
+    assert_eq!(receipt.device_auth_generation, 1);
+    assert_eq!(receipt.registry_version, 4);
+
+    let db = crate::internal::local_state::open_writable(&candidate_paths.local_state.sqlite_path)
+        .unwrap();
+    db.execute(
+        "UPDATE identity_transition_pending SET contract_version=?1,contract_hash=?2 WHERE recovery_id=?3",
+        rusqlite::params![
+            "unsupported-handle-recovery-contract",
+            "0".repeat(64),
+            marker.recovery_id,
+        ],
+    )
+    .unwrap();
+    drop(db);
+    assert_eq!(
+        super::super::identity_handle_recovery_runtime::authorized_receipt(
+            &recovery_core,
+            crate::identity::IdentitySelector::Did(receipt.current_did.clone()),
+        )
+        .await
+        .unwrap_err(),
+        crate::ImError::PermissionDenied
+    );
+    assert_eq!(
+        crate::internal::group_rebind_recovery::handle_recovery_job_counts(
+            &candidate_paths.local_state.sqlite_path,
+            &owner_id,
+            "alice.awiki.test",
+            previous_did.as_str(),
+            current_did.as_str(),
+            "8",
+        )
+        .unwrap(),
+        (0, 1),
+    );
     let db = rusqlite::Connection::open_with_flags(
         &candidate_paths.local_state.sqlite_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,

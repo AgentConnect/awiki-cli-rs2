@@ -78,6 +78,10 @@ pub struct ImCoreOpenOptions {
     /// Enables the hidden same-deployment Manifest Handle Recovery v1 path.
     /// This gate is local, defaults to false, and does not advertise support.
     pub multi_device_handle_recovery_enabled: bool,
+    /// Explicit same-deployment control-plane audience used in Recovery V4
+    /// key-possession proofs. It must equal User Service
+    /// `AWIKI_MULTI_DEVICE_AUDIENCE`; Core never derives or hard-codes it.
+    pub multi_device_audience: Option<String>,
 }
 
 impl ImCoreOpenOptions {
@@ -112,6 +116,11 @@ impl ImCoreOpenOptions {
 
     pub fn with_multi_device_handle_recovery_enabled(mut self, enabled: bool) -> Self {
         self.multi_device_handle_recovery_enabled = enabled;
+        self
+    }
+
+    pub fn with_multi_device_audience(mut self, audience: impl Into<String>) -> Self {
+        self.multi_device_audience = Some(audience.into());
         self
     }
 }

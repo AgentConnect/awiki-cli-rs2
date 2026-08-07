@@ -60,38 +60,61 @@ class AwikiImCore {
   }
 
   Future<HandleRecoveryOtpResult> requestHandleRecoveryOtp({
+    required IdentitySelector selector,
     required String phone,
-    required String handle,
-    required String operationId,
   }) async {
     throw _unsupported();
   }
 
   Future<HandleRecoveryProgress> prepareHandleRecovery({
-    IdentitySelector? selector,
+    required String operationId,
     required String phone,
     required String code,
-    required String handle,
-    required String operationId,
   }) async {
     throw _unsupported();
   }
 
   Future<HandleRecoveryProgress> activateHandleRecovery({
-    required String recoveryId,
+    required String operationId,
     required bool userPresenceConfirmed,
   }) async {
     throw _unsupported();
   }
 
   Future<HandleRecoveryProgress> resumeHandleRecovery(
-    String recoveryId,
+    String operationId,
   ) async {
     throw _unsupported();
   }
 
   Future<HandleRecoveryProgress> handleRecoveryStatus(
-    String recoveryId,
+    String operationId,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<List<HandleRecoveryOperationSummary>> listHandleRecoveryOperations(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryOperationSummary> discardHandleRecoveryPreAttempt(
+    String operationId,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryOperationSummary>
+  quarantineHandleRecoveryKeyUnavailable({
+    required String operationId,
+    required bool userPresenceConfirmed,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<HandleRecoveryAccountEpochReceipt?> authorizedHandleRecoveryReceipt(
+    IdentitySelector selector,
   ) async {
     throw _unsupported();
   }

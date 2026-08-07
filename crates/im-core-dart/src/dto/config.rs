@@ -46,6 +46,7 @@ pub struct DartImCoreOpenOptions {
     pub multi_device_direct_e2ee_enabled: bool,
     pub multi_device_group_e2ee_enabled: bool,
     pub multi_device_handle_recovery_enabled: bool,
+    pub multi_device_audience: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

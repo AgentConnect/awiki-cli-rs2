@@ -283,10 +283,13 @@ raw P3 payload。Flutter Web 保留同形 API，但该 native 流程仍返回 un
 Native hosts opt in with `ImCoreOpenOptions.multiDeviceHandleRecoveryEnabled`; the default is
 `false`. The generated Dart facade exposes `requestHandleRecoveryOtp`,
 `prepareHandleRecovery`, `activateHandleRecovery`, `resumeHandleRecovery`,
-`handleRecoveryStatus`, `activateAuthorizedJoin`, and
-`resumeAuthorizedJoinActivation`. Progress is a closed
-`prepared → remoteCommitPending → remoteCommitted → identityTransitionPending →
-identitySwitched → completed|blocked` projection. Phone, OTP, Recovery Grant, proof,
+`handleRecoveryStatus`, `listHandleRecoveryOperations`,
+`discardHandleRecoveryPreAttempt`, `quarantineHandleRecoveryKeyUnavailable`,
+`authorizedHandleRecoveryReceipt`, `activateAuthorizedJoin`, and
+`resumeAuthorizedJoinActivation`. V4.0 progress is the closed
+`awaitingFactor → readyToCommit → remoteOutcomeUnknown|remoteCommitted →
+identityTransitionPending → applied` projection, with `quarantinedKeyUnavailable` as the explicit
+key-loss escape state. Phone, OTP, Recovery Grant, proof,
 private keys, JWT, Vault refs, ciphertext, and filesystem paths are never returned.
 `HandleRecoveryProgress` also carries the secret-free impact counts used by confirmation UI and
 an optional Core-authorized Registry epoch reset tuple. Authorized Join returns
@@ -296,10 +299,13 @@ The public methods are wrappers on `AwikiImCore` itself; callers do not import g
 access its private native handle. Flutter Web exposes the same signatures and fails closed as
 unsupported.
 
-The host creates one non-secret operation ID before requesting the OTP and must pass that exact ID
-again to `prepareHandleRecovery`. Read-only `handleRecoveryStatus` requires the opaque recovery ID
-returned by prepare; Core does not guess a pending Recovery from an identity scope and does not
-return `null` for an unknown ID.
+`requestHandleRecoveryOtp` accepts an explicit identity selector and phone; Core creates and returns
+the opaque operation ID. The host passes that exact ID to `prepareHandleRecovery`, activate, resume,
+status, discard, or quarantine. Core does not guess a pending Recovery from an identity scope and
+does not return `null` for an unknown ID. The public failure enum is closed to
+`factorRetryRequired`, `resultAbsent`, `outcomeUnknown`, `localKeyUnavailable`,
+`localTransitionPending`, `localMigrationUnsupported`, and `unknownEpoch`; no V3 aliases are
+accepted.
 
 The host may supply an exact identity selector and always supplies foreground user-presence
 confirmation. A global flow passes `null`; Core resolves an exact local Handle match or, when
@@ -316,10 +322,10 @@ already active legacy local device-registry epoch. It returns only the exact own
 generation/device tuple and an opaque provenance ID. It returns `null` if any Handle Recovery
 transition marker exists, including completed markers. Dart must not synthesize this authority.
 
-V1 adds no Flutter route or widget, CLI command, Daemon task, Agent recovery flow, or
-process-global current identity. A later host surface must call these same typed APIs rather
-than own recovery state. The older one-shot phone-owned Legacy `recoverHandle` path remains a
-separate compatibility flow and is not Manifest Handle Recovery.
+V4.0 adds no CLI command, Daemon task, Agent recovery flow, or process-global current identity.
+A later host surface must call these same typed APIs rather than own recovery state. The older
+one-shot phone-owned Legacy `recoverHandle` API is not a V3 Manifest compatibility path and cannot
+resume, query, or authorize a V4 operation.
 
 ## Management-device root-key transfer
 

@@ -24,56 +24,86 @@ legacyRegistryEpochAdoptionAuthority({
 
 Future<DartHandleRecoveryOtpResult> requestHandleRecoveryOtp({
   required ArcDartImCore core,
+  required DartIdentitySelector selector,
   required String phone,
-  required String handle,
-  required String operationId,
 }) => RustLib.instance.api.crateApiIdentityRequestHandleRecoveryOtp(
   core: core,
+  selector: selector,
   phone: phone,
-  handle: handle,
-  operationId: operationId,
 );
 
 Future<DartHandleRecoveryProgress> prepareHandleRecovery({
   required ArcDartImCore core,
-  DartIdentitySelector? selector,
+  required String operationId,
   required String phone,
   required String code,
-  required String handle,
-  required String operationId,
 }) => RustLib.instance.api.crateApiIdentityPrepareHandleRecovery(
   core: core,
-  selector: selector,
+  operationId: operationId,
   phone: phone,
   code: code,
-  handle: handle,
-  operationId: operationId,
 );
 
 Future<DartHandleRecoveryProgress> activateHandleRecovery({
   required ArcDartImCore core,
-  required String recoveryId,
+  required String operationId,
   required bool userPresenceConfirmed,
 }) => RustLib.instance.api.crateApiIdentityActivateHandleRecovery(
   core: core,
-  recoveryId: recoveryId,
+  operationId: operationId,
   userPresenceConfirmed: userPresenceConfirmed,
 );
 
 Future<DartHandleRecoveryProgress> resumeHandleRecovery({
   required ArcDartImCore core,
-  required String recoveryId,
+  required String operationId,
 }) => RustLib.instance.api.crateApiIdentityResumeHandleRecovery(
   core: core,
-  recoveryId: recoveryId,
+  operationId: operationId,
 );
 
 Future<DartHandleRecoveryProgress> handleRecoveryStatus({
   required ArcDartImCore core,
-  required String recoveryId,
+  required String operationId,
 }) => RustLib.instance.api.crateApiIdentityHandleRecoveryStatus(
   core: core,
-  recoveryId: recoveryId,
+  operationId: operationId,
+);
+
+Future<List<DartHandleRecoveryOperationSummary>> listHandleRecoveryOperations({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityListHandleRecoveryOperations(
+  core: core,
+  selector: selector,
+);
+
+Future<DartHandleRecoveryOperationSummary> discardHandleRecoveryPreAttempt({
+  required ArcDartImCore core,
+  required String operationId,
+}) => RustLib.instance.api.crateApiIdentityDiscardHandleRecoveryPreAttempt(
+  core: core,
+  operationId: operationId,
+);
+
+Future<DartHandleRecoveryOperationSummary>
+quarantineHandleRecoveryKeyUnavailable({
+  required ArcDartImCore core,
+  required String operationId,
+  required bool userPresenceConfirmed,
+}) =>
+    RustLib.instance.api.crateApiIdentityQuarantineHandleRecoveryKeyUnavailable(
+      core: core,
+      operationId: operationId,
+      userPresenceConfirmed: userPresenceConfirmed,
+    );
+
+Future<DartHandleRecoveryAccountEpochReceipt?> authorizedHandleRecoveryReceipt({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityAuthorizedHandleRecoveryReceipt(
+  core: core,
+  selector: selector,
 );
 
 Future<DartAuthorizedJoinActivationProgress> activateAuthorizedJoin({

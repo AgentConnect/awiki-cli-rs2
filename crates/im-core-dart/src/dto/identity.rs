@@ -44,25 +44,24 @@ pub struct DartLegacyRegistryEpochAdoptionAuthority {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DartHandleRecoveryPhase {
-    Prepared,
-    RemoteCommitPending,
+    AwaitingFactor,
+    ReadyToCommit,
+    RemoteOutcomeUnknown,
     RemoteCommitted,
     IdentityTransitionPending,
-    IdentitySwitched,
-    Completed,
-    Blocked,
+    Applied,
+    QuarantinedKeyUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DartHandleRecoveryErrorCode {
-    HandleRecoveryNotPrepared,
-    HandleRecoveryUserPresenceRequired,
-    HandleRecoveryTransitionMismatch,
-    HandleRecoveryTransitionChainUnsupported,
-    HandleRecoveryRemoteStateChanged,
-    HandleRecoveryOutcomeUnknown,
-    HandleRecoveryLocalStateUnavailable,
-    HandleRecoveryBlocked,
+    FactorRetryRequired,
+    ResultAbsent,
+    OutcomeUnknown,
+    LocalKeyUnavailable,
+    LocalTransitionPending,
+    LocalMigrationUnsupported,
+    UnknownEpoch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,17 +92,18 @@ pub struct DartHandleRecoveryResetReference {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartHandleRecoveryProgress {
-    pub recovery_id: String,
     pub operation_id: String,
     pub owner_identity_id: String,
-    pub handle: String,
-    pub previous_did: String,
+    pub account_user_id: Option<String>,
+    pub full_handle: String,
+    pub local_previous_did: Option<String>,
     pub current_did: String,
     pub binding_generation: Option<String>,
+    pub state_root_fingerprint: Option<String>,
     pub phase: DartHandleRecoveryPhase,
     pub impact: DartHandleRecoveryImpact,
     pub reset_reference: Option<DartHandleRecoveryResetReference>,
-    pub blocked_code: Option<DartHandleRecoveryErrorCode>,
+    pub failure_code: Option<DartHandleRecoveryErrorCode>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,11 +114,68 @@ pub struct DartAuthorizedJoinActivationProgress {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartHandleRecoveryOtpResult {
-    pub handle: String,
+    pub full_handle: String,
     pub operation_id: String,
     pub accepted: bool,
     pub retry_after_seconds: u32,
     pub retry_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartHandleRecoveryOperationLifecycle {
+    PreCommit,
+    RemoteUnresolved,
+    RemoteCommitted,
+    LocalTransitionPending,
+    Applied,
+    DiscardedPreAttempt,
+    QuarantinedKeyUnavailable,
+    SupersededByStateChange,
+    FailedTerminal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartHandleRecoveryKeyState {
+    Available,
+    TemporarilyLocked,
+    PermanentlyUnavailable,
+    DestroyedPreAttempt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartHandleRecoveryOperationSummary {
+    pub operation_id: String,
+    pub owner_identity_id: String,
+    pub account_user_id: Option<String>,
+    pub full_handle: String,
+    pub lifecycle_class: DartHandleRecoveryOperationLifecycle,
+    pub commit_attempted: bool,
+    pub key_state: DartHandleRecoveryKeyState,
+    pub intent_hash: Option<String>,
+    pub state_root_fingerprint: Option<String>,
+    pub superseded_by_operation_id: Option<String>,
+    pub last_error_code: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartHandleRecoveryAccountEpochReceipt {
+    pub receipt_schema_version: String,
+    pub source_kind: DartHandleRecoveryTransitionSourceKind,
+    pub source_id: String,
+    pub account_user_id: String,
+    pub owner_identity_id: String,
+    pub full_handle: String,
+    pub local_previous_did: String,
+    pub current_did: String,
+    pub binding_generation: String,
+    pub current_device_id: String,
+    pub device_auth_generation: u64,
+    pub registry_version: u64,
+    pub state_root_fingerprint: String,
+    pub applied_at: String,
+    pub metadata_json: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

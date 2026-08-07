@@ -135,13 +135,13 @@ class LegacyRegistryEpochAdoptionAuthority {
 }
 
 enum HandleRecoveryPhase {
-  prepared,
-  remoteCommitPending,
+  awaitingFactor,
+  readyToCommit,
+  remoteOutcomeUnknown,
   remoteCommitted,
   identityTransitionPending,
-  identitySwitched,
-  completed,
-  blocked,
+  applied,
+  quarantinedKeyUnavailable,
 }
 
 enum HandleRecoveryTransitionSourceKind { initiator, joinedDevice }
@@ -184,26 +184,28 @@ class HandleRecoveryRegistryEpochReset {
 
 class HandleRecoveryProgress {
   const HandleRecoveryProgress({
-    required this.recoveryId,
     required this.operationId,
     required this.ownerIdentityId,
-    required this.handle,
-    required this.previousDid,
+    this.accountUserId,
+    required this.fullHandle,
+    this.localPreviousDid,
     required this.currentDid,
     this.bindingGeneration,
+    this.stateRootFingerprint,
     required this.phase,
     required this.impact,
     this.registryEpochReset,
     this.failureCode,
   });
 
-  final String recoveryId;
   final String operationId;
   final String ownerIdentityId;
-  final String handle;
-  final String previousDid;
+  final String? accountUserId;
+  final String fullHandle;
+  final String? localPreviousDid;
   final String currentDid;
   final String? bindingGeneration;
+  final String? stateRootFingerprint;
   final HandleRecoveryPhase phase;
   final HandleRecoveryImpact impact;
   final HandleRecoveryRegistryEpochReset? registryEpochReset;
@@ -212,18 +214,105 @@ class HandleRecoveryProgress {
 
 class HandleRecoveryOtpResult {
   const HandleRecoveryOtpResult({
-    required this.handle,
+    required this.fullHandle,
     required this.operationId,
     required this.accepted,
     required this.retryAfterSeconds,
     required this.retryAt,
   });
 
-  final String handle;
+  final String fullHandle;
   final String operationId;
   final bool accepted;
   final int retryAfterSeconds;
   final DateTime retryAt;
+}
+
+enum HandleRecoveryOperationLifecycle {
+  preCommit,
+  remoteUnresolved,
+  remoteCommitted,
+  localTransitionPending,
+  applied,
+  discardedPreAttempt,
+  quarantinedKeyUnavailable,
+  supersededByStateChange,
+  failedTerminal,
+}
+
+enum HandleRecoveryKeyState {
+  available,
+  temporarilyLocked,
+  permanentlyUnavailable,
+  destroyedPreAttempt,
+}
+
+class HandleRecoveryOperationSummary {
+  const HandleRecoveryOperationSummary({
+    required this.operationId,
+    required this.ownerIdentityId,
+    this.accountUserId,
+    required this.fullHandle,
+    required this.lifecycleClass,
+    required this.commitAttempted,
+    required this.keyState,
+    this.intentHash,
+    this.stateRootFingerprint,
+    this.supersededByOperationId,
+    this.lastErrorCode,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  final String operationId;
+  final String ownerIdentityId;
+  final String? accountUserId;
+  final String fullHandle;
+  final HandleRecoveryOperationLifecycle lifecycleClass;
+  final bool commitAttempted;
+  final HandleRecoveryKeyState keyState;
+  final String? intentHash;
+  final String? stateRootFingerprint;
+  final String? supersededByOperationId;
+  final String? lastErrorCode;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+}
+
+class HandleRecoveryAccountEpochReceipt {
+  const HandleRecoveryAccountEpochReceipt({
+    required this.receiptSchemaVersion,
+    required this.sourceKind,
+    required this.sourceId,
+    required this.accountUserId,
+    required this.ownerIdentityId,
+    required this.fullHandle,
+    required this.localPreviousDid,
+    required this.currentDid,
+    required this.bindingGeneration,
+    required this.currentDeviceId,
+    required this.deviceAuthGeneration,
+    required this.registryVersion,
+    required this.stateRootFingerprint,
+    required this.appliedAt,
+    required this.metadataJson,
+  });
+
+  final String receiptSchemaVersion;
+  final HandleRecoveryTransitionSourceKind sourceKind;
+  final String sourceId;
+  final String accountUserId;
+  final String ownerIdentityId;
+  final String fullHandle;
+  final String localPreviousDid;
+  final String currentDid;
+  final String bindingGeneration;
+  final String currentDeviceId;
+  final int deviceAuthGeneration;
+  final int registryVersion;
+  final String stateRootFingerprint;
+  final DateTime appliedAt;
+  final String metadataJson;
 }
 
 class AuthorizedJoinActivationProgress {

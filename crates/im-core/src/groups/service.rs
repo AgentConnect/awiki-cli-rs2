@@ -1144,6 +1144,16 @@ impl<'a> GroupService<'a> {
         summary.send_paused_groups = paused_rebind_groups(sqlite_path, owner_identity_id)?;
         summary.items =
             crate::internal::group_rebind_recovery::recovery_items(sqlite_path, owner_identity_id)?;
+        let metric_result = if summary.blocked > 0 {
+            crate::internal::identity_handle_recovery_metrics::GroupRepairResult::Blocked
+        } else if summary.pending > 0 {
+            crate::internal::identity_handle_recovery_metrics::GroupRepairResult::Pending
+        } else if summary.completed > 0 {
+            crate::internal::identity_handle_recovery_metrics::GroupRepairResult::Completed
+        } else {
+            crate::internal::identity_handle_recovery_metrics::GroupRepairResult::Noop
+        };
+        crate::internal::identity_handle_recovery_metrics::record_group_repair(metric_result);
         Ok(summary)
     }
 
@@ -2738,13 +2748,10 @@ fn classify_recovery_rebind_authority(
     job: &crate::internal::group_rebind_recovery::P4RebindJob,
     members: &[super::GroupMember],
 ) -> crate::ImResult<RecoveryRebindAuthority> {
-    let previous_generation = job
-        .binding_generation
-        .parse::<u128>()
-        .ok()
-        .and_then(|value| value.checked_sub(1))
-        .filter(|value| *value > 0)
-        .map(|value| value.to_string())
+    let previous_generation =
+        crate::internal::identity_handle_recovery_pending::previous_canonical_generation(
+            &job.binding_generation,
+        )
         .ok_or(crate::ImError::PermissionDenied)?;
     let active = members
         .iter()

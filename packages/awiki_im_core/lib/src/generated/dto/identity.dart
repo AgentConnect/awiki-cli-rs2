@@ -535,15 +535,89 @@ class DartDeviceRevokeResult {
 
 enum DartDeviceRevokeStatus { revoked }
 
+class DartHandleRecoveryAccountEpochReceipt {
+  final String receiptSchemaVersion;
+  final DartHandleRecoveryTransitionSourceKind sourceKind;
+  final String sourceId;
+  final String accountUserId;
+  final String ownerIdentityId;
+  final String fullHandle;
+  final String localPreviousDid;
+  final String currentDid;
+  final String bindingGeneration;
+  final String currentDeviceId;
+  final BigInt deviceAuthGeneration;
+  final BigInt registryVersion;
+  final String stateRootFingerprint;
+  final String appliedAt;
+  final String metadataJson;
+
+  const DartHandleRecoveryAccountEpochReceipt({
+    required this.receiptSchemaVersion,
+    required this.sourceKind,
+    required this.sourceId,
+    required this.accountUserId,
+    required this.ownerIdentityId,
+    required this.fullHandle,
+    required this.localPreviousDid,
+    required this.currentDid,
+    required this.bindingGeneration,
+    required this.currentDeviceId,
+    required this.deviceAuthGeneration,
+    required this.registryVersion,
+    required this.stateRootFingerprint,
+    required this.appliedAt,
+    required this.metadataJson,
+  });
+
+  @override
+  int get hashCode =>
+      receiptSchemaVersion.hashCode ^
+      sourceKind.hashCode ^
+      sourceId.hashCode ^
+      accountUserId.hashCode ^
+      ownerIdentityId.hashCode ^
+      fullHandle.hashCode ^
+      localPreviousDid.hashCode ^
+      currentDid.hashCode ^
+      bindingGeneration.hashCode ^
+      currentDeviceId.hashCode ^
+      deviceAuthGeneration.hashCode ^
+      registryVersion.hashCode ^
+      stateRootFingerprint.hashCode ^
+      appliedAt.hashCode ^
+      metadataJson.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartHandleRecoveryAccountEpochReceipt &&
+          runtimeType == other.runtimeType &&
+          receiptSchemaVersion == other.receiptSchemaVersion &&
+          sourceKind == other.sourceKind &&
+          sourceId == other.sourceId &&
+          accountUserId == other.accountUserId &&
+          ownerIdentityId == other.ownerIdentityId &&
+          fullHandle == other.fullHandle &&
+          localPreviousDid == other.localPreviousDid &&
+          currentDid == other.currentDid &&
+          bindingGeneration == other.bindingGeneration &&
+          currentDeviceId == other.currentDeviceId &&
+          deviceAuthGeneration == other.deviceAuthGeneration &&
+          registryVersion == other.registryVersion &&
+          stateRootFingerprint == other.stateRootFingerprint &&
+          appliedAt == other.appliedAt &&
+          metadataJson == other.metadataJson;
+}
+
 enum DartHandleRecoveryErrorCode {
-  handleRecoveryNotPrepared,
-  handleRecoveryUserPresenceRequired,
-  handleRecoveryTransitionMismatch,
-  handleRecoveryTransitionChainUnsupported,
-  handleRecoveryRemoteStateChanged,
-  handleRecoveryOutcomeUnknown,
-  handleRecoveryLocalStateUnavailable,
-  handleRecoveryBlocked,
+  factorRetryRequired,
+  resultAbsent,
+  outcomeUnknown,
+  localKeyUnavailable,
+  localTransitionPending,
+  localMigrationUnsupported,
+  unknownEpoch,
 }
 
 class DartHandleRecoveryImpact {
@@ -577,15 +651,101 @@ class DartHandleRecoveryImpact {
           unsupportedDidOnlyGroupCount == other.unsupportedDidOnlyGroupCount;
 }
 
+enum DartHandleRecoveryKeyState {
+  available,
+  temporarilyLocked,
+  permanentlyUnavailable,
+  destroyedPreAttempt,
+}
+
+enum DartHandleRecoveryOperationLifecycle {
+  preCommit,
+  remoteUnresolved,
+  remoteCommitted,
+  localTransitionPending,
+  applied,
+  discardedPreAttempt,
+  quarantinedKeyUnavailable,
+  supersededByStateChange,
+  failedTerminal,
+}
+
+class DartHandleRecoveryOperationSummary {
+  final String operationId;
+  final String ownerIdentityId;
+  final String? accountUserId;
+  final String fullHandle;
+  final DartHandleRecoveryOperationLifecycle lifecycleClass;
+  final bool commitAttempted;
+  final DartHandleRecoveryKeyState keyState;
+  final String? intentHash;
+  final String? stateRootFingerprint;
+  final String? supersededByOperationId;
+  final String? lastErrorCode;
+  final String createdAt;
+  final String updatedAt;
+
+  const DartHandleRecoveryOperationSummary({
+    required this.operationId,
+    required this.ownerIdentityId,
+    this.accountUserId,
+    required this.fullHandle,
+    required this.lifecycleClass,
+    required this.commitAttempted,
+    required this.keyState,
+    this.intentHash,
+    this.stateRootFingerprint,
+    this.supersededByOperationId,
+    this.lastErrorCode,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  @override
+  int get hashCode =>
+      operationId.hashCode ^
+      ownerIdentityId.hashCode ^
+      accountUserId.hashCode ^
+      fullHandle.hashCode ^
+      lifecycleClass.hashCode ^
+      commitAttempted.hashCode ^
+      keyState.hashCode ^
+      intentHash.hashCode ^
+      stateRootFingerprint.hashCode ^
+      supersededByOperationId.hashCode ^
+      lastErrorCode.hashCode ^
+      createdAt.hashCode ^
+      updatedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartHandleRecoveryOperationSummary &&
+          runtimeType == other.runtimeType &&
+          operationId == other.operationId &&
+          ownerIdentityId == other.ownerIdentityId &&
+          accountUserId == other.accountUserId &&
+          fullHandle == other.fullHandle &&
+          lifecycleClass == other.lifecycleClass &&
+          commitAttempted == other.commitAttempted &&
+          keyState == other.keyState &&
+          intentHash == other.intentHash &&
+          stateRootFingerprint == other.stateRootFingerprint &&
+          supersededByOperationId == other.supersededByOperationId &&
+          lastErrorCode == other.lastErrorCode &&
+          createdAt == other.createdAt &&
+          updatedAt == other.updatedAt;
+}
+
 class DartHandleRecoveryOtpResult {
-  final String handle;
+  final String fullHandle;
   final String operationId;
   final bool accepted;
   final int retryAfterSeconds;
   final String retryAt;
 
   const DartHandleRecoveryOtpResult({
-    required this.handle,
+    required this.fullHandle,
     required this.operationId,
     required this.accepted,
     required this.retryAfterSeconds,
@@ -594,7 +754,7 @@ class DartHandleRecoveryOtpResult {
 
   @override
   int get hashCode =>
-      handle.hashCode ^
+      fullHandle.hashCode ^
       operationId.hashCode ^
       accepted.hashCode ^
       retryAfterSeconds.hashCode ^
@@ -605,7 +765,7 @@ class DartHandleRecoveryOtpResult {
       identical(this, other) ||
       other is DartHandleRecoveryOtpResult &&
           runtimeType == other.runtimeType &&
-          handle == other.handle &&
+          fullHandle == other.fullHandle &&
           operationId == other.operationId &&
           accepted == other.accepted &&
           retryAfterSeconds == other.retryAfterSeconds &&
@@ -613,72 +773,76 @@ class DartHandleRecoveryOtpResult {
 }
 
 enum DartHandleRecoveryPhase {
-  prepared,
-  remoteCommitPending,
+  awaitingFactor,
+  readyToCommit,
+  remoteOutcomeUnknown,
   remoteCommitted,
   identityTransitionPending,
-  identitySwitched,
-  completed,
-  blocked,
+  applied,
+  quarantinedKeyUnavailable,
 }
 
 class DartHandleRecoveryProgress {
-  final String recoveryId;
   final String operationId;
   final String ownerIdentityId;
-  final String handle;
-  final String previousDid;
+  final String? accountUserId;
+  final String fullHandle;
+  final String? localPreviousDid;
   final String currentDid;
   final String? bindingGeneration;
+  final String? stateRootFingerprint;
   final DartHandleRecoveryPhase phase;
   final DartHandleRecoveryImpact impact;
   final DartHandleRecoveryResetReference? resetReference;
-  final DartHandleRecoveryErrorCode? blockedCode;
+  final DartHandleRecoveryErrorCode? failureCode;
 
   const DartHandleRecoveryProgress({
-    required this.recoveryId,
     required this.operationId,
     required this.ownerIdentityId,
-    required this.handle,
-    required this.previousDid,
+    this.accountUserId,
+    required this.fullHandle,
+    this.localPreviousDid,
     required this.currentDid,
     this.bindingGeneration,
+    this.stateRootFingerprint,
     required this.phase,
     required this.impact,
     this.resetReference,
-    this.blockedCode,
+    this.failureCode,
   });
 
   @override
   int get hashCode =>
-      recoveryId.hashCode ^
       operationId.hashCode ^
       ownerIdentityId.hashCode ^
-      handle.hashCode ^
-      previousDid.hashCode ^
+      accountUserId.hashCode ^
+      fullHandle.hashCode ^
+      localPreviousDid.hashCode ^
       currentDid.hashCode ^
       bindingGeneration.hashCode ^
+      stateRootFingerprint.hashCode ^
       phase.hashCode ^
       impact.hashCode ^
       resetReference.hashCode ^
-      blockedCode.hashCode;
+      failureCode.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is DartHandleRecoveryProgress &&
           runtimeType == other.runtimeType &&
-          recoveryId == other.recoveryId &&
           operationId == other.operationId &&
           ownerIdentityId == other.ownerIdentityId &&
-          handle == other.handle &&
-          previousDid == other.previousDid &&
+          accountUserId == other.accountUserId &&
+          fullHandle == other.fullHandle &&
+          localPreviousDid == other.localPreviousDid &&
           currentDid == other.currentDid &&
           bindingGeneration == other.bindingGeneration &&
+          stateRootFingerprint == other.stateRootFingerprint &&
           phase == other.phase &&
           impact == other.impact &&
           resetReference == other.resetReference &&
-          blockedCode == other.blockedCode;
+          failureCode == other.failureCode;
 }
 
 class DartHandleRecoveryResetReference {

@@ -709,18 +709,29 @@ impl IdentityService<'_> {
 }
 ```
 
-Manifest Handle Recovery V1 是 host-neutral、默认关闭的 Core 能力。Host 通过
+Manifest Handle Recovery V4.0 是 host-neutral、默认关闭的 Core 能力。Host 通过
 `ImCoreOpenOptions.multi_device_handle_recovery_enabled` 显式开启后，使用
-`ImCore::handle_recovery()` 的七个 typed 操作：`request_handle_recovery_otp`、
+`ImCore::handle_recovery()` 的 typed 操作：`request_handle_recovery_otp`、
 `prepare_handle_recovery`、`activate_handle_recovery`、`resume_handle_recovery`、
-`handle_recovery_status`、`activate_authorized_join` 和
-`resume_authorized_join_activation`。`status` 只读；activate/resume 才能推进持久化状态机。
+`handle_recovery_status`、`list_handle_recovery_operations`、
+`discard_handle_recovery_pre_attempt`、`quarantine_handle_recovery_key_unavailable`、
+`authorized_handle_recovery_receipt`、`activate_authorized_join` 和
+`resume_authorized_join_activation`；metrics 另有只读快照。`status` 和 list 只读；
+activate/resume 才能推进持久化状态机。
 OTP、Recovery Grant、proof、私钥与 JWT 不进入公开进度 DTO 或 SQLite transition marker。
-OTP request 与 prepare 必须复用 host 显式生成的同一 operation ID；status 精确接受 prepare
-返回的 recovery ID，不按 identity scope 猜测，也不把 unknown 映射成 nullable success。
+OTP request 只接受显式 identity 与 phone，由 Core 生成并返回 operation ID；prepare、status、
+activate 和 resume 都精确接受该 ID，不按 identity scope 猜测，也不把 unknown 映射成
+nullable success。
 `HandleRecoveryProgress` 包含 secret-free impact 和 initiator reset projection；authorized Join
 返回 `AuthorizedJoinActivationProgress { join, reset_reference }`，其中 joined-device reset 的
 source ID 是精确普通 Join session ID，App 不需要也不得猜 epoch tuple。
+
+V4.0 的公开进度阶段闭集是 `awaiting_factor`、`ready_to_commit`、
+`remote_outcome_unknown`、`remote_committed`、`identity_transition_pending`、`applied` 和
+`quarantined_key_unavailable`。公开 Recovery 错误码闭集是 `factor_retry_required`、
+`result_absent`、`outcome_unknown`、`local_key_unavailable`、`local_transition_pending`、
+`local_migration_unsupported` 和 `unknown_epoch`。V3 阶段名和 `handle_recovery_*` 兼容错误别名
+均不存在。
 
 恢复保留稳定 `owner_identity_id` 和本地 alias，切换后用新设备签名刷新 JWT、发布新的 P5
 PreKey，并只为 authoritative `required_security_profile=transport-protected` 的 Handle-backed
@@ -729,19 +740,19 @@ PreKey，并只为 authoritative `required_security_profile=transport-protected`
 业务历史仍保留。`identity_transition_pending` 在本地 epoch reset 前持久化，并按 initiator
 operation ID 或 joined-device Join session ID 绑定来源。
 Recovery Commit 收到 HTTP 2xx 零字节响应时按传输结果不确定处理：activate 返回稳定
-`handle_recovery_outcome_unknown`，pending phase 保持 `remoteCommitPending`；进程重开后的
-resume 使用 Vault 中已持久化的原请求精确重放，不生成新 operation ID、proof 或身份材料。
+`outcome_unknown`，pending phase 保持 `remote_outcome_unknown`；进程重开后的 resume 先用
+Vault 中持久化的 bootstrap key 对 `handle_recovery_result_get_v4` 签名。已提交结果继续本地
+transition；`result_absent` 才允许同一冻结 intent 重试 Commit，不生成新 operation ID 或身份材料。
+pre-attempt discard 必须先在 SQLite operation index 中原子占有
+`pre_commit && commit_attempted=false`，再幂等删除 Vault key。post-attempt 刷新 Grant 时如果
+fresh binding 已变化，Core 会再次 Result Get；只有仍为 `result_absent` 才将旧 operation 标为
+state-change loser，防止把刚刚完成的延迟 Commit 错判为 superseded。
 
-`HandleRecoveryPrepareRequest.identity` 是可选的本地 identity hint。提供时必须与输入 Handle
-精确一致；省略时 Core 在完整本地 identity index 中按 Handle 精确匹配，找不到时通过公开
-WNS binding 创建新的本地恢复身份。省略 selector 绝不表示使用 default/current identity。
-已有本地目标只迁移该 owner 的普通状态；新目标不迁移本地普通数据，也不修改其他身份。
-
-V1 不增加 CLI command、Daemon task、Agent 恢复入口或 process-global identity。未来这些 host
+V4.0 不增加 CLI command、Daemon task、Agent 恢复入口或 process-global identity。未来这些 host
 可复用同一 typed service 和显式 `IdentitySelector`，不得绕过 Core 状态机。App 迁移旧
 device-registry epoch 时只能采用 `IdentityRegistry::legacy_registry_epoch_adoption_authority`
 返回的精确、marker-free、opaque authority；任意 Recovery marker phase 都会使该 authority
-fail closed。
+fail closed。V4.0 不实现透明 N-k 本地历史认领；该能力保留给后续 V4.1。
 
 `plan_default_identity_change` 返回计划，CLI/App 负责是否写入 default identity 文件。若未来 SDK 需要直接写入，必须只写显式传入的 `default_identity_path`。
 
@@ -1367,7 +1378,7 @@ Handle recovery 后，host 通过现有 high-level `resume_rebind_recovery_async
 `handle` / `did` / `status` / `binding_generation`；公共响应中的域内 `user_id` /
 `subject_id` 不参与群成员换绑、Persona 或 scope 判断。
 
-补建后仍由新 DID 的 origin proof 调用 `group.rebind_member`，Group Host 负责再次校验 WNS continuity 和幂等性。Manifest Handle Recovery v1 只处理权威策略明确为 `transport-protected`、且权威完整 roster 精确显示旧 DID/旧 generation 的 Handle-backed member；发送 P4 前必须重新读取 `group.get + group.get_info` 与版本一致的分页 roster。DID-only、Group E2EE、缺失、畸形或冲突状态一律 fail closed，并计入不支持影响项；Recovery operation ID 即使遇到缓存漂移也绝不进入 P6。既有非 Recovery 群换绑仍可遵循 P4 `group_state_ref` → P6 Add(new DID) → Remove(old DID) durable 顺序。若 P4 返回 stale/not-allowed，只有权威 roster 已精确等于新 DID/新 generation 才按响应丢失收敛为 completed，否则 blocked 或保持可重试。App 只调用 Handle Recovery high-level resume 并消费脱敏 summary，不拼 raw RPC 或 SQL；CLI/Daemon 的 Recovery 产品入口留待后续版本。
+补建后仍由新 DID 的 origin proof 调用 `group.rebind_member`，Group Host 负责再次校验 WNS continuity 和幂等性。Manifest Handle Recovery V4.0 只为权威策略明确为 `transport-protected`、且权威完整 roster 精确显示旧 DID/旧 generation 的 Handle-backed member 创建修复任务；发送 P4 前必须重新读取 `group.get + group.get_info` 与版本一致的分页 roster。DID-only、Group E2EE、缺失、畸形或冲突状态一律 fail closed，并计入不支持影响项；Recovery operation ID 即使遇到缓存漂移也绝不进入 P6。身份 Recovery 在 receipt 落盘后即为 `applied`，Group 修复的 pending/blocked 只属于 Group journal，不得把 Recovery 改回 blocked。App 只调用 high-level resume 并消费脱敏 summary，不拼 raw RPC 或 SQL；CLI/Daemon 的 Recovery 产品入口留待后续版本。
 
 P4 被 Group Host 接受后，high-level resume 会先把本地稳定 Handle member 投影原子推进到返回请求对应的 `new_member_did` 与 generation，再把 durable P4 job 标记为 `complete` 或 `awaiting_p6`。若该本地投影未能完成，job 保持重试状态；下一次恢复仍使用相同稳定 `operation_id`。因此连续 Handle recovery 的下一代任务必须以前一代已接受并已投影的 DID 为 `previous_member_did`，不能重新从最早历史 DID 建链。
 
